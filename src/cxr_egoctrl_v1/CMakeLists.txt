@@ -13,6 +13,8 @@ find_package(catkin REQUIRED COMPONENTS
   rospy
   std_msgs
   quadrotor_msgs
+  tf
+  tf2
 )
 
 ## System dependencies are found with CMake's conventions
