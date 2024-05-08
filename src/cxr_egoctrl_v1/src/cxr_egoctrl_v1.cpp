@@ -115,7 +115,7 @@ int main(int argc, char **argv)
 	ros::ServiceClient set_mode_client = nh.serviceClient<mavros_msgs::SetMode>
 	("/mavros/set_mode");//设置飞机飞行模式的服务端，也不需要用
 	ros::Subscriber twist_sub = nh.subscribe<quadrotor_msgs::PositionCommand>
-	("/planning/pos_cmd", 10, twist_cb);//订阅egoplanner的规划指令话题的
+	("/position_cmd", 10, twist_cb);//订阅egoplanner的规划指令话题的
     ros::Subscriber target_sub = nh.subscribe<geometry_msgs::PoseStamped>
 	("move_base_simple/goal", 10, target_cb);
 	ros::Subscriber position_sub=nh.subscribe<nav_msgs::Odometry>
