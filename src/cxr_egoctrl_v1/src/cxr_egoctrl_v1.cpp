@@ -138,8 +138,8 @@ void Ctrl::control(const ros::TimerEvent&)
         current_goal.coordinate_frame = mavros_msgs::PositionTarget::FRAME_LOCAL_NED;//选择local系，一定要local系
         current_goal.header.stamp = ros::Time::now();
         current_goal.type_mask = velocity_mask;//这个就算对应的掩码设置，可以看mavros_msgs::PositionTarget消息格式
-        current_goal.velocity.x =  0.5 * ego_vel_x + (ego_pos_x - position_x)*1;
-        current_goal.velocity.y =  0.5 * ego_vel_y + (ego_pos_y - position_y)*1;
+        current_goal.velocity.x =  0.8 * ego_vel_x + (ego_pos_x - position_x)*1;
+        current_goal.velocity.y =  0.8 * ego_vel_y + (ego_pos_y - position_y)*1;
         current_goal.velocity.z =  (ego_pos_z - position_z)*1;
         current_goal.yaw = ego_yaw;
         ROS_INFO("已触发控制器，当前EGO规划速度：vel_x = %.2f\n", sqrt(pow(current_goal.velocity.x, 2)+pow(current_goal.velocity.y, 2)));
