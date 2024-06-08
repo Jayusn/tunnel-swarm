@@ -6,7 +6,7 @@ ego-planner+PX4自定义控制器V1版本(告别PX4Ctrl）,这玩意用在ego上
 当然了，能开源就很优秀了，这里只是个人的短浅看法
 
 #### 使用说明
-
+#####方法一
 1.  cd到主目录
 2.  `git clone https://gitee.com/Canada-a/cxr_ego_ctrl.git`
 3.  `cd cxr_ego_ctrl`
