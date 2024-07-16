@@ -55,7 +55,7 @@ Ctrl::Ctrl()
     state_sub = nh.subscribe("/mavros/state", 10, &Ctrl::state_cb, this);
     position_sub=nh.subscribe("/mavros/local_position/odom", 10, &Ctrl::position_cb, this);
     target_sub = nh.subscribe("move_base_simple/goal", 10, &Ctrl::target_cb, this);
-    twist_sub = nh.subscribe("/pos_cmd", 10, &Ctrl::twist_cb, this);
+    twist_sub = nh.subscribe("/position_cmd", 10, &Ctrl::twist_cb, this);
     local_pos_pub = nh.advertise<mavros_msgs::PositionTarget>("/mavros/setpoint_raw/local", 1);
     pubMarker = nh.advertise<visualization_msgs::Marker>("/track_drone_point", 5);
     get_now_pos = false;
