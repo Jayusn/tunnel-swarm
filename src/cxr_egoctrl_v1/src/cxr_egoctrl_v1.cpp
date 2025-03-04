@@ -22,6 +22,7 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #define VELOCITY2D_CONTROL 0b101111000111 //设置好对应的掩码，从右往左依次对应PX/PY/PZ/VX/VY/VZ/AX/AY/AZ/FORCE/YAW/YAW-RATE
 //设置掩码时注意要用的就加上去，用的就不加，这里是用二进制表示，我需要用到VX/VY/VZ/YAW，所以这四个我给0，其他都是1.
+bool allow_yaw = true;//如果不想要机头转动，则把这个设置为false，专门适配于雷达用的
 class Ctrl
 {
     public:
@@ -45,6 +46,7 @@ class Ctrl
         float position_x, position_y, position_z, now_x, now_y, now_yaw, current_yaw, targetpos_x, targetpos_y;
         float ego_pos_x, ego_pos_y, ego_pos_z, ego_vel_x, ego_vel_y, ego_vel_z, ego_a_x, ego_a_y, ego_a_z, ego_yaw, ego_yaw_rate; //EGO planner information has position velocity acceleration yaw yaw_dot
         bool receive, get_now_pos;//触发轨迹的条件判断
+        bool have_odom = false;
         ros::Subscriber state_sub, twist_sub, target_sub, position_sub;
         ros::Publisher local_pos_pub, pubMarker;
         ros::Timer timer;
@@ -93,7 +95,7 @@ void Ctrl::position_cb(const nav_msgs::Odometry::ConstPtr&msg)
     position_y = position_msg.pose.pose.position.y;
     position_z = position_msg.pose.pose.position.z;
 	current_yaw = yaw;
-
+    have_odom = true;
 }
 
 void Ctrl::target_cb(const geometry_msgs::PoseStamped::ConstPtr& msg)//读取rviz的航点
@@ -120,6 +122,11 @@ void Ctrl::twist_cb(const quadrotor_msgs::PositionCommand::ConstPtr& msg)//ego�
 
 void Ctrl::control(const ros::TimerEvent&)
 {
+    if(!have_odom)
+    {
+        std::cout<<"---------------no odom!!-------------"<<std::endl;
+        return;
+    }
     if(!receive) //如果没有在rviz上打点，则offboard模式下会保持在1m的高度
     {
         current_goal.coordinate_frame = mavros_msgs::PositionTarget::FRAME_LOCAL_NED;
@@ -141,7 +148,10 @@ void Ctrl::control(const ros::TimerEvent&)
         current_goal.velocity.x =  0.8 * ego_vel_x + (ego_pos_x - position_x)*1;
         current_goal.velocity.y =  0.8 * ego_vel_y + (ego_pos_y - position_y)*1;
         current_goal.velocity.z =  (ego_pos_z - position_z)*1;
-        current_goal.yaw = ego_yaw;
+        if(allow_yaw)
+            current_goal.yaw = ego_yaw;
+        else
+            current_goal.yaw = now_yaw;
         ROS_INFO("已触发控制器，当前EGO规划速度：vel_x = %.2f\n", sqrt(pow(current_goal.velocity.x, 2)+pow(current_goal.velocity.y, 2)));
     }
     local_pos_pub.publish(current_goal);
