@@ -1,0 +1,13 @@
+<launch>
+  <arg name="config_file" default="$(find ldop)/config/ldop.yaml" />
+  <arg name="cloud_topic" default="/points_raw" />
+  <arg name="odom_topic" default="/lidar_slam/odom" />
+  <arg name="dynamic_objects_topic" default="/ldop/dynamic_objects" />
+
+  <node pkg="ldop" type="ldop_node" name="ldop_node" output="screen">
+    <rosparam command="load" file="$(arg config_file)" />
+    <param name="input_cloud_topic" value="$(arg cloud_topic)" />
+    <param name="odom_topic" value="$(arg odom_topic)" />
+    <param name="dynamic_objects_topic" value="$(arg dynamic_objects_topic)" />
+  </node>
+</launch>
