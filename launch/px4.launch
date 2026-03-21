@@ -1,0 +1,71 @@
+<launch>
+  <!-- 是否启用天花板空气墙。 -->
+  <arg name="enable_ceiling" default="false" />
+
+  <!-- 保留原始 world 路径，开启天花板时直接复用 PX4 场景。 -->
+  <arg name="world_with_ceiling" default="$(find px4)/Tools/sitl_gazebo/worlds/square/square_box_dynamic_8.world" />
+  <!-- 关闭天花板时使用 LDOP 内的裁剪副本，避免反复改 PX4 源文件。 -->
+  <arg name="world_without_ceiling" default="$(find ldop)/worlds/square/square_box_dynamic_8_no_ceiling.world" />
+
+  <!-- 下面这些参数与 px4_start.launch 对齐，方便直接透传。 -->
+  <arg name="x" default="0" />
+  <arg name="y" default="0" />
+  <arg name="z" default="0.1" />
+  <arg name="R" default="0" />
+  <arg name="P" default="0" />
+  <arg name="Y" default="0" />
+  <arg name="vehicle" default="iris" />
+  <arg name="sdf" default="$(find px4)/Tools/sitl_gazebo/models/iris_mid360/iris_mid360.sdf" />
+  <arg name="gui" default="true" />
+  <arg name="debug" default="false" />
+  <arg name="verbose" default="false" />
+  <arg name="paused" default="false" />
+  <arg name="respawn_gazebo" default="false" />
+  <arg name="fcu_url" default="udp://:14540@localhost:14557" />
+  <arg name="respawn_mavros" default="false" />
+  <arg name="interactive" default="true" />
+
+  <group if="$(arg enable_ceiling)">
+    <include file="$(find px4)/launch/px4_start.launch">
+      <arg name="x" value="$(arg x)" />
+      <arg name="y" value="$(arg y)" />
+      <arg name="z" value="$(arg z)" />
+      <arg name="R" value="$(arg R)" />
+      <arg name="P" value="$(arg P)" />
+      <arg name="Y" value="$(arg Y)" />
+      <arg name="world" value="$(arg world_with_ceiling)" />
+      <arg name="vehicle" value="$(arg vehicle)" />
+      <arg name="sdf" value="$(arg sdf)" />
+      <arg name="gui" value="$(arg gui)" />
+      <arg name="debug" value="$(arg debug)" />
+      <arg name="verbose" value="$(arg verbose)" />
+      <arg name="paused" value="$(arg paused)" />
+      <arg name="respawn_gazebo" value="$(arg respawn_gazebo)" />
+      <arg name="fcu_url" value="$(arg fcu_url)" />
+      <arg name="respawn_mavros" value="$(arg respawn_mavros)" />
+      <arg name="interactive" value="$(arg interactive)" />
+    </include>
+  </group>
+
+  <group unless="$(arg enable_ceiling)">
+    <include file="$(find px4)/launch/px4_start.launch">
+      <arg name="x" value="$(arg x)" />
+      <arg name="y" value="$(arg y)" />
+      <arg name="z" value="$(arg z)" />
+      <arg name="R" value="$(arg R)" />
+      <arg name="P" value="$(arg P)" />
+      <arg name="Y" value="$(arg Y)" />
+      <arg name="world" value="$(arg world_without_ceiling)" />
+      <arg name="vehicle" value="$(arg vehicle)" />
+      <arg name="sdf" value="$(arg sdf)" />
+      <arg name="gui" value="$(arg gui)" />
+      <arg name="debug" value="$(arg debug)" />
+      <arg name="verbose" value="$(arg verbose)" />
+      <arg name="paused" value="$(arg paused)" />
+      <arg name="respawn_gazebo" value="$(arg respawn_gazebo)" />
+      <arg name="fcu_url" value="$(arg fcu_url)" />
+      <arg name="respawn_mavros" value="$(arg respawn_mavros)" />
+      <arg name="interactive" value="$(arg interactive)" />
+    </include>
+  </group>
+</launch>

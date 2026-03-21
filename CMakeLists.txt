@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.0.2)
 project(ldop)
 
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 
 # 要求编译器必须支持上面的标准；如果不支持就直接报错，
 # 而不是偷偷降级成更老的标准。
@@ -33,13 +33,11 @@ find_package(catkin REQUIRED COMPONENTS
   roscpp
   sensor_msgs
   std_msgs
-  visualization_msgs
 )
 find_package(Threads REQUIRED)
 
 add_message_files(
   FILES
-  PredictedState.msg
   DynamicObject.msg
   DynamicObjectArray.msg
 )
@@ -64,14 +62,14 @@ generate_messages(
 catkin_package(
   INCLUDE_DIRS include
   LIBRARIES ldop_core
-  CATKIN_DEPENDS geometry_msgs message_runtime nav_msgs roscpp sensor_msgs std_msgs visualization_msgs
+  CATKIN_DEPENDS geometry_msgs message_runtime nav_msgs roscpp sensor_msgs std_msgs
 )
 
 # include_directories(...) 指定编译时去哪些目录找头文件。
 #
 # include
 # 对应你自己包里的头文件目录，例如：
-#   #include <LDOP/ldop.h>
+#   #include <ldop/ldop.h>
 #
 # ${catkin_INCLUDE_DIRS}
 # 对应上面 find_package(catkin ...) 找到的 ROS 依赖头文件目录。

@@ -111,9 +111,10 @@
 
 ### 已有输出
 
+- `/ldop/raw_cloud`
+- `/ldop/odom`
 - `/ldop/static_cloud`
 - `/ldop/dynamic_cloud`
-- `/ldop/debug_markers`
 
 ### 新增的动态预测接口
 
@@ -126,7 +127,6 @@
 配套消息类型为：
 
 - `ldop/DynamicObject`
-- `ldop/PredictedState`
 
 这套消息接口未来打算承载的信息包括：
 
@@ -135,6 +135,13 @@
 - 目标尺寸
 - 目标速度
 - 短时间范围内的未来预测位置
+
+当前 `ldop/DynamicObject` 已经直接把预测信息收敛到两个数组字段里：
+
+- `prediction_time_offsets`
+- `predicted_positions`
+
+这两个数组按下标一一对应，不再单独使用 `PredictedState` 消息。
 
 目前仍处于骨架阶段，所以这个消息当前会发布“空数组”，等以后真正实现检测、跟踪和预测之后再填入真实内容。
 

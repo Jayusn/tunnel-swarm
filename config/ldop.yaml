@@ -1,11 +1,10 @@
-input_cloud_topic: /points_raw
-odom_topic: /lidar_slam/odom
+input_cloud_topic: /cloud_registered_body
+odom_topic: /Odometry
+raw_cloud_output_topic: /ldop/raw_cloud
+odom_output_topic: /ldop/odom
 static_cloud_topic: /ldop/static_cloud
 dynamic_cloud_topic: /ldop/dynamic_cloud
 dynamic_objects_topic: /ldop/dynamic_objects
-marker_topic: /ldop/debug_markers
-world_frame: world
-input_queue_size: 3
-output_queue_size: 3
-spinner_thread_count: 0
-verbose: false
+world_frame: camera_init  #世界坐标系名称
+sensor_frame: body  #雷达坐标系名称
+verbose: true

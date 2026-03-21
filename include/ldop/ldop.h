@@ -2,7 +2,6 @@
 
 #include <atomic>
 #include <condition_variable>
-#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <mutex>
@@ -13,95 +12,115 @@
 #include <nav_msgs/Odometry.h>
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
-#include <std_msgs/Header.h>
-#include <visualization_msgs/MarkerArray.h>
 
-namespace ldop {
+namespace ldopcore {
 
-class LDOP {
+class Ldop {
  public:
-  LDOP(ros::NodeHandle& nh, ros::NodeHandle& pnh);
-  ~LDOP();
-
-  int spinnerThreadCount() const;
+  // 负责订阅点云/里程计、异步处理并发布结果的主类。
+  Ldop(ros::NodeHandle& nh, ros::NodeHandle& pnh);
+  ~Ldop();
 
  private:
+  // 输入队列中的原始数据帧，点云到来时顺带缓存一份最近里程计快照。
   struct InputFrame {
-    sensor_msgs::PointCloud2ConstPtr cloud_msg;
+    sensor_msgs::PointCloud2 cloud_msg;
     nav_msgs::Odometry odom_msg;
-    bool has_odom{false};
-    ros::Time received_time;
     std::uint64_t sequence{0};
   };
 
+  // 处理线程输出的结果帧，供发布线程统一发布。
   struct ProcessedFrame {
+    sensor_msgs::PointCloud2 raw_cloud_msg;
     sensor_msgs::PointCloud2 static_cloud_msg;
     sensor_msgs::PointCloud2 dynamic_cloud_msg;
-    ldop::DynamicObjectArray dynamic_objects_msg;
-    visualization_msgs::MarkerArray marker_array_msg;
+    ::ldop::DynamicObjectArray dynamic_objects_msg;
     nav_msgs::Odometry odom_msg;
-    bool has_odom{false};
-    ros::Time processed_time;
     std::uint64_t sequence{0};
-    std::size_t skipped_input_frames{0};
   };
 
+  // 初始化流程：读取参数、注册 ROS 接口、启动工作线程。
   void loadParameters();
   void setupRosInterfaces();
   void startWorkers();
   void stopWorkers();
 
+  // ROS 回调：缓存最新里程计，并把有效的点云/里程计数据对送入输入队列。
   void odomCallback(const nav_msgs::OdometryConstPtr& odom_msg);
   void pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr& cloud_msg);
 
+  // 工作线程：处理线程和发布线程都按队列顺序消费，只有在各自队列为空时才进入等待。
   void processingLoop();
   void publishingLoop();
 
-  ProcessedFrame processFrame(const InputFrame& frame, std::size_t skipped_frames);
+  // 当前阶段还是占位实现：静态点云透传，动态结果先留空。
+  ProcessedFrame processFrame(const InputFrame& frame);
   void publishFrame(const ProcessedFrame& frame);
-  ldop::DynamicObjectArray buildDynamicObjectArray(const ProcessedFrame& frame) const;
-  visualization_msgs::MarkerArray buildMarkerArray(const ProcessedFrame& frame) const;
+  ::ldop::DynamicObjectArray buildDynamicObjectArray(const ProcessedFrame& frame) const;
   sensor_msgs::PointCloud2 buildEmptyCloud(const std_msgs::Header& header) const;
 
+  // ROS 节点句柄、订阅器与发布器。
   ros::NodeHandle nh_;
   ros::NodeHandle pnh_;
   ros::Subscriber cloud_sub_;
   ros::Subscriber odom_sub_;
+  ros::Publisher raw_cloud_pub_;
+  ros::Publisher odom_pub_;
   ros::Publisher static_cloud_pub_;
   ros::Publisher dynamic_cloud_pub_;
   ros::Publisher dynamic_objects_pub_;
-  ros::Publisher marker_pub_;
 
+  // 参数服务器读取的话题名与运行配置。
   std::string input_cloud_topic_;
   std::string odom_topic_;
+  std::string raw_cloud_output_topic_;
+  std::string odom_output_topic_;
   std::string static_cloud_topic_;
   std::string dynamic_cloud_topic_;
   std::string dynamic_objects_topic_;
-  std::string marker_topic_;
   std::string world_frame_;
+  std::string sensor_frame_;
   bool verbose_;
-  int input_queue_size_;
-  int output_queue_size_;
-  int spinner_thread_count_;
 
+  ///////
+  //运行状态与统计数据
+  ///////
+
+  // 节点或线程总开关
   std::atomic<bool> running_;
+
+  // 已接收到的点云、里程计帧总数
   std::atomic<std::uint64_t> received_cloud_count_;
+  std::atomic<std::uint64_t> received_odom_count_;
+
+  // 成功配对或因缺少 odom 而被丢弃的点云帧数。
+  std::atomic<std::uint64_t> matched_odom_count_;
+  std::atomic<std::uint64_t> missing_odom_count_;
+
+  // 已完成处理或丢失的点云帧总数。
   std::atomic<std::uint64_t> processed_cloud_count_;
-  std::atomic<std::uint64_t> dropped_cloud_count_;
+  std::atomic<std::uint64_t> dropped_cloud_count_;    // 这个值越大，越说明当前处理速度可能跟不上输入速度。
 
-  mutable std::mutex odom_mutex_;
-  std::mutex input_mutex_;
-  std::mutex output_mutex_;
-  std::condition_variable input_cv_;
-  std::condition_variable output_cv_;
+  // 保护输入队列 input_queue_ 和 输出队列 output_queue_的互斥锁。
+  std::mutex input_mutex_;  // 点云回调负责往里放数据，处理线程负责从里取数据，两边会并发访问。
+  std::mutex output_mutex_; // 处理线程会写入处理结果，发布线程会读取并清空结果队列。
 
-  nav_msgs::Odometry latest_odom_;
+  // 输入队列 和 输出队列的条件变量。
+  std::condition_variable input_cv_;  // processingLoop() 在没有输入时会阻塞等待这个条件变量。
+  std::condition_variable output_cv_; // publishingLoop() 在没有输出时会阻塞等待这个条件变量。
+
+  // std::mutex线程锁，那个线程先触发，另一个线程就要等待
+  mutable std::mutex odom_mutex_;  // 保护 latest_odom_ 和 has_latest_odom_ 的互斥锁。
+  nav_msgs::Odometry latest_odom_; // 当前缓存的“最新一帧”里程计。
+
+  // 是否已经缓存过至少一帧可用于配对的最新里程计。
   bool has_latest_odom_;
   std::deque<InputFrame> input_queue_;
   std::deque<ProcessedFrame> output_queue_;
 
+  // 后台线程：一个负责处理，一个负责发布。
   std::thread processing_thread_;
   std::thread publishing_thread_;
 };
 
-}  // namespace ldop
+}  // namespace ldopcore
