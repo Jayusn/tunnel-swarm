@@ -4,11 +4,13 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 
 #include <ldop/DynamicObjectArray.h>
+#include <ldop/octomap_mapper.h>
 #include <nav_msgs/Odometry.h>
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
@@ -35,6 +37,7 @@ class Ldop {
     sensor_msgs::PointCloud2 static_cloud_msg;
     sensor_msgs::PointCloud2 dynamic_cloud_msg;
     ::ldop::DynamicObjectArray dynamic_objects_msg;
+    OctomapPublishData octomap_publish_data;
     nav_msgs::Odometry odom_msg;
     std::uint64_t sequence{0};
   };
@@ -53,7 +56,7 @@ class Ldop {
   void processingLoop();
   void publishingLoop();
 
-  // 当前阶段还是占位实现：静态点云透传，动态结果先留空。
+  // 当前阶段保留 LDOP 主流程，把 OctoMap 逻辑委托给独立模块。
   ProcessedFrame processFrame(const InputFrame& frame);
   void publishFrame(const ProcessedFrame& frame);
   ::ldop::DynamicObjectArray buildDynamicObjectArray(const ProcessedFrame& frame) const;
@@ -79,17 +82,16 @@ class Ldop {
   std::string dynamic_cloud_topic_;
   std::string dynamic_objects_topic_;
   std::string world_frame_;
-  std::string sensor_frame_;
   bool verbose_;
 
   ///////
-  //运行状态与统计数据
+  // 运行状态与统计数据
   ///////
 
-  // 节点或线程总开关
+  // 节点或线程总开关。
   std::atomic<bool> running_;
 
-  // 已接收到的点云、里程计帧总数
+  // 已接收到的点云、里程计帧总数。
   std::atomic<std::uint64_t> received_cloud_count_;
   std::atomic<std::uint64_t> received_odom_count_;
 
@@ -97,21 +99,24 @@ class Ldop {
   std::atomic<std::uint64_t> matched_odom_count_;
   std::atomic<std::uint64_t> missing_odom_count_;
 
-  // 已完成处理或丢失的点云帧总数。
+  // 已完成处理或丢弃的点云帧总数。
   std::atomic<std::uint64_t> processed_cloud_count_;
-  std::atomic<std::uint64_t> dropped_cloud_count_;    // 这个值越大，越说明当前处理速度可能跟不上输入速度。
+  std::atomic<std::uint64_t> dropped_cloud_count_;  // 这个值越大，越说明当前处理速度可能跟不上输入速度。
 
-  // 保护输入队列 input_queue_ 和 输出队列 output_queue_的互斥锁。
-  std::mutex input_mutex_;  // 点云回调负责往里放数据，处理线程负责从里取数据，两边会并发访问。
-  std::mutex output_mutex_; // 处理线程会写入处理结果，发布线程会读取并清空结果队列。
+  // 保护输入队列 input_queue_ 和输出队列 output_queue_ 的互斥锁。
+  std::mutex input_mutex_;   // 点云回调负责往里放数据，处理线程负责从里取数据，两边会并发访问。
+  std::mutex output_mutex_;  // 处理线程会写入处理结果，发布线程会读取并清空结果队列。
 
-  // 输入队列 和 输出队列的条件变量。
-  std::condition_variable input_cv_;  // processingLoop() 在没有输入时会阻塞等待这个条件变量。
-  std::condition_variable output_cv_; // publishingLoop() 在没有输出时会阻塞等待这个条件变量。
+  // 输入队列和输出队列的条件变量。
+  std::condition_variable input_cv_;   // processingLoop() 在没有输入时会阻塞等待这个条件变量。
+  std::condition_variable output_cv_;  // publishingLoop() 在没有输出时会阻塞等待这个条件变量。
 
-  // std::mutex线程锁，那个线程先触发，另一个线程就要等待
-  mutable std::mutex odom_mutex_;  // 保护 latest_odom_ 和 has_latest_odom_ 的互斥锁。
-  nav_msgs::Odometry latest_odom_; // 当前缓存的“最新一帧”里程计。
+  // 保护 latest_odom_ 和 has_latest_odom_ 的互斥锁。
+  mutable std::mutex odom_mutex_;
+  nav_msgs::Odometry latest_odom_;  // 当前缓存的“最新一帧”里程计。
+
+  // OctoMap 独立模块，不再把具体建图逻辑塞进 ldop 文件里。
+  std::unique_ptr<OctomapMapper> octomap_mapper_;
 
   // 是否已经缓存过至少一帧可用于配对的最新里程计。
   bool has_latest_odom_;

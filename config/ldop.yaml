@@ -1,10 +1,17 @@
-input_cloud_topic: /cloud_registered_body
+input_cloud_topic: /cloud_registered
 odom_topic: /Odometry
 raw_cloud_output_topic: /ldop/raw_cloud
 odom_output_topic: /ldop/odom
 static_cloud_topic: /ldop/static_cloud
 dynamic_cloud_topic: /ldop/dynamic_cloud
 dynamic_objects_topic: /ldop/dynamic_objects
-world_frame: camera_init  #世界坐标系名称
-sensor_frame: body  #雷达坐标系名称
+world_frame: camera_init  # 输入点云和里程计位姿统一使用的世界坐标系
+octomap_full_topic: /ldop/octomap_full
+octomap_resolution: 0.2  # OctoMap 体素分辨率，单位米
+octomap_max_range: 15.0  # OctoMap 最大射线长度，<=0 表示不限制
+octomap_hit_probability: 0.7
+octomap_miss_probability: 0.4
+octomap_clamping_min_probability: 0.12
+octomap_clamping_max_probability: 0.97
+octomap_occupancy_threshold: 0.5
 verbose: true

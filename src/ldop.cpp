@@ -1,4 +1,5 @@
 #include <ldop/ldop.h>
+#include <sensor_msgs/point_cloud2_iterator.h>
 
 namespace ldopcore {
 
@@ -12,7 +13,6 @@ constexpr int kOutputQueueSize = 10;
 Ldop::Ldop(ros::NodeHandle& nh, ros::NodeHandle& pnh)
     : nh_(nh),
       pnh_(pnh),
-      verbose_(false),
       running_(true),
       received_cloud_count_(0U),
       received_odom_count_(0U),
@@ -23,14 +23,17 @@ Ldop::Ldop(ros::NodeHandle& nh, ros::NodeHandle& pnh)
       has_latest_odom_(false) {
   loadParameters();
   setupRosInterfaces();
+  octomap_mapper_ = std::make_unique<OctomapMapper>(nh_, pnh_, world_frame_, verbose_);
   startWorkers();
 
-  ROS_INFO_STREAM("LDOP is ready. Input cloud: " << input_cloud_topic_ << "\n odom: " << odom_topic_
-                                  << "\n         raw cloud output: "<< raw_cloud_output_topic_
-                                  << "\n         odom output: " << odom_output_topic_
-                                  << "\n         static output: " << static_cloud_topic_
-                                  << "\n         dynamic output: " << dynamic_cloud_topic_
-                                  << "\n         dynamic objects: " << dynamic_objects_topic_);
+  ROS_INFO_STREAM("  LDOP is ready.");
+  ROS_INFO_STREAM("  input cloud: " << input_cloud_topic_);
+  ROS_INFO_STREAM("  odom: " << odom_topic_);
+  ROS_INFO_STREAM("  raw cloud output: " << raw_cloud_output_topic_);
+  ROS_INFO_STREAM("  odom output: " << odom_output_topic_);
+  ROS_INFO_STREAM("  static output: " << static_cloud_topic_);
+  ROS_INFO_STREAM("  dynamic output: " << dynamic_cloud_topic_);
+  ROS_INFO_STREAM("  dynamic objects: " << dynamic_objects_topic_);
 }
 
 Ldop::~Ldop() {
@@ -47,12 +50,11 @@ void Ldop::loadParameters() {
   pnh_.param<std::string>("dynamic_cloud_topic", dynamic_cloud_topic_, "/ldop/dynamic_cloud");
   pnh_.param<std::string>("dynamic_objects_topic", dynamic_objects_topic_, "/ldop/dynamic_objects");
   pnh_.param<std::string>("world_frame", world_frame_, "camera_init");
-  pnh_.param<std::string>("sensor_frame", sensor_frame_, "body");
   pnh_.param("verbose", verbose_, false);
 }
 
 void Ldop::setupRosInterfaces() {
-  // 订阅输入，并提前创建所有输出通道。
+  // 订阅输入，并提前创建 LDOP 自己负责的输出通道。
   cloud_sub_ = nh_.subscribe(input_cloud_topic_, 50, &Ldop::pointCloudCallback, this);
   odom_sub_ = nh_.subscribe(odom_topic_, 200, &Ldop::odomCallback, this);
 
@@ -122,26 +124,22 @@ void Ldop::pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr& cloud_msg)
   frame.cloud_msg = *cloud_msg;
   frame.sequence = cloud_sequence;
 
-  // std::size_t buffered_frames = 0U; 一次回调的现有输入队列长度
-  // std::size_t dropped_on_enqueue = 0U; 一次回调中丢弃的输入队列长度
   {
     std::lock_guard<std::mutex> input_lock(input_mutex_);
     // 只有输入队列触顶时才丢掉最旧点云，其余情况由处理线程按先进先出顺序消费。
     while (static_cast<int>(input_queue_.size()) >= kInputQueueSize) {
       input_queue_.pop_front();
       dropped_cloud_count_.fetch_add(1U);
-      // ++dropped_on_enqueue;
     }
     input_queue_.push_back(std::move(frame));
-    // buffered_frames = input_queue_.size();
   }
-  input_cv_.notify_one(); // 通知“input_cv_.wait”处理线程现在可以干活了
+  input_cv_.notify_one();
 
-  const double odom_cloud_time_offset_sec = (frame.odom_msg.header.stamp - cloud_msg->header.stamp).toSec();
+  const double odom_cloud_time_offset_sec =
+      (frame.odom_msg.header.stamp - cloud_msg->header.stamp).toSec();
   if (verbose_) {
     ROS_INFO_STREAM_THROTTLE(1.0, "received cloud count: " << received_cloud_count_.load()
                                   << ", odom matched: " << matched_odom_count_.load()
-                                  // << ", odom missing: " << missing_odom_count_.load()                              
                                   << ", input queue : " << input_queue_.size()
                                   << ", dropped on enqueue: " << dropped_cloud_count_.load()
                                   << ", odom-cloud dt: " << odom_cloud_time_offset_sec);
@@ -202,29 +200,38 @@ void Ldop::publishingLoop() {
 }
 
 Ldop::ProcessedFrame Ldop::processFrame(const InputFrame& frame) {
-  // 当前实现仍是骨架：静态点云直接透传，动态点云先构造为空。
+  // 主流程只做调度，把世界系点云和里程计委托给独立的 OctoMap 模块。
   ProcessedFrame processed;
   processed.raw_cloud_msg = frame.cloud_msg;
-  processed.static_cloud_msg = frame.cloud_msg;
-  processed.dynamic_cloud_msg = buildEmptyCloud(frame.cloud_msg.header);
   processed.odom_msg = frame.odom_msg;
   processed.sequence = frame.sequence;
+
+  const OctomapFrameResult octomap_result =
+      octomap_mapper_->processStaticCloud(frame.cloud_msg, frame.odom_msg);
+  processed.static_cloud_msg = octomap_result.static_cloud_msg;
+  processed.octomap_publish_data = octomap_result.publish_data;
+  processed.dynamic_cloud_msg = buildEmptyCloud(processed.static_cloud_msg.header);
   processed.dynamic_objects_msg = buildDynamicObjectArray(processed);
   return processed;
 }
 
 void Ldop::publishFrame(const ProcessedFrame& frame) {
-  // 统一从这里发出所有结果，方便后续补充更多输出。
+  // 统一从这里发出 LDOP 输出，OctoMap 地图则交给独立模块自行发布。
   raw_cloud_pub_.publish(frame.raw_cloud_msg);
   odom_pub_.publish(frame.odom_msg);
   static_cloud_pub_.publish(frame.static_cloud_msg);
   dynamic_cloud_pub_.publish(frame.dynamic_cloud_msg);
   dynamic_objects_pub_.publish(frame.dynamic_objects_msg);
+  octomap_mapper_->publish(frame.octomap_publish_data);
 
   if (verbose_) {
     ROS_INFO_STREAM_THROTTLE(1.0, "published frame #" << frame.sequence
-                                  << ", processed: "<< processed_cloud_count_.load()
-                                  << ", dropped: "<< dropped_cloud_count_.load());
+                                  << ", processed: " << processed_cloud_count_.load()
+                                  << ", dropped: " << dropped_cloud_count_.load()
+                                  << ", octomap updates: "
+                                  << frame.octomap_publish_data.update_count
+                                  << ", octomap nodes: "
+                                  << frame.octomap_publish_data.node_count);
   }
 }
 
@@ -249,12 +256,11 @@ sensor_msgs::PointCloud2 Ldop::buildEmptyCloud(const std_msgs::Header& header) c
   if (cloud.header.frame_id.empty()) {
     cloud.header.frame_id = world_frame_;
   }
-  cloud.height = 1;
-  cloud.width = 0;
-  cloud.is_bigendian = false;
+
+  sensor_msgs::PointCloud2Modifier modifier(cloud);
+  modifier.setPointCloud2FieldsByString(1, "xyz");
+  modifier.resize(0);
   cloud.is_dense = false;
-  cloud.point_step = 0;
-  cloud.row_step = 0;
   return cloud;
 }
 
