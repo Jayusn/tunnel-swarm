@@ -24,23 +24,37 @@ class Ldop {
   ~Ldop();
 
  private:
+  struct LdopTimingStats {
+    // 单帧 LDOP 关键函数整体耗时，单位均为毫秒。
+    double point_cloud_callback_ms{0.0};
+    double processing_loop_ms{0.0};
+    double process_frame_ms{0.0};
+    double publish_frame_ms{0.0};
+    double publishing_loop_ms{0.0};
+  };
+
   // 输入队列中的原始数据帧，点云到来时顺带缓存一份最近里程计快照。
   struct InputFrame {
     sensor_msgs::PointCloud2 cloud_msg;
     nav_msgs::Odometry odom_msg;
     std::uint64_t sequence{0};
+    double point_cloud_callback_ms{0.0};
+    double odom_cloud_dt_ms{0.0};
   };
 
   // 处理线程输出的结果帧，供发布线程统一发布。
   struct ProcessedFrame {
     sensor_msgs::PointCloud2 raw_cloud_msg;
-    sensor_msgs::PointCloud2 static_cloud_msg;
+    sensor_msgs::PointCloud2 static_map_cloud_msg;
     sensor_msgs::PointCloud2 dynamic_cloud_msg;
     ::ldop::DynamicObjectArray dynamic_objects_msg;
     UfomapRuntimeStats ufomap_runtime_stats;
     UfomapPublishData ufomap_publish_data;
+    UfomapTimingStats ufomap_timing;
+    LdopTimingStats timing;
     nav_msgs::Odometry odom_msg;
     std::uint64_t sequence{0};
+    double odom_cloud_dt_ms{0.0};
   };
 
   // 初始化流程：读取参数、注册 ROS 接口、启动工作线程。
@@ -59,7 +73,7 @@ class Ldop {
 
   // 当前阶段保留 LDOP 主流程，把 UFOMap 逻辑委托给独立模块。
   ProcessedFrame processFrame(const InputFrame& frame);
-  void publishFrame(const ProcessedFrame& frame);
+  void publishFrame(ProcessedFrame& frame);
   ::ldop::DynamicObjectArray buildDynamicObjectArray(const ProcessedFrame& frame) const;
   sensor_msgs::PointCloud2 buildEmptyCloud(const std_msgs::Header& header) const;
 

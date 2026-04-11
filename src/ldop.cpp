@@ -1,7 +1,10 @@
 #include <ldop/ldop.h>
 
+#include <chrono>
 #include <cmath>
+#include <iomanip>
 #include <limits>
+#include <sstream>
 
 #include <sensor_msgs/point_cloud2_iterator.h>
 
@@ -11,6 +14,17 @@ namespace {
 
 constexpr int kInputQueueSize = 10;
 constexpr int kOutputQueueSize = 10;
+
+double elapsedMs(const std::chrono::steady_clock::time_point& start,
+                 const std::chrono::steady_clock::time_point& end) {
+  return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
+std::string formatFloatMs(const double value) {
+  std::ostringstream stream;
+  stream << std::fixed << std::setprecision(3) << value;
+  return stream.str();
+}
 
 }  // namespace
 
@@ -106,6 +120,7 @@ void Ldop::pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr& cloud_msg)
     return;
   }
 
+  const auto callback_start = std::chrono::steady_clock::now();
   InputFrame frame;
   const std::uint64_t cloud_sequence = received_cloud_count_.fetch_add(1U) + 1U;
 
@@ -127,6 +142,8 @@ void Ldop::pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr& cloud_msg)
 
   frame.cloud_msg = *cloud_msg;
   frame.sequence = cloud_sequence;
+  frame.odom_cloud_dt_ms =
+      (frame.odom_msg.header.stamp - cloud_msg->header.stamp).toSec() * 1000.0;
 
   {
     std::lock_guard<std::mutex> input_lock(input_mutex_);
@@ -136,18 +153,10 @@ void Ldop::pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr& cloud_msg)
       dropped_cloud_count_.fetch_add(1U);
     }
     input_queue_.push_back(std::move(frame));
+    input_queue_.back().point_cloud_callback_ms =
+        elapsedMs(callback_start, std::chrono::steady_clock::now());
   }
   input_cv_.notify_one();
-
-  const double odom_cloud_time_offset_sec =
-      (frame.odom_msg.header.stamp - cloud_msg->header.stamp).toSec();
-  if (verbose_) {
-    ROS_INFO_STREAM_THROTTLE(1.0, "received cloud count: " << received_cloud_count_.load()
-                                  << ", odom matched: " << matched_odom_count_.load()
-                                  << ", input queue : " << input_queue_.size()
-                                  << ", dropped on enqueue: " << dropped_cloud_count_.load()
-                                  << ", odom-cloud dt: " << odom_cloud_time_offset_sec);
-  }
 }
 
 void Ldop::processingLoop() {
@@ -167,7 +176,9 @@ void Ldop::processingLoop() {
       input_queue_.pop_front();
     }
 
+    const auto loop_start = std::chrono::steady_clock::now();
     ProcessedFrame processed = processFrame(frame);
+    processed.timing.processing_loop_ms = elapsedMs(loop_start, std::chrono::steady_clock::now());
     processed_cloud_count_.fetch_add(1U);
 
     {
@@ -199,51 +210,76 @@ void Ldop::publishingLoop() {
       output_queue_.pop_front();
     }
 
+    const auto loop_start = std::chrono::steady_clock::now();
     publishFrame(frame);
+    frame.timing.publishing_loop_ms = elapsedMs(loop_start, std::chrono::steady_clock::now());
+
+    if (verbose_) {
+      ROS_INFO_STREAM_THROTTLE(1.0, "LDOP timing frame #" << frame.sequence
+                                    << ": odomCloudDt="
+                                    << formatFloatMs(frame.odom_cloud_dt_ms)
+                                    << "ms, pointCloudCallback="
+                                    << formatFloatMs(frame.timing.point_cloud_callback_ms)
+                                    << "ms, processingLoop="
+                                    << formatFloatMs(frame.timing.processing_loop_ms)
+                                    << "ms, processFrame="
+                                    << formatFloatMs(frame.timing.process_frame_ms)
+                                    << "ms, processInputCloud="
+                                    << formatFloatMs(frame.ufomap_timing.process_input_cloud_ms)
+                                    << "ms, publishFrame="
+                                    << formatFloatMs(frame.timing.publish_frame_ms)
+                                    << "ms, publishingLoop="
+                                    << formatFloatMs(frame.timing.publishing_loop_ms)
+                                    << "ms");
+      ROS_INFO_STREAM_THROTTLE(1.0, "LDOP status frame #" << frame.sequence
+                                    << ": received=" << received_cloud_count_.load()
+                                    << ", processed=" << processed_cloud_count_.load()
+                                    << ", backlog="
+                                    << (received_cloud_count_.load() > processed_cloud_count_.load()
+                                            ? received_cloud_count_.load() -processed_cloud_count_.load(): 0U)
+                                    << ", matched=" << matched_odom_count_.load()
+                                    << ", missing=" << missing_odom_count_.load()
+                                    << ", dropped=" << dropped_cloud_count_.load()
+                                    << ", ufomapNodes=" << frame.ufomap_runtime_stats.node_count);
+    }
   }
 }
 
 Ldop::ProcessedFrame Ldop::processFrame(const InputFrame& frame) {
   // 主流程只做调度，把世界系点云和里程计委托给独立的 UFOMap 模块。
+  const auto processing_start = std::chrono::steady_clock::now();
   ProcessedFrame processed;
   processed.raw_cloud_msg = frame.cloud_msg;
   processed.odom_msg = frame.odom_msg;
   processed.sequence = frame.sequence;
+  processed.odom_cloud_dt_ms = frame.odom_cloud_dt_ms;
+  processed.timing.point_cloud_callback_ms = frame.point_cloud_callback_ms;
 
   const UfomapFrameResult ufomap_result =
-      ufomap_mapper_->processStaticCloud(frame.cloud_msg, frame.odom_msg);
-  processed.static_cloud_msg = ufomap_result.static_cloud_msg;
+      ufomap_mapper_->processInputCloud(frame.cloud_msg, frame.odom_msg);
+  processed.static_map_cloud_msg = ufomap_result.static_map_cloud_msg;
   processed.ufomap_runtime_stats = ufomap_result.runtime_stats;
   processed.ufomap_publish_data = ufomap_result.publish_data;
+  processed.ufomap_timing = ufomap_result.timing;
   processed.dynamic_cloud_msg = ufomap_result.dynamic_cloud_msg;
+
   processed.dynamic_objects_msg = buildDynamicObjectArray(processed);
+  processed.timing.process_frame_ms =
+      elapsedMs(processing_start, std::chrono::steady_clock::now());
   return processed;
 }
 
-void Ldop::publishFrame(const ProcessedFrame& frame) {
+void Ldop::publishFrame(ProcessedFrame& frame) {
   // 统一从这里发出 LDOP 输出，UFOMap 统计信息则交给独立模块维护。
+  const auto publish_start = std::chrono::steady_clock::now();
   raw_cloud_pub_.publish(frame.raw_cloud_msg);
   odom_pub_.publish(frame.odom_msg);
-  static_cloud_pub_.publish(frame.static_cloud_msg);
+  static_cloud_pub_.publish(frame.static_map_cloud_msg);
   dynamic_cloud_pub_.publish(frame.dynamic_cloud_msg);
   dynamic_objects_pub_.publish(frame.dynamic_objects_msg);
   ufomap_mapper_->publish(frame.ufomap_publish_data);
-
-  if (verbose_) {
-    ROS_INFO_STREAM_THROTTLE(1.0, "published frame #" << frame.sequence
-                                  << ", processed: " << processed_cloud_count_.load()
-                                  << ", dropped: " << dropped_cloud_count_.load()
-                                  << ", ufomap runtime ready: "
-                                  << (frame.ufomap_runtime_stats.runtime_ready ? "true" : "false")
-                                  << ", ufomap runtime updates: "
-                                  << frame.ufomap_runtime_stats.update_count
-                                  << ", ufomap runtime nodes: "
-                                  << frame.ufomap_runtime_stats.node_count
-                                  << ", ufomap updates: "
-                                  << frame.ufomap_publish_data.update_count
-                                  << ", ufomap nodes: "
-                                  << frame.ufomap_publish_data.node_count);
-  }
+  frame.timing.publish_frame_ms =
+      elapsedMs(publish_start, std::chrono::steady_clock::now());
 }
 
 ::ldop::DynamicObjectArray Ldop::buildDynamicObjectArray(const ProcessedFrame& frame) const {

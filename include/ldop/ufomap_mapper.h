@@ -41,19 +41,13 @@ struct UfomapMapperParams {
   bool propagate{true};
   int map_reserve_nodes{0};
 
-  // DUFOMap 风格累计点云与候选聚类配置。
+  // 累计点云窗口配置，用于输出累计静态地图云。
   int ufomap_accumulation_max_points{0};
-  bool ufomap_clustering_enabled{false};
-  double ufomap_clustering_max_distance{0.2};
-  int ufomap_clustering_min_points{1};
-  int ufomap_clustering_depth{0};
 };
 
 UfomapMapperParams sanitizeUfomapParams(const UfomapMapperParams& params);
 
 struct UfomapPublishData {
-  std::uint64_t update_count{0};
-  std::size_t node_count{0};
 };
 
 struct UfomapRuntimeStats {
@@ -63,9 +57,20 @@ struct UfomapRuntimeStats {
   std::size_t node_count{0};
 };
 
+struct UfomapTimingStats {
+  // 单帧 processInputCloud() 整体耗时，单位为毫秒。
+  double process_input_cloud_ms{0.0};
+  // 点云提取、地图更新、累计点维护与分类的分阶段耗时，单位为毫秒。
+  double extract_finite_points_ms{0.0};
+  double update_ufomap_ms{0.0};
+  double accumulate_points_ms{0.0};
+  double classify_current_frame_ms{0.0};
+  double classify_accumulated_ms{0.0};
+};
+
 struct UfomapClassificationResult {
   // static_cloud_msg / dynamic_cloud_msg 的语义由调用方定义，
-  // 当前在 LDOP 主流程中分别用于累计静态地图与当前帧动态点云输出。
+  // 当前在 LDOP 主流程中分别用于“当前帧静态点云 / 当前帧动态点云”。
   sensor_msgs::PointCloud2 static_cloud_msg;
   sensor_msgs::PointCloud2 dynamic_cloud_msg;
   std::size_t static_point_count{0};
@@ -73,23 +78,16 @@ struct UfomapClassificationResult {
   std::size_t accumulated_point_count{0};
 };
 
-struct UfomapClusterResult {
-  std::size_t cluster_count{0};
-  std::size_t labeled_node_count{0};
-  std::size_t rejected_node_count{0};
-  std::size_t dynamic_candidate_count{0};
-};
-
 struct UfomapFrameResult {
   // classification: 当前帧点云分割结果。
   // accumulated_classification: 累计点云分割结果（用于静态地图输出）。
-  sensor_msgs::PointCloud2 static_cloud_msg;
+  sensor_msgs::PointCloud2 static_map_cloud_msg;
   sensor_msgs::PointCloud2 dynamic_cloud_msg;
   UfomapClassificationResult classification;
   UfomapClassificationResult accumulated_classification;
-  UfomapClusterResult clustering;
   UfomapRuntimeStats runtime_stats;
   UfomapPublishData publish_data;
+  UfomapTimingStats timing;
 };
 
 struct UfomapNodeQueryResult {
@@ -119,7 +117,7 @@ struct UfomapCandidateNode {
 
 class UfomapMapper {
  public:
-  // 独立负责提取世界系静态点云，并使用世界系里程计更新 UFOMap。
+  // 独立负责处理输入点云、更新 UFOMap，并输出动静态点云与静态地图云。
   UfomapMapper(ros::NodeHandle& nh,
                ros::NodeHandle& pnh,
                const std::string& world_frame,
@@ -142,12 +140,11 @@ class UfomapMapper {
   // 对累计点云执行 seenFree 判别，复用与当前帧一致的分类逻辑。
   UfomapClassificationResult classifyAccumulatedCloud(const std_msgs::Header& header) const;
 
-  // 对动态候选执行 DUFOMap 风格 BFS 聚类，并把标签回写到地图节点。
-  UfomapClusterResult clusterDynamicCandidates();
+  // 暴露 UFOMap 中 seenFree / label 等基础查询能力，供上层构建更高层逻辑。
   std::vector<UfomapCandidateNode> queryDynamicCandidates(
       const UfomapCandidateQuery& query) const;
-  UfomapFrameResult processStaticCloud(const sensor_msgs::PointCloud2& cloud_msg,
-                                       const nav_msgs::Odometry& odom_msg);
+  UfomapFrameResult processInputCloud(const sensor_msgs::PointCloud2& cloud_msg,
+                                      const nav_msgs::Odometry& odom_msg);
   void publish(const UfomapPublishData& publish_data);
 
  private:
@@ -158,7 +155,6 @@ class UfomapMapper {
                                               bool* has_invalid_points) const;
   UfomapClassificationResult classifyPoints(const std_msgs::Header& header,
                                             const std::vector<ufo::Point>& points) const;
-  UfomapClusterResult clusterDynamicCandidatesLocked();
   void updateUfomap(void* ufomap_cloud,
                     const nav_msgs::Odometry& odom_msg,
                     UfomapFrameResult& frame_result);

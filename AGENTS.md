@@ -11,6 +11,11 @@
 - 注释保持简短、聚焦；避免逐行复述代码表面行为。
 - 注释默认使用中文；必要术语、协议名或库 API 名可保留英文。
 
+## 函数命名与职责
+- 函数名不一定完全等同于函数在当前阶段承担的全部职责；随着后续开发推进，函数职责可能阶段性演化。
+- 修改函数时，可以在比较确定职责边界已经变化后，同步调整函数名以减少误导。
+- 不要为了追求“名字更准确”而频繁改函数名；除非已经比较确定新职责会稳定保留，否则优先保持接口名稳定。
+
 ## 仓库与工作区边界
 - 真实 git 仓库在 `src/LDOP`（`ldop_ws` 根目录不是 git 仓库）。
 - 这是 ROS1 catkin 工作区；包名是 `ldop`。
@@ -35,9 +40,10 @@
 - 常用运行：`roslaunch ldop run_ldop.launch`
 
 ## 架构事实（改代码前先对齐）
-- `Ldop` 负责 ROS I/O 与线程调度；`UfomapMapper` 负责 UFOMap 插入、`seenFree` 判别、累计点云分类与候选聚类。
+- `Ldop` 负责 ROS I/O 与线程调度；`UfomapMapper` 负责 UFOMap 插入、`seenFree` 判别、当前帧动静态点云分割、累计静态地图云输出，以及 `queryNode` / `queryDynamicCandidates` / label 读写等基础查询接口。
 - 当前 `/ldop/static_cloud` 语义是“累计静态点云”；`/ldop/dynamic_cloud` 语义是“当前帧动态点云”。不要把二者语义改回“同一帧静/动态对”。
-- `DynamicObjectArray` 已接线但仍是最小实现（基于动态点云包围盒生成观测对象）；后续扩展应在不破坏上述两路点云语义前提下进行。
+- `UfomapMapper` 已移除 clustering/BFS 聚类职责；聚类、检测、跟踪和预测不应再塞回 mapper。
+- `DynamicObjectArray` 已接线但仍是最小实现（基于当前帧动态点云包围盒生成单个观测对象，速度为零、预测数组为空）；后续扩展应在不破坏上述两路点云语义前提下进行。
 
 ## 测试注意事项
 - 多个 gtest 用例依赖 ROS master；无 master 时会 `GTEST_SKIP`（非失败）。跑测试前先确保 roscore 可用。

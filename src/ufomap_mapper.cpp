@@ -1,11 +1,13 @@
 #include <ldop/ufomap_mapper.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <iomanip>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <string>
-#include <unordered_set>
 #include <utility>
 
 #include <sensor_msgs/point_cloud2_iterator.h>
@@ -37,6 +39,17 @@ constexpr int kDefaultUfomapDepthLevels = 17;
 
 using DufomapMapType =
     ufo::Map<ufo::MapType::SEEN_FREE | ufo::MapType::REFLECTION | ufo::MapType::LABEL>;
+
+double elapsedMs(const std::chrono::steady_clock::time_point& start,
+                 const std::chrono::steady_clock::time_point& end) {
+  return std::chrono::duration<double, std::milli>(end - start).count();
+}
+
+std::string formatFloatMs(const double value) {
+  std::ostringstream stream;
+  stream << std::fixed << std::setprecision(3) << value;
+  return stream.str();
+}
 
 sensor_msgs::PointCloud2 buildCloudFromPoints(const std_msgs::Header& header,
                                               const std::string& world_frame,
@@ -121,13 +134,6 @@ UfomapMapperParams sanitizeUfomapParams(const UfomapMapperParams& params) {
   sanitized.inflate_hits_dist = std::max(0.0, sanitized.inflate_hits_dist);
   sanitized.ufomap_accumulation_max_points =
       std::max(0, sanitized.ufomap_accumulation_max_points);
-  sanitized.ufomap_clustering_max_distance =
-      std::isfinite(sanitized.ufomap_clustering_max_distance) &&
-              sanitized.ufomap_clustering_max_distance > 0.0
-          ? sanitized.ufomap_clustering_max_distance
-          : 0.2;
-  sanitized.ufomap_clustering_min_points =
-      std::max(1, sanitized.ufomap_clustering_min_points);
   sanitized.simple_ray_casting_factor =
       std::isfinite(sanitized.simple_ray_casting_factor) &&
               sanitized.simple_ray_casting_factor > 0.0
@@ -142,8 +148,6 @@ UfomapMapperParams sanitizeUfomapParams(const UfomapMapperParams& params) {
   if (sanitized.max_range > 0.0 && sanitized.min_range > sanitized.max_range) {
     sanitized.min_range = sanitized.max_range;
   }
-  sanitized.ufomap_clustering_depth =
-      std::clamp(sanitized.ufomap_clustering_depth, 0, sanitized.depth_levels);
   return sanitized;
 }
 
@@ -190,10 +194,6 @@ void UfomapMapper::loadParameters() {
   pnh_.param("ufomap_propagate", params_.propagate, true);
   pnh_.param("ufomap_map_reserve_nodes", params_.map_reserve_nodes, 0);
   pnh_.param("ufomap_accumulation_max_points", params_.ufomap_accumulation_max_points, 0);
-  pnh_.param("ufomap_clustering_enabled", params_.ufomap_clustering_enabled, false);
-  pnh_.param("ufomap_clustering_max_distance", params_.ufomap_clustering_max_distance, 0.2);
-  pnh_.param("ufomap_clustering_min_points", params_.ufomap_clustering_min_points, 1);
-  pnh_.param("ufomap_clustering_depth", params_.ufomap_clustering_depth, 0);
   pnh_.param<std::string>("ufomap_down_sampling_method", params_.down_sampling_method, "center");
 }
 
@@ -239,8 +239,9 @@ void UfomapMapper::configureUfomap() {
   }
 }
 
-UfomapFrameResult UfomapMapper::processStaticCloud(const sensor_msgs::PointCloud2& cloud_msg,
-                                                   const nav_msgs::Odometry& odom_msg) {
+UfomapFrameResult UfomapMapper::processInputCloud(const sensor_msgs::PointCloud2& cloud_msg,
+                                                  const nav_msgs::Odometry& odom_msg) {
+  const auto total_start = std::chrono::steady_clock::now();
   UfomapFrameResult result;
   {
     std::lock_guard<std::mutex> lock(runtime_mutex_);
@@ -248,12 +249,18 @@ UfomapFrameResult UfomapMapper::processStaticCloud(const sensor_msgs::PointCloud
   }
   ufo::PointCloud ufomap_cloud;
   bool has_invalid_points = false;
+  const auto extract_start = std::chrono::steady_clock::now();
   const std::vector<ufo::Point> frame_points =
       extractFinitePoints(cloud_msg, &ufomap_cloud, &has_invalid_points);
+  const auto extract_end = std::chrono::steady_clock::now();
+  result.timing.extract_finite_points_ms = elapsedMs(extract_start, extract_end);
+
+  const auto update_start = extract_end;
   updateUfomap(&ufomap_cloud, odom_msg, result);
-  if (params_.ufomap_clustering_enabled) {
-    result.clustering = clusterDynamicCandidates();
-  }
+  const auto update_end = std::chrono::steady_clock::now();
+  result.timing.update_ufomap_ms = elapsedMs(update_start, update_end);
+
+  const auto accumulate_start = update_end;
   {
     std::lock_guard<std::mutex> lock(runtime_mutex_);
     // 先累计再裁剪，始终保留最近的 max_points 个点。
@@ -268,15 +275,44 @@ UfomapFrameResult UfomapMapper::processStaticCloud(const sensor_msgs::PointCloud
       }
     }
   }
+  const auto accumulate_end = std::chrono::steady_clock::now();
+  result.timing.accumulate_points_ms = elapsedMs(accumulate_start, accumulate_end);
+
+  const auto classify_current_start = accumulate_end;
   result.classification = classifyPoints(cloud_msg.header, frame_points);
+  const auto classify_current_end = std::chrono::steady_clock::now();
+  result.timing.classify_current_frame_ms =
+      elapsedMs(classify_current_start, classify_current_end);
   if (has_invalid_points) {
     result.classification.static_cloud_msg.is_dense = false;
     result.classification.dynamic_cloud_msg.is_dense = false;
   }
+
+  const auto classify_accumulated_start = classify_current_end;
   result.accumulated_classification = classifyAccumulatedCloud(cloud_msg.header);
+  const auto classify_accumulated_end = std::chrono::steady_clock::now();
+  result.timing.classify_accumulated_ms =
+      elapsedMs(classify_accumulated_start, classify_accumulated_end);
+
   // 输出语义：静态=累计分类结果，动态=当前帧分类结果。
-  result.static_cloud_msg = result.accumulated_classification.static_cloud_msg;
+  result.static_map_cloud_msg = result.accumulated_classification.static_cloud_msg;
   result.dynamic_cloud_msg = result.classification.dynamic_cloud_msg;
+  result.timing.process_input_cloud_ms = elapsedMs(total_start, classify_accumulated_end);
+  if (verbose_) {
+    ROS_INFO_STREAM_THROTTLE(1.0, "Ufomap timing"
+                                      << ": extractFinitePoints="
+                                      << formatFloatMs(result.timing.extract_finite_points_ms)
+                                      << "ms, updateUfomap="
+                                      << formatFloatMs(result.timing.update_ufomap_ms)
+                                      << "ms, accumulatePoints="
+                                      << formatFloatMs(result.timing.accumulate_points_ms)
+                                      << "ms, classifyCurrentFrame="
+                                      << formatFloatMs(
+                                             result.timing.classify_current_frame_ms)
+                                      << "ms, classifyAccumulated="
+                                      << formatFloatMs(result.timing.classify_accumulated_ms)
+                                      << "ms");
+  }
   return result;
 }
 
@@ -316,15 +352,10 @@ void UfomapMapper::updateUfomap(void* ufomap_cloud_ptr,
   const std::size_t node_count = runtime_->map.numNodes();
   frame_result.runtime_stats.update_count = update_count;
   frame_result.runtime_stats.node_count = node_count;
-  frame_result.publish_data.update_count = update_count;
-  frame_result.publish_data.node_count = node_count;
 }
 
 void UfomapMapper::publish(const UfomapPublishData& publish_data) {
-  if (verbose_ && publish_data.update_count > 0U) {
-    ROS_INFO_STREAM_THROTTLE(1.0, "ufomap update count: " << publish_data.update_count
-                                  << ", ufomap nodes: " << publish_data.node_count);
-  }
+  (void)publish_data;
 }
 
 UfomapMapperParams UfomapMapper::effectiveParams() const {
@@ -528,80 +559,6 @@ UfomapClassificationResult UfomapMapper::classifyAccumulatedCloud(
     points = accumulated_points_;
   }
   return classifyPoints(header, points);
-}
-
-UfomapClusterResult UfomapMapper::clusterDynamicCandidates() {
-  std::lock_guard<std::mutex> lock(runtime_mutex_);
-  return clusterDynamicCandidatesLocked();
-}
-
-UfomapClusterResult UfomapMapper::clusterDynamicCandidatesLocked() {
-  UfomapClusterResult result;
-  if (runtime_ == nullptr || !params_.ufomap_clustering_enabled) {
-    return result;
-  }
-
-  for (auto it = runtime_->map.begin(); it != runtime_->map.end(); ++it) {
-    // 每轮聚类前清空历史标签，避免旧结果污染当前帧聚类。
-    runtime_->map.setLabel(*it, 0U, false);
-  }
-
-  const auto depth = static_cast<ufo::depth_t>(params_.ufomap_clustering_depth);
-  const float cluster_radius = static_cast<float>(params_.ufomap_clustering_max_distance);
-  const std::size_t min_points =
-      static_cast<std::size_t>(params_.ufomap_clustering_min_points);
-  ufo::label_t next_label = 1U;
-  const ufo::label_t rejected_label = std::numeric_limits<ufo::label_t>::max();
-
-  for (const auto seed :
-       runtime_->map.query(ufo::pred::Leaf(depth) && ufo::pred::SeenFree() &&
-                           ufo::pred::HitsMin(static_cast<ufo::count_t>(1U)) &&
-                           ufo::pred::Label(static_cast<ufo::label_t>(0U)))) {
-    ++result.dynamic_candidate_count;
-    if (runtime_->map.label(seed.index()) != 0U) {
-      continue;
-    }
-
-    std::unordered_set<ufo::Node> seen;
-    std::vector<ufo::Node> cluster_nodes;
-    std::vector<ufo::Sphere> queue;
-    seen.insert(seed);
-    cluster_nodes.push_back(seed);
-    queue.emplace_back(runtime_->map.center(seed), cluster_radius);
-
-    for (std::size_t queue_index = 0U; queue_index < queue.size(); ++queue_index) {
-      // 以球邻域扩张队列，形成 DUFOMap 风格 BFS 连通簇。
-      for (const auto node :
-           runtime_->map.query(ufo::pred::Leaf(depth) && ufo::pred::SeenFree() &&
-                               ufo::pred::HitsMin(static_cast<ufo::count_t>(1U)) &&
-                               ufo::pred::Label(static_cast<ufo::label_t>(0U)) &&
-                               ufo::pred::Intersects(
-                                   std::vector<ufo::Sphere>{queue[queue_index]}))) {
-        if (!seen.insert(node).second) {
-          continue;
-        }
-        cluster_nodes.push_back(node);
-        queue.emplace_back(runtime_->map.center(node), cluster_radius);
-      }
-    }
-
-    const bool accepted = cluster_nodes.size() >= min_points;
-    const ufo::label_t label = accepted ? next_label : rejected_label;
-    for (const auto node : cluster_nodes) {
-      runtime_->map.setLabel(node, label, false);
-    }
-
-    if (accepted) {
-      ++result.cluster_count;
-      result.labeled_node_count += cluster_nodes.size();
-      ++next_label;
-    } else {
-      result.rejected_node_count += cluster_nodes.size();
-    }
-  }
-
-  runtime_->map.propagateModified();
-  return result;
 }
 
 std::vector<UfomapCandidateNode> UfomapMapper::queryDynamicCandidates(

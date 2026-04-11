@@ -77,9 +77,6 @@ TEST(UfomapMapperParamsTest, sanitizeDufomapIntegrationOptions) {
   EXPECT_DOUBLE_EQ(sanitized.simple_ray_casting_factor, 1.0);
   EXPECT_EQ(sanitized.map_reserve_nodes, 0);
   EXPECT_EQ(sanitized.ufomap_accumulation_max_points, 0);
-  EXPECT_EQ(sanitized.ufomap_clustering_min_points, 1);
-  EXPECT_DOUBLE_EQ(sanitized.ufomap_clustering_max_distance, 0.2);
-  EXPECT_EQ(sanitized.ufomap_clustering_depth, 0);
   EXPECT_EQ(sanitized.down_sampling_method, "uniform");
   EXPECT_FALSE(sanitized.parallel);
   EXPECT_FALSE(sanitized.propagate);
@@ -98,24 +95,39 @@ TEST(UfomapMapperParamsTest, sanitizeInvalidDownSamplingMethod) {
 }
 
 TEST(UfomapMapperResultTest, exposesStructuredRuntimeStatsDefaults) {
+  ldopcore::UfomapPublishData publish_data;
+  (void)publish_data;
+
   ldopcore::UfomapRuntimeStats runtime_stats;
   EXPECT_FALSE(runtime_stats.runtime_ready);
   EXPECT_EQ(runtime_stats.update_count, 0U);
   EXPECT_EQ(runtime_stats.node_count, 0U);
 
+  ldopcore::UfomapTimingStats timing_stats;
+  EXPECT_DOUBLE_EQ(timing_stats.process_input_cloud_ms, 0.0);
+  EXPECT_DOUBLE_EQ(timing_stats.extract_finite_points_ms, 0.0);
+  EXPECT_DOUBLE_EQ(timing_stats.update_ufomap_ms, 0.0);
+  EXPECT_DOUBLE_EQ(timing_stats.accumulate_points_ms, 0.0);
+  EXPECT_DOUBLE_EQ(timing_stats.classify_current_frame_ms, 0.0);
+  EXPECT_DOUBLE_EQ(timing_stats.classify_accumulated_ms, 0.0);
+
   ldopcore::UfomapFrameResult frame_result;
   EXPECT_FALSE(frame_result.runtime_stats.runtime_ready);
   EXPECT_EQ(frame_result.runtime_stats.update_count, 0U);
   EXPECT_EQ(frame_result.runtime_stats.node_count, 0U);
-  EXPECT_EQ(frame_result.publish_data.update_count, 0U);
-  EXPECT_EQ(frame_result.publish_data.node_count, 0U);
   EXPECT_EQ(frame_result.classification.static_point_count, 0U);
   EXPECT_EQ(frame_result.classification.dynamic_point_count, 0U);
   EXPECT_EQ(frame_result.classification.accumulated_point_count, 0U);
+  (void)frame_result.publish_data;
   EXPECT_EQ(frame_result.accumulated_classification.static_point_count, 0U);
   EXPECT_EQ(frame_result.accumulated_classification.dynamic_point_count, 0U);
   EXPECT_EQ(frame_result.accumulated_classification.accumulated_point_count, 0U);
-  EXPECT_EQ(frame_result.clustering.cluster_count, 0U);
+  EXPECT_DOUBLE_EQ(frame_result.timing.process_input_cloud_ms, 0.0);
+  EXPECT_DOUBLE_EQ(frame_result.timing.extract_finite_points_ms, 0.0);
+  EXPECT_DOUBLE_EQ(frame_result.timing.update_ufomap_ms, 0.0);
+  EXPECT_DOUBLE_EQ(frame_result.timing.accumulate_points_ms, 0.0);
+  EXPECT_DOUBLE_EQ(frame_result.timing.classify_current_frame_ms, 0.0);
+  EXPECT_DOUBLE_EQ(frame_result.timing.classify_accumulated_ms, 0.0);
 }
 
 namespace {
@@ -182,7 +194,7 @@ nav_msgs::Odometry makeOdom(const std::string& frame_id) {
 
 }  // namespace
 
-TEST(UfomapMapperResultTest, processStaticCloudProducesRealRuntimeStats) {
+TEST(UfomapMapperResultTest, processInputCloudProducesRealRuntimeStats) {
   ensureRosInitialized();
   if (!ros::master::check()) {
     GTEST_SKIP() << "ROS master is not available";
@@ -195,13 +207,17 @@ TEST(UfomapMapperResultTest, processStaticCloudProducesRealRuntimeStats) {
   const auto cloud = makeSinglePointCloud("map", 1.0F, 0.0F, 0.0F);
   const auto odom = makeOdom("map");
 
-  const auto result = mapper.processStaticCloud(cloud, odom);
+  const auto result = mapper.processInputCloud(cloud, odom);
 
   EXPECT_TRUE(result.runtime_stats.runtime_ready);
   EXPECT_EQ(result.runtime_stats.update_count, 1U);
   EXPECT_GT(result.runtime_stats.node_count, 0U);
-  EXPECT_EQ(result.runtime_stats.update_count, result.publish_data.update_count);
-  EXPECT_EQ(result.runtime_stats.node_count, result.publish_data.node_count);
+  EXPECT_GE(result.timing.process_input_cloud_ms, 0.0);
+  EXPECT_GE(result.timing.extract_finite_points_ms, 0.0);
+  EXPECT_GE(result.timing.update_ufomap_ms, 0.0);
+  EXPECT_GE(result.timing.accumulate_points_ms, 0.0);
+  EXPECT_GE(result.timing.classify_current_frame_ms, 0.0);
+  EXPECT_GE(result.timing.classify_accumulated_ms, 0.0);
 }
 
 TEST(UfomapMapperClassificationTest, splitsCurrentFrameBySeenFreeAndTracksAccumulation) {
@@ -215,17 +231,17 @@ TEST(UfomapMapperClassificationTest, splitsCurrentFrameBySeenFreeAndTracksAccumu
   ldopcore::UfomapMapper mapper(nh, pnh, "map", false);
 
   const auto odom = makeOdom("map");
-  (void)mapper.processStaticCloud(makeSinglePointCloud("map", 2.0F, 0.0F, 0.0F), odom);
+  (void)mapper.processInputCloud(makeSinglePointCloud("map", 2.0F, 0.0F, 0.0F), odom);
   ASSERT_TRUE(mapper.seenFree(makePoint(1.0F, 0.0F, 0.0F)));
 
   const auto mixed_cloud =
       makePointCloud("map", {{{1.0F, 0.0F, 0.0F}, {3.0F, 0.0F, 0.0F}}});
-  const auto result = mapper.processStaticCloud(mixed_cloud, odom);
+  const auto result = mapper.processInputCloud(mixed_cloud, odom);
 
   EXPECT_EQ(result.classification.dynamic_point_count, 1U);
   EXPECT_EQ(result.classification.static_point_count, 1U);
   EXPECT_EQ(countCloudPoints(result.dynamic_cloud_msg), 1U);
-  EXPECT_EQ(countCloudPoints(result.static_cloud_msg), 1U);
+  EXPECT_EQ(countCloudPoints(result.classification.static_cloud_msg), 1U);
   EXPECT_EQ(result.classification.accumulated_point_count, 3U);
   EXPECT_EQ(mapper.accumulatedPointCount(), 3U);
 
@@ -245,11 +261,11 @@ TEST(UfomapMapperClassificationTest, frameResultPublishesAccumulatedStaticMapClo
   ldopcore::UfomapMapper mapper(nh, pnh, "map", false);
 
   const auto odom = makeOdom("map");
-  (void)mapper.processStaticCloud(makeSinglePointCloud("map", 2.0F, 0.0F, 0.0F), odom);
+  (void)mapper.processInputCloud(makeSinglePointCloud("map", 2.0F, 0.0F, 0.0F), odom);
 
   const auto mixed_cloud =
       makePointCloud("map", {{{1.0F, 0.0F, 0.0F}, {3.0F, 0.0F, 0.0F}}});
-  const auto result = mapper.processStaticCloud(mixed_cloud, odom);
+  const auto result = mapper.processInputCloud(mixed_cloud, odom);
 
   EXPECT_EQ(result.classification.static_point_count + result.classification.dynamic_point_count,
             2U);
@@ -257,7 +273,7 @@ TEST(UfomapMapperClassificationTest, frameResultPublishesAccumulatedStaticMapClo
   EXPECT_EQ(result.accumulated_classification.static_point_count +
                 result.accumulated_classification.dynamic_point_count,
             3U);
-  EXPECT_EQ(countCloudPoints(result.static_cloud_msg),
+  EXPECT_EQ(countCloudPoints(result.static_map_cloud_msg),
             result.accumulated_classification.static_point_count);
   EXPECT_EQ(countCloudPoints(result.dynamic_cloud_msg), result.classification.dynamic_point_count);
 }
@@ -273,7 +289,7 @@ TEST(UfomapMapperLifecycleTest, clearMapAlsoClearsAccumulatedCloud) {
   ldopcore::UfomapMapper mapper(nh, pnh, "map", false);
 
   const auto odom = makeOdom("map");
-  (void)mapper.processStaticCloud(makeSinglePointCloud("map", 2.0F, 0.0F, 0.0F), odom);
+  (void)mapper.processInputCloud(makeSinglePointCloud("map", 2.0F, 0.0F, 0.0F), odom);
   EXPECT_EQ(mapper.accumulatedPointCount(), 1U);
 
   mapper.clearMap();
@@ -293,7 +309,7 @@ TEST(UfomapMapperQueryTest, supportsSeenFreeAndNodeQuery) {
 
   const auto cloud = makeSinglePointCloud("map", 1.0F, 0.0F, 0.0F);
   const auto odom = makeOdom("map");
-  (void)mapper.processStaticCloud(cloud, odom);
+  (void)mapper.processInputCloud(cloud, odom);
 
   EXPECT_TRUE(mapper.seenFree(makePoint(0.5F, 0.0F, 0.0F)));
 
@@ -319,7 +335,7 @@ TEST(UfomapMapperLifecycleTest, exposesRuntimeStatsAndCanClearMap) {
   mapper.reserveMap(256U);
   const auto cloud = makeSinglePointCloud("map", 2.0F, 0.0F, 0.0F);
   const auto odom = makeOdom("map");
-  (void)mapper.processStaticCloud(cloud, odom);
+  (void)mapper.processInputCloud(cloud, odom);
   EXPECT_GT(mapper.runtimeStats().node_count, 0U);
   EXPECT_TRUE(mapper.seenFree(makePoint(1.0F, 0.0F, 0.0F)));
 
@@ -342,8 +358,8 @@ TEST(UfomapMapperQueryTest, returnsDufomapStyleDynamicCandidates) {
   ldopcore::UfomapMapper mapper(nh, pnh, "map", false);
 
   const auto odom = makeOdom("map");
-  (void)mapper.processStaticCloud(makeSinglePointCloud("map", 2.0F, 0.0F, 0.0F), odom);
-  (void)mapper.processStaticCloud(makeSinglePointCloud("map", 1.0F, 0.0F, 0.0F), odom);
+  (void)mapper.processInputCloud(makeSinglePointCloud("map", 2.0F, 0.0F, 0.0F), odom);
+  (void)mapper.processInputCloud(makeSinglePointCloud("map", 1.0F, 0.0F, 0.0F), odom);
   mapper.propagateModified();
 
   ldopcore::UfomapCandidateQuery query;
@@ -367,29 +383,6 @@ TEST(UfomapMapperQueryTest, returnsDufomapStyleDynamicCandidates) {
   query.label = 7U;
   const auto labeled_candidates = mapper.queryDynamicCandidates(query);
   EXPECT_FALSE(labeled_candidates.empty());
-}
-
-TEST(UfomapMapperClusteringTest, labelsDynamicCandidatesWithBfsClusters) {
-  ensureRosInitialized();
-  if (!ros::master::check()) {
-    GTEST_SKIP() << "ROS master is not available";
-  }
-
-  ros::NodeHandle nh;
-  ros::NodeHandle pnh("~");
-  pnh.setParam("ufomap_clustering_enabled", true);
-  pnh.setParam("ufomap_clustering_min_points", 1);
-  pnh.setParam("ufomap_clustering_max_distance", 0.35);
-  ldopcore::UfomapMapper mapper(nh, pnh, "map", false);
-
-  const auto odom = makeOdom("map");
-  (void)mapper.processStaticCloud(makeSinglePointCloud("map", 2.0F, 0.0F, 0.0F), odom);
-  const auto result = mapper.processStaticCloud(makeSinglePointCloud("map", 1.0F, 0.0F, 0.0F),
-                                                odom);
-
-  EXPECT_GE(result.clustering.cluster_count, 1U);
-  EXPECT_GE(result.clustering.labeled_node_count, 1U);
-  EXPECT_GT(mapper.nodeLabel(makePoint(1.0F, 0.0F, 0.0F)), 0U);
 }
 
 TEST(UfomapMapperLabelTest, supportsSettingReadingAndClearingLabels) {

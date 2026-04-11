@@ -6,7 +6,7 @@ static_cloud_topic: /ldop/static_cloud
 dynamic_cloud_topic: /ldop/dynamic_cloud
 dynamic_objects_topic: /ldop/dynamic_objects
 world_frame: camera_init  # 输入点云和里程计位姿统一使用的世界坐标系
-verbose: false
+verbose: true  
 
 ufomap_resolution: 0.3  # UFOMap 体素分辨率，单位米（更粗分辨率换取更高实时性）
 ufomap_depth_levels: 16  # UFOMap 八叉树深度层数
@@ -27,9 +27,4 @@ ufomap_simple_ray_casting_factor: 1.2  # simple ray casting 步长系数
 ufomap_parallel: true  # 是否使用 UFOMap 并行积分
 ufomap_propagate: true  # 是否在每帧插入后立即传播修改
 ufomap_map_reserve_nodes: 200000  # 地图预分配节点数，0 表示不预分配
-ufomap_accumulation_max_points: 120000  # DUFOMap 风格累计点云窗口，0 表示不限制点数
-ufomap_clustering_enabled: false  # 是否启用 DUFOMap 风格 seen-free 动态候选 BFS 聚类
-ufomap_clustering_max_distance: 0.2  # 聚类邻域半径，单位米
-ufomap_clustering_min_points: 1  # 小于该点/节点数的簇会标为拒绝簇
-ufomap_clustering_depth: 0  # 聚类查询深度，0 沿用 UFOMap Leaf 默认语义
-
+ufomap_accumulation_max_points: 120000  # 累计静态地图云窗口，0 表示不限制点数
