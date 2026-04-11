@@ -40,8 +40,7 @@ struct UfomapMapperParams {
   bool parallel{true};
   bool propagate{true};
   int map_reserve_nodes{0};
-
-  // 累计点云窗口配置，用于输出累计静态地图云。
+  // 仅供低频 clean static map 导出使用的历史点缓存窗口。
   int ufomap_accumulation_max_points{0};
 };
 
@@ -60,12 +59,11 @@ struct UfomapRuntimeStats {
 struct UfomapTimingStats {
   // 单帧 processInputCloud() 整体耗时，单位为毫秒。
   double process_input_cloud_ms{0.0};
-  // 点云提取、地图更新、累计点维护与分类的分阶段耗时，单位为毫秒。
+  // 点云提取、地图更新、旁路累计缓存维护与当前帧分类的分阶段耗时，单位为毫秒。
   double extract_finite_points_ms{0.0};
   double update_ufomap_ms{0.0};
-  double accumulate_points_ms{0.0};
+  double accumulate_cache_ms{0.0};
   double classify_current_frame_ms{0.0};
-  double classify_accumulated_ms{0.0};
 };
 
 struct UfomapClassificationResult {
@@ -75,16 +73,14 @@ struct UfomapClassificationResult {
   sensor_msgs::PointCloud2 dynamic_cloud_msg;
   std::size_t static_point_count{0};
   std::size_t dynamic_point_count{0};
-  std::size_t accumulated_point_count{0};
+  std::size_t input_point_count{0};
 };
 
 struct UfomapFrameResult {
-  // classification: 当前帧点云分割结果。
-  // accumulated_classification: 累计点云分割结果（用于静态地图输出）。
+  // 当前阶段 static_map_cloud_msg / dynamic_cloud_msg 分别用于发布当前帧静态/动态点云。
   sensor_msgs::PointCloud2 static_map_cloud_msg;
   sensor_msgs::PointCloud2 dynamic_cloud_msg;
   UfomapClassificationResult classification;
-  UfomapClassificationResult accumulated_classification;
   UfomapRuntimeStats runtime_stats;
   UfomapPublishData publish_data;
   UfomapTimingStats timing;
@@ -136,8 +132,7 @@ class UfomapMapper {
   void clearAllLabels();
   std::size_t accumulatedPointCount() const;
   void clearAccumulatedCloud();
-
-  // 对累计点云执行 seenFree 判别，复用与当前帧一致的分类逻辑。
+  // 低频导出接口：按当前地图状态重新过滤累计历史点，供 clean static map 导出使用。
   UfomapClassificationResult classifyAccumulatedCloud(const std_msgs::Header& header) const;
 
   // 暴露 UFOMap 中 seenFree / label 等基础查询能力，供上层构建更高层逻辑。
@@ -156,6 +151,7 @@ class UfomapMapper {
   UfomapClassificationResult classifyPoints(const std_msgs::Header& header,
                                             const std::vector<ufo::Point>& points) const;
   void updateUfomap(void* ufomap_cloud,
+                    const ufo::Point& sensor_origin,
                     const nav_msgs::Odometry& odom_msg,
                     UfomapFrameResult& frame_result);
 

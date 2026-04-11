@@ -52,10 +52,11 @@
 
 - 读取原始点云和里程计
 - 静态点 / 动态点分离
-- 发布累计静态地图点云 `/ldop/static_cloud`
+- 发布当前帧静态点云 `/ldop/static_cloud`
 - 发布当前帧动态点云 `/ldop/dynamic_cloud`
 - 发布最小实现的 `DynamicObjectArray`
 - 维护 UFOMap，并提供 `seenFree`、节点查询、候选查询与 label 读写等基础接口
+- 为后续静态体素地图可视化提供地图状态基础
 
 ### 未来可以继续扩展什么
 
@@ -164,7 +165,7 @@
 做法是：
 
 - `LDOP` 输入：原始点云 + 里程计
-- `LDOP` 输出：`/ldop/static_cloud`（当前语义是累计静态地图点云）
+- `LDOP` 输出：`/ldop/static_cloud`（当前语义是当前帧静态点云）
 - `rog_map` 输入点云话题：改成 `/ldop/static_cloud`
 
 这一步已经能解决一个很重要的问题：

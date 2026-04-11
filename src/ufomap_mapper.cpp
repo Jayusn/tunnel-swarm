@@ -34,9 +34,6 @@ struct UfomapMapper::UfomapRuntime {
 
 namespace {
 
-constexpr double kDefaultUfomapResolution = 0.2;
-constexpr int kDefaultUfomapDepthLevels = 17;
-
 using DufomapMapType =
     ufo::Map<ufo::MapType::SEEN_FREE | ufo::MapType::REFLECTION | ufo::MapType::LABEL>;
 
@@ -112,45 +109,6 @@ void appendCandidateNodes(const DufomapMapType& map,
 
 }  // namespace
 
-UfomapMapperParams sanitizeUfomapParams(const UfomapMapperParams& params) {
-  UfomapMapperParams sanitized = params;
-  // 统一做参数合法化，避免非法值进入 UFOMap 积分/查询路径。
-  sanitized.resolution =
-      std::isfinite(sanitized.resolution) && sanitized.resolution > 0.0
-          ? sanitized.resolution
-          : kDefaultUfomapResolution;
-  const int min_depth_levels = static_cast<int>(DufomapMapType::minDepthLevels());
-  const int max_depth_levels = static_cast<int>(DufomapMapType::maxDepthLevels());
-  sanitized.depth_levels = std::clamp(sanitized.depth_levels, min_depth_levels, max_depth_levels);
-  sanitized.insert_hit_depth =
-      std::clamp(sanitized.insert_hit_depth, 0, sanitized.depth_levels);
-  sanitized.insert_miss_depth =
-      std::clamp(sanitized.insert_miss_depth, 0, sanitized.depth_levels);
-  sanitized.ray_casting_depth =
-      std::clamp(sanitized.ray_casting_depth, 0, sanitized.depth_levels);
-  sanitized.num_threads = std::max(0, sanitized.num_threads);
-  sanitized.min_range = std::max(0.0, sanitized.min_range);
-  sanitized.inflate_unknown = std::max(0, sanitized.inflate_unknown);
-  sanitized.inflate_hits_dist = std::max(0.0, sanitized.inflate_hits_dist);
-  sanitized.ufomap_accumulation_max_points =
-      std::max(0, sanitized.ufomap_accumulation_max_points);
-  sanitized.simple_ray_casting_factor =
-      std::isfinite(sanitized.simple_ray_casting_factor) &&
-              sanitized.simple_ray_casting_factor > 0.0
-          ? sanitized.simple_ray_casting_factor
-          : 1.0;
-  sanitized.map_reserve_nodes = std::max(0, sanitized.map_reserve_nodes);
-  if (sanitized.down_sampling_method != "none" && sanitized.down_sampling_method != "center" &&
-      sanitized.down_sampling_method != "centroid" &&
-      sanitized.down_sampling_method != "uniform") {
-    sanitized.down_sampling_method = "center";
-  }
-  if (sanitized.max_range > 0.0 && sanitized.min_range > sanitized.max_range) {
-    sanitized.min_range = sanitized.max_range;
-  }
-  return sanitized;
-}
-
 UfomapMapper::UfomapMapper(ros::NodeHandle& nh,
                            ros::NodeHandle& pnh,
                            const std::string& world_frame,
@@ -175,10 +133,10 @@ UfomapMapper::UfomapMapper(ros::NodeHandle& nh,
 UfomapMapper::~UfomapMapper() = default;
 
 void UfomapMapper::loadParameters() {
-  pnh_.param("ufomap_resolution", params_.resolution, kDefaultUfomapResolution);
-  pnh_.param("ufomap_depth_levels", params_.depth_levels, kDefaultUfomapDepthLevels);
-  pnh_.param("ufomap_min_range", params_.min_range, 0.0);
-  pnh_.param("ufomap_max_range", params_.max_range, 50.0);
+  pnh_.param("ufomap_resolution", params_.resolution, 0.2);
+  pnh_.param("ufomap_depth_levels", params_.depth_levels, 16);
+  pnh_.param("ufomap_min_range", params_.min_range, 0.5);
+  pnh_.param("ufomap_max_range", params_.max_range, 20.0);
   pnh_.param("ufomap_insert_hit_depth", params_.insert_hit_depth, 0);
   pnh_.param("ufomap_insert_miss_depth", params_.insert_miss_depth, 0);
   pnh_.param("ufomap_ray_casting_depth", params_.ray_casting_depth, 0);
@@ -195,43 +153,59 @@ void UfomapMapper::loadParameters() {
   pnh_.param("ufomap_map_reserve_nodes", params_.map_reserve_nodes, 0);
   pnh_.param("ufomap_accumulation_max_points", params_.ufomap_accumulation_max_points, 0);
   pnh_.param<std::string>("ufomap_down_sampling_method", params_.down_sampling_method, "center");
+  params_ = sanitizeUfomapParams(params_);
+}
+
+UfomapMapperParams sanitizeUfomapParams(const UfomapMapperParams& params) {
+  UfomapMapperParams sanitized = params;
+  // 统一做参数合法化，避免非法值进入 UFOMap 积分/查询路径。
+  sanitized.resolution =
+      std::isfinite(sanitized.resolution) && sanitized.resolution > 0.0 ? sanitized.resolution : 0.2;
+  const int min_depth_levels = static_cast<int>(DufomapMapType::minDepthLevels());
+  const int max_depth_levels = static_cast<int>(DufomapMapType::maxDepthLevels());
+  sanitized.depth_levels = std::clamp(sanitized.depth_levels, min_depth_levels, max_depth_levels);
+  sanitized.insert_hit_depth = std::clamp(sanitized.insert_hit_depth, 0, sanitized.depth_levels);
+  sanitized.insert_miss_depth = std::clamp(sanitized.insert_miss_depth, 0, sanitized.depth_levels);
+  sanitized.ray_casting_depth = std::clamp(sanitized.ray_casting_depth, 0, sanitized.depth_levels);
+  sanitized.num_threads = std::max(0, sanitized.num_threads);
+  sanitized.min_range = std::max(0.0, sanitized.min_range);
+  sanitized.max_range = sanitized.max_range > 0.0 ? static_cast<float>(sanitized.max_range) : -1.0f;
+  sanitized.inflate_unknown = std::max(0, sanitized.inflate_unknown);
+  sanitized.inflate_hits_dist = std::max(0.0, sanitized.inflate_hits_dist);
+  sanitized.ufomap_accumulation_max_points = std::max(0, sanitized.ufomap_accumulation_max_points);
+  sanitized.simple_ray_casting_factor = std::isfinite(sanitized.simple_ray_casting_factor) && 
+          sanitized.simple_ray_casting_factor > 0.0 ? sanitized.simple_ray_casting_factor: 1.0;
+  sanitized.map_reserve_nodes = std::max(0, sanitized.map_reserve_nodes);
+  if (sanitized.down_sampling_method != "none" && sanitized.down_sampling_method != "center" &&
+      sanitized.down_sampling_method != "centroid" && sanitized.down_sampling_method != "uniform") {
+    sanitized.down_sampling_method = "center";
+  }
+  return sanitized;
 }
 
 void UfomapMapper::configureUfomap() {
-  // 该函数会在首次初始化和 clearMap() 后重建 runtime。
-  params_ = sanitizeUfomapParams(params_);
+  // 该函数会在 clearMap() 后重建 runtime。
   ufomap_update_count_.store(0U);
   runtime_ = std::make_unique<UfomapRuntime>(static_cast<ufo::node_size_t>(params_.resolution),
                                              static_cast<ufo::depth_t>(params_.depth_levels));
 
   runtime_->integration_params = {};
-  runtime_->integration_params.down_sampling_method =
-      toUfoDownSamplingMethod(params_.down_sampling_method);
-  runtime_->integration_params.hit_depth =
-      static_cast<ufo::depth_t>(params_.insert_hit_depth);
-  runtime_->integration_params.miss_depth =
-      static_cast<ufo::depth_t>(params_.insert_miss_depth);
-  runtime_->integration_params.ray_casting_depth =
-      static_cast<ufo::depth_t>(params_.ray_casting_depth);
+  runtime_->integration_params.down_sampling_method = toUfoDownSamplingMethod(params_.down_sampling_method);
+  runtime_->integration_params.hit_depth = static_cast<ufo::depth_t>(params_.insert_hit_depth);
+  runtime_->integration_params.miss_depth = static_cast<ufo::depth_t>(params_.insert_miss_depth);
+  runtime_->integration_params.ray_casting_depth = static_cast<ufo::depth_t>(params_.ray_casting_depth);
   runtime_->integration_params.min_range = static_cast<float>(params_.min_range);
-  runtime_->integration_params.max_range =
-      params_.max_range > 0.0 ? static_cast<float>(params_.max_range)
-                              : -std::numeric_limits<float>::infinity();
+  runtime_->integration_params.max_range = static_cast<float>(params_.max_range);
   runtime_->integration_params.only_valid = params_.only_valid;
-  runtime_->integration_params.inflate_unknown =
-      static_cast<std::size_t>(params_.inflate_unknown);
-  runtime_->integration_params.inflate_unknown_compensation =
-      params_.inflate_unknown_compensation;
+  runtime_->integration_params.inflate_unknown = static_cast<std::size_t>(params_.inflate_unknown);
+  runtime_->integration_params.inflate_unknown_compensation = params_.inflate_unknown_compensation;
   runtime_->integration_params.ray_passthrough_hits = params_.ray_passthrough_hits;
-  runtime_->integration_params.inflate_hits_dist =
-      static_cast<float>(params_.inflate_hits_dist);
+  runtime_->integration_params.inflate_hits_dist = static_cast<float>(params_.inflate_hits_dist);
   runtime_->integration_params.ray_casting_method =
       params_.simple_ray_casting ? ufo::RayCastingMethod::SIMPLE : ufo::RayCastingMethod::PROPER;
-  runtime_->integration_params.simple_ray_casting_factor =
-      static_cast<float>(params_.simple_ray_casting_factor);
+  runtime_->integration_params.simple_ray_casting_factor = static_cast<float>(params_.simple_ray_casting_factor);
   if (params_.num_threads > 0) {
-    runtime_->integration_params.num_threads = static_cast<std::size_t>(params_.num_threads);
-  }
+    runtime_->integration_params.num_threads = static_cast<std::size_t>(params_.num_threads);}
   runtime_->integration_params.parallel = params_.parallel;
   runtime_->integration_params.propagate = params_.propagate;
   if (params_.map_reserve_nodes > 0) {
@@ -243,10 +217,6 @@ UfomapFrameResult UfomapMapper::processInputCloud(const sensor_msgs::PointCloud2
                                                   const nav_msgs::Odometry& odom_msg) {
   const auto total_start = std::chrono::steady_clock::now();
   UfomapFrameResult result;
-  {
-    std::lock_guard<std::mutex> lock(runtime_mutex_);
-    result.runtime_stats.runtime_ready = runtime_ != nullptr;
-  }
   ufo::PointCloud ufomap_cloud;
   bool has_invalid_points = false;
   const auto extract_start = std::chrono::steady_clock::now();
@@ -256,14 +226,17 @@ UfomapFrameResult UfomapMapper::processInputCloud(const sensor_msgs::PointCloud2
   result.timing.extract_finite_points_ms = elapsedMs(extract_start, extract_end);
 
   const auto update_start = extract_end;
-  updateUfomap(&ufomap_cloud, odom_msg, result);
+  const ufo::Point sensor_origin(static_cast<float>(odom_msg.pose.pose.position.x),
+                                static_cast<float>(odom_msg.pose.pose.position.y),
+                                static_cast<float>(odom_msg.pose.pose.position.z));
+  updateUfomap(&ufomap_cloud, sensor_origin, odom_msg, result);
   const auto update_end = std::chrono::steady_clock::now();
   result.timing.update_ufomap_ms = elapsedMs(update_start, update_end);
 
-  const auto accumulate_start = update_end;
+  const auto accumulate_cache_start = update_end;
   {
     std::lock_guard<std::mutex> lock(runtime_mutex_);
-    // 先累计再裁剪，始终保留最近的 max_points 个点。
+    // 历史点缓存仅供低频 clean static map 导出使用，不参与主流程输出与主计时。
     accumulated_points_.insert(accumulated_points_.end(), frame_points.begin(), frame_points.end());
     if (params_.ufomap_accumulation_max_points > 0) {
       const auto max_points =
@@ -275,48 +248,59 @@ UfomapFrameResult UfomapMapper::processInputCloud(const sensor_msgs::PointCloud2
       }
     }
   }
-  const auto accumulate_end = std::chrono::steady_clock::now();
-  result.timing.accumulate_points_ms = elapsedMs(accumulate_start, accumulate_end);
+  const auto accumulate_cache_end = std::chrono::steady_clock::now();
+  result.timing.accumulate_cache_ms = elapsedMs(accumulate_cache_start, accumulate_cache_end);
 
-  const auto classify_current_start = accumulate_end;
-  result.classification = classifyPoints(cloud_msg.header, frame_points);
+  const auto classify_current_start = accumulate_cache_end;
+  // 当前帧输出只关心配置工作半径内的点，避免对远处点做无意义的 seenFree 查询。
+  std::vector<ufo::Point> output_points;
+  if (std::isfinite(params_.max_range) && params_.max_range > 0.0) {
+    const float max_range_sq = static_cast<float>(params_.max_range * params_.max_range);
+    output_points.reserve(frame_points.size());
+    for (const auto& point : frame_points) {
+      if (sensor_origin.squaredDistance(point) <= max_range_sq) {
+        output_points.push_back(point);
+      }
+    }
+  } else {
+    output_points = frame_points;
+  }
+  result.classification = classifyPoints(cloud_msg.header, output_points);
   const auto classify_current_end = std::chrono::steady_clock::now();
   result.timing.classify_current_frame_ms =
       elapsedMs(classify_current_start, classify_current_end);
+
   if (has_invalid_points) {
     result.classification.static_cloud_msg.is_dense = false;
     result.classification.dynamic_cloud_msg.is_dense = false;
   }
-
-  const auto classify_accumulated_start = classify_current_end;
-  result.accumulated_classification = classifyAccumulatedCloud(cloud_msg.header);
-  const auto classify_accumulated_end = std::chrono::steady_clock::now();
-  result.timing.classify_accumulated_ms =
-      elapsedMs(classify_accumulated_start, classify_accumulated_end);
-
-  // 输出语义：静态=累计分类结果，动态=当前帧分类结果。
-  result.static_map_cloud_msg = result.accumulated_classification.static_cloud_msg;
+  // 当前阶段主流程只输出当前帧静态/动态点云，静态体素地图另由 UFOMap 查询结果可视化。
+  result.static_map_cloud_msg = result.classification.static_cloud_msg;
   result.dynamic_cloud_msg = result.classification.dynamic_cloud_msg;
-  result.timing.process_input_cloud_ms = elapsedMs(total_start, classify_accumulated_end);
+  {
+    std::lock_guard<std::mutex> lock(runtime_mutex_);
+    result.runtime_stats.runtime_ready = runtime_ != nullptr;
+  }
+  
+  result.timing.process_input_cloud_ms = elapsedMs(total_start, std::chrono::steady_clock::now());
   if (verbose_) {
     ROS_INFO_STREAM_THROTTLE(1.0, "Ufomap timing"
                                       << ": extractFinitePoints="
                                       << formatFloatMs(result.timing.extract_finite_points_ms)
                                       << "ms, updateUfomap="
                                       << formatFloatMs(result.timing.update_ufomap_ms)
-                                      << "ms, accumulatePoints="
-                                      << formatFloatMs(result.timing.accumulate_points_ms)
+                                      << "ms, accumulateCache="
+                                      << formatFloatMs(result.timing.accumulate_cache_ms)
                                       << "ms, classifyCurrentFrame="
                                       << formatFloatMs(
                                              result.timing.classify_current_frame_ms)
-                                      << "ms, classifyAccumulated="
-                                      << formatFloatMs(result.timing.classify_accumulated_ms)
                                       << "ms");
   }
   return result;
 }
 
 void UfomapMapper::updateUfomap(void* ufomap_cloud_ptr,
+                                const ufo::Point& sensor_origin,
                                 const nav_msgs::Odometry& odom_msg,
                                 UfomapFrameResult& frame_result) {
   auto* ufomap_cloud = static_cast<ufo::PointCloud*>(ufomap_cloud_ptr);
@@ -331,18 +315,10 @@ void UfomapMapper::updateUfomap(void* ufomap_cloud_ptr,
                                  << world_frame_);
   }
 
-  const ufo::Point sensor_origin(static_cast<float>(odom_msg.pose.pose.position.x),
-                                 static_cast<float>(odom_msg.pose.pose.position.y),
-                                 static_cast<float>(odom_msg.pose.pose.position.z));
   std::lock_guard<std::mutex> lock(runtime_mutex_);
-  frame_result.runtime_stats.runtime_ready = runtime_ != nullptr;
   if (runtime_ == nullptr) {
     return;
   }
-  runtime_->integration_params.min_range = static_cast<float>(params_.min_range);
-  runtime_->integration_params.max_range =
-      params_.max_range > 0.0 ? static_cast<float>(params_.max_range)
-                              : -std::numeric_limits<float>::infinity();
 
   // 积分与统计更新在同一把锁内，保证 frame_result 与地图状态一致。
   ufo::insertPointCloud(runtime_->map, *ufomap_cloud, sensor_origin, runtime_->integration_params,
@@ -530,7 +506,7 @@ UfomapClassificationResult UfomapMapper::classifyPoints(
 
   {
     std::lock_guard<std::mutex> lock(runtime_mutex_);
-    result.accumulated_point_count = accumulated_points_.size();
+    result.input_point_count = points.size();
     if (runtime_ != nullptr) {
       for (const auto& point : points) {
         if (runtime_->map.seenFree(point)) {

@@ -10,11 +10,6 @@
 
 namespace ldopcore {
 
-namespace {
-
-constexpr int kInputQueueSize = 10;
-constexpr int kOutputQueueSize = 10;
-
 double elapsedMs(const std::chrono::steady_clock::time_point& start,
                  const std::chrono::steady_clock::time_point& end) {
   return std::chrono::duration<double, std::milli>(end - start).count();
@@ -25,8 +20,6 @@ std::string formatFloatMs(const double value) {
   stream << std::fixed << std::setprecision(3) << value;
   return stream.str();
 }
-
-}  // namespace
 
 Ldop::Ldop(ros::NodeHandle& nh, ros::NodeHandle& pnh)
     : nh_(nh),
@@ -148,7 +141,7 @@ void Ldop::pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr& cloud_msg)
   {
     std::lock_guard<std::mutex> input_lock(input_mutex_);
     // 只有输入队列触顶时才丢掉最旧点云，其余情况由处理线程按先进先出顺序消费。
-    while (static_cast<int>(input_queue_.size()) >= kInputQueueSize) {
+    while (static_cast<int>(input_queue_.size()) >= 10) {
       input_queue_.pop_front();
       dropped_cloud_count_.fetch_add(1U);
     }
@@ -184,7 +177,7 @@ void Ldop::processingLoop() {
     {
       std::lock_guard<std::mutex> output_lock(output_mutex_);
       // 只有输出队列触顶时才丢掉最旧结果，其余情况由发布线程按先进先出顺序发送。
-      while (static_cast<int>(output_queue_.size()) >= kOutputQueueSize) {
+      while (static_cast<int>(output_queue_.size()) >= 10) {
         output_queue_.pop_front();
       }
       output_queue_.push_back(std::move(processed));
@@ -255,13 +248,13 @@ Ldop::ProcessedFrame Ldop::processFrame(const InputFrame& frame) {
   processed.odom_cloud_dt_ms = frame.odom_cloud_dt_ms;
   processed.timing.point_cloud_callback_ms = frame.point_cloud_callback_ms;
 
-  const UfomapFrameResult ufomap_result =
+  UfomapFrameResult ufomap_result =
       ufomap_mapper_->processInputCloud(frame.cloud_msg, frame.odom_msg);
-  processed.static_map_cloud_msg = ufomap_result.static_map_cloud_msg;
+  processed.static_map_cloud_msg = std::move(ufomap_result.static_map_cloud_msg);
   processed.ufomap_runtime_stats = ufomap_result.runtime_stats;
-  processed.ufomap_publish_data = ufomap_result.publish_data;
+  processed.ufomap_publish_data = std::move(ufomap_result.publish_data);
   processed.ufomap_timing = ufomap_result.timing;
-  processed.dynamic_cloud_msg = ufomap_result.dynamic_cloud_msg;
+  processed.dynamic_cloud_msg = std::move(ufomap_result.dynamic_cloud_msg);
 
   processed.dynamic_objects_msg = buildDynamicObjectArray(processed);
   processed.timing.process_frame_ms =

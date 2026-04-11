@@ -2,15 +2,15 @@ input_cloud_topic: /cloud_registered
 odom_topic: /Odometry
 raw_cloud_output_topic: /ldop/raw_cloud
 odom_output_topic: /ldop/odom
-static_cloud_topic: /ldop/static_cloud
-dynamic_cloud_topic: /ldop/dynamic_cloud
+static_cloud_topic: /ldop/static_cloud  # 当前帧静态点云输出
+dynamic_cloud_topic: /ldop/dynamic_cloud  # 当前帧动态点云输出
 dynamic_objects_topic: /ldop/dynamic_objects
 world_frame: camera_init  # 输入点云和里程计位姿统一使用的世界坐标系
 verbose: true  
 
-ufomap_resolution: 0.3  # UFOMap 体素分辨率，单位米（更粗分辨率换取更高实时性）
+ufomap_resolution: 0.2  # UFOMap 体素分辨率，单位米（更粗分辨率换取更高实时性）
 ufomap_depth_levels: 16  # UFOMap 八叉树深度层数
-ufomap_min_range: 0.5  # UFOMap 射线积分的最小距离
+ufomap_min_range: 0.5  # UFOMap 射线积分的最小距离,大于等于里程计的最小过滤距离
 ufomap_max_range: 12.0  # UFOMap 最大射线长度，<=0 表示不限制
 ufomap_insert_hit_depth: 0  # 命中点更新深度
 ufomap_insert_miss_depth: 0  # 失配点更新深度
@@ -25,6 +25,6 @@ ufomap_down_sampling_method: uniform  # 可选 none、center、centroid、unifor
 ufomap_simple_ray_casting: true  # false 使用 UFOMap proper ray casting
 ufomap_simple_ray_casting_factor: 1.2  # simple ray casting 步长系数
 ufomap_parallel: true  # 是否使用 UFOMap 并行积分
-ufomap_propagate: true  # 是否在每帧插入后立即传播修改
+ufomap_propagate: true  # 是否在每帧插入后立即传播修改（更新整个树的结构、节点状态等）
 ufomap_map_reserve_nodes: 200000  # 地图预分配节点数，0 表示不预分配
-ufomap_accumulation_max_points: 120000  # 累计静态地图云窗口，0 表示不限制点数
+ufomap_accumulation_max_points: 120000  # 仅供低频导出 clean static map 使用的历史点缓存窗口

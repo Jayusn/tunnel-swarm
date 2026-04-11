@@ -12,86 +12,137 @@
 #include <sensor_msgs/point_cloud2_iterator.h>
 #include <ufo/map/ufomap.hpp>
 
-TEST(UfomapMapperParamsTest, sanitizeInvalidDepthAndRangeValues) {
-  ldopcore::UfomapMapperParams params;
-  params.depth_levels = 0;
-  params.min_range = 10.0;
-  params.max_range = 5.0;
+namespace {
 
-  const auto sanitized = ldopcore::sanitizeUfomapParams(params);
+void ensureRosInitialized();
 
-  EXPECT_EQ(sanitized.depth_levels,
+}  // namespace
+
+TEST(UfomapMapperParamsTest, effectiveParamsClampInvalidDepthAndRanges) {
+  ensureRosInitialized();
+  if (!ros::master::check()) {
+    GTEST_SKIP() << "ROS master is not available";
+  }
+
+  ros::NodeHandle nh;
+  ros::NodeHandle pnh("ufomap_params_clamp_invalid_depth_and_ranges");
+  pnh.setParam("ufomap_depth_levels", 0);
+  pnh.setParam("ufomap_min_range", 10.0);
+  pnh.setParam("ufomap_max_range", 5.0);
+  ldopcore::UfomapMapper mapper(nh, pnh, "map", false);
+
+  const auto params = mapper.effectiveParams();
+  EXPECT_EQ(params.depth_levels,
             static_cast<int>(ufo::Map<ufo::MapType::SEEN_FREE | ufo::MapType::REFLECTION |
                                       ufo::MapType::LABEL>::minDepthLevels()));
-  EXPECT_DOUBLE_EQ(sanitized.min_range, 5.0);
-  EXPECT_DOUBLE_EQ(sanitized.max_range, 5.0);
+  EXPECT_DOUBLE_EQ(params.min_range, 5.0);
+  EXPECT_DOUBLE_EQ(params.max_range, 5.0);
 }
 
-TEST(UfomapMapperParamsTest, preserveUnlimitedMaxRangeSemantics) {
-  ldopcore::UfomapMapperParams params;
-  params.min_range = 10.0;
-  params.max_range = 0.0;
+TEST(UfomapMapperParamsTest, effectiveParamsPreserveUnlimitedMaxRangeSemantics) {
+  ensureRosInitialized();
+  if (!ros::master::check()) {
+    GTEST_SKIP() << "ROS master is not available";
+  }
 
-  const auto sanitized = ldopcore::sanitizeUfomapParams(params);
+  ros::NodeHandle nh;
+  ros::NodeHandle pnh("ufomap_params_preserve_unlimited_max_range");
+  pnh.setParam("ufomap_min_range", 10.0);
+  pnh.setParam("ufomap_max_range", 0.0);
+  ldopcore::UfomapMapper mapper(nh, pnh, "map", false);
 
-  EXPECT_DOUBLE_EQ(sanitized.min_range, 10.0);
-  EXPECT_DOUBLE_EQ(sanitized.max_range, 0.0);
+  const auto params = mapper.effectiveParams();
+  EXPECT_DOUBLE_EQ(params.min_range, 10.0);
+  EXPECT_DOUBLE_EQ(params.max_range, 0.0);
 }
 
-TEST(UfomapMapperParamsTest, clampOversizedDepthAndFixInvalidResolution) {
-  ldopcore::UfomapMapperParams params;
-  params.resolution = 0.0;
-  params.depth_levels = std::numeric_limits<int>::max();
-  params.insert_hit_depth = std::numeric_limits<int>::max();
-  params.insert_miss_depth = std::numeric_limits<int>::max();
-  params.ray_casting_depth = std::numeric_limits<int>::max();
+TEST(UfomapMapperParamsTest, effectiveParamsSanitizeNonFiniteRangeValues) {
+  ensureRosInitialized();
+  if (!ros::master::check()) {
+    GTEST_SKIP() << "ROS master is not available";
+  }
 
-  const auto sanitized = ldopcore::sanitizeUfomapParams(params);
+  ros::NodeHandle nh;
+  ros::NodeHandle pnh("ufomap_params_sanitize_non_finite_ranges");
+  pnh.setParam("ufomap_min_range", std::numeric_limits<double>::quiet_NaN());
+  pnh.setParam("ufomap_max_range", std::numeric_limits<double>::infinity());
+  ldopcore::UfomapMapper mapper(nh, pnh, "map", false);
 
-  EXPECT_DOUBLE_EQ(sanitized.resolution, 0.2);
-  EXPECT_EQ(sanitized.depth_levels,
+  const auto params = mapper.effectiveParams();
+  EXPECT_DOUBLE_EQ(params.min_range, 0.0);
+  EXPECT_DOUBLE_EQ(params.max_range, 0.0);
+}
+
+TEST(UfomapMapperParamsTest, effectiveParamsFixInvalidResolutionAndDepths) {
+  ensureRosInitialized();
+  if (!ros::master::check()) {
+    GTEST_SKIP() << "ROS master is not available";
+  }
+
+  ros::NodeHandle nh;
+  ros::NodeHandle pnh("ufomap_params_fix_invalid_resolution_and_depths");
+  pnh.setParam("ufomap_resolution", 0.0);
+  pnh.setParam("ufomap_depth_levels", std::numeric_limits<int>::max());
+  pnh.setParam("ufomap_insert_hit_depth", std::numeric_limits<int>::max());
+  pnh.setParam("ufomap_insert_miss_depth", std::numeric_limits<int>::max());
+  pnh.setParam("ufomap_ray_casting_depth", std::numeric_limits<int>::max());
+  ldopcore::UfomapMapper mapper(nh, pnh, "map", false);
+
+  const auto params = mapper.effectiveParams();
+  EXPECT_DOUBLE_EQ(params.resolution, 0.2);
+  EXPECT_EQ(params.depth_levels,
             static_cast<int>(ufo::Map<ufo::MapType::SEEN_FREE | ufo::MapType::REFLECTION |
                                       ufo::MapType::LABEL>::maxDepthLevels()));
-  EXPECT_EQ(sanitized.insert_hit_depth, sanitized.depth_levels);
-  EXPECT_EQ(sanitized.insert_miss_depth, sanitized.depth_levels);
-  EXPECT_EQ(sanitized.ray_casting_depth, sanitized.depth_levels);
+  EXPECT_EQ(params.insert_hit_depth, params.depth_levels);
+  EXPECT_EQ(params.insert_miss_depth, params.depth_levels);
+  EXPECT_EQ(params.ray_casting_depth, params.depth_levels);
 }
 
-TEST(UfomapMapperParamsTest, sanitizeDufomapIntegrationOptions) {
-  ldopcore::UfomapMapperParams params;
-  params.inflate_unknown = -5;
-  params.inflate_hits_dist = -0.25;
-  params.simple_ray_casting_factor = 0.0;
-  params.map_reserve_nodes = -10;
-  params.down_sampling_method = "uniform";
-  params.parallel = false;
-  params.propagate = false;
-  params.ray_passthrough_hits = false;
-  params.inflate_unknown_compensation = true;
-  params.simple_ray_casting = true;
+TEST(UfomapMapperParamsTest, effectiveParamsSanitizeDufomapIntegrationOptions) {
+  ensureRosInitialized();
+  if (!ros::master::check()) {
+    GTEST_SKIP() << "ROS master is not available";
+  }
 
-  const auto sanitized = ldopcore::sanitizeUfomapParams(params);
+  ros::NodeHandle nh;
+  ros::NodeHandle pnh("ufomap_params_sanitize_dufomap_options");
+  pnh.setParam("ufomap_inflate_unknown", -5);
+  pnh.setParam("ufomap_inflate_hits_dist", -0.25);
+  pnh.setParam("ufomap_simple_ray_casting_factor", 0.0);
+  pnh.setParam("ufomap_map_reserve_nodes", -10);
+  pnh.setParam("ufomap_down_sampling_method", "uniform");
+  pnh.setParam("ufomap_parallel", false);
+  pnh.setParam("ufomap_propagate", false);
+  pnh.setParam("ufomap_ray_passthrough_hits", false);
+  pnh.setParam("ufomap_inflate_unknown_compensation", true);
+  pnh.setParam("ufomap_simple_ray_casting", true);
+  ldopcore::UfomapMapper mapper(nh, pnh, "map", false);
 
-  EXPECT_EQ(sanitized.inflate_unknown, 0);
-  EXPECT_DOUBLE_EQ(sanitized.inflate_hits_dist, 0.0);
-  EXPECT_DOUBLE_EQ(sanitized.simple_ray_casting_factor, 1.0);
-  EXPECT_EQ(sanitized.map_reserve_nodes, 0);
-  EXPECT_EQ(sanitized.ufomap_accumulation_max_points, 0);
-  EXPECT_EQ(sanitized.down_sampling_method, "uniform");
-  EXPECT_FALSE(sanitized.parallel);
-  EXPECT_FALSE(sanitized.propagate);
-  EXPECT_FALSE(sanitized.ray_passthrough_hits);
-  EXPECT_TRUE(sanitized.inflate_unknown_compensation);
-  EXPECT_TRUE(sanitized.simple_ray_casting);
+  const auto params = mapper.effectiveParams();
+  EXPECT_EQ(params.inflate_unknown, 0);
+  EXPECT_DOUBLE_EQ(params.inflate_hits_dist, 0.0);
+  EXPECT_DOUBLE_EQ(params.simple_ray_casting_factor, 1.0);
+  EXPECT_EQ(params.map_reserve_nodes, 0);
+  EXPECT_EQ(params.down_sampling_method, "uniform");
+  EXPECT_FALSE(params.parallel);
+  EXPECT_FALSE(params.propagate);
+  EXPECT_FALSE(params.ray_passthrough_hits);
+  EXPECT_TRUE(params.inflate_unknown_compensation);
+  EXPECT_TRUE(params.simple_ray_casting);
 }
 
-TEST(UfomapMapperParamsTest, sanitizeInvalidDownSamplingMethod) {
-  ldopcore::UfomapMapperParams params;
-  params.down_sampling_method = "invalid";
+TEST(UfomapMapperParamsTest, effectiveParamsSanitizeInvalidDownSamplingMethod) {
+  ensureRosInitialized();
+  if (!ros::master::check()) {
+    GTEST_SKIP() << "ROS master is not available";
+  }
 
-  const auto sanitized = ldopcore::sanitizeUfomapParams(params);
+  ros::NodeHandle nh;
+  ros::NodeHandle pnh("ufomap_params_invalid_down_sampling");
+  pnh.setParam("ufomap_down_sampling_method", "invalid");
+  ldopcore::UfomapMapper mapper(nh, pnh, "map", false);
 
-  EXPECT_EQ(sanitized.down_sampling_method, "center");
+  EXPECT_EQ(mapper.effectiveParams().down_sampling_method, "center");
 }
 
 TEST(UfomapMapperResultTest, exposesStructuredRuntimeStatsDefaults) {
@@ -107,9 +158,8 @@ TEST(UfomapMapperResultTest, exposesStructuredRuntimeStatsDefaults) {
   EXPECT_DOUBLE_EQ(timing_stats.process_input_cloud_ms, 0.0);
   EXPECT_DOUBLE_EQ(timing_stats.extract_finite_points_ms, 0.0);
   EXPECT_DOUBLE_EQ(timing_stats.update_ufomap_ms, 0.0);
-  EXPECT_DOUBLE_EQ(timing_stats.accumulate_points_ms, 0.0);
+  EXPECT_DOUBLE_EQ(timing_stats.accumulate_cache_ms, 0.0);
   EXPECT_DOUBLE_EQ(timing_stats.classify_current_frame_ms, 0.0);
-  EXPECT_DOUBLE_EQ(timing_stats.classify_accumulated_ms, 0.0);
 
   ldopcore::UfomapFrameResult frame_result;
   EXPECT_FALSE(frame_result.runtime_stats.runtime_ready);
@@ -117,17 +167,13 @@ TEST(UfomapMapperResultTest, exposesStructuredRuntimeStatsDefaults) {
   EXPECT_EQ(frame_result.runtime_stats.node_count, 0U);
   EXPECT_EQ(frame_result.classification.static_point_count, 0U);
   EXPECT_EQ(frame_result.classification.dynamic_point_count, 0U);
-  EXPECT_EQ(frame_result.classification.accumulated_point_count, 0U);
+  EXPECT_EQ(frame_result.classification.input_point_count, 0U);
   (void)frame_result.publish_data;
-  EXPECT_EQ(frame_result.accumulated_classification.static_point_count, 0U);
-  EXPECT_EQ(frame_result.accumulated_classification.dynamic_point_count, 0U);
-  EXPECT_EQ(frame_result.accumulated_classification.accumulated_point_count, 0U);
   EXPECT_DOUBLE_EQ(frame_result.timing.process_input_cloud_ms, 0.0);
   EXPECT_DOUBLE_EQ(frame_result.timing.extract_finite_points_ms, 0.0);
   EXPECT_DOUBLE_EQ(frame_result.timing.update_ufomap_ms, 0.0);
-  EXPECT_DOUBLE_EQ(frame_result.timing.accumulate_points_ms, 0.0);
+  EXPECT_DOUBLE_EQ(frame_result.timing.accumulate_cache_ms, 0.0);
   EXPECT_DOUBLE_EQ(frame_result.timing.classify_current_frame_ms, 0.0);
-  EXPECT_DOUBLE_EQ(frame_result.timing.classify_accumulated_ms, 0.0);
 }
 
 namespace {
@@ -215,12 +261,11 @@ TEST(UfomapMapperResultTest, processInputCloudProducesRealRuntimeStats) {
   EXPECT_GE(result.timing.process_input_cloud_ms, 0.0);
   EXPECT_GE(result.timing.extract_finite_points_ms, 0.0);
   EXPECT_GE(result.timing.update_ufomap_ms, 0.0);
-  EXPECT_GE(result.timing.accumulate_points_ms, 0.0);
+  EXPECT_GE(result.timing.accumulate_cache_ms, 0.0);
   EXPECT_GE(result.timing.classify_current_frame_ms, 0.0);
-  EXPECT_GE(result.timing.classify_accumulated_ms, 0.0);
 }
 
-TEST(UfomapMapperClassificationTest, splitsCurrentFrameBySeenFreeAndTracksAccumulation) {
+TEST(UfomapMapperClassificationTest, splitsCurrentFrameBySeenFree) {
   ensureRosInitialized();
   if (!ros::master::check()) {
     GTEST_SKIP() << "ROS master is not available";
@@ -242,15 +287,10 @@ TEST(UfomapMapperClassificationTest, splitsCurrentFrameBySeenFreeAndTracksAccumu
   EXPECT_EQ(result.classification.static_point_count, 1U);
   EXPECT_EQ(countCloudPoints(result.dynamic_cloud_msg), 1U);
   EXPECT_EQ(countCloudPoints(result.classification.static_cloud_msg), 1U);
-  EXPECT_EQ(result.classification.accumulated_point_count, 3U);
-  EXPECT_EQ(mapper.accumulatedPointCount(), 3U);
-
-  const auto accumulated = mapper.classifyAccumulatedCloud(mixed_cloud.header);
-  EXPECT_EQ(accumulated.accumulated_point_count, 3U);
-  EXPECT_GE(accumulated.dynamic_point_count, 1U);
+  EXPECT_EQ(result.classification.input_point_count, 2U);
 }
 
-TEST(UfomapMapperClassificationTest, frameResultPublishesAccumulatedStaticMapCloud) {
+TEST(UfomapMapperClassificationTest, frameResultPublishesCurrentFrameStaticCloud) {
   ensureRosInitialized();
   if (!ros::master::check()) {
     GTEST_SKIP() << "ROS master is not available";
@@ -261,7 +301,8 @@ TEST(UfomapMapperClassificationTest, frameResultPublishesAccumulatedStaticMapClo
   ldopcore::UfomapMapper mapper(nh, pnh, "map", false);
 
   const auto odom = makeOdom("map");
-  (void)mapper.processInputCloud(makeSinglePointCloud("map", 2.0F, 0.0F, 0.0F), odom);
+  // 先插入一帧不会被后续射线重新穿过的静态点，确保累计静态云与当前帧静态云不相同。
+  (void)mapper.processInputCloud(makeSinglePointCloud("map", 0.0F, 2.0F, 0.0F), odom);
 
   const auto mixed_cloud =
       makePointCloud("map", {{{1.0F, 0.0F, 0.0F}, {3.0F, 0.0F, 0.0F}}});
@@ -269,16 +310,75 @@ TEST(UfomapMapperClassificationTest, frameResultPublishesAccumulatedStaticMapClo
 
   EXPECT_EQ(result.classification.static_point_count + result.classification.dynamic_point_count,
             2U);
-  EXPECT_EQ(result.accumulated_classification.accumulated_point_count, 3U);
-  EXPECT_EQ(result.accumulated_classification.static_point_count +
-                result.accumulated_classification.dynamic_point_count,
-            3U);
+  ASSERT_EQ(result.classification.static_point_count, 2U);
+  EXPECT_EQ(result.classification.dynamic_point_count, 0U);
   EXPECT_EQ(countCloudPoints(result.static_map_cloud_msg),
-            result.accumulated_classification.static_point_count);
+            result.classification.static_point_count);
   EXPECT_EQ(countCloudPoints(result.dynamic_cloud_msg), result.classification.dynamic_point_count);
 }
 
-TEST(UfomapMapperLifecycleTest, clearMapAlsoClearsAccumulatedCloud) {
+TEST(UfomapMapperClassificationTest, accumulatedClassificationRemainsAvailableForLowRateExport) {
+  ensureRosInitialized();
+  if (!ros::master::check()) {
+    GTEST_SKIP() << "ROS master is not available";
+  }
+
+  ros::NodeHandle nh;
+  ros::NodeHandle pnh("~");
+  pnh.setParam("ufomap_accumulation_max_points", 8);
+  ldopcore::UfomapMapper mapper(nh, pnh, "map", false);
+
+  const auto odom = makeOdom("map");
+  (void)mapper.processInputCloud(makeSinglePointCloud("map", 0.0F, 2.0F, 0.0F), odom);
+  const auto mixed_cloud =
+      makePointCloud("map", {{{1.0F, 0.0F, 0.0F}, {3.0F, 0.0F, 0.0F}}});
+  const auto result = mapper.processInputCloud(mixed_cloud, odom);
+
+  // 主流程仍然只发布当前帧静态/动态点云。
+  EXPECT_EQ(countCloudPoints(result.static_map_cloud_msg), result.classification.static_point_count);
+  EXPECT_EQ(result.classification.input_point_count, 2U);
+
+  // 累计分类接口单独保留给低频 clean static map 导出。
+  EXPECT_EQ(mapper.accumulatedPointCount(), 3U);
+  const auto accumulated = mapper.classifyAccumulatedCloud(mixed_cloud.header);
+  EXPECT_EQ(accumulated.input_point_count, 3U);
+  EXPECT_EQ(countCloudPoints(accumulated.static_cloud_msg) +
+                countCloudPoints(accumulated.dynamic_cloud_msg),
+            3U);
+}
+
+TEST(UfomapMapperClassificationTest, currentFrameClassificationFiltersPointsOutsideMaxRange) {
+  ensureRosInitialized();
+  if (!ros::master::check()) {
+    GTEST_SKIP() << "ROS master is not available";
+  }
+
+  ros::NodeHandle nh;
+  ros::NodeHandle pnh("~");
+  pnh.setParam("ufomap_max_range", 2.0);
+  pnh.setParam("ufomap_insert_only_valid", true);
+  ldopcore::UfomapMapper mapper(nh, pnh, "map", false);
+
+  const auto odom = makeOdom("map");
+  (void)mapper.processInputCloud(makeSinglePointCloud("map", 2.0F, 0.0F, 0.0F), odom);
+  ASSERT_TRUE(mapper.seenFree(makePoint(1.0F, 0.0F, 0.0F)));
+
+  const auto mixed_cloud =
+      makePointCloud("map", {{{1.0F, 0.0F, 0.0F}, {3.0F, 0.0F, 0.0F}}});
+  const auto result = mapper.processInputCloud(mixed_cloud, odom);
+
+  // 当前帧输出分支只应分类最大判别范围内的点。
+  EXPECT_EQ(result.classification.input_point_count, 1U);
+  EXPECT_EQ(result.classification.dynamic_point_count, 1U);
+  EXPECT_EQ(result.classification.static_point_count, 0U);
+  EXPECT_EQ(countCloudPoints(result.dynamic_cloud_msg), 1U);
+  EXPECT_EQ(countCloudPoints(result.static_map_cloud_msg), 0U);
+
+  // 地图/旁路输入仍保持完整当前帧，供低频导出等场景使用。
+  EXPECT_EQ(mapper.accumulatedPointCount(), 3U);
+}
+
+TEST(UfomapMapperLifecycleTest, clearMapResetsMapState) {
   ensureRosInitialized();
   if (!ros::master::check()) {
     GTEST_SKIP() << "ROS master is not available";
@@ -290,11 +390,11 @@ TEST(UfomapMapperLifecycleTest, clearMapAlsoClearsAccumulatedCloud) {
 
   const auto odom = makeOdom("map");
   (void)mapper.processInputCloud(makeSinglePointCloud("map", 2.0F, 0.0F, 0.0F), odom);
-  EXPECT_EQ(mapper.accumulatedPointCount(), 1U);
+  EXPECT_TRUE(mapper.seenFree(makePoint(1.0F, 0.0F, 0.0F)));
 
   mapper.clearMap();
 
-  EXPECT_EQ(mapper.accumulatedPointCount(), 0U);
+  EXPECT_FALSE(mapper.seenFree(makePoint(1.0F, 0.0F, 0.0F)));
 }
 
 TEST(UfomapMapperQueryTest, supportsSeenFreeAndNodeQuery) {
