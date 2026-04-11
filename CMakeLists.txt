@@ -1,7 +1,11 @@
 cmake_minimum_required(VERSION 3.0.2)
 project(ldop)
 
-set(CMAKE_CXX_STANDARD 17)
+get_filename_component(LDOP_WORKSPACE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+list(PREPEND CMAKE_PREFIX_PATH "/opt/ros/noetic")
+list(PREPEND CMAKE_PREFIX_PATH "${LDOP_WORKSPACE_ROOT}/external/install/ufomap")
+
+set(CMAKE_CXX_STANDARD 20)
 
 # 要求编译器必须支持上面的标准；如果不支持就直接报错，
 # 而不是偷偷降级成更老的标准。
@@ -30,13 +34,17 @@ find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
   message_generation
   nav_msgs
-  octomap_msgs
   roscpp
   sensor_msgs
   std_msgs
 )
 find_package(Threads REQUIRED)
-find_package(octomap REQUIRED)
+find_package(OpenMP REQUIRED)
+find_package(TBB REQUIRED)
+find_package(ufomap CONFIG REQUIRED
+  HINTS "${LDOP_WORKSPACE_ROOT}/external/install/ufomap"
+  PATH_SUFFIXES lib/cmake/ufomap
+)
 
 add_message_files(
   FILES
@@ -55,15 +63,13 @@ generate_messages(
 catkin_package(
   INCLUDE_DIRS include
   LIBRARIES ldop_core
-  CATKIN_DEPENDS geometry_msgs message_runtime nav_msgs octomap_msgs roscpp sensor_msgs std_msgs
-  DEPENDS OCTOMAP
+  CATKIN_DEPENDS geometry_msgs message_runtime nav_msgs roscpp sensor_msgs std_msgs
 )
 
 # include_directories(...) 指定编译时去哪些目录找头文件。
 include_directories(
   include
   ${catkin_INCLUDE_DIRS}
-  ${OCTOMAP_INCLUDE_DIRS}
 )
 
 # add_library(...) 定义一个“库”目标。
@@ -74,17 +80,17 @@ include_directories(
 # 3. 别的可执行程序将来也能复用这部分代码
 add_library(ldop_core
   src/ldop.cpp
-  src/octomap_mapper.cpp
+  src/ufomap_mapper.cpp
 )
 
 # add_dependencies(...) 用来声明“编译顺序依赖”。
 add_dependencies(ldop_core ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 # target_link_libraries(...) 表示链接阶段要把哪些库连进来。
-# 这里 ldop_core 需要使用 roscpp、OctoMap 和线程库。
+# 这里 ldop_core 需要使用 roscpp、UFOMap 和线程库。
 target_link_libraries(ldop_core
   ${catkin_LIBRARIES}
-  ${OCTOMAP_LIBRARIES}
+  UFO::Map
   ${CMAKE_THREAD_LIBS_INIT}
 )
 
@@ -101,10 +107,22 @@ add_dependencies(ldop_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED
 # 节点最终需要链接两部分：
 # 1. ldop_core：你自己写的核心逻辑库
 # 2. ${catkin_LIBRARIES}：ROS 相关库
-# 3. OctoMap：八叉树建图库
+# 3. UFOMap：体素地图建图库
 # 这样 main 函数就可以调用你自己的类，同时也能正常使用 ROS API。
 target_link_libraries(ldop_node
   ldop_core
   ${catkin_LIBRARIES}
-  ${OCTOMAP_LIBRARIES}
 )
+
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(test_ufomap_mapper
+    test/test_ufomap_mapper.cpp
+  )
+  if(TARGET test_ufomap_mapper)
+    target_link_libraries(test_ufomap_mapper
+      ldop_core
+      ${catkin_LIBRARIES}
+      gtest_main
+    )
+  endif()
+endif()

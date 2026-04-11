@@ -1,2 +1,4 @@
 CompileFlags:
-  CompilationDatabase: /home/st/LDOT_ws/build
+  CompilationDatabase: /home/st/ldop_ws/build/ldop
+  Remove:
+    - -DUFO_PARALLEL=1

@@ -10,7 +10,7 @@
 #include <thread>
 
 #include <ldop/DynamicObjectArray.h>
-#include <ldop/octomap_mapper.h>
+#include <ldop/ufomap_mapper.h>
 #include <nav_msgs/Odometry.h>
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
@@ -37,7 +37,8 @@ class Ldop {
     sensor_msgs::PointCloud2 static_cloud_msg;
     sensor_msgs::PointCloud2 dynamic_cloud_msg;
     ::ldop::DynamicObjectArray dynamic_objects_msg;
-    OctomapPublishData octomap_publish_data;
+    UfomapRuntimeStats ufomap_runtime_stats;
+    UfomapPublishData ufomap_publish_data;
     nav_msgs::Odometry odom_msg;
     std::uint64_t sequence{0};
   };
@@ -56,7 +57,7 @@ class Ldop {
   void processingLoop();
   void publishingLoop();
 
-  // 当前阶段保留 LDOP 主流程，把 OctoMap 逻辑委托给独立模块。
+  // 当前阶段保留 LDOP 主流程，把 UFOMap 逻辑委托给独立模块。
   ProcessedFrame processFrame(const InputFrame& frame);
   void publishFrame(const ProcessedFrame& frame);
   ::ldop::DynamicObjectArray buildDynamicObjectArray(const ProcessedFrame& frame) const;
@@ -115,8 +116,8 @@ class Ldop {
   mutable std::mutex odom_mutex_;
   nav_msgs::Odometry latest_odom_;  // 当前缓存的“最新一帧”里程计。
 
-  // OctoMap 独立模块，不再把具体建图逻辑塞进 ldop 文件里。
-  std::unique_ptr<OctomapMapper> octomap_mapper_;
+  // UFOMap 独立模块，不再把具体建图逻辑塞进 ldop 文件里。
+  std::unique_ptr<UfomapMapper> ufomap_mapper_;
 
   // 是否已经缓存过至少一帧可用于配对的最新里程计。
   bool has_latest_odom_;

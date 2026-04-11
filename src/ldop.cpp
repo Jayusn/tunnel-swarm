@@ -1,4 +1,8 @@
 #include <ldop/ldop.h>
+
+#include <cmath>
+#include <limits>
+
 #include <sensor_msgs/point_cloud2_iterator.h>
 
 namespace ldopcore {
@@ -23,7 +27,7 @@ Ldop::Ldop(ros::NodeHandle& nh, ros::NodeHandle& pnh)
       has_latest_odom_(false) {
   loadParameters();
   setupRosInterfaces();
-  octomap_mapper_ = std::make_unique<OctomapMapper>(nh_, pnh_, world_frame_, verbose_);
+  ufomap_mapper_ = std::make_unique<UfomapMapper>(nh_, pnh_, world_frame_, verbose_);
   startWorkers();
 
   ROS_INFO_STREAM("  LDOP is ready.");
@@ -200,52 +204,110 @@ void Ldop::publishingLoop() {
 }
 
 Ldop::ProcessedFrame Ldop::processFrame(const InputFrame& frame) {
-  // 主流程只做调度，把世界系点云和里程计委托给独立的 OctoMap 模块。
+  // 主流程只做调度，把世界系点云和里程计委托给独立的 UFOMap 模块。
   ProcessedFrame processed;
   processed.raw_cloud_msg = frame.cloud_msg;
   processed.odom_msg = frame.odom_msg;
   processed.sequence = frame.sequence;
 
-  const OctomapFrameResult octomap_result =
-      octomap_mapper_->processStaticCloud(frame.cloud_msg, frame.odom_msg);
-  processed.static_cloud_msg = octomap_result.static_cloud_msg;
-  processed.octomap_publish_data = octomap_result.publish_data;
-  processed.dynamic_cloud_msg = buildEmptyCloud(processed.static_cloud_msg.header);
+  const UfomapFrameResult ufomap_result =
+      ufomap_mapper_->processStaticCloud(frame.cloud_msg, frame.odom_msg);
+  processed.static_cloud_msg = ufomap_result.static_cloud_msg;
+  processed.ufomap_runtime_stats = ufomap_result.runtime_stats;
+  processed.ufomap_publish_data = ufomap_result.publish_data;
+  processed.dynamic_cloud_msg = ufomap_result.dynamic_cloud_msg;
   processed.dynamic_objects_msg = buildDynamicObjectArray(processed);
   return processed;
 }
 
 void Ldop::publishFrame(const ProcessedFrame& frame) {
-  // 统一从这里发出 LDOP 输出，OctoMap 地图则交给独立模块自行发布。
+  // 统一从这里发出 LDOP 输出，UFOMap 统计信息则交给独立模块维护。
   raw_cloud_pub_.publish(frame.raw_cloud_msg);
   odom_pub_.publish(frame.odom_msg);
   static_cloud_pub_.publish(frame.static_cloud_msg);
   dynamic_cloud_pub_.publish(frame.dynamic_cloud_msg);
   dynamic_objects_pub_.publish(frame.dynamic_objects_msg);
-  octomap_mapper_->publish(frame.octomap_publish_data);
+  ufomap_mapper_->publish(frame.ufomap_publish_data);
 
   if (verbose_) {
     ROS_INFO_STREAM_THROTTLE(1.0, "published frame #" << frame.sequence
                                   << ", processed: " << processed_cloud_count_.load()
                                   << ", dropped: " << dropped_cloud_count_.load()
-                                  << ", octomap updates: "
-                                  << frame.octomap_publish_data.update_count
-                                  << ", octomap nodes: "
-                                  << frame.octomap_publish_data.node_count);
+                                  << ", ufomap runtime ready: "
+                                  << (frame.ufomap_runtime_stats.runtime_ready ? "true" : "false")
+                                  << ", ufomap runtime updates: "
+                                  << frame.ufomap_runtime_stats.update_count
+                                  << ", ufomap runtime nodes: "
+                                  << frame.ufomap_runtime_stats.node_count
+                                  << ", ufomap updates: "
+                                  << frame.ufomap_publish_data.update_count
+                                  << ", ufomap nodes: "
+                                  << frame.ufomap_publish_data.node_count);
   }
 }
 
 ::ldop::DynamicObjectArray Ldop::buildDynamicObjectArray(const ProcessedFrame& frame) const {
-  // 先发布空数组，占住接口，方便后续接入检测/跟踪结果。
   ::ldop::DynamicObjectArray object_array;
-  object_array.header = frame.static_cloud_msg.header;
+  object_array.header = frame.dynamic_cloud_msg.header;
   if (object_array.header.frame_id.empty()) {
     object_array.header.frame_id = world_frame_;
   }
 
-  // 真正的检测、跟踪、预测结果后续会在这里填充。
-  // 现在先保持话题和消息类型稳定，方便后续模块联调。
   object_array.objects.clear();
+  if (frame.dynamic_cloud_msg.data.empty() || frame.dynamic_cloud_msg.width == 0U ||
+      frame.dynamic_cloud_msg.height == 0U) {
+    return object_array;
+  }
+
+  float min_x = std::numeric_limits<float>::infinity();
+  float min_y = std::numeric_limits<float>::infinity();
+  float min_z = std::numeric_limits<float>::infinity();
+  float max_x = -std::numeric_limits<float>::infinity();
+  float max_y = -std::numeric_limits<float>::infinity();
+  float max_z = -std::numeric_limits<float>::infinity();
+  std::size_t finite_count = 0U;
+
+  try {
+    sensor_msgs::PointCloud2ConstIterator<float> iter_x(frame.dynamic_cloud_msg, "x");
+    sensor_msgs::PointCloud2ConstIterator<float> iter_y(frame.dynamic_cloud_msg, "y");
+    sensor_msgs::PointCloud2ConstIterator<float> iter_z(frame.dynamic_cloud_msg, "z");
+    for (; iter_x != iter_x.end(); ++iter_x, ++iter_y, ++iter_z) {
+      const float x = *iter_x;
+      const float y = *iter_y;
+      const float z = *iter_z;
+      if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
+        continue;
+      }
+      min_x = std::min(min_x, x);
+      min_y = std::min(min_y, y);
+      min_z = std::min(min_z, z);
+      max_x = std::max(max_x, x);
+      max_y = std::max(max_y, y);
+      max_z = std::max(max_z, z);
+      ++finite_count;
+    }
+  } catch (const std::runtime_error& error) {
+    ROS_WARN_STREAM_THROTTLE(1.0,
+                             "failed to build dynamic objects from cloud: " << error.what());
+    return object_array;
+  }
+
+  if (finite_count == 0U) {
+    return object_array;
+  }
+
+  ::ldop::DynamicObject object;
+  object.id = static_cast<std::uint32_t>(frame.sequence);
+  object.center.x = (static_cast<double>(min_x) + static_cast<double>(max_x)) * 0.5;
+  object.center.y = (static_cast<double>(min_y) + static_cast<double>(max_y)) * 0.5;
+  object.center.z = (static_cast<double>(min_z) + static_cast<double>(max_z)) * 0.5;
+  object.size.x = std::max(static_cast<double>(max_x - min_x), 0.0);
+  object.size.y = std::max(static_cast<double>(max_y - min_y), 0.0);
+  object.size.z = std::max(static_cast<double>(max_z - min_z), 0.0);
+  object.velocity.x = 0.0;
+  object.velocity.y = 0.0;
+  object.velocity.z = 0.0;
+  object_array.objects.push_back(object);
   return object_array;
 }
 
