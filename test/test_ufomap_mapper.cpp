@@ -147,7 +147,7 @@ TEST(UfomapMapperParamsTest, effectiveParamsSanitizeInvalidDownSamplingMethod) {
 
 TEST(UfomapMapperResultTest, exposesStructuredRuntimeStatsDefaults) {
   ldopcore::UfomapPublishData publish_data;
-  (void)publish_data;
+  EXPECT_TRUE(publish_data.static_map_markers.markers.empty());
 
   ldopcore::UfomapRuntimeStats runtime_stats;
   EXPECT_FALSE(runtime_stats.runtime_ready);
@@ -168,7 +168,7 @@ TEST(UfomapMapperResultTest, exposesStructuredRuntimeStatsDefaults) {
   EXPECT_EQ(frame_result.classification.static_point_count, 0U);
   EXPECT_EQ(frame_result.classification.dynamic_point_count, 0U);
   EXPECT_EQ(frame_result.classification.input_point_count, 0U);
-  (void)frame_result.publish_data;
+  EXPECT_TRUE(frame_result.publish_data.static_map_markers.markers.empty());
   EXPECT_DOUBLE_EQ(frame_result.timing.process_input_cloud_ms, 0.0);
   EXPECT_DOUBLE_EQ(frame_result.timing.extract_finite_points_ms, 0.0);
   EXPECT_DOUBLE_EQ(frame_result.timing.update_ufomap_ms, 0.0);
@@ -263,6 +263,34 @@ TEST(UfomapMapperResultTest, processInputCloudProducesRealRuntimeStats) {
   EXPECT_GE(result.timing.update_ufomap_ms, 0.0);
   EXPECT_GE(result.timing.accumulate_cache_ms, 0.0);
   EXPECT_GE(result.timing.classify_current_frame_ms, 0.0);
+}
+
+TEST(UfomapMapperResultTest, processInputCloudBuildsStaticMapMarkers) {
+  ensureRosInitialized();
+  if (!ros::master::check()) {
+    GTEST_SKIP() << "ROS master is not available";
+  }
+
+  ros::NodeHandle nh;
+  ros::NodeHandle pnh("ufomap_static_map_markers");
+  pnh.setParam("static_map_visualization_max_voxels", 100);
+  ldopcore::UfomapMapper mapper(nh, pnh, "map", false);
+
+  const auto cloud = makeSinglePointCloud("map", 2.0F, 0.0F, 0.0F);
+  const auto odom = makeOdom("map");
+  const auto result = mapper.processInputCloud(cloud, odom);
+
+  ASSERT_FALSE(result.publish_data.static_map_markers.markers.empty());
+  EXPECT_EQ(result.publish_data.static_map_markers.markers.front().action,
+            visualization_msgs::Marker::DELETEALL);
+
+  std::size_t rendered_voxel_count = 0U;
+  for (const auto& marker : result.publish_data.static_map_markers.markers) {
+    if (marker.action == visualization_msgs::Marker::ADD) {
+      rendered_voxel_count += marker.points.size();
+    }
+  }
+  EXPECT_GT(rendered_voxel_count, 0U);
 }
 
 TEST(UfomapMapperClassificationTest, splitsCurrentFrameBySeenFree) {

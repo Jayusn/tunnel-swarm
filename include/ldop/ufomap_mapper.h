@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <string>
 #include <vector>
 
@@ -13,6 +14,7 @@
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <std_msgs/Header.h>
+#include <visualization_msgs/MarkerArray.h>
 #include <ufo/geometry/point.hpp>
 #include <ufo/geometry/sphere.hpp>
 #include <ufo/map/types.hpp>
@@ -42,11 +44,15 @@ struct UfomapMapperParams {
   int map_reserve_nodes{0};
   // 仅供低频 clean static map 导出使用的历史点缓存窗口。
   int ufomap_accumulation_max_points{0};
+  // 静态体素地图 RViz 可视化相关参数。
+  int static_map_visualization_max_voxels{50000};
 };
 
 UfomapMapperParams sanitizeUfomapParams(const UfomapMapperParams& params);
 
 struct UfomapPublishData {
+  // 按深度分组的静态体素 CUBE_LIST，可直接给 RViz MarkerArray 显示。
+  visualization_msgs::MarkerArray static_map_markers;
 };
 
 struct UfomapRuntimeStats {
@@ -81,8 +87,8 @@ struct UfomapFrameResult {
   sensor_msgs::PointCloud2 static_map_cloud_msg;
   sensor_msgs::PointCloud2 dynamic_cloud_msg;
   UfomapClassificationResult classification;
-  UfomapRuntimeStats runtime_stats;
   UfomapPublishData publish_data;
+  UfomapRuntimeStats runtime_stats;
   UfomapTimingStats timing;
 };
 
@@ -140,20 +146,17 @@ class UfomapMapper {
       const UfomapCandidateQuery& query) const;
   UfomapFrameResult processInputCloud(const sensor_msgs::PointCloud2& cloud_msg,
                                       const nav_msgs::Odometry& odom_msg);
-  void publish(const UfomapPublishData& publish_data);
 
  private:
+  struct UfomapRuntime;
+
   void loadParameters();
   void configureUfomap();
-  std::vector<ufo::Point> extractFinitePoints(const sensor_msgs::PointCloud2& cloud_msg,
-                                              void* ufomap_cloud,
-                                              bool* has_invalid_points) const;
+  // 调用方需先持有地图读锁或写锁；当前实现中 runtime_ 在对象存活期内应始终有效。
+  UfomapRuntime& runtimeLocked();
+  const UfomapRuntime& runtimeLocked() const;
   UfomapClassificationResult classifyPoints(const std_msgs::Header& header,
                                             const std::vector<ufo::Point>& points) const;
-  void updateUfomap(void* ufomap_cloud,
-                    const ufo::Point& sensor_origin,
-                    const nav_msgs::Odometry& odom_msg,
-                    UfomapFrameResult& frame_result);
 
   ros::NodeHandle nh_;
   ros::NodeHandle pnh_;
@@ -163,9 +166,11 @@ class UfomapMapper {
   UfomapMapperParams params_;
 
   std::atomic<std::uint64_t> ufomap_update_count_;
-  mutable std::mutex runtime_mutex_;
+  // 地图读多写少，使用读写锁避免多个查询路径彼此串行化。
+  mutable std::shared_mutex map_mutex_;
+  // 历史点缓存与实时地图分开加锁，避免缓存维护阻塞地图查询。
+  mutable std::mutex accumulated_mutex_;
 
-  struct UfomapRuntime;
   std::unique_ptr<UfomapRuntime> runtime_;
   std::vector<ufo::Point> accumulated_points_;
 };

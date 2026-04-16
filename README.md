@@ -235,7 +235,37 @@
 - `rog_map` 提供静态安全信息
 - `LDOP` 提供动态风险信息
 
-## 9. 一句话记忆法
+## 9. 测试与最终验证
+
+日常开发优先使用轻量级检查：
+
+```bash
+cd /home/st/ldop_ws
+catkin build ldop --no-status
+catkin run_tests ldop --no-status
+catkin_test_results /home/st/ldop_ws/build/ldop
+```
+
+完整 Gazebo + PX4 + FAST-LIO + LDOP 联合仿真只作为最后验证检查启用，不作为每次改动的默认测试入口：
+
+```bash
+cd /home/st/ldop_ws
+./src/LDOP/launch/gazebo_px4_LDOP.sh
+```
+
+该脚本会依次启动：
+
+1. `roslaunch ldop px4.launch interactive:=false`
+2. `roslaunch external_pos_fusion fusion_mapping_mid360.launch`
+3. `roslaunch ldop run_ldop.launch`
+
+使用它时主要验证：
+
+- `/ldop/static_cloud` 在 RViz 中保持稳定、不过度吸收动态物体残影
+- `/ldop/dynamic_cloud` 能反映当前帧动态点云
+- LDOP、PX4、Gazebo、外部位姿融合链路能完整跑通并可正常退出
+
+## 10. 一句话记忆法
 
 以后如果要快速回忆整个设计，可以记住这句话：
 

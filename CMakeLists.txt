@@ -37,6 +37,7 @@ find_package(catkin REQUIRED COMPONENTS
   roscpp
   sensor_msgs
   std_msgs
+  visualization_msgs
 )
 find_package(Threads REQUIRED)
 find_package(OpenMP REQUIRED)
@@ -63,7 +64,7 @@ generate_messages(
 catkin_package(
   INCLUDE_DIRS include
   LIBRARIES ldop_core
-  CATKIN_DEPENDS geometry_msgs message_runtime nav_msgs roscpp sensor_msgs std_msgs
+  CATKIN_DEPENDS geometry_msgs message_runtime nav_msgs roscpp sensor_msgs std_msgs visualization_msgs
 )
 
 # include_directories(...) 指定编译时去哪些目录找头文件。

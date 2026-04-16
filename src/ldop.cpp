@@ -45,6 +45,7 @@ Ldop::Ldop(ros::NodeHandle& nh, ros::NodeHandle& pnh)
   ROS_INFO_STREAM("  static output: " << static_cloud_topic_);
   ROS_INFO_STREAM("  dynamic output: " << dynamic_cloud_topic_);
   ROS_INFO_STREAM("  dynamic objects: " << dynamic_objects_topic_);
+  ROS_INFO_STREAM("  static voxel markers: " << static_map_markers_topic_);
 }
 
 Ldop::~Ldop() {
@@ -60,6 +61,7 @@ void Ldop::loadParameters() {
   pnh_.param<std::string>("static_cloud_topic", static_cloud_topic_, "/ldop/static_cloud");
   pnh_.param<std::string>("dynamic_cloud_topic", dynamic_cloud_topic_, "/ldop/dynamic_cloud");
   pnh_.param<std::string>("dynamic_objects_topic", dynamic_objects_topic_, "/ldop/dynamic_objects");
+  pnh_.param<std::string>("static_map_markers_topic", static_map_markers_topic_, "/ldop/static_map_markers");
   pnh_.param<std::string>("world_frame", world_frame_, "camera_init");
   pnh_.param("verbose", verbose_, false);
 }
@@ -74,25 +76,21 @@ void Ldop::setupRosInterfaces() {
   static_cloud_pub_ = nh_.advertise<sensor_msgs::PointCloud2>(static_cloud_topic_, 10);
   dynamic_cloud_pub_ = nh_.advertise<sensor_msgs::PointCloud2>(dynamic_cloud_topic_, 10);
   dynamic_objects_pub_ = nh_.advertise<::ldop::DynamicObjectArray>(dynamic_objects_topic_, 10);
+  static_map_markers_pub_ = nh_.advertise<visualization_msgs::MarkerArray>(static_map_markers_topic_, 10, true);
 }
 
 void Ldop::startWorkers() {
-  // 将计算和发布拆到后台线程，避免在 ROS 回调里做重活。
+  // 将处理与发布统一放到后台线程，避免在 ROS 回调里做重活。
   processing_thread_ = std::thread(&Ldop::processingLoop, this);
-  publishing_thread_ = std::thread(&Ldop::publishingLoop, this);
 }
 
 void Ldop::stopWorkers() {
   // 通知线程退出，并等待它们安全收尾。
   running_.store(false);
   input_cv_.notify_all();
-  output_cv_.notify_all();
 
   if (processing_thread_.joinable()) {
     processing_thread_.join();
-  }
-  if (publishing_thread_.joinable()) {
-    publishing_thread_.join();
   }
 }
 
@@ -171,60 +169,26 @@ void Ldop::processingLoop() {
 
     const auto loop_start = std::chrono::steady_clock::now();
     ProcessedFrame processed = processFrame(frame);
-    processed.timing.processing_loop_ms = elapsedMs(loop_start, std::chrono::steady_clock::now());
     processed_cloud_count_.fetch_add(1U);
-
-    {
-      std::lock_guard<std::mutex> output_lock(output_mutex_);
-      // 只有输出队列触顶时才丢掉最旧结果，其余情况由发布线程按先进先出顺序发送。
-      while (static_cast<int>(output_queue_.size()) >= 10) {
-        output_queue_.pop_front();
-      }
-      output_queue_.push_back(std::move(processed));
-    }
-    output_cv_.notify_one();
-  }
-}
-
-void Ldop::publishingLoop() {
-  while (true) {
-    ProcessedFrame frame;
-
-    {
-      std::unique_lock<std::mutex> output_lock(output_mutex_);
-      output_cv_.wait(output_lock, [this] { return !running_.load() || !output_queue_.empty(); });
-
-      if (!running_.load() && output_queue_.empty()) {
-        return;
-      }
-
-      // 队列为空时才会等待；只要有可发布结果且写线程已经释放互斥锁，就按先进先出顺序发布最旧一帧。
-      frame = std::move(output_queue_.front());
-      output_queue_.pop_front();
-    }
-
-    const auto loop_start = std::chrono::steady_clock::now();
-    publishFrame(frame);
-    frame.timing.publishing_loop_ms = elapsedMs(loop_start, std::chrono::steady_clock::now());
+    publishFrame(processed);
+    processed.timing.processing_loop_ms = elapsedMs(loop_start, std::chrono::steady_clock::now());
 
     if (verbose_) {
-      ROS_INFO_STREAM_THROTTLE(1.0, "LDOP timing frame #" << frame.sequence
+      ROS_INFO_STREAM_THROTTLE(1.0, "LDOP timing frame #" << processed.sequence
                                     << ": odomCloudDt="
-                                    << formatFloatMs(frame.odom_cloud_dt_ms)
+                                    << formatFloatMs(processed.odom_cloud_dt_ms)
                                     << "ms, pointCloudCallback="
-                                    << formatFloatMs(frame.timing.point_cloud_callback_ms)
+                                    << formatFloatMs(processed.timing.point_cloud_callback_ms)
                                     << "ms, processingLoop="
-                                    << formatFloatMs(frame.timing.processing_loop_ms)
+                                    << formatFloatMs(processed.timing.processing_loop_ms)
                                     << "ms, processFrame="
-                                    << formatFloatMs(frame.timing.process_frame_ms)
+                                    << formatFloatMs(processed.timing.process_frame_ms)
                                     << "ms, processInputCloud="
-                                    << formatFloatMs(frame.ufomap_timing.process_input_cloud_ms)
+                                    << formatFloatMs(processed.ufomap_timing.process_input_cloud_ms)
                                     << "ms, publishFrame="
-                                    << formatFloatMs(frame.timing.publish_frame_ms)
-                                    << "ms, publishingLoop="
-                                    << formatFloatMs(frame.timing.publishing_loop_ms)
+                                    << formatFloatMs(processed.timing.publish_frame_ms)
                                     << "ms");
-      ROS_INFO_STREAM_THROTTLE(1.0, "LDOP status frame #" << frame.sequence
+      ROS_INFO_STREAM_THROTTLE(1.0, "LDOP status frame #" << processed.sequence
                                     << ": received=" << received_cloud_count_.load()
                                     << ", processed=" << processed_cloud_count_.load()
                                     << ", backlog="
@@ -233,7 +197,7 @@ void Ldop::publishingLoop() {
                                     << ", matched=" << matched_odom_count_.load()
                                     << ", missing=" << missing_odom_count_.load()
                                     << ", dropped=" << dropped_cloud_count_.load()
-                                    << ", ufomapNodes=" << frame.ufomap_runtime_stats.node_count);
+                                    << ", ufomapNodes=" << processed.ufomap_runtime_stats.node_count);
     }
   }
 }
@@ -248,11 +212,10 @@ Ldop::ProcessedFrame Ldop::processFrame(const InputFrame& frame) {
   processed.odom_cloud_dt_ms = frame.odom_cloud_dt_ms;
   processed.timing.point_cloud_callback_ms = frame.point_cloud_callback_ms;
 
-  UfomapFrameResult ufomap_result =
-      ufomap_mapper_->processInputCloud(frame.cloud_msg, frame.odom_msg);
+  UfomapFrameResult ufomap_result = ufomap_mapper_->processInputCloud(frame.cloud_msg, frame.odom_msg);
   processed.static_map_cloud_msg = std::move(ufomap_result.static_map_cloud_msg);
-  processed.ufomap_runtime_stats = ufomap_result.runtime_stats;
   processed.ufomap_publish_data = std::move(ufomap_result.publish_data);
+  processed.ufomap_runtime_stats = ufomap_result.runtime_stats;
   processed.ufomap_timing = ufomap_result.timing;
   processed.dynamic_cloud_msg = std::move(ufomap_result.dynamic_cloud_msg);
 
@@ -263,14 +226,14 @@ Ldop::ProcessedFrame Ldop::processFrame(const InputFrame& frame) {
 }
 
 void Ldop::publishFrame(ProcessedFrame& frame) {
-  // 统一从这里发出 LDOP 输出，UFOMap 统计信息则交给独立模块维护。
+  // 统一从这里发出 LDOP 输出；静态体素 marker 已在处理阶段异步构建完成。
   const auto publish_start = std::chrono::steady_clock::now();
   raw_cloud_pub_.publish(frame.raw_cloud_msg);
   odom_pub_.publish(frame.odom_msg);
   static_cloud_pub_.publish(frame.static_map_cloud_msg);
   dynamic_cloud_pub_.publish(frame.dynamic_cloud_msg);
   dynamic_objects_pub_.publish(frame.dynamic_objects_msg);
-  ufomap_mapper_->publish(frame.ufomap_publish_data);
+  static_map_markers_pub_.publish(frame.ufomap_publish_data.static_map_markers);
   frame.timing.publish_frame_ms =
       elapsedMs(publish_start, std::chrono::steady_clock::now());
 }

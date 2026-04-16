@@ -5,26 +5,29 @@ odom_output_topic: /ldop/odom
 static_cloud_topic: /ldop/static_cloud  # 当前帧静态点云输出
 dynamic_cloud_topic: /ldop/dynamic_cloud  # 当前帧动态点云输出
 dynamic_objects_topic: /ldop/dynamic_objects
+static_map_markers_topic: /ldop/static_map_markers  # 静态体素地图 MarkerArray 输出
 world_frame: camera_init  # 输入点云和里程计位姿统一使用的世界坐标系
 verbose: true  
 
-ufomap_resolution: 0.2  # UFOMap 体素分辨率，单位米（更粗分辨率换取更高实时性）
-ufomap_depth_levels: 16  # UFOMap 八叉树深度层数
-ufomap_min_range: 0.5  # UFOMap 射线积分的最小距离,大于等于里程计的最小过滤距离
-ufomap_max_range: 12.0  # UFOMap 最大射线长度，<=0 表示不限制
-ufomap_insert_hit_depth: 0  # 命中点更新深度
-ufomap_insert_miss_depth: 0  # 失配点更新深度
-ufomap_ray_casting_depth: 0  # 射线投射深度，0 表示沿用 UFOMap 默认值
-ufomap_num_threads: 4  # 并行插入线程数，0 表示沿用 UFOMap 默认值
-ufomap_insert_only_valid: true  # 仅对有效射线区段执行插入
-ufomap_inflate_unknown: 0  # DUFOMap 的 d_p，按邻域膨胀未知区域以容忍定位误差
-ufomap_inflate_unknown_compensation: false  # 按 d_p 补偿射线末端未知膨胀
-ufomap_ray_passthrough_hits: false  # DUFOMap 默认不让射线直接穿过命中点
-ufomap_inflate_hits_dist: 0.1  # DUFOMap 的 d_s，沿射线扩展命中区域以容忍测距噪声
-ufomap_down_sampling_method: uniform  # 可选 none、center、centroid、uniform
-ufomap_simple_ray_casting: true  # false 使用 UFOMap proper ray casting
-ufomap_simple_ray_casting_factor: 1.2  # simple ray casting 步长系数
+ufomap_resolution: 0.2  # 叶子体素尺寸
+ufomap_depth_levels: 16  # 八叉树层级规模
+ufomap_inflate_unknown: 1  # 按邻域膨胀d_p未知区域以容忍定位误差 
+ufomap_inflate_hits_dist: 0.2  # 沿射线扩展d_s命中区域以容忍测距噪声 
+ufomap_inflate_unknown_compensation: true  # 是否补偿未知区域膨胀
+ufomap_ray_passthrough_hits: false  # 射线是否穿过命中点
+ufomap_down_sampling_method: center  # 积分前降采样策略，可选 none、center、centroid、uniform
+ufomap_min_range: 0.5  # 近点过滤 / 最小积分距离
+ufomap_max_range: -1  # 最大积分距离，还影响当前帧分类输出半径，<=0 表示不限制
+ufomap_insert_only_valid: false  # 仅对有效射线区段执行插入，即ufomap_max_range范围内点的射线段
+ufomap_insert_hit_depth: 0  # 命中点更新深度，0 表示沿用 UFOMap 默认值
+ufomap_insert_miss_depth: 0  # free / miss （失配）更新深度
+ufomap_ray_casting_depth: 0  # 射线投射深度
+ufomap_simple_ray_casting: true  # 简化射线投射开关，false 使用 UFOMap proper ray casting
+ufomap_simple_ray_casting_factor: 1.0  # 简化射线步长系数 
 ufomap_parallel: true  # 是否使用 UFOMap 并行积分
+ufomap_num_threads: 8  # 并行积分的线程数，0 表示沿用 UFOMap 默认值
 ufomap_propagate: true  # 是否在每帧插入后立即传播修改（更新整个树的结构、节点状态等）
+
 ufomap_map_reserve_nodes: 200000  # 地图预分配节点数，0 表示不预分配
 ufomap_accumulation_max_points: 120000  # 仅供低频导出 clean static map 使用的历史点缓存窗口
+static_map_visualization_max_voxels: 50000  # 单帧最多可视化的静态体素数量，0 表示不限制

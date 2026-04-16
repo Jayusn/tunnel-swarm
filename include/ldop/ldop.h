@@ -14,6 +14,7 @@
 #include <nav_msgs/Odometry.h>
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
+#include <visualization_msgs/MarkerArray.h>
 
 namespace ldopcore {
 
@@ -30,7 +31,6 @@ class Ldop {
     double processing_loop_ms{0.0};
     double process_frame_ms{0.0};
     double publish_frame_ms{0.0};
-    double publishing_loop_ms{0.0};
   };
 
   // 输入队列中的原始数据帧，点云到来时顺带缓存一份最近里程计快照。
@@ -42,14 +42,14 @@ class Ldop {
     double odom_cloud_dt_ms{0.0};
   };
 
-  // 处理线程输出的结果帧，供发布线程统一发布。
+  // 工作线程处理完成后的结果帧，随后会在同一线程里直接发布。
   struct ProcessedFrame {
     sensor_msgs::PointCloud2 raw_cloud_msg;
     sensor_msgs::PointCloud2 static_map_cloud_msg;
     sensor_msgs::PointCloud2 dynamic_cloud_msg;
     ::ldop::DynamicObjectArray dynamic_objects_msg;
-    UfomapRuntimeStats ufomap_runtime_stats;
     UfomapPublishData ufomap_publish_data;
+    UfomapRuntimeStats ufomap_runtime_stats;
     UfomapTimingStats ufomap_timing;
     LdopTimingStats timing;
     nav_msgs::Odometry odom_msg;
@@ -67,9 +67,8 @@ class Ldop {
   void odomCallback(const nav_msgs::OdometryConstPtr& odom_msg);
   void pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr& cloud_msg);
 
-  // 工作线程：处理线程和发布线程都按队列顺序消费，只有在各自队列为空时才进入等待。
+  // 工作线程：按输入队列顺序消费，处理完成后在同一线程里直接发布。
   void processingLoop();
-  void publishingLoop();
 
   // 当前阶段保留 LDOP 主流程，把 UFOMap 逻辑委托给独立模块。
   ProcessedFrame processFrame(const InputFrame& frame);
@@ -87,6 +86,7 @@ class Ldop {
   ros::Publisher static_cloud_pub_;
   ros::Publisher dynamic_cloud_pub_;
   ros::Publisher dynamic_objects_pub_;
+  ros::Publisher static_map_markers_pub_;
 
   // 参数服务器读取的话题名与运行配置。
   std::string input_cloud_topic_;
@@ -96,6 +96,7 @@ class Ldop {
   std::string static_cloud_topic_;
   std::string dynamic_cloud_topic_;
   std::string dynamic_objects_topic_;
+  std::string static_map_markers_topic_;
   std::string world_frame_;
   bool verbose_;
 
@@ -118,13 +119,11 @@ class Ldop {
   std::atomic<std::uint64_t> processed_cloud_count_;
   std::atomic<std::uint64_t> dropped_cloud_count_;  // 这个值越大，越说明当前处理速度可能跟不上输入速度。
 
-  // 保护输入队列 input_queue_ 和输出队列 output_queue_ 的互斥锁。
-  std::mutex input_mutex_;   // 点云回调负责往里放数据，处理线程负责从里取数据，两边会并发访问。
-  std::mutex output_mutex_;  // 处理线程会写入处理结果，发布线程会读取并清空结果队列。
+  // 保护输入队列 input_queue_ 的互斥锁。
+  std::mutex input_mutex_;  // 点云回调负责往里放数据，处理线程负责从里取数据，两边会并发访问。
 
-  // 输入队列和输出队列的条件变量。
-  std::condition_variable input_cv_;   // processingLoop() 在没有输入时会阻塞等待这个条件变量。
-  std::condition_variable output_cv_;  // publishingLoop() 在没有输出时会阻塞等待这个条件变量。
+  // 输入队列的条件变量。
+  std::condition_variable input_cv_;  // processingLoop() 在没有输入时会阻塞等待这个条件变量。
 
   // 保护 latest_odom_ 和 has_latest_odom_ 的互斥锁。
   mutable std::mutex odom_mutex_;
@@ -136,11 +135,9 @@ class Ldop {
   // 是否已经缓存过至少一帧可用于配对的最新里程计。
   bool has_latest_odom_;
   std::deque<InputFrame> input_queue_;
-  std::deque<ProcessedFrame> output_queue_;
 
-  // 后台线程：一个负责处理，一个负责发布。
+  // 后台线程：统一负责处理和发布。
   std::thread processing_thread_;
-  std::thread publishing_thread_;
 };
 
 }  // namespace ldopcore
