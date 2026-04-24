@@ -16,6 +16,7 @@
 #include <visualization_msgs/Marker.h>
 #include <ufo/map/integration/integration.hpp>
 #include <ufo/map/integration/integration_parameters.hpp>
+#include <ufo/map/key.hpp>
 #include <ufo/map/node.hpp>
 #include <ufo/map/point.hpp>
 #include <ufo/map/point_cloud.hpp>
@@ -83,10 +84,10 @@ sensor_msgs::PointCloud2 buildCloudFromPoints(const std_msgs::Header& header,
   return cloud;
 }
 
-UfomapPublishData buildStaticMapVisualization(const std_msgs::Header& header,
-                                              const std::string& world_frame,
-                                              const DufomapMapType& map) {
-  UfomapPublishData publish_data;
+visualization_msgs::MarkerArray buildStaticMapVisualization(const std_msgs::Header& header,
+                                                            const std::string& world_frame,
+                                                            const DufomapMapType& map) {
+  visualization_msgs::MarkerArray static_map_markers;
 
   const int max_depth = static_cast<int>(map.depthLevels());
   std::vector<visualization_msgs::Marker> markers_by_depth(
@@ -136,12 +137,12 @@ UfomapPublishData buildStaticMapVisualization(const std_msgs::Header& header,
     marker.points.push_back(center);
   }
 
-  publish_data.static_map_markers.markers.reserve(markers_by_depth.size());
+  static_map_markers.markers.reserve(markers_by_depth.size());
   for (auto& marker : markers_by_depth) {
-    publish_data.static_map_markers.markers.push_back(std::move(marker));
+    static_map_markers.markers.push_back(std::move(marker));
   }
 
-  return publish_data;
+  return static_map_markers;
 }
 
 ufo::DownSamplingMethod toUfoDownSamplingMethod(const std::string& method) {
@@ -338,37 +339,21 @@ UfomapFrameResult UfomapMapper::processInputCloud(const sensor_msgs::PointCloud2
   const auto extract_end = std::chrono::steady_clock::now();
   result.timing.extract_finite_points_ms = elapsedMs(extract_start, extract_end);
 
-  const auto update_start = extract_end;
   const ufo::Point sensor_origin(static_cast<float>(odom_msg.pose.pose.position.x),
                                 static_cast<float>(odom_msg.pose.pose.position.y),
                                 static_cast<float>(odom_msg.pose.pose.position.z));
-  if (!extracted.points.empty()) {
-    std::unique_lock<std::shared_mutex> lock(map_mutex_);
-    auto& runtime = runtimeLocked();
-    // 积分与统计更新在同一把锁内，保证 frame_result 与地图状态一致。
-    ufo::insertPointCloud(runtime.map, extracted.points, sensor_origin,
-                          runtime.integration_params,
-                          runtime.integration_params.propagate);
-
-    const std::uint64_t update_count = ufomap_update_count_.fetch_add(1U) + 1U;
-    result.runtime_stats.update_count = update_count;
-    result.runtime_stats.node_count = runtime.map.numNodes();
-  }
-  const auto update_end = std::chrono::steady_clock::now();
-  result.timing.update_ufomap_ms = elapsedMs(update_start, update_end);
-
-  // 地图更新完成后立即启动静态体素可视化构建，让它与当前帧分类并行执行。
-  auto publish_data_future = std::async(std::launch::async, [this, header = cloud_msg.header] {
+  // 先用更新前地图生成可视化快照；允许 RViz 迟一帧，但避免当前帧积分污染分类。
+  auto static_map_markers_future = std::async(std::launch::async, [this, header = cloud_msg.header] {
     // 异步构建时显式持有地图读锁，避免再额外绕一层成员转发。
     std::shared_lock<std::shared_mutex> lock(map_mutex_);
     return buildStaticMapVisualization(header, world_frame_, runtimeLocked().map);
   });
 
-  const auto classify_current_start = update_end;
+  const auto classify_current_start = std::chrono::steady_clock::now();
   // 当前帧输出只关心配置工作半径内的点，避免对远处点做无意义的 seenFree 查询。
   const ufo::PointCloud* output_points = &extracted.points;
   ufo::PointCloud filtered_output_points;
-  if (std::isfinite(params_.max_range) && params_.max_range > 0.0) {
+  if (params_.max_range > 0.0) {
     const float max_range_sq = static_cast<float>(params_.max_range * params_.max_range);
     filtered_output_points.reserve(extracted.points.size());
     for (const auto& point : extracted.points) {
@@ -390,9 +375,25 @@ UfomapFrameResult UfomapMapper::processInputCloud(const sensor_msgs::PointCloud2
   // 当前阶段主流程只输出当前帧静态/动态点云，静态体素地图则在本函数内异步构建后随结果返回。
   result.static_map_cloud_msg = result.classification.static_cloud_msg;
   result.dynamic_cloud_msg = result.classification.dynamic_cloud_msg;
-  result.publish_data = publish_data_future.get();
-  result.runtime_stats.runtime_ready = true;
-  
+  // 必须在写入当前帧前取回旧地图快照，避免 updateUfomap 计时里夹杂异步读锁等待。
+  result.static_map_markers = static_map_markers_future.get();
+
+  const auto update_start = std::chrono::steady_clock::now();
+  if (!extracted.points.empty()) {
+    std::unique_lock<std::shared_mutex> lock(map_mutex_);
+    auto& runtime = runtimeLocked();
+    // 积分与统计更新在同一把锁内，保证 frame_result 与地图状态一致。
+    ufo::insertPointCloud(runtime.map, extracted.points, sensor_origin,
+                          runtime.integration_params,
+                          runtime.integration_params.propagate);
+
+    const std::uint64_t update_count = ufomap_update_count_.fetch_add(1U) + 1U;
+    result.runtime_stats.update_count = update_count;
+    result.runtime_stats.node_count = runtime.map.numNodes();
+  }
+  const auto update_end = std::chrono::steady_clock::now();
+  result.timing.update_ufomap_ms = elapsedMs(update_start, update_end);
+
   result.timing.process_input_cloud_ms = elapsedMs(total_start, std::chrono::steady_clock::now());
   if (verbose_) {
     ROS_INFO_STREAM_THROTTLE(1.0, "Ufomap timing"
@@ -416,7 +417,6 @@ UfomapRuntimeStats UfomapMapper::runtimeStats() const {
   std::shared_lock<std::shared_mutex> lock(map_mutex_);
   UfomapRuntimeStats stats;
   const auto& runtime = runtimeLocked();
-  stats.runtime_ready = true;
   stats.update_count = ufomap_update_count_.load();
   stats.node_count = runtime.map.numNodes();
   return stats;
@@ -494,6 +494,7 @@ UfomapClassificationResult UfomapMapper::classifyPoints(
   ufo::PointCloud dynamic_points;
   static_points.reserve(points.size());
   dynamic_points.reserve(points.size());
+  result.dynamic_cluster_points.reserve(points.size());
 
   {
     std::shared_lock<std::shared_mutex> lock(map_mutex_);
@@ -502,6 +503,18 @@ UfomapClassificationResult UfomapMapper::classifyPoints(
     for (const auto& point : points) {
       if (runtime.map.seenFree(point)) {
         dynamic_points.push_back(point);
+        const auto code = runtime.map.toCodeChecked(point);
+        if (code.has_value()) {
+          const ufo::Key key = *code;
+          UfomapDynamicClusterPoint cluster_point;
+          cluster_point.point = point;
+          cluster_point.voxel_code.raw_code = code->raw();
+          cluster_point.voxel_code.key_x = key.x();
+          cluster_point.voxel_code.key_y = key.y();
+          cluster_point.voxel_code.key_z = key.z();
+          cluster_point.voxel_code.depth = key.depth();
+          result.dynamic_cluster_points.push_back(cluster_point);
+        }
       } else {
         static_points.push_back(point);
       }

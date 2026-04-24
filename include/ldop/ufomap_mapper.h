@@ -19,6 +19,8 @@
 #include <ufo/map/types.hpp>
 
 namespace ufo {
+// 这里只需要在私有类型别名里声明 CloudElement；完整定义放在 .cpp 中引入。
+// 直接 include ufo/map/point_cloud.hpp 会触发 UFOMap 安装头的包含顺序问题。
 template <class... Types>
 struct CloudElement;
 }  // namespace ufo
@@ -51,14 +53,8 @@ struct UfomapMapperParams {
 
 UfomapMapperParams sanitizeUfomapParams(const UfomapMapperParams& params);
 
-struct UfomapPublishData {
-  // 按深度分组的静态体素 CUBE_LIST，可直接给 RViz MarkerArray 显示。
-  visualization_msgs::MarkerArray static_map_markers;
-};
-
 struct UfomapRuntimeStats {
-  // runtime_ready 表示运行时地图对象是否已构造完成。
-  bool runtime_ready{false};
+  // 已完成 UFOMap 积分的帧数，以及当前地图节点规模。
   std::uint64_t update_count{0};
   std::size_t node_count{0};
 };
@@ -72,11 +68,29 @@ struct UfomapTimingStats {
   double classify_current_frame_ms{0.0};
 };
 
+struct UfomapVoxelCode {
+  // raw_code 保留 UFOMap Code::raw()，可用于调试或后续直接复用节点编码。
+  ufo::code_t raw_code{0};
+  // key_* / depth 用于后续按 UFOMap key 空间生成 6/18/26 邻域。
+  ufo::key_t key_x{0};
+  ufo::key_t key_y{0};
+  ufo::key_t key_z{0};
+  ufo::depth_t depth{0};
+};
+
+struct UfomapDynamicClusterPoint {
+  // 原始动态点用于聚类后计算 AABB，避免体素中心放大目标框。
+  ufo::Point point{};
+  UfomapVoxelCode voxel_code;
+};
+
 struct UfomapClassificationResult {
   // static_cloud_msg / dynamic_cloud_msg 的语义由调用方定义，
   // 当前在 LDOP 主流程中分别用于“当前帧静态点云 / 当前帧动态点云”。
   sensor_msgs::PointCloud2 static_cloud_msg;
   sensor_msgs::PointCloud2 dynamic_cloud_msg;
+  // 当前帧动态点的结构化聚类输入；不改变 dynamic_cloud_msg 的 ROS 输出语义。
+  std::vector<UfomapDynamicClusterPoint> dynamic_cluster_points;
   std::size_t static_point_count{0};
   std::size_t dynamic_point_count{0};
   std::size_t input_point_count{0};
@@ -87,7 +101,8 @@ struct UfomapFrameResult {
   sensor_msgs::PointCloud2 static_map_cloud_msg;
   sensor_msgs::PointCloud2 dynamic_cloud_msg;
   UfomapClassificationResult classification;
-  UfomapPublishData publish_data;
+  // 按深度分组的静态体素 CUBE_LIST，可直接给 RViz MarkerArray 显示。
+  visualization_msgs::MarkerArray static_map_markers;
   UfomapRuntimeStats runtime_stats;
   UfomapTimingStats timing;
 };

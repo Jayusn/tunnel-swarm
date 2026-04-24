@@ -221,11 +221,7 @@ TEST(UfomapMapperParamsTest, effectiveParamsSanitizeInvalidDownSamplingMethod) {
 }
 
 TEST(UfomapMapperResultTest, exposesStructuredRuntimeStatsDefaults) {
-  ldopcore::UfomapPublishData publish_data;
-  EXPECT_TRUE(publish_data.static_map_markers.markers.empty());
-
   ldopcore::UfomapRuntimeStats runtime_stats;
-  EXPECT_FALSE(runtime_stats.runtime_ready);
   EXPECT_EQ(runtime_stats.update_count, 0U);
   EXPECT_EQ(runtime_stats.node_count, 0U);
 
@@ -236,13 +232,12 @@ TEST(UfomapMapperResultTest, exposesStructuredRuntimeStatsDefaults) {
   EXPECT_DOUBLE_EQ(timing_stats.classify_current_frame_ms, 0.0);
 
   ldopcore::UfomapFrameResult frame_result;
-  EXPECT_FALSE(frame_result.runtime_stats.runtime_ready);
   EXPECT_EQ(frame_result.runtime_stats.update_count, 0U);
   EXPECT_EQ(frame_result.runtime_stats.node_count, 0U);
   EXPECT_EQ(frame_result.classification.static_point_count, 0U);
   EXPECT_EQ(frame_result.classification.dynamic_point_count, 0U);
   EXPECT_EQ(frame_result.classification.input_point_count, 0U);
-  EXPECT_TRUE(frame_result.publish_data.static_map_markers.markers.empty());
+  EXPECT_TRUE(frame_result.static_map_markers.markers.empty());
   EXPECT_DOUBLE_EQ(frame_result.timing.process_input_cloud_ms, 0.0);
   EXPECT_DOUBLE_EQ(frame_result.timing.extract_finite_points_ms, 0.0);
   EXPECT_DOUBLE_EQ(frame_result.timing.update_ufomap_ms, 0.0);
@@ -299,6 +294,20 @@ std::size_t countCloudPoints(const sensor_msgs::PointCloud2& cloud) {
   return static_cast<std::size_t>(cloud.width) * static_cast<std::size_t>(cloud.height);
 }
 
+std::size_t countRenderedStaticMapVoxels(
+    const visualization_msgs::MarkerArray& static_map_markers) {
+  std::size_t rendered_voxel_count = 0U;
+  for (const auto& marker : static_map_markers.markers) {
+    EXPECT_NE(marker.action, visualization_msgs::Marker::DELETEALL);
+    if (marker.action == visualization_msgs::Marker::ADD) {
+      EXPECT_EQ(marker.ns, "static_map_occupied");
+      EXPECT_GE(marker.id, 0);
+      rendered_voxel_count += marker.points.size();
+    }
+  }
+  return rendered_voxel_count;
+}
+
 ufo::Point makePoint(const float x, const float y, const float z) {
   return ufo::Point(x, y, z);
 }
@@ -328,7 +337,6 @@ TEST(UfomapMapperResultTest, processInputCloudProducesRealRuntimeStats) {
 
   const auto result = mapper.processInputCloud(cloud, odom);
 
-  EXPECT_TRUE(result.runtime_stats.runtime_ready);
   EXPECT_EQ(result.runtime_stats.update_count, 1U);
   EXPECT_GT(result.runtime_stats.node_count, 0U);
   EXPECT_GE(result.timing.process_input_cloud_ms, 0.0);
@@ -349,20 +357,14 @@ TEST(UfomapMapperResultTest, processInputCloudBuildsStaticMapMarkers) {
 
   const auto cloud = makeSinglePointCloud("map", 2.0F, 0.0F, 0.0F);
   const auto odom = makeOdom("map");
-  const auto result = mapper.processInputCloud(cloud, odom);
+  const auto first_result = mapper.processInputCloud(cloud, odom);
 
-  ASSERT_FALSE(result.publish_data.static_map_markers.markers.empty());
+  ASSERT_FALSE(first_result.static_map_markers.markers.empty());
+  // 可视化读取的是更新前的地图快照，所以首帧允许只返回清理 marker。
+  EXPECT_EQ(countRenderedStaticMapVoxels(first_result.static_map_markers), 0U);
 
-  std::size_t rendered_voxel_count = 0U;
-  for (const auto& marker : result.publish_data.static_map_markers.markers) {
-    EXPECT_NE(marker.action, visualization_msgs::Marker::DELETEALL);
-    if (marker.action == visualization_msgs::Marker::ADD) {
-      EXPECT_EQ(marker.ns, "static_map_occupied");
-      EXPECT_GE(marker.id, 0);
-      rendered_voxel_count += marker.points.size();
-    }
-  }
-  EXPECT_GT(rendered_voxel_count, 0U);
+  const auto second_result = mapper.processInputCloud(cloud, odom);
+  EXPECT_GT(countRenderedStaticMapVoxels(second_result.static_map_markers), 0U);
 }
 
 TEST(UfomapMapperClassificationTest, splitsCurrentFrameBySeenFree) {
@@ -388,6 +390,74 @@ TEST(UfomapMapperClassificationTest, splitsCurrentFrameBySeenFree) {
   EXPECT_EQ(countCloudPoints(result.dynamic_cloud_msg), 1U);
   EXPECT_EQ(countCloudPoints(result.classification.static_cloud_msg), 1U);
   EXPECT_EQ(result.classification.input_point_count, 2U);
+}
+
+TEST(UfomapMapperClassificationTest, exposesUfomapVoxelCodesForDynamicPoints) {
+  ensureRosInitialized();
+  if (!ros::master::check()) {
+    GTEST_SKIP() << "ROS master is not available";
+  }
+
+  ros::NodeHandle nh;
+  ros::NodeHandle pnh("ufomap_dynamic_cluster_points");
+  ldopcore::UfomapMapper mapper(nh, pnh, "map", false);
+
+  const auto odom = makeOdom("map");
+  (void)mapper.processInputCloud(makeSinglePointCloud("map", 2.0F, 0.0F, 0.0F), odom);
+  ASSERT_TRUE(mapper.seenFree(makePoint(1.0F, 0.0F, 0.0F)));
+
+  const auto mixed_cloud =
+      makePointCloud("map", {{{1.0F, 0.0F, 0.0F}, {3.0F, 0.0F, 0.0F}}});
+  const auto result = mapper.processInputCloud(mixed_cloud, odom);
+
+  ASSERT_EQ(result.classification.dynamic_point_count, 1U);
+  ASSERT_EQ(result.classification.dynamic_cluster_points.size(), 1U);
+
+  const auto& dynamic_cluster_point = result.classification.dynamic_cluster_points.front();
+  EXPECT_FLOAT_EQ(dynamic_cluster_point.point.x, 1.0F);
+  EXPECT_FLOAT_EQ(dynamic_cluster_point.point.y, 0.0F);
+  EXPECT_FLOAT_EQ(dynamic_cluster_point.point.z, 0.0F);
+
+  using TestMap =
+      ufo::Map<ufo::MapType::SEEN_FREE | ufo::MapType::REFLECTION | ufo::MapType::LABEL>;
+  const auto params = mapper.effectiveParams();
+  // UfomapRuntime 当前用 float 构造 map；测试也保持同样精度，避免边界点落到相邻 cell。
+  TestMap map(static_cast<ufo::node_size_t>(static_cast<float>(params.resolution)),
+              static_cast<ufo::depth_t>(params.depth_levels));
+  const auto expected_code = map.toCodeChecked(makePoint(1.0F, 0.0F, 0.0F));
+  ASSERT_TRUE(expected_code.has_value());
+  const ufo::Key expected_key = *expected_code;
+
+  EXPECT_EQ(dynamic_cluster_point.voxel_code.raw_code, expected_code->raw());
+  EXPECT_EQ(dynamic_cluster_point.voxel_code.key_x, expected_key.x());
+  EXPECT_EQ(dynamic_cluster_point.voxel_code.key_y, expected_key.y());
+  EXPECT_EQ(dynamic_cluster_point.voxel_code.key_z, expected_key.z());
+  EXPECT_EQ(dynamic_cluster_point.voxel_code.depth, expected_key.depth());
+}
+
+TEST(UfomapMapperClassificationTest, classifiesCurrentFrameBeforeInsertingItIntoMap) {
+  ensureRosInitialized();
+  if (!ros::master::check()) {
+    GTEST_SKIP() << "ROS master is not available";
+  }
+
+  ros::NodeHandle nh;
+  ros::NodeHandle pnh("ufomap_classify_before_insert");
+  pnh.setParam("ufomap_min_range", 1.5);
+  ldopcore::UfomapMapper mapper(nh, pnh, "map", false);
+
+  const auto odom = makeOdom("map");
+  const auto same_ray_cloud =
+      makePointCloud("map", {{{1.0F, 0.0F, 0.0F}, {3.0F, 0.0F, 0.0F}}});
+  const auto result = mapper.processInputCloud(same_ray_cloud, odom);
+
+  // 近点低于 min_range 不作为 hit 写入；若先积分，远点射线会把它写成 seenFree。
+  // 本帧分类必须只读旧地图，避免被同一帧观测反向污染。
+  EXPECT_EQ(result.classification.input_point_count, 2U);
+  EXPECT_EQ(result.classification.dynamic_point_count, 0U);
+  EXPECT_EQ(result.classification.static_point_count, 2U);
+  EXPECT_EQ(countCloudPoints(result.static_map_cloud_msg), 2U);
+  EXPECT_TRUE(mapper.seenFree(makePoint(1.0F, 0.0F, 0.0F)));
 }
 
 TEST(UfomapMapperClassificationTest, frameResultPublishesCurrentFrameStaticCloud) {
@@ -509,7 +579,6 @@ TEST(UfomapMapperLifecycleTest, exposesRuntimeStatsAndCanClearMap) {
   mapper.clearMap();
 
   const auto stats = mapper.runtimeStats();
-  EXPECT_TRUE(stats.runtime_ready);
   EXPECT_EQ(stats.update_count, 0U);
   EXPECT_FALSE(mapper.seenFree(makePoint(1.0F, 0.0F, 0.0F)));
 }
