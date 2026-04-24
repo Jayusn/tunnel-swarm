@@ -1,12 +1,50 @@
-# DUFOMap 参数工作流与 LDOP 参数说明
+# DUFOMap 官方实现、参数工作流与 LDOP 当前实现说明
 
-这份文档的目标不是逐个背参数名，而是按 `DUFOMap` / `UFOMap` 的实际工作流程来理解：
+这份文档合并了原来的两份说明：
+
+- `DUFOMap官方实现与LDOP当前实现说明.md`
+- `DUFOMap参数工作流与LDOP参数说明.md`
+
+目标不是逐个背参数名，而是按 `DUFOMap` / `UFOMap` 的实际工作流程来理解：
 
 1. 点云怎样进入地图
 2. 射线怎样把空间写成 hit / miss / seenFree
 3. `LDOP` 怎样基于 `seenFree(point)` 把当前帧分成静态和动态
 
 这样理解后，后面调参时可以先判断自己是在调“输入预处理”“积分方式”“free 空间生成方式”，还是在调“当前帧输出口径”。
+
+## 0. 合并后的核心结论
+
+`LDOP` 现在和官方 `DUFOMap` 的核心一致点在于：都用 `UFOMap` 做逐帧增量建图，用 `seenFree(point)` 作为动态残影清理依据。区别不在“有没有用 DUFOMap 思路”，而在处理模式不同：官方参考实现更偏离线，`LDOP` 当前实现更偏在线。
+
+可以把当前逻辑只记成两条流：
+
+### 0.1 地图更新流
+
+当前帧点云每帧都送进 `UFOMap`，持续更新占据、free、seen-free 等状态。  
+这部分是主链路，也是 `seenFree()` 判断的基础。
+
+### 0.2 当前帧分类与可视化流
+
+地图更新完成后，当前输入帧会立刻按 `seenFree(point)` 拆成静态和动态点云；  
+静态地图可视化则直接从当前 `UFOMap` 状态导出，不再额外维护历史点缓存。
+
+### 0.3 和官方实现的主要区别
+
+官方 `dufomap.cpp` 更像离线清图工具：先把整段序列全部积分进地图，再统一遍历累计点云，用 `!seenFree(p)` 保留静态点。  
+`LDOP` 当前更像在线分割系统：每帧更新地图后，直接对当前帧做分类，不再保留额外的累计点云旁路。
+
+### 0.4 几个最容易混淆的点
+
+- `seenFree(point)` 的含义：这个位置后来已经被观测为空闲，所以旧点更像动态残影。
+- `propagate` 的作用：控制本帧地图修改后，状态是否立刻向八叉树上层传播。在线流程通常更适合 `true`。
+- `min_range`：当前项目里主要用于和上游 SLAM 的近点过滤口径保持一致，继续传给 `UFOMap` 即可。
+- `max_range`：适合同时约束 `UFOMap` 的工作半径和 `LDOP` 当前帧输出的判别半径。
+- 官方 `cluster()`：只是对动态候选体素做辅助连通域聚类，不等于完整的检测、跟踪或预测模块，也不是点级动静态判别的核心。
+
+### 0.5 一句话版本
+
+官方 `DUFOMap` 参考程序是“离线累计后统一清图”，当前 `LDOP` 是“在线逐帧分割”；两者共享的真正核心，都是 `UFOMap` 增量更新加 `seenFree` 判别。
 
 ## 1. 先看官方 DUFOMap 的主流程
 
@@ -108,9 +146,9 @@ if (!map.seenFree(p)) {
 - `seenFree(point) == true` -> `/ldop/dynamic_cloud`
 - `seenFree(point) == false` -> `/ldop/static_cloud`
 
-### 2.5 历史点缓存只保留给低频导出
+### 2.5 当前实现不再维护额外历史点缓存
 
-`ufomap_accumulation_max_points` 维护的是历史点缓存窗口，只给低频 `classifyAccumulatedCloud()` 使用，不参与当前帧实时分类。
+当前 `LDOP` 只保留 UFOMap 地图本身，以及基于当前输入帧生成的 `/ldop/static_cloud` 和 `/ldop/dynamic_cloud`。
 
 所以当前 `LDOP` 里有三类参数：
 
@@ -139,9 +177,9 @@ if (!map.seenFree(p)) {
 | `integration.parallel` | `ufomap_parallel` | 是否并行积分 |
 | `integration.num_threads` | `ufomap_num_threads` | 线程数 |
 | `integration.only_valid` | `ufomap_insert_only_valid` | 是否只对有效射线段积分 |
+| `integration.sliding_window_size` | `ufomap_sliding_window_size` | 最近 N 帧 hits / misses 窗口；`>1` 时合并多帧观测生成 `seenFree` |
+| `integration.early_stop_distance` | 暂无 | 官方 / UFOMap 参数；当前 LDOP 未接线，且当前底层主积分路径未实际使用 |
 | `integration.propagate` | `ufomap_propagate` | 每帧后是否立即传播修改 |
-| 无 | `ufomap_map_reserve_nodes` | LDOP 工程参数，预分配节点容量 |
-| 无 | `ufomap_accumulation_max_points` | LDOP 工程参数，历史点缓存窗口 |
 
 ## 4. 按工作流程理解每个参数
 
@@ -191,21 +229,6 @@ if (!map.seenFree(p)) {
 
 - 你想扩更大空间范围
 - 或者希望更细地控制不同深度上的更新行为
-
-#### `ufomap_map_reserve_nodes`
-
-作用：
-
-- 初始化地图时预留节点容量
-
-影响：
-
-- 只影响内存分配和性能
-- 不改变动静态判别语义
-
-什么时候调：
-
-- 地图长期增长、插入阶段频繁扩容时
 
 ### 4.2 输入预处理阶段
 
@@ -339,6 +362,54 @@ if (!map.seenFree(p)) {
 调参影响：
 
 - 对远距离噪声和范围边界附近的误判比较敏感
+
+#### `ufomap_sliding_window_size`
+
+作用：
+
+- 控制 UFOMap 是否缓存最近 N 帧 `hits` / `misses`
+- 当值 `>1` 时，底层会合并最近 N 帧观测后再计算 miss / `seenFree`
+- 当值为 `0` 或 `1` 时，等价于关闭多帧窗口
+
+对当前 `LDOP` 的意义：
+
+- 当前帧分类公式仍然是 `seenFree(point)`，但 `seenFree` 的生成证据可以来自最近多帧
+- 对点云稀疏、单帧 26 邻域观测不完整的情况，可能让 free / void 判定更稳定
+- 对动态物体刚进入或刚离开的场景，窗口内旧证据会保留一段时间，因此可能带来短时滞后
+
+调大时通常会：
+
+- 降低单帧偶然缺点导致的分类抖动
+- 增加内存和积分阶段合并开销
+- 让动态残留或误判证据在窗口期内更不容易立刻消失
+
+当前默认：
+
+- `ufomap_sliding_window_size: 0`
+- 这表示保持原来的单帧积分行为，不引入多帧窗口
+
+调试建议：
+
+- 如果当前问题是“单帧观测不足、`seenFree` 不稳定”，可以从 `3` 开始做 A/B
+- 如果当前问题是“动态残留消不掉”，不要一开始就调大它，否则可能让残留更慢消失
+
+#### `early_stop_distance`
+
+作用：
+
+- 这是官方 / UFOMap 侧的积分参数，不是当前 LDOP 的 ROS 参数
+- 设计语义是让射线在接近 hit 终点前提前停止，避免把命中点附近的一小段空间误写成 free
+
+对当前 `LDOP` 的实际状态：
+
+- 当前 `LDOP` 没有 `ufomap_early_stop_distance`
+- 只把这个名字写进 `ldop.yaml` 不会被读取
+- 当前使用的 UFOMap `dufomap` 分支里，主积分路径虽然有 `early_stop_distance` 字段，但没有在 proper ray casting 主调用里实际传下去
+
+所以它现在更适合记成：
+
+- “可以作为后续底层 UFOMap 实验方向”
+- 不是当前 LDOP 可直接调的参数
 
 ### 4.4 DUFOMap 论文相关的两组关键容错参数
 
@@ -490,24 +561,10 @@ if (!map.seenFree(p)) {
 - 在 LDOP 里，它不是单纯性能开关
 - 它还决定“当前帧分类时，地图状态是否已经更新到可查询状态”
 
-### 4.8 历史缓存与低频导出阶段
+### 4.8 当前帧输出与静态体素可视化阶段
 
-这部分不是官方 DUFOMap 的积分参数，而是 LDOP 在线实现为了保留低频 clean map 导出能力额外加的。
-
-#### `ufomap_accumulation_max_points`
-
-作用：
-
-- 限制历史点缓存窗口大小
-
-重要说明：
-
-- 它不参与当前帧 `/ldop/static_cloud` 和 `/ldop/dynamic_cloud` 的实时分类
-- 只影响后续低频 `classifyAccumulatedCloud()` 的候选点集合
-
-所以：
-
-- 如果你在调当前帧动静态判别效果，不要优先改它
+当前实现里，当前帧分类结果会直接发布到 `/ldop/static_cloud` 和 `/ldop/dynamic_cloud`，
+静态地图可视化则通过 `/ldop/static_map_markers` 输出，不再额外维护历史点缓存窗口。
 
 ## 5. 哪些参数最值得优先调
 
@@ -521,12 +578,14 @@ if (!map.seenFree(p)) {
 - `ufomap_inflate_hits_dist`
 - `ufomap_ray_passthrough_hits`
 - `ufomap_simple_ray_casting`
+- `ufomap_sliding_window_size`
 - `ufomap_down_sampling_method`
 
 这几项最直接影响：
 
 - free 空间怎么被 carving
 - 静态结构边缘会不会被后续 free 观测推翻
+- 多帧观测是否会共同影响 `seenFree`
 - 远距离噪声会不会进入判别链
 
 ### 第二优先级：输入口径与近场稳定性
@@ -544,8 +603,6 @@ if (!map.seenFree(p)) {
 - `ufomap_ray_casting_depth`
 - `ufomap_parallel`
 - `ufomap_num_threads`
-- `ufomap_map_reserve_nodes`
-- `ufomap_accumulation_max_points`
 
 它们不是没用，而是通常不是第一批造成“效果很差”的主因。
 
@@ -568,6 +625,7 @@ ufomap_insert_miss_depth: 0
 ufomap_ray_casting_depth: 0
 ufomap_simple_ray_casting: false
 ufomap_simple_ray_casting_factor: 1.0
+ufomap_sliding_window_size: 0
 ufomap_parallel: true
 ufomap_num_threads: 0
 ```
@@ -605,13 +663,17 @@ ufomap_num_threads: 0
 - `ufomap_inflate_unknown_compensation: true`
 - `ufomap_inflate_hits_dist: 0.2`
 - `ufomap_ray_passthrough_hits: false`
+- `ufomap_sliding_window_size: 0`
 
-### 7.3 再单变量调 `resolution` 和 `max_range`
+这里先把 `ufomap_sliding_window_size` 放在 `0`，是为了先得到最容易归因的单帧积分基线；如果后面确认主要问题是单帧观测不足，再单独把它调到 `3` 或更高做对比。
 
-这两个参数最容易让结果发生肉眼可见变化：
+### 7.3 再单变量调 `resolution`、`max_range` 和窗口大小
+
+这些参数最容易让结果发生肉眼可见变化：
 
 - `resolution` 主要影响“对抖动的容忍度”和“结构细节”
 - `max_range` 主要影响“远处点是否进入积分和当前帧输出”
+- `ufomap_sliding_window_size` 主要影响“`seenFree` 是否允许合并最近多帧证据”
 
 ### 7.4 最后才碰深度和并行参数
 
@@ -630,10 +692,11 @@ ufomap_num_threads: 0
 - `config/ldop.yaml`
 - `include/ldop/ufomap_mapper.h`
 - `src/ufomap_mapper.cpp`
-- `docs/note/DUFOMap官方实现与LDOP当前实现说明.md`
+- `docs/note/LDOP_design.md`
 
 外部参考：
 
+- DUFOMap 官方仓库：`https://github.com/KTH-RPL/dufomap`
 - 官方配置：`https://github.com/KTH-RPL/dufomap/blob/main/assets/config.toml`
 - 官方主流程：`https://github.com/KTH-RPL/dufomap/blob/main/src/dufomap.cpp`
-
+- DUFOMap 论文：`https://mit-spark.github.io/Longterm-Perception-WS/2024_IROS/assets/proceedings/DUFOMap/paper.pdf`

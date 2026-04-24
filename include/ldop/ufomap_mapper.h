@@ -4,7 +4,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <shared_mutex>
 #include <string>
@@ -18,6 +17,11 @@
 #include <ufo/geometry/point.hpp>
 #include <ufo/geometry/sphere.hpp>
 #include <ufo/map/types.hpp>
+
+namespace ufo {
+template <class... Types>
+struct CloudElement;
+}  // namespace ufo
 
 namespace ldopcore {
 
@@ -39,13 +43,10 @@ struct UfomapMapperParams {
   std::string down_sampling_method{"center"};
   bool simple_ray_casting{false};
   double simple_ray_casting_factor{1.0};
+  // UFOMap 会在该值大于 1 时合并最近 N 帧 hits/misses 生成 seenFree。
+  int sliding_window_size{0};
   bool parallel{true};
   bool propagate{true};
-  int map_reserve_nodes{0};
-  // 仅供低频 clean static map 导出使用的历史点缓存窗口。
-  int ufomap_accumulation_max_points{0};
-  // 静态体素地图 RViz 可视化相关参数。
-  int static_map_visualization_max_voxels{50000};
 };
 
 UfomapMapperParams sanitizeUfomapParams(const UfomapMapperParams& params);
@@ -65,10 +66,9 @@ struct UfomapRuntimeStats {
 struct UfomapTimingStats {
   // 单帧 processInputCloud() 整体耗时，单位为毫秒。
   double process_input_cloud_ms{0.0};
-  // 点云提取、地图更新、旁路累计缓存维护与当前帧分类的分阶段耗时，单位为毫秒。
+  // 点云提取、地图更新与当前帧分类的分阶段耗时，单位为毫秒。
   double extract_finite_points_ms{0.0};
   double update_ufomap_ms{0.0};
-  double accumulate_cache_ms{0.0};
   double classify_current_frame_ms{0.0};
 };
 
@@ -136,10 +136,6 @@ class UfomapMapper {
   void setNodeLabel(const ufo::Point& point, std::uint32_t label, bool propagate = true);
   std::uint32_t nodeLabel(const ufo::Point& point) const;
   void clearAllLabels();
-  std::size_t accumulatedPointCount() const;
-  void clearAccumulatedCloud();
-  // 低频导出接口：按当前地图状态重新过滤累计历史点，供 clean static map 导出使用。
-  UfomapClassificationResult classifyAccumulatedCloud(const std_msgs::Header& header) const;
 
   // 暴露 UFOMap 中 seenFree / label 等基础查询能力，供上层构建更高层逻辑。
   std::vector<UfomapCandidateNode> queryDynamicCandidates(
@@ -149,6 +145,7 @@ class UfomapMapper {
 
  private:
   struct UfomapRuntime;
+  using UfomapPointCloud = std::vector<ufo::CloudElement<ufo::Point>>;
 
   void loadParameters();
   void configureUfomap();
@@ -156,7 +153,7 @@ class UfomapMapper {
   UfomapRuntime& runtimeLocked();
   const UfomapRuntime& runtimeLocked() const;
   UfomapClassificationResult classifyPoints(const std_msgs::Header& header,
-                                            const std::vector<ufo::Point>& points) const;
+                                            const UfomapPointCloud& points) const;
 
   ros::NodeHandle nh_;
   ros::NodeHandle pnh_;
@@ -168,11 +165,8 @@ class UfomapMapper {
   std::atomic<std::uint64_t> ufomap_update_count_;
   // 地图读多写少，使用读写锁避免多个查询路径彼此串行化。
   mutable std::shared_mutex map_mutex_;
-  // 历史点缓存与实时地图分开加锁，避免缓存维护阻塞地图查询。
-  mutable std::mutex accumulated_mutex_;
 
   std::unique_ptr<UfomapRuntime> runtime_;
-  std::vector<ufo::Point> accumulated_points_;
 };
 
 }  // namespace ldopcore

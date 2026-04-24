@@ -1,6 +1,6 @@
 <launch>
   <!-- 是否启用天花板空气墙。 -->
-  <arg name="enable_ceiling" default="false" />
+  <arg name="enable_ceiling" default="true" />
 
   <!-- 保留原始 world 路径，开启天花板时直接复用 PX4 场景。 -->
   <arg name="world_with_ceiling" default="$(find px4)/Tools/sitl_gazebo/worlds/square/square_box_dynamic_8.world" />

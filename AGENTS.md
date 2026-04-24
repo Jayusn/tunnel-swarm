@@ -4,10 +4,6 @@
 
 - 面向用户的自然语言默认使用简体中文；英文只保留代码标识符、命令、配置键、协议名等不可替换内容。
 
-## 代理行为偏好
-
-- 当代理推理程度为“低”时，不调用 `planning-with-files-zh` 和 `using-superpowers` 技能。
-
 ## 代码注释约定
 
 - 以后新增或修改代码时，默认补充简要注释，优先解释非显而易见的逻辑与约束（如线程并发、坐标系假设、参数语义、接口边界），方便快速阅读。
@@ -50,7 +46,7 @@
 ## 架构事实（改代码前先对齐）
 
 - `Ldop` 负责 ROS I/O 与线程调度；`UfomapMapper` 负责 UFOMap 插入、`seenFree` 判别、当前帧动静态点云分割、累计静态地图云输出，以及 `queryNode` / `queryDynamicCandidates` / label 读写等基础查询接口。
-- 当前 `/ldop/static_cloud` 语义是“累计静态点云”；`/ldop/dynamic_cloud` 语义是“当前帧动态点云”。不要把二者语义改回“同一帧静/动态对”。
+- 当前 `/ldop/static_cloud` 语义是“当前帧静态点云”；`/ldop/dynamic_cloud` 语义是“当前帧动态点云”。累计地图状态由 `/ldop/ufomap` 表达。
 - `UfomapMapper` 已移除 clustering/BFS 聚类职责；聚类、检测、跟踪和预测不应再塞回 mapper。
 - `DynamicObjectArray` 已接线但仍是最小实现（基于当前帧动态点云包围盒生成单个观测对象，速度为零、预测数组为空）；后续扩展应在不破坏上述两路点云语义前提下进行。
 
@@ -63,7 +59,7 @@
 - 第一优先级仍是“动静态分割 + 静态地图闭环可视化”：
   - 稳定 `/ldop/static_cloud`
   - 稳定 `/ldop/dynamic_cloud`
-  - 补齐 UFOMap 静态体素地图 RViz 可视化输出（如 `/ldop/static_map_markers`）
+  - 补齐基于 `ufomap_msgs/UFOMapStamped` 的上游风格 RViz 可视化链路（如 `ufomap_rviz_plugins`）
 - 在上面未稳定前，不优先做复杂跟踪/预测/规划融合。
 
 ## 提交约定

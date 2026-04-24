@@ -6,6 +6,8 @@ Panels:
       Expanded:
         - /Global Options1
         - /Status1
+        - /Odometry1/Covariance1/Position1
+        - /Odometry1/Covariance1/Orientation1
       Splitter Ratio: 0.5
     Tree Height: 671
   - Class: rviz/Selection
@@ -103,7 +105,7 @@ Visualization Manager:
       Queue Size: 10
       Shape:
         Alpha: 1
-        Axes Length: 0.5
+        Axes Length: 1
         Axes Radius: 0.10000000149011612
         Color: 255; 25; 0
         Head Length: 0.30000001192092896
@@ -111,8 +113,8 @@ Visualization Manager:
         Shaft Length: 1
         Shaft Radius: 0.05000000074505806
         Value: Axes
-      Topic: /ldop/odom
-      Unreliable: false
+      Topic: /Odometry
+      Unreliable: true
       Value: true
     - Alpha: 1
       Autocompute Intensity Bounds: true
@@ -126,7 +128,7 @@ Visualization Manager:
       Color: 255; 255; 255
       Color Transformer: Intensity
       Decay Time: 0
-      Enabled: true
+      Enabled: false
       Invert Rainbow: false
       Max Color: 255; 255; 255
       Min Color: 0; 0; 0
@@ -141,12 +143,12 @@ Visualization Manager:
       Unreliable: false
       Use Fixed Frame: true
       Use rainbow: true
-      Value: true
+      Value: false
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
-        Max Value: 1.6618809700012207
-        Min Value: 0.20067204535007477
+        Max Value: 1.6679257154464722
+        Min Value: 0.23129886388778687
         Value: true
       Axis: Z
       Channel Name: intensity
@@ -175,7 +177,7 @@ Visualization Manager:
       Marker Topic: /ldop/static_map_markers
       Name: StaticVoxelMap
       Namespaces:
-        {}
+        static_map_occupied: true
       Queue Size: 10
       Value: true
   Enabled: true
@@ -206,7 +208,7 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz/Orbit
-      Distance: 24.41529655456543
+      Distance: 22.104690551757812
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
@@ -222,9 +224,9 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.7753982543945312
+      Pitch: 0.46039843559265137
       Target Frame: <Fixed Frame>
-      Yaw: 3.2554168701171875
+      Yaw: 2.215397596359253
     Saved: ~
 Window Geometry:
   Displays:
