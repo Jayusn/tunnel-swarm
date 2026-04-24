@@ -81,6 +81,7 @@ include_directories(
 # 3. 别的可执行程序将来也能复用这部分代码
 add_library(ldop_core
   src/ldop.cpp
+  src/dynamic_object_clusterer.cpp
   src/ufomap_mapper.cpp
 )
 
@@ -121,6 +122,17 @@ if(CATKIN_ENABLE_TESTING)
   )
   if(TARGET test_ufomap_mapper)
     target_link_libraries(test_ufomap_mapper
+      ldop_core
+      ${catkin_LIBRARIES}
+      gtest_main
+    )
+  endif()
+
+  catkin_add_gtest(test_dynamic_object_clusterer
+    test/test_dynamic_object_clusterer.cpp
+  )
+  if(TARGET test_dynamic_object_clusterer)
+    target_link_libraries(test_dynamic_object_clusterer
       ldop_core
       ${catkin_LIBRARIES}
       gtest_main

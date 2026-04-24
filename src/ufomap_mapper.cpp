@@ -1,12 +1,11 @@
 #include <ldop/ufomap_mapper.h>
+#include <ldop/utils.h>
 
 #include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cmath>
 #include <future>
-#include <iomanip>
-#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -45,17 +44,6 @@ struct ExtractFinitePointsResult {
   ufo::PointCloud points;
   bool has_invalid_points{false};
 };
-
-double elapsedMs(const std::chrono::steady_clock::time_point& start,
-                 const std::chrono::steady_clock::time_point& end) {
-  return std::chrono::duration<double, std::milli>(end - start).count();
-}
-
-std::string formatFloatMs(const double value) {
-  std::ostringstream stream;
-  stream << std::fixed << std::setprecision(3) << value;
-  return stream.str();
-}
 
 sensor_msgs::PointCloud2 buildCloudFromPoints(const std_msgs::Header& header,
                                               const std::string& world_frame,
@@ -397,7 +385,9 @@ UfomapFrameResult UfomapMapper::processInputCloud(const sensor_msgs::PointCloud2
   result.timing.process_input_cloud_ms = elapsedMs(total_start, std::chrono::steady_clock::now());
   if (verbose_) {
     ROS_INFO_STREAM_THROTTLE(1.0, "Ufomap timing"
-                                      << ": extractFinitePoints="
+                                      << ": processInputCloud="
+                                      << formatFloatMs(result.timing.process_input_cloud_ms)
+                                      << "ms, extractFinitePoints="
                                       << formatFloatMs(result.timing.extract_finite_points_ms)
                                       << "ms, updateUfomap="
                                       << formatFloatMs(result.timing.update_ufomap_ms)

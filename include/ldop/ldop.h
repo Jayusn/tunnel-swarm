@@ -8,8 +8,10 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <ldop/DynamicObjectArray.h>
+#include <ldop/dynamic_object_clusterer.h>
 #include <ldop/ufomap_mapper.h>
 #include <nav_msgs/Odometry.h>
 #include <ros/ros.h>
@@ -44,15 +46,14 @@ class Ldop {
 
   // 工作线程处理完成后的结果帧，随后会在同一线程里直接发布。
   struct ProcessedFrame {
-    sensor_msgs::PointCloud2 raw_cloud_msg;
     sensor_msgs::PointCloud2 static_map_cloud_msg;
     sensor_msgs::PointCloud2 dynamic_cloud_msg;
-    ::ldop::DynamicObjectArray dynamic_objects_msg;
-    UfomapPublishData ufomap_publish_data;
+    ldop::DynamicObjectArray dynamic_objects_msg;
+    visualization_msgs::MarkerArray dynamic_object_markers_msg;
+    std::vector<UfomapDynamicClusterPoint> dynamic_cluster_points;
+    visualization_msgs::MarkerArray static_map_markers_msg;
     UfomapRuntimeStats ufomap_runtime_stats;
-    UfomapTimingStats ufomap_timing;
     LdopTimingStats timing;
-    nav_msgs::Odometry odom_msg;
     std::uint64_t sequence{0};
     double odom_cloud_dt_ms{0.0};
   };
@@ -73,29 +74,25 @@ class Ldop {
   // 当前阶段保留 LDOP 主流程，把 UFOMap 逻辑委托给独立模块。
   ProcessedFrame processFrame(const InputFrame& frame);
   void publishFrame(ProcessedFrame& frame);
-  ::ldop::DynamicObjectArray buildDynamicObjectArray(const ProcessedFrame& frame) const;
-  sensor_msgs::PointCloud2 buildEmptyCloud(const std_msgs::Header& header) const;
 
   // ROS 节点句柄、订阅器与发布器。
   ros::NodeHandle nh_;
   ros::NodeHandle pnh_;
   ros::Subscriber cloud_sub_;
   ros::Subscriber odom_sub_;
-  ros::Publisher raw_cloud_pub_;
-  ros::Publisher odom_pub_;
   ros::Publisher static_cloud_pub_;
   ros::Publisher dynamic_cloud_pub_;
   ros::Publisher dynamic_objects_pub_;
+  ros::Publisher dynamic_object_markers_pub_;
   ros::Publisher static_map_markers_pub_;
 
   // 参数服务器读取的话题名与运行配置。
   std::string input_cloud_topic_;
   std::string odom_topic_;
-  std::string raw_cloud_output_topic_;
-  std::string odom_output_topic_;
   std::string static_cloud_topic_;
   std::string dynamic_cloud_topic_;
   std::string dynamic_objects_topic_;
+  std::string dynamic_object_markers_topic_;
   std::string static_map_markers_topic_;
   std::string world_frame_;
   bool verbose_;
@@ -131,6 +128,9 @@ class Ldop {
 
   // UFOMap 独立模块，不再把具体建图逻辑塞进 ldop 文件里。
   std::unique_ptr<UfomapMapper> ufomap_mapper_;
+
+  // 当前帧动态点聚类模块，消费 UfomapMapper 输出的结构化动态点。
+  std::unique_ptr<DynamicObjectClusterer> dynamic_object_clusterer_;
 
   // 是否已经缓存过至少一帧可用于配对的最新里程计。
   bool has_latest_odom_;

@@ -117,8 +117,6 @@
 
 ### 已有输出
 
-- `/ldop/raw_cloud`
-- `/ldop/odom`
 - `/ldop/static_cloud`
 - `/ldop/dynamic_cloud`
 - `/ldop/static_map_markers`

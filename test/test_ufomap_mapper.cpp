@@ -623,6 +623,9 @@ TEST(UfomapMapperQueryTest, returnsDufomapStyleDynamicCandidates) {
 
 TEST(UfomapMapperLabelTest, supportsSettingReadingAndClearingLabels) {
   ensureRosInitialized();
+  if (!ros::master::check()) {
+    GTEST_SKIP() << "ROS master is not available";
+  }
 
   ros::NodeHandle nh;
   ros::NodeHandle pnh("~");
