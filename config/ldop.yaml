@@ -4,6 +4,7 @@ static_cloud_topic: /ldop/static_cloud  # 当前帧静态点云输出
 dynamic_cloud_topic: /ldop/dynamic_cloud  # 当前帧动态点云输出
 dynamic_objects_topic: /ldop/dynamic_objects
 dynamic_object_markers_topic: /ldop/dynamic_object_markers  # 当前帧动态目标包围盒 MarkerArray 输出
+dynamic_track_markers_topic: /ldop/dynamic_track_markers  # 跨帧动态目标轨迹 MarkerArray 输出
 static_map_markers_topic: /ldop/static_map_markers  # 静态体素地图 MarkerArray 输出
 world_frame: camera_init  # 输入点云和里程计位姿统一使用的世界坐标系
 verbose: true  
@@ -31,4 +32,28 @@ ufomap_propagate: true  # 是否在每帧插入后立即传播修改（更新整
 # 当前帧动态点聚类参数
 dynamic_cluster_min_points: 5   #cluster 中原始动态点数量小于该值时丢弃
 dynamic_cluster_max_extent: 3.0  #cluster 原始点 AABB 对角线长度大于该值时丢弃，用于过滤大片误分割或粘连结果。
-dynamic_cluster_connectivity: 6  #cluster 连通性，6 18 26
+dynamic_cluster_connectivity: 26  #cluster 连通性，6 18 26
+
+# 动态目标跟踪参数
+tracking_history_size: 100  # 每条轨迹保留的历史样本数上限（用于轨迹可视化）
+tracking_max_missed_frames: 5  # 连续漏检超过该帧数后删除轨迹
+tracking_min_hits_to_publish: 2  # 轨迹至少命中该次数后才对外发布
+tracking_association_gate_confidence: 0.7  # 马氏距离卡方门限置信度（3 自由度）
+tracking_coasting_gate_relax_factor: 1.5  # 漏检轨迹重关联时的门限放宽倍数
+tracking_box_size_smoothing_alpha: 0.5  # 目标尺寸指数平滑系数
+tracking_spawn_suppression_distance: 0.5  # 马氏距离关联失败后的第一层回退条件：distance 先过，才继续看 IoU；若最终仍未匹配，也继续抑制建新轨迹；0 表示关闭
+tracking_spawn_suppression_iou_threshold: 0.5  # 马氏距离关联失败后的第二层回退条件：只有 distance 已经过阈值时，才检查 IoU；若最终仍未匹配，也继续抑制建新轨迹；0 表示关闭
+tracking_default_dt: 0.1  # 时间戳异常时回退使用的预测时间步长（秒）
+tracking_max_dt: 0.5  # 预测时间步长上限（秒），防止大间隔导致发散
+tracking_adaptive_window_size: 10  # 自适应 Q/R 的 innovation 统计窗口长度
+tracking_adaptive_alpha: 0.7  # 过程噪声 Q 的 EMA 平滑系数
+tracking_adaptive_r_alpha: 0.7  # 测量噪声 R 的 EMA 平滑系数
+tracking_adaptive_min_noise_ratio: 0.2  # 自适应噪声下限（相对初始噪声比例）
+tracking_max_pos_cov: 1.5  # 位置协方差上限（m^2）
+tracking_max_vel_cov: 9.0  # 速度协方差上限（m/s)^2
+tracking_max_acc_cov: 25.0  # 加速度协方差上限（m/s^2)^2
+tracking_ca_jerk_sigma: 3.0  # CA 模型的 jerk 噪声标准差
+tracking_ca_position_noise: 0.1  # 位置观测噪声方差
+tracking_ca_initial_position_cov: 0.1  # 新轨迹初始位置协方差
+tracking_ca_initial_velocity_cov: 1.0  # 新轨迹初始速度协方差
+tracking_ca_initial_acceleration_cov: 10.0  # 新轨迹初始加速度协方差

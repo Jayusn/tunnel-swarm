@@ -76,7 +76,7 @@
   - 预测置信度或风险半径估计
   - 预测结果平滑与异常目标剔除
 - 必须输出：
-  - `/ldop/dynamic_objects`：填充 `prediction_time_offsets` 与 `predicted_positions`
+  - 独立预测话题：发布未来时间采样和预测位置，不复用当前跟踪对象消息承载预测数组
   - 可选 `/ldop/prediction_markers`：预测轨迹 RViz 可视化
   - 可选动态风险点云或风险体素
 - 验收重点：

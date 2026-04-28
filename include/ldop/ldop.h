@@ -12,6 +12,8 @@
 
 #include <ldop/DynamicObjectArray.h>
 #include <ldop/dynamic_object_clusterer.h>
+#include <ldop/dynamic_object_tracker.h>
+#include <ldop/utils.h>
 #include <ldop/ufomap_mapper.h>
 #include <nav_msgs/Odometry.h>
 #include <ros/ros.h>
@@ -50,6 +52,7 @@ class Ldop {
     sensor_msgs::PointCloud2 dynamic_cloud_msg;
     ldop::DynamicObjectArray dynamic_objects_msg;
     visualization_msgs::MarkerArray dynamic_object_markers_msg;
+    visualization_msgs::MarkerArray dynamic_track_markers_msg;
     std::vector<UfomapDynamicClusterPoint> dynamic_cluster_points;
     visualization_msgs::MarkerArray static_map_markers_msg;
     UfomapRuntimeStats ufomap_runtime_stats;
@@ -84,6 +87,7 @@ class Ldop {
   ros::Publisher dynamic_cloud_pub_;
   ros::Publisher dynamic_objects_pub_;
   ros::Publisher dynamic_object_markers_pub_;
+  ros::Publisher dynamic_track_markers_pub_;
   ros::Publisher static_map_markers_pub_;
 
   // 参数服务器读取的话题名与运行配置。
@@ -93,6 +97,7 @@ class Ldop {
   std::string dynamic_cloud_topic_;
   std::string dynamic_objects_topic_;
   std::string dynamic_object_markers_topic_;
+  std::string dynamic_track_markers_topic_;
   std::string static_map_markers_topic_;
   std::string world_frame_;
   bool verbose_;
@@ -131,6 +136,9 @@ class Ldop {
 
   // 当前帧动态点聚类模块，消费 UfomapMapper 输出的结构化动态点。
   std::unique_ptr<DynamicObjectClusterer> dynamic_object_clusterer_;
+
+  // 跨帧动态目标跟踪模块，消费 clusterer 的 detection 并输出稳定 track id。
+  std::unique_ptr<DynamicObjectTracker> dynamic_object_tracker_;
 
   // 是否已经缓存过至少一帧可用于配对的最新里程计。
   bool has_latest_odom_;

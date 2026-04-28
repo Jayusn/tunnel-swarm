@@ -1,0 +1,75 @@
+# 动态对象跟踪设计进度记录
+
+## 2026-04-24
+
+- 建立本轮 `planning-with-files-zh` 过程文件：`task_plan.md`、`findings.md`、`progress.md`。
+- 确认本轮使用 `superpowers:brainstorming`，先做设计澄清和方案收敛，不修改实现代码。
+- 读取当前工作区状态：设计文档为新增文件，`launch/rviz/ldop_rviz.rviz` 已有修改，本轮不触碰无关 RViz 文件。
+- 读取最近提交，确认当前分支已经有第二阶段聚类和可视化工作。
+- 读取现有 tracking spec、`DynamicObjectClusterer` 头文件和 `utils.h`，发现 tracker 头文件和共享 detection/bbox 结构尚未落地。
+- 读取 `src/dynamic_object_clusterer.cpp`、`include/ldop/ldop.h`、`src/ldop.cpp`、消息定义、配置、阶段文档和 CMake，确认当前输出仍是帧内动态对象，tracker 尚未接入。
+- 发现 `test/test_dynamic_object_clusterer.cpp` 与当前 clusterer 接口存在 timing 参数重载不一致，后续实现计划需要处理测试滞后问题。
+- 用户选择 tracking 第一版复杂度为 B：按当前 spec 完整版推进，包含 adaptive Q/R、cov limit、history、coasting gate 放松等全部参数。
+- 用户提出新增独立运动模型/卡尔曼滤波器模块，参考 LDOT 的 `multiModelKalmanFilter.h`、`motionModel.h`、`motionModel.cpp`，避免 `dynamic_object_tracker` 承担过多滤波细节。
+- 已读取 LDOT 参考文件，整理出可借鉴边界：`MotionModel` 管模型矩阵和状态映射，Kalman filter 管 predict/update、自适应 Q/R、协方差限制，tracker 管关联和生命周期。
+- 回答用户关于“三个模块”的澄清：这是三个职责层；代码上建议至少分为 tracker、motion model、kalman filter 三个文件/编译单元，但不是三个 ROS 节点或三个对外模块。
+- 用户指出这可能不是想要的，并要求查看整个 `/home/st/catkin/LDOT/ldot_detector`。
+- 已读取 LDOT 目录结构、CMake、`dynamicDetector.h` 和 `utils.h`：LDOT 的滤波器是 track 内部状态，运动模型是滤波器内部依赖；`dynamicDetector` 是大主类，不适合作为 LDOP 的直接结构模板。
+- 继续读取 `runTracking()`、`boxAssociation()`、`switchKalmanModel()`、`kalmanFilterAndUpdateHist()`、参数加载和跟踪数学文档，确认 LDOT 的实际结构是 tracker 主流程内管理 `filters_`，并在 filter 内组合 motion model。
+- 修正设计表述：LDOP 不应写成三个平级模块，而应写成 `DynamicObjectTracker` 主模块 + `TrackState` 内部持有多模型 Kalman 组件；`MotionModel` 是 Kalman 组件内部依赖。
+- 用户确认修正后的模块边界符合意图。
+- 用户选择第一版默认所有 track 使用 3D CA；类别切换暂不启用，但代码结构保留 `MotionModelType` 和 factory。
+- 用户指出已确认内容应直接修改设计文档。
+- 已修改 `docs/superpowers/specs/2026-04-24-dynamic-object-tracking-design.md`：加入 LDOT 风格的 tracker 内部 filter 边界、新增 `motion_model` / `multi_model_kalman_filter` 文件、修正非目标中的多模型表述、把默认模型改为 `CA3D`、补充 `test_multi_model_kalman_filter.cpp` 测试范围。
+- 已用 `rg` 检查旧矛盾表述，未再发现“不实现多模型”“三个平级模块”“CA Kalman 模型”等残留。
+- 用户希望减少文件数量；已修改 spec，移除单独的 `motion_model.h/cpp` 文件项，把 `MotionModel` 相关接口和 CA3D 实现合并进 `multi_model_kalman_filter.h/cpp` 文件组。
+- 用户要求明确 `ldot_detector` 的具体路径；已在 spec 背景段落注明：`ldot_detector` 指 `/home/st/catkin/LDOT/ldot_detector`。
+- 用户确认 `DynamicObjectArray` 移到 tracker 输出，不采用备选方案一或备选方案二；同时要求 `DynamicObject.msg` 移除预测字段，预测未来走独立 ROS 话题，聚类阶段保留 `/ldop/dynamic_object_markers`，tracker 阶段新增轨迹可视化。
+- 已修改 spec：`DynamicObject.msg` 不再包含预测数组；`DynamicObjectClustererFrameResult` 携带 detection 和检测框 marker；tracker 输出 `/ldop/dynamic_objects` 与 `/ldop/dynamic_track_markers`；预测预留为独立 `/ldop/dynamic_object_predictions` 与 `/ldop/dynamic_prediction_markers`。
+- 已检查 spec 中与预测字段、marker 归属、`DynamicObjectDetection`、`dynamic_track_markers` 相关的表述；当前正文不再保留“预测数组保持空”的旧策略。
+- 已运行 `git diff --check -- docs/superpowers/specs/2026-04-24-dynamic-object-tracking-design.md task_plan.md findings.md progress.md`，无空白格式问题。
+- 用户明确要求数据关联求解器直接保持与 LDOT 一致，使用 Hungarian，不采用贪婪最小代价分配。
+- 已核对 LDOT：`boxAssociation()` 构建 detection 到 track 的 `costMatrix`，gate 外候选填入大代价，然后调用 `hungarianAlgorithm(costMatrix, bestMatch)`。
+- 已修改 spec 的“数据关联”和测试章节：第一版使用 Hungarian 分配，保留 3D 马氏距离代价和 gate 过滤。
+- 下一步：继续逐个确认剩余设计取舍，优先确认重复轨迹清理是否仍保持“只日志提示、不主动合并”。
+- 用户提示当前可用额度快没了，要求把剩余未明确设计需求写入过程文档。
+- 已在 `task_plan.md` 增加“剩余待确认设计需求”表，按 P0/P1/P2 记录：重复轨迹清理、Hungarian 具体实现、参数组织、adaptive Q/R 公式、history 内容、检测/跟踪 marker 细节、未来预测消息和类别/多模型切换。
+- 已同步更新 `findings.md` 的“开放问题”，把已确认项和待确认项分开，便于下次会话恢复。
+
+## 2026-04-25
+
+- 用户要求继续完成设计文档，不再只保留“待确认项”。
+- 已补查当前 clusterer marker 实现，确认现有检测框样式为 `dynamic_object_bbox` + `LINE_LIST` + 橙色线框 + 每帧 `DELETEALL`，并把该约定写回 spec，避免设计与现有代码分叉。
+- 已补查 LDOT 的 `removeDuplicateTracks()`、`hungarianAlgorithm()`、adaptive Q/R 公式和参数读取方式，用于给第一版默认方案定稿。
+- 已修改 spec：新增 `TrackHistorySample` 结构，明确 history 只保存 `stamp/position/velocity/matched`。
+- 已修改 spec：明确第一版 Hungarian 直接按 LDOT 当前简化语义实现，而不是另写一版标准完整 Hungarian。
+- 已修改 spec：明确第一版不做主动重复轨迹清理，不引入 `removeDuplicateTracks()`。
+- 已修改 spec：明确参数组织继续使用扁平 `tracking_*`，并新增 `dynamic_track_markers_topic` 话题配置键。
+- 已修改 spec：明确 adaptive Q/R 语义直接对齐 LDOT 当前 `innovation_buffer + C_gamma + EMA + min_noise_ratio` 机制。
+- 已修改 spec：明确 `/ldop/dynamic_track_markers` 固定为历史线 `LINE_STRIP` + 头部 `SPHERE`，coasting 时降低 alpha，不显示文本 id，不画速度箭头。
+- 已把 `task_plan.md` 从“剩余待确认设计需求”改为“已收口与后续阶段设计项”，并把第一版已定内容转成显式结论。
+- 已同步更新 `findings.md`，现在开放项只剩后续阶段内容，不再把第一版默认方案留成悬而未决。
+- 用户要求把已收口 design 直接转成实施计划。
+- 已新增 `docs/superpowers/plans/2026-04-25-dynamic-object-tracking-implementation-plan.md`，按 5 个实施阶段拆分：接口与消息契约、多模型 Kalman 组件、Tracker 主流程、Ldop 集成与 marker、参数与测试收尾。
+- 已同步更新 `task_plan.md`：设计阶段完成，实施计划阶段完成，下一阶段为等待用户确认后进入实现。
+- 已同步更新 `findings.md`：补充实施计划文档路径和实施顺序事实。
+- 用户追问是否使用 `@superpowers` 流程。
+- 已核对当前有效 skill：`writing-plans` 和 `executing-plans` 都要求在实施计划生成后做标准 handoff；这里遗漏了“让用户选择执行方式”这一步。
+- 已修正过程文件：下一步不是直接实现，而是等待用户在 `Subagent-Driven` 与 `Inline Execution` 中做选择。
+- 用户选择 `Subagent-Driven (recommended)`。
+- 已按 `using-git-worktrees` 检查项目内 worktree 目录；用户指定使用项目内 `.worktrees/`。
+- 发现 `.worktrees/` 初始未被忽略，已在 `.gitignore` 中补充 `.worktrees/`，随后创建 worktree：`/home/st/ldop_ws/src/LDOP/.worktrees/feature-dynamic-object-tracking`，分支为 `feature/dynamic-object-tracking`。
+- 已在工作区根 `/home/st/ldop_ws` 运行基线构建：`catkin build ldop --no-status`，结果通过。
+- 已按 `Superpowers:subagent-driven-development` 派出阶段 1 实现子代理，负责消息契约和 clusterer 接口改造；后续会先做 spec compliance review，再做 code quality review。
+- 阶段 1 spec compliance review 已返回通过：`DynamicObject.msg` 已移除预测字段，clusterer 正式输出契约已切为 `detections + dynamic_object_markers_msg`，`Ldop` 仅做最小过渡适配，把 detection 临时转回当前仍发布的 `DynamicObjectArray`。
+- 当前项目内 `.worktrees/feature-dynamic-object-tracking` 已成为本轮实现主工作区；主工作区继续只保留设计、计划和过程记录。
+- 阶段 1 后续又补做了一次 controller 自查，发现 `DynamicObjectDetection` / `TrackHistorySample` 共享结构与 spec 有偏差；已回派实现子代理修正，当前 phase 1 契约已与 spec 对齐。
+- 阶段 2 已完成第一版 `CA3D` `MultiModelKalmanFilter`、对应测试和最小 `CMakeLists.txt` 接入；当前正在补做 `Superpowers:subagent-driven-development` 要求的 code quality review，review 通过后才进入 phase 3。
+- 阶段 2 code quality review 已返回阻塞问题，主要集中在：公共接口承诺了未实现的通用 MotionModel 扩展、adaptive Q/R 生效时序不对、公共头文件暴露 ROS message 类型、`update()` 缺少非有限观测保护。当前已回派实现子代理修复，phase 2 尚未通过，不进入 phase 3。
+- 阶段 2 第二轮 code quality review 已通过，无阻塞问题；当前只剩两个低风险测试缺口待补：未经过 `predict()` 的首帧 `update()` 回归测试，以及 `Inf` 观测异常路径测试。补完后直接进入 phase 3。
+- 阶段 2 已完成收尾：首帧不经 `predict()` 的 `update()` 回归测试和 `Inf` 观测异常路径测试都已补上。当前进入 phase 3，实现 `DynamicObjectTracker` 主流程本体；仍不提前触碰 `Ldop` 集成和 `dynamic_track_markers`。
+- phase 3 implementer 已返回，tracker 主流程本体已落地到独立文件与测试中；phase 3 spec compliance review 已通过，当前进入 code quality review。
+- phase 3 code quality review 因子代理额度触顶由主代理接手；已发现并修复关联代价使用欧氏距离的问题，改为 `innovation^T P_pos^-1 innovation` 的 3D 马氏距离，并新增协方差 gate 回归测试。临时 worktree 构建 `test_dynamic_object_tracker` 通过，运行结果 `5/5` 通过。
+- phase 4 已完成：`Ldop` 正式持有 `DynamicObjectTracker`，`/ldop/dynamic_objects` 切换为 tracker 输出，`/ldop/dynamic_object_markers` 保留 clusterer 当前帧检测框，新增 `/ldop/dynamic_track_markers` 发布轨迹历史线和头部点。
+- phase 5 已完成：`config/ldop.yaml` 增加 `dynamic_track_markers_topic` 和第一版 `tracking_*` 参数；`Ldop::loadParameters()` 接入 tracker/filter 配置。主代理修正了 `tracking_adaptive_window_size: 0` 关闭自适应更新的语义，并补了 Kalman 回归测试。
+- 验证：在临时 CMake 构建目录 `/tmp/ldop_tracking_phase3_check` 中使用 `gcc-11/g++-11` 和显式 `ufomap_DIR` 构建 `ldop_node`、`test_dynamic_object_tracker`、`test_multi_model_kalman_filter`、`test_dynamic_object_clusterer` 均通过；tracker 测试 `5/5` 通过，Kalman 测试 `8/8` 通过，clusterer 测试在临时 `roscore` 下 `12/12` 通过。Eigen 在 GCC11/C++20 下仍输出模板告警，但不影响构建结果。

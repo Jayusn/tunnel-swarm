@@ -20,7 +20,7 @@
 - 不做跨帧目标关联。
 - 不维护稳定目标 ID。
 - 不估计速度。
-- 不填充 `prediction_time_offsets` 或 `predicted_positions`。
+- 不输出预测字段；预测消息由后续阶段单独定义。
 - 不新增 `/ldop/dynamic_clusters`、`/ldop/dynamic_object_markers` 或其他可视化话题。
 - 不引入 PCL DBSCAN 或 voxblox。
 - 不做 UFOMap 全图节点遍历式聚类；方案 B 只复用当前帧动态点对应的 UFOMap code/key，不把聚类职责放回 `UfomapMapper`。
@@ -153,8 +153,6 @@ dynamic_cluster_connectivity: 6  # 可选 6、18、26
 - `center`：原始动态点 AABB 中心。
 - `size`：原始动态点 AABB 的 x/y/z 尺寸。
 - `velocity`：第一版固定为 `0`。
-- `prediction_time_offsets`：空。
-- `predicted_positions`：空。
 
 后续进入跟踪阶段后，`id` 将升级为跨帧稳定目标 ID，`velocity` 由跟踪状态估计填充。
 

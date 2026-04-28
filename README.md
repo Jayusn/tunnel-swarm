@@ -139,22 +139,23 @@
 - 目标中心位置
 - 目标尺寸
 - 目标速度
-- 短时间范围内的未来预测位置
 
-当前 `ldop/DynamicObject` 已经直接把预测信息收敛到两个数组字段里：
+当前 `ldop/DynamicObject` 只保留已跟踪目标的当前状态：
 
-- `prediction_time_offsets`
-- `predicted_positions`
+- `id`
+- `center`
+- `size`
+- `velocity`
 
-这两个数组按下标一一对应，不再单独使用 `PredictedState` 消息。
+短时间范围内的未来预测位置会在后续阶段通过单独的预测话题输出，不再塞进当前跟踪对象消息。
 
-当前实现还不是预测接口，而是一个最小观测接口：
+当前实现是检测和跟踪接口：
 
-- 当当前帧动态点云非空时，基于其包围盒生成 1 个 `DynamicObject`
-- `velocity` 当前固定为 0
-- `prediction_time_offsets` 和 `predicted_positions` 当前为空数组
+- `DynamicObjectClusterer` 输出帧内 detection，并继续发布 `/ldop/dynamic_object_markers`
+- `DynamicObjectTracker` 输出稳定 `id`、滤波后的 `center`、平滑后的 `size` 和估计 `velocity`
+- 跟踪轨迹通过 `/ldop/dynamic_track_markers` 可视化
 
-也就是说，这个话题已经有基础输出，但还没有进入真正的检测、跟踪和预测阶段。
+也就是说，`/ldop/dynamic_objects` 已进入检测跟踪阶段，但还不是预测接口。
 
 ## 7. LDOP 应该怎样和 rog_map 连接
 
@@ -184,10 +185,7 @@
 
 ### 第三阶段：动态目标短时轨迹预测
 
-在第二阶段目标跟踪稳定后，再给 `/ldop/dynamic_objects` 填充预测信息：
-
-- `prediction_time_offsets`
-- `predicted_positions`
+在第二阶段目标跟踪稳定后，再新增一组预测输出话题，发布未来状态和预测轨迹。
 
 这时规划器才有比较可靠的未来动态障碍物位置可用。
 
@@ -219,7 +217,8 @@
 
 目标输出是：
 
-- 带未来状态的 `ldop/DynamicObjectArray`
+- 带未来状态的独立预测消息
+- 预测轨迹 RViz marker
 
 ### 第三步：进入第四阶段
 

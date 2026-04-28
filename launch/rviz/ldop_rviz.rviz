@@ -8,7 +8,8 @@ Panels:
         - /Status1
         - /Odometry1/Covariance1/Position1
         - /Odometry1/Covariance1/Orientation1
-        - /DynamicPC21
+        - /StaticVoxelMap1
+        - /DynamicTrackMarkers1
       Splitter Ratio: 0.5
     Tree Height: 671
   - Class: rviz/Selection
@@ -89,6 +90,14 @@ Visualization Manager:
       Topic: /Odometry
       Unreliable: true
       Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /ldop/static_map_markers
+      Name: StaticVoxelMap
+      Namespaces:
+        static_map_occupied: true
+      Queue Size: 10
+      Value: true
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
@@ -120,8 +129,8 @@ Visualization Manager:
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
-        Max Value: 1.6660425662994385
-        Min Value: 0.20257046818733215
+        Max Value: 1.670271635055542
+        Min Value: 0.004522867500782013
         Value: true
       Axis: Z
       Channel Name: intensity
@@ -155,10 +164,11 @@ Visualization Manager:
       Value: true
     - Class: rviz/MarkerArray
       Enabled: true
-      Marker Topic: /ldop/static_map_markers
-      Name: StaticVoxelMap
+      Marker Topic: /ldop/dynamic_track_markers
+      Name: DynamicTrackMarkers
       Namespaces:
-        static_map_occupied: true
+        dynamic_track_head: true
+        dynamic_track_history: true
       Queue Size: 10
       Value: true
   Enabled: true
@@ -205,9 +215,9 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.5253983736038208
+      Pitch: 0.540398359298706
       Target Frame: <Fixed Frame>
-      Yaw: 2.240396738052368
+      Yaw: 1.950387716293335
     Saved: ~
 Window Geometry:
   Displays:

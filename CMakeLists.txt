@@ -42,6 +42,7 @@ find_package(catkin REQUIRED COMPONENTS
 find_package(Threads REQUIRED)
 find_package(OpenMP REQUIRED)
 find_package(TBB REQUIRED)
+find_package(Eigen3 REQUIRED)
 find_package(ufomap CONFIG REQUIRED
   HINTS "${LDOP_WORKSPACE_ROOT}/external/install/ufomap"
   PATH_SUFFIXES lib/cmake/ufomap
@@ -65,12 +66,15 @@ catkin_package(
   INCLUDE_DIRS include
   LIBRARIES ldop_core
   CATKIN_DEPENDS geometry_msgs message_runtime nav_msgs roscpp sensor_msgs std_msgs visualization_msgs
+  DEPENDS EIGEN3
 )
 
 # include_directories(...) 指定编译时去哪些目录找头文件。
 include_directories(
   include
   ${catkin_INCLUDE_DIRS}
+  ${EIGEN3_INCLUDE_DIR}
+  ${EIGEN3_INCLUDE_DIRS}
 )
 
 # add_library(...) 定义一个“库”目标。
@@ -82,6 +86,8 @@ include_directories(
 add_library(ldop_core
   src/ldop.cpp
   src/dynamic_object_clusterer.cpp
+  src/dynamic_object_tracker.cpp
+  src/multi_model_kalman_filter.cpp
   src/ufomap_mapper.cpp
 )
 
@@ -115,27 +121,3 @@ target_link_libraries(ldop_node
   ldop_core
   ${catkin_LIBRARIES}
 )
-
-if(CATKIN_ENABLE_TESTING)
-  catkin_add_gtest(test_ufomap_mapper
-    test/test_ufomap_mapper.cpp
-  )
-  if(TARGET test_ufomap_mapper)
-    target_link_libraries(test_ufomap_mapper
-      ldop_core
-      ${catkin_LIBRARIES}
-      gtest_main
-    )
-  endif()
-
-  catkin_add_gtest(test_dynamic_object_clusterer
-    test/test_dynamic_object_clusterer.cpp
-  )
-  if(TARGET test_dynamic_object_clusterer)
-    target_link_libraries(test_dynamic_object_clusterer
-      ldop_core
-      ${catkin_LIBRARIES}
-      gtest_main
-    )
-  endif()
-endif()

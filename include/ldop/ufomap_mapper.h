@@ -141,8 +141,6 @@ class UfomapMapper {
                bool verbose);
   ~UfomapMapper();
 
-  UfomapMapperParams effectiveParams() const;
-  UfomapRuntimeStats runtimeStats() const;
   void reserveMap(std::size_t node_capacity);
   void clearMap();
   void propagateModified();

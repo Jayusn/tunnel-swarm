@@ -3,8 +3,8 @@
 #include <cstddef>
 #include <vector>
 
-#include <ldop/DynamicObjectArray.h>
 #include <ldop/ufomap_mapper.h>
+#include <ldop/utils.h>
 #include <ros/node_handle.h>
 #include <std_msgs/Header.h>
 #include <ufo/map/types.hpp>
@@ -13,7 +13,7 @@
 namespace ldopcore {
 
 struct DynamicObjectClustererParams {
-  std::size_t min_points{3U};
+  int min_points{5};
   double max_extent{3.0};
   int connectivity{6};
 };
@@ -21,13 +21,13 @@ struct DynamicObjectClustererParams {
 struct DynamicObjectClustererTimingStats {
   // 单帧动态聚类主流程整体耗时，单位为毫秒。
   double process_dynamic_objects_ms{0.0};
-  // 聚类与 marker 构建的分阶段耗时，单位为毫秒。
-  double build_dynamic_object_array_ms{0.0};
+  // 检测框生成与 marker 构建的分阶段耗时，单位为毫秒。
+  double build_detections_ms{0.0};
   double build_object_markers_ms{0.0};
 };
 
 struct DynamicObjectClustererFrameResult {
-  ldop::DynamicObjectArray dynamic_objects_msg;
+  std::vector<DynamicObjectDetection> detections;
   visualization_msgs::MarkerArray dynamic_object_markers_msg;
   DynamicObjectClustererTimingStats timing;
 };
@@ -38,21 +38,25 @@ class DynamicObjectClusterer {
   // verbose 只控制模块自己的 timing 日志，不影响聚类结果。
   DynamicObjectClusterer(ros::NodeHandle& pnh, bool verbose = false);
 
-  const DynamicObjectClustererParams& params() const;
-
   // 聚类模块自己的主流程：统一生成当前帧动态目标与对应可视化，并在模块内记录日志。
   DynamicObjectClustererFrameResult processDynamicObjects(
       const std_msgs::Header& header,
       const std::vector<UfomapDynamicClusterPoint>& dynamic_points) const;
 
-  ldop::DynamicObjectArray buildDynamicObjectArray(
-      const std_msgs::Header& header,
+ private:
+  // 统一在模块内部读取并合法化 ROS 参数；clusterer 没有额外 runtime 重建阶段。
+  void loadParameters();
+
+  // 下面两个子步骤只服务于模块内部主流程，不再额外暴露测试入口。
+  std::vector<DynamicObjectDetection> buildDetections(
+      const ros::Time& stamp,
       const std::vector<UfomapDynamicClusterPoint>& dynamic_points) const;
 
   // 为当前帧动态目标生成 RViz 线框包围盒；每帧先发 DELETEALL 清理旧框。
-  visualization_msgs::MarkerArray buildObjectMarkers(const ldop::DynamicObjectArray& object_array) const;
-
- private:
+  visualization_msgs::MarkerArray buildObjectMarkers(
+      const std_msgs::Header& header,
+      const std::vector<DynamicObjectDetection>& detections) const;
+  ros::NodeHandle pnh_;
   DynamicObjectClustererParams params_;
   bool verbose_{false};
 };

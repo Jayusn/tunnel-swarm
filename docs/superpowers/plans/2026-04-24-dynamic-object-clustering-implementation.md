@@ -560,8 +560,6 @@ TEST(DynamicObjectClustererTest, sixConnectedKeysProduceSingleObject) {
   EXPECT_NEAR(objects.objects.front().size.x, 0.2, 1e-6);
   EXPECT_NEAR(objects.objects.front().size.y, 0.3, 1e-6);
   EXPECT_NEAR(objects.objects.front().size.z, 0.1, 1e-6);
-  EXPECT_TRUE(objects.objects.front().prediction_time_offsets.empty());
-  EXPECT_TRUE(objects.objects.front().predicted_positions.empty());
 }
 
 TEST(DynamicObjectClustererTest, separatedKeysProduceFrameLocalIdsFromZero) {

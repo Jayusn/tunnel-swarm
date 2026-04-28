@@ -1,6 +1,7 @@
 #include <ldop/ldop.h>
 #include <ldop/utils.h>
 
+#include <algorithm>
 #include <chrono>
 
 namespace ldopcore {
@@ -20,6 +21,7 @@ Ldop::Ldop(ros::NodeHandle& nh, ros::NodeHandle& pnh)
   setupRosInterfaces();
   ufomap_mapper_ = std::make_unique<UfomapMapper>(nh_, pnh_, world_frame_, verbose_);
   dynamic_object_clusterer_ = std::make_unique<DynamicObjectClusterer>(pnh_, verbose_);
+  dynamic_object_tracker_ = std::make_unique<DynamicObjectTracker>(pnh_, verbose_);
   startWorkers();
 
   ROS_INFO_STREAM("  LDOP is ready.");
@@ -29,6 +31,7 @@ Ldop::Ldop(ros::NodeHandle& nh, ros::NodeHandle& pnh)
   ROS_INFO_STREAM("  dynamic output: " << dynamic_cloud_topic_);
   ROS_INFO_STREAM("  dynamic objects: " << dynamic_objects_topic_);
   ROS_INFO_STREAM("  dynamic object markers: " << dynamic_object_markers_topic_);
+  ROS_INFO_STREAM("  dynamic track markers: " << dynamic_track_markers_topic_);
   ROS_INFO_STREAM("  static voxel markers: " << static_map_markers_topic_);
 }
 
@@ -46,6 +49,9 @@ void Ldop::loadParameters() {
   pnh_.param<std::string>("dynamic_object_markers_topic",
                           dynamic_object_markers_topic_,
                           "/ldop/dynamic_object_markers");
+  pnh_.param<std::string>("dynamic_track_markers_topic",
+                          dynamic_track_markers_topic_,
+                          "/ldop/dynamic_track_markers");
   pnh_.param<std::string>("static_map_markers_topic", static_map_markers_topic_, "/ldop/static_map_markers");
   pnh_.param<std::string>("world_frame", world_frame_, "camera_init");
   pnh_.param("verbose", verbose_, false);
@@ -61,6 +67,8 @@ void Ldop::setupRosInterfaces() {
   dynamic_objects_pub_ = nh_.advertise<ldop::DynamicObjectArray>(dynamic_objects_topic_, 10);
   dynamic_object_markers_pub_ =
       nh_.advertise<visualization_msgs::MarkerArray>(dynamic_object_markers_topic_, 10);
+  dynamic_track_markers_pub_ =
+      nh_.advertise<visualization_msgs::MarkerArray>(dynamic_track_markers_topic_, 10);
   static_map_markers_pub_ = nh_.advertise<visualization_msgs::MarkerArray>(static_map_markers_topic_, 10, true);
 }
 
@@ -203,8 +211,12 @@ Ldop::ProcessedFrame Ldop::processFrame(const InputFrame& frame) {
   DynamicObjectClustererFrameResult cluster_result =
       dynamic_object_clusterer_->processDynamicObjects(processed.dynamic_cloud_msg.header,
                                                       processed.dynamic_cluster_points);
-  processed.dynamic_objects_msg = std::move(cluster_result.dynamic_objects_msg);
+  DynamicObjectTrackerFrameResult tracking_result =
+      dynamic_object_tracker_->processDynamicTracks(processed.dynamic_cloud_msg.header,
+                                                    cluster_result.detections);
+  processed.dynamic_objects_msg = std::move(tracking_result.dynamic_objects_msg);
   processed.dynamic_object_markers_msg = std::move(cluster_result.dynamic_object_markers_msg);
+  processed.dynamic_track_markers_msg = std::move(tracking_result.dynamic_track_markers_msg);
   processed.timing.process_frame_ms =
       elapsedMs(processing_start, std::chrono::steady_clock::now());
   return processed;
@@ -217,6 +229,7 @@ void Ldop::publishFrame(ProcessedFrame& frame) {
   dynamic_cloud_pub_.publish(frame.dynamic_cloud_msg);
   dynamic_objects_pub_.publish(frame.dynamic_objects_msg);
   dynamic_object_markers_pub_.publish(frame.dynamic_object_markers_msg);
+  dynamic_track_markers_pub_.publish(frame.dynamic_track_markers_msg);
   static_map_markers_pub_.publish(frame.static_map_markers_msg);
   frame.timing.publish_frame_ms =
       elapsedMs(publish_start, std::chrono::steady_clock::now());

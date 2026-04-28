@@ -399,19 +399,6 @@ UfomapFrameResult UfomapMapper::processInputCloud(const sensor_msgs::PointCloud2
   return result;
 }
 
-UfomapMapperParams UfomapMapper::effectiveParams() const {
-  return params_;
-}
-
-UfomapRuntimeStats UfomapMapper::runtimeStats() const {
-  std::shared_lock<std::shared_mutex> lock(map_mutex_);
-  UfomapRuntimeStats stats;
-  const auto& runtime = runtimeLocked();
-  stats.update_count = ufomap_update_count_.load();
-  stats.node_count = runtime.map.numNodes();
-  return stats;
-}
-
 void UfomapMapper::reserveMap(const std::size_t node_capacity) {
   std::unique_lock<std::shared_mutex> lock(map_mutex_);
   runtimeLocked().map.reserve(node_capacity);
