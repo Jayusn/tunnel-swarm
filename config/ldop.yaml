@@ -7,17 +7,18 @@ dynamic_object_markers_topic: /ldop/dynamic_object_markers  # 当前帧动态目
 dynamic_track_markers_topic: /ldop/dynamic_track_markers  # 跨帧动态目标轨迹 MarkerArray 输出
 static_map_markers_topic: /ldop/static_map_markers  # 静态体素地图 MarkerArray 输出
 world_frame: camera_init  # 输入点云和里程计位姿统一使用的世界坐标系
+static_map_visualization_max_z: 3.0  # 仅限制静态体素地图RViz可视化高度，不改变UFOMap地图内容
 verbose: true  
 
 ufomap_resolution: 0.2  # 叶子体素尺寸
 ufomap_depth_levels: 16  # 八叉树层级规模
 ufomap_inflate_unknown: 1  # 按邻域膨胀d_p未知区域以容忍定位误差 
-ufomap_inflate_hits_dist: 0.2  # 沿射线扩展d_s命中区域以容忍测距噪声 
+ufomap_inflate_hits_dist: 0.4  # 沿射线扩展d_s命中区域以容忍测距噪声， 天花板/墙顶这种大平面在仿真雷达里容易被斜向射线、体素离散、测距噪声打出“边缘擦过”的情况。
 ufomap_inflate_unknown_compensation: true  # 是否补偿未知区域膨胀
 ufomap_ray_passthrough_hits: false  # 射线是否穿过命中点
 ufomap_down_sampling_method: center  # 积分前降采样策略，可选 none、center、centroid、uniform
 ufomap_min_range: 0.5  # 近点过滤 / 最小积分距离
-ufomap_max_range: 7  # 最大积分距离，还影响当前帧分类输出半径，<=0 表示不限制
+ufomap_max_range: -1  # 最大积分距离，还影响当前帧分类输出半径，<=0 表示不限制
 ufomap_insert_only_valid: false  # 仅对有效射线区段执行插入，即ufomap_max_range范围内点的射线段
 ufomap_insert_hit_depth: 0  # 命中点更新深度，0 表示沿用 UFOMap 默认值
 ufomap_insert_miss_depth: 0  # free / miss （失配）更新深度
@@ -33,6 +34,8 @@ ufomap_propagate: true  # 是否在每帧插入后立即传播修改（更新整
 dynamic_cluster_min_points: 5   #cluster 中原始动态点数量小于该值时丢弃
 dynamic_cluster_max_extent: 3.0  #cluster 原始点 AABB 对角线长度大于该值时丢弃，用于过滤大片误分割或粘连结果。
 dynamic_cluster_connectivity: 26  #cluster 连通性，6 18 26
+dynamic_cluster_vertical_merge_max_z_gap: 0.6  # 当前帧上下碎片合并允许的最大竖向空隙，单位 m；用于修复远处目标被竖向切成多个 cluster。
+dynamic_cluster_vertical_merge_min_xy_overlap_ratio: 0.5  # 水平投影有面积重叠时，交叠面积至少占较小投影面积的比例；避免仅擦边就合并。
 
 # 动态目标跟踪参数
 tracking_history_size: 100  # 每条轨迹保留的历史样本数上限（用于轨迹可视化）

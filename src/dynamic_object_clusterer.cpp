@@ -46,6 +46,21 @@ struct VoxelBucket {
   std::vector<std::size_t> point_indices;
 };
 
+struct Fragment {
+  // 当前帧一个初始 cluster 的原始统计量。min/max 表示真实 AABB 边界，
+  // sum/count 用来在合并后继续保持“点云质心”作为 detection center。
+  double min_x{std::numeric_limits<double>::infinity()};
+  double min_y{std::numeric_limits<double>::infinity()};
+  double min_z{std::numeric_limits<double>::infinity()};
+  double max_x{-std::numeric_limits<double>::infinity()};
+  double max_y{-std::numeric_limits<double>::infinity()};
+  double max_z{-std::numeric_limits<double>::infinity()};
+  double sum_x{0.0};
+  double sum_y{0.0};
+  double sum_z{0.0};
+  std::size_t point_count{0U};
+};
+
 // 根据 6/18/26 连通规则生成邻域偏移，供后续 key 空间 BFS 使用。
 std::vector<std::array<int, 3>> neighborOffsets(const int connectivity) {
   std::vector<std::array<int, 3>> offsets;
@@ -141,16 +156,123 @@ void appendBoundingBoxEdges(const BoundingBox3D& bbox, visualization_msgs::Marke
   }
 }
 
+void mergeInto(Fragment& target, const Fragment& source) {
+  target.min_x = std::min(target.min_x, source.min_x);
+  target.min_y = std::min(target.min_y, source.min_y);
+  target.min_z = std::min(target.min_z, source.min_z);
+  target.max_x = std::max(target.max_x, source.max_x);
+  target.max_y = std::max(target.max_y, source.max_y);
+  target.max_z = std::max(target.max_z, source.max_z);
+  target.sum_x += source.sum_x;
+  target.sum_y += source.sum_y;
+  target.sum_z += source.sum_z;
+  target.point_count += source.point_count;
+}
+
+DynamicObjectDetection fragmentToDetection(const Fragment& fragment,
+                                           const std::uint32_t detection_id,
+                                           const ros::Time& stamp) {
+  DynamicObjectDetection detection;
+  detection.detection_id = detection_id;
+  const double point_count = static_cast<double>(std::max<std::size_t>(fragment.point_count, 1U));
+  detection.bbox.center.x = fragment.sum_x / point_count;
+  detection.bbox.center.y = fragment.sum_y / point_count;
+  detection.bbox.center.z = fragment.sum_z / point_count;
+  detection.bbox.size.x = std::max(fragment.max_x - fragment.min_x, 0.0);
+  detection.bbox.size.y = std::max(fragment.max_y - fragment.min_y, 0.0);
+  detection.bbox.size.z = std::max(fragment.max_z - fragment.min_z, 0.0);
+  detection.bbox.yaw = 0.0;
+  detection.stamp = stamp;
+  return detection;
+}
+
+bool shouldMergeVerticalFragments(const Fragment& lhs,
+                                  const Fragment& rhs,
+                                  const DynamicObjectClustererParams& params) {
+  constexpr double kAreaEpsilon = 1e-9;
+
+  const double lhs_size_x = std::max(lhs.max_x - lhs.min_x, 0.0);
+  const double lhs_size_y = std::max(lhs.max_y - lhs.min_y, 0.0);
+  const double lhs_size_z = std::max(lhs.max_z - lhs.min_z, 0.0);
+  const double rhs_size_x = std::max(rhs.max_x - rhs.min_x, 0.0);
+  const double rhs_size_y = std::max(rhs.max_y - rhs.min_y, 0.0);
+  const double rhs_size_z = std::max(rhs.max_z - rhs.min_z, 0.0);
+
+  const double union_z_size = std::max(lhs.max_z, rhs.max_z) -
+                              std::min(lhs.min_z, rhs.min_z);
+  // 只修复“上下切开”的碎片；若两个框高度范围几乎一致，更像水平并排目标。
+  if (union_z_size <= std::max(lhs_size_z, rhs_size_z) + 1e-6) {
+    return false;
+  }
+
+  const double z_gap =
+      std::max({lhs.min_z - rhs.max_z, rhs.min_z - lhs.max_z, 0.0});
+  if (z_gap > params.vertical_merge_max_z_gap) {
+    return false;
+  }
+
+  const double intersection_x =
+      std::max(0.0, std::min(lhs.max_x, rhs.max_x) - std::max(lhs.min_x, rhs.min_x));
+  const double intersection_y =
+      std::max(0.0, std::min(lhs.max_y, rhs.max_y) - std::max(lhs.min_y, rhs.min_y));
+  const double intersection_area = intersection_x * intersection_y;
+  const double lhs_area = lhs_size_x * lhs_size_y;
+  const double rhs_area = rhs_size_x * rhs_size_y;
+  const double min_area = std::min(lhs_area, rhs_area);
+  // 只解决垂直方向断裂：水平投影必须有足够重叠，不跨 xy 空隙合并。
+  if (!(intersection_area > kAreaEpsilon && min_area > kAreaEpsilon &&
+        intersection_area / min_area >= params.vertical_merge_min_xy_overlap_ratio)) {
+    return false;
+  }
+
+  const double merged_size_x = std::max(lhs.max_x, rhs.max_x) - std::min(lhs.min_x, rhs.min_x);
+  const double merged_size_y = std::max(lhs.max_y, rhs.max_y) - std::min(lhs.min_y, rhs.min_y);
+  const double merged_size_z = std::max(lhs.max_z, rhs.max_z) - std::min(lhs.min_z, rhs.min_z);
+  const double merged_extent =
+      std::sqrt(merged_size_x * merged_size_x +
+                merged_size_y * merged_size_y +
+                merged_size_z * merged_size_z);
+  if (params.max_extent > 0.0 && merged_extent > params.max_extent) {
+    return false;
+  }
+
+  return true;
+}
+
+std::vector<Fragment> mergeFragmentedDetections(
+    std::vector<Fragment> fragments,
+    const DynamicObjectClustererParams& params) {
+  // 当前帧目标数通常很少，直接反复合并第一对满足条件的上下碎片。
+  bool merged = true;
+  while (merged) {
+    merged = false;
+    for (std::size_t lhs_index = 0; lhs_index < fragments.size() && !merged; ++lhs_index) {
+      for (std::size_t rhs_index = lhs_index + 1U; rhs_index < fragments.size(); ++rhs_index) {
+        if (!shouldMergeVerticalFragments(fragments[lhs_index], fragments[rhs_index], params)) {
+          continue;
+        }
+        mergeInto(fragments[lhs_index], fragments[rhs_index]);
+        fragments.erase(fragments.begin() + static_cast<std::ptrdiff_t>(rhs_index));
+        merged = true;
+        break;
+      }
+    }
+  }
+
+  return fragments;
+}
+
 }  // namespace
 
 DynamicObjectClustererParams sanitizeClustererParams(DynamicObjectClustererParams params) {
   params.min_points = std::max(params.min_points, 1);
-  params.max_extent =
-      std::isfinite(params.max_extent) && params.max_extent > 0.0 ? params.max_extent : 0.0;
-  params.connectivity =
-      params.connectivity == 6 || params.connectivity == 18 || params.connectivity == 26
-          ? params.connectivity
-          : 6;
+  params.max_extent = std::isfinite(params.max_extent) && params.max_extent > 0.0 ? params.max_extent : 0.0;
+  params.connectivity = params.connectivity == 6 || params.connectivity == 18 || params.connectivity == 26
+      ? params.connectivity : 6;
+  params.vertical_merge_max_z_gap = std::isfinite(params.vertical_merge_max_z_gap) && params.vertical_merge_max_z_gap >= 0.0
+      ? params.vertical_merge_max_z_gap : 0.0;
+  params.vertical_merge_min_xy_overlap_ratio = std::isfinite(params.vertical_merge_min_xy_overlap_ratio)
+      ? std::clamp(params.vertical_merge_min_xy_overlap_ratio, 0.0, 1.0) : 0.1;
   return params;
 }
 
@@ -160,13 +282,18 @@ DynamicObjectClusterer::DynamicObjectClusterer(ros::NodeHandle& pnh, const bool 
 
   ROS_INFO_STREAM("Dynamic object clusterer is ready. connectivity: " << params_.connectivity
                   << ", min points: " << params_.min_points
-                  << ", max extent: " << params_.max_extent);
+                  << ", max extent: " << params_.max_extent
+                  << ", vertical merge z gap: " << params_.vertical_merge_max_z_gap
+                  << ", vertical merge overlap ratio: "
+                  << params_.vertical_merge_min_xy_overlap_ratio);
 }
 
 void DynamicObjectClusterer::loadParameters() {
   pnh_.param("dynamic_cluster_min_points", params_.min_points, 5);
   pnh_.param("dynamic_cluster_max_extent", params_.max_extent, 3.0);
   pnh_.param("dynamic_cluster_connectivity", params_.connectivity, 6);
+  pnh_.param("dynamic_cluster_vertical_merge_max_z_gap", params_.vertical_merge_max_z_gap, 0.4);
+  pnh_.param("dynamic_cluster_vertical_merge_min_xy_overlap_ratio", params_.vertical_merge_min_xy_overlap_ratio, 0.1);
   params_ = sanitizeClustererParams(params_);
 }
 
@@ -207,9 +334,8 @@ DynamicObjectClustererFrameResult DynamicObjectClusterer::processDynamicObjects(
 std::vector<DynamicObjectDetection> DynamicObjectClusterer::buildDetections(
     const ros::Time& stamp,
     const std::vector<UfomapDynamicClusterPoint>& dynamic_points) const {
-  std::vector<DynamicObjectDetection> detections;
   if (dynamic_points.empty()) {
-    return detections;
+    return {};
   }
 
   // 1) 先按体素 key 聚合点，后续在 key 空间做连通域，避免对原始点做半径搜索。
@@ -248,7 +374,7 @@ std::vector<DynamicObjectDetection> DynamicObjectClusterer::buildDetections(
   // 3) 在 UFOMap key 空间做 BFS 连通域，每个连通块对应一个候选目标。
   const auto offsets = neighborOffsets(params_.connectivity);  // 根据连通域大小生成邻域偏移，供后续 BFS 使用。
   std::vector<bool> visited(buckets.size(), false);
-  std::uint32_t next_id = 0U;
+  std::vector<Fragment> fragments;
 
   for (const std::size_t start_bucket : sorted_bucket_indices) {
     if (visited[start_bucket]) {
@@ -326,21 +452,30 @@ std::vector<DynamicObjectDetection> DynamicObjectClusterer::buildDetections(
       continue;
     }
 
-    // 6) 生成检测输出：center 使用点簇质心，size 保留 AABB 尺寸。
-    DynamicObjectDetection detection;
-    detection.detection_id = next_id++;
-    const double point_count = static_cast<double>(cluster_points.size());
-    detection.bbox.center.x = sum_x / point_count;
-    detection.bbox.center.y = sum_y / point_count;
-    detection.bbox.center.z = sum_z / point_count;
-    detection.bbox.size.x = size_x;
-    detection.bbox.size.y = size_y;
-    detection.bbox.size.z = size_z;
-    detection.bbox.yaw = 0.0;
-    detection.stamp = stamp;
-    detections.push_back(detection);
+    // 6) 先保留 fragment 统计量；合并完成后再统一生成 detection。
+    Fragment fragment;
+    fragment.min_x = min_x;
+    fragment.min_y = min_y;
+    fragment.min_z = min_z;
+    fragment.max_x = max_x;
+    fragment.max_y = max_y;
+    fragment.max_z = max_z;
+    fragment.sum_x = sum_x;
+    fragment.sum_y = sum_y;
+    fragment.sum_z = sum_z;
+    fragment.point_count = cluster_points.size();
+    fragments.push_back(fragment);
   }
 
+  // 7) 当前帧检测级后处理：合并上下断裂的碎片，再生成帧内 detection_id。
+  const auto merged_fragments = mergeFragmentedDetections(std::move(fragments), params_);
+  std::vector<DynamicObjectDetection> detections;
+  detections.reserve(merged_fragments.size());
+  for (std::size_t index = 0; index < merged_fragments.size(); ++index) {
+    detections.push_back(fragmentToDetection(merged_fragments[index],
+                                             static_cast<std::uint32_t>(index),
+                                             stamp));
+  }
   return detections;
 }
 

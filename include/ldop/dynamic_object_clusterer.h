@@ -16,6 +16,10 @@ struct DynamicObjectClustererParams {
   int min_points{5};
   double max_extent{3.0};
   int connectivity{6};
+  // 上下碎片合并允许的竖向空隙，单位米；只用于当前帧内的检测后处理。
+  double vertical_merge_max_z_gap{0.4};
+  // 水平投影有面积重叠时，交叠面积至少占较小投影面积的比例；用于避免擦边误合并。
+  double vertical_merge_min_xy_overlap_ratio{0.1};
 };
 
 struct DynamicObjectClustererTimingStats {

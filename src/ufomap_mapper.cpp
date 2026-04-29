@@ -45,6 +45,12 @@ struct ExtractFinitePointsResult {
   bool has_invalid_points{false};
 };
 
+struct StaticMapVisualizationSnapshot {
+  // 只保留 RViz CUBE_LIST 需要的最小数据，缩短 UFOMap 读锁持有时间。
+  std::vector<std::vector<geometry_msgs::Point>> points_by_depth;
+  std::vector<double> voxel_sizes_by_depth;
+};
+
 sensor_msgs::PointCloud2 buildCloudFromPoints(const std_msgs::Header& header,
                                               const std::string& world_frame,
                                               const ufo::PointCloud& points) {
@@ -72,21 +78,16 @@ sensor_msgs::PointCloud2 buildCloudFromPoints(const std_msgs::Header& header,
   return cloud;
 }
 
-visualization_msgs::MarkerArray buildStaticMapVisualization(const std_msgs::Header& header,
-                                                            const std::string& world_frame,
-                                                            const DufomapMapType& map) {
-  visualization_msgs::MarkerArray static_map_markers;
-
+StaticMapVisualizationSnapshot captureStaticMapVisualizationSnapshot(
+    const DufomapMapType& map,
+    const double max_visualization_z) {
   const int max_depth = static_cast<int>(map.depthLevels());
-  std::vector<visualization_msgs::Marker> markers_by_depth(
-      static_cast<std::size_t>(max_depth) + 1U);
+  StaticMapVisualizationSnapshot snapshot;
+  snapshot.points_by_depth.resize(static_cast<std::size_t>(max_depth) + 1U);
+  snapshot.voxel_sizes_by_depth.resize(static_cast<std::size_t>(max_depth) + 1U);
   for (int depth = 0; depth <= max_depth; ++depth) {
-    auto& marker = markers_by_depth[static_cast<std::size_t>(depth)];
-    marker.header = header;
-    marker.header.frame_id = world_frame;
-    marker.ns = "static_map_occupied";
-    marker.id = depth;
-    marker.action = visualization_msgs::Marker::DELETE;
+    snapshot.voxel_sizes_by_depth[static_cast<std::size_t>(depth)] =
+        map.size(static_cast<ufo::depth_t>(depth));
   }
 
   // 用 Leaf && HitsMin 先做树级剪枝，再在叶子层手动过滤 seenFree。
@@ -102,27 +103,52 @@ visualization_msgs::MarkerArray buildStaticMapVisualization(const std_msgs::Head
       continue;
     }
 
-    auto& marker = markers_by_depth[static_cast<std::size_t>(depth)];
-    if (marker.action != visualization_msgs::Marker::ADD) {
-      // ns/id 按 depth 固定，RViz 会用本帧内容覆盖上一帧同一 marker。
-      marker.type = visualization_msgs::Marker::CUBE_LIST;
-      marker.action = visualization_msgs::Marker::ADD;
-      marker.pose.orientation.w = 1.0;
-      marker.scale.x = map.size(static_cast<ufo::depth_t>(depth));
-      marker.scale.y = marker.scale.x;
-      marker.scale.z = marker.scale.x;
-      marker.color.r = 0.10f;
-      marker.color.g = 0.85f;
-      marker.color.b = 0.25f;
-      marker.color.a = 1.0f;
-    }
-
     geometry_msgs::Point center;
     const auto node_center = map.center(node);
+    // 虚拟天花板等高处体素仍保留在 UFOMap 中；
+    // 这里只在最终 RViz marker 层隐藏超过上限的方块。
+    if (node_center.z > max_visualization_z) {
+      continue;
+    }
     center.x = node_center.x;
     center.y = node_center.y;
     center.z = node_center.z;
-    marker.points.push_back(center);
+    snapshot.points_by_depth[static_cast<std::size_t>(depth)].push_back(center);
+  }
+
+  return snapshot;
+}
+
+visualization_msgs::MarkerArray buildStaticMapVisualization(
+    const std_msgs::Header& header,
+    const std::string& world_frame,
+    StaticMapVisualizationSnapshot snapshot) {
+  visualization_msgs::MarkerArray static_map_markers;
+  std::vector<visualization_msgs::Marker> markers_by_depth(snapshot.points_by_depth.size());
+  for (std::size_t depth = 0; depth < markers_by_depth.size(); ++depth) {
+    auto& marker = markers_by_depth[depth];
+    marker.header = header;
+    marker.header.frame_id = world_frame;
+    marker.ns = "static_map_occupied";
+    marker.id = static_cast<int>(depth);
+    marker.action = visualization_msgs::Marker::DELETE;
+
+    if (snapshot.points_by_depth[depth].empty()) {
+      continue;
+    }
+
+    // ns/id 按 depth 固定，RViz 会用本帧内容覆盖上一帧同一 marker。
+    marker.type = visualization_msgs::Marker::CUBE_LIST;
+    marker.action = visualization_msgs::Marker::ADD;
+    marker.pose.orientation.w = 1.0;
+    marker.scale.x = snapshot.voxel_sizes_by_depth[depth];
+    marker.scale.y = marker.scale.x;
+    marker.scale.z = marker.scale.x;
+    marker.color.r = 0.10f;
+    marker.color.g = 0.85f;
+    marker.color.b = 0.25f;
+    marker.color.a = 1.0f;
+    marker.points = std::move(snapshot.points_by_depth[depth]);
   }
 
   static_map_markers.markers.reserve(markers_by_depth.size());
@@ -242,6 +268,7 @@ void UfomapMapper::loadParameters() {
   pnh_.param("ufomap_sliding_window_size", params_.sliding_window_size, 0);
   pnh_.param("ufomap_parallel", params_.parallel, true);
   pnh_.param("ufomap_propagate", params_.propagate, true);
+  pnh_.param("static_map_visualization_max_z", params_.static_map_visualization_max_z, 3.0);
   pnh_.param<std::string>("ufomap_down_sampling_method", params_.down_sampling_method, "center");
   params_ = sanitizeUfomapParams(params_);
 }
@@ -273,6 +300,10 @@ UfomapMapperParams sanitizeUfomapParams(const UfomapMapperParams& params) {
   sanitized.simple_ray_casting_factor = std::isfinite(sanitized.simple_ray_casting_factor) && 
           sanitized.simple_ray_casting_factor > 0.0 ? sanitized.simple_ray_casting_factor: 1.0;
   sanitized.sliding_window_size = std::max(0, sanitized.sliding_window_size);
+  // 可视化高度上限只影响 MarkerArray 输出；非法配置回退到仿真环境当前需要的 3m。
+  sanitized.static_map_visualization_max_z =
+      std::isfinite(sanitized.static_map_visualization_max_z)
+          ? sanitized.static_map_visualization_max_z : 3.0;
   if (sanitized.down_sampling_method != "none" && sanitized.down_sampling_method != "center" &&
       sanitized.down_sampling_method != "centroid" && sanitized.down_sampling_method != "uniform") {
     sanitized.down_sampling_method = "center";
@@ -330,12 +361,20 @@ UfomapFrameResult UfomapMapper::processInputCloud(const sensor_msgs::PointCloud2
   const ufo::Point sensor_origin(static_cast<float>(odom_msg.pose.pose.position.x),
                                 static_cast<float>(odom_msg.pose.pose.position.y),
                                 static_cast<float>(odom_msg.pose.pose.position.z));
-  // 先用更新前地图生成可视化快照；允许 RViz 迟一帧，但避免当前帧积分污染分类。
-  auto static_map_markers_future = std::async(std::launch::async, [this, header = cloud_msg.header] {
-    // 异步构建时显式持有地图读锁，避免再额外绕一层成员转发。
-    std::shared_lock<std::shared_mutex> lock(map_mutex_);
-    return buildStaticMapVisualization(header, world_frame_, runtimeLocked().map);
-  });
+  // 先从更新前地图提取轻量可视化快照；允许 RViz 迟一帧，但避免当前帧积分污染分类。
+  // 这里把 UFOMap 树遍历放进短读锁里，MarkerArray 组装则留到锁外执行。
+  const double static_map_visualization_max_z = params_.static_map_visualization_max_z;
+  auto static_map_markers_future =
+      std::async(std::launch::async, [this, header = cloud_msg.header, static_map_visualization_max_z] {
+        StaticMapVisualizationSnapshot snapshot;
+        {
+          // 异步线程只在抓取旧地图快照时持有读锁，避免整段 marker 构建阻塞写入。
+          std::shared_lock<std::shared_mutex> lock(map_mutex_);
+          snapshot = captureStaticMapVisualizationSnapshot(
+              runtimeLocked().map, static_map_visualization_max_z);
+        }
+        return buildStaticMapVisualization(header, world_frame_, std::move(snapshot));
+      });
 
   const auto classify_current_start = std::chrono::steady_clock::now();
   // 当前帧输出只关心配置工作半径内的点，避免对远处点做无意义的 seenFree 查询。
@@ -363,8 +402,6 @@ UfomapFrameResult UfomapMapper::processInputCloud(const sensor_msgs::PointCloud2
   // 当前阶段主流程只输出当前帧静态/动态点云，静态体素地图则在本函数内异步构建后随结果返回。
   result.static_map_cloud_msg = result.classification.static_cloud_msg;
   result.dynamic_cloud_msg = result.classification.dynamic_cloud_msg;
-  // 必须在写入当前帧前取回旧地图快照，避免 updateUfomap 计时里夹杂异步读锁等待。
-  result.static_map_markers = static_map_markers_future.get();
 
   const auto update_start = std::chrono::steady_clock::now();
   if (!extracted.points.empty()) {
@@ -381,6 +418,8 @@ UfomapFrameResult UfomapMapper::processInputCloud(const sensor_msgs::PointCloud2
   }
   const auto update_end = std::chrono::steady_clock::now();
   result.timing.update_ufomap_ms = elapsedMs(update_start, update_end);
+  // updateUfomap 统计完成后，再回收锁外组装完成的旧地图 marker 结果。
+  result.static_map_markers = static_map_markers_future.get();
 
   result.timing.process_input_cloud_ms = elapsedMs(total_start, std::chrono::steady_clock::now());
   if (verbose_) {

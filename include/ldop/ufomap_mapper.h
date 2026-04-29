@@ -49,6 +49,8 @@ struct UfomapMapperParams {
   int sliding_window_size{0};
   bool parallel{true};
   bool propagate{true};
+  // 仅限制静态体素地图 MarkerArray 的可视化最高 z 值；不参与 UFOMap 地图积分、查询或分类。
+  double static_map_visualization_max_z{3.0};
 };
 
 UfomapMapperParams sanitizeUfomapParams(const UfomapMapperParams& params);
