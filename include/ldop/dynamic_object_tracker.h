@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -16,10 +17,18 @@
 
 namespace ldopcore {
 
+enum class ObjectClass : std::uint8_t {
+  Unknown = 0U,
+  Human = 1U,
+  Vehicle = 2U,
+  Uav = 3U,
+  Other = 4U,
+};
+
 // 跟踪模块内部使用的合法化配置：构造阶段由 ROS 参数转换而来，运行过程中不再反复补默认值。
 struct DynamicObjectTrackerConfig {
-  // 当前阶段每条轨迹固定使用同一种运动模型；保留字段方便后续切换/扩展模型。
-  MotionModelType model_type{MotionModelType::CA3D};
+  // 新轨迹先用最稳妥的 CV3D 承接未知类别，等证据足够后再切到类别模型。
+  MotionModelType model_type{MotionModelType::CV3D};
   // 传给每条 TrackState 内部 Kalman filter 的滤波参数。
   MultiModelKalmanFilterConfig filter_config{};
   // 数据关联使用的卡方 gate 阈值，已经由置信度转换为 3 自由度马氏距离平方阈值。
@@ -40,6 +49,17 @@ struct DynamicObjectTrackerConfig {
   std::size_t max_coast_frames{2U};
   std::size_t max_history_size{30U};
   std::size_t min_hits_to_publish{2U};
+  std::size_t classification_start_frame{10U};
+  double classification_score_decay{0.85};
+  double classification_score_increment{1.0};
+  double classification_confirm_score{3.0};
+  double classification_switch_margin{1.5};
+  double classification_size_change_ratio{0.5};
+  double classification_point_count_change_ratio{0.5};
+  std::size_t classification_size_change_confirm_frames{5U};
+  std::vector<double> classify_human_threshold{1.1, 0.8};
+  std::vector<double> classify_vehicle_threshold{1.5, 0.7};
+  std::vector<double> classify_uav_threshold{0.6, 1.5};
 };
 
 // ROS 参数读取后的原始参数快照；具体合法化规则集中在 sanitizeTrackerParams()。
@@ -66,6 +86,31 @@ struct DynamicObjectTrackerParams {
   double ca_initial_position_cov{0.1};
   double ca_initial_velocity_cov{1.0};
   double ca_initial_acceleration_cov{10.0};
+  int classification_start_frame{10};
+  double classification_score_decay{0.85};
+  double classification_score_increment{1.0};
+  double classification_confirm_score{3.0};
+  double classification_switch_margin{1.5};
+  double classification_size_change_ratio{0.5};
+  double classification_point_count_change_ratio{0.5};
+  int classification_size_change_confirm_frames{5};
+  std::vector<double> classify_human_threshold{1.1, 0.8};
+  std::vector<double> classify_vehicle_threshold{1.5, 0.7};
+  std::vector<double> classify_uav_threshold{0.6, 1.5};
+  bool enable_cov_limit{true};
+  double ca_human_jerk_sigma{1.0};
+  std::vector<double> ca_human_init_cov{0.1, 0.1, 0.1, 1.0, 1.0, 10.0, 10.0};
+  std::vector<double> ca_human_meas_noise{0.1, 0.1, 0.1};
+  double ca_human_z_process_noise{0.01};
+  double ca_uav_jerk_sigma{1.0};
+  std::vector<double> ca_uav_init_cov{0.1, 0.1, 0.1, 1.0, 1.0, 1.0, 10.0, 10.0, 10.0};
+  std::vector<double> ca_uav_meas_noise{0.1, 0.1, 0.1};
+  double cv_acc_sigma{3.0};
+  std::vector<double> cv_init_cov{0.5, 0.5, 0.5, 2.0, 2.0, 2.0};
+  std::vector<double> cv_meas_noise{0.3, 0.3, 0.3};
+  std::vector<double> ctra_init_cov{0.1, 0.1, 0.1, 1.0, 10.0, 0.5, 1.0};
+  std::vector<double> ctra_process_noise{0.1, 0.1, 0.01, 1.0, 10.0, 0.1, 1.0};
+  std::vector<double> ctra_meas_noise{0.1, 0.1, 0.1};
 };
 
 struct DynamicObjectTrackerTimingStats {
@@ -97,9 +142,9 @@ struct TrackState {
   TrackState& operator=(TrackState&&) noexcept;
 
   std::uint32_t id{0U};
-  MotionModelType model_type{MotionModelType::CA3D};
-  // 每条轨迹独占一个滤波器实例，避免跨轨迹共享状态。
-  std::unique_ptr<MultiModelKalmanFilter> filter;
+  MotionModelType model_type{MotionModelType::CV3D};
+  // 每条轨迹独占一个 KF/EKF 实例；基类接口对 tracker 隐藏具体运动模型。
+  std::shared_ptr<KalmanFilterBase> filter;
   // bbox.center 会被滤波器位置覆盖，bbox.size 保留检测框尺寸并做平滑。
   BoundingBox3D bbox;
   std::vector<TrackHistorySample> history;
@@ -109,6 +154,15 @@ struct TrackState {
   std::size_t missed_frames{0U};
   // 上次处理该轨迹的时间戳，用于下一帧计算预测 dt。
   ros::Time last_stamp;
+  // 对外类别和内部证据分开：新轨迹先保持 Unknown，避免把 CV3D 默认模型误报为 Other。
+  ObjectClass object_class{ObjectClass::Unknown};
+  // 只给 Human/Vehicle/UAV/Other 四个明确类别积分；Unknown 表示证据尚未达标。
+  std::array<double, 4U> classification_scores{0.0, 0.0, 0.0, 0.0};
+  // 这里的 max_observed_size 是分类用的历史稳定尺寸，不是轨迹 history 的容量。
+  geometry_msgs::Vector3 max_observed_size;
+  std::size_t last_point_count{0U};
+  std::size_t large_size_counter{0U};
+  std::size_t small_size_counter{0U};
 };
 
 class DynamicObjectTracker {
@@ -131,6 +185,10 @@ class DynamicObjectTracker {
   void updateMatchedTrack(TrackState& track,
                           const DynamicObjectDetection& detection,
                           const ros::Time& stamp);
+  geometry_msgs::Vector3 prepareMatchedTrackForUpdate(TrackState& track,
+                                                      const DynamicObjectDetection& detection,
+                                                      std::size_t matched_hits);
+  void switchTrackModel(TrackState& track, ObjectClass target_class);
   // 未匹配且未被 spawn suppression 挡住的 detection 才会创建新稳定 ID。
   void createTrack(const DynamicObjectDetection& detection, const ros::Time& stamp);
   // 漏检轨迹继续按预测状态维护，给后续帧重关联留窗口。

@@ -1,13 +1,39 @@
 # DynamicObjectTracker 与多运动模型 Kalman 工具数学逻辑说明
 
-本文把当前跟踪模块和内联的多运动模型 Kalman 工具，从代码流程改写成数学形式。它描述的是当前实现，而不是理想化设计：第一版虽然保留了 `MotionModelType` 和 factory，但运行时实际只使用 `CA3D`，也就是 3D constant-acceleration 模型。
+本文把当前跟踪模块、运动模型和多模型 Kalman 工具，从代码流程改写成数学形式。它描述的是当前实现，而不是理想化设计：KF/EKF 组件已经按 LDOT 补齐 `CA2D / CA3D / CV3D / CTRA`，tracker 新轨迹先以 `UNKNOWN + CV3D` 初始化，达到分类条件后按类别切换到对应模型。
 
 对应代码主要位于：
 
 1. `include/ldop/dynamic_object_tracker.h`
 2. `src/dynamic_object_tracker.cpp`
-3. `include/ldop/multi_model_kalman_filter.h`
-4. `src/multi_model_kalman_filter.cpp`
+3. `include/ldop/motion_model.h`
+4. `src/motion_model.cpp`
+5. `include/ldop/multi_model_kalman_filter.h`
+6. `src/multi_model_kalman_filter.cpp`
+
+## 0. 代码执行路线
+
+读 tracker 时建议先把代码分成“三层”，否则很容易在关联、生命周期和 Kalman 数学之间来回跳：
+
+1. `DynamicObjectTracker::processDynamicTracks()` 是单帧主流程，决定本帧对每条轨迹做 `predict / update / create / coast / delete` 中的哪一种。
+2. `dynamic_object_tracker.cpp` 匿名命名空间里的函数负责局部工具逻辑，例如 cost matrix、Hungarian、fallback 关联、建轨抑制和 ROS 点类型转换。
+3. `KalmanFilterBase` 及其 `LinearKalmanFilter` / `ExtendedKalmanFilter` 子类只负责单条轨迹内部的 `setDt()`、`predict()`、`update()`、`initialize()`，不关心其他轨迹，也不关心 ROS 发布。
+
+`processDynamicTracks()` 的代码顺序就是一帧跟踪顺序：
+
+```text
+detections + tracks_
+  -> predictTracks(): 所有旧轨迹先预测到当前 header.stamp
+  -> buildCostMatrix(): detection-track 两两算马氏距离，必要时追加 fallback 候选
+  -> selectAssociations(): Hungarian 全局匹配，得到一对一 matches
+  -> updateMatchedTrack(): 匹配成功的轨迹先做分类证据和模型切换，再做 Kalman update，并刷新 size/history
+  -> shouldSuppressTrackSpawn() / createTrack(): 未匹配 detection 决定是否建新 ID
+  -> coastTrack(): 未匹配旧轨迹进入短期漏检保留状态
+  -> deleteExpiredTracks(): 删除超过漏检阈值的轨迹
+  -> buildOutput() + buildTrackMarkers(): 生成对外消息和 RViz marker
+```
+
+最容易混淆的边界是：`TrackState::bbox.center` 是对外和 marker 使用的当前轨迹中心，但每次预测或更新后都会被 `filter->position()` 覆盖；`bbox.size` 不进 Kalman，只在匹配成功时按 detection 的 AABB 尺寸做指数平滑。
 
 ## 1. 模块边界
 
@@ -30,9 +56,9 @@ $$
 职责边界是：
 
 1. `DynamicObjectTracker` 维护轨迹列表、数据关联、建轨、漏检 coast、删除、输出消息和 marker。
-2. `TrackState` 是单条轨迹的运行状态，内部独占一个 `MultiModelKalmanFilter`。
-3. `MultiModelKalmanFilter` 只负责单条轨迹的状态估计，不接触 ROS I/O，不知道其他轨迹，也不做数据关联。
-4. `MotionModel` 是滤波器文件内部的运动模型接口，当前唯一实现是 `CA3DMotionModel`。
+2. `TrackState` 是单条轨迹的运行状态，内部独占一个 `KalmanFilterBase` 实例。
+3. `KalmanFilterBase` 只负责单条轨迹的状态估计，不接触 ROS I/O，不知道其他轨迹，也不做数据关联。
+4. `MotionModel` 是独立的运动模型接口，当前实现包括 `CAMotionModel`、`CVMotionModel` 和 `CTRAMotionModel`。
 
 换成数学对象：
 
@@ -47,7 +73,9 @@ B_i,\;
 \text{hits}_i,\;
 \text{miss}_i,\;
 \tau_i,\;
-\mathcal{H}_i
+\mathcal{H}_i,\;
+\kappa_i,\;
+q_i
 \right)
 $$
 
@@ -62,13 +90,15 @@ $$
 7. $\text{miss}_i$ 是连续漏检帧数。
 8. $\tau_i$ 是该轨迹上次处理时间戳。
 9. $\mathcal{H}_i$ 是用于 marker 和调试的历史样本序列。
+10. $\kappa_i$ 是当前确认类别，取值为 `Unknown/Human/Vehicle/Uav/Other`。
+11. $q_i$ 是 `Human/Vehicle/UAV/Other` 四类证据分数。
 
 ## 2. 输入检测量
 
 第 $k$ 帧每个 detection 记为：
 
 $$
-d_j = (\text{detection\_id}_j,\; B_j,\; t_k)
+d_j = (\text{detection\_id}_j,\; B_j,\; n_j,\; t_k)
 $$
 
 其中 bbox 为：
@@ -81,7 +111,8 @@ $$
 
 1. $c_j=(x_j,y_j,z_j)^T\in\mathbb{R}^3$ 是聚类阶段计算的点簇质心。
 2. $s_j=(l_j,w_j,h_j)^T\in\mathbb{R}^3$ 是同一连通块的 AABB 尺寸。
-3. $\psi_j=0$，当前没有引入有向框。
+3. $n_j$ 是 detection 中的点数，只用于临时合并/分离保护。
+4. $\psi_j=0$，当前没有引入有向框。
 
 跟踪滤波只把中心 $c_j$ 当作 3D 位置观测：
 
@@ -117,7 +148,20 @@ $$
 
 这个裁剪很重要：如果点云时间戳跳变或长时间暂停，滤波器不会一次性外推一个很大的距离，而是最多按 $\Delta t_{\max}$ 做一步预测。
 
-## 4. CA3D 状态定义
+## 4. 多运动模型状态定义
+
+类别到运动模型的映射为：
+
+$$
+\text{Human}\rightarrow\text{CA2D},\quad
+\text{Vehicle}\rightarrow\text{CTRA},\quad
+\text{UAV}\rightarrow\text{CA3D},\quad
+\text{Other}\rightarrow\text{CV3D}
+$$
+
+`Unknown` 不触发模型切换，新轨迹默认使用 `CV3D`。这和 LDOT 的“新目标先按 else/CV 初始化”一致，但对外消息在分类前发布 `CLASS_UNKNOWN`，避免把内部默认模型误解成已经确认是 `Other`。
+
+### 4.1 CA3D 状态定义
 
 当前 `MotionModelType::CA3D` 的状态是 9 维：
 
@@ -275,16 +319,24 @@ $$
 
 ## 8. 新轨迹初始化
 
-创建新轨迹时，滤波器先用零状态初始化：
+创建新轨迹时，`TrackState` 使用 `MotionModelType::CV3D` 创建滤波器，类别为 `Unknown`。CV3D 状态为：
 
 $$
 x_0 =
 \begin{bmatrix}
-0\\0\\0\\0\\0\\0\\0\\0\\0
+c_j\\0
 \end{bmatrix}
 $$
 
-初始协方差是分块对角矩阵：
+其中 $c_j$ 是首帧 detection 质心，速度从 0 开始。初始化同时保存：
+
+$$
+\kappa_i=\text{Unknown},\quad q_i=[0,0,0,0]^T,\quad s_i^{max}=s_j,\quad n_i^{ref}=n_j
+$$
+
+CV3D 初始协方差来自 `kalman_filter/cv_model/init_cov`。CA2D、CA3D 和 CTRA 的初始协方差分别来自 `kalman_filter/ca_model/human/init_cov`、`kalman_filter/ca_model/uav/init_cov` 和 `kalman_filter/ctra_model/init_cov`。
+
+为了说明 CA3D 的协方差结构，若后续类别确认为 UAV 并切到 CA3D，初始协方差可写成分块对角矩阵：
 
 $$
 P_0 =
@@ -301,40 +353,28 @@ $$
 2. $c_v=\texttt{tracking\_ca\_initial\_velocity\_cov}$
 3. $c_a=\texttt{tracking\_ca\_initial\_acceleration\_cov}$
 
-随后 `createTrack()` 会立刻用首帧 detection 中心做一次 Kalman update：
+`createTrack()` 调用：
 
 $$
-z_0=c_j
+\texttt{filter.initialize}(c_j)
 $$
 
-注意：这不是直接执行 $p_0=z_0$ 的硬赋值，而是一次标准 Kalman 校正。由于初始状态为 0，第一次 innovation 为：
+当前 `initialize()` 不是一次 Kalman update，而是直接把首帧 detection 中心写入当前模型的位置状态：
 
 $$
-y_0=z_0-Hx_0=z_0
+x_0 =
+\begin{bmatrix}
+c_j\\0\\0
+\end{bmatrix}
 $$
 
-初始位置更新近似为：
+其中位置为点簇质心，速度和加速度仍从 0 开始。这样做的原因是避免“零状态 + 首帧 update”在较大测量噪声下把新轨迹中心拉向原点或旧参考点。初始协方差仍然由配置控制。
 
 $$
-p_0^+ =
-\frac{c_p}{c_p+r}z_0
+c_p=0.1,\quad c_v=1.0,\quad c_a=10.0
 $$
 
-如果 $c_p \gg r$，新轨迹位置会非常接近首帧检测质心；如果 $c_p$ 与 $r$ 接近，则位置会更保守。
-
-当前默认配置中：
-
-$$
-c_p=0.1,\quad r=0.1^2=0.01
-$$
-
-所以第一次位置权重约为：
-
-$$
-\frac{0.1}{0.1+0.01}\approx 0.909
-$$
-
-也就是说，新轨迹位置会被拉到很接近观测中心，但数学上仍然是滤波更新。
+也就是说，新轨迹的位置一开始就等于观测中心，但速度/加速度的不确定性仍然保留给后续帧逐步估计。
 
 ## 9. Kalman 预测
 
@@ -345,14 +385,13 @@ x_i^- = F_i x_i^+
 $$
 
 $$
-P_i^- = F_i P_i^+ F_i^T + \lambda_Q Q_i
+P_i^- = F_i P_i^+ F_i^T + Q_i
 $$
 
 其中：
 
-1. $F_i=F(\Delta t_i)$。
-2. $\lambda_Q=\texttt{tracking\_prediction\_cov\_multiplier}$。
-3. $Q_i$ 是当前使用的过程噪声矩阵。
+1. $F_i=F(\Delta t_i)$，由当前运动模型的 `getTransitionF(state)` 返回。
+2. $Q_i$ 是当前滤波器持有的过程噪声矩阵 `process_noise_`；启用自适应噪声时，它来自上一轮 update 后保留下来的自适应估计。
 
 在当前 tracker 调用路径中，每帧 `predictTracks()` 都会先调用：
 
@@ -360,7 +399,7 @@ $$
 \texttt{setDt}(\Delta t_i)
 $$
 
-而 `setDt()` 只负责刷新当前步长下的运动模型参数。真正进入预测公式的过程噪声矩阵由滤波器当前持有的 `adaptive_process_noise_` 决定；当关闭自适应噪声时，它退回当前 $\Delta t$ 下的基础 $Q_0(\Delta t)$。因此当前预测阶段的有效形式可以理解为：
+而 `setDt()` 只负责把当前步长写入运动模型，不在这里重置 Q/R。真正进入预测公式的过程噪声矩阵由滤波器当前持有的 `process_noise_` 决定；当关闭自适应噪声时，`predict()` 会显式读取当前 $\Delta t$ 下的基础 $Q_0(\Delta t)$。因此当前预测阶段的有效形式可以理解为：
 
 $$
 P_i^- = F_i P_i^+ F_i^T + Q_i^{adaptive}
@@ -506,9 +545,64 @@ $$
 
 所以 dummy 匹配、未通过 gate 的组合都会在输出 matches 时被过滤。
 
-## 13. 匹配成功后的轨迹更新
+## 13. 匹配成功后的分类、模型切换和轨迹更新
 
-如果 detection $d_j$ 匹配轨迹 $T_i$，先用 detection center 做 Kalman update。当前 detection center 是点簇质心，不是 AABB 几何中心。
+如果 detection $d_j$ 匹配轨迹 $T_i$，先更新分类保护和类别证据。当前 detection center 是点簇质心，不是 AABB 几何中心。
+
+### 13.1 临时合并/分离保护
+
+tracker 保存历史稳定尺寸 $s_i^{max}$ 和参考点数 $n_i^{ref}$。当前帧计算：
+
+$$
+r_s=\max_a\frac{s_{j,a}}{\max(s_{i,a}^{max},\epsilon)}
+$$
+
+$$
+r_n=\frac{n_j}{\max(n_i^{ref},1)}
+$$
+
+如果 $r_s$ 或 $r_n$ 突然大于 $1+\rho$，先视为临时合并；如果小于 $1-\rho$，先视为临时分离。临时状态下分类使用 $s_i^{max}$，并冻结类别证据分数。只有变化持续超过 `classification_size_change_confirm_frames` 后，才接受新的稳定尺寸和参考点数。
+
+### 13.2 类别证据积分
+
+轨迹命中数达到 `classification_start_frame` 后，可靠匹配帧执行 bbox/质心分类，得到当前观测类别 $\hat{\kappa}$。类别分数更新为：
+
+$$
+q_i \leftarrow \lambda q_i
+$$
+
+$$
+q_{i,\hat{\kappa}} \leftarrow q_{i,\hat{\kappa}} + \eta
+$$
+
+其中：
+
+1. $\lambda=\texttt{classification\_score\_decay}$。
+2. $\eta=\texttt{classification\_score\_increment}$。
+
+当最高分满足：
+
+$$
+\max(q_i)\ge \texttt{classification\_confirm\_score}
+$$
+
+且领先第二名至少：
+
+$$
+\texttt{classification\_switch\_margin}
+$$
+
+才确认类别。coasting 帧、临时合并帧和疑似遮挡残片帧不更新 $q_i$；短时遮挡不会把缺观测当成反证。
+
+### 13.3 模型切换
+
+如果确认类别对应的模型和当前模型不同，tracker 在本帧 Kalman update 前切换 filter。状态迁移只保留稳定的公共物理量：位置和世界坐标系速度。对 CTRA，若水平速度足够大，用速度方向生成 yaw；否则从旧 CTRA 状态保留 yaw 或使用 0。
+
+切换后调用 `initializeState()` 写入新模型完整状态，并重置为新模型的初始协方差。这样不直接搬运旧协方差，避免不同状态维度之间产生虚假的相关性。
+
+### 13.4 Kalman update
+
+模型确认或保持后，再用 detection center 做 Kalman update。
 
 预测观测：
 
@@ -596,16 +690,10 @@ $$
 y=[y_x,y_y,y_z]^T
 $$
 
-先计算三轴平均 innovation 能量：
+维护最近 $W$ 个完整 innovation 向量：
 
 $$
-e_k=\frac{1}{3}\Vert y\Vert^2
-$$
-
-维护最近 $W$ 个 $e_k$ 的窗口：
-
-$$
-\mathcal{E}_k=\{e_{k-W+1},\dots,e_k\}
+\mathcal{Y}_k=\{y_{k-W+1},\dots,y_k\}
 $$
 
 其中：
@@ -617,7 +705,7 @@ $$
 样本协方差：
 
 $$
-C_{\gamma,k}=\frac{1}{|\mathcal{E}_k|}\sum_{e\in\mathcal{E}_k}ee^T
+C_{\gamma,k}=\frac{1}{|\mathcal{Y}_k|}\sum_{y\in\mathcal{Y}_k}yy^T
 $$
 
 先估计测量噪声：
@@ -667,10 +755,10 @@ $$
 如果 `tracking_adaptive_window_size <= 1`，则自适应噪声关闭：
 
 $$
-Q_k^{adaptive}=Q_0,\quad R_k^{adaptive}=R_0
+Q_k=Q_0,\quad R_k=R_0
 $$
 
-实现细节再强调一次：`R_k^{adaptive}` 会立即作用在当前这次 update；`Q_k^{adaptive}` 会保留到下一次 predict 使用。当前实现和 LDOT 一样，`setDt()` 不会把已经估计出来的 adaptive Q 重新按基础 $Q_0(\Delta t)$ 映射成“统一缩放比”。
+实现细节再强调一次：自适应 `R_k` 会立即作用在当前这次 update；自适应 `Q_k` 会保留到下一次 predict 使用。当前实现和 LDOT 一样，`setDt()` 不会把已经估计出来的 Q 重新按基础 $Q_0(\Delta t)$ 映射成“统一缩放比”。
 
 ## 15. 协方差 clamp
 
@@ -818,8 +906,8 @@ $$
 新轨迹初始化步骤是：
 
 1. 构造 `TrackState`。
-2. 创建内部 `MultiModelKalmanFilter`。
-3. 用 detection center 做一次 Kalman update。
+2. 通过 `createKalmanFilter()` 创建内部 `KalmanFilterBase` 实例。
+3. 调用 `initialize(detection.bbox.center)`，直接把首帧 detection center 写入位置状态。
 4. bbox 取 detection bbox。
 5. bbox center 再用滤波器位置覆盖。
 6. 设置生命周期：
@@ -961,6 +1049,7 @@ marker 输出包括：
 1. `DELETEALL`：每帧先清空旧 marker。
 2. `dynamic_track_history`：历史轨迹线，至少 2 个点才发布。
 3. `dynamic_track_head`：当前轨迹头部球体。
+4. `dynamic_track_label`：目标上方文字，显示轨迹 ID、类别和速度模长。
 
 如果轨迹处于 coast 状态，即：
 
@@ -981,7 +1070,7 @@ marker 透明度会降低，用于可视化区分“当前帧未匹配到观测�
 1. 对每条已有轨迹 T_i：
    1.1 根据 header.stamp 和 track.last_stamp 计算 dt_i
    1.2 setDt(dt_i)
-   1.3 predict: x_i^- = F_i x_i^+, P_i^- = F_i P_i^+ F_i^T + lambda_Q Q_i
+   1.3 predict: x_i^- = F_i x_i^+, P_i^- = F_i P_i^+ F_i^T + Q_i
    1.4 bbox.center = H x_i^-
 
 2. 对每个 detection-track 组合：
@@ -1033,25 +1122,34 @@ marker 透明度会降低，用于可视化区分“当前帧未匹配到观测�
 | `tracking_max_missed_frames` | $M_{\max}$ | 删除轨迹前允许的连续漏检帧数 |
 | `tracking_min_hits_to_publish` | $H_{\min}$ | 对外发布前需要的命中次数 |
 | `tracking_history_size` | $H_{\text{history}}$ | 每条轨迹保留的历史样本数 |
-| `tracking_adaptive_window_size` | $W$ | innovation 能量统计窗口 |
+| `tracking_adaptive_window_size` | $W$ | innovation 向量统计窗口 |
 | `tracking_adaptive_alpha` | $\alpha_Q$ | 自适应 Q 缩放 EMA 系数 |
 | `tracking_adaptive_r_alpha` | $\alpha_R$ | 自适应 R 缩放 EMA 系数 |
 | `tracking_adaptive_min_noise_ratio` | $\rho_{\min}$ | 自适应噪声缩放下限 |
 | `tracking_max_pos_cov` | $L_p$ | 位置协方差对角线上限 |
 | `tracking_max_vel_cov` | $L_v$ | 速度协方差对角线上限 |
 | `tracking_max_acc_cov` | $L_a$ | 加速度协方差对角线上限 |
+| `classification_start_frame` | $H_{\text{cls}}$ | 开始给类别证据积分的最小命中数 |
+| `classification_score_decay` | $\lambda$ | 类别证据分数衰减系数 |
+| `classification_score_increment` | $\eta$ | 当前观测类别的证据增量 |
+| `classification_confirm_score` | $q_{\min}$ | 确认类别所需的最高分阈值 |
+| `classification_switch_margin` | $m_{\text{cls}}$ | 最高类别分数领先第二名的最小 margin |
+| `classification_size_change_ratio` | $\rho_s$ | bbox 尺寸临时合并/分离比例阈值 |
+| `classification_point_count_change_ratio` | $\rho_n$ | 点数临时合并/分离比例阈值 |
+| `classification_size_change_confirm_frames` | $K_s$ | 接受尺寸/点数持续变化所需帧数 |
 
 ## 24. 当前实现的关键语义
 
-1. 当前“多模型”是结构预留，不是 IMM。代码没有多个模型概率、模型混合、模型转移矩阵或多模型融合。
-2. 当前唯一模型是 `CA3D`，状态维度固定为 9，观测维度固定为 3。
+1. 当前“多模型”不是 IMM。代码没有多个模型概率、模型混合、模型转移矩阵或多模型融合。
+2. KF/EKF 层已经实现 `CA2D / CA3D / CV3D / CTRA`；当前 tracker 新轨迹默认 `UNKNOWN + CV3D`，类别证据确认后再切到 `CA2D/CTRA/CA3D/CV3D`。
 3. 跟踪关联默认使用位置马氏距离平方；只有马氏距离被 gate 拒绝时，才会退回到“先 distance、后 IoU”的两层阈值做次优匹配。
 4. bbox IoU 当前不参与主匹配 cost，只作为 distance 已通过后的第二层回退条件，以及最终未匹配 detection 的建轨抑制条件。
 5. bbox size 不进入 Kalman 状态，只做指数平滑。
 6. 新轨迹会直接用首帧 detection center（点簇质心）初始化滤波器位置状态，速度与加速度仍从零起步。
-7. coasting 轨迹会继续发布，前提是它已经满足 hits 阈值且尚未超过漏检删除阈值。
-8. `max_missed_frames` 的删除条件是 `missed_frames > max_missed_frames`。
-9. 自适应 R 会影响当前与后续观测更新；自适应 Q 会持续影响后续预测，并在当前 `update()` 内同步修正本次使用的 `P_{pred}`。
+7. coasting 轨迹冻结类别证据，不因为缺少观测而降低类别分数或切回 `Unknown`。
+8. coasting 轨迹会继续发布，前提是它已经满足 hits 阈值且尚未超过漏检删除阈值。
+9. `max_missed_frames` 的删除条件是 `missed_frames > max_missed_frames`。
+10. 自适应 R 会影响当前与后续观测更新；自适应 Q 会持续影响后续预测，并在当前 `update()` 内同步修正本次使用的 `P_{pred}`。
 
 ## 25. 一句话总结
 
@@ -1059,12 +1157,14 @@ marker 透明度会降低，用于可视化区分“当前帧未匹配到观测�
 
 $$
 \text{点簇质心观测}
-\xrightarrow{\text{CA3D Kalman predict}}
+\xrightarrow{\text{当前类别模型 predict}}
 \text{预测轨迹}
 \xrightarrow{\chi^2\ \text{gate}+\text{Hungarian}}
 \text{全局关联}
-\xrightarrow{\text{update/create/coast/delete}}
-\text{稳定 ID、平滑 bbox、估计速度}
+\xrightarrow{\text{分类证据/必要时切模型}}
+\text{matched update}
+\xrightarrow{\text{create/coast/delete/output}}
+\text{稳定 ID、类别、平滑 bbox、估计速度}
 $$
 
-其中 `DynamicObjectTracker` 负责“哪条 detection 属于哪条轨迹，以及轨迹是否存在”，`MultiModelKalmanFilter` 负责“单条轨迹在数学上如何预测和校正位置、速度、加速度”。
+其中 `DynamicObjectTracker` 负责“哪条 detection 属于哪条轨迹，以及轨迹是否存在”，`KalmanFilterBase` / `LinearKalmanFilter` / `ExtendedKalmanFilter` 负责“单条轨迹在数学上如何预测和校正运动状态”。

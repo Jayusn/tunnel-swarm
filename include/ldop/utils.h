@@ -23,6 +23,9 @@ struct DynamicObjectDetection {
   std::uint32_t detection_id{0U};
   BoundingBox3D bbox;
   ros::Time stamp;
+  // 当前 detection 的点数只服务于 tracker 的合并/分离保护；
+  // 不进入对外 ROS 消息，避免把聚类实现细节固化成公共接口。
+  std::size_t point_count{0U};
 };
 
 struct TrackHistorySample {

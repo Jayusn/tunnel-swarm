@@ -73,3 +73,50 @@
 - phase 4 已完成：`Ldop` 正式持有 `DynamicObjectTracker`，`/ldop/dynamic_objects` 切换为 tracker 输出，`/ldop/dynamic_object_markers` 保留 clusterer 当前帧检测框，新增 `/ldop/dynamic_track_markers` 发布轨迹历史线和头部点。
 - phase 5 已完成：`config/ldop.yaml` 增加 `dynamic_track_markers_topic` 和第一版 `tracking_*` 参数；`Ldop::loadParameters()` 接入 tracker/filter 配置。主代理修正了 `tracking_adaptive_window_size: 0` 关闭自适应更新的语义，并补了 Kalman 回归测试。
 - 验证：在临时 CMake 构建目录 `/tmp/ldop_tracking_phase3_check` 中使用 `gcc-11/g++-11` 和显式 `ufomap_DIR` 构建 `ldop_node`、`test_dynamic_object_tracker`、`test_multi_model_kalman_filter`、`test_dynamic_object_clusterer` 均通过；tracker 测试 `5/5` 通过，Kalman 测试 `8/8` 通过，clusterer 测试在临时 `roscore` 下 `12/12` 通过。Eigen 在 GCC11/C++20 下仍输出模板告警，但不影响构建结果。
+
+## 2026-04-30
+
+- 用户提出新目标：参考 LDOT，完整实现目标分类和多运动模型 KF/EKF。
+- 已恢复现有规划文件，确认上一轮结论是第一版只落地 CA3D，目标类别、CV/CTRA 和模型切换被列为后续阶段。
+- 已读取 `superpowers:brainstorming` 与 `planning-with-files-zh` 技能要求；本轮先调研和设计收敛，不在设计获批前修改实现代码。
+- 已把阶段 11 追加到 `task_plan.md`，并在 `findings.md` 记录本轮待核实内容。
+- 已核对当前主工作区文件列表和核心头文件：主线已经包含 `motion_model.*`、`multi_model_kalman_filter.*`、`dynamic_object_tracker.*`；当前缺口集中在目标类别输出合同、tracker 按类别选/切模型、以及 CV/CTRA 参数与验证闭环。
+- 已继续读取 `motion_model.*`、`multi_model_kalman_filter.cpp`、tracker 中段流程和 `config/ldop.yaml`：运动模型与 KF/EKF 底座已存在，配置和 tracker 主流程仍以单 CA 参数为主。
+- 已读取 `utils.h`、tracker 输出段、`CMakeLists.txt` 和 repo-wide 搜索结果：`DynamicObjectDetection`/`DynamicObject.msg` 均未承载类别，`createTrack()` 仍固定用 `config_.model_type`。
+- 尝试读取 `test/test_multi_model_kalman_filter.cpp` 与 `test/test_dynamic_object_tracker.cpp` 失败，当前主工作区没有这两个测试文件；已记录为验证缺口。
+- 已开始对照 `/home/st/catkin/LDOT/ldot_detector`：确认 LDOT 的 `box3D` 直接携带类别标志、速度/加速度和 yaw，且模型映射为 human=CA2D、uav=CA3D、vehicle=CTRA、else=CV3D。
+- 搜索 LDOT 时发现配置目录误写为 `config`，实际是 `cfg`；后续使用正确目录继续查参数。
+- 已读取 LDOT `runTracking()`、`boxAssociation()`、`classifyBox()`、`switchKalmanModel()`、`kalmanFilterAndUpdateHist()` 和 `paramLoader.cpp` 相关段落；关键设计点是分类/切模型发生在匹配旧轨迹的 Kalman update 之前，新轨迹先按 else/CV 初始化。
+- 已对照 LDOT `cfg/detector_param*.yaml`：分类阈值和 Kalman 参数在 LDOT 中是树状分组，LDOP 需要决定是继续扁平参数风格还是为多模型引入局部分组。
+- 用户确认本轮不做 LDOT 的动态/静态投票分类；范围收敛为对象类别分类 `human/vehicle/uav/else` 和类别驱动的 `CA2D/CTRA/CA3D/CV3D` 模型选择/切换。
+- 用户确认新轨迹初始化/切换时机：默认 `else + CV3D`，达到 `classification_start_frame` 后分类，分类变化时在 Kalman update 前切换模型。
+- 用户认可对外消息中 `UNKNOWN` 和 `OTHER` 分开：分类前输出 `UNKNOWN`，分类后若不属于前三类再输出 `OTHER`。
+- 用户同意分类规则方向：按 LDOT 核心尺寸/质心规则适配 LDOP，使用历史最大 bbox 尺寸和当前 detection 质心高度，暂不引入点云 PCA/std 或运动投票。
+- 用户同意参数组织：普通 tracking/classification 参数扁平，多模型 Kalman 参数按 LDOT 使用 `kalman_filter/...` 树状分组。
+- 用户确认 `DynamicObject.msg` 只新增 `uint8 object_class`；其他模型状态不对外暴露。
+- 用户追问 LDOT 合并/分离检测机制；已重新核对 LDOT 逻辑和 LDOP clusterer，发现 LDOP 可通过内部 `DynamicObjectDetection::point_count` 承接 LDOT 的尺寸比例 + 点数比例保护。
+- 用户同意纳入 LDOT 的临时合并/分离检测机制，范围限定为分类和 bbox 尺寸稳定保护。
+- 用户批准按方案 A 写正式设计稿。
+- 已新增 `docs/superpowers/specs/2026-04-30-dynamic-object-classification-multimodel-design.md`，覆盖对象类别枚举、内部 detection `point_count`、TrackState 分类状态、LDOT 顺序、临时合并/分离保护、分类规则、模型切换、参数组织、输出和测试。
+- 已执行 spec 自检：占位扫描无结果；范围关键词命中均在非目标或内部状态转换语境；`git diff --check` 通过。
+- 按当前仓库/AGENTS 规则，本轮未创建提交。
+- 用户指出新增 spec 是英文，违反 `AGENTS.md` 的中文默认要求。
+- 已读取 `AGENTS.md`，确认面向用户自然语言默认使用简体中文。
+- 已把 `docs/superpowers/specs/2026-04-30-dynamic-object-classification-multimodel-design.md` 全文改为中文；代码标识符、参数名、消息名和命令保留英文。
+- 用户继续追问分类稳定策略：`fix_size_classification_threshold` 是否和 `classification_size_change_confirm_frames` 重复、`classify_xy_distance_threshold` 的用途，以及是否有比 LDOT 更好的分类稳定方案。已重新核对 LDOT 源码，准备把 LDOP 设计从 LDOT 的 `fix_size` 耦合语义改成更清晰的分类锁定/尺寸保护分离方案。
+- 用户决定删除 `classify_xy_distance_threshold`，后续需要平台近场保护时再单独设计。
+- 已更新中文 spec：删除 `classify_xy_distance_threshold`；先把 `fix_size_classification_threshold` 拆成更清晰的类别稳定和尺寸变化确认语义。
+- 用户继续追问相比 `classification_interval_sec` 和 `classification_stable_confirmations` 是否还有更好的稳定方式；已提出并得到认可：改成类别证据积分 + 滞回切换。
+- 已更新中文 spec：删除 LDOP 实现侧的 `classification_interval_sec` 和 `classification_stable_confirmations`，新增 `classification_score_decay`、`classification_score_increment`、`classification_confirm_score`、`classification_switch_margin`；可靠匹配帧更新分数，coasting 帧、临时合并/分离帧和疑似遮挡残片帧冻结类别证据。
+- 用户说“继续”，按已确认设计进入实施阶段。
+- 已新增实施计划 `docs/superpowers/plans/2026-04-30-dynamic-object-classification-multimodel-implementation-plan.md`，拆成消息/detection 合同、filter 状态迁移、tracker 参数和分类状态、证据积分与模型切换、输出文档验证五个任务。
+- 已更新 `task_plan.md`：阶段 12 标记完成，阶段 13 标记为当前内联实施阶段。
+- 已实现 `DynamicObject.msg.object_class` 和类别常量，`DynamicObjectDetection::point_count` 由 clusterer fragment 传入 tracker。
+- 已给 `KalmanFilterBase` 增加 `initializeState()`，用于模型切换时按新模型状态维度迁移位置、速度和 yaw。
+- 已实现 tracker 内部 `ObjectClass`、`classification_scores` 证据积分、临时合并/分离尺寸保护、coasting 冻结分类证据，以及 `Human/Vehicle/UAV/Other -> CA2D/CTRA/CA3D/CV3D` 的 update 前切换。
+- 已更新 `config/ldop.yaml`：新增分类参数和 `kalman_filter/...` 分组，旧 `tracking_ca_*` 保留为兼容默认值。
+- 已同步 `docs/note/dynamic_object_tracker_执行流程说明.md`、`docs/note/dynamic_object_tracker_数学逻辑说明.md` 和 `docs/note/LDOP_design.md`。
+- 验证：`catkin build ldop --no-status` 通过；`catkin run_tests ldop --no-status` 通过，汇总为 4 tests、0 errors、0 failures、0 skipped；`catkin_test_results /home/st/ldop_ws/build/ldop` 汇总同样为 4 tests、0 errors、0 failures、0 skipped；`git diff --check` 在仓库根目录通过。构建仍有既有 Eigen C++20 模板告警。
+- 错误记录：一次 `rg` 检查命令把反引号放在双引号正则里，shell 误执行 `CA3D` 片段；已用单引号重跑。第一次 `git diff --check` 在 `/home/st/ldop_ws` 执行失败，因为该目录不是 git 仓库；已在 `/home/st/ldop_ws/src/LDOP` 重跑通过。
+- 用户要求在动态目标上方显示目标 ID、类别和速度；已把 `/ldop/dynamic_track_markers` 从历史线 + 头部球扩展为额外发布 `dynamic_track_label` 文字 marker，并同步执行说明、数学说明和设计文档。
+- 本轮 RViz label 修改验证：`catkin build ldop --no-status` 通过；`git diff --check` 通过。构建仍有既有 Eigen C++20 模板告警。

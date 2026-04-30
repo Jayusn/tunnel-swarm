@@ -48,15 +48,57 @@ tracking_spawn_suppression_distance: 0.5  # 马氏距离关联失败后的第一
 tracking_spawn_suppression_iou_threshold: 0.5  # 马氏距离关联失败后的第二层回退条件：只有 distance 已经过阈值时，才检查 IoU；若最终仍未匹配，也继续抑制建新轨迹；0 表示关闭
 tracking_default_dt: 0.1  # 时间戳异常时回退使用的预测时间步长（秒）
 tracking_max_dt: 0.5  # 预测时间步长上限（秒），防止大间隔导致发散
-tracking_adaptive_window_size: 10  # 自适应 Q/R 的 innovation 统计窗口长度
-tracking_adaptive_alpha: 0.7  # 过程噪声 Q 的 EMA 平滑系数
-tracking_adaptive_r_alpha: 0.7  # 测量噪声 R 的 EMA 平滑系数
-tracking_adaptive_min_noise_ratio: 0.2  # 自适应噪声下限（相对初始噪声比例）
-tracking_max_pos_cov: 1.5  # 位置协方差上限（m^2）
-tracking_max_vel_cov: 9.0  # 速度协方差上限（m/s)^2
-tracking_max_acc_cov: 25.0  # 加速度协方差上限（m/s^2)^2
-tracking_ca_jerk_sigma: 3.0  # CA 模型的 jerk 噪声标准差
-tracking_ca_position_noise: 0.1  # 位置观测噪声方差
-tracking_ca_initial_position_cov: 0.1  # 新轨迹初始位置协方差
-tracking_ca_initial_velocity_cov: 1.0  # 新轨迹初始速度协方差
-tracking_ca_initial_acceleration_cov: 10.0  # 新轨迹初始加速度协方差
+tracking_adaptive_window_size: 10  # 兼容旧配置的自适应 Q/R 默认值；kalman_filter 分组存在时会覆盖
+tracking_adaptive_alpha: 0.7  # 兼容旧配置的过程噪声 Q EMA 平滑系数
+tracking_adaptive_r_alpha: 0.7  # 兼容旧配置的测量噪声 R EMA 平滑系数
+tracking_adaptive_min_noise_ratio: 0.2  # 兼容旧配置的自适应噪声下限
+tracking_max_pos_cov: 1.5  # 兼容旧配置的位置协方差上限（m^2）
+tracking_max_vel_cov: 9.0  # 兼容旧配置的速度协方差上限（m/s)^2
+tracking_max_acc_cov: 25.0  # 兼容旧配置的加速度协方差上限（m/s^2)^2
+tracking_ca_jerk_sigma: 3.0  # 兼容旧配置的 CA jerk 噪声标准差
+tracking_ca_position_noise: 0.1  # 兼容旧配置的位置观测噪声方差
+tracking_ca_initial_position_cov: 0.1  # 兼容旧配置的新轨迹初始位置协方差
+tracking_ca_initial_velocity_cov: 1.0  # 兼容旧配置的新轨迹初始速度协方差
+tracking_ca_initial_acceleration_cov: 10.0  # 兼容旧配置的新轨迹初始加速度协方差
+
+# 动态目标类别分类参数
+classification_start_frame: 10  # 轨迹累计命中到该帧数后才开始给类别证据积分
+classification_score_decay: 0.85  # 可靠匹配帧更新类别证据前，对已有分数做 EMA 衰减
+classification_score_increment: 1.0  # 当前帧 bbox 分类命中某类别时增加的证据分
+classification_confirm_score: 3.0  # 最高类别分数达到该值后才允许确认类别
+classification_switch_margin: 1.5  # 最高分至少领先第二名这么多才允许确认/切换类别
+classification_size_change_ratio: 0.5  # bbox 尺寸突增/突减超过该比例时先视为临时合并/分离
+classification_point_count_change_ratio: 0.5  # 点数突增/突减超过该比例时先视为临时合并/分离
+classification_size_change_confirm_frames: 5  # 尺寸/点数变化持续超过该帧数后才接受为真实变化
+classify_human_threshold: [1.1, 0.8]  # [高度相对水平尺寸比例, 质心高度相对目标高度比例]
+classify_vehicle_threshold: [1.5, 0.7]  # [水平尺寸相对高度比例, 质心高度相对目标高度比例]
+classify_uav_threshold: [0.6, 1.5]  # [最大尺寸阈值, 质心高度相对目标高度比例]
+
+# 多运动模型 Kalman 参数；按 LDOT 的类别/模型分组，tracker 根据类别选择 CA2D/CTRA/CA3D/CV3D。
+kalman_filter:
+  adaptive_window_size: 10
+  adaptive_alpha: 0.7
+  adaptive_r_alpha: 0.7
+  adaptive_min_noise_ratio: 0.2
+  enable_cov_limit: true
+  max_pos_cov: 1.5
+  max_vel_cov: 9.0
+  max_acc_cov: 25.0
+  ca_model:
+    human:
+      jerk_sigma: 1.0
+      init_cov: [0.1, 0.1, 0.1, 1.0, 1.0, 10.0, 10.0]
+      meas_noise: [0.1, 0.1, 0.1]
+      z_process_noise: 0.01
+    uav:
+      jerk_sigma: 1.0
+      init_cov: [0.1, 0.1, 0.1, 1.0, 1.0, 1.0, 10.0, 10.0, 10.0]
+      meas_noise: [0.1, 0.1, 0.1]
+  cv_model:
+    acc_sigma: 3.0
+    init_cov: [0.5, 0.5, 0.5, 2.0, 2.0, 2.0]
+    meas_noise: [0.3, 0.3, 0.3]
+  ctra_model:
+    init_cov: [0.1, 0.1, 0.1, 1.0, 10.0, 0.5, 1.0]
+    process_noise: [0.1, 0.1, 0.01, 1.0, 10.0, 0.1, 1.0]
+    meas_noise: [0.1, 0.1, 0.1]

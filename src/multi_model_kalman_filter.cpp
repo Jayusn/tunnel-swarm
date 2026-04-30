@@ -1,388 +1,475 @@
-#if !defined(EIGEN_DONT_PARALLELIZE)
-#if defined(__has_include)
-#if !__has_include(<omp.h>)
-// 诊断环境缺少 omp.h 时禁用 Eigen 并行分支，避免编辑期级联误报。
-#define EIGEN_DONT_PARALLELIZE
-#endif
-#endif
-#endif
-
-#if defined(__clang__) && !defined(EIGEN_DONT_VECTORIZE)
-// clangd 10 + GCC11 头组合下可能出现 _mm_prefetch 冲突，诊断路径禁用 Eigen 向量化。
-#define EIGEN_DONT_VECTORIZE
-#endif
-
 #include <ldop/multi_model_kalman_filter.h>
 
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <utility>
 
 namespace ldopcore {
 
-// 运动模型只提供 F/H/Q/R 等矩阵；轨迹生命周期、ROS 参数和关联逻辑都由 tracker 负责。
-class MotionModel {
- public:
-  virtual ~MotionModel() = default;
-
-  virtual MotionModelType type() const = 0;
-  virtual void setDt(double dt) = 0;
-  virtual double dt() const = 0;
-  virtual int stateDim() const = 0;
-  virtual int measurementDim() const = 0;
-  virtual const Eigen::MatrixXd& transition() const = 0;
-  virtual const Eigen::MatrixXd& measurement() const = 0;
-  virtual const Eigen::MatrixXd& baseProcessNoise() const = 0;
-  virtual const Eigen::MatrixXd& baseMeasurementNoise() const = 0;
-};
-
 namespace {
 
-class CA3DMotionModel final : public ldopcore::MotionModel {
- public:
-  explicit CA3DMotionModel(const MultiModelKalmanFilterConfig& config) {
-    // 噪声强制为正，避免后续协方差更新出现奇异或非物理负噪声。
-    process_noise_ = std::max(config.process_noise, 1e-9);
-    measurement_noise_ = std::max(config.measurement_noise, 1e-9);
-    setDt(config.dt);
-  }
-
-  MotionModelType type() const override {
-    return MotionModelType::CA3D;
-  }
-
-  void setDt(double dt) override {
-    dt_ = std::isfinite(dt) && dt > 0.0 ? dt : 1e-3;
-
-    // CA3D 状态布局为 [pos, vel, acc]，观测只直接测量 position。
-    // KF: F=transition_, H=measurement_。
-    transition_ = Eigen::MatrixXd::Identity(9, 9);
-    measurement_ = Eigen::MatrixXd::Zero(3, 9);
-    measurement_.block<3, 3>(0, 0) = Eigen::Matrix3d::Identity();
-
-    const double dt2 = dt_ * dt_;
-    const double dt3 = dt2 * dt_;
-    const double dt4 = dt2 * dt2;
-    const double dt5 = dt2 * dt3;
-
-    for (int axis = 0; axis < 3; ++axis) {
-      // 每个轴独立使用 constant acceleration 离散转移：p += v*dt + 0.5*a*dt^2, v += a*dt。
-      transition_(axis, axis + 3) = dt_;
-      transition_(axis, axis + 6) = 0.5 * dt2;
-      transition_(axis + 3, axis + 6) = dt_;
-    }
-
-    // 白 jerk 驱动的 CA 模型离散过程噪声；3 个轴共享同一 3x3 模板。
-    // KF: Q=process_noise_matrix_。
-    Eigen::Matrix3d axis_process_noise;
-    axis_process_noise << dt5 / 20.0, dt4 / 8.0, dt3 / 6.0,
-                          dt4 / 8.0, dt3 / 3.0, dt2 / 2.0,
-                          dt3 / 6.0, dt2 / 2.0, dt_;
-
-    process_noise_matrix_ = Eigen::MatrixXd::Zero(9, 9);
-    for (int axis = 0; axis < 3; ++axis) {
-      // 将单轴 pos/vel/acc 噪声块嵌入完整 9x9 矩阵，轴之间暂不建模相关性。
-      process_noise_matrix_(axis, axis) = process_noise_ * axis_process_noise(0, 0);
-      process_noise_matrix_(axis, axis + 3) = process_noise_ * axis_process_noise(0, 1);
-      process_noise_matrix_(axis, axis + 6) = process_noise_ * axis_process_noise(0, 2);
-      process_noise_matrix_(axis + 3, axis) = process_noise_ * axis_process_noise(1, 0);
-      process_noise_matrix_(axis + 3, axis + 3) = process_noise_ * axis_process_noise(1, 1);
-      process_noise_matrix_(axis + 3, axis + 6) = process_noise_ * axis_process_noise(1, 2);
-      process_noise_matrix_(axis + 6, axis) = process_noise_ * axis_process_noise(2, 0);
-      process_noise_matrix_(axis + 6, axis + 3) = process_noise_ * axis_process_noise(2, 1);
-      process_noise_matrix_(axis + 6, axis + 6) = process_noise_ * axis_process_noise(2, 2);
-    }
-
-    // KF: R=measurement_noise_matrix_。
-    measurement_noise_matrix_ =
-        measurement_noise_ * Eigen::MatrixXd::Identity(measurementDim(), measurementDim());
-  }
-
-  double dt() const override {
-    return dt_;
-  }
-
-  int stateDim() const override {
-    return 9;
-  }
-
-  int measurementDim() const override {
-    return 3;
-  }
-
-  const Eigen::MatrixXd& transition() const override {
-    return transition_;
-  }
-
-  const Eigen::MatrixXd& measurement() const override {
-    return measurement_;
-  }
-
-  const Eigen::MatrixXd& baseProcessNoise() const override {
-    return process_noise_matrix_;
-  }
-
-  const Eigen::MatrixXd& baseMeasurementNoise() const override {
-    return measurement_noise_matrix_;
-  }
-
- private:
-  double dt_{0.1};
-  double process_noise_{1.0};
-  double measurement_noise_{0.5};
-  Eigen::MatrixXd transition_;
-  Eigen::MatrixXd measurement_;
-  Eigen::MatrixXd process_noise_matrix_;
-  Eigen::MatrixXd measurement_noise_matrix_;
-};
-
-std::unique_ptr<MotionModel> createMotionModel(const MotionModelType model_type,
-                                               const MultiModelKalmanFilterConfig& config) {
-  switch (model_type) {
-    case MotionModelType::CA3D:
-      return std::make_unique<CA3DMotionModel>(config);
-  }
-
-  throw std::invalid_argument("unsupported motion model");
+bool isFiniteVector(const Eigen::VectorXd& vector) {
+  return vector.allFinite();
 }
 
-bool isFiniteVector(const Eigen::Vector3d& vector) {
-  return vector.allFinite();
+Eigen::VectorXd positionMeasurementVector(const Eigen::Vector3d& measurement) {
+  Eigen::VectorXd vector(3);
+  vector << measurement.x(), measurement.y(), measurement.z();
+  return vector;
+}
+
+void sanitizeConfig(MultiModelKalmanFilterConfig& config) {
+  config.default_dt = std::isfinite(config.default_dt) && config.default_dt > 0.0
+                          ? config.default_dt
+                          : 0.1;
+  config.adaptive_window_size = std::max(config.adaptive_window_size, 0);
+  config.adaptive_alpha = std::clamp(config.adaptive_alpha, 0.0, 1.0);
+  config.adaptive_r_alpha = std::clamp(config.adaptive_r_alpha, 0.0, 1.0);
+  config.adaptive_min_noise_ratio =
+      std::isfinite(config.adaptive_min_noise_ratio) && config.adaptive_min_noise_ratio > 0.0
+          ? config.adaptive_min_noise_ratio
+          : 0.5;
+  config.max_pos_cov = std::isfinite(config.max_pos_cov) && config.max_pos_cov > 0.0
+                           ? config.max_pos_cov
+                           : 9.0;
+  config.max_vel_cov = std::isfinite(config.max_vel_cov) && config.max_vel_cov > 0.0
+                           ? config.max_vel_cov
+                           : 16.0;
+  config.max_acc_cov = std::isfinite(config.max_acc_cov) && config.max_acc_cov > 0.0
+                           ? config.max_acc_cov
+                           : 100.0;
+}
+
+std::shared_ptr<LinearKalmanFilter> configureLinearFilter(
+    const std::shared_ptr<MotionModel>& model,
+    const MultiModelKalmanFilterConfig& config) {
+  auto filter = std::make_shared<LinearKalmanFilter>(model);
+  filter->setAdaptiveParams(config.adaptive_window_size,
+                            config.adaptive_alpha,
+                            config.adaptive_r_alpha,
+                            config.adaptive_min_noise_ratio);
+  filter->setCovLimitParams(config.enable_cov_limit,
+                            config.max_pos_cov,
+                            config.max_vel_cov,
+                            config.max_acc_cov);
+  return filter;
+}
+
+std::shared_ptr<ExtendedKalmanFilter> configureExtendedFilter(
+    const std::shared_ptr<MotionModel>& model,
+    const MultiModelKalmanFilterConfig& config) {
+  auto filter = std::make_shared<ExtendedKalmanFilter>(model);
+  filter->setAdaptiveParams(config.adaptive_window_size,
+                            config.adaptive_alpha,
+                            config.adaptive_r_alpha,
+                            config.adaptive_min_noise_ratio);
+  filter->setCovLimitParams(config.enable_cov_limit,
+                            config.max_pos_cov,
+                            config.max_vel_cov,
+                            config.max_acc_cov);
+  return filter;
 }
 
 }  // namespace
 
-MultiModelKalmanFilter::MultiModelKalmanFilter(const MultiModelKalmanFilterConfig& config)
-    : config_(config) {
-  // 滤波器作为内部算法对象，构造时完成配置合法化，之后不再接触 ROS 参数服务器。
-  config_.dt = std::isfinite(config_.dt) && config_.dt > 0.0 ? config_.dt : 0.1;
-  config_.process_noise = std::max(config_.process_noise, 1e-9);
-  config_.measurement_noise = std::max(config_.measurement_noise, 1e-9);
-  config_.initial_pos_covariance = std::max(config_.initial_pos_covariance, 1e-9);
-  config_.initial_vel_covariance = std::max(config_.initial_vel_covariance, 1e-9);
-  config_.initial_acc_covariance = std::max(config_.initial_acc_covariance, 1e-9);
-  config_.adaptive_q_alpha = std::clamp(config_.adaptive_q_alpha, 0.0, 1.0);
-  config_.adaptive_r_alpha = std::clamp(config_.adaptive_r_alpha, 0.0, 1.0);
-  config_.min_noise_ratio = std::max(config_.min_noise_ratio, 1e-6);
-  config_.max_pos_covariance = std::max(config_.max_pos_covariance, 1e-9);
-  config_.max_vel_covariance = std::max(config_.max_vel_covariance, 1e-9);
-  config_.max_acc_covariance = std::max(config_.max_acc_covariance, 1e-9);
-
-  motion_model_ = createMotionModel(MotionModelType::CA3D, config_);
-  motion_model_->setDt(config_.dt);
-  adaptive_process_noise_ = motion_model_->baseProcessNoise();
-  adaptive_measurement_noise_ = motion_model_->baseMeasurementNoise();
-  min_process_noise_ = adaptive_process_noise_ * config_.min_noise_ratio;
-  min_measurement_noise_ = adaptive_measurement_noise_ * config_.min_noise_ratio;
-  initialize(Eigen::Vector3d::Zero());
-}
-
-MultiModelKalmanFilter::~MultiModelKalmanFilter() = default;
-
-MultiModelKalmanFilter::MultiModelKalmanFilter(MultiModelKalmanFilter&&) noexcept = default;
-
-MultiModelKalmanFilter& MultiModelKalmanFilter::operator=(MultiModelKalmanFilter&&) noexcept =
-    default;
-
-void MultiModelKalmanFilter::setDt(const double dt) {
-  // 这里只为后续 predict() 准备当前帧模型参数，不推进状态本身。
-  // 参考 LDOT：setDt() 只更新运动模型里的 dt/F，不在这里重建 adaptive Q/R。
-  motion_model_->setDt(dt);
-  if (config_.innovation_buffer <= 1U) {
-    adaptive_process_noise_ = motion_model_->baseProcessNoise();
-  }
-}
-
-void MultiModelKalmanFilter::initialize(const Eigen::Vector3d& measurement) {
-  if (!isFiniteVector(measurement)) {
-    throw std::invalid_argument("initial measurement must be finite");
+KalmanFilterBase::KalmanFilterBase(std::shared_ptr<MotionModel> model)
+    : model_(std::move(model)) {
+  if (model_ == nullptr) {
+    throw std::invalid_argument("motion model must not be null");
   }
 
-  // 参考 LDOT：新轨迹初始化时直接使用首帧 detection 作为位置状态，而不是从零状态
-  // 先做一次 measurement update；否则在较大 R 下会把初值拉到原点与观测之间。
-  state_ = Eigen::VectorXd::Zero(motion_model_->stateDim());
-  state_.segment<3>(0) = measurement;
+  state_dim_ = model_->stateDim();
+  measurement_dim_ = model_->measurementDim();
+  process_noise_ = model_->getProcessNoiseQ();
+  measurement_noise_ = model_->getMeasNoiseR();
+  min_process_noise_ = process_noise_ * 0.5;
+  min_measurement_noise_ = measurement_noise_ * 0.5;
+}
 
-  covariance_ = Eigen::MatrixXd::Zero(motion_model_->stateDim(), motion_model_->stateDim());
-  covariance_.block<3, 3>(0, 0) = config_.initial_pos_covariance * Eigen::Matrix3d::Identity();
-  covariance_.block<3, 3>(3, 3) = config_.initial_vel_covariance * Eigen::Matrix3d::Identity();
-  covariance_.block<3, 3>(6, 6) = config_.initial_acc_covariance * Eigen::Matrix3d::Identity();
+void KalmanFilterBase::setAdaptiveParams(const int window_size,
+                                         const double alpha,
+                                         const double r_alpha,
+                                         const double min_noise_ratio) {
+  adaptive_window_size_ = std::max(window_size, 0);
+  adaptive_alpha_ = std::clamp(alpha, 0.0, 1.0);
+  adaptive_r_alpha_ = std::clamp(r_alpha, 0.0, 1.0);
+  const double ratio =
+      std::isfinite(min_noise_ratio) && min_noise_ratio > 0.0 ? min_noise_ratio : 0.5;
 
-  adaptive_process_noise_ = motion_model_->baseProcessNoise();
-  adaptive_measurement_noise_ = motion_model_->baseMeasurementNoise();
-  innovation_history_.clear();
+  // 下限来自当前模型的基础 Q/R，和 LDOT 一样用来避免自适应估计把噪声压到 0。
+  min_process_noise_ = model_->getProcessNoiseQ() * ratio;
+  min_measurement_noise_ = model_->getMeasNoiseR() * ratio;
+}
+
+void KalmanFilterBase::setCovLimitParams(const bool enable,
+                                         const double max_pos_cov,
+                                         const double max_vel_cov,
+                                         const double max_acc_cov) {
+  enable_cov_limit_ = enable;
+  max_pos_cov_ = std::isfinite(max_pos_cov) && max_pos_cov > 0.0 ? max_pos_cov : max_pos_cov_;
+  max_vel_cov_ = std::isfinite(max_vel_cov) && max_vel_cov > 0.0 ? max_vel_cov : max_vel_cov_;
+  max_acc_cov_ = std::isfinite(max_acc_cov) && max_acc_cov > 0.0 ? max_acc_cov : max_acc_cov_;
+}
+
+void KalmanFilterBase::initialize(const Eigen::VectorXd& detection) {
+  if (detection.size() < measurement_dim_ || !isFiniteVector(detection)) {
+    throw std::invalid_argument("initial detection must be finite and contain [x,y,z]");
+  }
+
+  // LDOT 语义：初始化不是先从零状态做一次 update，而是让运动模型直接生成初始状态。
+  state_ = model_->getInitState(detection);
+  covariance_ = model_->getInitCovP();
+  process_noise_ = model_->getProcessNoiseQ();
+  measurement_noise_ = model_->getMeasNoiseR();
+  innovation_buffer_.clear();
+  initialized_ = true;
   clampCovariance();
 }
 
-void MultiModelKalmanFilter::predict() {
-  // 预测阶段只使用运动模型，不引入新观测。
-  // KF: x = F x, P = F P F^T + Q。
-  state_ = motion_model_->transition() * state_;
-  covariance_ = motion_model_->transition() * covariance_ * motion_model_->transition().transpose() +
-                adaptive_process_noise_;
-  clampCovariance();
+void KalmanFilterBase::initialize(const Eigen::Vector3d& detection) {
+  initialize(positionMeasurementVector(detection));
 }
 
-void MultiModelKalmanFilter::update(const Eigen::Vector3d& measurement) {
-  if (!isFiniteVector(measurement)) {
-    throw std::invalid_argument("measurement must be finite");
+void KalmanFilterBase::initializeState(const Eigen::VectorXd& state) {
+  if (state.size() != state_dim_ || !isFiniteVector(state)) {
+    throw std::invalid_argument("initial state must be finite and match model dimension");
   }
 
-  const Eigen::MatrixXd measurement_matrix = motion_model_->measurement();
-  Eigen::MatrixXd predicted_covariance = covariance_;
-  // innovation = 当前观测与预测观测的差值，是后续 Kalman 增益和自适应噪声的共同输入。
-  // KF: y = z - H x。
-  const Eigen::Vector3d innovation = measurement - measurement_matrix * state_;
-
-  // 参考 LDOT：adaptive R/Q 基于当前 P_pred 和 innovation，在正式更新前完成估计。
-  predicted_covariance = updateAdaptiveNoise(innovation, predicted_covariance);
-
-  // KF: S = H P H^T + R。
-  const Eigen::MatrixXd innovation_covariance =
-      measurement_matrix * predicted_covariance * measurement_matrix.transpose() + adaptive_measurement_noise_;
-  // 当前观测维度固定为 3，直接求逆足够简单，也能避开 GCC11 + Eigen 在 LDLT 上的模板兼容噪声。
-  // KF: K = P H^T S^{-1}。
-  const Eigen::MatrixXd kalman_gain =
-      predicted_covariance * measurement_matrix.transpose() * innovation_covariance.inverse();
-
-  state_ += kalman_gain * innovation;
-
-  const Eigen::MatrixXd identity = Eigen::MatrixXd::Identity(state_.size(), state_.size());
-  const Eigen::MatrixXd measurement_projection = identity - kalman_gain * measurement_matrix;
-  // Joseph 形式协方差更新比简单 (I-KH)P 更稳，能更好维持半正定性。
-  // KF: P = (I-KH) P (I-KH)^T + K R K^T。
-  covariance_ = measurement_projection * predicted_covariance * measurement_projection.transpose() +
-                kalman_gain * adaptive_measurement_noise_ * kalman_gain.transpose();
+  // 只在 tracker 确认类别变化并切换模型时使用。协方差重置为新模型的初值，
+  // 因为旧模型的状态维度和物理含义可能不同，直接搬 P 反而会制造虚假的相关性。
+  state_ = state;
+  covariance_ = model_->getInitCovP();
+  process_noise_ = model_->getProcessNoiseQ();
+  measurement_noise_ = model_->getMeasNoiseR();
+  innovation_buffer_.clear();
+  initialized_ = true;
+  model_->normalizeYaw(state_);
   clampCovariance();
 }
 
-const Eigen::VectorXd& MultiModelKalmanFilter::state() const {
-  return state_;
+void KalmanFilterBase::setDt(const double dt) {
+  model_->setDt(dt);
 }
 
-const Eigen::MatrixXd& MultiModelKalmanFilter::covariance() const {
-  return covariance_;
-}
-
-Eigen::Vector3d MultiModelKalmanFilter::position() const {
+Eigen::Vector3d KalmanFilterBase::position() const {
+  if (state_.size() < 3) {
+    return Eigen::Vector3d::Zero();
+  }
   return state_.segment<3>(0);
 }
 
-Eigen::Vector3d MultiModelKalmanFilter::velocity() const {
-  return state_.segment<3>(3);
-}
-
-MotionModelType MultiModelKalmanFilter::modelType() const {
-  return motion_model_->type();
-}
-
-Eigen::MatrixXd MultiModelKalmanFilter::updateAdaptiveNoise(
-    const Eigen::Vector3d& innovation,
-    const Eigen::MatrixXd& predicted_covariance) {
-  if (config_.innovation_buffer <= 1U) {
-    // buffer 小于等于 1 时视为关闭自适应噪声，Q/R 回到当前 dt 下的基础矩阵。
-    adaptive_measurement_noise_ = motion_model_->baseMeasurementNoise();
-    adaptive_process_noise_ = motion_model_->baseProcessNoise();
-    innovation_history_.clear();
-    return predicted_covariance;
+Eigen::Vector3d KalmanFilterBase::velocity() const {
+  if (state_.size() < 6) {
+    return Eigen::Vector3d::Zero();
   }
 
-  innovation_history_.push_back(innovation);
-  if (innovation_history_.size() > config_.innovation_buffer) {
-    innovation_history_.pop_front();
-  }
-  if (innovation_history_.size() < config_.innovation_buffer) {
-    return predicted_covariance;
-  }
-
-  Eigen::MatrixXd innovation_sample_covariance = Eigen::MatrixXd::Zero(
-      motion_model_->measurementDim(), motion_model_->measurementDim());
-  for (const auto& sample : innovation_history_) {
-    innovation_sample_covariance += sample * sample.transpose();
-  }
-  innovation_sample_covariance /=
-      static_cast<double>(innovation_history_.size());
-
-  const Eigen::MatrixXd measurement_matrix = motion_model_->measurement();
-  const Eigen::MatrixXd estimated_measurement_noise =
-      innovation_sample_covariance -
-      measurement_matrix * predicted_covariance * measurement_matrix.transpose();
-  for (int axis = 0; axis < motion_model_->measurementDim(); ++axis) {
-    const double diagonal_estimate =
-        std::max(estimated_measurement_noise(axis, axis), 0.0);
-    const double smoothed_value =
-        config_.adaptive_r_alpha * diagonal_estimate +
-        (1.0 - config_.adaptive_r_alpha) * adaptive_measurement_noise_(axis, axis);
-    adaptive_measurement_noise_(axis, axis) =
-        std::max(smoothed_value, min_measurement_noise_(axis, axis));
-  }
-
-  const Eigen::MatrixXd temporary_innovation_covariance =
-      measurement_matrix * predicted_covariance * measurement_matrix.transpose() +
-      adaptive_measurement_noise_;
-  const Eigen::MatrixXd temporary_kalman_gain =
-      predicted_covariance * measurement_matrix.transpose() *
-      temporary_innovation_covariance.inverse();
-  const Eigen::MatrixXd previous_process_noise = adaptive_process_noise_;
-  const Eigen::MatrixXd propagated_covariance =
-      predicted_covariance - previous_process_noise;
-  const Eigen::MatrixXd unexplained_innovation_covariance =
-      innovation_sample_covariance -
-      measurement_matrix * propagated_covariance * measurement_matrix.transpose() -
-      adaptive_measurement_noise_;
-  const Eigen::MatrixXd estimated_process_noise =
-      temporary_kalman_gain * unexplained_innovation_covariance *
-      temporary_kalman_gain.transpose();
-  for (int axis = 0; axis < predicted_covariance.rows(); ++axis) {
-    const double diagonal_estimate =
-        std::max(estimated_process_noise(axis, axis), 0.0);
-    const double smoothed_value =
-        config_.adaptive_q_alpha * diagonal_estimate +
-        (1.0 - config_.adaptive_q_alpha) * adaptive_process_noise_(axis, axis);
-    adaptive_process_noise_(axis, axis) =
-        std::max(smoothed_value, min_process_noise_(axis, axis));
-  }
-
-  // 参考 LDOT：Q 从 Q_old 更新到 Q_new 后，当前帧的 P_pred 也同步替换成与新 Q 一致的版本。
-  // 否则本次 Kalman 增益仍在使用旧 Q 对应的预测协方差，自适应 Q 会晚一帧才真正生效。
-  Eigen::MatrixXd adjusted_predicted_covariance =
-      predicted_covariance - previous_process_noise + adaptive_process_noise_;
-  adjusted_predicted_covariance =
-      0.5 * (adjusted_predicted_covariance + adjusted_predicted_covariance.transpose());
-  return adjusted_predicted_covariance;
-}
-
-void MultiModelKalmanFilter::clampCovariance() {
-  // 数值计算后先强制对称，避免极小非对称误差在后续 inverse/乘法中逐步放大。
-  covariance_ = 0.5 * (covariance_ + covariance_.transpose());
-
-  Eigen::VectorXd scale = Eigen::VectorXd::Ones(covariance_.rows());
-  const auto clamp_block = [this, &scale](const int offset, const double limit) {
-    for (int axis = 0; axis < 3; ++axis) {
-      const int index = offset + axis;
-      covariance_(index, index) = std::max(covariance_(index, index), 0.0);
-      if (covariance_(index, index) > limit) {
-        // 先记录缩放系数，最后统一左右乘，保留协方差的相关项比例关系。
-        scale(index) = std::sqrt(limit / std::max(covariance_(index, index), 1e-9));
-      }
+  switch (model_->type()) {
+    case MotionModelType::CA2D:
+      return Eigen::Vector3d(state_(3), state_(4), 0.0);
+    case MotionModelType::CA3D:
+    case MotionModelType::CV3D:
+      return state_.segment<3>(3);
+    case MotionModelType::CTRA: {
+      // CTRA 只有标量速度和 yaw，对外转换为世界坐标系水平速度。
+      const double speed = state_(3);
+      const double yaw = state_(5);
+      return Eigen::Vector3d(speed * std::cos(yaw), speed * std::sin(yaw), 0.0);
     }
+  }
+
+  return Eigen::Vector3d::Zero();
+}
+
+void KalmanFilterBase::updateInnovationBuffer(const Eigen::VectorXd& innovation) {
+  if (adaptive_window_size_ <= 1) {
+    innovation_buffer_.clear();
+    return;
+  }
+
+  innovation_buffer_.push_back(innovation);
+  if (innovation_buffer_.size() > static_cast<std::size_t>(adaptive_window_size_)) {
+    innovation_buffer_.pop_front();
+  }
+}
+
+void KalmanFilterBase::update(const Eigen::Vector3d& measurement) {
+  update(positionMeasurementVector(measurement));
+}
+
+Eigen::MatrixXd KalmanFilterBase::innovationSampleCovariance() const {
+  Eigen::MatrixXd sample_covariance = Eigen::MatrixXd::Zero(measurement_dim_, measurement_dim_);
+  if (innovation_buffer_.empty()) {
+    return sample_covariance;
+  }
+
+  for (const auto& innovation : innovation_buffer_) {
+    sample_covariance += innovation * innovation.transpose();
+  }
+  sample_covariance /= static_cast<double>(innovation_buffer_.size());
+  return sample_covariance;
+}
+
+void KalmanFilterBase::estimateAdaptiveR(const Eigen::VectorXd& /*innovation*/,
+                                         const Eigen::MatrixXd& measurement_matrix) {
+  if (adaptive_window_size_ <= 1 ||
+      innovation_buffer_.size() < static_cast<std::size_t>(adaptive_window_size_)) {
+    return;
+  }
+
+  // C_gamma ≈ H * P_pred * H^T + R，因此 R 可由样本 innovation 协方差反推。
+  const Eigen::MatrixXd sample_covariance = innovationSampleCovariance();
+  const Eigen::MatrixXd estimated_measurement_noise =
+      sample_covariance - measurement_matrix * covariance_ * measurement_matrix.transpose();
+
+  for (int index = 0; index < measurement_dim_; ++index) {
+    const double diagonal_estimate = std::max(estimated_measurement_noise(index, index), 0.0);
+    const double smoothed_value =
+        adaptive_r_alpha_ * diagonal_estimate +
+        (1.0 - adaptive_r_alpha_) * measurement_noise_(index, index);
+    measurement_noise_(index, index) =
+        std::max(smoothed_value, min_measurement_noise_(index, index));
+  }
+}
+
+void KalmanFilterBase::estimateAdaptiveQ(const Eigen::VectorXd& /*innovation*/,
+                                         const Eigen::MatrixXd& measurement_matrix,
+                                         const Eigen::MatrixXd& measurement_noise,
+                                         const Eigen::MatrixXd& kalman_gain) {
+  if (adaptive_window_size_ <= 1 ||
+      innovation_buffer_.size() < static_cast<std::size_t>(adaptive_window_size_)) {
+    return;
+  }
+
+  // LDOT 同款估计：P_prop = P_pred - Q_old，剩余 innovation 协方差映射回状态空间得到 Q_new。
+  const Eigen::MatrixXd sample_covariance = innovationSampleCovariance();
+  const Eigen::MatrixXd propagated_covariance = covariance_ - process_noise_;
+  const Eigen::MatrixXd unexplained_covariance =
+      sample_covariance -
+      measurement_matrix * propagated_covariance * measurement_matrix.transpose() -
+      measurement_noise;
+  const Eigen::MatrixXd estimated_process_noise =
+      kalman_gain * unexplained_covariance * kalman_gain.transpose();
+
+  for (int index = 0; index < state_dim_; ++index) {
+    const double diagonal_estimate = std::max(estimated_process_noise(index, index), 0.0);
+    const double smoothed_value =
+        adaptive_alpha_ * diagonal_estimate +
+        (1.0 - adaptive_alpha_) * process_noise_(index, index);
+    process_noise_(index, index) = std::max(smoothed_value, min_process_noise_(index, index));
+  }
+}
+
+void KalmanFilterBase::clampCovariance() {
+  if (!initialized_ || covariance_.rows() == 0) {
+    return;
+  }
+
+  covariance_ = 0.5 * (covariance_ + covariance_.transpose());
+  if (!enable_cov_limit_) {
+    return;
+  }
+
+  const auto clamp_diagonal = [this](const int index, const double limit) {
+    covariance_(index, index) = std::clamp(covariance_(index, index), 0.0, limit);
   };
 
-  clamp_block(0, config_.max_pos_covariance);
-  clamp_block(3, config_.max_vel_covariance);
-  clamp_block(6, config_.max_acc_covariance);
-  covariance_ = scale.asDiagonal() * covariance_ * scale.asDiagonal();
+  // 三个模型都把位置放在 [0,1,2]；速度/加速度/yaw 的含义按状态维度和模型类型区分。
+  for (int index = 0; index < std::min(3, state_dim_); ++index) {
+    clamp_diagonal(index, max_pos_cov_);
+  }
+
+  switch (model_->type()) {
+    case MotionModelType::CA2D:
+      clamp_diagonal(3, max_vel_cov_);
+      clamp_diagonal(4, max_vel_cov_);
+      clamp_diagonal(5, max_acc_cov_);
+      clamp_diagonal(6, max_acc_cov_);
+      break;
+    case MotionModelType::CA3D:
+      for (int index = 3; index < 6; ++index) {
+        clamp_diagonal(index, max_vel_cov_);
+      }
+      for (int index = 6; index < 9; ++index) {
+        clamp_diagonal(index, max_acc_cov_);
+      }
+      break;
+    case MotionModelType::CV3D:
+      for (int index = 3; index < 6; ++index) {
+        clamp_diagonal(index, max_vel_cov_);
+      }
+      break;
+    case MotionModelType::CTRA:
+      clamp_diagonal(3, max_vel_cov_);
+      clamp_diagonal(4, max_acc_cov_);
+      clamp_diagonal(5, max_acc_cov_);
+      clamp_diagonal(6, max_acc_cov_);
+      break;
+  }
 }
 
-std::unique_ptr<MultiModelKalmanFilter> createMultiModelKalmanFilter(
+LinearKalmanFilter::LinearKalmanFilter(std::shared_ptr<MotionModel> model)
+    : KalmanFilterBase(std::move(model)) {}
+
+void LinearKalmanFilter::predict() {
+  if (!initialized_) {
+    return;
+  }
+
+  const Eigen::MatrixXd transition = model_->getTransitionF(state_);
+  // 关闭自适应时，Q 每次从模型读取，因此 dt 改变会体现在本次 predict 的基础 Q 上。
+  if (adaptive_window_size_ <= 1) {
+    process_noise_ = model_->getProcessNoiseQ();
+  }
+  state_ = transition * state_;
+  covariance_ = transition * covariance_ * transition.transpose() + process_noise_;
+  clampCovariance();
+  model_->normalizeYaw(state_);
+}
+
+void LinearKalmanFilter::update(const Eigen::VectorXd& measurement) {
+  if (!initialized_) {
+    return;
+  }
+  if (measurement.size() < measurement_dim_ || !isFiniteVector(measurement)) {
+    throw std::invalid_argument("measurement must be finite and contain [x,y,z]");
+  }
+
+  const Eigen::MatrixXd measurement_matrix = model_->getMeasurementH(state_);
+  Eigen::VectorXd innovation = measurement - measurement_matrix * state_;
+  model_->normalizeYawInResidual(innovation);
+
+  updateInnovationBuffer(innovation);
+  estimateAdaptiveR(innovation, measurement_matrix);
+
+  const Eigen::MatrixXd temporary_innovation_covariance =
+      measurement_matrix * covariance_ * measurement_matrix.transpose() + measurement_noise_;
+  const Eigen::MatrixXd temporary_kalman_gain =
+      covariance_ * measurement_matrix.transpose() * temporary_innovation_covariance.inverse();
+  const Eigen::MatrixXd previous_process_noise = process_noise_;
+  estimateAdaptiveQ(innovation, measurement_matrix, measurement_noise_, temporary_kalman_gain);
+  covariance_ = covariance_ - previous_process_noise + process_noise_;
+
+  const Eigen::MatrixXd innovation_covariance =
+      measurement_matrix * covariance_ * measurement_matrix.transpose() + measurement_noise_;
+  const Eigen::MatrixXd kalman_gain =
+      covariance_ * measurement_matrix.transpose() * innovation_covariance.inverse();
+
+  state_ = state_ + kalman_gain * innovation;
+  const Eigen::MatrixXd identity = Eigen::MatrixXd::Identity(state_dim_, state_dim_);
+  covariance_ = (identity - kalman_gain * measurement_matrix) * covariance_;
+  clampCovariance();
+  model_->normalizeYaw(state_);
+}
+
+ExtendedKalmanFilter::ExtendedKalmanFilter(std::shared_ptr<MotionModel> model)
+    : KalmanFilterBase(std::move(model)) {}
+
+void ExtendedKalmanFilter::predict() {
+  if (!initialized_) {
+    return;
+  }
+
+  state_ = model_->stateTransition(state_);
+  const Eigen::MatrixXd transition_jacobian = model_->getTransitionF(state_);
+  if (adaptive_window_size_ <= 1) {
+    process_noise_ = model_->getProcessNoiseQ();
+  }
+  covariance_ = transition_jacobian * covariance_ * transition_jacobian.transpose() + process_noise_;
+  clampCovariance();
+  model_->normalizeYaw(state_);
+}
+
+void ExtendedKalmanFilter::update(const Eigen::VectorXd& measurement) {
+  if (!initialized_) {
+    return;
+  }
+  if (measurement.size() < measurement_dim_ || !isFiniteVector(measurement)) {
+    throw std::invalid_argument("measurement must be finite and contain [x,y,z]");
+  }
+
+  const Eigen::VectorXd predicted_measurement = model_->stateToMeasurement(state_);
+  Eigen::VectorXd innovation = measurement - predicted_measurement;
+  model_->normalizeYawInResidual(innovation);
+
+  const Eigen::MatrixXd measurement_jacobian = model_->getMeasurementH(state_);
+  updateInnovationBuffer(innovation);
+  estimateAdaptiveR(innovation, measurement_jacobian);
+
+  const Eigen::MatrixXd temporary_innovation_covariance =
+      measurement_jacobian * covariance_ * measurement_jacobian.transpose() + measurement_noise_;
+  const Eigen::MatrixXd temporary_kalman_gain =
+      covariance_ * measurement_jacobian.transpose() * temporary_innovation_covariance.inverse();
+  const Eigen::MatrixXd previous_process_noise = process_noise_;
+  estimateAdaptiveQ(innovation, measurement_jacobian, measurement_noise_, temporary_kalman_gain);
+  covariance_ = covariance_ - previous_process_noise + process_noise_;
+
+  const Eigen::MatrixXd innovation_covariance =
+      measurement_jacobian * covariance_ * measurement_jacobian.transpose() + measurement_noise_;
+  const Eigen::MatrixXd kalman_gain =
+      covariance_ * measurement_jacobian.transpose() * innovation_covariance.inverse();
+
+  state_ = state_ + kalman_gain * innovation;
+  const Eigen::MatrixXd identity = Eigen::MatrixXd::Identity(state_dim_, state_dim_);
+  const Eigen::MatrixXd projection = identity - kalman_gain * measurement_jacobian;
+  // EKF 的数值误差更明显，沿用 LDOT 里 EKF 的 Joseph 形式。
+  covariance_ = projection * covariance_ * projection.transpose() +
+                kalman_gain * measurement_noise_ * kalman_gain.transpose();
+  clampCovariance();
+  model_->normalizeYaw(state_);
+}
+
+std::shared_ptr<KalmanFilterBase> createKalmanFilter(
     const MotionModelType model_type,
-    const MultiModelKalmanFilterConfig& config) {
+    const MultiModelKalmanFilterConfig& raw_config) {
+  MultiModelKalmanFilterConfig config = raw_config;
+  sanitizeConfig(config);
+
   switch (model_type) {
-    case MotionModelType::CA3D:
-      return std::make_unique<MultiModelKalmanFilter>(config);
+    case MotionModelType::CA2D: {
+      auto model = std::make_shared<CAMotionModel>(config.ca_human, false);
+      model->setDt(config.default_dt);
+      return configureLinearFilter(model, config);
+    }
+    case MotionModelType::CA3D: {
+      auto model = std::make_shared<CAMotionModel>(config.ca_uav, true);
+      model->setDt(config.default_dt);
+      return configureLinearFilter(model, config);
+    }
+    case MotionModelType::CV3D: {
+      auto model = std::make_shared<CVMotionModel>(config.cv);
+      model->setDt(config.default_dt);
+      return configureLinearFilter(model, config);
+    }
+    case MotionModelType::CTRA: {
+      auto model = std::make_shared<CTRAMotionModel>(config.ctra);
+      model->setDt(config.default_dt);
+      return configureExtendedFilter(model, config);
+    }
   }
 
   throw std::invalid_argument("unsupported motion model");
+}
+
+std::shared_ptr<KalmanFilterBase> createKalmanFilter(
+    const bool is_human,
+    const bool is_vehicle,
+    const bool is_uav,
+    const bool is_other,
+    const MultiModelKalmanFilterConfig& config) {
+  if (is_human) {
+    return createKalmanFilter(MotionModelType::CA2D, config);
+  }
+  if (is_uav) {
+    return createKalmanFilter(MotionModelType::CA3D, config);
+  }
+  if (is_vehicle) {
+    return createKalmanFilter(MotionModelType::CTRA, config);
+  }
+  if (is_other) {
+    return createKalmanFilter(MotionModelType::CV3D, config);
+  }
+  return createKalmanFilter(MotionModelType::CV3D, config);
 }
 
 }  // namespace ldopcore

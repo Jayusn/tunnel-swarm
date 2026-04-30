@@ -87,6 +87,7 @@ add_library(ldop_core
   src/ldop.cpp
   src/dynamic_object_clusterer.cpp
   src/dynamic_object_tracker.cpp
+  src/motion_model.cpp
   src/multi_model_kalman_filter.cpp
   src/ufomap_mapper.cpp
 )

@@ -174,6 +174,7 @@ DynamicObjectDetection fragmentToDetection(const Fragment& fragment,
                                            const ros::Time& stamp) {
   DynamicObjectDetection detection;
   detection.detection_id = detection_id;
+  detection.point_count = fragment.point_count;
   const double point_count = static_cast<double>(std::max<std::size_t>(fragment.point_count, 1U));
   detection.bbox.center.x = fragment.sum_x / point_count;
   detection.bbox.center.y = fragment.sum_y / point_count;
@@ -338,6 +339,10 @@ std::vector<DynamicObjectDetection> DynamicObjectClusterer::buildDetections(
     return {};
   }
 
+  // 本函数按“体素桶 -> key 空间连通域 -> Fragment 统计量 -> 当前帧后处理 -> detection”
+  // 的顺序组织。读代码时先跟着这条主线走，neighborOffsets()/shiftedKey() 只是 BFS
+  // 找邻居的工具函数，mergeFragmentedDetections() 是 detection 生成前的局部修正。
+
   // 1) 先按体素 key 聚合点，后续在 key 空间做连通域，避免对原始点做半径搜索。
   std::vector<VoxelBucket> buckets;
   std::unordered_map<ClusterKey, std::size_t, ClusterKeyHash> bucket_by_key;
@@ -372,7 +377,7 @@ std::vector<DynamicObjectDetection> DynamicObjectClusterer::buildDetections(
             });
 
   // 3) 在 UFOMap key 空间做 BFS 连通域，每个连通块对应一个候选目标。
-  const auto offsets = neighborOffsets(params_.connectivity);  // 根据连通域大小生成邻域偏移，供后续 BFS 使用。
+  const auto offsets = neighborOffsets(params_.connectivity);
   std::vector<bool> visited(buckets.size(), false);
   std::vector<Fragment> fragments;
 
@@ -387,8 +392,8 @@ std::vector<DynamicObjectDetection> DynamicObjectClusterer::buildDetections(
     visited[start_bucket] = true;
 
     while (!queue.empty()) {
-      const std::size_t bucket_index = queue.front(); // 读队首
-      queue.pop(); // 弹队首，把这个队首元素从队列中移除。
+      const std::size_t bucket_index = queue.front();
+      queue.pop();
 
       const auto& bucket = buckets[bucket_index];
       // 将当前桶里的点索引并入当前连通块。
@@ -417,8 +422,8 @@ std::vector<DynamicObjectDetection> DynamicObjectClusterer::buildDetections(
       continue;
     }
 
-    // 4) 同时计算当前连通块的轴对齐包围盒 (AABB) 和点簇质心。
-    // AABB 尺寸用于可视化/尺度过滤；质心用于目标位置观测，和 LDOT 的 bbox.x/y 语义对齐。
+    // 4) 统计当前连通块的 Fragment。min/max 形成真实 AABB，sum/count 保留点云质心；
+    // 后面可能会合并上下碎片，所以这里先不直接生成 DynamicObjectDetection。
     double min_x = std::numeric_limits<double>::infinity();
     double min_y = std::numeric_limits<double>::infinity();
     double min_z = std::numeric_limits<double>::infinity();

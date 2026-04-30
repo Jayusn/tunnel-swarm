@@ -41,7 +41,7 @@
 ### 第二阶段：动态点云聚类、检测与跟踪
 - 目标：
   - 将第一阶段输出的动态点云从“动态点集合”提升为“动态目标集合”。
-  - 对动态目标进行跨帧关联，形成稳定目标 ID 和速度估计。
+  - 对动态目标进行跨帧关联，形成稳定目标 ID、对象类别和速度估计。
 - 主要输入：
   - `/ldop/dynamic_cloud`
   - 无人机位姿/里程计
@@ -51,15 +51,19 @@
   - 小簇过滤
   - 包围盒或尺寸估计
   - 目标中心估计
+  - 基于 bbox 尺寸、质心高度和轨迹历史进行 human / vehicle / UAV / other 分类
   - 跨帧数据关联
+  - 根据确认类别在 CA2D / CTRA / CA3D / CV3D 间切换运动模型
   - 速度估计与目标状态维护
 - 必须输出：
-  - `/ldop/dynamic_objects`：包含目标 id、中心、尺寸、速度
+  - `/ldop/dynamic_objects`：包含目标 id、中心、尺寸、速度和 `object_class`
   - 可选 `/ldop/dynamic_clusters`：带聚类结果的动态点云
-  - 可选 `/ldop/dynamic_object_markers`：目标框和轨迹 RViz 可视化
+  - 可选 `/ldop/dynamic_object_markers`：当前帧目标框 RViz 可视化
+  - `/ldop/dynamic_track_markers`：轨迹历史线、头部球和目标上方 ID/类别/速度文字
 - 验收重点：
   - 同一动态目标在连续帧中尽量保持稳定 ID
   - 目标中心、尺寸和速度估计随时间连续
+  - 新轨迹分类前保持 `UNKNOWN`，类别证据稳定后再发布 human / vehicle / UAV / other
   - 聚类错误不应反向破坏第一阶段静态地图输出
 
 ### 第三阶段：动态目标短时轨迹预测

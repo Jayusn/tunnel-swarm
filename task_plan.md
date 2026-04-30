@@ -6,7 +6,8 @@
 
 ## 当前状态
 
-- 当前阶段：阶段 10 已完成，实施计划已在独立 worktree 中落地并完成临时构建/测试验证。
+- 当前阶段：阶段 13 已完成，目标分类 + 多运动模型 KF/EKF 已在当前工作区落地并通过构建/测试验证。
+- 上一阶段：阶段 10 已完成，第一版单 CA3D 跟踪实施计划已在独立 worktree 中落地并完成临时构建/测试验证。
 - 设计文档：`docs/superpowers/specs/2026-04-24-dynamic-object-tracking-design.md` 已完成第一版收口。
 - 实施计划：`docs/superpowers/plans/2026-04-25-dynamic-object-tracking-implementation-plan.md` 已生成。
 - 执行方式：用户已选择 `Subagent-Driven (recommended)`。
@@ -26,6 +27,9 @@
 | 8 | complete | 生成实施计划文档并同步过程记录 |
 | 9 | complete | 按 `Superpowers` 的 writing-plans handoff，由用户选择执行方式 |
 | 10 | complete | 按 `Superpowers:subagent-driven-development` 执行实施计划与阶段评审；受子代理额度限制，后半段由主代理完成 review、修复和验证 |
+| 11 | complete | 按 `superpowers:brainstorming` 调研当前 LDOP 与 `/home/st/catkin/LDOT/ldot_detector`，收敛目标分类和多运动模型 KF/EKF 的设计边界 |
+| 12 | complete | 用户审阅 `docs/superpowers/specs/2026-04-30-dynamic-object-classification-multimodel-design.md`，确认后进入实施计划 |
+| 13 | complete | 执行 `docs/superpowers/plans/2026-04-30-dynamic-object-classification-multimodel-implementation-plan.md`，实现目标分类、证据积分和模型切换 |
 
 ## 决策记录
 
@@ -48,6 +52,18 @@
 | 2026-04-25 | 使用项目内 `.worktrees/` 创建隔离工作区 | 用户明确要求把 worktree 建在项目内 `.worktrees/` |
 | 2026-04-25 | 阶段 1 以“先实现、再做 spec 复核”的方式通过 | 子代理实现消息契约与 clusterer 接口改造后，复核确认未越阶段塞入 tracker 主流程 |
 | 2026-04-25 | 实施计划 5 个阶段已在 worktree 完成 | 子代理额度触顶后，主代理继续完成 phase 3 code review、phase 4 集成、phase 5 参数与验证 |
+| 2026-04-30 | 新一轮目标分类和多运动模型实现先走设计门 | 用户显式要求使用 `superpowers:brainstorming`，因此在设计获批前只调研、记录和收敛方案，不修改实现代码 |
+| 2026-04-30 | 本轮分类范围限定为对象类别分类 | LDOP 的动静态点云分割已经由 UFOMap 链路实现，本轮只补 human/vehicle/uav/else 类别、模型选择和模型切换 |
+| 2026-04-30 | 新轨迹默认 `else + CV3D`，分类后再切模型 | 用户确认采用最贴近 LDOT 的时机：新轨迹先稳住，达到 `classification_start_frame` 后分类，若类别变化则在 Kalman update 前切到对应模型 |
+| 2026-04-30 | `UNKNOWN` 与 `OTHER` 在对外消息中分开 | `UNKNOWN` 表示尚未可靠分类；`OTHER` 表示已分类但不属于 human/vehicle/uav，避免把新轨迹默认 CV3D 误解为已确认其他类别 |
+| 2026-04-30 | 分类规则采用 LDOT 核心尺寸/质心规则，但适配 LDOP 数据边界 | 用户确认使用历史最大 bbox 尺寸和当前 detection 质心高度分类；不引入点云 PCA/std 或运动投票 |
+| 2026-04-30 | 参数组织采用混合方案 | 生命周期/关联/分类参数继续扁平化，多模型 Kalman 参数按 LDOT 使用 `kalman_filter/...` 树状分组 |
+| 2026-04-30 | `DynamicObject.msg` 本轮只新增 `uint8 object_class` | 加速度、yaw、motion model 保持 tracker 内部状态，不进入本轮对外 ROS 消息合同 |
+| 2026-04-30 | 纳入 LDOT 临时合并/分离检测机制 | 用户确认本轮实现尺寸比例 + 点数比例保护，用于分类和 bbox 尺寸稳定；不扩展为轨迹去重或重新聚类 |
+| 2026-04-30 | 设计文档落地但不创建提交 | 仓库规则要求任务过程中不创建中间提交；本轮只写入 spec 和规划记录，等待用户审阅 |
+| 2026-04-30 | 设计文档改为中文 | 用户指出英文 spec 不符合 `AGENTS.md` 的中文默认要求；已按仓库语言规则修正 |
+| 2026-04-30 | 分类稳定改为证据积分和滞回切换 | 用户认为固定间隔和连续次数还可优化；本轮删除 `classification_interval_sec`、`classification_stable_confirmations` 和 `classify_xy_distance_threshold`，可靠匹配帧更新类别分数，coasting/疑似遮挡帧冻结证据，尺寸变化确认继续使用 `classification_size_change_confirm_frames` |
+| 2026-04-30 | 本轮在当前工作区内联执行 | 用户已明确说“继续”；本轮不创建中间提交，也不额外开子代理，直接在当前 LDOP 工作区按实施计划执行 |
 
 ## 已收口与后续阶段设计项
 
@@ -58,7 +74,7 @@
 | P1 | 参数组织方式 | 已收口：继续使用扁平 `tracking_*` | 保持与当前 `ldop.yaml` 风格一致 |
 | P1 | adaptive Q/R 公式 | 已收口：语义对齐 LDOT 当前 innovation-window + EMA 实现 | 不另设计新公式 |
 | P1 | 轨迹 history 内容 | 已收口：`TrackHistorySample = stamp + position + velocity + matched` | 第一版不保存协方差历史 |
-| P2 | `/ldop/dynamic_track_markers` 细节 | 已收口：固定为 `LINE_STRIP` 历史线 + `SPHERE` 头部 | coasting 时降低 alpha |
+| P2 | `/ldop/dynamic_track_markers` 细节 | 已更新：`LINE_STRIP` 历史线 + `SPHERE` 头部 + `TEXT_VIEW_FACING` 标签 | 标签显示 ID、类别和速度模长 |
 | P2 | `/ldop/dynamic_object_markers` 细节 | 已收口：沿用现有 clusterer 样式 | `dynamic_object_bbox` + `LINE_LIST` + 橙色线框 |
 | P2 | 未来预测消息 | 后续阶段设计项 | 第三阶段再定义独立预测消息字段 |
 | P2 | 未来类别和多模型切换 | 后续阶段设计项 | 第一版只保留 `MotionModelType` 和 factory |
@@ -69,3 +85,6 @@
 |------|------|------|
 | 2026-04-24 | 一次 `rg` 检查命令的正则中包含未转义反引号，shell 误解释了片段 | 后续改用单引号或避免在 shell 正则中直接混用反引号；已重新用安全命令完成检查 |
 | 2026-04-25 | 一次读取 brainstorming skill 路径时命中文件不存在的旧缓存路径 | 直接回退到现有规划文件和仓库上下文继续，不影响设计文档收口 |
+| 2026-04-30 | 新增设计文档最初使用英文，违反 `AGENTS.md` 中“面向用户默认简体中文”的约定 | 已读取 `AGENTS.md` 并把 `docs/superpowers/specs/2026-04-30-dynamic-object-classification-multimodel-design.md` 全文改为中文，代码标识符和配置键保留英文 |
+| 2026-04-30 | 一次 `rg` 检查命令把反引号放在双引号正则里，shell 误执行了 `CA3D` 片段 | 已用单引号重跑检查；后续包含反引号的 shell 正则继续用单引号 |
+| 2026-04-30 | 第一次 `git diff --check` 在 `/home/st/ldop_ws` 执行，那里不是 git 仓库 | 已在 `/home/st/ldop_ws/src/LDOP` 重新执行，结果通过 |

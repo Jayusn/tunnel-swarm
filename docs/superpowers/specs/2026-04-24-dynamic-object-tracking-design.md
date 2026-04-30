@@ -326,12 +326,13 @@ tracking_ca_initial_acceleration_cov: 10.0
 - color：`rgba = (0.95, 0.35, 0.10, 1.0)`
 - 不显示文字标签，不单独显示 detection id
 
-跟踪阶段新增 `/ldop/dynamic_track_markers`。第一版固定输出两类 marker，不再保留“线/点/箭头三选一”的模糊描述：
+跟踪阶段新增 `/ldop/dynamic_track_markers`。当前固定输出三类 marker，不再保留“线/点/箭头三选一”的模糊描述：
 
 - `dynamic_track_history`：`LINE_STRIP`，使用 `TrackHistorySample.position` 绘制历史轨迹线，颜色 `rgba = (0.10, 0.80, 0.95, 1.0)`，`scale.x = 0.04`
-- `dynamic_track_head`：`SPHERE`，显示当前稳定轨迹头部，颜色与历史线一致，`scale.x/y/z = 0.12`
+- `dynamic_track_head`：`SPHERE`，显示当前稳定轨迹头部，颜色与历史线一致，`scale.x/y/z = 0.18`
+- `dynamic_track_label`：`TEXT_VIEW_FACING`，显示轨迹 ID、类别和速度模长，位置在当前目标上方
 
-`dynamic_track_markers` 也在每帧开头先发一个 `DELETEALL`。如果轨迹当前处于 coasting 状态，则 `dynamic_track_history` 和 `dynamic_track_head` 的 alpha 降为 `0.35`，用来区分“真实检测更新”和“仅预测保活”。第一版不显示 track id 文本，不额外绘制速度箭头，避免 marker 数量和 RViz 负担过大。`/ldop/dynamic_object_markers` 和 `/ldop/dynamic_track_markers` 共同构成第二阶段的检测跟踪可视化：前者看当前帧检测框，后者看跨帧轨迹连续性。
+`dynamic_track_markers` 也在每帧开头先发一个 `DELETEALL`。如果轨迹当前处于 coasting 状态，则这些轨迹 marker 的 alpha 降低，用来区分“真实检测更新”和“仅预测保活”。当前仍不额外绘制速度箭头，避免 marker 数量和 RViz 负担过大。`/ldop/dynamic_object_markers` 和 `/ldop/dynamic_track_markers` 共同构成第二阶段的检测跟踪可视化：前者看当前帧检测框，后者看跨帧轨迹连续性和 track 状态。
 
 ## 数据流
 

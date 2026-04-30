@@ -58,6 +58,88 @@
 - 已对 spec 做轻量自检：旧的“预测数组保持空”表述已经改为“`DynamicObject.msg` 不包含预测数组”；`/ldop/dynamic_object_markers` 明确归 clusterer 检测框，`/ldop/dynamic_track_markers` 明确归 tracker 轨迹。
 - 用户要求第一版关联求解器直接使用 Hungarian，以保持与 LDOT 一致；spec 已从贪婪最小代价分配改为 Hungarian 分配。
 
+## 2026-04-30 新任务事实
+
+- 用户要求继续参考 LDOT，完整实现目标分类和多运动模型 KF/EKF；这已经超出上一轮“第一版默认 CA3D，类别切换暂不启用”的范围。
+- 本轮必须先使用 `superpowers:brainstorming` 做设计收敛：设计获批前不改实现代码。
+- 本轮继续使用 `planning-with-files-zh`，关键发现写入 `findings.md`，阶段进度写入 `task_plan.md` 和 `progress.md`。
+- 仓库规则要求任务过程中不创建中间提交；因此即使设计文档落地，也不在用户明确要求前提交。
+
+## 2026-04-30 待核实内容
+
+- 当前主工作区是否已经包含上一轮 worktree 的 tracker/Kalman 实现，还是仍停留在更早的主线状态。
+- 当前 LDOP 的 `DynamicObject` / detection / tracker 内部结构是否已有类别字段、yaw、acceleration、模型类型等扩展点。
+- LDOT 当前目标分类入口、类别字段、模型选择和 `switchKalmanModel()` 的真实调用顺序。
+- LDOT 的 CV/CA/CTRA 模型状态维度、测量维度、噪声参数、线性 KF 与 EKF 的分工。
+- LDOP 本轮是否需要完全复制 LDOT 类别集合，还是保留 LDOP 更小的阶段二输出合同。
+
+## 2026-04-30 已核实现状
+
+- 当前主工作区已经包含 `include/ldop/dynamic_object_tracker.h`、`include/ldop/multi_model_kalman_filter.h`、`include/ldop/motion_model.h` 以及对应 `.cpp`，说明上一轮滤波/跟踪实现已经进入主线。
+- 当前 `DynamicObjectTrackerConfig` 仍有单个 `model_type{MotionModelType::CA3D}`；`TrackState` 虽保存 `model_type`，但 tracker 入口尚未按类别选择或切换模型。
+- 当前 `DynamicObject.msg` 只有 `id/center/size/velocity`，没有类别、yaw、加速度、模型类型或分类置信度字段。
+- 当前 `MultiModelKalmanFilterConfig` 已包含 `ca_human`、`ca_uav`、`cv`、`ctra` 四组参数，并已有 `LinearKalmanFilter` / `ExtendedKalmanFilter` 接口；这说明本轮更像是补齐分类入口、模型选择/切换、参数和消息合同，而不是从零写滤波器。
+- 当前 `MotionModelType` 已覆盖 `CA2D/CA3D/CV3D/CTRA`；`createKalmanFilter(bool is_human, bool is_vehicle, bool is_uav, bool is_other, ...)` 已按 LDOT 类别映射到 CA2D、CTRA、CA3D、CV3D。
+- 当前 `CAMotionModel`、`CVMotionModel` 是线性模型，`CTRAMotionModel` 覆写 `stateTransition()` 和雅可比，已通过 `ExtendedKalmanFilter` 接入。
+- 当前 `config/ldop.yaml` 只有 `tracking_ca_*` 参数，尚未暴露 human/uav/vehicle/other 分组参数，也没有分类参数。
+- 当前 clusterer 到 tracker 的输入仍只是 `std::vector<DynamicObjectDetection>`，需要继续核实 `DynamicObjectDetection` 是否有类别字段；从已读接口看，分类目前还没有进入主流程。
+- 当前 `DynamicObjectDetection` 只有 `detection_id`、`bbox`、`stamp`；`BoundingBox3D` 虽有 `yaw`，但 detection 和输出消息都没有目标类别。
+- 当前 `DynamicObjectTracker::createTrack()` 始终用 `config_.model_type` 创建 `TrackState`，且该配置默认 `CA3D`；`buildOutput()` 只发布 `id/center/size/velocity`。
+- 当前 `CMakeLists.txt` 已把 `src/motion_model.cpp` 和 `src/multi_model_kalman_filter.cpp` 编进 `ldop_core`，但没有找到 tracker/Kalman 测试文件；上一轮进度中的测试结果不能直接代表当前主线测试资产仍存在。
+
+## 2026-04-30 LDOT 初步对照
+
+- LDOT 参考路径为 `/home/st/catkin/LDOT/ldot_detector`；源码主要放在 `include/ldot_detector/*.cpp/.h`，配置目录是 `cfg/`。
+- LDOT `box3D` 同时保存 bbox、稳定/临时 id、速度、加速度、`is_human/is_che/is_uav/is_else`、动态标志、估计标志、`fix_size` 和 `yaw`。
+- LDOT 的运动模型/KF 结构与当前 LDOP 底座基本同源：human -> 2D CA，uav -> 3D CA，vehicle -> CTRA EKF，else -> 3D CV。
+- LDOT `KF_Params` 还包含 `prediction_cov_multiplier`；当前 LDOP `MultiModelKalmanFilterConfig` 没有该字段，因为当前阶段还不做未来预测。
+- LDOT 跟踪顺序是 `runTracking()` -> `boxAssociation()` -> 对匹配旧轨迹做分类/必要时 `switchKalmanModel()` -> `kalmanFilterAndUpdateHist()` -> `removeDuplicateTracks()`。
+- LDOT 新轨迹默认初始化为 `is_else` + 3D CV；达到 `classification_start_frame` 后才对匹配旧轨迹按尺寸/质心规则分类。
+- LDOT 分类逻辑使用历史最大尺寸判断 human/vehicle/uav/else，并用 `classification_interval_sec` 控制重分类频率；连续相同明确分类达到 `fix_size_classification_threshold` 后会固定分类和尺寸。
+- LDOT `switchKalmanModel()` 在 Kalman update 前执行；它从旧模型预测后的状态抽取位置/速度，再转换到新模型状态维度：human CA2D、vehicle CTRA、uav CA3D、else CV3D。
+- LDOT 参数组织采用 `kalman_filter/...` 树状分组，分别给 human CA、uav CA、CV、CTRA 配置噪声与协方差；当前 LDOP 仍只有扁平 CA 参数。
+- LDOT 的动态/静态分类文档还包含点云运动投票等动态性判别，但 LDOP 当前阶段的“目标分类”更接近对象类别 human/vehicle/uav/else，而不是重新做动静态点云分类。
+- 用户已确认：LDOP 的动静态分类从一开始已经由 UFOMap 分割链路实现，本轮“目标分类”只做对象类别分类和模型切换，不搬 LDOT 的动态/静态投票分类模块。
+- 用户已确认：新轨迹先默认 `else + CV3D`；当轨迹命中数达到 `classification_start_frame` 后才执行对象类别分类；如果分类结果变为 `human/vehicle/uav/else`，则在本帧 Kalman update 前切换到 `CA2D/CTRA/CA3D/CV3D`。
+- 用户认可对外类别枚举分成 `UNKNOWN=0, HUMAN=1, VEHICLE=2, UAV=3, OTHER=4`；其中 `UNKNOWN` 只表示尚未可靠分类，`OTHER` 表示已经执行分类但不满足前三类规则。
+- 设计含义：新轨迹内部可使用 `CV3D` 作为默认滤波模型，但 `DynamicObject.msg.object_class` 在分类前应发布 `UNKNOWN`，不能因为内部模型是 CV3D 就对外发布 `OTHER`。
+- 用户已确认：对象类别分类按 LDOT 的核心尺寸/质心规则做 LDOP 适配，使用轨迹历史最大 bbox 尺寸和当前 detection 质心高度；`classification_start_frame` 继续作为新轨迹开始分类前的最小命中数。
+- 本轮不引入点云 PCA/std 作为分类输入，也不引入 LDOT 的点云运动投票动态性判别；这保持 tracker 输入仍为 detection/bbox/centroid 级别。
+- 用户已确认参数组织：`tracking_*` 生命周期/关联参数和 `classification_*` 对象类别参数保持扁平；多模型 Kalman 噪声和协方差参数按 LDOT 采用 `kalman_filter/ca_model/human/...`、`kalman_filter/ca_model/uav/...`、`kalman_filter/cv_model/...`、`kalman_filter/ctra_model/...` 分组。
+- 用户已确认：`DynamicObject.msg` 本轮只增加 `uint8 object_class`；不增加 acceleration、yaw、motion_model 或分类置信度字段。
+- 用户追问 LDOT 合并/分离检测机制后重新核对：LDOT 在分类前先比较当前 bbox 尺寸与历史最大尺寸的比例，以及当前点数与上一帧点数的比例；短期突增视为临时合并，短期突减视为临时分离。
+- LDOT 对临时合并/分离使用 `largeSizeCounter_` / `smallSizeCounter_` 和 `classification_size_change_confirm_frames` 做确认；临时状态下使用历史最大尺寸替代当前尺寸，避免分类被瞬时粘连/分裂污染。
+- 当前 LDOP `Fragment` 已经统计 `point_count`，但 `DynamicObjectDetection` 尚未暴露该字段；如果要贴近 LDOT，可把 `point_count` 加到内部 detection，用于 tracker 的合并/分离保护，不需要把原始点云历史带入 tracker。
+- 用户已确认：本轮纳入 LDOT 的临时合并/分离检测机制。实现边界是 tracker 内部的分类尺寸保护和 bbox 尺寸稳定，不做 `removeDuplicateTracks()`，也不改变 clusterer 的连通域/竖向碎片合并流程。
+
+## 2026-04-30 错误与缺口
+
+- 读取 `test/test_multi_model_kalman_filter.cpp` 和 `test/test_dynamic_object_tracker.cpp` 失败：当前主工作区不存在这两个文件。后续设计/实施需要把测试是否恢复或新增列为验证项。
+- 第一次搜索 LDOT 时误把配置目录写成 `/home/st/catkin/LDOT/ldot_detector/config`，实际应使用 `cfg/`；后续已按正确目录继续。
+
+## 2026-04-30 设计产出
+
+- 新增设计文档：`docs/superpowers/specs/2026-04-30-dynamic-object-classification-multimodel-design.md`。
+- 设计文档采用方案 A：在现有 `DynamicObjectTracker` 上增量补齐对象分类、多模型切换、内部 `point_count` 和临时合并/分离保护，不新建独立 classifier 模块，不照搬 LDOT 大主类。
+- 已完成 spec 自检：未发现 `TODO/TBD/待定/占位/FIXME`；`git diff --check -- docs/superpowers/specs/2026-04-30-dynamic-object-classification-multimodel-design.md task_plan.md findings.md progress.md` 通过。
+- 按仓库规则没有创建 git 提交。
+- 用户指出新增 spec 使用英文，不符合 `AGENTS.md` 的语言约定。已读取 `AGENTS.md`，其中明确要求面向用户的自然语言或可视化内容默认用简体中文，代码标识符、命令、配置键、协议名保留英文。
+- 已将 `docs/superpowers/specs/2026-04-30-dynamic-object-classification-multimodel-design.md` 改为中文；保留模型名、参数名、消息字段和命令为英文。
+- 用户质疑 LDOT 的 `classification_size_change_confirm_frames`、`fix_size_classification_threshold` 和 `classify_xy_distance_threshold` 的稳定策略是否重复或可优化。重新核对后结论：LDOT 中 `classification_size_change_confirm_frames` 用于确认持续的尺寸/点数变化是否真实，`fix_size_classification_threshold` 用于连续相同明确类别后设置 `fix_size`；但 `fix_size` 同时表示分类锁定和尺寸固定，语义耦合较强，LDOP 设计应考虑拆成更清楚的状态。
+- 用户决定删除 `classify_xy_distance_threshold`，后续如果需要平台近场保护再单独加入。
+- 设计修正：放弃 `classification_interval_sec` + `classification_stable_confirmations` 的固定间隔/连续次数方案，改为 `classification_scores` 证据积分。可靠匹配帧按当前 bbox 分类结果更新分数，最高分达到 `classification_confirm_score` 且领先第二名至少 `classification_switch_margin` 后才确认或切换类别。
+- 短时遮挡处理已收口：coasting 帧冻结类别分数和当前模型，不把缺观测当成反证；遮挡后如果 bbox/点数突降，先按临时分离或疑似遮挡残片冻结类别证据，等观测稳定后再继续积分。
+
+## 2026-04-30 实施结果
+
+- 已按设计实现目标类别输出：`DynamicObject.msg` 增加 `CLASS_UNKNOWN/HUMAN/VEHICLE/UAV/OTHER` 常量和 `object_class` 字段。
+- 内部 detection 已增加 `point_count`，clusterer 在 `fragmentToDetection()` 中把 `Fragment::point_count` 传给 tracker。
+- 新轨迹现在以 `Unknown + CV3D` 初始化；达到 `classification_start_frame` 后，可靠匹配帧更新 `classification_scores`。
+- 分类证据策略已按用户确认的优化方案落地：可靠匹配帧 decay + increment，coasting、临时合并/分离和疑似遮挡残片帧冻结证据；不实现 `classification_interval_sec`、`classification_stable_confirmations` 或 `classify_xy_distance_threshold`。
+- 模型切换在 matched-track Kalman update 前执行；`initializeState()` 用于把旧模型的位置/速度迁移到新模型状态，CTRA yaw 优先由速度方向估计，低速时保留旧 yaw 或置 0。
+- `config/ldop.yaml` 已加入分类参数和 `kalman_filter/...` 分组；旧 `tracking_ca_*` 参数保留为兼容默认值，不再作为主语义入口。
+- 文档已同步：tracker 执行流程、数学逻辑和 LDOP 第二阶段路线图都记录了对象类别、证据积分和模型切换语义。
+
 ## 已收口结论与后续阶段项
 
 - 已确认：动态对象跟踪第一版按当前 spec 完整版推进，包含 adaptive Q/R、cov limit、history、coasting gate 放松等参数。
@@ -71,7 +153,7 @@
 - 已收口：参数组织继续使用扁平 `tracking_*`，不在第一版引入 `tracking/...`、`kalman_filter/...` 树状命名。
 - 已收口：adaptive Q/R 公式语义直接对齐 LDOT 当前 `innovation_buffer + C_gamma + EMA + min_noise_ratio` 实现。
 - 已收口：track history 固定为 `TrackHistorySample(stamp, position, velocity, matched)`，不保存协方差历史。
-- 已收口：`/ldop/dynamic_track_markers` 固定为 `LINE_STRIP` 历史线和 `SPHERE` 头部，coasting 轨迹降低 alpha，不显示文本 id，不画速度箭头。
+- 已更新：`/ldop/dynamic_track_markers` 固定为 `LINE_STRIP` 历史线、`SPHERE` 头部和 `TEXT_VIEW_FACING` 标签；标签显示轨迹 ID、类别和速度模长，仍不画速度箭头。
 - 已收口：`/ldop/dynamic_object_markers` 沿用现有 clusterer 线框样式：`dynamic_object_bbox` + `LINE_LIST` + 橙色 + `DELETEALL`。
 - 已产出：实施计划文档已经生成，下一步不再是继续讨论设计，而是决定是否按计划进入实现。
 - 已确认：用户已选择 `Subagent-Driven`，并指定项目内 `.worktrees/` 作为隔离工作区位置。
