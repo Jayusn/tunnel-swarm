@@ -71,7 +71,7 @@
 - phase 3 implementer 已返回，tracker 主流程本体已落地到独立文件与测试中；phase 3 spec compliance review 已通过，当前进入 code quality review。
 - phase 3 code quality review 因子代理额度触顶由主代理接手；已发现并修复关联代价使用欧氏距离的问题，改为 `innovation^T P_pos^-1 innovation` 的 3D 马氏距离，并新增协方差 gate 回归测试。临时 worktree 构建 `test_dynamic_object_tracker` 通过，运行结果 `5/5` 通过。
 - phase 4 已完成：`Ldop` 正式持有 `DynamicObjectTracker`，`/ldop/dynamic_objects` 切换为 tracker 输出，`/ldop/dynamic_object_markers` 保留 clusterer 当前帧检测框，新增 `/ldop/dynamic_track_markers` 发布轨迹历史线和头部点。
-- phase 5 已完成：`config/ldop.yaml` 增加 `dynamic_track_markers_topic` 和第一版 `tracking_*` 参数；`Ldop::loadParameters()` 接入 tracker/filter 配置。主代理修正了 `tracking_adaptive_window_size: 0` 关闭自适应更新的语义，并补了 Kalman 回归测试。
+- phase 5 已完成：`config/ldop.yaml` 增加 `dynamic_track_markers_topic` 和第一版 `tracking_*` 参数；`Ldop::loadParameters()` 接入 tracker/filter 配置。主代理修正了旧扁平 adaptive 参数关闭自适应更新的语义，并补了 Kalman 回归测试。
 - 验证：在临时 CMake 构建目录 `/tmp/ldop_tracking_phase3_check` 中使用 `gcc-11/g++-11` 和显式 `ufomap_DIR` 构建 `ldop_node`、`test_dynamic_object_tracker`、`test_multi_model_kalman_filter`、`test_dynamic_object_clusterer` 均通过；tracker 测试 `5/5` 通过，Kalman 测试 `8/8` 通过，clusterer 测试在临时 `roscore` 下 `12/12` 通过。Eigen 在 GCC11/C++20 下仍输出模板告警，但不影响构建结果。
 
 ## 2026-04-30
@@ -114,7 +114,7 @@
 - 已实现 `DynamicObject.msg.object_class` 和类别常量，`DynamicObjectDetection::point_count` 由 clusterer fragment 传入 tracker。
 - 已给 `KalmanFilterBase` 增加 `initializeState()`，用于模型切换时按新模型状态维度迁移位置、速度和 yaw。
 - 已实现 tracker 内部 `ObjectClass`、`classification_scores` 证据积分、临时合并/分离尺寸保护、coasting 冻结分类证据，以及 `Human/Vehicle/UAV/Other -> CA2D/CTRA/CA3D/CV3D` 的 update 前切换。
-- 已更新 `config/ldop.yaml`：新增分类参数和 `kalman_filter/...` 分组，旧 `tracking_ca_*` 保留为兼容默认值。
+- 已更新 `config/ldop.yaml`：新增分类参数和 `kalman_filter/...` 分组；未使用的旧顶层 CA 兼容参数不再保留。
 - 已同步 `docs/note/dynamic_object_tracker_执行流程说明.md`、`docs/note/dynamic_object_tracker_数学逻辑说明.md` 和 `docs/note/LDOP_design.md`。
 - 验证：`catkin build ldop --no-status` 通过；`catkin run_tests ldop --no-status` 通过，汇总为 4 tests、0 errors、0 failures、0 skipped；`catkin_test_results /home/st/ldop_ws/build/ldop` 汇总同样为 4 tests、0 errors、0 failures、0 skipped；`git diff --check` 在仓库根目录通过。构建仍有既有 Eigen C++20 模板告警。
 - 错误记录：一次 `rg` 检查命令把反引号放在双引号正则里，shell 误执行 `CA3D` 片段；已用单引号重跑。第一次 `git diff --check` 在 `/home/st/ldop_ws` 执行失败，因为该目录不是 git 仓库；已在 `/home/st/ldop_ws/src/LDOP` 重跑通过。

@@ -12,13 +12,13 @@ verbose: true
 
 ufomap_resolution: 0.2  # 叶子体素尺寸
 ufomap_depth_levels: 16  # 八叉树层级规模
-ufomap_inflate_unknown: 1  # 按邻域膨胀d_p未知区域以容忍定位误差 
+ufomap_inflate_unknown: 1  # 按邻域膨胀d_p未知区域以容忍定位误差，单位为一个体素 
 ufomap_inflate_hits_dist: 0.4  # 沿射线扩展d_s命中区域以容忍测距噪声， 天花板/墙顶这种大平面在仿真雷达里容易被斜向射线、体素离散、测距噪声打出“边缘擦过”的情况。
 ufomap_inflate_unknown_compensation: true  # 是否补偿未知区域膨胀
 ufomap_ray_passthrough_hits: false  # 射线是否穿过命中点
 ufomap_down_sampling_method: center  # 积分前降采样策略，可选 none、center、centroid、uniform
 ufomap_min_range: 0.5  # 近点过滤 / 最小积分距离
-ufomap_max_range: -1  # 最大积分距离，还影响当前帧分类输出半径，<=0 表示不限制
+ufomap_max_range: -1  # 最大积分距离，还影响当前帧分类输出半径；-1 表示不限制，其他非负值需大于 ufomap_min_range
 ufomap_insert_only_valid: false  # 仅对有效射线区段执行插入，即ufomap_max_range范围内点的射线段
 ufomap_insert_hit_depth: 0  # 命中点更新深度，0 表示沿用 UFOMap 默认值
 ufomap_insert_miss_depth: 0  # free / miss （失配）更新深度
@@ -48,18 +48,6 @@ tracking_spawn_suppression_distance: 0.5  # 马氏距离关联失败后的第一
 tracking_spawn_suppression_iou_threshold: 0.5  # 马氏距离关联失败后的第二层回退条件：只有 distance 已经过阈值时，才检查 IoU；若最终仍未匹配，也继续抑制建新轨迹；0 表示关闭
 tracking_default_dt: 0.1  # 时间戳异常时回退使用的预测时间步长（秒）
 tracking_max_dt: 0.5  # 预测时间步长上限（秒），防止大间隔导致发散
-tracking_adaptive_window_size: 10  # 兼容旧配置的自适应 Q/R 默认值；kalman_filter 分组存在时会覆盖
-tracking_adaptive_alpha: 0.7  # 兼容旧配置的过程噪声 Q EMA 平滑系数
-tracking_adaptive_r_alpha: 0.7  # 兼容旧配置的测量噪声 R EMA 平滑系数
-tracking_adaptive_min_noise_ratio: 0.2  # 兼容旧配置的自适应噪声下限
-tracking_max_pos_cov: 1.5  # 兼容旧配置的位置协方差上限（m^2）
-tracking_max_vel_cov: 9.0  # 兼容旧配置的速度协方差上限（m/s)^2
-tracking_max_acc_cov: 25.0  # 兼容旧配置的加速度协方差上限（m/s^2)^2
-tracking_ca_jerk_sigma: 3.0  # 兼容旧配置的 CA jerk 噪声标准差
-tracking_ca_position_noise: 0.1  # 兼容旧配置的位置观测噪声方差
-tracking_ca_initial_position_cov: 0.1  # 兼容旧配置的新轨迹初始位置协方差
-tracking_ca_initial_velocity_cov: 1.0  # 兼容旧配置的新轨迹初始速度协方差
-tracking_ca_initial_acceleration_cov: 10.0  # 兼容旧配置的新轨迹初始加速度协方差
 
 # 动态目标类别分类参数
 classification_start_frame: 10  # 轨迹累计命中到该帧数后才开始给类别证据积分

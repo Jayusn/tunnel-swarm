@@ -19,28 +19,6 @@ Eigen::VectorXd positionMeasurementVector(const Eigen::Vector3d& measurement) {
   return vector;
 }
 
-void sanitizeConfig(MultiModelKalmanFilterConfig& config) {
-  config.default_dt = std::isfinite(config.default_dt) && config.default_dt > 0.0
-                          ? config.default_dt
-                          : 0.1;
-  config.adaptive_window_size = std::max(config.adaptive_window_size, 0);
-  config.adaptive_alpha = std::clamp(config.adaptive_alpha, 0.0, 1.0);
-  config.adaptive_r_alpha = std::clamp(config.adaptive_r_alpha, 0.0, 1.0);
-  config.adaptive_min_noise_ratio =
-      std::isfinite(config.adaptive_min_noise_ratio) && config.adaptive_min_noise_ratio > 0.0
-          ? config.adaptive_min_noise_ratio
-          : 0.5;
-  config.max_pos_cov = std::isfinite(config.max_pos_cov) && config.max_pos_cov > 0.0
-                           ? config.max_pos_cov
-                           : 9.0;
-  config.max_vel_cov = std::isfinite(config.max_vel_cov) && config.max_vel_cov > 0.0
-                           ? config.max_vel_cov
-                           : 16.0;
-  config.max_acc_cov = std::isfinite(config.max_acc_cov) && config.max_acc_cov > 0.0
-                           ? config.max_acc_cov
-                           : 100.0;
-}
-
 std::shared_ptr<LinearKalmanFilter> configureLinearFilter(
     const std::shared_ptr<MotionModel>& model,
     const MultiModelKalmanFilterConfig& config) {
@@ -421,10 +399,7 @@ void ExtendedKalmanFilter::update(const Eigen::VectorXd& measurement) {
 
 std::shared_ptr<KalmanFilterBase> createKalmanFilter(
     const MotionModelType model_type,
-    const MultiModelKalmanFilterConfig& raw_config) {
-  MultiModelKalmanFilterConfig config = raw_config;
-  sanitizeConfig(config);
-
+    const MultiModelKalmanFilterConfig& config) {
   switch (model_type) {
     case MotionModelType::CA2D: {
       auto model = std::make_shared<CAMotionModel>(config.ca_human, false);

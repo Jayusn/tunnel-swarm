@@ -81,7 +81,7 @@
 - 当前 `MultiModelKalmanFilterConfig` 已包含 `ca_human`、`ca_uav`、`cv`、`ctra` 四组参数，并已有 `LinearKalmanFilter` / `ExtendedKalmanFilter` 接口；这说明本轮更像是补齐分类入口、模型选择/切换、参数和消息合同，而不是从零写滤波器。
 - 当前 `MotionModelType` 已覆盖 `CA2D/CA3D/CV3D/CTRA`；`createKalmanFilter(bool is_human, bool is_vehicle, bool is_uav, bool is_other, ...)` 已按 LDOT 类别映射到 CA2D、CTRA、CA3D、CV3D。
 - 当前 `CAMotionModel`、`CVMotionModel` 是线性模型，`CTRAMotionModel` 覆写 `stateTransition()` 和雅可比，已通过 `ExtendedKalmanFilter` 接入。
-- 当前 `config/ldop.yaml` 只有 `tracking_ca_*` 参数，尚未暴露 human/uav/vehicle/other 分组参数，也没有分类参数。
+- 当时 `config/ldop.yaml` 只有旧顶层 CA 参数，尚未暴露 human/uav/vehicle/other 分组参数，也没有分类参数。
 - 当前 clusterer 到 tracker 的输入仍只是 `std::vector<DynamicObjectDetection>`，需要继续核实 `DynamicObjectDetection` 是否有类别字段；从已读接口看，分类目前还没有进入主流程。
 - 当前 `DynamicObjectDetection` 只有 `detection_id`、`bbox`、`stamp`；`BoundingBox3D` 虽有 `yaw`，但 detection 和输出消息都没有目标类别。
 - 当前 `DynamicObjectTracker::createTrack()` 始终用 `config_.model_type` 创建 `TrackState`，且该配置默认 `CA3D`；`buildOutput()` 只发布 `id/center/size/velocity`。
@@ -137,7 +137,7 @@
 - 新轨迹现在以 `Unknown + CV3D` 初始化；达到 `classification_start_frame` 后，可靠匹配帧更新 `classification_scores`。
 - 分类证据策略已按用户确认的优化方案落地：可靠匹配帧 decay + increment，coasting、临时合并/分离和疑似遮挡残片帧冻结证据；不实现 `classification_interval_sec`、`classification_stable_confirmations` 或 `classify_xy_distance_threshold`。
 - 模型切换在 matched-track Kalman update 前执行；`initializeState()` 用于把旧模型的位置/速度迁移到新模型状态，CTRA yaw 优先由速度方向估计，低速时保留旧 yaw 或置 0。
-- `config/ldop.yaml` 已加入分类参数和 `kalman_filter/...` 分组；旧 `tracking_ca_*` 参数保留为兼容默认值，不再作为主语义入口。
+- `config/ldop.yaml` 已加入分类参数和 `kalman_filter/...` 分组；旧顶层 CA 参数不再保留为兼容入口，Kalman 噪声和协方差只从 `kalman_filter/...` 读取。
 - 文档已同步：tracker 执行流程、数学逻辑和 LDOP 第二阶段路线图都记录了对象类别、证据积分和模型切换语义。
 
 ## 已收口结论与后续阶段项
@@ -159,5 +159,5 @@
 - 已确认：用户已选择 `Subagent-Driven`，并指定项目内 `.worktrees/` 作为隔离工作区位置。
 - 当前实现进度：实施计划 5 个阶段已经在 `/home/st/ldop_ws/src/LDOP/.worktrees/feature-dynamic-object-tracking` 落地。`DynamicObject.msg` 已移除预测数组，clusterer 正式输出 detection 与检测框 marker，tracker 输出稳定 `DynamicObjectArray`，`Ldop` 已接入 tracker 和 `/ldop/dynamic_track_markers`。
 - 当前验证事实：worktree 临时 CMake 构建已通过 `ldop_node`、`test_dynamic_object_tracker`、`test_multi_model_kalman_filter`、`test_dynamic_object_clusterer`；运行结果分别覆盖 tracker `5/5`、Kalman `8/8`、clusterer `12/12`。由于 worktree 是嵌套在主仓内，常规 `/home/st/ldop_ws` catkin source space 仍指向主工作区，不能直接代表 worktree 构建结果。
-- 当前实现限制：第一版仍只支持 `CA3D`；`tracking_ca_initial_position/velocity/acceleration_cov` 和 `tracking_max_pos/vel/acc_cov` 在当前 filter 接口中折算为单一初始协方差/协方差上限，后续若要严格分轴/分状态上限，需要扩展 `MultiModelKalmanFilterConfig`。
+- 历史实现限制：第一版只支持 `CA3D`，且旧扁平 CA/协方差参数会折算成单一初始协方差/协方差上限；当前多模型主线已改为按 `kalman_filter/...` 分组表达这些量。
 - 后续阶段：未来预测消息字段、CV/CTRA、目标类别字段和模型切换策略放到后续阶段；第一版只保留扩展边界。

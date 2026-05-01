@@ -20,16 +20,16 @@ struct MultiModelKalmanFilterConfig {
   CTRAParams ctra;
 
   // 自适应 Q/R 参数。window_size <= 1 表示关闭自适应估计，直接使用模型基础 Q/R。
-  int adaptive_window_size{5};
-  double adaptive_alpha{0.3};
-  double adaptive_r_alpha{0.3};
-  double adaptive_min_noise_ratio{0.5};
+  int adaptive_window_size{10};
+  double adaptive_alpha{0.7};
+  double adaptive_r_alpha{0.7};
+  double adaptive_min_noise_ratio{0.2};
 
   // 协方差上限用于防止长时间 coast 或异常观测后状态不确定性无限膨胀。
   bool enable_cov_limit{true};
-  double max_pos_cov{9.0};
-  double max_vel_cov{16.0};
-  double max_acc_cov{100.0};
+  double max_pos_cov{1.0};
+  double max_vel_cov{9.0};
+  double max_acc_cov{25.0};
 };
 
 class KalmanFilterBase {
@@ -87,16 +87,16 @@ class KalmanFilterBase {
   bool initialized_{false};
 
   std::deque<Eigen::VectorXd> innovation_buffer_;
-  int adaptive_window_size_{5};
-  double adaptive_alpha_{0.3};
-  double adaptive_r_alpha_{0.3};
+  int adaptive_window_size_{10};
+  double adaptive_alpha_{0.7};
+  double adaptive_r_alpha_{0.7};
   Eigen::MatrixXd min_process_noise_;
   Eigen::MatrixXd min_measurement_noise_;
 
   bool enable_cov_limit_{true};
-  double max_pos_cov_{9.0};
-  double max_vel_cov_{16.0};
-  double max_acc_cov_{100.0};
+  double max_pos_cov_{1.0};
+  double max_vel_cov_{9.0};
+  double max_acc_cov_{25.0};
 };
 
 class LinearKalmanFilter final : public KalmanFilterBase {

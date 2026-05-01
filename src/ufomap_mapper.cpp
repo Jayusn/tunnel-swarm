@@ -172,6 +172,51 @@ ufo::DownSamplingMethod toUfoDownSamplingMethod(const std::string& method) {
   return ufo::DownSamplingMethod::CENTER;
 }
 
+UfomapMapperConfig buildUfomapConfig(const UfomapMapperParams& params) {
+  const UfomapMapperParams defaults;
+  UfomapMapperConfig config;
+
+  config.resolution = params.resolution > 0.0 ? params.resolution : defaults.resolution;
+  config.depth_levels = params.depth_levels;
+  // UFOMap 的 depth 必须落在 MapType 支持范围内，插入/射线 depth 也不能超过实际树深度。
+  const int min_depth_levels = static_cast<int>(DufomapMapType::minDepthLevels());
+  const int max_depth_levels = static_cast<int>(DufomapMapType::maxDepthLevels());
+  config.depth_levels = std::clamp(config.depth_levels, min_depth_levels, max_depth_levels);
+  config.insert_hit_depth = std::clamp(params.insert_hit_depth, 0, config.depth_levels);
+  config.insert_miss_depth = std::clamp(params.insert_miss_depth, 0, config.depth_levels);
+  config.ray_casting_depth = std::clamp(params.ray_casting_depth, 0, config.depth_levels);
+  config.min_range = std::max(0.0, params.min_range);
+  if (params.max_range == -1.0) {
+    config.max_range = params.max_range;
+  } else if (params.max_range >= 0.0 && params.max_range > config.min_range) {
+    config.max_range = params.max_range;
+  } else {
+    // max_range 依赖已收束的 min_range；默认最大距离仍越界时退回 -1 的无上限语义。
+    config.max_range = defaults.max_range > config.min_range ? defaults.max_range : -1.0;
+  }
+  config.num_threads = std::max(0, params.num_threads);
+  config.only_valid = params.only_valid;
+  config.inflate_unknown = std::max(0, params.inflate_unknown);
+  config.inflate_unknown_compensation = params.inflate_unknown_compensation;
+  config.ray_passthrough_hits = params.ray_passthrough_hits;
+  config.inflate_hits_dist = std::max(0.0, params.inflate_hits_dist);
+  if (params.down_sampling_method == "none" || params.down_sampling_method == "center" ||
+      params.down_sampling_method == "centroid" || params.down_sampling_method == "uniform") {
+    config.down_sampling_method = params.down_sampling_method;
+  } else {
+    config.down_sampling_method = defaults.down_sampling_method;
+  }
+  config.simple_ray_casting = params.simple_ray_casting;
+  config.simple_ray_casting_factor = params.simple_ray_casting_factor > 0.0
+      ? params.simple_ray_casting_factor : defaults.simple_ray_casting_factor;
+  config.sliding_window_size = std::max(0, params.sliding_window_size);
+  config.parallel = params.parallel;
+  config.propagate = params.propagate;
+  config.static_map_visualization_max_z = params.static_map_visualization_max_z > 0.0
+      ? params.static_map_visualization_max_z : defaults.static_map_visualization_max_z;
+  return config;
+}
+
 template <class Predicate>
 void appendCandidateNodes(const DufomapMapType& map,
                           Predicate&& predicate,
@@ -235,108 +280,77 @@ UfomapMapper::UfomapMapper(ros::NodeHandle& nh,
       world_frame_(world_frame),
       verbose_(verbose),
       params_(),
+      config_(),
       ufomap_update_count_(0U),
       runtime_(nullptr) {
   loadParameters();
   configureUfomap();
 
-  ROS_INFO_STREAM("UFOMap module is ready. resolution: " << params_.resolution
-                  << ", depth levels: " << params_.depth_levels
-                  << ", min range: " << params_.min_range
-                  << ", max range: " << params_.max_range
+  ROS_INFO_STREAM("UFOMap module is ready. resolution: " << config_.resolution
+                  << ", depth levels: " << config_.depth_levels
+                  << ", min range: " << config_.min_range
+                  << ", max range: " << config_.max_range
                   << ", world frame: " << world_frame_);
 }
 
 UfomapMapper::~UfomapMapper() = default;
 
 void UfomapMapper::loadParameters() {
-  pnh_.param("ufomap_resolution", params_.resolution, 0.2);
-  pnh_.param("ufomap_depth_levels", params_.depth_levels, 16);
-  pnh_.param("ufomap_min_range", params_.min_range, 0.5);
-  pnh_.param("ufomap_max_range", params_.max_range, 20.0);
-  pnh_.param("ufomap_insert_hit_depth", params_.insert_hit_depth, 0);
-  pnh_.param("ufomap_insert_miss_depth", params_.insert_miss_depth, 0);
-  pnh_.param("ufomap_ray_casting_depth", params_.ray_casting_depth, 0);
-  pnh_.param("ufomap_num_threads", params_.num_threads, 0);
-  pnh_.param("ufomap_insert_only_valid", params_.only_valid, false);
-  pnh_.param("ufomap_inflate_unknown", params_.inflate_unknown, 0);
-  pnh_.param("ufomap_inflate_unknown_compensation", params_.inflate_unknown_compensation, false);
-  pnh_.param("ufomap_ray_passthrough_hits", params_.ray_passthrough_hits, true);
-  pnh_.param("ufomap_inflate_hits_dist", params_.inflate_hits_dist, 0.0);
-  pnh_.param("ufomap_simple_ray_casting", params_.simple_ray_casting, false);
-  pnh_.param("ufomap_simple_ray_casting_factor", params_.simple_ray_casting_factor, 1.0);
-  pnh_.param("ufomap_sliding_window_size", params_.sliding_window_size, 0);
-  pnh_.param("ufomap_parallel", params_.parallel, true);
-  pnh_.param("ufomap_propagate", params_.propagate, true);
-  pnh_.param("static_map_visualization_max_z", params_.static_map_visualization_max_z, 3.0);
-  pnh_.param<std::string>("ufomap_down_sampling_method", params_.down_sampling_method, "center");
-  params_ = sanitizeUfomapParams(params_);
-}
-
-UfomapMapperParams sanitizeUfomapParams(const UfomapMapperParams& params) {
-  UfomapMapperParams sanitized = params;
-  // 统一做参数合法化，避免非法值进入 UFOMap 积分/查询路径。
-  sanitized.resolution =
-      std::isfinite(sanitized.resolution) && sanitized.resolution > 0.0 ? sanitized.resolution : 0.2;
-  const int min_depth_levels = static_cast<int>(DufomapMapType::minDepthLevels());
-  const int max_depth_levels = static_cast<int>(DufomapMapType::maxDepthLevels());
-  sanitized.depth_levels = std::clamp(sanitized.depth_levels, min_depth_levels, max_depth_levels);
-  sanitized.insert_hit_depth = std::clamp(sanitized.insert_hit_depth, 0, sanitized.depth_levels);
-  sanitized.insert_miss_depth = std::clamp(sanitized.insert_miss_depth, 0, sanitized.depth_levels);
-  sanitized.ray_casting_depth = std::clamp(sanitized.ray_casting_depth, 0, sanitized.depth_levels);
-  sanitized.num_threads = std::max(0, sanitized.num_threads);
-  sanitized.min_range =
-      std::isfinite(sanitized.min_range) ? std::max(0.0, sanitized.min_range) : 0.0;
-  // max_range 使用 <=0 表示不限制；非有限值也统一折叠到这个语义，避免把 inf 传进积分配置。
-  sanitized.max_range = std::isfinite(sanitized.max_range) && sanitized.max_range > 0.0
-                            ? sanitized.max_range
-                            : -1.0;
-  // 当 min_range 大于有效的 max_range 时，收敛到同一上界，避免出现空积分区间。
-  if (sanitized.max_range > 0.0 && sanitized.min_range > sanitized.max_range) {
-    sanitized.min_range = sanitized.max_range;
-  }
-  sanitized.inflate_unknown = std::max(0, sanitized.inflate_unknown);
-  sanitized.inflate_hits_dist = std::max(0.0, sanitized.inflate_hits_dist);
-  sanitized.simple_ray_casting_factor = std::isfinite(sanitized.simple_ray_casting_factor) && 
-          sanitized.simple_ray_casting_factor > 0.0 ? sanitized.simple_ray_casting_factor: 1.0;
-  sanitized.sliding_window_size = std::max(0, sanitized.sliding_window_size);
-  // 可视化高度上限只影响 MarkerArray 输出；非法配置回退到仿真环境当前需要的 3m。
-  sanitized.static_map_visualization_max_z =
-      std::isfinite(sanitized.static_map_visualization_max_z)
-          ? sanitized.static_map_visualization_max_z : 3.0;
-  if (sanitized.down_sampling_method != "none" && sanitized.down_sampling_method != "center" &&
-      sanitized.down_sampling_method != "centroid" && sanitized.down_sampling_method != "uniform") {
-    sanitized.down_sampling_method = "center";
-  }
-  return sanitized;
+  // 默认值只从参数快照结构体取，避免读参处和结构体初值各维护一份数字。
+  const UfomapMapperParams defaults;
+  pnh_.param("ufomap_resolution", params_.resolution, defaults.resolution);
+  pnh_.param("ufomap_depth_levels", params_.depth_levels, defaults.depth_levels);
+  pnh_.param("ufomap_min_range", params_.min_range, defaults.min_range);
+  pnh_.param("ufomap_max_range", params_.max_range, defaults.max_range);
+  pnh_.param("ufomap_insert_hit_depth", params_.insert_hit_depth, defaults.insert_hit_depth);
+  pnh_.param("ufomap_insert_miss_depth", params_.insert_miss_depth, defaults.insert_miss_depth);
+  pnh_.param("ufomap_ray_casting_depth", params_.ray_casting_depth, defaults.ray_casting_depth);
+  pnh_.param("ufomap_num_threads", params_.num_threads, defaults.num_threads);
+  pnh_.param("ufomap_insert_only_valid", params_.only_valid, defaults.only_valid);
+  pnh_.param("ufomap_inflate_unknown", params_.inflate_unknown, defaults.inflate_unknown);
+  pnh_.param("ufomap_inflate_unknown_compensation", params_.inflate_unknown_compensation, defaults.inflate_unknown_compensation);
+  pnh_.param("ufomap_ray_passthrough_hits", params_.ray_passthrough_hits, defaults.ray_passthrough_hits);
+  pnh_.param("ufomap_inflate_hits_dist", params_.inflate_hits_dist, defaults.inflate_hits_dist);
+  pnh_.param("ufomap_simple_ray_casting", params_.simple_ray_casting, defaults.simple_ray_casting);
+  pnh_.param("ufomap_simple_ray_casting_factor", params_.simple_ray_casting_factor, defaults.simple_ray_casting_factor);
+  pnh_.param("ufomap_sliding_window_size", params_.sliding_window_size, defaults.sliding_window_size);
+  pnh_.param("ufomap_parallel", params_.parallel, defaults.parallel);
+  pnh_.param("ufomap_propagate", params_.propagate, defaults.propagate);
+  pnh_.param("static_map_visualization_max_z", params_.static_map_visualization_max_z, defaults.static_map_visualization_max_z);
+  pnh_.param("ufomap_down_sampling_method", params_.down_sampling_method, defaults.down_sampling_method);
+  config_ = buildUfomapConfig(params_);
 }
 
 void UfomapMapper::configureUfomap() {
   // 该函数会在 clearMap() 后重建 runtime。
   ufomap_update_count_.store(0U);
-  runtime_ = std::make_unique<UfomapRuntime>(static_cast<ufo::node_size_t>(params_.resolution),
-                                             static_cast<ufo::depth_t>(params_.depth_levels));
+  runtime_ = std::make_unique<UfomapRuntime>(static_cast<ufo::node_size_t>(config_.resolution),
+                                             static_cast<ufo::depth_t>(config_.depth_levels));
 
   runtime_->integration_params = {};
-  runtime_->integration_params.down_sampling_method = toUfoDownSamplingMethod(params_.down_sampling_method);
-  runtime_->integration_params.hit_depth = static_cast<ufo::depth_t>(params_.insert_hit_depth);
-  runtime_->integration_params.miss_depth = static_cast<ufo::depth_t>(params_.insert_miss_depth);
-  runtime_->integration_params.ray_casting_depth = static_cast<ufo::depth_t>(params_.ray_casting_depth);
-  runtime_->integration_params.min_range = static_cast<float>(params_.min_range);
-  runtime_->integration_params.max_range = static_cast<float>(params_.max_range);
-  runtime_->integration_params.only_valid = params_.only_valid;
-  runtime_->integration_params.inflate_unknown = static_cast<std::size_t>(params_.inflate_unknown);
-  runtime_->integration_params.inflate_unknown_compensation = params_.inflate_unknown_compensation;
-  runtime_->integration_params.ray_passthrough_hits = params_.ray_passthrough_hits;
-  runtime_->integration_params.inflate_hits_dist = static_cast<float>(params_.inflate_hits_dist);
+  runtime_->integration_params.down_sampling_method =
+      toUfoDownSamplingMethod(config_.down_sampling_method);
+  runtime_->integration_params.hit_depth = static_cast<ufo::depth_t>(config_.insert_hit_depth);
+  runtime_->integration_params.miss_depth = static_cast<ufo::depth_t>(config_.insert_miss_depth);
+  runtime_->integration_params.ray_casting_depth =
+      static_cast<ufo::depth_t>(config_.ray_casting_depth);
+  runtime_->integration_params.min_range = static_cast<float>(config_.min_range);
+  runtime_->integration_params.max_range = static_cast<float>(config_.max_range);
+  runtime_->integration_params.only_valid = config_.only_valid;
+  runtime_->integration_params.inflate_unknown = static_cast<std::size_t>(config_.inflate_unknown);
+  runtime_->integration_params.inflate_unknown_compensation =
+      config_.inflate_unknown_compensation;
+  runtime_->integration_params.ray_passthrough_hits = config_.ray_passthrough_hits;
+  runtime_->integration_params.inflate_hits_dist = static_cast<float>(config_.inflate_hits_dist);
   runtime_->integration_params.ray_casting_method =
-      params_.simple_ray_casting ? ufo::RayCastingMethod::SIMPLE : ufo::RayCastingMethod::PROPER;
-  runtime_->integration_params.simple_ray_casting_factor = static_cast<float>(params_.simple_ray_casting_factor);
-  runtime_->integration_params.sliding_window_size = params_.sliding_window_size;
-  if (params_.num_threads > 0) {
-    runtime_->integration_params.num_threads = static_cast<std::size_t>(params_.num_threads);}
-  runtime_->integration_params.parallel = params_.parallel;
-  runtime_->integration_params.propagate = params_.propagate;
+      config_.simple_ray_casting ? ufo::RayCastingMethod::SIMPLE : ufo::RayCastingMethod::PROPER;
+  runtime_->integration_params.simple_ray_casting_factor =
+      static_cast<float>(config_.simple_ray_casting_factor);
+  runtime_->integration_params.sliding_window_size = config_.sliding_window_size;
+  runtime_->integration_params.num_threads =
+      static_cast<std::size_t>(config_.num_threads);
+  runtime_->integration_params.parallel = config_.parallel;
+  runtime_->integration_params.propagate = config_.propagate;
 }
 
 UfomapMapper::UfomapRuntime& UfomapMapper::runtimeLocked() {
@@ -363,7 +377,7 @@ UfomapFrameResult UfomapMapper::processInputCloud(const sensor_msgs::PointCloud2
                                 static_cast<float>(odom_msg.pose.pose.position.z));
   // 先从更新前地图提取轻量可视化快照；允许 RViz 迟一帧，但避免当前帧积分污染分类。
   // 这里把 UFOMap 树遍历放进短读锁里，MarkerArray 组装则留到锁外执行。
-  const double static_map_visualization_max_z = params_.static_map_visualization_max_z;
+  const double static_map_visualization_max_z = config_.static_map_visualization_max_z;
   auto static_map_markers_future =
       std::async(std::launch::async, [this, header = cloud_msg.header, static_map_visualization_max_z] {
         StaticMapVisualizationSnapshot snapshot;
@@ -380,8 +394,8 @@ UfomapFrameResult UfomapMapper::processInputCloud(const sensor_msgs::PointCloud2
   // 当前帧输出只关心配置工作半径内的点，避免对远处点做无意义的 seenFree 查询。
   const ufo::PointCloud* output_points = &extracted.points;
   ufo::PointCloud filtered_output_points;
-  if (params_.max_range > 0.0) {
-    const float max_range_sq = static_cast<float>(params_.max_range * params_.max_range);
+  if (config_.max_range > 0.0) {
+    const float max_range_sq = static_cast<float>(config_.max_range * config_.max_range);
     filtered_output_points.reserve(extracted.points.size());
     for (const auto& point : extracted.points) {
       if (sensor_origin.squaredDistance(point) <= max_range_sq) {

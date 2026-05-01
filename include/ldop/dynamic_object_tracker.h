@@ -25,7 +25,7 @@ enum class ObjectClass : std::uint8_t {
   Other = 4U,
 };
 
-// 跟踪模块内部使用的合法化配置：构造阶段由 ROS 参数转换而来，运行过程中不再反复补默认值。
+// 跟踪模块内部使用的运行时配置：构造阶段由 ROS 参数快照转换而来。
 struct DynamicObjectTrackerConfig {
   // 新轨迹先用最稳妥的 CV3D 承接未知类别，等证据足够后再切到类别模型。
   MotionModelType model_type{MotionModelType::CV3D};
@@ -34,66 +34,62 @@ struct DynamicObjectTrackerConfig {
   // 数据关联使用的卡方 gate 阈值，已经由置信度转换为 3 自由度马氏距离平方阈值。
   double association_gate_threshold{11.34};
   // 漏检轨迹重关联时的 gate 放宽倍数，用于给 coasting 目标更大的回收窗口。
-  double coasting_gate_relax_factor{1.0};
+  double coasting_gate_relax_factor{1.5};
   // bbox 尺寸只做指数平滑，中心位置仍以滤波器状态为准。
-  double box_size_smoothing_alpha{0.3};
+  double box_size_smoothing_alpha{0.5};
   // 马氏距离 gate 失败后的回退关联先看三维中心距离：只有距离判据先通过，才会继续看 IoU；
-  // 若关闭了 IoU 判据（阈值为 0），则距离通过后即可回退匹配。最终未匹配 detection 的建轨抑制也复用它。
-  double spawn_suppression_distance{0.8};
+  // 参数必须大于 0，避免把回退关联意外关掉后导致旋转中心附近反复裂出新 ID。
+  double spawn_suppression_distance{0.5};
   // IoU 是距离判据通过后的第二层回退条件，不是与距离并列抢先判断的独立入口。
-  // 0 表示关闭该判据。未匹配 detection 的建轨抑制同样复用该阈值。
-  double spawn_suppression_iou_threshold{0.1};
+  // 参数范围为 (0,1]；未匹配 detection 的建轨抑制同样复用该阈值。
+  double spawn_suppression_iou_threshold{0.5};
   // 单帧预测 dt 上限，避免时间戳跳变把轨迹一次性外推过远。
   double max_dt{0.5};
-  double invalid_cost{1e9};
-  std::size_t max_coast_frames{2U};
-  std::size_t max_history_size{30U};
+  double invalid_cost{1e9}; // 数据关联中表示无效匹配的成本值，必须大于 gate 阈值。
+  std::size_t max_coast_frames{5U};
+  std::size_t max_history_size{100U};
   std::size_t min_hits_to_publish{2U};
   std::size_t classification_start_frame{10U};
   double classification_score_decay{0.85};
   double classification_score_increment{1.0};
   double classification_confirm_score{3.0};
   double classification_switch_margin{1.5};
-  double classification_size_change_ratio{0.5};
-  double classification_point_count_change_ratio{0.5};
+  double classification_size_change_ratio{0.3};
+  double classification_point_count_change_ratio{0.3};
   std::size_t classification_size_change_confirm_frames{5U};
   std::vector<double> classify_human_threshold{1.1, 0.8};
   std::vector<double> classify_vehicle_threshold{1.5, 0.7};
   std::vector<double> classify_uav_threshold{0.6, 1.5};
 };
 
-// ROS 参数读取后的原始参数快照；具体合法化规则集中在 sanitizeTrackerParams()。
+// ROS 参数读取后的原始参数快照；默认值集中写在这里，运行时配置再由 tracker 构建。
 struct DynamicObjectTrackerParams {
-  int history_size{100};
-  int max_missed_frames{5};
-  int min_hits_to_publish{2};
-  double association_gate_confidence{0.99};
-  double coasting_gate_relax_factor{1.5};
-  double box_size_smoothing_alpha{0.5};
-  double spawn_suppression_distance{0.8};
-  double spawn_suppression_iou_threshold{0.1};
-  double default_dt{0.1};
-  double max_dt{0.5};
-  int adaptive_window_size{10};
-  double adaptive_alpha{0.7};
-  double adaptive_r_alpha{0.7};
-  double adaptive_min_noise_ratio{0.2};
-  double max_pos_cov{1.5};
-  double max_vel_cov{9.0};
-  double max_acc_cov{25.0};
-  double ca_jerk_sigma{3.0};
-  double ca_position_noise{0.1};
-  double ca_initial_position_cov{0.1};
-  double ca_initial_velocity_cov{1.0};
-  double ca_initial_acceleration_cov{10.0};
-  int classification_start_frame{10};
-  double classification_score_decay{0.85};
-  double classification_score_increment{1.0};
-  double classification_confirm_score{3.0};
-  double classification_switch_margin{1.5};
-  double classification_size_change_ratio{0.5};
-  double classification_point_count_change_ratio{0.5};
-  int classification_size_change_confirm_frames{5};
+  int history_size{100};                                // 大于0
+  int max_missed_frames{5};                             // 大于0
+  int min_hits_to_publish{2};                           // 大于0，且小于 history_size，轨迹发布的最小匹配次数
+  double association_gate_confidence{0.7};              // (0,1) ，且由卡方分布分位数转换为门限值，不能直接等同于门限值。
+  double coasting_gate_relax_factor{1.5};               // >=1.0
+  double box_size_smoothing_alpha{0.5};                 // [0,1]
+  double spawn_suppression_distance{0.5};               // >0
+  double spawn_suppression_iou_threshold{0.5};          // (0,1]
+  double default_dt{0.1};                               // >0, 用于初始预测和时间戳异常时的 fallback
+  double max_dt{0.5};                                   // >0, 预测时的 dt 上限，避免时间跳变导致状态外推过远
+  int adaptive_window_size{10};                         // >0, 自适应噪声窗口大小，越大适应越慢但越平滑
+  double adaptive_alpha{0.7};                           // [0,1], 自适应噪声平滑因子，越大适应越慢
+  double adaptive_r_alpha{0.7};                         // [0,1], 自适应测量噪声平滑因子，越大适应越慢
+  double adaptive_min_noise_ratio{0.2};                 // [0,1], 自适应噪声下限占比，避免噪声过低导致滤波器发散
+  double max_pos_cov{1.0};                              // >0, 卡尔曼滤波器位置协方差上限，避免滤波器发散时状态估计不受限制地变大
+  double max_vel_cov{9.0};                              // >0, 卡尔曼滤波器速度协方差上限，避免滤波器发散时状态估计不受限制地变大
+  double max_acc_cov{25.0};                             // >0, 卡尔曼滤波器加速度协方差上限，避免滤波器发散时状态估计不受限制地变大
+  int classification_start_frame{10};                   // >0, 轨迹达到该帧数后开始尝试分类，避免过早分类导致频繁切换
+  double classification_score_decay{0.85};              // (0,1), 分类得分衰减因子，新轨迹的分数都是0
+  double classification_score_increment{1.0};           // >0, 分类得分增量
+  double classification_confirm_score{3.0};             // >0, 分类确认时的得分阈值，且需要大于 classification_switch_margin 才能切换类别
+  double classification_switch_margin{1.5};             // >0, 分类切换的领先得分边际
+  // 得分公式：上一帧分数 * classification_score_decay + classification_score_increment(当前观测是否判断为该类别，即四个类别中只有一个等加分)
+  double classification_size_change_ratio{0.3};         // [0,1], 尺寸变化比率阈值
+  double classification_point_count_change_ratio{0.3};  // [0,1], 点数变化比率阈值
+  int classification_size_change_confirm_frames{5};     // >0, 尺寸变化确认帧数，避免短时遮挡或残片导致的尺寸骤变误触发分类切换
   std::vector<double> classify_human_threshold{1.1, 0.8};
   std::vector<double> classify_vehicle_threshold{1.5, 0.7};
   std::vector<double> classify_uav_threshold{0.6, 1.5};
@@ -167,7 +163,7 @@ struct TrackState {
 
 class DynamicObjectTracker {
  public:
-  // 构造时直接从 ROS 参数服务器读取跟踪参数，并在模块内部完成合法化。
+  // 构造时直接从 ROS 参数服务器读取跟踪参数，并在模块内部构建运行时配置。
   explicit DynamicObjectTracker(ros::NodeHandle& pnh, bool verbose = false);
 
   // 跟踪模块自己的主流程：顺序执行关联、状态维护、输出与可视化构建。
@@ -176,7 +172,7 @@ class DynamicObjectTracker {
       const std::vector<DynamicObjectDetection>& detections);
 
  private:
-  // 构造阶段集中读取并合法化 tracker 参数，保持构造函数主体简洁。
+  // 构造阶段集中读取 tracker 参数并构建运行时配置，保持构造函数主体简洁。
   void loadParameters();
 
   // 历史线和轨迹头 marker 只在模块内部生成，避免测试代码反向塑形公共接口。

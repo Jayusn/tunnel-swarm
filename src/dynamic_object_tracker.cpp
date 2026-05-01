@@ -36,37 +36,6 @@ struct ClassificationSizeUpdate {
   bool reliable_for_classification{true};
 };
 
-double positiveOr(const double value, const double fallback) {
-  return std::isfinite(value) && value > 0.0 ? value : fallback;
-}
-
-double unitIntervalOr(const double value, const double fallback) {
-  return std::isfinite(value) ? std::clamp(value, 0.0, 1.0) : fallback;
-}
-
-std::vector<double> sanitizedVector(std::vector<double> values,
-                                    const std::vector<double>& fallback,
-                                    const std::size_t required_size) {
-  if (values.size() < required_size) {
-    values = fallback;
-  }
-  for (std::size_t index = 0; index < values.size(); ++index) {
-    if (!std::isfinite(values[index]) || values[index] <= 0.0) {
-      values[index] = index < fallback.size() ? fallback[index] : 1.0;
-    }
-  }
-  return values;
-}
-
-double thresholdValue(const std::vector<double>& values,
-                      const std::size_t index,
-                      const double fallback) {
-  if (index >= values.size() || !std::isfinite(values[index])) {
-    return fallback;
-  }
-  return values[index];
-}
-
 double maxComponent(const geometry_msgs::Vector3& vector) {
   return std::max({vector.x, vector.y, vector.z});
 }
@@ -176,181 +145,90 @@ std::string makeTrackLabelText(const TrackState& track) {
 
 double trackLabelZOffset(const BoundingBox3D& bbox) {
   // TEXT_VIEW_FACING 的锚点在文字中心；按目标高度上移，避免文字压住头部球体。
-  return std::max(0.45, 0.5 * positiveOr(bbox.size.z, 0.0) + 0.30);
+  return std::max(0.45, 0.5 * std::max(bbox.size.z, 0.0) + 0.30);
 }
 
 double chiSquare3DThresholdFromConfidence(const double confidence) {
   constexpr double kDegreesOfFreedom = 3.0;
-  constexpr double kDefaultConfidence = 0.99;
   constexpr double kMinConfidence = 1e-6;
   constexpr double kMaxConfidence = 1.0 - 1e-6;
 
   // 使用卡方分布分位数连续计算 gate，避免离散查表导致门限突跳。
-  const double sanitized_confidence =
-      std::isfinite(confidence)
-          ? std::clamp(confidence, kMinConfidence, kMaxConfidence)
-          : kDefaultConfidence;
+  const double bounded_confidence = std::clamp(confidence, kMinConfidence, kMaxConfidence);
   const boost::math::chi_squared chi_square_distribution(kDegreesOfFreedom);
-  return boost::math::quantile(chi_square_distribution, sanitized_confidence);
+  return boost::math::quantile(chi_square_distribution, bounded_confidence);
 }
 
-DynamicObjectTrackerConfig sanitizeTrackerParams(const DynamicObjectTrackerParams& params) {
+DynamicObjectTrackerConfig buildTrackerConfig(const DynamicObjectTrackerParams& params) {
   DynamicObjectTrackerConfig config;
-  // 计数类参数统一裁剪到非负/至少 1，避免运行阶段反复做边界兜底。
-  config.max_history_size = static_cast<std::size_t>(std::max(params.history_size, 0));
-  config.max_coast_frames = static_cast<std::size_t>(std::max(params.max_missed_frames, 0));
-  config.min_hits_to_publish = static_cast<std::size_t>(std::max(params.min_hits_to_publish, 1));
-  // 外部配置使用更直观的置信度，内部关联直接使用卡方分布的距离平方阈值。
+  const DynamicObjectTrackerParams defaults;
+
+  config.max_history_size =
+      static_cast<std::size_t>(params.history_size > 0 ? params.history_size : defaults.history_size);
+  config.max_coast_frames =
+      static_cast<std::size_t>(params.max_missed_frames > 0 ? params.max_missed_frames : defaults.max_missed_frames);
+  const std::size_t requested_min_hits =
+      static_cast<std::size_t>(params.min_hits_to_publish > 0 ? params.min_hits_to_publish : defaults.min_hits_to_publish);
+  const std::size_t max_publish_hits = config.max_history_size > 1U ? config.max_history_size - 1U : 1U;
+  config.min_hits_to_publish = std::min(requested_min_hits, max_publish_hits);
+  // 外部参数是置信度，tracker 内部关联使用 3 自由度卡方分布的马氏距离平方门限。
   config.association_gate_threshold = chiSquare3DThresholdFromConfidence(params.association_gate_confidence);
-  config.coasting_gate_relax_factor = std::isfinite(params.coasting_gate_relax_factor) &&
-      params.coasting_gate_relax_factor > 0.0 ? std::max(params.coasting_gate_relax_factor, 1.0) : 1.0;
+  config.coasting_gate_relax_factor =
+      params.coasting_gate_relax_factor >= 1.0 ? params.coasting_gate_relax_factor : defaults.coasting_gate_relax_factor;
   config.box_size_smoothing_alpha = std::clamp(params.box_size_smoothing_alpha, 0.0, 1.0);
-  // 这两个阈值优先用于“马氏距离 gate 失败后的回退关联”；如果最终仍未匹配，
-  // 后面的建轨抑制也继续复用同一组阈值，避免旋转中心抖动时裂出新 ID。
-  config.spawn_suppression_distance = std::isfinite(params.spawn_suppression_distance) && 
-      params.spawn_suppression_distance > 0.0 ? params.spawn_suppression_distance : 0.0;
-  config.spawn_suppression_iou_threshold = std::isfinite(params.spawn_suppression_iou_threshold) &&
-      params.spawn_suppression_iou_threshold > 0.0 ? std::clamp(params.spawn_suppression_iou_threshold, 0.0, 1.0) : 0.0;
-  config.max_dt = std::isfinite(params.max_dt) && params.max_dt > 0.0 ? params.max_dt : 0.5;
-  config.classification_start_frame =
-      static_cast<std::size_t>(std::max(params.classification_start_frame, 1));
+  config.spawn_suppression_distance =
+      params.spawn_suppression_distance > 0.0 ? params.spawn_suppression_distance : defaults.spawn_suppression_distance;
+  config.spawn_suppression_iou_threshold = params.spawn_suppression_iou_threshold > 0.0
+      ? std::min(params.spawn_suppression_iou_threshold, 1.0) : defaults.spawn_suppression_iou_threshold;
+  config.max_dt = params.max_dt > 0.0 ? params.max_dt : defaults.max_dt;
+  config.classification_start_frame = static_cast<std::size_t>(params.classification_start_frame > 0
+      ? params.classification_start_frame : defaults.classification_start_frame);
   config.classification_score_decay =
-      std::isfinite(params.classification_score_decay)
-          ? std::clamp(params.classification_score_decay, 0.0, 1.0)
-          : 0.85;
+      params.classification_score_decay > 0.0 && !(params.classification_score_decay >= 1.0)
+          ? params.classification_score_decay : defaults.classification_score_decay;
   config.classification_score_increment =
-      positiveOr(params.classification_score_increment, 1.0);
+      params.classification_score_increment > 0.0 ? params.classification_score_increment
+                                                  : defaults.classification_score_increment;
   config.classification_confirm_score =
-      positiveOr(params.classification_confirm_score, 3.0);
+      params.classification_confirm_score > 0.0 ? params.classification_confirm_score
+                                                : defaults.classification_confirm_score;
   config.classification_switch_margin =
-      std::isfinite(params.classification_switch_margin) && params.classification_switch_margin >= 0.0
-          ? params.classification_switch_margin
-          : 1.5;
+      params.classification_switch_margin > 0.0 ? params.classification_switch_margin
+                                                : defaults.classification_switch_margin;
   config.classification_size_change_ratio =
-      unitIntervalOr(params.classification_size_change_ratio, 0.5);
+      std::clamp(params.classification_size_change_ratio, 0.0, 1.0);
   config.classification_point_count_change_ratio =
-      unitIntervalOr(params.classification_point_count_change_ratio, 0.5);
+      std::clamp(params.classification_point_count_change_ratio, 0.0, 1.0);
   config.classification_size_change_confirm_frames =
-      static_cast<std::size_t>(std::max(params.classification_size_change_confirm_frames, 1));
-  config.classify_human_threshold =
-      sanitizedVector(params.classify_human_threshold, {1.1, 0.8}, 2U);
-  config.classify_vehicle_threshold =
-      sanitizedVector(params.classify_vehicle_threshold, {1.5, 0.7}, 2U);
-  config.classify_uav_threshold =
-      sanitizedVector(params.classify_uav_threshold, {0.6, 1.5}, 2U);
-  // tracker 负责把 ROS 参数语义转换成滤波器配置，滤波器不再自行读取 ROS 参数。
-  config.filter_config.default_dt = std::isfinite(params.default_dt) && params.default_dt > 0.0 ? params.default_dt : 0.1;
-  config.filter_config.adaptive_window_size = std::max(params.adaptive_window_size, 0);
+      static_cast<std::size_t>(params.classification_size_change_confirm_frames > 0
+          ? params.classification_size_change_confirm_frames : defaults.classification_size_change_confirm_frames);
+  config.classify_human_threshold = params.classify_human_threshold;
+  config.classify_vehicle_threshold = params.classify_vehicle_threshold;
+  config.classify_uav_threshold = params.classify_uav_threshold;
+  config.filter_config.default_dt = params.default_dt > 0.0 ? params.default_dt : defaults.default_dt;
+  config.filter_config.adaptive_window_size =
+      params.adaptive_window_size > 0 ? params.adaptive_window_size : defaults.adaptive_window_size;
   config.filter_config.adaptive_alpha = std::clamp(params.adaptive_alpha, 0.0, 1.0);
   config.filter_config.adaptive_r_alpha = std::clamp(params.adaptive_r_alpha, 0.0, 1.0);
-  config.filter_config.adaptive_min_noise_ratio = std::isfinite(params.adaptive_min_noise_ratio) &&
-      params.adaptive_min_noise_ratio > 0.0 ? params.adaptive_min_noise_ratio : 0.1;
-  config.filter_config.enable_cov_limit = true;
-  config.filter_config.max_pos_cov = std::isfinite(params.max_pos_cov) &&
-      params.max_pos_cov > 0.0 ? params.max_pos_cov : 1e3;
-  config.filter_config.max_vel_cov = std::isfinite(params.max_vel_cov) &&
-      params.max_vel_cov > 0.0 ? params.max_vel_cov : 1e3;
-  config.filter_config.max_acc_cov = std::isfinite(params.max_acc_cov) &&
-      params.max_acc_cov > 0.0 ? params.max_acc_cov : 1e3;
+  config.filter_config.adaptive_min_noise_ratio = std::clamp(params.adaptive_min_noise_ratio, 0.0, 1.0);
+  config.filter_config.max_pos_cov = params.max_pos_cov > 0.0 ? params.max_pos_cov : defaults.max_pos_cov;
+  config.filter_config.max_vel_cov = params.max_vel_cov > 0.0 ? params.max_vel_cov : defaults.max_vel_cov;
+  config.filter_config.max_acc_cov = params.max_acc_cov > 0.0 ? params.max_acc_cov : defaults.max_acc_cov;
+  // bool 参数没有类型转换或外部库取值约束，按 AGENTS.md 约定直接透传。
   config.filter_config.enable_cov_limit = params.enable_cov_limit;
-  const double ca_jerk_sigma = std::isfinite(params.ca_jerk_sigma) &&
-      params.ca_jerk_sigma > 0.0 ? params.ca_jerk_sigma : 1.0;
-  // 对齐 LDOT：这里直接把参数当作位置观测噪声方差，而不是标准差后再平方。
-  const double ca_position_noise = std::isfinite(params.ca_position_noise) &&
-      params.ca_position_noise > 0.0 ? params.ca_position_noise : 0.5;
-  const double ca_initial_position_cov = std::isfinite(params.ca_initial_position_cov) &&
-      params.ca_initial_position_cov > 0.0 ? params.ca_initial_position_cov : 1.0;
-  const double ca_initial_velocity_cov = std::isfinite(params.ca_initial_velocity_cov) &&
-      params.ca_initial_velocity_cov > 0.0 ? params.ca_initial_velocity_cov : 1.0;
-  const double ca_initial_acceleration_cov = std::isfinite(params.ca_initial_acceleration_cov) &&
-      params.ca_initial_acceleration_cov > 0.0 ? params.ca_initial_acceleration_cov : 1.0;
-  config.filter_config.ca_uav.jerk_sigma = ca_jerk_sigma;
-  config.filter_config.ca_uav.meas_noise =
-      {ca_position_noise, ca_position_noise, ca_position_noise};
-  config.filter_config.ca_uav.init_cov = {ca_initial_position_cov,
-                                          ca_initial_position_cov,
-                                          ca_initial_position_cov,
-                                          ca_initial_velocity_cov,
-                                          ca_initial_velocity_cov,
-                                          ca_initial_velocity_cov,
-                                          ca_initial_acceleration_cov,
-                                          ca_initial_acceleration_cov,
-                                          ca_initial_acceleration_cov};
-  // 先用旧 tracking_ca_* 填兼容默认值；如果配置了 kalman_filter/...，下面会按模型分组覆盖。
-  config.filter_config.ca_human.jerk_sigma = ca_jerk_sigma;
-  config.filter_config.ca_human.meas_noise =
-      {ca_position_noise, ca_position_noise, ca_position_noise};
-  config.filter_config.ca_human.init_cov = {ca_initial_position_cov,
-                                            ca_initial_position_cov,
-                                            ca_initial_position_cov,
-                                            ca_initial_velocity_cov,
-                                            ca_initial_velocity_cov,
-                                            ca_initial_acceleration_cov,
-                                            ca_initial_acceleration_cov};
-  config.filter_config.cv.acc_sigma = ca_jerk_sigma;
-  config.filter_config.cv.meas_noise =
-      {ca_position_noise, ca_position_noise, ca_position_noise};
-  config.filter_config.ctra.meas_noise =
-      {ca_position_noise, ca_position_noise, ca_position_noise};
-  // 多模型参数按 LDOT 的类别/模型分组读取；旧 tracking_ca_* 只保留为缺省兼容路径。
-  config.filter_config.ca_human.jerk_sigma =
-      positiveOr(params.ca_human_jerk_sigma, ca_jerk_sigma);
-  config.filter_config.ca_human.init_cov =
-      sanitizedVector(params.ca_human_init_cov,
-                      {ca_initial_position_cov,
-                       ca_initial_position_cov,
-                       ca_initial_position_cov,
-                       ca_initial_velocity_cov,
-                       ca_initial_velocity_cov,
-                       ca_initial_acceleration_cov,
-                       ca_initial_acceleration_cov},
-                      7U);
-  config.filter_config.ca_human.meas_noise =
-      sanitizedVector(params.ca_human_meas_noise,
-                      {ca_position_noise, ca_position_noise, ca_position_noise},
-                      3U);
-  config.filter_config.ca_human.z_process_noise =
-      positiveOr(params.ca_human_z_process_noise, 0.01);
-  config.filter_config.ca_uav.jerk_sigma =
-      positiveOr(params.ca_uav_jerk_sigma, ca_jerk_sigma);
-  config.filter_config.ca_uav.init_cov =
-      sanitizedVector(params.ca_uav_init_cov,
-                      {ca_initial_position_cov,
-                       ca_initial_position_cov,
-                       ca_initial_position_cov,
-                       ca_initial_velocity_cov,
-                       ca_initial_velocity_cov,
-                       ca_initial_velocity_cov,
-                       ca_initial_acceleration_cov,
-                       ca_initial_acceleration_cov,
-                       ca_initial_acceleration_cov},
-                      9U);
-  config.filter_config.ca_uav.meas_noise =
-      sanitizedVector(params.ca_uav_meas_noise,
-                      {ca_position_noise, ca_position_noise, ca_position_noise},
-                      3U);
-  config.filter_config.cv.acc_sigma = positiveOr(params.cv_acc_sigma, ca_jerk_sigma);
-  config.filter_config.cv.init_cov =
-      sanitizedVector(params.cv_init_cov,
-                      {ca_initial_position_cov,
-                       ca_initial_position_cov,
-                       ca_initial_position_cov,
-                       ca_initial_velocity_cov,
-                       ca_initial_velocity_cov,
-                       ca_initial_velocity_cov},
-                      6U);
-  config.filter_config.cv.meas_noise =
-      sanitizedVector(params.cv_meas_noise,
-                      {ca_position_noise, ca_position_noise, ca_position_noise},
-                      3U);
-  config.filter_config.ctra.init_cov =
-      sanitizedVector(params.ctra_init_cov, {0.1, 0.1, 0.1, 1.0, 10.0, 0.5, 1.0}, 7U);
-  config.filter_config.ctra.process_noise =
-      sanitizedVector(params.ctra_process_noise, {0.1, 0.1, 0.01, 1.0, 10.0, 0.1, 1.0}, 7U);
-  config.filter_config.ctra.meas_noise =
-      sanitizedVector(params.ctra_meas_noise,
-                      {ca_position_noise, ca_position_noise, ca_position_noise},
-                      3U);
+  config.filter_config.ca_human.jerk_sigma = params.ca_human_jerk_sigma;
+  config.filter_config.ca_human.init_cov = params.ca_human_init_cov;
+  config.filter_config.ca_human.meas_noise = params.ca_human_meas_noise;
+  config.filter_config.ca_human.z_process_noise = params.ca_human_z_process_noise;
+  config.filter_config.ca_uav.jerk_sigma = params.ca_uav_jerk_sigma;
+  config.filter_config.ca_uav.init_cov = params.ca_uav_init_cov;
+  config.filter_config.ca_uav.meas_noise = params.ca_uav_meas_noise;
+  config.filter_config.cv.acc_sigma = params.cv_acc_sigma;
+  config.filter_config.cv.init_cov = params.cv_init_cov;
+  config.filter_config.cv.meas_noise = params.cv_meas_noise;
+  config.filter_config.ctra.init_cov = params.ctra_init_cov;
+  config.filter_config.ctra.process_noise = params.ctra_process_noise;
+  config.filter_config.ctra.meas_noise = params.ctra_meas_noise;
   return config;
 }
 
@@ -456,18 +334,12 @@ ObjectClass classifyObservation(const BoundingBox3D& detection_bbox,
     return ObjectClass::Other;
   }
 
-  const double human_z_width_ratio =
-      thresholdValue(config.classify_human_threshold, 0U, 1.1);
-  const double human_centroid_z_ratio =
-      thresholdValue(config.classify_human_threshold, 1U, 0.8);
-  const double vehicle_xy_width_ratio =
-      thresholdValue(config.classify_vehicle_threshold, 0U, 1.5);
-  const double vehicle_centroid_z_ratio =
-      thresholdValue(config.classify_vehicle_threshold, 1U, 0.7);
-  const double uav_max_size =
-      thresholdValue(config.classify_uav_threshold, 0U, 0.6);
-  const double uav_centroid_z_ratio =
-      thresholdValue(config.classify_uav_threshold, 1U, 1.5);
+  const double human_z_width_ratio = config.classify_human_threshold[0];
+  const double human_centroid_z_ratio = config.classify_human_threshold[1];
+  const double vehicle_xy_width_ratio = config.classify_vehicle_threshold[0];
+  const double vehicle_centroid_z_ratio = config.classify_vehicle_threshold[1];
+  const double uav_max_size = config.classify_uav_threshold[0];
+  const double uav_centroid_z_ratio = config.classify_uav_threshold[1];
 
   // 这里沿用 LDOT 的尺寸/质心启发式：用稳定尺寸判断外形，用当前质心高度区分近地目标和空中目标。
   // LDOP 的动静态分割已经在 UFOMap 前级完成，因此这里不再做点云运动投票。
@@ -904,74 +776,54 @@ DynamicObjectTracker::DynamicObjectTracker(
 }
 
 void DynamicObjectTracker::loadParameters() {
-  pnh_.param("tracking_history_size", params_.history_size, 100);
-  pnh_.param("tracking_max_missed_frames", params_.max_missed_frames, 5);
-  pnh_.param("tracking_min_hits_to_publish", params_.min_hits_to_publish, 2);
-  pnh_.param("tracking_association_gate_confidence", params_.association_gate_confidence, 0.99);
-  pnh_.param("tracking_coasting_gate_relax_factor", params_.coasting_gate_relax_factor, 1.5);
-  pnh_.param("tracking_box_size_smoothing_alpha", params_.box_size_smoothing_alpha, 0.5);
-  pnh_.param("tracking_spawn_suppression_distance", params_.spawn_suppression_distance, 0.8);
-  pnh_.param("tracking_spawn_suppression_iou_threshold", params_.spawn_suppression_iou_threshold, 0.1);
-  pnh_.param("tracking_default_dt", params_.default_dt, 0.1);
-  pnh_.param("tracking_max_dt", params_.max_dt, 0.5);
-  pnh_.param("tracking_adaptive_window_size", params_.adaptive_window_size, 10);
-  pnh_.param("tracking_adaptive_alpha", params_.adaptive_alpha, 0.7);
-  pnh_.param("tracking_adaptive_r_alpha", params_.adaptive_r_alpha, 0.7);
-  pnh_.param("tracking_adaptive_min_noise_ratio", params_.adaptive_min_noise_ratio, 0.2);
-  pnh_.param("tracking_max_pos_cov", params_.max_pos_cov, 1.5);
-  pnh_.param("tracking_max_vel_cov", params_.max_vel_cov, 9.0);
-  pnh_.param("tracking_max_acc_cov", params_.max_acc_cov, 25.0);
-  pnh_.param("tracking_ca_jerk_sigma", params_.ca_jerk_sigma, 3.0);
-  pnh_.param("tracking_ca_position_noise", params_.ca_position_noise, 0.1);
-  pnh_.param("tracking_ca_initial_position_cov", params_.ca_initial_position_cov, 0.1);
-  pnh_.param("tracking_ca_initial_velocity_cov", params_.ca_initial_velocity_cov, 1.0);
-  pnh_.param("tracking_ca_initial_acceleration_cov", params_.ca_initial_acceleration_cov, 10.0);
-  pnh_.param("classification_start_frame", params_.classification_start_frame, 10);
-  pnh_.param("classification_score_decay", params_.classification_score_decay, 0.85);
-  pnh_.param("classification_score_increment", params_.classification_score_increment, 1.0);
-  pnh_.param("classification_confirm_score", params_.classification_confirm_score, 3.0);
-  pnh_.param("classification_switch_margin", params_.classification_switch_margin, 1.5);
-  pnh_.param("classification_size_change_ratio", params_.classification_size_change_ratio, 0.5);
-  pnh_.param("classification_point_count_change_ratio", params_.classification_point_count_change_ratio, 0.5);
-  pnh_.param("classification_size_change_confirm_frames",
-             params_.classification_size_change_confirm_frames,
-             5);
-  pnh_.getParam("classify_human_threshold", params_.classify_human_threshold);
-  pnh_.getParam("classify_vehicle_threshold", params_.classify_vehicle_threshold);
-  pnh_.getParam("classify_uav_threshold", params_.classify_uav_threshold);
+  // 默认值只从参数快照结构体取，避免读参处和结构体初值各维护一份数字。
+  const DynamicObjectTrackerParams defaults;
+  pnh_.param("tracking_history_size", params_.history_size, defaults.history_size);
+  pnh_.param("tracking_max_missed_frames", params_.max_missed_frames, defaults.max_missed_frames);
+  pnh_.param("tracking_min_hits_to_publish", params_.min_hits_to_publish, defaults.min_hits_to_publish);
+  pnh_.param("tracking_association_gate_confidence", params_.association_gate_confidence, defaults.association_gate_confidence);
+  pnh_.param("tracking_coasting_gate_relax_factor", params_.coasting_gate_relax_factor, defaults.coasting_gate_relax_factor);
+  pnh_.param("tracking_box_size_smoothing_alpha", params_.box_size_smoothing_alpha, defaults.box_size_smoothing_alpha);
+  pnh_.param("tracking_spawn_suppression_distance", params_.spawn_suppression_distance,  defaults.spawn_suppression_distance);
+  pnh_.param("tracking_spawn_suppression_iou_threshold", params_.spawn_suppression_iou_threshold, defaults.spawn_suppression_iou_threshold);
+  pnh_.param("tracking_default_dt", params_.default_dt, defaults.default_dt);
+  pnh_.param("tracking_max_dt", params_.max_dt, defaults.max_dt);
+  pnh_.param("classification_start_frame", params_.classification_start_frame, defaults.classification_start_frame);
+  pnh_.param("classification_score_decay", params_.classification_score_decay, defaults.classification_score_decay);
+  pnh_.param("classification_score_increment", params_.classification_score_increment, defaults.classification_score_increment);
+  pnh_.param("classification_confirm_score", params_.classification_confirm_score, defaults.classification_confirm_score);
+  pnh_.param("classification_switch_margin", params_.classification_switch_margin, defaults.classification_switch_margin);
+  pnh_.param("classification_size_change_ratio", params_.classification_size_change_ratio, defaults.classification_size_change_ratio);
+  pnh_.param("classification_point_count_change_ratio", params_.classification_point_count_change_ratio, defaults.classification_point_count_change_ratio);
+  pnh_.param("classification_size_change_confirm_frames", params_.classification_size_change_confirm_frames, defaults.classification_size_change_confirm_frames);
+  pnh_.param("classify_human_threshold", params_.classify_human_threshold, defaults.classify_human_threshold);
+  pnh_.param("classify_vehicle_threshold", params_.classify_vehicle_threshold, defaults.classify_vehicle_threshold);
+  pnh_.param("classify_uav_threshold", params_.classify_uav_threshold, defaults.classify_uav_threshold);
 
-  // 兼容旧 tracking_* 参数，同时允许新的 LDOT 风格 kalman_filter/... 分组覆盖。
-  pnh_.param("kalman_filter/adaptive_window_size", params_.adaptive_window_size, params_.adaptive_window_size);
-  pnh_.param("kalman_filter/adaptive_alpha", params_.adaptive_alpha, params_.adaptive_alpha);
-  pnh_.param("kalman_filter/adaptive_r_alpha", params_.adaptive_r_alpha, params_.adaptive_r_alpha);
-  pnh_.param("kalman_filter/adaptive_min_noise_ratio",
-             params_.adaptive_min_noise_ratio,
-             params_.adaptive_min_noise_ratio);
-  pnh_.param("kalman_filter/enable_cov_limit", params_.enable_cov_limit, params_.enable_cov_limit);
-  pnh_.param("kalman_filter/max_pos_cov", params_.max_pos_cov, params_.max_pos_cov);
-  pnh_.param("kalman_filter/max_vel_cov", params_.max_vel_cov, params_.max_vel_cov);
-  pnh_.param("kalman_filter/max_acc_cov", params_.max_acc_cov, params_.max_acc_cov);
-  pnh_.param("kalman_filter/ca_model/human/jerk_sigma",
-             params_.ca_human_jerk_sigma,
-             params_.ca_human_jerk_sigma);
-  pnh_.getParam("kalman_filter/ca_model/human/init_cov", params_.ca_human_init_cov);
-  pnh_.getParam("kalman_filter/ca_model/human/meas_noise", params_.ca_human_meas_noise);
-  pnh_.param("kalman_filter/ca_model/human/z_process_noise",
-             params_.ca_human_z_process_noise,
-             params_.ca_human_z_process_noise);
-  pnh_.param("kalman_filter/ca_model/uav/jerk_sigma",
-             params_.ca_uav_jerk_sigma,
-             params_.ca_uav_jerk_sigma);
-  pnh_.getParam("kalman_filter/ca_model/uav/init_cov", params_.ca_uav_init_cov);
-  pnh_.getParam("kalman_filter/ca_model/uav/meas_noise", params_.ca_uav_meas_noise);
-  pnh_.param("kalman_filter/cv_model/acc_sigma", params_.cv_acc_sigma, params_.cv_acc_sigma);
-  pnh_.getParam("kalman_filter/cv_model/init_cov", params_.cv_init_cov);
-  pnh_.getParam("kalman_filter/cv_model/meas_noise", params_.cv_meas_noise);
-  pnh_.getParam("kalman_filter/ctra_model/init_cov", params_.ctra_init_cov);
-  pnh_.getParam("kalman_filter/ctra_model/process_noise", params_.ctra_process_noise);
-  pnh_.getParam("kalman_filter/ctra_model/meas_noise", params_.ctra_meas_noise);
+  // Kalman 噪声和协方差只从 LDOT 风格分组读取，避免旧顶层参数与当前分组参数并存。
+  pnh_.param("kalman_filter/adaptive_window_size", params_.adaptive_window_size, defaults.adaptive_window_size);
+  pnh_.param("kalman_filter/adaptive_alpha", params_.adaptive_alpha, defaults.adaptive_alpha);
+  pnh_.param("kalman_filter/adaptive_r_alpha", params_.adaptive_r_alpha, defaults.adaptive_r_alpha);
+  pnh_.param("kalman_filter/adaptive_min_noise_ratio", params_.adaptive_min_noise_ratio, defaults.adaptive_min_noise_ratio);
+  pnh_.param("kalman_filter/enable_cov_limit", params_.enable_cov_limit, defaults.enable_cov_limit);
+  pnh_.param("kalman_filter/max_pos_cov", params_.max_pos_cov, defaults.max_pos_cov);
+  pnh_.param("kalman_filter/max_vel_cov", params_.max_vel_cov, defaults.max_vel_cov);
+  pnh_.param("kalman_filter/max_acc_cov", params_.max_acc_cov, defaults.max_acc_cov);
+  pnh_.param("kalman_filter/ca_model/human/jerk_sigma", params_.ca_human_jerk_sigma, defaults.ca_human_jerk_sigma);
+  pnh_.param("kalman_filter/ca_model/human/init_cov", params_.ca_human_init_cov, defaults.ca_human_init_cov);
+  pnh_.param("kalman_filter/ca_model/human/meas_noise", params_.ca_human_meas_noise, defaults.ca_human_meas_noise);
+  pnh_.param("kalman_filter/ca_model/human/z_process_noise", params_.ca_human_z_process_noise, defaults.ca_human_z_process_noise);
+  pnh_.param("kalman_filter/ca_model/uav/jerk_sigma", params_.ca_uav_jerk_sigma, defaults.ca_uav_jerk_sigma);
+  pnh_.param("kalman_filter/ca_model/uav/init_cov", params_.ca_uav_init_cov, defaults.ca_uav_init_cov);
+  pnh_.param("kalman_filter/ca_model/uav/meas_noise", params_.ca_uav_meas_noise, defaults.ca_uav_meas_noise);
+  pnh_.param("kalman_filter/cv_model/acc_sigma", params_.cv_acc_sigma, defaults.cv_acc_sigma);
+  pnh_.param("kalman_filter/cv_model/init_cov", params_.cv_init_cov, defaults.cv_init_cov);
+  pnh_.param("kalman_filter/cv_model/meas_noise", params_.cv_meas_noise, defaults.cv_meas_noise);
+  pnh_.param("kalman_filter/ctra_model/init_cov", params_.ctra_init_cov, defaults.ctra_init_cov);
+  pnh_.param("kalman_filter/ctra_model/process_noise", params_.ctra_process_noise, defaults.ctra_process_noise);
+  pnh_.param("kalman_filter/ctra_model/meas_noise", params_.ctra_meas_noise, defaults.ctra_meas_noise);
 
-  config_ = sanitizeTrackerParams(params_);
+  config_ = buildTrackerConfig(params_);
 }
 
 DynamicObjectTrackerFrameResult DynamicObjectTracker::processDynamicTracks(

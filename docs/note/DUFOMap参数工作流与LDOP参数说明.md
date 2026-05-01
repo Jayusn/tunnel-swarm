@@ -330,6 +330,7 @@ if (!map.seenFree(p)) {
 作用：
 
 - 限制积分时的最大射线长度
+- `-1` 表示不限制；其他非负值需要大于 `ufomap_min_range`
 
 在当前 `LDOP` 中还有一个额外作用：
 
@@ -538,6 +539,7 @@ if (!map.seenFree(p)) {
 作用：
 
 - 并行积分的线程数
+- `0` 表示把线程数选择交给 UFOMap 的默认策略
 
 影响：
 
@@ -620,7 +622,7 @@ ufomap_ray_passthrough_hits: false
 ufomap_inflate_hits_dist: 0.2
 ufomap_down_sampling_method: center
 ufomap_min_range: 0.2
-ufomap_max_range: <=0  # 表示不限制
+ufomap_max_range: -1  # 表示不限制
 ufomap_insert_only_valid: false
 ufomap_insert_hit_depth: 0
 ufomap_insert_miss_depth: 0

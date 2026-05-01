@@ -171,19 +171,19 @@ a' = a
 
 `dt` 优先使用当前 `DynamicObjectArray.header.stamp` 与轨迹 `last_stamp` 的差值。`tracking_default_dt` 是点云周期的手动兜底值，例如 10 Hz 点云可设为 `0.1` 秒；正常时间戳递增时不使用它。只有 `header.stamp` 为零、非递增、缺失测试时间戳，或其他时间戳异常场景，才回退到该值，并输出 throttle warning。若真实帧间隔过大，则用 `tracking_max_dt` 钳制，也必须输出 throttle warning，方便定位时间戳、bag 播放、仿真暂停或处理积压问题。
 
-保留 LDOT 中 adaptive Q/R 和 cov limit 的语义，但第一版只作用于默认 3D CA 模型：
+保留 LDOT 中 adaptive Q/R 和 cov limit 的语义；多模型进入主线后，这些参数统一放在 `kalman_filter/...` 分组下：
 
 - adaptive Q：根据最近 innovation 统计调整过程噪声，降低固定 Q 对不同运动强度的敏感性。
 - adaptive R：根据最近 innovation 统计调整测量噪声，缓解 cluster 中心抖动或测量质量变化。
 - cov limit：固定开启，限制位置、速度和加速度协方差上限，避免长时间 coasting 或异常 `dt` 后不确定性膨胀到不可用。
 
-第一版在实现语义上直接沿用 LDOT 当前 `multiModelKalmanFilter.h` 的思路：
+实现语义上直接沿用 LDOT 当前 `multiModelKalmanFilter.h` 的思路：
 
 - 每次 `update()` 时先把 innovation 推入固定窗口 `innovation_buffer`。
-- 当窗口样本数达到 `tracking_adaptive_window_size` 后，先按 `C_gamma - H * P_pred * H^T` 估计 `R`。
+- 当窗口样本数达到 `kalman_filter/adaptive_window_size` 后，先按 `C_gamma - H * P_pred * H^T` 估计 `R`。
 - 再按 `K * (C_gamma - H * (P_pred - Q_old) * H^T - R) * K^T` 估计 `Q`。
-- `Q` 和 `R` 都只更新对角线，并使用 `tracking_adaptive_alpha` / `tracking_adaptive_r_alpha` 做 EMA 平滑。
-- `tracking_adaptive_min_noise_ratio` 用于给 `Q/R` 施加相对初始噪声的下限，防止估计值塌缩到过小。
+- `Q` 和 `R` 都只更新对角线，并使用 `kalman_filter/adaptive_alpha` / `kalman_filter/adaptive_r_alpha` 做 EMA 平滑。
+- `kalman_filter/adaptive_min_noise_ratio` 用于给 `Q/R` 施加相对初始噪声的下限，防止估计值塌缩到过小。
 
 这些机制不启用目标类别，也不在第一版切换 motion model；核心目标是保持参数语义与 LDOT 接近，而不是重新发明一套新公式。
 
@@ -244,7 +244,7 @@ size = alpha * detection.size + (1 - alpha) * previous_size
 
 ## 参数
 
-第一版参数组织保持 `LDOP` 当前 `ldop.yaml` 的扁平风格，不照搬 `LDOT` 的 `tracking/...`、`kalman_filter/...` 树形层级。当前仓库的 topic、UFOMap 和 cluster 参数都使用顶层平铺键，tracking 第一版继续使用 `tracking_*` 更符合现有读参方式，也能减少 `Ldop`、tracker 和文档同时改参数层级的噪声。等未来类别和多模型真正进入主流程，再考虑统一重构为嵌套层级。
+参数组织采用混合方案：生命周期、关联和分类参数仍保持顶层扁平；Kalman 噪声、协方差和模型参数使用 LDOT 风格的 `kalman_filter/...` 分组。旧的顶层 CA/Kalman 参数不再保留兼容入口，避免同一滤波语义被两套参数名同时控制。
 
 除数值参数外，第一版还新增一个话题配置键：
 
@@ -263,20 +263,33 @@ tracking_box_size_smoothing_alpha: 0.3
 tracking_default_dt: 0.1
 tracking_max_dt: 0.5
 
-tracking_adaptive_window_size: 10
-tracking_adaptive_alpha: 0.7
-tracking_adaptive_r_alpha: 0.7
-tracking_adaptive_min_noise_ratio: 0.2
-
-tracking_max_pos_cov: 1.5
-tracking_max_vel_cov: 9.0
-tracking_max_acc_cov: 25.0
-
-tracking_ca_jerk_sigma: 3.0
-tracking_ca_position_noise: 0.1
-tracking_ca_initial_position_cov: 0.1
-tracking_ca_initial_velocity_cov: 1.0
-tracking_ca_initial_acceleration_cov: 10.0
+kalman_filter:
+  adaptive_window_size: 10
+  adaptive_alpha: 0.7
+  adaptive_r_alpha: 0.7
+  adaptive_min_noise_ratio: 0.2
+  enable_cov_limit: true
+  max_pos_cov: 1.5
+  max_vel_cov: 9.0
+  max_acc_cov: 25.0
+  ca_model:
+    human:
+      jerk_sigma: 1.0
+      init_cov: [0.1, 0.1, 0.1, 1.0, 1.0, 10.0, 10.0]
+      meas_noise: [0.1, 0.1, 0.1]
+      z_process_noise: 0.01
+    uav:
+      jerk_sigma: 1.0
+      init_cov: [0.1, 0.1, 0.1, 1.0, 1.0, 1.0, 10.0, 10.0, 10.0]
+      meas_noise: [0.1, 0.1, 0.1]
+  cv_model:
+    acc_sigma: 3.0
+    init_cov: [0.5, 0.5, 0.5, 2.0, 2.0, 2.0]
+    meas_noise: [0.3, 0.3, 0.3]
+  ctra_model:
+    init_cov: [0.1, 0.1, 0.1, 1.0, 10.0, 0.5, 1.0]
+    process_noise: [0.1, 0.1, 0.01, 1.0, 10.0, 0.1, 1.0]
+    meas_noise: [0.1, 0.1, 0.1]
 ```
 
 参数语义：
@@ -288,16 +301,15 @@ tracking_ca_initial_acceleration_cov: 10.0
 - `tracking_box_size_smoothing_alpha`：bbox 尺寸指数平滑系数，合法范围 `[0.0, 1.0]`；`1.0` 表示完全使用当前帧 cluster 尺寸，`0.0` 表示保持上一帧尺寸，默认 `0.3` 表示尺寸变化偏平滑。
 - `tracking_default_dt`：时间戳不可用、为零或非递增时的回退时间步长，单位为秒；手动设置为点云周期，只影响 Kalman predict 的时间间隔；触发时必须输出 throttle warning。
 - `tracking_max_dt`：允许用于 predict 的最大时间间隔，单位为秒；真实帧间隔超过该值时进行钳制，避免长时间卡顿后一次预测把状态和协方差放大过头；触发时必须输出 throttle warning。
-- `tracking_adaptive_window_size`：adaptive Q/R 使用的 innovation 历史窗口大小；`<=1` 可关闭自适应更新。
-- `tracking_adaptive_alpha`：adaptive Q 平滑系数，值越大越快响应新 innovation。
-- `tracking_adaptive_r_alpha`：adaptive R 平滑系数，值越大越快响应测量噪声变化。
-- `tracking_adaptive_min_noise_ratio`：adaptive Q/R 相对初始噪声的最小比例，防止噪声被压得过小。
-- `tracking_max_pos_cov`：位置协方差上限，单位 `m^2`。
-- `tracking_max_vel_cov`：速度协方差上限，单位 `(m/s)^2`。
-- `tracking_max_acc_cov`：加速度协方差上限，单位 `(m/s^2)^2`。
-- `tracking_ca_jerk_sigma`：CA 模型 jerk 噪声标准差，等价于 LDOT 3D CA 的 `jerk_sigma`。
-- `tracking_ca_position_noise`：中心观测噪声方差。
-- `tracking_ca_initial_*_cov`：新轨迹初始化协方差。
+- `kalman_filter/adaptive_window_size`：adaptive Q/R 使用的 innovation 历史窗口大小；`<=1` 可关闭自适应更新。
+- `kalman_filter/adaptive_alpha`：adaptive Q 平滑系数，值越大越快响应新 innovation。
+- `kalman_filter/adaptive_r_alpha`：adaptive R 平滑系数，值越大越快响应测量噪声变化。
+- `kalman_filter/adaptive_min_noise_ratio`：adaptive Q/R 相对初始噪声的最小比例，防止噪声被压得过小。
+- `kalman_filter/max_pos_cov`、`kalman_filter/max_vel_cov`、`kalman_filter/max_acc_cov`：位置、速度、加速度协方差对角线上限。
+- `kalman_filter/ca_model/human/*`：Human 的 CA2D 模型参数。
+- `kalman_filter/ca_model/uav/*`：UAV 的 CA3D 模型参数。
+- `kalman_filter/cv_model/*`：Other 的 CV3D 模型参数。
+- `kalman_filter/ctra_model/*`：Vehicle 的 CTRA 模型参数。
 
 第一版不增加 IoU 权重、类别权重、模型切换阈值、预测时域或预测步长参数。默认 motion model 固定为 `CA3D`，不额外暴露 `tracking_default_motion_model` 参数；`MotionModelType` 和 factory 是内部扩展点。
 

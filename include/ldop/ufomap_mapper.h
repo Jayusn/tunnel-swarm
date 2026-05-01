@@ -27,33 +27,52 @@ struct CloudElement;
 
 namespace ldopcore {
 
-struct UfomapMapperParams {
-  // UFOMap 基础分辨率与深度配置。
+// UFOMap 模块内部使用的运行时配置：构造阶段由 ROS 参数快照转换而来。
+struct UfomapMapperConfig {
   double resolution{0.2};
-  int depth_levels{17};
-  double min_range{0.0};
-  double max_range{50.0};
+  int depth_levels{16};
+  double min_range{0.5};
+  double max_range{10.0};
   int insert_hit_depth{0};
   int insert_miss_depth{0};
   int ray_casting_depth{0};
   int num_threads{0};
   bool only_valid{false};
-  int inflate_unknown{0};
-  bool inflate_unknown_compensation{false};
-  bool ray_passthrough_hits{true};
-  double inflate_hits_dist{0.0};
+  int inflate_unknown{1};
+  bool inflate_unknown_compensation{true};
+  bool ray_passthrough_hits{false};
+  double inflate_hits_dist{0.4};
   std::string down_sampling_method{"center"};
   bool simple_ray_casting{false};
   double simple_ray_casting_factor{1.0};
-  // UFOMap 会在该值大于 1 时合并最近 N 帧 hits/misses 生成 seenFree。
   int sliding_window_size{0};
   bool parallel{true};
   bool propagate{true};
-  // 仅限制静态体素地图 MarkerArray 的可视化最高 z 值；不参与 UFOMap 地图积分、查询或分类。
   double static_map_visualization_max_z{3.0};
 };
 
-UfomapMapperParams sanitizeUfomapParams(const UfomapMapperParams& params);
+struct UfomapMapperParams {
+  double resolution{0.2};             // 大于0.0，叶子体素尺寸
+  int depth_levels{16};               // [2, 20]，由UFOMAP自身限制范围，八叉树层级规模    
+  double min_range{0.5};              // 大于等于0.0，积分和查询的最小范围 
+  double max_range{10.0};             // 非负时大于min_range，-1时不限制范围，积分和查询的最大范围   
+  int insert_hit_depth{0};            // [0, depth_levels]，命中点积分深度，0 表示叶子节点     
+  int insert_miss_depth{0};           // [0, depth_levels]，空闲点积分深度，0 表示叶子节点  
+  int ray_casting_depth{0};           // [0, depth_levels]，射线穿透查询深度，0 表示叶子节点
+  int num_threads{0};                 // 大于等于0，积分线程数，0 表示交给 UFOMap 使用默认线程策略
+  bool only_valid{false};             // 是否仅积分有效点（即满足 min_range <= range <= max_range 的点）
+  int inflate_unknown{1};             // 大于等于0，按邻域膨胀d_p未知区域以容忍定位误差，单位为一个体素
+  bool inflate_unknown_compensation{true};          // 是否补偿未知区域膨胀导致的过度占用风险
+  bool ray_passthrough_hits{false};                 // 射线是否穿过命中点；如果为 true，射线将继续穿过命中点并可能在更远处产生额外的空闲更新
+  double inflate_hits_dist{0.4};                    // 大于等于0，建议为体素的倍数，沿射线扩展d_s命中区域以容忍测距噪声，天花板/墙顶这种大平面在仿真雷达里容易被斜向射线、体素离散、测距噪声打出“边缘擦过”的情况。
+  std::string down_sampling_method{"center"};     // 下采样方法，支持 "none"（不下采样）、"center"（保留体素中心点）、"centroid"（保留体素质心点）和 "uniform"（在体素内随机均匀采样一个点）
+  bool simple_ray_casting{false};                   // 是否使用简单射线穿透方法；false为启用简单投射，射线穿透查询将直接将目标深度的体素视为命中，不考虑实际占用概率，会加速积分但降低分类准确率
+  double simple_ray_casting_factor{1.0};            // 大于0，投射节点的间隔的系数，以层级为投射基础？以体素尺寸为投射基础？
+  int sliding_window_size{0};                       // 大于等于0，滑动窗口大小，0 表示不使用滑动窗口；启用，UFOMap 将仅保留最近 N 帧的积分结果？还是保留最近 N 帧再/一起积分
+  bool parallel{true};                              // 是否启用并行处理；如果为 true，UFOMap 将在积分过程中使用多线程，这可能会加速处理但也可能引入线程安全问题或增加资源竞争
+  bool propagate{true};                             // 积分后是否马上更新父节点状态（树的状态）；如果为 false，父节点状态将仅在查询时根据子节点动态计算，这可能会加速积分但增加查询时的计算负担
+  double static_map_visualization_max_z{3.0};       // 大于0，静态地图的可视化高度
+};
 
 struct UfomapRuntimeStats {
   // 已完成 UFOMap 积分的帧数，以及当前地图节点规模。
@@ -176,6 +195,7 @@ class UfomapMapper {
   std::string world_frame_;
   bool verbose_;
   UfomapMapperParams params_;
+  UfomapMapperConfig config_;
 
   std::atomic<std::uint64_t> ufomap_update_count_;
   // 地图读多写少，使用读写锁避免多个查询路径彼此串行化。

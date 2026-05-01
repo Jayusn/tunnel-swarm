@@ -171,7 +171,7 @@ std::size_t small_size_counter{0U};
 
 - [x] **Step 4: 参数读取**
 
-`loadParameters()` 读取 `classification_*`、`classify_*` 和 `kalman_filter/...`；旧 `tracking_ca_*` 只作为默认兼容值。
+`loadParameters()` 读取 `classification_*`、`classify_*` 和 `kalman_filter/...`；未使用的旧顶层 CA 参数不再保留兼容入口。
 
 - [x] **Step 5: 配置文件**
 

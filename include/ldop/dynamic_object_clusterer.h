@@ -12,14 +12,20 @@
 
 namespace ldopcore {
 
-struct DynamicObjectClustererParams {
-  int min_points{5};
+struct DynamicObjectClustererConfig {
+  std::size_t min_points{5U};
   double max_extent{3.0};
   int connectivity{6};
-  // 上下碎片合并允许的竖向空隙，单位米；只用于当前帧内的检测后处理。
   double vertical_merge_max_z_gap{0.4};
-  // 水平投影有面积重叠时，交叠面积至少占较小投影面积的比例；用于避免擦边误合并。
-  double vertical_merge_min_xy_overlap_ratio{0.1};
+  double vertical_merge_min_xy_overlap_ratio{0.3};
+};
+
+struct DynamicObjectClustererParams {
+  int min_points{5};           //大于0
+  double max_extent{3.0};      //大于0
+  int connectivity{6};         // 只能6/18/26三选一
+  double vertical_merge_max_z_gap{0.4};             //大于0 ，上下碎片合并允许的竖向空隙，单位米；只用于当前帧内的检测后处理。
+  double vertical_merge_min_xy_overlap_ratio{0.3};  //大于0 ，水平投影有面积重叠时，交叠面积至少占较小投影面积的比例；用于避免擦边误合并。
 };
 
 struct DynamicObjectClustererTimingStats {
@@ -38,7 +44,7 @@ struct DynamicObjectClustererFrameResult {
 
 class DynamicObjectClusterer {
  public:
-  // 构造时直接从 ROS 参数服务器读取聚类参数，并在内部完成合法化。
+  // 构造时直接从 ROS 参数服务器读取聚类参数，并在内部构建运行时配置。
   // verbose 只控制模块自己的 timing 日志，不影响聚类结果。
   DynamicObjectClusterer(ros::NodeHandle& pnh, bool verbose = false);
 
@@ -48,7 +54,7 @@ class DynamicObjectClusterer {
       const std::vector<UfomapDynamicClusterPoint>& dynamic_points) const;
 
  private:
-  // 统一在模块内部读取并合法化 ROS 参数；clusterer 没有额外 runtime 重建阶段。
+  // 统一在模块内部读取 ROS 参数并构建运行时配置；clusterer 没有额外 runtime 重建阶段。
   void loadParameters();
 
   // 下面两个子步骤只服务于模块内部主流程，不再额外暴露测试入口。
@@ -62,6 +68,7 @@ class DynamicObjectClusterer {
       const std::vector<DynamicObjectDetection>& detections) const;
   ros::NodeHandle pnh_;
   DynamicObjectClustererParams params_;
+  DynamicObjectClustererConfig config_;
   bool verbose_{false};
 };
 

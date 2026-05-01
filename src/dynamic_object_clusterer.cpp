@@ -189,7 +189,7 @@ DynamicObjectDetection fragmentToDetection(const Fragment& fragment,
 
 bool shouldMergeVerticalFragments(const Fragment& lhs,
                                   const Fragment& rhs,
-                                  const DynamicObjectClustererParams& params) {
+                                  const DynamicObjectClustererConfig& config) {
   constexpr double kAreaEpsilon = 1e-9;
 
   const double lhs_size_x = std::max(lhs.max_x - lhs.min_x, 0.0);
@@ -208,7 +208,7 @@ bool shouldMergeVerticalFragments(const Fragment& lhs,
 
   const double z_gap =
       std::max({lhs.min_z - rhs.max_z, rhs.min_z - lhs.max_z, 0.0});
-  if (z_gap > params.vertical_merge_max_z_gap) {
+  if (z_gap > config.vertical_merge_max_z_gap) {
     return false;
   }
 
@@ -222,7 +222,7 @@ bool shouldMergeVerticalFragments(const Fragment& lhs,
   const double min_area = std::min(lhs_area, rhs_area);
   // 只解决垂直方向断裂：水平投影必须有足够重叠，不跨 xy 空隙合并。
   if (!(intersection_area > kAreaEpsilon && min_area > kAreaEpsilon &&
-        intersection_area / min_area >= params.vertical_merge_min_xy_overlap_ratio)) {
+        intersection_area / min_area >= config.vertical_merge_min_xy_overlap_ratio)) {
     return false;
   }
 
@@ -233,7 +233,7 @@ bool shouldMergeVerticalFragments(const Fragment& lhs,
       std::sqrt(merged_size_x * merged_size_x +
                 merged_size_y * merged_size_y +
                 merged_size_z * merged_size_z);
-  if (params.max_extent > 0.0 && merged_extent > params.max_extent) {
+  if (config.max_extent > 0.0 && merged_extent > config.max_extent) {
     return false;
   }
 
@@ -242,14 +242,14 @@ bool shouldMergeVerticalFragments(const Fragment& lhs,
 
 std::vector<Fragment> mergeFragmentedDetections(
     std::vector<Fragment> fragments,
-    const DynamicObjectClustererParams& params) {
+    const DynamicObjectClustererConfig& config) {
   // 当前帧目标数通常很少，直接反复合并第一对满足条件的上下碎片。
   bool merged = true;
   while (merged) {
     merged = false;
     for (std::size_t lhs_index = 0; lhs_index < fragments.size() && !merged; ++lhs_index) {
       for (std::size_t rhs_index = lhs_index + 1U; rhs_index < fragments.size(); ++rhs_index) {
-        if (!shouldMergeVerticalFragments(fragments[lhs_index], fragments[rhs_index], params)) {
+        if (!shouldMergeVerticalFragments(fragments[lhs_index], fragments[rhs_index], config)) {
           continue;
         }
         mergeInto(fragments[lhs_index], fragments[rhs_index]);
@@ -265,37 +265,49 @@ std::vector<Fragment> mergeFragmentedDetections(
 
 }  // namespace
 
-DynamicObjectClustererParams sanitizeClustererParams(DynamicObjectClustererParams params) {
-  params.min_points = std::max(params.min_points, 1);
-  params.max_extent = std::isfinite(params.max_extent) && params.max_extent > 0.0 ? params.max_extent : 0.0;
-  params.connectivity = params.connectivity == 6 || params.connectivity == 18 || params.connectivity == 26
-      ? params.connectivity : 6;
-  params.vertical_merge_max_z_gap = std::isfinite(params.vertical_merge_max_z_gap) && params.vertical_merge_max_z_gap >= 0.0
-      ? params.vertical_merge_max_z_gap : 0.0;
-  params.vertical_merge_min_xy_overlap_ratio = std::isfinite(params.vertical_merge_min_xy_overlap_ratio)
-      ? std::clamp(params.vertical_merge_min_xy_overlap_ratio, 0.0, 1.0) : 0.1;
-  return params;
+DynamicObjectClustererConfig buildClustererConfig(const DynamicObjectClustererParams& params) {
+  const DynamicObjectClustererParams defaults;
+  DynamicObjectClustererConfig config;
+
+  // 这些参数来自 ROS/YAML，属于跨边界输入；这里只按 Params 注释里已经声明的
+  // 正数契约做默认值兜底，避免把负点数等非法值带入后续无符号类型或几何阈值。
+  const int min_points = params.min_points > 0 ? params.min_points : defaults.min_points;
+  config.min_points = static_cast<std::size_t>(min_points);
+  config.max_extent = params.max_extent > 0.0 ? params.max_extent : defaults.max_extent;
+  config.vertical_merge_max_z_gap = params.vertical_merge_max_z_gap > 0.0
+      ? params.vertical_merge_max_z_gap : defaults.vertical_merge_max_z_gap;
+  config.vertical_merge_min_xy_overlap_ratio = params.vertical_merge_min_xy_overlap_ratio > 0.0
+      ? params.vertical_merge_min_xy_overlap_ratio : defaults.vertical_merge_min_xy_overlap_ratio;
+
+  // connectivity 是离散枚举型约束；非法值回到 Params 默认值，后续邻域生成才能
+  // 始终落在 6/18/26 三种有定义的连通规则内。
+  const bool valid_connectivity =
+      params.connectivity == 6 || params.connectivity == 18 || params.connectivity == 26;
+  config.connectivity = valid_connectivity ? params.connectivity : defaults.connectivity;
+  return config;
 }
 
 DynamicObjectClusterer::DynamicObjectClusterer(ros::NodeHandle& pnh, const bool verbose)
-    : pnh_(pnh), params_(), verbose_(verbose) {
+    : pnh_(pnh), params_(), config_(), verbose_(verbose) {
   loadParameters();
 
-  ROS_INFO_STREAM("Dynamic object clusterer is ready. connectivity: " << params_.connectivity
-                  << ", min points: " << params_.min_points
-                  << ", max extent: " << params_.max_extent
-                  << ", vertical merge z gap: " << params_.vertical_merge_max_z_gap
+  ROS_INFO_STREAM("Dynamic object clusterer is ready. connectivity: " << config_.connectivity
+                  << ", min points: " << config_.min_points
+                  << ", max extent: " << config_.max_extent
+                  << ", vertical merge z gap: " << config_.vertical_merge_max_z_gap
                   << ", vertical merge overlap ratio: "
-                  << params_.vertical_merge_min_xy_overlap_ratio);
+                  << config_.vertical_merge_min_xy_overlap_ratio);
 }
 
 void DynamicObjectClusterer::loadParameters() {
-  pnh_.param("dynamic_cluster_min_points", params_.min_points, 5);
-  pnh_.param("dynamic_cluster_max_extent", params_.max_extent, 3.0);
-  pnh_.param("dynamic_cluster_connectivity", params_.connectivity, 6);
-  pnh_.param("dynamic_cluster_vertical_merge_max_z_gap", params_.vertical_merge_max_z_gap, 0.4);
-  pnh_.param("dynamic_cluster_vertical_merge_min_xy_overlap_ratio", params_.vertical_merge_min_xy_overlap_ratio, 0.1);
-  params_ = sanitizeClustererParams(params_);
+  // 默认值只从参数快照结构体取，避免读参处和结构体初值各维护一份数字。
+  const DynamicObjectClustererParams defaults;
+  pnh_.param("dynamic_cluster_min_points", params_.min_points, defaults.min_points);
+  pnh_.param("dynamic_cluster_max_extent", params_.max_extent, defaults.max_extent);
+  pnh_.param("dynamic_cluster_connectivity", params_.connectivity, defaults.connectivity);
+  pnh_.param("dynamic_cluster_vertical_merge_max_z_gap", params_.vertical_merge_max_z_gap, defaults.vertical_merge_max_z_gap);
+  pnh_.param("dynamic_cluster_vertical_merge_min_xy_overlap_ratio", params_.vertical_merge_min_xy_overlap_ratio, defaults.vertical_merge_min_xy_overlap_ratio);
+  config_ = buildClustererConfig(params_);
 }
 
 DynamicObjectClustererFrameResult DynamicObjectClusterer::processDynamicObjects(
@@ -377,7 +389,7 @@ std::vector<DynamicObjectDetection> DynamicObjectClusterer::buildDetections(
             });
 
   // 3) 在 UFOMap key 空间做 BFS 连通域，每个连通块对应一个候选目标。
-  const auto offsets = neighborOffsets(params_.connectivity);
+  const auto offsets = neighborOffsets(config_.connectivity);
   std::vector<bool> visited(buckets.size(), false);
   std::vector<Fragment> fragments;
 
@@ -418,7 +430,7 @@ std::vector<DynamicObjectDetection> DynamicObjectClusterer::buildDetections(
     }
 
     // 点数不足的连通块视为噪声。
-    if (cluster_points.size() < static_cast<std::size_t>(params_.min_points)) {
+    if (cluster_points.size() < config_.min_points) {
       continue;
     }
 
@@ -451,9 +463,9 @@ std::vector<DynamicObjectDetection> DynamicObjectClusterer::buildDetections(
     const double size_y = std::max(max_y - min_y, 0.0);
     const double size_z = std::max(max_z - min_z, 0.0);
     // 5) 用包围盒对角线做尺寸过滤，剔除异常大目标。
-    if (params_.max_extent > 0.0 &&
+    if (config_.max_extent > 0.0 &&
         std::sqrt(size_x * size_x + size_y * size_y + size_z * size_z) >
-            params_.max_extent) {
+            config_.max_extent) {
       continue;
     }
 
@@ -473,7 +485,7 @@ std::vector<DynamicObjectDetection> DynamicObjectClusterer::buildDetections(
   }
 
   // 7) 当前帧检测级后处理：合并上下断裂的碎片，再生成帧内 detection_id。
-  const auto merged_fragments = mergeFragmentedDetections(std::move(fragments), params_);
+  const auto merged_fragments = mergeFragmentedDetections(std::move(fragments), config_);
   std::vector<DynamicObjectDetection> detections;
   detections.reserve(merged_fragments.size());
   for (std::size_t index = 0; index < merged_fragments.size(); ++index) {

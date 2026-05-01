@@ -96,7 +96,7 @@ loadParameters()
 3. bbox 平滑参数：`tracking_box_size_smoothing_alpha`。
 4. 时间步长参数：`tracking_default_dt`、`tracking_max_dt`。
 5. 类别分类参数：`classification_*` 和 `classify_*`，用于控制开始分类帧数、类别证据积分、临时合并/分离保护和尺寸/质心阈值。
-6. Kalman 噪声和协方差参数：旧 `tracking_ca_*` 仍作为兼容默认值；多模型参数优先使用 `kalman_filter/...` 分组。
+6. Kalman 噪声和协方差参数：只从 `kalman_filter/...` 分组读取，避免旧顶层参数和当前分组参数同时表达同一套滤波语义。
 
 ### 3.2 `sanitizeTrackerParams()`
 
@@ -120,7 +120,7 @@ sanitizeTrackerParams(params)
 1. `tracking_association_gate_confidence` 不是直接当距离阈值用，而是先通过 `chiSquare3DThresholdFromConfidence()` 转成 3 自由度马氏距离平方阈值。
 2. 新轨迹默认使用 `CV3D`，对外类别先发布 `UNKNOWN`；达到 `classification_start_frame` 后才开始给类别证据积分。
 3. `classification_interval_sec`、`classification_stable_confirmations` 和 `classify_xy_distance_threshold` 不进入当前实现，类别稳定由分数和 margin 判断。
-4. `tracking_ca_position_noise` 当前直接作为位置观测噪声方差使用，不再额外平方。
+4. `kalman_filter/.../meas_noise` 当前直接作为三轴位置观测噪声方差使用，不再额外平方。
 5. `spawn_suppression_distance` 和 `spawn_suppression_iou_threshold` 有两个用途：马氏距离 gate 失败后的回退关联，以及最终未匹配 detection 的建轨抑制。
 
 ## 4. 每帧输入怎样走到 tracker

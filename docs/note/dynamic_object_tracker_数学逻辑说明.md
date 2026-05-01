@@ -747,12 +747,12 @@ $$
 
 对应参数：
 
-1. $\alpha_Q=\texttt{tracking\_adaptive\_alpha}$
-2. $\alpha_R=\texttt{tracking\_adaptive\_r\_alpha}$
-3. $Q_{\min}=Q_0\cdot\texttt{tracking\_adaptive\_min\_noise\_ratio}$
-4. $R_{\min}=R_0\cdot\texttt{tracking\_adaptive\_min\_noise\_ratio}$
+1. $\alpha_Q=\texttt{kalman\_filter/adaptive\_alpha}$
+2. $\alpha_R=\texttt{kalman\_filter/adaptive\_r\_alpha}$
+3. $Q_{\min}=Q_0\cdot\texttt{kalman\_filter/adaptive\_min\_noise\_ratio}$
+4. $R_{\min}=R_0\cdot\texttt{kalman\_filter/adaptive\_min\_noise\_ratio}$
 
-如果 `tracking_adaptive_window_size <= 1`，则自适应噪声关闭：
+如果 `kalman_filter/adaptive_window_size <= 1`，则自适应噪声关闭：
 
 $$
 Q_k=Q_0,\quad R_k=R_0
@@ -1109,11 +1109,6 @@ marker 透明度会降低，用于可视化区分“当前帧未匹配到观测�
 | --- | --- | --- |
 | `tracking_default_dt` | $\Delta t_{\text{default}}$ | 时间戳无效或非递增时的回退步长 |
 | `tracking_max_dt` | $\Delta t_{\max}$ | 单帧预测步长上限 |
-| `tracking_ca_jerk_sigma` | $\sigma_j$ | CA 模型 jerk 噪声标准差 |
-| `tracking_ca_position_noise` | $r$ | 点簇质心位置观测噪声方差 |
-| `tracking_ca_initial_position_cov` | $c_p$ | 新轨迹初始位置协方差 |
-| `tracking_ca_initial_velocity_cov` | $c_v$ | 新轨迹初始速度协方差 |
-| `tracking_ca_initial_acceleration_cov` | $c_a$ | 新轨迹初始加速度协方差 |
 | `tracking_association_gate_confidence` | $\alpha$ | 3D 卡方 gate 置信度 |
 | `tracking_coasting_gate_relax_factor` | $\rho_{\text{coast}}$ | coast 轨迹 gate 放宽倍数 |
 | `tracking_box_size_smoothing_alpha` | $\beta$ | bbox 尺寸 EMA 平滑系数 |
@@ -1122,13 +1117,26 @@ marker 透明度会降低，用于可视化区分“当前帧未匹配到观测�
 | `tracking_max_missed_frames` | $M_{\max}$ | 删除轨迹前允许的连续漏检帧数 |
 | `tracking_min_hits_to_publish` | $H_{\min}$ | 对外发布前需要的命中次数 |
 | `tracking_history_size` | $H_{\text{history}}$ | 每条轨迹保留的历史样本数 |
-| `tracking_adaptive_window_size` | $W$ | innovation 向量统计窗口 |
-| `tracking_adaptive_alpha` | $\alpha_Q$ | 自适应 Q 缩放 EMA 系数 |
-| `tracking_adaptive_r_alpha` | $\alpha_R$ | 自适应 R 缩放 EMA 系数 |
-| `tracking_adaptive_min_noise_ratio` | $\rho_{\min}$ | 自适应噪声缩放下限 |
-| `tracking_max_pos_cov` | $L_p$ | 位置协方差对角线上限 |
-| `tracking_max_vel_cov` | $L_v$ | 速度协方差对角线上限 |
-| `tracking_max_acc_cov` | $L_a$ | 加速度协方差对角线上限 |
+| `kalman_filter/adaptive_window_size` | $W$ | innovation 向量统计窗口 |
+| `kalman_filter/adaptive_alpha` | $\alpha_Q$ | 自适应 Q 缩放 EMA 系数 |
+| `kalman_filter/adaptive_r_alpha` | $\alpha_R$ | 自适应 R 缩放 EMA 系数 |
+| `kalman_filter/adaptive_min_noise_ratio` | $\rho_{\min}$ | 自适应噪声缩放下限 |
+| `kalman_filter/max_pos_cov` | $L_p$ | 位置协方差对角线上限 |
+| `kalman_filter/max_vel_cov` | $L_v$ | 速度协方差对角线上限 |
+| `kalman_filter/max_acc_cov` | $L_a$ | 加速度协方差对角线上限 |
+| `kalman_filter/ca_model/human/jerk_sigma` | $\sigma_{j,h}$ | Human CA2D 模型 jerk 噪声标准差 |
+| `kalman_filter/ca_model/human/init_cov` | $P_{0,h}$ | Human CA2D 新轨迹初始协方差对角线 |
+| `kalman_filter/ca_model/human/meas_noise` | $R_h$ | Human CA2D 三轴位置观测噪声方差 |
+| `kalman_filter/ca_model/human/z_process_noise` | $q_{z,h}$ | Human CA2D 的 z 位置过程噪声 |
+| `kalman_filter/ca_model/uav/jerk_sigma` | $\sigma_{j,u}$ | UAV CA3D 模型 jerk 噪声标准差 |
+| `kalman_filter/ca_model/uav/init_cov` | $P_{0,u}$ | UAV CA3D 新轨迹初始协方差对角线 |
+| `kalman_filter/ca_model/uav/meas_noise` | $R_u$ | UAV CA3D 三轴位置观测噪声方差 |
+| `kalman_filter/cv_model/acc_sigma` | $\sigma_a$ | Other CV3D 模型加速度噪声标准差 |
+| `kalman_filter/cv_model/init_cov` | $P_{0,o}$ | Other CV3D 新轨迹初始协方差对角线 |
+| `kalman_filter/cv_model/meas_noise` | $R_o$ | Other CV3D 三轴位置观测噪声方差 |
+| `kalman_filter/ctra_model/init_cov` | $P_{0,v}$ | Vehicle CTRA 新轨迹初始协方差对角线 |
+| `kalman_filter/ctra_model/process_noise` | $Q_v$ | Vehicle CTRA 过程噪声对角线 |
+| `kalman_filter/ctra_model/meas_noise` | $R_v$ | Vehicle CTRA 三轴位置观测噪声方差 |
 | `classification_start_frame` | $H_{\text{cls}}$ | 开始给类别证据积分的最小命中数 |
 | `classification_score_decay` | $\lambda$ | 类别证据分数衰减系数 |
 | `classification_score_increment` | $\eta$ | 当前观测类别的证据增量 |
