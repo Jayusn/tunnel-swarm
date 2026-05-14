@@ -52,11 +52,9 @@ struct StaticMapVisualizationSnapshot {
 };
 
 sensor_msgs::PointCloud2 buildCloudFromPoints(const std_msgs::Header& header,
-                                              const std::string& world_frame,
                                               const ufo::PointCloud& points) {
   sensor_msgs::PointCloud2 cloud;
   cloud.header = header;
-  cloud.header.frame_id = world_frame;
 
   sensor_msgs::PointCloud2Modifier modifier(cloud);
   modifier.setPointCloud2FieldsByString(1, "xyz");
@@ -121,14 +119,12 @@ StaticMapVisualizationSnapshot captureStaticMapVisualizationSnapshot(
 
 visualization_msgs::MarkerArray buildStaticMapVisualization(
     const std_msgs::Header& header,
-    const std::string& world_frame,
     StaticMapVisualizationSnapshot snapshot) {
   visualization_msgs::MarkerArray static_map_markers;
   std::vector<visualization_msgs::Marker> markers_by_depth(snapshot.points_by_depth.size());
   for (std::size_t depth = 0; depth < markers_by_depth.size(); ++depth) {
     auto& marker = markers_by_depth[depth];
     marker.header = header;
-    marker.header.frame_id = world_frame;
     marker.ns = "static_map_occupied";
     marker.id = static_cast<int>(depth);
     marker.action = visualization_msgs::Marker::DELETE;
@@ -273,11 +269,9 @@ ExtractFinitePointsResult extractFinitePoints(const sensor_msgs::PointCloud2& cl
 
 UfomapMapper::UfomapMapper(ros::NodeHandle& nh,
                            ros::NodeHandle& pnh,
-                           const std::string& world_frame,
                            const bool verbose)
   : nh_(nh),
       pnh_(pnh),
-      world_frame_(world_frame),
       verbose_(verbose),
       params_(),
       config_(),
@@ -289,8 +283,7 @@ UfomapMapper::UfomapMapper(ros::NodeHandle& nh,
   ROS_INFO_STREAM("UFOMap module is ready. resolution: " << config_.resolution
                   << ", depth levels: " << config_.depth_levels
                   << ", min range: " << config_.min_range
-                  << ", max range: " << config_.max_range
-                  << ", world frame: " << world_frame_);
+                  << ", max range: " << config_.max_range);
 }
 
 UfomapMapper::~UfomapMapper() = default;
@@ -387,7 +380,7 @@ UfomapFrameResult UfomapMapper::processInputCloud(const sensor_msgs::PointCloud2
           snapshot = captureStaticMapVisualizationSnapshot(
               runtimeLocked().map, static_map_visualization_max_z);
         }
-        return buildStaticMapVisualization(header, world_frame_, std::move(snapshot));
+        return buildStaticMapVisualization(header, std::move(snapshot));
       });
 
   const auto classify_current_start = std::chrono::steady_clock::now();
@@ -553,8 +546,8 @@ UfomapClassificationResult UfomapMapper::classifyPoints(
 
   result.static_point_count = static_points.size();
   result.dynamic_point_count = dynamic_points.size();
-  result.static_cloud_msg = buildCloudFromPoints(header, world_frame_, static_points);
-  result.dynamic_cloud_msg = buildCloudFromPoints(header, world_frame_, dynamic_points);
+  result.static_cloud_msg = buildCloudFromPoints(header, static_points);
+  result.dynamic_cloud_msg = buildCloudFromPoints(header, dynamic_points);
   return result;
 }
 

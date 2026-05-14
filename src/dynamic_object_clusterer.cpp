@@ -110,21 +110,6 @@ bool shiftedKey(const ClusterKey& key,
          shift_axis(key.z, offset[2], shifted.z);
 }
 
-geometry_msgs::Point makeMarkerPoint(const double x, const double y, const double z) {
-  geometry_msgs::Point point;
-  point.x = x;
-  point.y = y;
-  point.z = z;
-  return point;
-}
-
-visualization_msgs::Marker makeDeleteAllMarker(const std_msgs::Header& header) {
-  visualization_msgs::Marker marker;
-  marker.header = header;
-  marker.action = visualization_msgs::Marker::DELETEALL;
-  return marker;
-}
-
 void appendBoundingBoxEdges(const BoundingBox3D& bbox, visualization_msgs::Marker& marker) {
   const double half_x = bbox.size.x * 0.5;
   const double half_y = bbox.size.y * 0.5;
@@ -136,13 +121,13 @@ void appendBoundingBoxEdges(const BoundingBox3D& bbox, visualization_msgs::Marke
   const double min_z = bbox.center.z - half_z;
   const double max_z = bbox.center.z + half_z;
 
-    // 8 个角点按“底面 4 点 + 顶面 4 点”的顺序组织，后续通过索引连边。
+  // 8 个角点按“底面 4 点 + 顶面 4 点”的顺序组织，后续通过索引连边。
   const std::array<geometry_msgs::Point, 8> corners{
-      makeMarkerPoint(min_x, min_y, min_z), makeMarkerPoint(max_x, min_y, min_z),
-      makeMarkerPoint(max_x, max_y, min_z), makeMarkerPoint(min_x, max_y, min_z),
-      makeMarkerPoint(min_x, min_y, max_z), makeMarkerPoint(max_x, min_y, max_z),
-      makeMarkerPoint(max_x, max_y, max_z), makeMarkerPoint(min_x, max_y, max_z)};
-    // 12 条边：底面 4 条、顶面 4 条、上下连接 4 条。
+      makePoint(min_x, min_y, min_z), makePoint(max_x, min_y, min_z),
+      makePoint(max_x, max_y, min_z), makePoint(min_x, max_y, min_z),
+      makePoint(min_x, min_y, max_z), makePoint(max_x, min_y, max_z),
+      makePoint(max_x, max_y, max_z), makePoint(min_x, max_y, max_z)};
+  // 12 条边：底面 4 条、顶面 4 条、上下连接 4 条。
   constexpr std::array<std::array<std::size_t, 2>, 12> kEdges{{
       {{0U, 1U}}, {{1U, 2U}}, {{2U, 3U}}, {{3U, 0U}},
       {{4U, 5U}}, {{5U, 6U}}, {{6U, 7U}}, {{7U, 4U}},

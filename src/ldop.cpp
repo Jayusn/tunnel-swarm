@@ -19,10 +19,11 @@ Ldop::Ldop(ros::NodeHandle& nh, ros::NodeHandle& pnh)
       has_latest_odom_(false) {
   loadParameters();
   setupRosInterfaces();
-  ufomap_mapper_ = std::make_unique<UfomapMapper>(nh_, pnh_, world_frame_, verbose_);
+  ufomap_mapper_ = std::make_unique<UfomapMapper>(nh_, pnh_, verbose_);
   dynamic_object_clusterer_ = std::make_unique<DynamicObjectClusterer>(pnh_, verbose_);
   dynamic_object_tracker_ = std::make_unique<DynamicObjectTracker>(pnh_, verbose_);
-  startWorkers();
+  // 当前只有一个后台处理线程，构造阶段直接启动比再包一层单调用函数更容易按初始化顺序阅读。
+  processing_thread_ = std::thread(&Ldop::processingLoop, this);
 
   ROS_INFO_STREAM("  LDOP is ready.");
   ROS_INFO_STREAM("  input cloud: " << input_cloud_topic_);
@@ -36,11 +37,17 @@ Ldop::Ldop(ros::NodeHandle& nh, ros::NodeHandle& pnh)
 }
 
 Ldop::~Ldop() {
-  stopWorkers();
+  // 析构阶段直接收束唯一后台线程，避免把简单退出流程藏在额外薄包装里。
+  running_.store(false);
+  input_cv_.notify_all();
+
+  if (processing_thread_.joinable()) {
+    processing_thread_.join();
+  }
 }
 
 void Ldop::loadParameters() {
-  // 从参数服务器加载话题名与坐标系配置。
+  // 坐标系由输入数据自身声明；这里只加载话题名和模块运行开关，避免用参数重贴 frame 标签。
   pnh_.param<std::string>("input_cloud_topic", input_cloud_topic_, "/points_raw");
   pnh_.param<std::string>("odom_topic", odom_topic_, "/lidar_slam/odom");
   pnh_.param<std::string>("static_cloud_topic", static_cloud_topic_, "/ldop/static_cloud");
@@ -53,7 +60,6 @@ void Ldop::loadParameters() {
                           dynamic_track_markers_topic_,
                           "/ldop/dynamic_track_markers");
   pnh_.param<std::string>("static_map_markers_topic", static_map_markers_topic_, "/ldop/static_map_markers");
-  pnh_.param<std::string>("world_frame", world_frame_, "camera_init");
   pnh_.param("verbose", verbose_, false);
 }
 
@@ -70,21 +76,6 @@ void Ldop::setupRosInterfaces() {
   dynamic_track_markers_pub_ =
       nh_.advertise<visualization_msgs::MarkerArray>(dynamic_track_markers_topic_, 10);
   static_map_markers_pub_ = nh_.advertise<visualization_msgs::MarkerArray>(static_map_markers_topic_, 10, true);
-}
-
-void Ldop::startWorkers() {
-  // 将处理与发布统一放到后台线程，避免在 ROS 回调里做重活。
-  processing_thread_ = std::thread(&Ldop::processingLoop, this);
-}
-
-void Ldop::stopWorkers() {
-  // 通知线程退出，并等待它们安全收尾。
-  running_.store(false);
-  input_cv_.notify_all();
-
-  if (processing_thread_.joinable()) {
-    processing_thread_.join();
-  }
 }
 
 void Ldop::odomCallback(const nav_msgs::OdometryConstPtr& odom_msg) {

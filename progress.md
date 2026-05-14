@@ -41,7 +41,7 @@
 - 用户要求继续完成设计文档，不再只保留“待确认项”。
 - 已补查当前 clusterer marker 实现，确认现有检测框样式为 `dynamic_object_bbox` + `LINE_LIST` + 橙色线框 + 每帧 `DELETEALL`，并把该约定写回 spec，避免设计与现有代码分叉。
 - 已补查 LDOT 的 `removeDuplicateTracks()`、`hungarianAlgorithm()`、adaptive Q/R 公式和参数读取方式，用于给第一版默认方案定稿。
-- 已修改 spec：新增 `TrackHistorySample` 结构，明确 history 只保存 `stamp/position/velocity/matched`。
+- 已修改 spec：新增 `TrackHistorySample` 结构；当前 history 保存 `stamp/position/velocity/covariance/matched`，其中 covariance 是公共状态 6x6 协方差。
 - 已修改 spec：明确第一版 Hungarian 直接按 LDOT 当前简化语义实现，而不是另写一版标准完整 Hungarian。
 - 已修改 spec：明确第一版不做主动重复轨迹清理，不引入 `removeDuplicateTracks()`。
 - 已修改 spec：明确参数组织继续使用扁平 `tracking_*`，并新增 `dynamic_track_markers_topic` 话题配置键。
@@ -120,3 +120,31 @@
 - 错误记录：一次 `rg` 检查命令把反引号放在双引号正则里，shell 误执行 `CA3D` 片段；已用单引号重跑。第一次 `git diff --check` 在 `/home/st/ldop_ws` 执行失败，因为该目录不是 git 仓库；已在 `/home/st/ldop_ws/src/LDOP` 重跑通过。
 - 用户要求在动态目标上方显示目标 ID、类别和速度；已把 `/ldop/dynamic_track_markers` 从历史线 + 头部球扩展为额外发布 `dynamic_track_label` 文字 marker，并同步执行说明、数学说明和设计文档。
 - 本轮 RViz label 修改验证：`catkin build ldop --no-status` 通过；`git diff --check` 通过。构建仍有既有 Eigen C++20 模板告警。
+
+## 2026-05-13
+
+- 用户要求检查第二阶段是否真正完成。
+- 已恢复 `task_plan.md`、`findings.md`、`progress.md`，确认历史记录显示阶段 13 已实现目标分类、多模型 KF/EKF 并通过构建/测试；本次仍需按当前主工作区重新审查。
+- 已追加阶段 14：对照第二阶段目标审查当前实现、配置、消息、文档、构建和测试。
+- 已检查实现链路：`Ldop::processFrame()` 中已接通 UFOMap 分类输出、clusterer detection、tracker 稳定对象输出和检测/轨迹 marker 发布。
+- 已检查消息、配置和 launch：`DynamicObject.msg` 当前发布模型原生状态与协方差；`ldop.yaml` 暴露聚类、跟踪、分类和多模型 Kalman 参数；`run_ldop.launch` 会加载默认配置。
+- 已检查验证资产：初始状态下源码树没有 `test/` 目录，`CMakeLists.txt` 没有注册第二阶段测试；`ctest -N` 显示当前注册测试数为 0。
+- 用户要求同步对外接口和文档；随后明确纠正：接口代码不要动，只更新文档对当前 `DynamicObject.msg` 的描述。
+- 已同步 README、LDOP 设计说明、tracker 执行流程、tracker 数学说明和分类/多模型设计文档：当前对外接口为 `id/size/model_state/model_covariance/object_class/motion_model_type`，中心在 `model_state[0..2]`，速度和协方差按 `motion_model_type` 解释。
+- 用户要求 CTRA EKF 做真实修复，而不是只在文档标注待修风险。
+- 已修复 `ExtendedKalmanFilter::predict()`：先保存预测前状态并在该状态处计算转移雅可比，再调用 `stateTransition()` 推进状态。
+- 曾新增 `test/test_multi_model_kalman_filter.cpp` 和 `CMakeLists.txt` gtest 目标覆盖 CTRA predict 线性化时序；随后用户要求删除测试内容，已撤掉该测试文件和 CMake 测试目标。
+- 已运行 `catkin build ldop --no-status`，结果通过。
+- 删除测试内容前，曾运行 `catkin run_tests ldop --no-status` 与 `catkin_test_results /home/st/ldop_ws/build/ldop` 并通过；删除后当前仓库不再注册该 gtest，后续只以构建和静态检查确认本轮撤测试动作。
+- 已运行 `git diff --check`，通过。
+- 当时结论：文档/接口一致性和 CTRA EKF 疑点已收口；按当时“可维护、可回归、可抗错误配置”的标准，主要硬化建议是继续补齐分类阈值参数短数组校验。
+
+## 2026-05-14
+
+- 用户确认第二阶段已完成，要求更新相关文档。
+- 已把 `AGENTS.md` 当前阶段从“第二阶段进行中”改为“第一、第二阶段已完成，当前主线进入第三阶段短时轨迹预测”。
+- 已更新 `README.md`：当前阶段状态、第二阶段能力摘要、后续开发顺序和联合仿真验证项都切到“第二阶段已完成，第三阶段为下一步”。
+- 已更新 `docs/note/LDOP_design.md`：第二阶段增加完成状态，当前优先级改为第三阶段预测，并明确第四阶段应融合第一阶段静态层和第三阶段动态预测。
+- 已同步 `task_plan.md` 和 `findings.md`：追加阶段 16 与 2026-05-14 完成记录，把目标类别、多模型切换从“后续扩展”更新为第二阶段已完成能力。
+- 已给第二阶段聚类、tracking、classification 相关 spec 和 implementation plan 增加完成状态说明，避免历史设计背景里的“待实现”表述被误读为当前状态。
+- 已按当前 `DynamicObject.msg` 再次修正文档措辞：第二阶段对外能力不再写成独立速度输出，统一表述为模型原生状态、状态协方差和按 `motion_model_type` 派生速度。

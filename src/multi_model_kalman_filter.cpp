@@ -9,10 +9,6 @@ namespace ldopcore {
 
 namespace {
 
-bool isFiniteVector(const Eigen::VectorXd& vector) {
-  return vector.allFinite();
-}
-
 Eigen::VectorXd positionMeasurementVector(const Eigen::Vector3d& measurement) {
   Eigen::VectorXd vector(3);
   vector << measurement.x(), measurement.y(), measurement.z();
@@ -91,7 +87,7 @@ void KalmanFilterBase::setCovLimitParams(const bool enable,
 }
 
 void KalmanFilterBase::initialize(const Eigen::VectorXd& detection) {
-  if (detection.size() < measurement_dim_ || !isFiniteVector(detection)) {
+  if (detection.size() < measurement_dim_ || !detection.allFinite()) {
     throw std::invalid_argument("initial detection must be finite and contain [x,y,z]");
   }
 
@@ -110,7 +106,7 @@ void KalmanFilterBase::initialize(const Eigen::Vector3d& detection) {
 }
 
 void KalmanFilterBase::initializeState(const Eigen::VectorXd& state) {
-  if (state.size() != state_dim_ || !isFiniteVector(state)) {
+  if (state.size() != state_dim_ || !state.allFinite()) {
     throw std::invalid_argument("initial state must be finite and match model dimension");
   }
 
@@ -309,7 +305,7 @@ void LinearKalmanFilter::update(const Eigen::VectorXd& measurement) {
   if (!initialized_) {
     return;
   }
-  if (measurement.size() < measurement_dim_ || !isFiniteVector(measurement)) {
+  if (measurement.size() < measurement_dim_ || !measurement.allFinite()) {
     throw std::invalid_argument("measurement must be finite and contain [x,y,z]");
   }
 
@@ -348,8 +344,11 @@ void ExtendedKalmanFilter::predict() {
     return;
   }
 
-  state_ = model_->stateTransition(state_);
-  const Eigen::MatrixXd transition_jacobian = model_->getTransitionF(state_);
+  // EKF 协方差传播必须在预测前状态处线性化；CTRA 的 F 依赖 yaw/yaw_rate，
+  // 若先更新 state_ 再求雅可比，会把协方差投影到错误的运动切线方向上。
+  const Eigen::VectorXd previous_state = state_;
+  const Eigen::MatrixXd transition_jacobian = model_->getTransitionF(previous_state);
+  state_ = model_->stateTransition(previous_state);
   if (adaptive_window_size_ <= 1) {
     process_noise_ = model_->getProcessNoiseQ();
   }
@@ -362,7 +361,7 @@ void ExtendedKalmanFilter::update(const Eigen::VectorXd& measurement) {
   if (!initialized_) {
     return;
   }
-  if (measurement.size() < measurement_dim_ || !isFiniteVector(measurement)) {
+  if (measurement.size() < measurement_dim_ || !measurement.allFinite()) {
     throw std::invalid_argument("measurement must be finite and contain [x,y,z]");
   }
 

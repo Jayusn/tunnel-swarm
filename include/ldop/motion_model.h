@@ -63,8 +63,8 @@ class MotionModel {
   virtual void normalizeYaw(Eigen::VectorXd& state) const = 0;
   virtual void normalizeYawInResidual(Eigen::VectorXd& residual) const = 0;
 
-  // 和 LDOT 一样，setDt 只更新模型持有的时间步长；F/Q 在 predict 或 initialize 时显式读取。
-  void setDt(double dt);
+  // dt 已在 tracker 时间戳边界统一清洗/截断；模型这里只缓存本次预测步长，
+  void setDt(double dt) { dt_ = dt; }
   double dt() const { return dt_; }
   int stateDim() const { return state_dim_; }
   int measurementDim() const { return measurement_dim_; }

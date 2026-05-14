@@ -4,9 +4,9 @@
 
 本文档是第二阶段动态目标跟踪设计的增量补充，目标是参考 `/home/st/catkin/LDOT/ldot_detector`，在当前 LDOP 跟踪链路上补齐对象类别分类和类别驱动的多运动模型切换。
 
-本文档不替代 `docs/superpowers/specs/2026-04-24-dynamic-object-tracking-design.md`。当前 LDOP 主线已经有 `CA2D / CA3D / CV3D / CTRA` 运动模型和 `LinearKalmanFilter / ExtendedKalmanFilter` 底座，但 tracker 主流程仍按固定默认模型建轨，也没有对外发布目标类别。
+本文档不替代 `docs/superpowers/specs/2026-04-24-dynamic-object-tracking-design.md`。当前 LDOP 主线已经有 `CA2D / CA3D / CV3D / CTRA` 运动模型和 `LinearKalmanFilter / ExtendedKalmanFilter` 底座。实现收口后，tracker 主流程已经按类别切换模型，并对外发布目标类别和当前运动模型类型。
 
-在用户审阅并确认本文档前，不进入实现代码修改。
+实施状态（2026-05-14）：本文档对应的对象类别、证据积分、临时合并/分离保护和类别驱动模型切换已经完成，第二阶段整体已标记完成。后续预测能力属于第三阶段，不回写到当前跟踪消息。
 
 ## 目标
 
@@ -20,7 +20,7 @@
 - 新轨迹对外先保持未分类状态，内部用 `CV3D` 作为初始滤波模型。
 - 轨迹拥有足够历史后才分类；如果类别变化，在当前帧 Kalman update 前切换滤波模型。
 - 引入 LDOT 的临时合并/分离保护机制，但只在 bbox 尺寸和点数层面适配。
-- `ldop/DynamicObject.msg` 只新增 `uint8 object_class`。
+- `ldop/DynamicObject.msg` 发布 `uint8 object_class`，并保留当前模型原生状态、协方差和 `motion_model_type`，供后续预测模块按模型解释。
 - 分类状态、模型切换和合并/分离保护都归 `DynamicObjectTracker` 管理，不塞回 `DynamicObjectClusterer` 或 `UfomapMapper`。
 
 ## 非目标
@@ -28,7 +28,7 @@
 - 不移植 LDOT 的点云运动投票式动静态分类。
 - 不在本轮引入 PCA/std 类别判别。
 - 不实现短时轨迹预测。
-- 不向 `DynamicObject.msg` 增加 acceleration、yaw、motion model、classification confidence 或 prediction 字段。
+- 不向 `DynamicObject.msg` 增加 prediction 字段或 classification confidence；模型内部的 acceleration、yaw 等状态只通过 `model_state` 按 `motion_model_type` 间接表达。
 - 不在本轮实现 LDOT 的 `removeDuplicateTracks()`。
 - 不改变 clusterer 的连通域聚类或竖向碎片合并行为；只把已有 `point_count` 通过内部 detection 合同传给 tracker。
 
@@ -60,7 +60,7 @@ LDOP 保留“先关联、后分类、再在 Kalman update 前切模型”的时
 
 ### DynamicObject.msg
 
-对外 ROS 消息只增加一个字段和对应枚举常量：
+当前对外 ROS 消息包含类别枚举、运动模型枚举、目标尺寸、模型原生状态和模型原生协方差。类别相关字段为：
 
 ```text
 uint8 CLASS_UNKNOWN=0
@@ -77,7 +77,7 @@ uint8 object_class
 - `CLASS_UNKNOWN`：轨迹还没有达到可靠分类条件。
 - `CLASS_OTHER`：已经执行过分类，但不满足 human、vehicle 或 UAV 规则。
 
-对外不暴露模型专属状态。`velocity` 仍然是公共运动输出。
+当前接口不再单独发布公共 `center/velocity/covariance` 字段。目标中心固定在 `model_state[0..2]`；速度和协方差由下游结合 `motion_model_type` 解释 `model_state/model_covariance` 得到。
 
 ### 内部 Detection
 
@@ -362,12 +362,13 @@ kalman_filter:
 `buildOutput()` 对外发布：
 
 - 稳定 `id`
-- 滤波后的 `center`
 - 平滑后的 `size`
-- 当前模型推导出的 `velocity`
+- 当前模型原生 `model_state`
+- 当前模型原生 `model_covariance`
 - `object_class`
+- `motion_model_type`
 
-`DynamicObject.msg` 只发布类别常量和 `object_class` 字段。
+`DynamicObject.msg` 不发布预测数组；第三阶段预测仍走独立话题。
 
 RViz 话题保持检测和跟踪分离：
 
@@ -380,7 +381,7 @@ RViz 话题保持检测和跟踪分离：
 
 本轮至少覆盖：
 
-- `DynamicObject.msg` 只新增类别常量和 `object_class` 字段。
+- `DynamicObject.msg` 中 `object_class`、`motion_model_type`、`model_state` 和 `model_covariance` 的语义与当前实现一致。
 - `DynamicObjectDetection::point_count` 能从 clusterer fragment 传出。
 - 新轨迹对外发布 `CLASS_UNKNOWN`，内部使用 `CV3D`。
 - 匹配轨迹达到 `classification_start_frame` 后能分别分类为 `Human`、`Vehicle`、`UAV`、`Other`，并映射到预期模型。
@@ -406,7 +407,7 @@ catkin_test_results /home/st/ldop_ws/build/ldop
 git diff --check
 ```
 
-因为本轮会修改 `msg/DynamicObject.msg`，实现后必须重新执行 `catkin build ldop --no-status`，触发消息生成。
+如果后续再次修改 `msg/*.msg`，实现后必须重新执行 `catkin build ldop --no-status`，触发消息生成；本次接口收口只同步当前 `DynamicObject.msg` 的文档描述，不要求修改消息定义。
 
 ## 文档同步
 

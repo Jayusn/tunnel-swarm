@@ -61,11 +61,9 @@ class Ldop {
     double odom_cloud_dt_ms{0.0};
   };
 
-  // 初始化流程：读取参数、注册 ROS 接口、启动工作线程。
+  // 初始化流程：读取参数并注册 ROS 接口；唯一后台线程在构造函数中直接启动。
   void loadParameters();
   void setupRosInterfaces();
-  void startWorkers();
-  void stopWorkers();
 
   // ROS 回调：缓存最新里程计，并把有效的点云/里程计数据对送入输入队列。
   void odomCallback(const nav_msgs::OdometryConstPtr& odom_msg);
@@ -99,7 +97,6 @@ class Ldop {
   std::string dynamic_object_markers_topic_;
   std::string dynamic_track_markers_topic_;
   std::string static_map_markers_topic_;
-  std::string world_frame_;
   bool verbose_;
 
   ///////

@@ -390,8 +390,16 @@ $$
 
 其中：
 
-1. $F_i=F(\Delta t_i)$，由当前运动模型的 `getTransitionF(state)` 返回。
-2. $Q_i$ 是当前滤波器持有的过程噪声矩阵 `process_noise_`；启用自适应噪声时，它来自上一轮 update 后保留下来的自适应估计。
+1. 对 `CA2D/CA3D/CV3D` 线性模型，$F_i=F(\Delta t_i)$，状态预测直接使用 $F_i x_i^+$。
+2. 对 `CTRA` EKF，状态预测使用非线性函数 $x_i^- = f_i(x_i^+)$，协方差传播仍使用局部线性化矩阵：
+
+$$
+F_i=\left.\frac{\partial f_i}{\partial x}\right|_{x_i^+}
+$$
+
+也就是说，CTRA 的转移雅可比在预测前状态 $x_i^+$ 处计算，再用 `stateTransition()` 得到 $x_i^-$。这样协方差沿当前状态的运动切线传播，不会把 yaw/yaw_rate 先推进后再线性化。
+
+3. $Q_i$ 是当前滤波器持有的过程噪声矩阵 `process_noise_`；启用自适应噪声时，它来自上一轮 update 后保留下来的自适应估计。
 
 在当前 tracker 调用路径中，每帧 `predictTracks()` 都会先调用：
 
@@ -994,25 +1002,39 @@ $$
 o_i =
 \left(
 \text{id}_i,\;
-B_i.center,\;
 B_i.size,\;
-v_i
+x_i,\;
+P_i,\;
+c_i,\;
+m_i
 \right)
 $$
 
-其中速度来自滤波器状态：
+其中 $x_i$ 是当前运动模型的原生状态，$P_i$ 是同一模型状态下的协方差，$c_i$ 是目标类别，$m_i$ 是运动模型类型。当前所有模型都把位置放在状态前三维：
 
 $$
-v_i=x_i(3:5)
+p_i=x_i(0:2)
 $$
+
+速度不再作为独立消息字段发布，而是由下游按 $m_i$ 解释：
+
+$$
+\begin{aligned}
+\text{CA2D}:&\quad v_i=(x_i(3),x_i(4),0)\\
+\text{CA3D/CV3D}:&\quad v_i=(x_i(3),x_i(4),x_i(5))\\
+\text{CTRA}:&\quad v_i=(x_i(3)\cos x_i(5),x_i(3)\sin x_i(5),0)
+\end{aligned}
+$$
+
+`model_covariance` 按当前模型状态维度做 row-major 展开。因此 CA2D、CA3D、CV3D 和 CTRA 的协方差长度不同；下游必须结合 `motion_model_type` 判断矩阵维度，不能把它当成固定 6x6 公共协方差。
+
+类别字段 $c_i$ 来自 tracker 内部稳定后的分类状态；未确认前为 `CLASS_UNKNOWN`。
 
 当前输出不包含：
 
 1. acceleration
-2. covariance
-3. prediction horizon
-4. class/type
-5. track confidence
+2. prediction horizon
+3. track confidence
 
 另外，`buildOutput()` 不检查 `missed_frames == 0`。所以只要轨迹还没被删除，且历史命中次数达到阈值，coasting 轨迹也可能继续出现在 `/ldop/dynamic_objects` 中。
 
@@ -1021,8 +1043,10 @@ $$
 每次 matched 或 coast 后都会追加历史样本：
 
 $$
-h_k=(t_k,\;p_k,\;v_k,\;\text{matched}_k)
+h_k=(t_k,\;c_k,\;m_k,\;x_k,\;P_k,\;\text{matched}_k)
 $$
+
+其中 $x_k/P_k$ 与当前 `DynamicObject.msg` 的 `model_state/model_covariance` 语义一致，表示模型原生状态和协方差。这样 history 能直接服务后续预测模块；代价是消费者需要按 `motion_model_type` 解释状态布局。
 
 历史长度上限为：
 
@@ -1070,7 +1094,7 @@ marker 透明度会降低，用于可视化区分“当前帧未匹配到观测�
 1. 对每条已有轨迹 T_i：
    1.1 根据 header.stamp 和 track.last_stamp 计算 dt_i
    1.2 setDt(dt_i)
-   1.3 predict: x_i^- = F_i x_i^+, P_i^- = F_i P_i^+ F_i^T + Q_i
+   1.3 predict: 线性模型用 x_i^- = F_i x_i^+；CTRA EKF 用 x_i^- = f_i(x_i^+)，且 F_i 在 x_i^+ 处线性化；P_i^- = F_i P_i^+ F_i^T + Q_i
    1.4 bbox.center = H x_i^-
 
 2. 对每个 detection-track 组合：
@@ -1099,7 +1123,7 @@ marker 透明度会降低，用于可视化区分“当前帧未匹配到观测�
 
 8. 构建输出：
    8.1 hits 不足阈值的轨迹不发布
-   8.2 发布 id、center、size、velocity
+   8.2 发布 id、size、model_state、model_covariance、object_class、motion_model_type
    8.3 构建 history/head markers
 ```
 
@@ -1116,7 +1140,7 @@ marker 透明度会降低，用于可视化区分“当前帧未匹配到观测�
 | `tracking_spawn_suppression_iou_threshold` | $\eta_{\text{sup}}$ | 马氏距离 gate 失败后的第二层回退匹配阈值：只有 distance 已经过阈值时，才检查 IoU；同时也是最终未匹配 detection 的建轨抑制阈值 |
 | `tracking_max_missed_frames` | $M_{\max}$ | 删除轨迹前允许的连续漏检帧数 |
 | `tracking_min_hits_to_publish` | $H_{\min}$ | 对外发布前需要的命中次数 |
-| `tracking_history_size` | $H_{\text{history}}$ | 每条轨迹保留的历史样本数 |
+| `tracking_history_size` | $H_{\text{history}}$ | 每条轨迹保留的历史样本数；每个样本保存模型原生状态和协方差 |
 | `kalman_filter/adaptive_window_size` | $W$ | innovation 向量统计窗口 |
 | `kalman_filter/adaptive_alpha` | $\alpha_Q$ | 自适应 Q 缩放 EMA 系数 |
 | `kalman_filter/adaptive_r_alpha` | $\alpha_R$ | 自适应 R 缩放 EMA 系数 |
@@ -1172,7 +1196,7 @@ $$
 \xrightarrow{\text{分类证据/必要时切模型}}
 \text{matched update}
 \xrightarrow{\text{create/coast/delete/output}}
-\text{稳定 ID、类别、平滑 bbox、估计速度}
+\text{稳定 ID、类别、平滑 bbox、模型状态与不确定性}
 $$
 
 其中 `DynamicObjectTracker` 负责“哪条 detection 属于哪条轨迹，以及轨迹是否存在”，`KalmanFilterBase` / `LinearKalmanFilter` / `ExtendedKalmanFilter` 负责“单条轨迹在数学上如何预测和校正运动状态”。

@@ -54,17 +54,16 @@
 - 静态点 / 动态点分离
 - 发布当前帧静态点云 `/ldop/static_cloud`
 - 发布当前帧动态点云 `/ldop/dynamic_cloud`
-- 发布最小实现的 `DynamicObjectArray`
+- 发布由 tracker 维护的 `DynamicObjectArray`
 - 维护 UFOMap，并提供 `seenFree`、节点查询、候选查询与 label 读写等基础接口
 - 为后续静态体素地图可视化提供地图状态基础
 
 ### 未来可以继续扩展什么
 
-- 动态点聚类
-- 跨帧目标关联
-- 速度估计
 - 短时轨迹预测
-- 更稳定的动态目标级输出
+- 预测轨迹 RViz marker
+- 动态风险图或规划接口
+- 更完整的回归测试和参数校验
 
 ### rog_map 应该负责什么
 
@@ -91,9 +90,16 @@
 3. `UfomapMapper` 维护 UFOMap，并基于 `seenFree(point)` 完成当前帧动静态判别
 4. `/ldop/static_map_markers` 输出静态体素地图 RViz 可视化
 
-因此，后续主线不再是补齐第一阶段闭环，而是进入第二阶段：动态点云聚类、检测与跟踪。
+第二阶段“动态点云聚类、检测与跟踪”也已经完成：
 
-需要注意的是，`/ldop/dynamic_objects` 目前仍是最小观测输出，不代表第二阶段已经完成；它只是后续目标级检测、跟踪和预测接口的占位基础。
+1. `DynamicObjectClusterer` 将当前帧动态点云提升为 detection 集合，并通过 `/ldop/dynamic_object_markers` 输出检测框可视化
+2. `DynamicObjectTracker` 维护跨帧数据关联、稳定目标 ID、目标尺寸、模型原生状态和协方差
+3. tracker 已输出对象类别 `object_class` 和运动模型 `motion_model_type`
+4. `/ldop/dynamic_track_markers` 输出轨迹历史线、头部点和目标标签
+
+因此，后续主线现在进入第三阶段：动态目标短时轨迹预测。
+
+需要注意的是，`/ldop/dynamic_objects` 当前已经由 tracker 输出稳定目标状态，不再是早期的单框占位输出；它仍然不是第三阶段预测接口，未来轨迹预测会走独立话题。
 
 ## 5. 当前 LDOP 的运行结构
 
@@ -121,7 +127,7 @@
 - `/ldop/dynamic_cloud`
 - `/ldop/static_map_markers`
 
-### 当前最小动态对象接口
+### 当前动态对象接口
 
 - `/ldop/dynamic_objects`
 
@@ -133,26 +139,28 @@
 
 - `ldop/DynamicObject`
 
-这套消息接口未来打算承载的信息包括：
-
-- 目标 id
-- 目标中心位置
-- 目标尺寸
-- 目标速度
-
-当前 `ldop/DynamicObject` 只保留已跟踪目标的当前状态：
+当前 `ldop/DynamicObject` 保留已跟踪目标的模型原生当前状态：
 
 - `id`
-- `center`
 - `size`
-- `velocity`
+- `model_state`
+- `model_covariance`
+- `object_class`
+- `motion_model_type`
+
+其中 `model_state` 前三维固定为目标中心 `x/y/z`；速度需要按 `motion_model_type` 解释：
+
+- `CA2D`：`[x,y,z,vx,vy,ax,ay]`
+- `CA3D`：`[x,y,z,vx,vy,vz,ax,ay,az]`
+- `CV3D`：`[x,y,z,vx,vy,vz]`
+- `CTRA`：`[x,y,z,v,a,yaw,yaw_rate]`
 
 短时间范围内的未来预测位置会在后续阶段通过单独的预测话题输出，不再塞进当前跟踪对象消息。
 
 当前实现是检测和跟踪接口：
 
 - `DynamicObjectClusterer` 输出帧内 detection，并继续发布 `/ldop/dynamic_object_markers`
-- `DynamicObjectTracker` 输出稳定 `id`、滤波后的 `center`、平滑后的 `size` 和估计 `velocity`
+- `DynamicObjectTracker` 输出稳定 `id`、平滑后的 `size`、模型原生状态/协方差、当前运动模型和确认类别
 - 跟踪轨迹通过 `/ldop/dynamic_track_markers` 可视化
 
 也就是说，`/ldop/dynamic_objects` 已进入检测跟踪阶段，但还不是预测接口。
@@ -173,12 +181,14 @@
 
 ### 第二阶段：动态点云聚类、检测与跟踪
 
-下一步主线是把 `/ldop/dynamic_cloud` 从“动态点集合”提升为“动态目标集合”：
+当前第二阶段已经完成，把 `/ldop/dynamic_cloud` 从“动态点集合”提升为“动态目标集合”，主链路包括：
 
 - 动态点云聚类
 - 目标包围盒或尺寸估计
 - 跨帧目标关联
-- 速度估计
+- 模型原生状态与协方差维护，速度按 `motion_model_type` 从 `model_state` 派生
+- 目标类别分类
+- 类别驱动的 CA2D / CTRA / CA3D / CV3D 运动模型切换
 - 稳定输出 `/ldop/dynamic_objects`
 
 这一阶段仍然不应反向改变第一阶段的 `/ldop/static_cloud`、`/ldop/dynamic_cloud` 和静态体素地图语义。
@@ -200,20 +210,22 @@
 
 ## 8. 推荐的后续开发顺序
 
-### 第一步：进入第二阶段
+### 第一步：进入第三阶段
 
-第一阶段已经完成，后续应优先实现“动态目标”这个更高层的抽象。
+第一阶段和第二阶段已经完成。后续优先在稳定跟踪输出之上定义第三阶段预测消息、预测时间采样、预测 marker 和预测验证方式。
 
-目标输出是：
+当前可作为第三阶段输入的目标输出是：
 
 - 聚类后的目标
 - 包围尺寸
-- 速度估计
 - 稳定的目标 ID
+- 对象类别
+- 当前运动模型和模型原生状态/协方差
+- 可按 `motion_model_type` 解释出的当前速度
 
-### 第二步：进入第三阶段
+### 第二步：进入第四阶段前的动态风险表达
 
-实现短时轨迹预测。
+实现短时轨迹预测，并确定规划侧需要消费的动态风险表达。
 
 目标输出是：
 
@@ -255,6 +267,8 @@ cd /home/st/ldop_ws
 
 - `/ldop/static_cloud` 在 RViz 中保持稳定、不过度吸收动态物体残影
 - `/ldop/dynamic_cloud` 能反映当前帧动态点云
+- `/ldop/dynamic_objects` 能保持稳定目标 ID、类别、模型状态和状态不确定性；速度可按当前运动模型从状态中解释
+- `/ldop/dynamic_object_markers` 与 `/ldop/dynamic_track_markers` 分别反映当前帧检测框和跨帧轨迹
 - LDOP、PX4、Gazebo、外部位姿融合链路能完整跑通并可正常退出
 
 ## 10. 一句话记忆法

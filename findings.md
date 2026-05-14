@@ -7,7 +7,7 @@
 - 仓库约定：`Ldop` 负责 ROS I/O 与线程调度；`UfomapMapper` 负责 UFOMap 插入、`seenFree` 判别、当前帧动静态点云分割、累计静态地图云输出及基础查询接口。
 - 仓库约定：`UfomapMapper` 已移除 clustering/BFS 聚类职责；聚类、检测、跟踪和预测不应塞回 mapper。
 - 当前 `/ldop/static_cloud` 和 `/ldop/dynamic_cloud` 语义均为当前帧输出，累计地图由 `/ldop/ufomap` 表达。
-- 当前阶段优先级仍是“动静态分割 + 静态地图闭环可视化”；复杂跟踪/预测/规划融合不应抢占该优先级。
+- 第一阶段和第二阶段均已完成；当前优先级转向第三阶段短时轨迹预测，预测应消费 tracker 的稳定目标输出，而不是直接回到原始动态点云。
 
 ## 待核实内容
 
@@ -77,14 +77,14 @@
 
 - 当前主工作区已经包含 `include/ldop/dynamic_object_tracker.h`、`include/ldop/multi_model_kalman_filter.h`、`include/ldop/motion_model.h` 以及对应 `.cpp`，说明上一轮滤波/跟踪实现已经进入主线。
 - 当前 `DynamicObjectTrackerConfig` 仍有单个 `model_type{MotionModelType::CA3D}`；`TrackState` 虽保存 `model_type`，但 tracker 入口尚未按类别选择或切换模型。
-- 当前 `DynamicObject.msg` 只有 `id/center/size/velocity`，没有类别、yaw、加速度、模型类型或分类置信度字段。
+- 当时 `DynamicObject.msg` 只有 `id/center/size/velocity`，没有类别、yaw、加速度、模型类型或分类置信度字段；当前接口已改为 `id/size/model_state/model_covariance/object_class/motion_model_type`。
 - 当前 `MultiModelKalmanFilterConfig` 已包含 `ca_human`、`ca_uav`、`cv`、`ctra` 四组参数，并已有 `LinearKalmanFilter` / `ExtendedKalmanFilter` 接口；这说明本轮更像是补齐分类入口、模型选择/切换、参数和消息合同，而不是从零写滤波器。
 - 当前 `MotionModelType` 已覆盖 `CA2D/CA3D/CV3D/CTRA`；`createKalmanFilter(bool is_human, bool is_vehicle, bool is_uav, bool is_other, ...)` 已按 LDOT 类别映射到 CA2D、CTRA、CA3D、CV3D。
 - 当前 `CAMotionModel`、`CVMotionModel` 是线性模型，`CTRAMotionModel` 覆写 `stateTransition()` 和雅可比，已通过 `ExtendedKalmanFilter` 接入。
 - 当时 `config/ldop.yaml` 只有旧顶层 CA 参数，尚未暴露 human/uav/vehicle/other 分组参数，也没有分类参数。
 - 当前 clusterer 到 tracker 的输入仍只是 `std::vector<DynamicObjectDetection>`，需要继续核实 `DynamicObjectDetection` 是否有类别字段；从已读接口看，分类目前还没有进入主流程。
 - 当前 `DynamicObjectDetection` 只有 `detection_id`、`bbox`、`stamp`；`BoundingBox3D` 虽有 `yaw`，但 detection 和输出消息都没有目标类别。
-- 当前 `DynamicObjectTracker::createTrack()` 始终用 `config_.model_type` 创建 `TrackState`，且该配置默认 `CA3D`；`buildOutput()` 只发布 `id/center/size/velocity`。
+- 当时 `DynamicObjectTracker::createTrack()` 始终用 `config_.model_type` 创建 `TrackState`，且该配置默认 `CA3D`；`buildOutput()` 只发布旧版中心和速度字段。当前 tracker 已按类别切换模型，并输出模型原生状态与协方差。
 - 当前 `CMakeLists.txt` 已把 `src/motion_model.cpp` 和 `src/multi_model_kalman_filter.cpp` 编进 `ldop_core`，但没有找到 tracker/Kalman 测试文件；上一轮进度中的测试结果不能直接代表当前主线测试资产仍存在。
 
 ## 2026-04-30 LDOT 初步对照
@@ -140,19 +140,40 @@
 - `config/ldop.yaml` 已加入分类参数和 `kalman_filter/...` 分组；旧顶层 CA 参数不再保留为兼容入口，Kalman 噪声和协方差只从 `kalman_filter/...` 读取。
 - 文档已同步：tracker 执行流程、数学逻辑和 LDOP 第二阶段路线图都记录了对象类别、证据积分和模型切换语义。
 
+## 2026-05-13 第二阶段完成度审查
+
+- 已核实：当前主链路按 `UfomapMapper -> DynamicObjectClusterer -> DynamicObjectTracker` 串接；`/ldop/dynamic_objects`、`/ldop/dynamic_object_markers`、`/ldop/dynamic_track_markers` 均在 `Ldop` 中发布。
+- 已核实：clusterer 使用 UFOMap key 空间 BFS，输出 `DynamicObjectDetection`，并生成当前帧检测框 marker。
+- 已核实：tracker 包含 predict、马氏距离 + fallback 关联、Hungarian 求解、matched update、unmatched 建轨、coasting、过期删除、类别证据积分、模型切换、track marker 和动态对象消息输出。
+- 已核实：Kalman 底座包含 `CA2D/CA3D/CV3D/CTRA`；`CTRA` 使用 `ExtendedKalmanFilter`，类别到模型映射已经落地。
+- 已验证：`catkin build ldop --no-status` 在 `/home/st/ldop_ws` 通过。
+- 已调整：刚新增的 `test/test_multi_model_kalman_filter.cpp` 和 `test_multi_model_kalman_filter` gtest 目标已按用户要求删除；当前不把该测试作为第二阶段完成依据。
+- 已收口：当前对外接口以现有 `DynamicObject.msg` 为准，即 `id/size/model_state/model_covariance/object_class/motion_model_type`；本轮只同步 README、设计说明和 tracker 文档，不修改消息定义或 tracker 输出代码。
+- 已修复：`ExtendedKalmanFilter::predict()` 现在先在预测前状态处计算转移雅可比，再调用 `stateTransition()` 推进 CTRA 状态。
+- 仍余缺口：分类阈值向量从 ROS 参数直接透传，`classifyObservation()` 直接访问 `[0]/[1]`；如果用户配置短数组，分类开始后可能越界。需在 `buildTrackerConfig()` 中按默认值补齐或回退。
+- 当时结论：第二阶段功能链路、对外接口描述和 CTRA EKF 关键疑点已经收口一轮；按当时“可维护、可回归、可抗错误配置”的标准，主要硬化建议是继续补齐分类阈值参数校验。
+
+## 2026-05-14 第二阶段完成状态
+
+- 用户确认第二阶段已经完成；当前文档状态以“动态点云聚类、检测与跟踪已完成”为准。
+- 第二阶段完成输出包括：`/ldop/dynamic_objects`、`/ldop/dynamic_object_markers` 和 `/ldop/dynamic_track_markers`。
+- `/ldop/dynamic_objects` 语义为 tracker 稳定目标集合，包含稳定 ID、目标尺寸、模型原生状态、模型原生协方差、对象类别和当前运动模型。
+- 第三阶段应新增独立预测消息与预测 marker；不把未来轨迹预测数组回填到当前 `DynamicObject.msg`。
+- 第四阶段规划地图仍应融合第一阶段静态层和第三阶段预测风险，不应直接消费未聚类动态点云做规划级风险。
+
 ## 已收口结论与后续阶段项
 
 - 已确认：动态对象跟踪第一版按当前 spec 完整版推进，包含 adaptive Q/R、cov limit、history、coasting gate 放松等参数。
 - 已确认：clusterer 到 tracker 的内部接口采用 `DynamicObjectDetection[]`；`DynamicObjectArray` 只作为 tracker 对外输出。
 - 已确认：`DynamicObject.msg` 后续实现移除预测数组；预测未来走独立消息和独立话题。
 - 已确认：数据关联求解器第一版使用 Hungarian；代价仍只使用 3D 马氏距离，gate 外候选用无效大代价处理。
-- 已确认：独立运动模型/滤波器组件第一版默认使用 3D CA；CV/CTRA 类在 spec 中作为后续扩展，不进入第一版主流程。
+- 已确认：独立运动模型/滤波器组件第一版默认使用 3D CA；后续增量已经完成 `CA2D/CA3D/CV3D/CTRA` 模型、类别映射和模型切换。
 - 已确认：`DynamicObjectTracker` 是第二阶段 tracking 主模块；`MultiModelKalmanFilter` 是 track 内部算法组件；`MotionModel` 是 filter 内部依赖，不是三个平级 ROS 模块。
 - 已收口：第一版不实现主动重复轨迹清理，不引入 `removeDuplicateTracks()` 对应的 IoU/速度方向去重启发式。
 - 已收口：Hungarian 实现细节直接对齐 LDOT 当前简化语义，即行/列归约后从零候选中按原始代价选择不冲突匹配。
-- 已收口：参数组织继续使用扁平 `tracking_*`，不在第一版引入 `tracking/...`、`kalman_filter/...` 树状命名。
+- 已收口：生命周期和关联参数继续使用扁平 `tracking_*`，分类参数使用扁平 `classification_*`，多模型 Kalman 噪声与协方差使用 `kalman_filter/...` 分组。
 - 已收口：adaptive Q/R 公式语义直接对齐 LDOT 当前 `innovation_buffer + C_gamma + EMA + min_noise_ratio` 实现。
-- 已收口：track history 固定为 `TrackHistorySample(stamp, position, velocity, matched)`，不保存协方差历史。
+- 已更新：track history 为 `TrackHistorySample(stamp, object_class, motion_model_type, model_state, model_covariance, matched)`；历史样本保存模型原生状态和协方差，并由 `motion_model_type` 解释。
 - 已更新：`/ldop/dynamic_track_markers` 固定为 `LINE_STRIP` 历史线、`SPHERE` 头部和 `TEXT_VIEW_FACING` 标签；标签显示轨迹 ID、类别和速度模长，仍不画速度箭头。
 - 已收口：`/ldop/dynamic_object_markers` 沿用现有 clusterer 线框样式：`dynamic_object_bbox` + `LINE_LIST` + 橙色 + `DELETEALL`。
 - 已产出：实施计划文档已经生成，下一步不再是继续讨论设计，而是决定是否按计划进入实现。
@@ -160,4 +181,5 @@
 - 当前实现进度：实施计划 5 个阶段已经在 `/home/st/ldop_ws/src/LDOP/.worktrees/feature-dynamic-object-tracking` 落地。`DynamicObject.msg` 已移除预测数组，clusterer 正式输出 detection 与检测框 marker，tracker 输出稳定 `DynamicObjectArray`，`Ldop` 已接入 tracker 和 `/ldop/dynamic_track_markers`。
 - 当前验证事实：worktree 临时 CMake 构建已通过 `ldop_node`、`test_dynamic_object_tracker`、`test_multi_model_kalman_filter`、`test_dynamic_object_clusterer`；运行结果分别覆盖 tracker `5/5`、Kalman `8/8`、clusterer `12/12`。由于 worktree 是嵌套在主仓内，常规 `/home/st/ldop_ws` catkin source space 仍指向主工作区，不能直接代表 worktree 构建结果。
 - 历史实现限制：第一版只支持 `CA3D`，且旧扁平 CA/协方差参数会折算成单一初始协方差/协方差上限；当前多模型主线已改为按 `kalman_filter/...` 分组表达这些量。
-- 后续阶段：未来预测消息字段、CV/CTRA、目标类别字段和模型切换策略放到后续阶段；第一版只保留扩展边界。
+- 当前阶段状态：第二阶段已经完成；CV/CTRA、目标类别字段和模型切换策略已经进入当前主线实现。
+- 后续阶段：第三阶段定义独立预测消息、预测轨迹 marker 和预测验证方式；第四阶段再设计规划可用的风险地图或融合接口。

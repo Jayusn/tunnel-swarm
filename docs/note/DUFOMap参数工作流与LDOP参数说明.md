@@ -133,7 +133,7 @@ if (!map.seenFree(p)) {
 ### 2.2 用当前 odom 位置作为 `sensor_origin`
 
 - `odom.pose.pose.position` 被直接当作射线起点
-- 当前实现默认输入点云和 odom 已经在同一个世界系
+- 输入点云 `xyz` 和 odom pose 必须已经在同一个世界系；这是 LDOP 的输入限制，LDOP 内部不做 TF 转换
 
 ### 2.3 当前帧按更新前地图立即分类
 
@@ -650,7 +650,7 @@ ufomap_num_threads: 0
 
 先确认：
 
-- `/cloud_registered` 在 `world_frame` 下是否稳定
+- `/cloud_registered.header.frame_id` 是否就是上游统一后的世界系
 - `/Odometry` 的位置是否就是点云射线起点
 - 点云和 odom 是否已经对齐到同一世界系
 

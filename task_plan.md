@@ -6,7 +6,8 @@
 
 ## 当前状态
 
-- 当前阶段：阶段 13 已完成，目标分类 + 多运动模型 KF/EKF 已在当前工作区落地并通过构建/测试验证。
+- 当前阶段：阶段 16 已完成；第二阶段“动态点云聚类、检测与跟踪”已标记完成，并已同步当前阶段文档、路线图和过程记录。
+- 当前主线：进入第三阶段“动态目标短时轨迹预测”，后续设计应基于 tracker 已稳定输出的 `id/object_class/motion_model_type/model_state/model_covariance`。
 - 上一阶段：阶段 10 已完成，第一版单 CA3D 跟踪实施计划已在独立 worktree 中落地并完成临时构建/测试验证。
 - 设计文档：`docs/superpowers/specs/2026-04-24-dynamic-object-tracking-design.md` 已完成第一版收口。
 - 实施计划：`docs/superpowers/plans/2026-04-25-dynamic-object-tracking-implementation-plan.md` 已生成。
@@ -30,6 +31,9 @@
 | 11 | complete | 按 `superpowers:brainstorming` 调研当前 LDOP 与 `/home/st/catkin/LDOT/ldot_detector`，收敛目标分类和多运动模型 KF/EKF 的设计边界 |
 | 12 | complete | 用户审阅 `docs/superpowers/specs/2026-04-30-dynamic-object-classification-multimodel-design.md`，确认后进入实施计划 |
 | 13 | complete | 执行 `docs/superpowers/plans/2026-04-30-dynamic-object-classification-multimodel-implementation-plan.md`，实现目标分类、证据积分和模型切换 |
+| 14 | complete | 对照第二阶段目标审查当前实现、配置、消息、文档、构建和测试，判断是否真正完成 |
+| 15 | complete | 同步当前 `DynamicObject.msg` 对外接口文档，修复 CTRA EKF 预测前状态线性化问题；随后按用户要求删除新增测试内容 |
+| 16 | complete | 按用户确认将第二阶段标记为已完成，更新 `AGENTS.md`、`README.md`、`docs/note/LDOP_design.md`、spec/plan 状态说明和过程记录 |
 
 ## 决策记录
 
@@ -64,6 +68,9 @@
 | 2026-04-30 | 设计文档改为中文 | 用户指出英文 spec 不符合 `AGENTS.md` 的中文默认要求；已按仓库语言规则修正 |
 | 2026-04-30 | 分类稳定改为证据积分和滞回切换 | 用户认为固定间隔和连续次数还可优化；本轮删除 `classification_interval_sec`、`classification_stable_confirmations` 和 `classify_xy_distance_threshold`，可靠匹配帧更新类别分数，coasting/疑似遮挡帧冻结证据，尺寸变化确认继续使用 `classification_size_change_confirm_frames` |
 | 2026-04-30 | 本轮在当前工作区内联执行 | 用户已明确说“继续”；本轮不创建中间提交，也不额外开子代理，直接在当前 LDOP 工作区按实施计划执行 |
+| 2026-05-13 | 对外接口收口只更新文档描述 | 用户明确纠正：本轮不应修改 `DynamicObject.msg` 或 tracker 输出字段，只把文档与当前接口语义对齐 |
+| 2026-05-13 | CTRA EKF 预测雅可比在预测前状态处计算 | 标准 EKF 协方差传播应围绕 $x_k^+$ 线性化，再推进到 $x_{k+1}^-$；否则 CTRA 的 yaw/yaw_rate 会影响错误的切线方向 |
+| 2026-05-14 | 第二阶段标记为已完成，主线切到第三阶段 | 用户明确说明“第二阶段已完成”；文档状态以该结论为准，后续预测归入第三阶段 |
 
 ## 已收口与后续阶段设计项
 
@@ -71,13 +78,13 @@
 |--------|----|-----------|------|
 | P0 | 重复轨迹清理 | 已收口：第一版不做 `removeDuplicateTracks()` | 先暴露问题，不在主流程静默合并 |
 | P0 | Hungarian 实现细节 | 已收口：复刻 LDOT 当前简化语义 | 行/列归约后从零候选中按原始代价选不冲突匹配 |
-| P1 | 参数组织方式 | 已收口：继续使用扁平 `tracking_*` | 保持与当前 `ldop.yaml` 风格一致 |
+| P1 | 参数组织方式 | 已收口：`tracking_*` / `classification_*` 保持扁平，多模型 Kalman 参数使用 `kalman_filter/...` 分组 | 生命周期与分类参数便于快速调试，模型噪声和协方差按模型分组避免含义混杂 |
 | P1 | adaptive Q/R 公式 | 已收口：语义对齐 LDOT 当前 innovation-window + EMA 实现 | 不另设计新公式 |
-| P1 | 轨迹 history 内容 | 已收口：`TrackHistorySample = stamp + position + velocity + matched` | 第一版不保存协方差历史 |
+| P1 | 轨迹 history 内容 | 已更新：`TrackHistorySample = stamp + object_class + motion_model_type + model_state + model_covariance + matched` | 历史样本与当前 `DynamicObject.msg` 一致，保存模型原生状态和协方差 |
 | P2 | `/ldop/dynamic_track_markers` 细节 | 已更新：`LINE_STRIP` 历史线 + `SPHERE` 头部 + `TEXT_VIEW_FACING` 标签 | 标签显示 ID、类别和速度模长 |
 | P2 | `/ldop/dynamic_object_markers` 细节 | 已收口：沿用现有 clusterer 样式 | `dynamic_object_bbox` + `LINE_LIST` + 橙色线框 |
-| P2 | 未来预测消息 | 后续阶段设计项 | 第三阶段再定义独立预测消息字段 |
-| P2 | 未来类别和多模型切换 | 后续阶段设计项 | 第一版只保留 `MotionModelType` 和 factory |
+| P2 | 未来预测消息 | 第三阶段设计项 | 第二阶段只输出当前跟踪状态，不把预测数组塞进 `DynamicObject.msg` |
+| P2 | 目标类别和多模型切换 | 已完成 | 当前第二阶段已经输出 `object_class` 和 `motion_model_type`，并在 tracker 内按类别执行 CA2D / CTRA / CA3D / CV3D 切换 |
 
 ## 错误记录
 

@@ -158,7 +158,6 @@ class UfomapMapper {
   // 独立负责处理输入点云、更新 UFOMap，并输出动静态点云与静态地图云。
   UfomapMapper(ros::NodeHandle& nh,
                ros::NodeHandle& pnh,
-               const std::string& world_frame,
                bool verbose);
   ~UfomapMapper();
 
@@ -192,7 +191,6 @@ class UfomapMapper {
   ros::NodeHandle nh_;
   ros::NodeHandle pnh_;
 
-  std::string world_frame_;
   bool verbose_;
   UfomapMapperParams params_;
   UfomapMapperConfig config_;

@@ -3,7 +3,11 @@
 ## 输入
 
 - 设计文档：`docs/superpowers/specs/2026-04-24-dynamic-object-tracking-design.md`
-- 当前代码基线：`DynamicObjectClusterer` 已输出帧内 `ldop/DynamicObjectArray` 和 `/ldop/dynamic_object_markers`，`DynamicObjectTracker` 与多模型 Kalman 组件尚未落地
+- 计划编写时的代码基线：`DynamicObjectClusterer` 已输出帧内 `ldop/DynamicObjectArray` 和 `/ldop/dynamic_object_markers`，`DynamicObjectTracker` 与多模型 Kalman 组件尚未落地
+
+## 状态
+
+已完成。该计划对应的第二阶段 tracking 主链路已经落地，并在后续增量中补齐对象类别、证据积分和 CA2D / CTRA / CA3D / CV3D 模型切换。第二阶段整体已在 2026-05-14 标记完成。
 
 ## 目标
 
@@ -85,7 +89,7 @@
    `predict -> build cost matrix -> gate -> simplified Hungarian -> update/create/coast/delete`
 3. 使用 LDOT 当前语义下的简化 Hungarian：
    行列归约后，从零候选中按原始代价选不冲突匹配
-4. history 固定写入 `TrackHistorySample(stamp, position, velocity, matched)`
+4. history 固定写入 `TrackHistorySample(stamp, position, velocity, covariance, matched)`，其中 `covariance` 是公共状态 `[x,y,z,vx,vy,vz]` 的 6x6 row-major 协方差
 5. 第一版不实现主动重复轨迹清理
 6. `DynamicObjectArray` 由 tracker 生成，`id` 为稳定 track id，`velocity` 来自滤波状态
 

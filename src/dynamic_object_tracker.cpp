@@ -36,19 +36,6 @@ struct ClassificationSizeUpdate {
   bool reliable_for_classification{true};
 };
 
-double maxComponent(const geometry_msgs::Vector3& vector) {
-  return std::max({vector.x, vector.y, vector.z});
-}
-
-geometry_msgs::Vector3 componentMax(const geometry_msgs::Vector3& lhs,
-                                    const geometry_msgs::Vector3& rhs) {
-  geometry_msgs::Vector3 result;
-  result.x = std::max(lhs.x, rhs.x);
-  result.y = std::max(lhs.y, rhs.y);
-  result.z = std::max(lhs.z, rhs.z);
-  return result;
-}
-
 std::size_t classScoreIndex(const ObjectClass object_class) {
   switch (object_class) {
     case ObjectClass::Human:
@@ -81,6 +68,20 @@ std::uint8_t toRosObjectClass(const ObjectClass object_class) {
   return ldop::DynamicObject::CLASS_UNKNOWN;
 }
 
+std::uint8_t toRosMotionModelType(const MotionModelType model_type) {
+  switch (model_type) {
+    case MotionModelType::CA2D:
+      return ldop::DynamicObject::MOTION_MODEL_CA2D;
+    case MotionModelType::CA3D:
+      return ldop::DynamicObject::MOTION_MODEL_CA3D;
+    case MotionModelType::CV3D:
+      return ldop::DynamicObject::MOTION_MODEL_CV3D;
+    case MotionModelType::CTRA:
+      return ldop::DynamicObject::MOTION_MODEL_CTRA;
+  }
+  return ldop::DynamicObject::MOTION_MODEL_CV3D;
+}
+
 MotionModelType motionModelForClass(const ObjectClass object_class,
                                     const MotionModelType current_model) {
   switch (object_class) {
@@ -96,24 +97,6 @@ MotionModelType motionModelForClass(const ObjectClass object_class,
       break;
   }
   return current_model;
-}
-
-visualization_msgs::Marker makeTrackDeleteAllMarker(const std_msgs::Header& header) {
-  visualization_msgs::Marker marker;
-  marker.header = header;
-  marker.ns = "dynamic_tracks";
-  marker.id = 0;
-  marker.action = visualization_msgs::Marker::DELETEALL;
-  return marker;
-}
-
-std_msgs::ColorRGBA makeTrackColor(const bool coasting) {
-  std_msgs::ColorRGBA color;
-  color.r = 0.10F;
-  color.g = 0.80F;
-  color.b = 0.95F;
-  color.a = coasting ? 0.35F : 1.0F;
-  return color;
 }
 
 const char* objectClassDisplayName(const ObjectClass object_class) {
@@ -141,11 +124,6 @@ std::string makeTrackLabelText(const TrackState& track) {
       << "Class: " << objectClassDisplayName(track.object_class) << '\n'
       << "Speed: " << std::fixed << std::setprecision(2) << speed_mps << " m/s";
   return stream.str();
-}
-
-double trackLabelZOffset(const BoundingBox3D& bbox) {
-  // TEXT_VIEW_FACING 的锚点在文字中心；按目标高度上移，避免文字压住头部球体。
-  return std::max(0.45, 0.5 * std::max(bbox.size.z, 0.0) + 0.30);
 }
 
 double chiSquare3DThresholdFromConfidence(const double confidence) {
@@ -232,26 +210,6 @@ DynamicObjectTrackerConfig buildTrackerConfig(const DynamicObjectTrackerParams& 
   return config;
 }
 
-Eigen::Vector3d pointToEigen(const geometry_msgs::Point& point) {
-  return Eigen::Vector3d(point.x, point.y, point.z);
-}
-
-geometry_msgs::Point eigenToPoint(const Eigen::Vector3d& point) {
-  geometry_msgs::Point ros_point;
-  ros_point.x = point.x();
-  ros_point.y = point.y();
-  ros_point.z = point.z();
-  return ros_point;
-}
-
-geometry_msgs::Vector3 eigenToVector(const Eigen::Vector3d& vector) {
-  geometry_msgs::Vector3 ros_vector;
-  ros_vector.x = vector.x();
-  ros_vector.y = vector.y();
-  ros_vector.z = vector.z();
-  return ros_vector;
-}
-
 double computeDeltaSeconds(const ros::Time& current_stamp,
                            const ros::Time& previous_stamp,
                            const double fallback_dt,
@@ -316,10 +274,6 @@ double computeHorizontalIntersectionOverUnion(const BoundingBox3D& lhs,
   const double intersection_area = intersection_x * intersection_y;
   const double union_area = lhs_area + rhs_area - intersection_area;
   return union_area > 0.0 ? intersection_area / union_area : 0.0;
-}
-
-double computeCenterDistance3D(const geometry_msgs::Point& lhs, const geometry_msgs::Point& rhs) {
-  return std::hypot(lhs.x - rhs.x, lhs.y - rhs.y, lhs.z - rhs.z);
 }
 
 ObjectClass classifyObservation(const BoundingBox3D& detection_bbox,
@@ -519,7 +473,7 @@ double computeFallbackAssociationCost(const DynamicObjectDetection& detection,
 
   double distance_penalty = 0.0;
   if (use_distance_fallback) {
-    const double center_distance = computeCenterDistance3D(detection.bbox.center, track.bbox.center);
+    const double center_distance = distance3D(detection.bbox.center, track.bbox.center);
     if (!(std::isfinite(center_distance) &&
           center_distance <= config.spawn_suppression_distance)) {
       return invalid_cost;
@@ -564,7 +518,7 @@ bool shouldSuppressTrackSpawn(const DynamicObjectDetection& detection,
       return true;
     }
     if (config.spawn_suppression_distance > 0.0 &&
-        computeCenterDistance3D(detection.bbox.center, track.bbox.center) <=
+        distance3D(detection.bbox.center, track.bbox.center) <=
             config.spawn_suppression_distance) {
       return true;
     }
@@ -574,15 +528,18 @@ bool shouldSuppressTrackSpawn(const DynamicObjectDetection& detection,
 }
 
 void updateBBoxCenterFromFilter(TrackState& track) {
-  track.bbox.center = eigenToPoint(track.filter->position());
+  const Eigen::Vector3d position = track.filter->position();
+  track.bbox.center = makePoint(position.x(), position.y(), position.z());
 }
 
 void appendHistorySample(TrackState& track, const ros::Time& stamp, const bool matched,
                          const std::size_t max_history_size) {
   TrackHistorySample sample;
   sample.stamp = stamp;
-  sample.position = track.bbox.center;
-  sample.velocity = eigenToVector(track.filter->velocity());
+  sample.object_class = track.object_class;
+  sample.motion_model_type = track.model_type;
+  sample.model_state = track.filter->state();
+  sample.model_covariance = track.filter->covariance();
   sample.matched = matched;
   track.history.push_back(std::move(sample));
 
@@ -887,6 +844,7 @@ DynamicObjectTrackerFrameResult DynamicObjectTracker::processDynamicTracks(
 
   const auto build_output_start = std::chrono::steady_clock::now();
   result.dynamic_objects_msg = buildOutput(header);
+  result.prediction_inputs = buildPredictionInputs(header);
   result.timing.build_output_ms = elapsedMs(build_output_start, std::chrono::steady_clock::now());
 
   const auto build_markers_start = std::chrono::steady_clock::now();
@@ -911,7 +869,8 @@ DynamicObjectTrackerFrameResult DynamicObjectTracker::processDynamicTracks(
                                       << "ms, detections=" << detections.size()
                                       << ", tracks=" << tracks_.size()
                                       << ", suppressedSpawns=" << suppressed_track_spawns
-                                      << ", publishedObjects=" << result.dynamic_objects_msg.objects.size());
+                                      << ", publishedObjects=" << result.dynamic_objects_msg.objects.size()
+                                      << ", predictionInputs=" << result.prediction_inputs.size());
   }
 
   return result;
@@ -921,11 +880,16 @@ visualization_msgs::MarkerArray DynamicObjectTracker::buildTrackMarkers(
     const std_msgs::Header& header) const {
   visualization_msgs::MarkerArray markers;
   markers.markers.reserve(1U + tracks_.size() * 3U);
-  markers.markers.push_back(makeTrackDeleteAllMarker(header));
+  markers.markers.push_back(makeDeleteAllMarker(header, "dynamic_tracks"));
 
   for (const auto& track : tracks_) {
     const bool coasting = track.missed_frames > 0U;
-    const auto color = makeTrackColor(coasting);
+    std_msgs::ColorRGBA color;
+    // 漏检轨迹保留同一颜色但降低透明度，方便 RViz 区分预测延续和本帧匹配。
+    color.r = 0.10F;
+    color.g = 0.80F;
+    color.b = 0.95F;
+    color.a = coasting ? 0.35F : 1.0F;
 
     visualization_msgs::Marker history_marker;
     history_marker.header = header;
@@ -938,7 +902,9 @@ visualization_msgs::MarkerArray DynamicObjectTracker::buildTrackMarkers(
     history_marker.color = color;
     history_marker.points.reserve(track.history.size());
     for (const auto& sample : track.history) {
-      history_marker.points.push_back(sample.position);
+      // 当前所有运动模型前三维都固定为 x/y/z；历史线只需要位置，不重新拆出公共状态结构。
+      history_marker.points.push_back(
+          makePoint(sample.model_state(0), sample.model_state(1), sample.model_state(2)));
     }
     // RViz 要求 LINE_STRIP 至少有 2 个点；新轨迹首帧先显示头部和文字，避免 history marker 报错。
     if (history_marker.points.size() >= 2U) {
@@ -966,10 +932,17 @@ visualization_msgs::MarkerArray DynamicObjectTracker::buildTrackMarkers(
     label_marker.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
     label_marker.action = visualization_msgs::Marker::ADD;
     label_marker.pose.position = track.bbox.center;
-    label_marker.pose.position.z += trackLabelZOffset(track.bbox);
+    // TEXT_VIEW_FACING 的锚点在文字中心；按目标高度上移，避免文字压住头部球体。
+    label_marker.pose.position.z +=
+        std::max(0.45, 0.5 * std::max(track.bbox.size.z, 0.0) + 0.30);
     label_marker.pose.orientation.w = 1.0;
-    label_marker.scale.z = 0.28;
-    label_marker.color = color;
+    // TEXT_VIEW_FACING 只用 scale.z 表达文字高度；文本单独使用更深的蓝青色，
+    // 避免沿用轨迹线的亮青色导致近距离观察时文字发浅。
+    label_marker.scale.z = 0.38;
+    label_marker.color.r = 0.02F;
+    label_marker.color.g = 0.26F;
+    label_marker.color.b = 0.38F;
+    label_marker.color.a = coasting ? 0.45F : 1.0F;
     label_marker.text = makeTrackLabelText(track);
     markers.markers.push_back(std::move(label_marker));
   }
@@ -1110,7 +1083,7 @@ void DynamicObjectTracker::coastTrack(TrackState& track, const ros::Time& stamp)
   track.missed_frames += 1U;
   track.last_stamp = stamp;
   updateBBoxCenterFromFilter(track);
-  // phase 3 固定记录最小历史样本，供后续轨迹状态和调试直接复用。
+  // 漏检样本同样记录公共状态协方差；预测保活阶段的不确定性对后续调试和预测更关键。
   appendHistorySample(track, stamp, false, config_.max_history_size);
 }
 
@@ -1145,14 +1118,65 @@ ldop::DynamicObjectArray DynamicObjectTracker::buildOutput(const std_msgs::Heade
     }
     ldop::DynamicObject object;
     object.id = track->id;
-    object.center = track->bbox.center;
     object.size = track->bbox.size;
-    object.velocity = eigenToVector(track->filter->velocity());
+    const Eigen::VectorXd& state = track->filter->state();
+    object.model_state.reserve(static_cast<std::size_t>(state.size()));
+    for (int index = 0; index < state.size(); ++index) {
+      object.model_state.push_back(state(index));
+    }
+    const Eigen::MatrixXd& covariance = track->filter->covariance();
+    object.model_covariance.reserve(
+        static_cast<std::size_t>(covariance.rows() * covariance.cols()));
+    for (int row = 0; row < covariance.rows(); ++row) {
+      for (int col = 0; col < covariance.cols(); ++col) {
+        object.model_covariance.push_back(covariance(row, col));
+      }
+    }
     object.object_class = toRosObjectClass(track->object_class);
+    object.motion_model_type = toRosMotionModelType(track->model_type);
     object_array.objects.push_back(std::move(object));
   }
 
   return object_array;
+}
+
+std::vector<TrackPredictionInput> DynamicObjectTracker::buildPredictionInputs(
+    const std_msgs::Header& header) const {
+  std::vector<const TrackState*> ordered_tracks;
+  ordered_tracks.reserve(tracks_.size());
+  for (const auto& track : tracks_) {
+    ordered_tracks.push_back(&track);
+  }
+  std::sort(ordered_tracks.begin(),
+            ordered_tracks.end(),
+            [](const TrackState* lhs, const TrackState* rhs) { return lhs->id < rhs->id; });
+
+  std::vector<TrackPredictionInput> prediction_inputs;
+  prediction_inputs.reserve(ordered_tracks.size());
+
+  for (const TrackState* track : ordered_tracks) {
+    // 与 DynamicObjectArray 保持同一稳定轨迹过滤策略，避免 predictor 以后把临时噪声当作真实目标。
+    if (track->hits < config_.min_hits_to_publish) {
+      continue;
+    }
+
+    TrackPredictionInput input;
+    input.stamp = header.stamp;
+    input.id = track->id;
+    input.object_class = track->object_class;
+    input.motion_model_type = track->model_type;
+    input.model_state = track->filter->state();
+    input.model_covariance = track->filter->covariance();
+    input.bbox = track->bbox;
+    input.history = track->history;
+    input.age = track->age;
+    input.hits = track->hits;
+    input.missed_frames = track->missed_frames;
+    input.matched_in_current_frame = track->missed_frames == 0U;
+    prediction_inputs.push_back(std::move(input));
+  }
+
+  return prediction_inputs;
 }
 
 }  // namespace ldopcore

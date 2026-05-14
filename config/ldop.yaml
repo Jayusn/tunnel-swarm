@@ -1,3 +1,4 @@
+# 雷达点云和里程计必须在同一世界坐标系
 input_cloud_topic: /cloud_registered
 odom_topic: /Odometry
 static_cloud_topic: /ldop/static_cloud  # 当前帧静态点云输出
@@ -6,7 +7,6 @@ dynamic_objects_topic: /ldop/dynamic_objects
 dynamic_object_markers_topic: /ldop/dynamic_object_markers  # 当前帧动态目标包围盒 MarkerArray 输出
 dynamic_track_markers_topic: /ldop/dynamic_track_markers  # 跨帧动态目标轨迹 MarkerArray 输出
 static_map_markers_topic: /ldop/static_map_markers  # 静态体素地图 MarkerArray 输出
-world_frame: camera_init  # 输入点云和里程计位姿统一使用的世界坐标系
 static_map_visualization_max_z: 3.0  # 仅限制静态体素地图RViz可视化高度，不改变UFOMap地图内容
 verbose: true  
 
@@ -38,7 +38,7 @@ dynamic_cluster_vertical_merge_max_z_gap: 0.6  # 当前帧上下碎片合并允�
 dynamic_cluster_vertical_merge_min_xy_overlap_ratio: 0.5  # 水平投影有面积重叠时，交叠面积至少占较小投影面积的比例；避免仅擦边就合并。
 
 # 动态目标跟踪参数
-tracking_history_size: 100  # 每条轨迹保留的历史样本数上限（用于轨迹可视化）
+tracking_history_size: 100  # 每条轨迹保留的历史样本数上限（位置、速度、公共状态协方差和匹配状态）
 tracking_max_missed_frames: 5  # 连续漏检超过该帧数后删除轨迹
 tracking_min_hits_to_publish: 2  # 轨迹至少命中该次数后才对外发布
 tracking_association_gate_confidence: 0.7  # 马氏距离卡方门限置信度（3 自由度）

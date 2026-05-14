@@ -2,9 +2,13 @@
 
 ## 背景
 
-`LDOP` 第一阶段已经完成当前帧动静态点云分割与静态地图可视化。第二阶段的当前实现已经把动态点云聚类为当前帧动态目标集合：`DynamicObjectClusterer` 消费 `UfomapMapper` 输出的动态点和 UFOMap voxel key，在当前帧内生成 `ldop/DynamicObjectArray` 与 `/ldop/dynamic_object_markers`。
+> 实施状态（2026-05-14）：本文档记录第二阶段 tracking 设计时的范围和取舍；对应跟踪链路已经完成，跨帧数据关联、稳定目标 ID、模型原生状态和状态不确定性维护均已由 `DynamicObjectTracker` 实现。对象类别、CV/CTRA 和类别驱动模型切换由 `docs/superpowers/specs/2026-04-30-dynamic-object-classification-multimodel-design.md` 补充并已进入当前第二阶段完成范围。
 
-当前仍缺少第二阶段后半段能力：跨帧数据关联、稳定目标 ID、速度估计和目标状态维护。本设计只覆盖第二阶段的跟踪部分，不进入第三阶段短时轨迹预测。
+以下背景描述的是 2026-04-24 编写本设计时的代码状态。
+
+当时 `LDOP` 第一阶段已经完成当前帧动静态点云分割与静态地图可视化；第二阶段前半段已经把动态点云聚类为当前帧动态目标集合：`DynamicObjectClusterer` 消费 `UfomapMapper` 输出的动态点和 UFOMap voxel key，在当前帧内生成 `ldop/DynamicObjectArray` 与 `/ldop/dynamic_object_markers`。
+
+本设计当时要补齐的是第二阶段后半段能力：跨帧数据关联、稳定目标 ID、模型原生状态和状态不确定性维护。这些能力现在已经实现；速度不作为独立消息字段发布，而是按 `motion_model_type` 从 `model_state` 派生。本设计仍不包含第三阶段短时轨迹预测。
 
 旧 `ldot_detector` 指 `/home/st/catkin/LDOT/ldot_detector`，可作为算法参考，但本次不是照搬。`LDOP` 已经有动静态判别和动态聚类，因此跟踪层只需要消费当前帧 cluster 级目标，不再引入旧流程里的动态候选判别、预测服务或双缓冲可视化框架。
 
@@ -119,6 +123,7 @@ TrackHistorySample
 - stamp: ros::Time
 - position: Eigen::Vector3d，使用滤波后的轨迹中心
 - velocity: Eigen::Vector3d，使用当前滤波状态速度
+- covariance: std::array<double, 36>，公共状态 `[x,y,z,vx,vy,vz]` 的 6x6 row-major 协方差
 - matched: bool，本帧是否由真实 detection update 而来；`false` 表示 coasting 样本
 
 TrackState
@@ -133,7 +138,7 @@ TrackState
 - last_stamp: ros::Time
 ```
 
-`TrackHistorySample` 只保留轨迹可视化和调试确实需要的字段，不回溯保存完整协方差、bbox 尺寸历史或完整 measurement。第一版 marker 和调试主要依赖 `stamp/position/velocity/matched`；若后续分类或预测确实需要更多历史，再单独扩展。
+`TrackHistorySample` 只保留轨迹可视化、调试和后续预测确实需要的字段。它保存与 `DynamicObject.msg` 一致的公共状态协方差，便于回看位置/速度不确定性；仍不回溯保存内部模型完整协方差、bbox 尺寸历史或完整 measurement。第一版 marker 仍只使用 `position` 绘制历史线，调试和预测可使用 `stamp/position/velocity/covariance/matched`。
 
 `DynamicObjectClusterer` 输出当前帧 `DynamicObjectDetection` 列表，并由同一组 detection 构建 `/ldop/dynamic_object_markers`。`DynamicObjectTracker` 消费 detection 列表，输出跟踪后的 `DynamicObjectArray`。`BoundingBox3D` 可以被两个模块复用，但仍不直接暴露为 ROS 消息；`DynamicObject.msg` 是 tracking 对外接口，不再作为 clusterer 的帧内对象输出。
 
@@ -294,7 +299,7 @@ kalman_filter:
 
 参数语义：
 
-- `tracking_history_size`：每条轨迹保留的 `TrackHistorySample` 容量，默认 100 帧；每个样本只存 `stamp/position/velocity/matched`，主要用于轨迹 marker 和调试，不影响 Kalman 状态维度，也不决定轨迹删除时机。
+- `tracking_history_size`：每条轨迹保留的 `TrackHistorySample` 容量，默认 100 帧；每个样本保存 `stamp/position/velocity/covariance/matched`，其中 `covariance` 是公共状态 `[x,y,z,vx,vy,vz]` 的 6x6 row-major 协方差。该参数不影响 Kalman 状态维度，也不决定轨迹删除时机。
 - `tracking_max_missed_frames`：连续漏检多少帧后删除轨迹。
 - `tracking_association_gate_confidence`：3D 卡方门限置信度，合法范围建议限制在 `(0.0, 1.0)`。
 - `tracking_coasting_gate_relax_factor`：漏检轨迹重新参与关联时的门限放松倍数，最小为 `1.0`；`1.0` 表示不放松，值越大越容易把漏检轨迹重新匹配到当前检测，但也更容易误关联。
@@ -377,7 +382,7 @@ InputFrame
 - 空输入输出空对象数组，且不崩溃。
 - 首帧 detection 新建稳定 track id。
 - 同一目标连续平移时保持同一 `id`。
-- 速度估计方向与位移方向一致。
+- 由模型状态派生出的速度方向与位移方向一致。
 - 两个目标在可分离距离内各自保持 ID。
 - 超过 gate 的 detection 新建新轨迹。
 - Hungarian 分配按 LDOT 当前简化实现语义工作：行/列归约后，从零候选中按原始代价选择不冲突匹配。
@@ -417,7 +422,7 @@ InputFrame
 - 单包测试通过：`catkin run_tests ldop --no-status`。
 - 测试结果汇总无失败：`catkin_test_results /home/st/ldop_ws/build/ldop`。
 - `/ldop/dynamic_objects` 中同一动态目标连续帧尽量保持稳定 ID。
-- `/ldop/dynamic_objects.velocity` 由 CA 状态估计，不再固定为零。
+- `/ldop/dynamic_objects` 不再发布独立 `velocity` 字段；速度由下游按 `motion_model_type` 从 `model_state` 解释。
 - `DynamicObject.msg` 不包含预测数组；预测输出未来走独立预测话题。
 - `/ldop/dynamic_object_markers` 继续展示当前帧聚类检测框。
 - `/ldop/dynamic_track_markers` 展示稳定 track 的历史轨迹和当前头部位置，coasting 轨迹会明显变淡。

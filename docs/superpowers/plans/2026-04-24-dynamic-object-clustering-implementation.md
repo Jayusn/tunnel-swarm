@@ -4,6 +4,8 @@
 
 **目标：** 按 `docs/superpowers/specs/2026-04-24-dynamic-object-clustering-design.md` 中的方案 B 实现当前帧动态点聚类：复用 `UfomapMapper` 分类阶段输出的 UFOMap voxel/key 信息，在 `/ldop/dynamic_objects` 中为每个有效 cluster 输出一个 `ldop/DynamicObject`。
 
+**状态：** 已完成。该计划是第二阶段聚类实现时的执行草案；当前聚类输出已经演进为 tracker 的内部 detection 输入，第二阶段整体已在 2026-05-14 标记完成。
+
 **架构：** `UfomapMapper` 继续负责 UFOMap 积分、`seenFree(point)` 动静态分类和静态地图可视化快照。分类时同步输出当前帧动态点的 `{原始点, UFOMap-derived voxel_code}`，但不在 mapper 内做 BFS 聚类。新增 `DynamicObjectClusterer` 消费这些结构化动态点，在 UFOMap key 空间做 `6/18/26` 邻域连通、按点数和 AABB 尺寸过滤 cluster，并生成 `DynamicObjectArray`。`Ldop` 只负责把 mapper 结果交给 clusterer，再发布结果，不改变 `/ldop/static_cloud` 和 `/ldop/dynamic_cloud` 的当前帧点云语义。
 
 **技术栈：** ROS1 Noetic、catkin、C++20、UFOMap、gtest、`ldop/DynamicObjectArray`。

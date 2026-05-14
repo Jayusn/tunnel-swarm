@@ -1,12 +1,12 @@
 #pragma once
 
 #include <array>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <vector>
 
+#include <Eigen/Dense>
 #include <ros/node_handle.h>
 #include <std_msgs/Header.h>
 #include <visualization_msgs/MarkerArray.h>
@@ -17,12 +17,23 @@
 
 namespace ldopcore {
 
-enum class ObjectClass : std::uint8_t {
-  Unknown = 0U,
-  Human = 1U,
-  Vehicle = 2U,
-  Uav = 3U,
-  Other = 4U,
+struct TrackPredictionInput {
+  // 该结构是 tracker 预留给未来 predictor 的内部快照，不新增预测话题。
+  ros::Time stamp;
+  std::uint32_t id{0U};
+  ObjectClass object_class{ObjectClass::Unknown};
+  MotionModelType motion_model_type{MotionModelType::CV3D};
+  BoundingBox3D bbox;
+  // 保留当前运动模型自己的完整状态和协方差；未来预测按 motion_model_type 解释，
+  // 当前帧位置、速度和不确定性不重复存一份公共投影，避免同一状态在边界里出现两套来源。
+  Eigen::VectorXd model_state;
+  Eigen::MatrixXd model_covariance;
+  std::vector<TrackHistorySample> history;
+  // 生命周期信息给未来预测模块判断轨迹质量：短历史、漏检延续和稳定轨迹应有不同权重。
+  std::size_t age{0U};
+  std::size_t hits{0U};
+  std::size_t missed_frames{0U};
+  bool matched_in_current_frame{false};
 };
 
 // 跟踪模块内部使用的运行时配置：构造阶段由 ROS 参数快照转换而来。
@@ -121,6 +132,8 @@ struct DynamicObjectTrackerTimingStats {
 
 struct DynamicObjectTrackerFrameResult {
   ldop::DynamicObjectArray dynamic_objects_msg;
+  // predictor 预留输入只在 C++ 边界内流转；当前不新增预测话题。
+  std::vector<TrackPredictionInput> prediction_inputs;
   visualization_msgs::MarkerArray dynamic_track_markers_msg;
   DynamicObjectTrackerTimingStats timing;
 };
@@ -192,6 +205,8 @@ class DynamicObjectTracker {
   void deleteExpiredTracks();
   // 对外只发布命中次数达到阈值的稳定轨迹，减少一帧噪声 detection 直接暴露给下游。
   ldop::DynamicObjectArray buildOutput(const std_msgs::Header& header) const;
+  // 与 buildOutput 使用同一稳定轨迹集合，为未来 predictor 提供比 ROS 消息更完整的内部快照。
+  std::vector<TrackPredictionInput> buildPredictionInputs(const std_msgs::Header& header) const;
 
   ros::NodeHandle pnh_;
   DynamicObjectTrackerConfig config_;

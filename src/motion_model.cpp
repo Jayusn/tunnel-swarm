@@ -48,10 +48,6 @@ Eigen::VectorXd MotionModel::stateTransition(const Eigen::VectorXd& state) const
   return getTransitionF(state) * state;
 }
 
-void MotionModel::setDt(const double dt) {
-  dt_ = std::isfinite(dt) && dt > 0.0 ? dt : 0.1;
-}
-
 double MotionModel::wrapToPi(double angle) {
   constexpr double kPi = 3.14159265358979323846;
   while (angle > kPi) {

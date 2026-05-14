@@ -4,6 +4,8 @@
 
 **Goal:** 在现有 LDOP 动态目标 tracker 中补齐对象类别分类、类别证据积分、短时遮挡保护，以及 `Human/Vehicle/UAV/Other` 到 `CA2D/CTRA/CA3D/CV3D` 的 Kalman 模型切换。
 
+**Status:** 已完成。用户已在 2026-05-14 确认第二阶段完成；后续工作切入第三阶段短时轨迹预测。
+
 **Architecture:** `DynamicObjectClusterer` 只把现有 `Fragment::point_count` 传给内部 detection；`DynamicObjectTracker` 继续作为分类、轨迹生命周期、模型切换和输出合同的唯一拥有者。KF/EKF 底座保持现有 `MotionModel` / `KalmanFilterBase` 边界，只增加“用迁移后的完整状态初始化新 filter”的入口。
 
 **Tech Stack:** ROS1 Noetic、catkin、C++20、Eigen、现有 `ldop_core`、自定义 ROS message。

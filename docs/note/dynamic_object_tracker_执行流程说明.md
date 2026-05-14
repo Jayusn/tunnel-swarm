@@ -248,6 +248,8 @@ predict()
   -> clampCovariance()
 ```
 
+上面的伪代码适合 `LinearKalmanFilter`。`ExtendedKalmanFilter` 对 CTRA 采用同一协方差传播形式，但转移雅可比会先在预测前状态处计算，再调用 `stateTransition()` 推进状态；这样 CTRA 的 yaw/yaw_rate 不会在协方差传播里被等效多推进一步。
+
 预测结束后，tracker 把轨迹 bbox 中心同步为 `filter->position()`。因此后面的关联、建轨抑制和 marker 使用的 `track.bbox.center` 已经是当前帧预测位置。
 
 ## 7. 第二步：构造关联代价矩阵
@@ -428,15 +430,17 @@ tracker 不直接改 `state_` 或 `covariance_`，只通过 `position()`、`velo
 ```text
 appendHistorySample(track, stamp, matched=true, max_history_size)
   -> sample.stamp = stamp
-  -> sample.position = track.bbox.center
-  -> sample.velocity = track.filter->velocity()
+  -> sample.object_class = track.object_class
+  -> sample.motion_model_type = track.model_type
+  -> sample.model_state = track.filter->state()
+  -> sample.model_covariance = track.filter->covariance()
   -> sample.matched = true
   -> push_back(sample)
   -> 如果 history_size 为 0，清空 history
   -> 如果超过上限，删除最旧样本
 ```
 
-历史样本既用于 RViz 轨迹线，也可以作为后续调试轨迹状态的依据。
+历史样本既用于 RViz 轨迹线，也可以作为后续调试轨迹状态和第三阶段预测输入的依据。当前历史保存模型原生状态和协方差，而不是固定公共状态；读取方必须结合 `motion_model_type` 解释状态布局。
 
 ## 10. 第五步：处理未匹配 detection
 
@@ -614,17 +618,20 @@ buildOutput(header)
   -> 按 track id 升序排序
   -> 遍历 ordered_tracks
   -> hits < min_hits_to_publish 的轨迹跳过
-  -> 填 object.id / center / size / velocity / object_class
+  -> 填 object.id / size / model_state / model_covariance / object_class / motion_model_type
   -> push_back(object)
 ```
 
 输出字段来源：
 
 1. `object.id` 来自 `track.id`。
-2. `object.center` 来自 `track.bbox.center`，已经在 predict 或 update 后同步为滤波器位置。
-3. `object.size` 来自 `track.bbox.size`，匹配成功时做过 EMA 平滑。
-4. `object.velocity` 来自 `track.filter->velocity()`。
+2. `object.size` 来自 `track.bbox.size`，匹配成功时做过 EMA 平滑。
+3. `object.model_state` 来自 `track.filter->state()`；所有模型前三维固定为滤波后的目标中心。
+4. `object.model_covariance` 来自 `track.filter->covariance()`，按模型原生状态维度做 row-major 展开。
 5. `object.object_class` 来自 tracker 内部确认类别；分类前是 `CLASS_UNKNOWN`，确认后是 `CLASS_HUMAN / CLASS_VEHICLE / CLASS_UAV / CLASS_OTHER`。
+6. `object.motion_model_type` 来自 `track.model_type`，下游应按该字段解释 `model_state` 和 `model_covariance`。
+
+当前 `DynamicObject.msg` 不单独发布 `center`、`velocity` 或固定 6x6 公共协方差。常规中心位置直接读取 `model_state[0..2]`；速度需要按 `motion_model_type` 从模型状态转换，例如 CTRA 的世界系水平速度为 `v*cos(yaw), v*sin(yaw), 0`。
 
 `buildOutput()` 不检查 `missed_frames == 0`。因此已经满足 `hits` 阈值且尚未删除的 coasting 轨迹，也可能继续对外发布。
 
