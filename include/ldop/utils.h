@@ -12,6 +12,7 @@
 #include <Eigen/Core>
 #include <geometry_msgs/Point.h>
 #include <geometry_msgs/Vector3.h>
+#include <ldop/DynamicObject.h>
 #include <ldop/motion_model.h>
 #include <ros/time.h>
 #include <std_msgs/Header.h>
@@ -104,6 +105,38 @@ inline visualization_msgs::Marker makeDeleteAllMarker(const std_msgs::Header& he
   marker.id = 0;
   marker.action = visualization_msgs::Marker::DELETEALL;
   return marker;
+}
+
+// 内部枚举转 ROS 消息常量；DynamicObject 和 DynamicObjectPrediction 的 CLASS_* 值相同。
+inline std::uint8_t toRosObjectClass(const ObjectClass object_class) {
+  switch (object_class) {
+    case ObjectClass::Human:
+      return ldop::DynamicObject::CLASS_HUMAN;
+    case ObjectClass::Vehicle:
+      return ldop::DynamicObject::CLASS_VEHICLE;
+    case ObjectClass::Uav:
+      return ldop::DynamicObject::CLASS_UAV;
+    case ObjectClass::Other:
+      return ldop::DynamicObject::CLASS_OTHER;
+    case ObjectClass::Unknown:
+      break;
+  }
+  return ldop::DynamicObject::CLASS_UNKNOWN;
+}
+
+// 内部枚举转 ROS 消息常量；DynamicObject 和 DynamicObjectPrediction 的 MOTION_MODEL_* 值相同。
+inline std::uint8_t toRosMotionModelType(const MotionModelType model_type) {
+  switch (model_type) {
+    case MotionModelType::CA2D:
+      return ldop::DynamicObject::MOTION_MODEL_CA2D;
+    case MotionModelType::CA3D:
+      return ldop::DynamicObject::MOTION_MODEL_CA3D;
+    case MotionModelType::CV3D:
+      return ldop::DynamicObject::MOTION_MODEL_CV3D;
+    case MotionModelType::CTRA:
+      return ldop::DynamicObject::MOTION_MODEL_CTRA;
+  }
+  return ldop::DynamicObject::MOTION_MODEL_CV3D;
 }
 
 // 统一把 steady_clock 的时间差转换成毫秒，避免各模块重复写样板代码。

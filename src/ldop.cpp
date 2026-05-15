@@ -22,6 +22,7 @@ Ldop::Ldop(ros::NodeHandle& nh, ros::NodeHandle& pnh)
   ufomap_mapper_ = std::make_unique<UfomapMapper>(nh_, pnh_, verbose_);
   dynamic_object_clusterer_ = std::make_unique<DynamicObjectClusterer>(pnh_, verbose_);
   dynamic_object_tracker_ = std::make_unique<DynamicObjectTracker>(pnh_, verbose_);
+  dynamic_object_predictor_ = std::make_unique<DynamicObjectPredictor>(pnh_, verbose_);
   // 当前只有一个后台处理线程，构造阶段直接启动比再包一层单调用函数更容易按初始化顺序阅读。
   processing_thread_ = std::thread(&Ldop::processingLoop, this);
 
@@ -33,6 +34,8 @@ Ldop::Ldop(ros::NodeHandle& nh, ros::NodeHandle& pnh)
   ROS_INFO_STREAM("  dynamic objects: " << dynamic_objects_topic_);
   ROS_INFO_STREAM("  dynamic object markers: " << dynamic_object_markers_topic_);
   ROS_INFO_STREAM("  dynamic track markers: " << dynamic_track_markers_topic_);
+  ROS_INFO_STREAM("  dynamic predictions: " << dynamic_predictions_topic_);
+  ROS_INFO_STREAM("  dynamic prediction markers: " << dynamic_prediction_markers_topic_);
   ROS_INFO_STREAM("  static voxel markers: " << static_map_markers_topic_);
 }
 
@@ -53,12 +56,10 @@ void Ldop::loadParameters() {
   pnh_.param<std::string>("static_cloud_topic", static_cloud_topic_, "/ldop/static_cloud");
   pnh_.param<std::string>("dynamic_cloud_topic", dynamic_cloud_topic_, "/ldop/dynamic_cloud");
   pnh_.param<std::string>("dynamic_objects_topic", dynamic_objects_topic_, "/ldop/dynamic_objects");
-  pnh_.param<std::string>("dynamic_object_markers_topic",
-                          dynamic_object_markers_topic_,
-                          "/ldop/dynamic_object_markers");
-  pnh_.param<std::string>("dynamic_track_markers_topic",
-                          dynamic_track_markers_topic_,
-                          "/ldop/dynamic_track_markers");
+  pnh_.param<std::string>("dynamic_object_markers_topic", dynamic_object_markers_topic_, "/ldop/dynamic_object_markers");
+  pnh_.param<std::string>("dynamic_track_markers_topic", dynamic_track_markers_topic_, "/ldop/dynamic_track_markers");
+  pnh_.param<std::string>("dynamic_predictions_topic", dynamic_predictions_topic_, "/ldop/dynamic_object_predictions");
+  pnh_.param<std::string>("dynamic_prediction_markers_topic", dynamic_prediction_markers_topic_, "/ldop/dynamic_prediction_markers");
   pnh_.param<std::string>("static_map_markers_topic", static_map_markers_topic_, "/ldop/static_map_markers");
   pnh_.param("verbose", verbose_, false);
 }
@@ -71,10 +72,10 @@ void Ldop::setupRosInterfaces() {
   static_cloud_pub_ = nh_.advertise<sensor_msgs::PointCloud2>(static_cloud_topic_, 10);
   dynamic_cloud_pub_ = nh_.advertise<sensor_msgs::PointCloud2>(dynamic_cloud_topic_, 10);
   dynamic_objects_pub_ = nh_.advertise<ldop::DynamicObjectArray>(dynamic_objects_topic_, 10);
-  dynamic_object_markers_pub_ =
-      nh_.advertise<visualization_msgs::MarkerArray>(dynamic_object_markers_topic_, 10);
-  dynamic_track_markers_pub_ =
-      nh_.advertise<visualization_msgs::MarkerArray>(dynamic_track_markers_topic_, 10);
+  dynamic_object_markers_pub_ = nh_.advertise<visualization_msgs::MarkerArray>(dynamic_object_markers_topic_, 10);
+  dynamic_track_markers_pub_ = nh_.advertise<visualization_msgs::MarkerArray>(dynamic_track_markers_topic_, 10);
+  dynamic_predictions_pub_ = nh_.advertise<ldop::DynamicObjectPredictionArray>(dynamic_predictions_topic_, 10);
+  dynamic_prediction_markers_pub_ = nh_.advertise<visualization_msgs::MarkerArray>(dynamic_prediction_markers_topic_, 10);
   static_map_markers_pub_ = nh_.advertise<visualization_msgs::MarkerArray>(static_map_markers_topic_, 10, true);
 }
 
@@ -208,6 +209,14 @@ Ldop::ProcessedFrame Ldop::processFrame(const InputFrame& frame) {
   processed.dynamic_objects_msg = std::move(tracking_result.dynamic_objects_msg);
   processed.dynamic_object_markers_msg = std::move(cluster_result.dynamic_object_markers_msg);
   processed.dynamic_track_markers_msg = std::move(tracking_result.dynamic_track_markers_msg);
+
+  // 轨迹预测：消费 tracker 的稳定输出，生成未来轨迹预测和可视化 marker。
+  DynamicObjectPredictorFrameResult prediction_result =
+      dynamic_object_predictor_->predict(processed.dynamic_cloud_msg.header,
+                                         tracking_result.prediction_inputs);
+  processed.dynamic_predictions_msg = std::move(prediction_result.predictions_msg);
+  processed.dynamic_prediction_markers_msg = std::move(prediction_result.prediction_markers_msg);
+
   processed.timing.process_frame_ms =
       elapsedMs(processing_start, std::chrono::steady_clock::now());
   return processed;
@@ -221,6 +230,8 @@ void Ldop::publishFrame(ProcessedFrame& frame) {
   dynamic_objects_pub_.publish(frame.dynamic_objects_msg);
   dynamic_object_markers_pub_.publish(frame.dynamic_object_markers_msg);
   dynamic_track_markers_pub_.publish(frame.dynamic_track_markers_msg);
+  dynamic_predictions_pub_.publish(frame.dynamic_predictions_msg);
+  dynamic_prediction_markers_pub_.publish(frame.dynamic_prediction_markers_msg);
   static_map_markers_pub_.publish(frame.static_map_markers_msg);
   frame.timing.publish_frame_ms =
       elapsedMs(publish_start, std::chrono::steady_clock::now());

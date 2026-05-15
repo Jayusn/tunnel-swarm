@@ -68,3 +68,14 @@
 - 已同步根目录三份规划记录，使其反映“设计规格和实现计划均已生成，代码实现尚未开始”的当前事实。
 - 按用户补充的恢复记录复核后发现，上一轮被自动审核拒绝的“预测目标消息常量收口”确实没有落盘；已把 `CLASS_*` 与 `MOTION_MODEL_*` 常量补入设计规格和实现计划，并删除测试段落里“如果常量不存在则用数字值”的不确定分支。
 - 本轮仍只处理规划文档和状态同步，不修改 C++、ROS msg、launch 或构建配置，不运行 catkin 构建。
+
+## 2026-05-15 第一阶段轨迹外推实现完成
+
+- 按实现计划完成第一阶段轨迹外推单轨迹预测的全部代码实现。
+- 新增预测消息：`DynamicObjectPredictionPoint.msg`、`DynamicObjectPredictionBranch.msg`、`DynamicObjectPrediction.msg`、`DynamicObjectPredictionArray.msg`。
+- 新增共享参数结构 `MultiModelKalmanFilterParams` 和工厂函数 `buildMultiModelKalmanFilterConfig()`、`createMotionModel()`，tracker 和 predictor 各自读取参数再通过共享构建函数转换为运行时配置。
+- 新增 `DynamicObjectPredictor` 模块：从 ROS 参数读取预测时长和卡尔曼参数，按采样间隔逐步外推状态和协方差，构建预测消息和 RViz marker。
+- 集成到 `Ldop` 主流程：在 tracker 后调用 predictor，发布预测消息和预测 marker。
+- 新增测试 `test_dynamic_object_predictor`，验证 CV3D 模型的基线预测点生成和影响权重。
+- 构建验证通过：`catkin build ldop --no-status` 成功，测试二进制已编译（运行需要 ROS master）。
+- 新增配置：`prediction_horizon`、`dynamic_predictions_topic`、`dynamic_prediction_markers_topic`。

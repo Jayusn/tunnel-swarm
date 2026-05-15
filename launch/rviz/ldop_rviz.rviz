@@ -10,6 +10,7 @@ Panels:
         - /Odometry1/Covariance1/Orientation1
         - /StaticVoxelMap1
         - /DynamicTrackMarkers1
+        - /DynamicPrediction1
       Splitter Ratio: 0.5
     Tree Height: 671
   - Class: rviz/Selection
@@ -129,8 +130,8 @@ Visualization Manager:
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
-        Max Value: 1.670271635055542
-        Min Value: 0.004522867500782013
+        Max Value: 1.6583884954452515
+        Min Value: 0.00036705509410239756
         Value: true
       Axis: Z
       Channel Name: intensity
@@ -169,7 +170,17 @@ Visualization Manager:
       Namespaces:
         dynamic_track_head: true
         dynamic_track_history: true
+        dynamic_track_label: true
       Queue Size: 10
+      Value: true
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /ldop/dynamic_prediction_markers
+      Name: DynamicPrediction
+      Namespaces:
+        dynamic_prediction_line: true
+        dynamic_prediction_uncertainty: true
+      Queue Size: 100
       Value: true
   Enabled: true
   Global Options:

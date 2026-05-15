@@ -9,6 +9,33 @@
 
 namespace ldopcore {
 
+// ROS 参数快照，集中保存卡尔曼滤波器相关参数默认值；
+// tracker 和 predictor 各自读取到自己的 Params 实例，再通过 buildMultiModelKalmanFilterConfig 转换为运行时配置。
+struct MultiModelKalmanFilterParams {
+  double default_dt{0.1};
+  int adaptive_window_size{10};
+  double adaptive_alpha{0.7};
+  double adaptive_r_alpha{0.7};
+  double adaptive_min_noise_ratio{0.2};
+  bool enable_cov_limit{true};
+  double max_pos_cov{1.0};
+  double max_vel_cov{9.0};
+  double max_acc_cov{25.0};
+  double ca_human_jerk_sigma{1.0};
+  std::vector<double> ca_human_init_cov{0.1, 0.1, 0.1, 1.0, 1.0, 10.0, 10.0};
+  std::vector<double> ca_human_meas_noise{0.1, 0.1, 0.1};
+  double ca_human_z_process_noise{0.01};
+  double ca_uav_jerk_sigma{1.0};
+  std::vector<double> ca_uav_init_cov{0.1, 0.1, 0.1, 1.0, 1.0, 1.0, 10.0, 10.0, 10.0};
+  std::vector<double> ca_uav_meas_noise{0.1, 0.1, 0.1};
+  double cv_acc_sigma{3.0};
+  std::vector<double> cv_init_cov{0.5, 0.5, 0.5, 2.0, 2.0, 2.0};
+  std::vector<double> cv_meas_noise{0.3, 0.3, 0.3};
+  std::vector<double> ctra_init_cov{0.1, 0.1, 0.1, 1.0, 10.0, 0.5, 1.0};
+  std::vector<double> ctra_process_noise{0.1, 0.1, 0.01, 1.0, 10.0, 0.1, 1.0};
+  std::vector<double> ctra_meas_noise{0.1, 0.1, 0.1};
+};
+
 struct MultiModelKalmanFilterConfig {
   // tracker 每帧会用真实时间戳覆盖 dt；这里是时间戳异常或新滤波器构造时的默认值。
   double default_dt{0.1};
@@ -114,6 +141,15 @@ class ExtendedKalmanFilter final : public KalmanFilterBase {
   void predict() override;
   void update(const Eigen::VectorXd& measurement) override;
 };
+
+// 从 ROS 参数快照构建运行时配置；tracker 和 predictor 各自调用，共享同一套构建逻辑。
+MultiModelKalmanFilterConfig buildMultiModelKalmanFilterConfig(
+    const MultiModelKalmanFilterParams& params);
+
+// 仅构造运动模型实例，不创建 Kalman filter；predictor 做轨迹外推时使用。
+std::shared_ptr<MotionModel> createMotionModel(
+    MotionModelType model_type,
+    const MultiModelKalmanFilterConfig& config = {});
 
 std::shared_ptr<KalmanFilterBase> createKalmanFilter(
     MotionModelType model_type,

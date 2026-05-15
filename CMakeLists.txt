@@ -52,6 +52,10 @@ add_message_files(
   FILES
   DynamicObject.msg
   DynamicObjectArray.msg
+  DynamicObjectPredictionPoint.msg
+  DynamicObjectPredictionBranch.msg
+  DynamicObjectPrediction.msg
+  DynamicObjectPredictionArray.msg
 )
 
 generate_messages(
@@ -87,6 +91,7 @@ add_library(ldop_core
   src/ldop.cpp
   src/dynamic_object_clusterer.cpp
   src/dynamic_object_tracker.cpp
+  src/dynamic_object_predictor.cpp
   src/motion_model.cpp
   src/multi_model_kalman_filter.cpp
   src/ufomap_mapper.cpp
@@ -122,3 +127,16 @@ target_link_libraries(ldop_node
   ldop_core
   ${catkin_LIBRARIES}
 )
+
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(test_dynamic_object_predictor
+    test/test_dynamic_object_predictor.cpp
+  )
+  if(TARGET test_dynamic_object_predictor)
+    target_link_libraries(test_dynamic_object_predictor
+      ldop_core
+      ${catkin_LIBRARIES}
+      gtest_main
+    )
+  endif()
+endif()

@@ -1,4 +1,5 @@
 #include <ldop/dynamic_object_tracker.h>
+#include <ldop/utils.h>
 
 #include <algorithm>
 #include <chrono>
@@ -50,36 +51,6 @@ std::size_t classScoreIndex(const ObjectClass object_class) {
       break;
   }
   return 4U;
-}
-
-std::uint8_t toRosObjectClass(const ObjectClass object_class) {
-  switch (object_class) {
-    case ObjectClass::Human:
-      return ldop::DynamicObject::CLASS_HUMAN;
-    case ObjectClass::Vehicle:
-      return ldop::DynamicObject::CLASS_VEHICLE;
-    case ObjectClass::Uav:
-      return ldop::DynamicObject::CLASS_UAV;
-    case ObjectClass::Other:
-      return ldop::DynamicObject::CLASS_OTHER;
-    case ObjectClass::Unknown:
-      break;
-  }
-  return ldop::DynamicObject::CLASS_UNKNOWN;
-}
-
-std::uint8_t toRosMotionModelType(const MotionModelType model_type) {
-  switch (model_type) {
-    case MotionModelType::CA2D:
-      return ldop::DynamicObject::MOTION_MODEL_CA2D;
-    case MotionModelType::CA3D:
-      return ldop::DynamicObject::MOTION_MODEL_CA3D;
-    case MotionModelType::CV3D:
-      return ldop::DynamicObject::MOTION_MODEL_CV3D;
-    case MotionModelType::CTRA:
-      return ldop::DynamicObject::MOTION_MODEL_CTRA;
-  }
-  return ldop::DynamicObject::MOTION_MODEL_CV3D;
 }
 
 MotionModelType motionModelForClass(const ObjectClass object_class,
@@ -183,30 +154,8 @@ DynamicObjectTrackerConfig buildTrackerConfig(const DynamicObjectTrackerParams& 
   config.classify_human_threshold = params.classify_human_threshold;
   config.classify_vehicle_threshold = params.classify_vehicle_threshold;
   config.classify_uav_threshold = params.classify_uav_threshold;
-  config.filter_config.default_dt = params.default_dt > 0.0 ? params.default_dt : defaults.default_dt;
-  config.filter_config.adaptive_window_size =
-      params.adaptive_window_size > 0 ? params.adaptive_window_size : defaults.adaptive_window_size;
-  config.filter_config.adaptive_alpha = std::clamp(params.adaptive_alpha, 0.0, 1.0);
-  config.filter_config.adaptive_r_alpha = std::clamp(params.adaptive_r_alpha, 0.0, 1.0);
-  config.filter_config.adaptive_min_noise_ratio = std::clamp(params.adaptive_min_noise_ratio, 0.0, 1.0);
-  config.filter_config.max_pos_cov = params.max_pos_cov > 0.0 ? params.max_pos_cov : defaults.max_pos_cov;
-  config.filter_config.max_vel_cov = params.max_vel_cov > 0.0 ? params.max_vel_cov : defaults.max_vel_cov;
-  config.filter_config.max_acc_cov = params.max_acc_cov > 0.0 ? params.max_acc_cov : defaults.max_acc_cov;
-  // bool 参数没有类型转换或外部库取值约束，按 AGENTS.md 约定直接透传。
-  config.filter_config.enable_cov_limit = params.enable_cov_limit;
-  config.filter_config.ca_human.jerk_sigma = params.ca_human_jerk_sigma;
-  config.filter_config.ca_human.init_cov = params.ca_human_init_cov;
-  config.filter_config.ca_human.meas_noise = params.ca_human_meas_noise;
-  config.filter_config.ca_human.z_process_noise = params.ca_human_z_process_noise;
-  config.filter_config.ca_uav.jerk_sigma = params.ca_uav_jerk_sigma;
-  config.filter_config.ca_uav.init_cov = params.ca_uav_init_cov;
-  config.filter_config.ca_uav.meas_noise = params.ca_uav_meas_noise;
-  config.filter_config.cv.acc_sigma = params.cv_acc_sigma;
-  config.filter_config.cv.init_cov = params.cv_init_cov;
-  config.filter_config.cv.meas_noise = params.cv_meas_noise;
-  config.filter_config.ctra.init_cov = params.ctra_init_cov;
-  config.filter_config.ctra.process_noise = params.ctra_process_noise;
-  config.filter_config.ctra.meas_noise = params.ctra_meas_noise;
+  // 共享卡尔曼参数快照统一由 buildMultiModelKalmanFilterConfig 转换为运行时配置。
+  config.filter_config = buildMultiModelKalmanFilterConfig(params.filter);
   return config;
 }
 
@@ -743,7 +692,7 @@ void DynamicObjectTracker::loadParameters() {
   pnh_.param("tracking_box_size_smoothing_alpha", params_.box_size_smoothing_alpha, defaults.box_size_smoothing_alpha);
   pnh_.param("tracking_spawn_suppression_distance", params_.spawn_suppression_distance,  defaults.spawn_suppression_distance);
   pnh_.param("tracking_spawn_suppression_iou_threshold", params_.spawn_suppression_iou_threshold, defaults.spawn_suppression_iou_threshold);
-  pnh_.param("tracking_default_dt", params_.default_dt, defaults.default_dt);
+  pnh_.param("tracking_default_dt", params_.filter.default_dt, defaults.filter.default_dt);
   pnh_.param("tracking_max_dt", params_.max_dt, defaults.max_dt);
   pnh_.param("classification_start_frame", params_.classification_start_frame, defaults.classification_start_frame);
   pnh_.param("classification_score_decay", params_.classification_score_decay, defaults.classification_score_decay);
@@ -758,27 +707,27 @@ void DynamicObjectTracker::loadParameters() {
   pnh_.param("classify_uav_threshold", params_.classify_uav_threshold, defaults.classify_uav_threshold);
 
   // Kalman 噪声和协方差只从 LDOT 风格分组读取，避免旧顶层参数与当前分组参数并存。
-  pnh_.param("kalman_filter/adaptive_window_size", params_.adaptive_window_size, defaults.adaptive_window_size);
-  pnh_.param("kalman_filter/adaptive_alpha", params_.adaptive_alpha, defaults.adaptive_alpha);
-  pnh_.param("kalman_filter/adaptive_r_alpha", params_.adaptive_r_alpha, defaults.adaptive_r_alpha);
-  pnh_.param("kalman_filter/adaptive_min_noise_ratio", params_.adaptive_min_noise_ratio, defaults.adaptive_min_noise_ratio);
-  pnh_.param("kalman_filter/enable_cov_limit", params_.enable_cov_limit, defaults.enable_cov_limit);
-  pnh_.param("kalman_filter/max_pos_cov", params_.max_pos_cov, defaults.max_pos_cov);
-  pnh_.param("kalman_filter/max_vel_cov", params_.max_vel_cov, defaults.max_vel_cov);
-  pnh_.param("kalman_filter/max_acc_cov", params_.max_acc_cov, defaults.max_acc_cov);
-  pnh_.param("kalman_filter/ca_model/human/jerk_sigma", params_.ca_human_jerk_sigma, defaults.ca_human_jerk_sigma);
-  pnh_.param("kalman_filter/ca_model/human/init_cov", params_.ca_human_init_cov, defaults.ca_human_init_cov);
-  pnh_.param("kalman_filter/ca_model/human/meas_noise", params_.ca_human_meas_noise, defaults.ca_human_meas_noise);
-  pnh_.param("kalman_filter/ca_model/human/z_process_noise", params_.ca_human_z_process_noise, defaults.ca_human_z_process_noise);
-  pnh_.param("kalman_filter/ca_model/uav/jerk_sigma", params_.ca_uav_jerk_sigma, defaults.ca_uav_jerk_sigma);
-  pnh_.param("kalman_filter/ca_model/uav/init_cov", params_.ca_uav_init_cov, defaults.ca_uav_init_cov);
-  pnh_.param("kalman_filter/ca_model/uav/meas_noise", params_.ca_uav_meas_noise, defaults.ca_uav_meas_noise);
-  pnh_.param("kalman_filter/cv_model/acc_sigma", params_.cv_acc_sigma, defaults.cv_acc_sigma);
-  pnh_.param("kalman_filter/cv_model/init_cov", params_.cv_init_cov, defaults.cv_init_cov);
-  pnh_.param("kalman_filter/cv_model/meas_noise", params_.cv_meas_noise, defaults.cv_meas_noise);
-  pnh_.param("kalman_filter/ctra_model/init_cov", params_.ctra_init_cov, defaults.ctra_init_cov);
-  pnh_.param("kalman_filter/ctra_model/process_noise", params_.ctra_process_noise, defaults.ctra_process_noise);
-  pnh_.param("kalman_filter/ctra_model/meas_noise", params_.ctra_meas_noise, defaults.ctra_meas_noise);
+  pnh_.param("kalman_filter/adaptive_window_size", params_.filter.adaptive_window_size, defaults.filter.adaptive_window_size);
+  pnh_.param("kalman_filter/adaptive_alpha", params_.filter.adaptive_alpha, defaults.filter.adaptive_alpha);
+  pnh_.param("kalman_filter/adaptive_r_alpha", params_.filter.adaptive_r_alpha, defaults.filter.adaptive_r_alpha);
+  pnh_.param("kalman_filter/adaptive_min_noise_ratio", params_.filter.adaptive_min_noise_ratio, defaults.filter.adaptive_min_noise_ratio);
+  pnh_.param("kalman_filter/enable_cov_limit", params_.filter.enable_cov_limit, defaults.filter.enable_cov_limit);
+  pnh_.param("kalman_filter/max_pos_cov", params_.filter.max_pos_cov, defaults.filter.max_pos_cov);
+  pnh_.param("kalman_filter/max_vel_cov", params_.filter.max_vel_cov, defaults.filter.max_vel_cov);
+  pnh_.param("kalman_filter/max_acc_cov", params_.filter.max_acc_cov, defaults.filter.max_acc_cov);
+  pnh_.param("kalman_filter/ca_model/human/jerk_sigma", params_.filter.ca_human_jerk_sigma, defaults.filter.ca_human_jerk_sigma);
+  pnh_.param("kalman_filter/ca_model/human/init_cov", params_.filter.ca_human_init_cov, defaults.filter.ca_human_init_cov);
+  pnh_.param("kalman_filter/ca_model/human/meas_noise", params_.filter.ca_human_meas_noise, defaults.filter.ca_human_meas_noise);
+  pnh_.param("kalman_filter/ca_model/human/z_process_noise", params_.filter.ca_human_z_process_noise, defaults.filter.ca_human_z_process_noise);
+  pnh_.param("kalman_filter/ca_model/uav/jerk_sigma", params_.filter.ca_uav_jerk_sigma, defaults.filter.ca_uav_jerk_sigma);
+  pnh_.param("kalman_filter/ca_model/uav/init_cov", params_.filter.ca_uav_init_cov, defaults.filter.ca_uav_init_cov);
+  pnh_.param("kalman_filter/ca_model/uav/meas_noise", params_.filter.ca_uav_meas_noise, defaults.filter.ca_uav_meas_noise);
+  pnh_.param("kalman_filter/cv_model/acc_sigma", params_.filter.cv_acc_sigma, defaults.filter.cv_acc_sigma);
+  pnh_.param("kalman_filter/cv_model/init_cov", params_.filter.cv_init_cov, defaults.filter.cv_init_cov);
+  pnh_.param("kalman_filter/cv_model/meas_noise", params_.filter.cv_meas_noise, defaults.filter.cv_meas_noise);
+  pnh_.param("kalman_filter/ctra_model/init_cov", params_.filter.ctra_init_cov, defaults.filter.ctra_init_cov);
+  pnh_.param("kalman_filter/ctra_model/process_noise", params_.filter.ctra_process_noise, defaults.filter.ctra_process_noise);
+  pnh_.param("kalman_filter/ctra_model/meas_noise", params_.filter.ctra_meas_noise, defaults.filter.ctra_meas_noise);
 
   config_ = buildTrackerConfig(params_);
 }

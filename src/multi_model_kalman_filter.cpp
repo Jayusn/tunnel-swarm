@@ -47,6 +47,64 @@ std::shared_ptr<ExtendedKalmanFilter> configureExtendedFilter(
 
 }  // namespace
 
+MultiModelKalmanFilterConfig buildMultiModelKalmanFilterConfig(
+    const MultiModelKalmanFilterParams& params) {
+  const MultiModelKalmanFilterParams defaults;
+  MultiModelKalmanFilterConfig config;
+  config.default_dt = params.default_dt > 0.0 ? params.default_dt : defaults.default_dt;
+  config.adaptive_window_size =
+      params.adaptive_window_size > 0 ? params.adaptive_window_size : defaults.adaptive_window_size;
+  config.adaptive_alpha = std::clamp(params.adaptive_alpha, 0.0, 1.0);
+  config.adaptive_r_alpha = std::clamp(params.adaptive_r_alpha, 0.0, 1.0);
+  config.adaptive_min_noise_ratio = std::clamp(params.adaptive_min_noise_ratio, 0.0, 1.0);
+  config.max_pos_cov = params.max_pos_cov > 0.0 ? params.max_pos_cov : defaults.max_pos_cov;
+  config.max_vel_cov = params.max_vel_cov > 0.0 ? params.max_vel_cov : defaults.max_vel_cov;
+  config.max_acc_cov = params.max_acc_cov > 0.0 ? params.max_acc_cov : defaults.max_acc_cov;
+  config.enable_cov_limit = params.enable_cov_limit;
+  config.ca_human.jerk_sigma = params.ca_human_jerk_sigma;
+  config.ca_human.init_cov = params.ca_human_init_cov;
+  config.ca_human.meas_noise = params.ca_human_meas_noise;
+  config.ca_human.z_process_noise = params.ca_human_z_process_noise;
+  config.ca_uav.jerk_sigma = params.ca_uav_jerk_sigma;
+  config.ca_uav.init_cov = params.ca_uav_init_cov;
+  config.ca_uav.meas_noise = params.ca_uav_meas_noise;
+  config.cv.acc_sigma = params.cv_acc_sigma;
+  config.cv.init_cov = params.cv_init_cov;
+  config.cv.meas_noise = params.cv_meas_noise;
+  config.ctra.init_cov = params.ctra_init_cov;
+  config.ctra.process_noise = params.ctra_process_noise;
+  config.ctra.meas_noise = params.ctra_meas_noise;
+  return config;
+}
+
+std::shared_ptr<MotionModel> createMotionModel(
+    const MotionModelType model_type,
+    const MultiModelKalmanFilterConfig& config) {
+  switch (model_type) {
+    case MotionModelType::CA2D: {
+      auto model = std::make_shared<CAMotionModel>(config.ca_human, false);
+      model->setDt(config.default_dt);
+      return model;
+    }
+    case MotionModelType::CA3D: {
+      auto model = std::make_shared<CAMotionModel>(config.ca_uav, true);
+      model->setDt(config.default_dt);
+      return model;
+    }
+    case MotionModelType::CV3D: {
+      auto model = std::make_shared<CVMotionModel>(config.cv);
+      model->setDt(config.default_dt);
+      return model;
+    }
+    case MotionModelType::CTRA: {
+      auto model = std::make_shared<CTRAMotionModel>(config.ctra);
+      model->setDt(config.default_dt);
+      return model;
+    }
+  }
+  throw std::invalid_argument("unsupported motion model");
+}
+
 KalmanFilterBase::KalmanFilterBase(std::shared_ptr<MotionModel> model)
     : model_(std::move(model)) {
   if (model_ == nullptr) {
@@ -399,30 +457,11 @@ void ExtendedKalmanFilter::update(const Eigen::VectorXd& measurement) {
 std::shared_ptr<KalmanFilterBase> createKalmanFilter(
     const MotionModelType model_type,
     const MultiModelKalmanFilterConfig& config) {
-  switch (model_type) {
-    case MotionModelType::CA2D: {
-      auto model = std::make_shared<CAMotionModel>(config.ca_human, false);
-      model->setDt(config.default_dt);
-      return configureLinearFilter(model, config);
-    }
-    case MotionModelType::CA3D: {
-      auto model = std::make_shared<CAMotionModel>(config.ca_uav, true);
-      model->setDt(config.default_dt);
-      return configureLinearFilter(model, config);
-    }
-    case MotionModelType::CV3D: {
-      auto model = std::make_shared<CVMotionModel>(config.cv);
-      model->setDt(config.default_dt);
-      return configureLinearFilter(model, config);
-    }
-    case MotionModelType::CTRA: {
-      auto model = std::make_shared<CTRAMotionModel>(config.ctra);
-      model->setDt(config.default_dt);
-      return configureExtendedFilter(model, config);
-    }
+  const std::shared_ptr<MotionModel> model = createMotionModel(model_type, config);
+  if (model_type == MotionModelType::CTRA) {
+    return configureExtendedFilter(model, config);
   }
-
-  throw std::invalid_argument("unsupported motion model");
+  return configureLinearFilter(model, config);
 }
 
 std::shared_ptr<KalmanFilterBase> createKalmanFilter(

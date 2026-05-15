@@ -85,13 +85,6 @@ struct DynamicObjectTrackerParams {
   double spawn_suppression_iou_threshold{0.5};          // (0,1]
   double default_dt{0.1};                               // >0, 用于初始预测和时间戳异常时的 fallback
   double max_dt{0.5};                                   // >0, 预测时的 dt 上限，避免时间跳变导致状态外推过远
-  int adaptive_window_size{10};                         // >0, 自适应噪声窗口大小，越大适应越慢但越平滑
-  double adaptive_alpha{0.7};                           // [0,1], 自适应噪声平滑因子，越大适应越慢
-  double adaptive_r_alpha{0.7};                         // [0,1], 自适应测量噪声平滑因子，越大适应越慢
-  double adaptive_min_noise_ratio{0.2};                 // [0,1], 自适应噪声下限占比，避免噪声过低导致滤波器发散
-  double max_pos_cov{1.0};                              // >0, 卡尔曼滤波器位置协方差上限，避免滤波器发散时状态估计不受限制地变大
-  double max_vel_cov{9.0};                              // >0, 卡尔曼滤波器速度协方差上限，避免滤波器发散时状态估计不受限制地变大
-  double max_acc_cov{25.0};                             // >0, 卡尔曼滤波器加速度协方差上限，避免滤波器发散时状态估计不受限制地变大
   int classification_start_frame{10};                   // >0, 轨迹达到该帧数后开始尝试分类，避免过早分类导致频繁切换
   double classification_score_decay{0.85};              // (0,1), 分类得分衰减因子，新轨迹的分数都是0
   double classification_score_increment{1.0};           // >0, 分类得分增量
@@ -104,20 +97,8 @@ struct DynamicObjectTrackerParams {
   std::vector<double> classify_human_threshold{1.1, 0.8};
   std::vector<double> classify_vehicle_threshold{1.5, 0.7};
   std::vector<double> classify_uav_threshold{0.6, 1.5};
-  bool enable_cov_limit{true};
-  double ca_human_jerk_sigma{1.0};
-  std::vector<double> ca_human_init_cov{0.1, 0.1, 0.1, 1.0, 1.0, 10.0, 10.0};
-  std::vector<double> ca_human_meas_noise{0.1, 0.1, 0.1};
-  double ca_human_z_process_noise{0.01};
-  double ca_uav_jerk_sigma{1.0};
-  std::vector<double> ca_uav_init_cov{0.1, 0.1, 0.1, 1.0, 1.0, 1.0, 10.0, 10.0, 10.0};
-  std::vector<double> ca_uav_meas_noise{0.1, 0.1, 0.1};
-  double cv_acc_sigma{3.0};
-  std::vector<double> cv_init_cov{0.5, 0.5, 0.5, 2.0, 2.0, 2.0};
-  std::vector<double> cv_meas_noise{0.3, 0.3, 0.3};
-  std::vector<double> ctra_init_cov{0.1, 0.1, 0.1, 1.0, 10.0, 0.5, 1.0};
-  std::vector<double> ctra_process_noise{0.1, 0.1, 0.01, 1.0, 10.0, 0.1, 1.0};
-  std::vector<double> ctra_meas_noise{0.1, 0.1, 0.1};
+  // 卡尔曼滤波器参数统一放在共享结构中；tracker 和 predictor 各自读取，再通过 buildMultiModelKalmanFilterConfig 转换。
+  MultiModelKalmanFilterParams filter;
 };
 
 struct DynamicObjectTrackerTimingStats {

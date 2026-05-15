@@ -6,6 +6,8 @@ dynamic_cloud_topic: /ldop/dynamic_cloud  # 当前帧动态点云输出
 dynamic_objects_topic: /ldop/dynamic_objects
 dynamic_object_markers_topic: /ldop/dynamic_object_markers  # 当前帧动态目标包围盒 MarkerArray 输出
 dynamic_track_markers_topic: /ldop/dynamic_track_markers  # 跨帧动态目标轨迹 MarkerArray 输出
+dynamic_predictions_topic: /ldop/dynamic_object_predictions  # 动态目标轨迹预测输出
+dynamic_prediction_markers_topic: /ldop/dynamic_prediction_markers  # 动态目标轨迹预测 MarkerArray 输出
 static_map_markers_topic: /ldop/static_map_markers  # 静态体素地图 MarkerArray 输出
 static_map_visualization_max_z: 3.0  # 仅限制静态体素地图RViz可视化高度，不改变UFOMap地图内容
 verbose: true  
@@ -48,6 +50,7 @@ tracking_spawn_suppression_distance: 0.5  # 马氏距离关联失败后的第一
 tracking_spawn_suppression_iou_threshold: 0.5  # 马氏距离关联失败后的第二层回退条件：只有 distance 已经过阈值时，才检查 IoU；若最终仍未匹配，也继续抑制建新轨迹；0 表示关闭
 tracking_default_dt: 0.1  # 时间戳异常时回退使用的预测时间步长（秒）
 tracking_max_dt: 0.5  # 预测时间步长上限（秒），防止大间隔导致发散
+prediction_horizon: 1.0  # 预测未来时长，采样间隔复用 tracking_default_dt
 
 # 动态目标类别分类参数
 classification_start_frame: 10  # 轨迹累计命中到该帧数后才开始给类别证据积分
@@ -75,9 +78,9 @@ kalman_filter:
   ca_model:
     human:
       jerk_sigma: 1.0
-      init_cov: [0.1, 0.1, 0.1, 1.0, 1.0, 10.0, 10.0]
+      init_cov: [0.1, 0.1, 0.01, 1.0, 1.0, 10.0, 10.0]
       meas_noise: [0.1, 0.1, 0.1]
-      z_process_noise: 0.01
+      z_process_noise: 0.001
     uav:
       jerk_sigma: 1.0
       init_cov: [0.1, 0.1, 0.1, 1.0, 1.0, 1.0, 10.0, 10.0, 10.0]
