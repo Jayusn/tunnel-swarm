@@ -186,7 +186,7 @@
 - 动态点云聚类
 - 目标包围盒或尺寸估计
 - 跨帧目标关联
-- 模型原生状态与协方差维护，速度按 `motion_model_type` 从 `model_state` 派生
+- 模型原生状态与协方差维护，状态布局按 `motion_model_type` 解释
 - 目标类别分类
 - 类别驱动的 CA2D / CTRA / CA3D / CV3D 运动模型切换
 - 稳定输出 `/ldop/dynamic_objects`
@@ -221,7 +221,6 @@
 - 稳定的目标 ID
 - 对象类别
 - 当前运动模型和模型原生状态/协方差
-- 可按 `motion_model_type` 解释出的当前速度
 
 ### 第二步：进入第四阶段前的动态风险表达
 
@@ -267,7 +266,7 @@ cd /home/st/ldop_ws
 
 - `/ldop/static_cloud` 在 RViz 中保持稳定、不过度吸收动态物体残影
 - `/ldop/dynamic_cloud` 能反映当前帧动态点云
-- `/ldop/dynamic_objects` 能保持稳定目标 ID、类别、模型状态和状态不确定性；速度可按当前运动模型从状态中解释
+- `/ldop/dynamic_objects` 能保持稳定目标 ID、类别、运动模型、模型原生状态和协方差
 - `/ldop/dynamic_object_markers` 与 `/ldop/dynamic_track_markers` 分别反映当前帧检测框和跨帧轨迹
 - LDOP、PX4、Gazebo、外部位姿融合链路能完整跑通并可正常退出
 

@@ -1,97 +1,94 @@
-# 动态对象跟踪设计收敛计划
+# 第三阶段动态目标轨迹预测规划
 
 ## 目标
 
-完成 `docs/superpowers/specs/2026-04-24-dynamic-object-tracking-design.md` 的设计收口，并输出配套实施计划 `docs/superpowers/plans/2026-04-25-dynamic-object-tracking-implementation-plan.md`，为下一步实现提供可执行顺序、文件范围和验证闭环。全过程继续使用 `planning-with-files-zh` 记录。
+基于第二阶段已经稳定输出的动态目标 ID、目标类别、运动模型、模型原生状态及协方差和历史轨迹，逐步实现动态目标短时轨迹预测。预测阶段应独立输出未来物体中心轨迹、轨迹概率分布和 RViz 可视化，不把未来轨迹数组回填到当前跟踪对象消息中。
 
 ## 当前状态
 
-- 当前阶段：阶段 16 已完成；第二阶段“动态点云聚类、检测与跟踪”已标记完成，并已同步当前阶段文档、路线图和过程记录。
-- 当前主线：进入第三阶段“动态目标短时轨迹预测”，后续设计应基于 tracker 已稳定输出的 `id/object_class/motion_model_type/model_state/model_covariance`。
-- 上一阶段：阶段 10 已完成，第一版单 CA3D 跟踪实施计划已在独立 worktree 中落地并完成临时构建/测试验证。
-- 设计文档：`docs/superpowers/specs/2026-04-24-dynamic-object-tracking-design.md` 已完成第一版收口。
-- 实施计划：`docs/superpowers/plans/2026-04-25-dynamic-object-tracking-implementation-plan.md` 已生成。
-- 执行方式：用户已选择 `Subagent-Driven (recommended)`。
-- 工作区：实现在 `/home/st/ldop_ws/src/LDOP/.worktrees/feature-dynamic-object-tracking` 上进行，主工作区保留为设计/计划记录。
+- 当前阶段：规划记录已重置为第三阶段轨迹预测专用记录。
+- 本轮目标：轨迹外推单轨迹预测的设计规格和可执行实现计划均已写入文档；下一步可按实现计划逐任务落地代码。
+- 已完成基础：第一阶段动静态点云分割与静态地图、第二阶段动态点云聚类检测跟踪均已完成。
+- 已有预测输入：`DynamicObjectTrackerFrameResult::prediction_inputs` 和 `TrackPredictionInput` 已在 tracker 内部预留，包含稳定目标 ID、类别、运动模型、模型原生状态及协方差、历史样本和生命周期信息。
+- 已有文档：设计规格 `docs/superpowers/specs/2026-05-14-dynamic-object-trajectory-prediction-design.md`，实现计划 `docs/superpowers/plans/2026-05-14-dynamic-object-trajectory-prediction-implementation-plan.md`。
+- 尚未实现：独立 predictor 模块、预测消息、预测话题、预测 marker、轨迹概率分布和闭环概率反馈。
+- 安排文档：`docs/superpowers/plans/2026-05-14-dynamic-object-trajectory-prediction-arrangement.md`。
 
 ## 阶段
 
 | 阶段 | 状态 | 内容 |
 |------|------|------|
-| 1 | complete | 恢复上下文，建立 `task_plan.md`、`findings.md`、`progress.md` |
-| 2 | complete | 阅读现有设计文档、相关代码和测试，整理事实 |
-| 3 | complete | 按 brainstorming 流程澄清关键设计取舍 |
-| 4 | complete | 汇总设计取舍并形成默认建议 |
-| 5 | complete | 在用户确认和默认收口后更新设计文档 |
-| 6 | complete | 对设计文档做自检：占位、矛盾、范围、歧义 |
-| 7 | complete | 用户审阅设计文档并确认转入实施计划 |
-| 8 | complete | 生成实施计划文档并同步过程记录 |
-| 9 | complete | 按 `Superpowers` 的 writing-plans handoff，由用户选择执行方式 |
-| 10 | complete | 按 `Superpowers:subagent-driven-development` 执行实施计划与阶段评审；受子代理额度限制，后半段由主代理完成 review、修复和验证 |
-| 11 | complete | 按 `superpowers:brainstorming` 调研当前 LDOP 与 `/home/st/catkin/LDOT/ldot_detector`，收敛目标分类和多运动模型 KF/EKF 的设计边界 |
-| 12 | complete | 用户审阅 `docs/superpowers/specs/2026-04-30-dynamic-object-classification-multimodel-design.md`，确认后进入实施计划 |
-| 13 | complete | 执行 `docs/superpowers/plans/2026-04-30-dynamic-object-classification-multimodel-implementation-plan.md`，实现目标分类、证据积分和模型切换 |
-| 14 | complete | 对照第二阶段目标审查当前实现、配置、消息、文档、构建和测试，判断是否真正完成 |
-| 15 | complete | 同步当前 `DynamicObject.msg` 对外接口文档，修复 CTRA EKF 预测前状态线性化问题；随后按用户要求删除新增测试内容 |
-| 16 | complete | 按用户确认将第二阶段标记为已完成，更新 `AGENTS.md`、`README.md`、`docs/note/LDOP_design.md`、spec/plan 状态说明和过程记录 |
+| 1 | complete | 恢复旧规划上下文，确认第二阶段已完成，重置三份规划记录为第三阶段专用记录 |
+| 2 | complete | 梳理第三阶段预测输入、系统过程、输出和闭环评估目标 |
+| 3 | complete | 新建轨迹预测安排文档，明确四个实现阶段和当前实现进展 |
+| 4 | in_progress | 按已生成实现计划落地轨迹外推，输出单条中心预测轨迹 |
+| 5 | pending | 引入航向/意图，输出简化高斯混合多轨迹 |
+| 6 | pending | 引入目标间和目标-地图交互，输出完整高斯混合多轨迹 |
+| 7 | pending | 建立闭环评估与概率反馈，按误差和不确定性更新各轨迹概率 |
+
+## 实现阶段安排
+
+| 实现阶段 | 核心输入 | 核心方法 | 输出形态 | 验证重点 |
+|----------|----------|----------|----------|----------|
+| 第一阶段：轨迹外推 | 当前模型原生状态及协方差、短历史 | 按 `motion_model_type` 解释预测所需运动学量，沿时间采样做轨迹外推，并传播模型原生协方差 | 单目标单条中心预测轨迹 | 位置误差、位移误差、耗时、预测方向是否与当前运动趋势一致 |
+| 第二阶段：轨迹外推 + 航向/意图 | 第一阶段输入 + 历史轨迹 + 类别/模型特征 | 根据历史速度方向、类别和运动模型生成少量候选意图，形成简化 GMM | 单目标多条候选轨迹，每条带概率和协方差 | 多模态覆盖率、概率归一化、主轨迹误差、耗时 |
+| 第三阶段：轨迹外推 + 航向/意图 + 交互 | 第二阶段输入 + 目标间相对关系 + 静态地图约束 | 引入目标间避让、目标-地图碰撞/可通行约束，修正轨迹均值和概率 | 完整 GMM 多轨迹分布 | 交互场景合理性、地图约束有效性、概率分布稳定性 |
+| 第四阶段：闭环概率反馈 | 预测结果 + 后续真实跟踪输出 + 运行耗时 | 用位置误差、位移误差和不确定性一致性反馈各模式概率 | 评估报告、在线概率校正状态 | ADE/FDE、NLL 或等价不确定性指标、单帧耗时 |
 
 ## 决策记录
 
 | 时间 | 决策 | 原因 |
 |------|------|------|
-| 2026-04-24 | 本轮不使用视觉伴随工具 | 当前问题是 ROS/C++ 架构与接口设计，文本结构和代码事实比浏览器可视化更直接 |
-| 2026-04-24 | 先对齐现有代码事实，再讨论 tracker 方案 | 当前 spec 已包含未落地的 tracker 设计，需区分“已实现聚类”和“待设计跟踪” |
-| 2026-04-24 | 第一版 tracker 采用当前 spec 完整版 | 用户选择 B：第一版包含 adaptive Q/R、cov limit、history、coasting gate 放松等全部参数 |
-| 2026-04-24 | 新增 track 内部的多模型 Kalman 组件作为设计约束 | 用户要求避免 `dynamic_object_tracker` 过于臃肿；进一步查看 LDOT 后确认应理解为 tracker 内部持有滤波器组件，而不是三套平级主流程模块 |
-| 2026-04-24 | 确认 LDOT 风格的 tracker 内部滤波组件边界 | 用户确认“这就是我想要的” |
-| 2026-04-24 | 第一版默认所有目标使用 3D CA | 用户选择默认 3D CA；类别切换不启用，但保留 `MotionModelType` 和 factory 结构 |
-| 2026-04-24 | 已确认内容应及时落入 spec | 用户指出已确认内容不应只停留在过程记录或对话里 |
-| 2026-04-24 | 合并 motion model 与 Kalman filter 文件组 | 为减少文件数量，第一版把 `MotionModel` 接口和 CA3D 实现放进 `multi_model_kalman_filter.{h,cpp}` |
-| 2026-04-24 | `DynamicObjectArray` 归属 tracker，聚类保留 marker | 用户确认不采用把 tracker 塞进 clusterer 或新增 `TrackedObjectArray`；`DynamicObject.msg` 移除预测字段，预测未来走独立话题 |
-| 2026-04-24 | 检测和跟踪可视化分开输出 | `/ldop/dynamic_object_markers` 保留为 clusterer 的当前帧检测框，新增 `/ldop/dynamic_track_markers` 显示 tracker 稳定轨迹 |
-| 2026-04-24 | 数据关联求解器第一版使用 Hungarian | 用户要求直接保持与 `/home/st/catkin/LDOT/ldot_detector` 一致，不采用贪婪最小代价分配 |
-| 2026-04-25 | 设计阶段结束，转入独立实施计划 | 用户要求“转成实施计划”，因此新增 `docs/superpowers/plans/2026-04-25-dynamic-object-tracking-implementation-plan.md` |
-| 2026-04-25 | 实施计划 handoff 按 `Superpowers` 标准执行 | `writing-plans` 明确要求在计划生成后提供两种执行方式：Subagent-Driven 或 Inline Execution |
-| 2026-04-25 | 执行方式选定为 `Subagent-Driven` | 用户明确选择 `Subagent-Driven (recommended)` |
-| 2026-04-25 | 使用项目内 `.worktrees/` 创建隔离工作区 | 用户明确要求把 worktree 建在项目内 `.worktrees/` |
-| 2026-04-25 | 阶段 1 以“先实现、再做 spec 复核”的方式通过 | 子代理实现消息契约与 clusterer 接口改造后，复核确认未越阶段塞入 tracker 主流程 |
-| 2026-04-25 | 实施计划 5 个阶段已在 worktree 完成 | 子代理额度触顶后，主代理继续完成 phase 3 code review、phase 4 集成、phase 5 参数与验证 |
-| 2026-04-30 | 新一轮目标分类和多运动模型实现先走设计门 | 用户显式要求使用 `superpowers:brainstorming`，因此在设计获批前只调研、记录和收敛方案，不修改实现代码 |
-| 2026-04-30 | 本轮分类范围限定为对象类别分类 | LDOP 的动静态点云分割已经由 UFOMap 链路实现，本轮只补 human/vehicle/uav/else 类别、模型选择和模型切换 |
-| 2026-04-30 | 新轨迹默认 `else + CV3D`，分类后再切模型 | 用户确认采用最贴近 LDOT 的时机：新轨迹先稳住，达到 `classification_start_frame` 后分类，若类别变化则在 Kalman update 前切到对应模型 |
-| 2026-04-30 | `UNKNOWN` 与 `OTHER` 在对外消息中分开 | `UNKNOWN` 表示尚未可靠分类；`OTHER` 表示已分类但不属于 human/vehicle/uav，避免把新轨迹默认 CV3D 误解为已确认其他类别 |
-| 2026-04-30 | 分类规则采用 LDOT 核心尺寸/质心规则，但适配 LDOP 数据边界 | 用户确认使用历史最大 bbox 尺寸和当前 detection 质心高度分类；不引入点云 PCA/std 或运动投票 |
-| 2026-04-30 | 参数组织采用混合方案 | 生命周期/关联/分类参数继续扁平化，多模型 Kalman 参数按 LDOT 使用 `kalman_filter/...` 树状分组 |
-| 2026-04-30 | `DynamicObject.msg` 本轮只新增 `uint8 object_class` | 加速度、yaw、motion model 保持 tracker 内部状态，不进入本轮对外 ROS 消息合同 |
-| 2026-04-30 | 纳入 LDOT 临时合并/分离检测机制 | 用户确认本轮实现尺寸比例 + 点数比例保护，用于分类和 bbox 尺寸稳定；不扩展为轨迹去重或重新聚类 |
-| 2026-04-30 | 设计文档落地但不创建提交 | 仓库规则要求任务过程中不创建中间提交；本轮只写入 spec 和规划记录，等待用户审阅 |
-| 2026-04-30 | 设计文档改为中文 | 用户指出英文 spec 不符合 `AGENTS.md` 的中文默认要求；已按仓库语言规则修正 |
-| 2026-04-30 | 分类稳定改为证据积分和滞回切换 | 用户认为固定间隔和连续次数还可优化；本轮删除 `classification_interval_sec`、`classification_stable_confirmations` 和 `classify_xy_distance_threshold`，可靠匹配帧更新类别分数，coasting/疑似遮挡帧冻结证据，尺寸变化确认继续使用 `classification_size_change_confirm_frames` |
-| 2026-04-30 | 本轮在当前工作区内联执行 | 用户已明确说“继续”；本轮不创建中间提交，也不额外开子代理，直接在当前 LDOP 工作区按实施计划执行 |
-| 2026-05-13 | 对外接口收口只更新文档描述 | 用户明确纠正：本轮不应修改 `DynamicObject.msg` 或 tracker 输出字段，只把文档与当前接口语义对齐 |
-| 2026-05-13 | CTRA EKF 预测雅可比在预测前状态处计算 | 标准 EKF 协方差传播应围绕 $x_k^+$ 线性化，再推进到 $x_{k+1}^-$；否则 CTRA 的 yaw/yaw_rate 会影响错误的切线方向 |
-| 2026-05-14 | 第二阶段标记为已完成，主线切到第三阶段 | 用户明确说明“第二阶段已完成”；文档状态以该结论为准，后续预测归入第三阶段 |
+| 2026-05-14 | 第三阶段预测走独立预测消息和话题 | 当前 `DynamicObject.msg` 表达当前跟踪状态，未来预测应保持独立，避免混淆当前状态和未来分布 |
+| 2026-05-14 | 第一版先实现轨迹外推单轨迹 | 这是最小可验证闭环，可直接复用 tracker 的模型原生状态及协方差；CTRA 等转弯模型并不是线性外推 |
+| 2026-05-14 | 预测消息一开始就按多预测分支结构设计 | 轨迹外推阶段只填一条 `trajectory_extrapolation` 分支、概率为 1.0；后续加入航向/意图和交互预测时不破坏预测话题接口 |
+| 2026-05-14 | 默认预测未来 1.0 秒，采样间隔复用 `tracking_default_dt` | 默认短时预测先覆盖更近未来；采样时间粒度与 tracker 默认时间步长保持一致，避免新增重复参数 |
+| 2026-05-14 | 漏检延续但尚未删除的稳定轨迹继续预测 | 与 tracker 当前仍发布 coasting 轨迹的策略保持一致；消息保留，RViz marker 用更低透明度表达不确定性 |
+| 2026-05-14 | 不为低速或近似静止目标单独设置退化策略 | 预测模块只消费 tracker 已确认的动态目标；低速仍属于动态目标状态范围，按当前运动模型状态正常外推 |
+| 2026-05-14 | 预测消息保存模型原生状态和模型原生协方差 | 与当前 `DynamicObject.msg` 的 `model_state/model_covariance` 语义保持一致；RViz 椭球只从预测状态前三维位置协方差派生 |
+| 2026-05-14 | 未来采样点单独建消息类型 | 用 `DynamicObjectPredictionPoint` 同时承载 `time_from_start`、`model_state` 和 `model_covariance`，避免并行数组错位 |
+| 2026-05-14 | 预测分支类型改为通用行为族方向 | 不把分支类型绑定到实现阶段或具体方向；上升/下降、前进/后退、转弯这类成对行为应由同一行为族加有符号参数表达 |
+| 2026-05-14 | `BEHAVIOR_BASELINE` 只用于第一阶段基准预测 | 第一阶段用它表示不额外假设意图、仅按当前运动模型外推；后续多意图/交互预测不再使用该行为类型 |
+| 2026-05-14 | `behavior_value` 使用归一化有符号行为强度 | 范围为 `[-1.0, 1.0]`；真实轨迹仍由采样点模型原生状态表达，行为强度只辅助解释预测分支偏向 |
+| 2026-05-14 | 模型不确定性和规划影响权重分开表达 | `model_covariance` 按运动模型真实传播；预测尾部对规划/RViz 的影响通过 `influence_weight` 衰减，不篡改协方差 |
+| 2026-05-14 | 影响权重前半段保持 1.0，后半段衰减到 0.3 | 分段时间直接取预测总时长的一半；最小尾部影响权重写死为 0.3，不额外暴露参数 |
+| 2026-05-14 | 不设置预测目标数量限制 | predictor 对 tracker 输出的全部稳定预测输入做预测，稳定性和数量边界由 tracker 控制 |
+| 2026-05-14 | RViz 预测可视化包含轨迹线和不确定性椭球 | 轨迹线连接采样点中心；每个采样点用椭球表达前三维位置协方差，透明度叠加 `influence_weight` 和漏检状态 |
+| 2026-05-14 | 不确定性椭球由 3x3 位置协方差特征分解生成 | 使用协方差主轴方向和长度显示椭球，不只取 xyz 对角线，保留位置相关性 |
+| 2026-05-14 | 不确定性椭球默认显示 1σ | 椭球轴长按 `2 * sqrt(lambda)` 设置为 RViz `SPHERE` 直径；负特征值仅作为数值误差裁剪到 0 |
+| 2026-05-14 | 预测目标消息保留 `size` 和 `matched_in_current_frame` | `size` 服务后续风险膨胀和可视化；`matched_in_current_frame` 表达预测是否来自当前帧匹配目标 |
+| 2026-05-14 | 预测目标消息复用当前目标类别和运动模型常量 | `DynamicObjectPrediction.msg` 中保留与 `DynamicObject.msg` 一致的 `CLASS_*` 与 `MOTION_MODEL_*` 常量，避免下游维护第二套数字映射 |
+| 2026-05-14 | predictor 自己读取 `tracking_default_dt` 作为采样间隔 | 采样间隔参数名与 tracker 复用，但模块各自读取，避免为了传参改动 tracker/Ldop 现有边界 |
+| 2026-05-14 | 预测结果和预测 marker 使用独立可配置话题 | 新增 `dynamic_predictions_topic` 和 `dynamic_prediction_markers_topic`，默认分别为 `/ldop/dynamic_object_predictions` 与 `/ldop/dynamic_prediction_markers` |
+| 2026-05-14 | predictor 返回帧级结果并由 `Ldop` 统一发布 | `DynamicObjectPredictorFrameResult` 包含预测消息、预测 marker 和 timing；`Ldop::processFrame()` 在 tracker 后调用，`publishFrame()` 统一发布 |
+| 2026-05-14 | predictor 输入按内部契约处理 | `TrackPredictionInput` 来自 tracker 内部稳定输出，不按外部不可信输入做重复兜底；状态维度等使用 assert 或明确契约表达 |
+| 2026-05-14 | 修改消息和 C++ 后至少执行 `catkin build ldop --no-status` | 新增 `msg` 会触发消息生成，构建验证是第一阶段实现后的最低验证范围 |
+| 2026-05-14 | 第一阶段采用独立 predictor 并复用 `MotionModel` | predictor 不复用 `KalmanFilterBase`，避免重新初始化协方差或混入 tracker 自适应/限幅语义；直接从输入状态和协方差做只读轨迹外推 |
+| 2026-05-14 | 未来传播使用运动模型基础 `Q` | 协方差初值来自 tracker 当前自适应后的 `model_covariance`，但未来传播新增过程噪声使用运动模型基础 `Q`，不读取 tracker filter 内部自适应噪声状态 |
+| 2026-05-14 | 设计规格文档已写入但不提交 | 仓库指令要求任务过程中不创建中间提交，除非任务完成且验证通过或用户明确要求 |
+| 2026-05-14 | 第一阶段轨迹外推实现计划已写入 | `docs/superpowers/plans/2026-05-14-dynamic-object-trajectory-prediction-implementation-plan.md` 已覆盖消息、共享运动模型构建、predictor、marker、测试、Ldop 集成和验证步骤 |
+| 2026-05-14 | 多轨迹概率分布分两步实现 | 先用航向/意图形成简化 GMM，再引入交互约束，降低一次性设计复杂度 |
+| 2026-05-14 | 闭环反馈放到第四阶段 | 需要先有预测输出和后续真实跟踪结果，才能可靠评估和更新概率 |
 
-## 已收口与后续阶段设计项
+## 待确认问题
 
-| 优先级 | 项 | 状态/结论 | 备注 |
-|--------|----|-----------|------|
-| P0 | 重复轨迹清理 | 已收口：第一版不做 `removeDuplicateTracks()` | 先暴露问题，不在主流程静默合并 |
-| P0 | Hungarian 实现细节 | 已收口：复刻 LDOT 当前简化语义 | 行/列归约后从零候选中按原始代价选不冲突匹配 |
-| P1 | 参数组织方式 | 已收口：`tracking_*` / `classification_*` 保持扁平，多模型 Kalman 参数使用 `kalman_filter/...` 分组 | 生命周期与分类参数便于快速调试，模型噪声和协方差按模型分组避免含义混杂 |
-| P1 | adaptive Q/R 公式 | 已收口：语义对齐 LDOT 当前 innovation-window + EMA 实现 | 不另设计新公式 |
-| P1 | 轨迹 history 内容 | 已更新：`TrackHistorySample = stamp + object_class + motion_model_type + model_state + model_covariance + matched` | 历史样本与当前 `DynamicObject.msg` 一致，保存模型原生状态和协方差 |
-| P2 | `/ldop/dynamic_track_markers` 细节 | 已更新：`LINE_STRIP` 历史线 + `SPHERE` 头部 + `TEXT_VIEW_FACING` 标签 | 标签显示 ID、类别和速度模长 |
-| P2 | `/ldop/dynamic_object_markers` 细节 | 已收口：沿用现有 clusterer 样式 | `dynamic_object_bbox` + `LINE_LIST` + 橙色线框 |
-| P2 | 未来预测消息 | 第三阶段设计项 | 第二阶段只输出当前跟踪状态，不把预测数组塞进 `DynamicObject.msg` |
-| P2 | 目标类别和多模型切换 | 已完成 | 当前第二阶段已经输出 `object_class` 和 `motion_model_type`，并在 tracker 内按类别执行 CA2D / CTRA / CA3D / CV3D 切换 |
+| 优先级 | 问题 | 默认建议 |
+|--------|------|----------|
+| 高 | 预测消息字段命名和结构 | 新增预测数组、目标预测、预测分支和预测采样点消息；预测分支保存行为族、归一化行为强度和概率，采样点保存相对时间、模型原生状态、模型原生协方差和规划影响权重 |
+| 高 | 预测 horizon 与采样间隔 | 默认 1.0 秒 horizon；采样间隔默认复用 `tracking_default_dt`，当前配置中为 0.1 秒 |
+| 中 | 轨迹外推单轨迹的不确定性传播方式 | 初版按当前运动模型状态和协方差做多步传播；消息保存完整模型协方差，marker 椭球大小从前三维位置协方差派生、透明度由 `influence_weight` 派生 |
+| 当前 | 代码实现顺序 | 按实现计划从新增消息与构建注册开始，再共享运动模型参数构建、实现 predictor、补 marker/test、最后接入 `Ldop` |
+| 后续 | 简化意图候选表达 | 后续用通用行为族和有符号参数表达候选预测分支，例如纵向加减速、垂向加减速、转向角速度变化；不继续使用 `BEHAVIOR_BASELINE` |
+| 后续 | 交互模型复杂度 | 先使用规则型几何约束，学习方法只作为后续扩展，不进入第三阶段首版实现 |
+
+## 沟通约束
+
+- 面向用户说明当前工作时，不用依赖过程文档的阶段简称；直接描述“轨迹外推单轨迹预测”“航向/意图多轨迹”“目标/地图交互预测”等具体内容。
 
 ## 错误记录
 
 | 时间 | 错误 | 处理 |
 |------|------|------|
-| 2026-04-24 | 一次 `rg` 检查命令的正则中包含未转义反引号，shell 误解释了片段 | 后续改用单引号或避免在 shell 正则中直接混用反引号；已重新用安全命令完成检查 |
-| 2026-04-25 | 一次读取 brainstorming skill 路径时命中文件不存在的旧缓存路径 | 直接回退到现有规划文件和仓库上下文继续，不影响设计文档收口 |
-| 2026-04-30 | 新增设计文档最初使用英文，违反 `AGENTS.md` 中“面向用户默认简体中文”的约定 | 已读取 `AGENTS.md` 并把 `docs/superpowers/specs/2026-04-30-dynamic-object-classification-multimodel-design.md` 全文改为中文，代码标识符和配置键保留英文 |
-| 2026-04-30 | 一次 `rg` 检查命令把反引号放在双引号正则里，shell 误执行了 `CA3D` 片段 | 已用单引号重跑检查；后续包含反引号的 shell 正则继续用单引号 |
-| 2026-04-30 | 第一次 `git diff --check` 在 `/home/st/ldop_ws` 执行，那里不是 git 仓库 | 已在 `/home/st/ldop_ws/src/LDOP` 重新执行，结果通过 |
+| 2026-05-14 | 默认沙箱缺少 `bwrap`，首次读取技能文件失败 | 已按审批流程以 escalated 方式读取本地文件并继续执行 |
+| 2026-05-14 | `apply_patch` 直接删除重建 `task_plan.md` 失败，且一次只改了文件标题 | 改用受控脚本整体重写三份规划记录和新安排文档；重写后继续做格式检查 |
+| 2026-05-14 | 记录低速目标决策时补丁上下文不匹配 | 重新读取相关段落后使用精确上下文更新规划文件 |
