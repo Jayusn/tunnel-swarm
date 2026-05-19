@@ -79,3 +79,19 @@
 - 新增测试 `test_dynamic_object_predictor`，验证 CV3D 模型的基线预测点生成和影响权重。
 - 构建验证通过：`catkin build ldop --no-status` 成功，测试二进制已编译（运行需要 ROS master）。
 - 新增配置：`prediction_horizon`、`dynamic_predictions_topic`、`dynamic_prediction_markers_topic`。
+
+## 2026-05-18 轨迹预测安排文档同步
+
+- 用户要求根据 `docs/note/2026-05-18_intent_prediction_trajectory_innovation.md` 和当前 LDOP 实现状态，修改 `docs/superpowers/plans/2026-05-14-dynamic-object-trajectory-prediction-arrangement.md`。
+- 已将安排文档从“P1 尚未实现”的旧状态更新为“P1 基础轨迹外推已实现”，并把下一步主线明确为“多分支 GMM + 历史航向/意图概率”。
+- 已把创新方案中的 trajectory-level GMM、MAP trajectory、交互能量、NIS 闭环概率/过程噪声反馈和多模态评估指标同步到安排文档。
+- 本轮只修改规划/进度文档，不修改 C++、ROS msg、launch 或构建配置。
+
+## 2026-05-19 P2 文档收口
+
+- 用户指出此前检查到的“不完整/需要同步”项都是后续已确认的设计改动，要求把相关文档全部更新。
+- 已按当前 P2 代码事实同步文档：P2 航向/意图 GMM 已实现，`BEHAVIOR_BASELINE` 已移除，RViz 只显示真实保留分支中心状态线，不再显示椭球或额外采样轨迹。
+- 已进一步补充分支语义：`prediction_max_branches` 和 `prediction_min_branch_probability` 作用在 GMM 分支/component 上；每个分支内部只有一条中心状态轨迹和对应协方差序列。
+- 已更新 `docs/superpowers/specs/2026-05-18-dynamic-object-intent-gmm-p2-design.md`、`docs/superpowers/plans/2026-05-18-dynamic-object-intent-gmm-p2-implementation-plan.md`、`docs/superpowers/plans/2026-05-14-dynamic-object-trajectory-prediction-arrangement.md` 和 `docs/note/2026-05-18_intent_prediction_trajectory_innovation.md`。
+- 已同步根目录规划记录：`task_plan.md` 标记航向/意图 GMM 阶段完成，`findings.md` 记录当前 P2 代码事实。
+- 进一步明确：删除的是仅用于可视化的额外采样轨迹，因为它没有实际规划或评估消费者；后续主线不默认恢复 sample marker 或 sample 消息字段。

@@ -48,6 +48,12 @@
 - `motion_model.cpp` 已经实现 `stateTransition()` / `getTransitionF()`，`multi_model_kalman_filter.cpp` 也明确 EKF 协方差传播要用预测前状态处的 CTRA 雅可比；轨迹外推单轨迹预测可以复用同一运动模型语义做多步预测和 `P' = FPF^T + Q`。
 - 当前 `CMakeLists.txt` 已有 `message_generation`、`geometry_msgs`、`std_msgs`、`visualization_msgs`，新增预测 `msg` 主要需要加入 `add_message_files()`；如果预测消息使用现有依赖，应无需新增 package 依赖。
 - 当前 `config/ldop.yaml` 参数按模块前缀组织；预测模块应新增 `prediction_*` 参数，保持默认值在 `DynamicObjectPredictorParams` 结构中集中声明，再由 `loadParameters()` 三参数形式读取。
+- P2 当前代码事实：
+  - `DynamicObjectPredictor` 已直接生成多条航向/意图预测分支，不再走旧单分支 fallback。
+  - `DynamicObjectPredictionBranch.msg` 已移除 `BEHAVIOR_BASELINE`，分支类型统一为纵向、垂向、转向和横向行为族。
+  - `config/ldop.yaml` 当前运行值为 `prediction_max_branches: 3`、`prediction_min_branch_probability: 0.05`；这两个参数都作用在 GMM 分支/component 层面，不作用在分支内的时间采样点或额外轨迹样本上。
+  - RViz 预测 marker 只保留 `dynamic_prediction_line`，一条 marker 对应一条真实保留的 GMM 分支；不生成协方差椭球或额外采样轨迹 marker。此前仅用于可视化的 sample marker 已删除，因为它没有实际规划或评估消费者。
+  - 当前 P2 测试重点覆盖 CV3D、CTRA、类别策略、概率归一化、分支发散、噪声放大和 marker 语义；CA2D/CA3D 通过共享 `MotionModel` 构建和包级构建覆盖。
 
 ## 用户给出的第三阶段思路
 
@@ -68,7 +74,7 @@
 ## 待核实内容
 
 - 已确认预测消息内部直接预留多预测分支结构；轨迹外推单轨迹阶段只填一条 `trajectory_extrapolation` 分支，概率为 1.0。这里的预测分支表示同一目标未来的一种候选走法，例如保持当前方向、轻微左偏或轻微右偏。
-- RViz 预测 marker 默认话题名已确定为 `/ldop/dynamic_prediction_markers`；样式为预测线加每个采样点的 1σ 位置协方差椭球，漏检延续目标降低透明度。
+- RViz 预测 marker 默认话题名已确定为 `/ldop/dynamic_prediction_markers`；当前 P2 样式为每条真实 GMM 分支一条中心状态轨迹线，漏检延续目标降低透明度。
 - 第四阶段闭环评估所需的真实轨迹缓存窗口和目标匹配策略尚未设计。
 
 ## 技术决策
@@ -101,6 +107,9 @@
 | 实现后至少构建验证 | 新增消息、C++ 模块和发布链路后必须执行 `catkin build ldop --no-status`；若实现测试再运行 `catkin run_tests ldop --no-status` 并查看结果 |
 | 第一阶段采用独立 predictor 并复用 `MotionModel` | 方案比复用 `KalmanFilterBase` 更适合纯预测输出：不重置协方差，不混入 tracker 自适应/限幅语义，也避免手写重复模型传播逻辑 |
 | 未来传播使用运动模型基础 `Q` | 协方差初值来自 tracker 当前自适应后的 `model_covariance`，未来传播新增过程噪声来自 `MotionModel::getProcessNoiseQ()`；当前不把 tracker filter 内部自适应 `process_noise_` 导出到 predictor |
+| P2 使用航向/意图 GMM 作为当前 predictor 主路径 | 当前分支由历史特征、类别策略和启发式 score 生成，softmax 后按概率阈值和最大分支数裁剪 |
+| P2 不再保留 `BEHAVIOR_BASELINE` | 所有预测分支都必须属于明确行为族；P1 基线消融通过分支数量和概率阈值控制 |
+| P2 不发布采样轨迹或椭球 marker | 当前可视化只表达真实保留分支中心状态线；仅用于可视化的 sample marker 没有实际使用价值，避免被误认为 planner-facing prediction |
 
 ## 错误与风险
 
@@ -113,7 +122,7 @@
 - 复用 tracker 的 `createKalmanFilter()` 做预测会重新初始化协方差并带入 adaptive/clamp 等 tracker 语义，不适合作为轨迹外推单轨迹的直接方案；更清晰的做法是 predictor 直接构建对应 `MotionModel`，从输入状态/协方差开始做只读外推。
 - 当前 `TrackPredictionInput` 不携带 tracker filter 的自适应 `Q/R` 内部状态。为了保持第一阶段接口简单，预测传播使用运动模型基础 `Q`；tracker 自适应估计对当前不确定性的影响已经体现在输入 `model_covariance` 初值里。
 - 预测分支类型如果直接枚举左/右/上/下/前/后，会把方向和行为族混在一起；更合适的是枚举行为族，并用有符号连续参数表达方向和强度，例如前进减速仍属于纵向行为族。
-- `BEHAVIOR_BASELINE` 不应成为后续长期混用的默认分支；后续分支应明确属于纵向、垂向、转向或横向等行为族。
+- `BEHAVIOR_BASELINE` 已从当前预测分支消息中移除；后续分支应明确属于纵向、垂向、转向或横向等行为族。
 - `behavior_value` 的范围固定为 `[-1.0, 1.0]`。纵向正值表示沿主要运动方向加速倾向，负值表示减速或反向趋势；垂向正负表示上升/下降；转向正负表示左右转向；横向正负表示相对当前航向的侧移方向。
 - 第一阶段轨迹外推实现计划文档已经生成，路径为 `docs/superpowers/plans/2026-05-14-dynamic-object-trajectory-prediction-implementation-plan.md`；当前事实不是计划缺失，而是根目录进度记录此前未同步到“实现计划已生成”的状态。
 

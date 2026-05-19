@@ -69,15 +69,3 @@
 ## 提交
 
 - 不在任务过程中创建中间提交；仅在任务完成且验证通过或用户明确要求时提交。
-
-## Superpower 工作流
-
-执行任务时，只要使用 `brainstorming`、`writing-plans`、`subagent-driven-development`、`executing-plans` 这四个技能中的任一个，就按以下顺序推进后续阶段：
-
-| 阶段 | 技能 | 触发时机 | 职责 |
-|------|------|---------|------|
-| 1 | `brainstorming` | Activates before writing code | Refines rough ideas through questions, explores alternatives, presents design in sections for validation. Saves design document. |
-| 2 | `writing-plans` | Activates with approved design | Breaks work into bite-sized tasks (2-5 minutes each). Every task has exact file paths, complete code, verification steps. |
-| 3 | `subagent-driven-development` 或 `executing-plans` | Activates with plan | Dispatches fresh subagent per task with two-stage review (spec compliance, then code quality), or executes in batches with human checkpoints. |
-| 4 | `test-driven-development` | Activates during implementation | Enforces RED-GREEN-REFACTOR: write failing test, watch it fail, write minimal code, watch it pass, commit. Deletes code written before tests. |
-| 5 | `requesting-code-review` | Activates between tasks | Reviews against plan, reports issues by severity. Critical issues block progress. |

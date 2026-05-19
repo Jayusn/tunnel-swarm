@@ -136,7 +136,7 @@ if(CATKIN_ENABLE_TESTING)
     target_link_libraries(test_dynamic_object_predictor
       ldop_core
       ${catkin_LIBRARIES}
-      gtest_main
+      gtest
     )
   endif()
 endif()
