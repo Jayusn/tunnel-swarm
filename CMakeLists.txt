@@ -92,6 +92,7 @@ add_library(ldop_core
   src/dynamic_object_clusterer.cpp
   src/dynamic_object_tracker.cpp
   src/dynamic_object_predictor.cpp
+  src/prediction_interaction_context.cpp
   src/motion_model.cpp
   src/multi_model_kalman_filter.cpp
   src/ufomap_mapper.cpp
@@ -134,6 +135,17 @@ if(CATKIN_ENABLE_TESTING)
   )
   if(TARGET test_dynamic_object_predictor)
     target_link_libraries(test_dynamic_object_predictor
+      ldop_core
+      ${catkin_LIBRARIES}
+      gtest
+    )
+  endif()
+
+  catkin_add_gtest(test_prediction_interaction_context
+    test/test_prediction_interaction_context.cpp
+  )
+  if(TARGET test_prediction_interaction_context)
+    target_link_libraries(test_prediction_interaction_context
       ldop_core
       ${catkin_LIBRARIES}
       gtest

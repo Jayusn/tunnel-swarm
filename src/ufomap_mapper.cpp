@@ -232,6 +232,24 @@ void appendCandidateNodes(const DufomapMapType& map,
   }
 }
 
+template <class Predicate>
+void appendLocalOccupiedNodes(const DufomapMapType& map,
+                              Predicate&& predicate,
+                              const std::size_t max_results,
+                              std::vector<UfomapLocalOccupiedNode>& nodes) {
+  for (const auto node : map.query(std::forward<Predicate>(predicate))) {
+    UfomapLocalOccupiedNode occupied_node;
+    occupied_node.center = map.center(node);
+    occupied_node.depth = node.depth();
+    occupied_node.voxel_size = map.size(node.depth());
+    occupied_node.hits = static_cast<std::uint32_t>(map.hits(node));
+    nodes.push_back(occupied_node);
+    if (max_results > 0U && nodes.size() >= max_results) {
+      return;
+    }
+  }
+}
+
 ExtractFinitePointsResult extractFinitePoints(const sensor_msgs::PointCloud2& cloud_msg) {
   ExtractFinitePointsResult result;
   result.points.reserve(static_cast<std::size_t>(cloud_msg.width) *
@@ -485,6 +503,7 @@ std::optional<UfomapNodeQueryResult> UfomapMapper::queryNode(const ufo::Point& p
   result.occupied = runtime.map.hits(node) > 0;
   result.center = runtime.map.center(node);
   result.depth = node.depth();
+  result.voxel_size = runtime.map.size(node.depth());
   return result;
 }
 
@@ -582,6 +601,27 @@ std::vector<UfomapCandidateNode> UfomapMapper::queryDynamicCandidates(
                          query.max_results, candidates);
   }
   return candidates;
+}
+
+std::vector<UfomapLocalOccupiedNode> UfomapMapper::queryLocalOccupied(
+    const UfomapLocalOccupiedQuery& query) const {
+  std::shared_lock<std::shared_mutex> lock(map_mutex_);
+  std::vector<UfomapLocalOccupiedNode> occupied_nodes;
+  const auto& runtime = runtimeLocked();
+
+  const auto leaf = ufo::pred::Leaf(query.depth);
+  const auto hits = ufo::pred::HitsMin(static_cast<ufo::count_t>(query.min_hits));
+  // P3 只需要静态占据证据；这里不叠加 label/SeenFree，避免把动态候选语义泄漏给规划侧。
+  if (query.intersects.empty()) {
+    appendLocalOccupiedNodes(runtime.map, leaf && hits, query.max_results, occupied_nodes);
+    return occupied_nodes;
+  }
+
+  appendLocalOccupiedNodes(runtime.map,
+                           leaf && hits && ufo::pred::Intersects(query.intersects),
+                           query.max_results,
+                           occupied_nodes);
+  return occupied_nodes;
 }
 
 }  // namespace ldopcore

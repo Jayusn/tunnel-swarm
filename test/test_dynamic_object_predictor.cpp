@@ -2,8 +2,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <ldop/dynamic_object_predictor.h>
+#include <optional>
 #include <ros/ros.h>
+#include <string>
 #include <vector>
 
 namespace ldopcore {
@@ -87,6 +90,63 @@ bool hasBehavior(const ldop::DynamicObjectPrediction& prediction,
                      prediction.branches.end(),
                      [&](const auto& branch) { return branch.behavior_type == behavior_type; });
 }
+
+class PredictorFakeMapQuery final : public PredictionMapQuery {
+ public:
+  bool available() const override { return available_; }
+
+  std::optional<PredictionMapNodeQuery> queryNode(
+      const Eigen::Vector3d& point) const override {
+    if (!isOccupied(point)) {
+      return std::nullopt;
+    }
+    PredictionMapNodeQuery node;
+    node.exists = true;
+    node.occupied = true;
+    node.center = point;
+    node.voxel_size = 0.2;
+    return node;
+  }
+
+  bool seenFree(const Eigen::Vector3d& /*point*/) const override {
+    return available_ && seen_free_;
+  }
+
+  std::vector<PredictionLocalOccupiedNode> queryLocalOccupied(
+      const Eigen::Vector3d& center,
+      double /*radius*/,
+      std::size_t /*max_results*/) const override {
+    if (!isOccupied(center)) {
+      if (available_ && near_node_enabled_) {
+        PredictionLocalOccupiedNode node;
+        node.center = center - Eigen::Vector3d(near_node_offset_, 0.0, 0.0);
+        node.voxel_size = 0.0;
+        node.hits = 1U;
+        return {node};
+      }
+      return {};
+    }
+    PredictionLocalOccupiedNode node;
+    node.center = center;
+    node.voxel_size = 0.2;
+    node.hits = 1U;
+    return {node};
+  }
+
+  bool available_{true};
+  bool occupied_node_enabled_{false};
+  bool near_node_enabled_{false};
+  bool seen_free_{false};
+  double occupied_min_x_{-std::numeric_limits<double>::infinity()};
+  double occupied_max_x_{std::numeric_limits<double>::infinity()};
+  double near_node_offset_{0.86};
+
+ private:
+  bool isOccupied(const Eigen::Vector3d& point) const {
+    return available_ && occupied_node_enabled_ &&
+           point.x() >= occupied_min_x_ && point.x() <= occupied_max_x_;
+  }
+};
 
 TEST(DynamicObjectPredictorTest, GeneratesBaselineCvPredictionPoints) {
   DynamicObjectPredictorConfig config;
@@ -470,6 +530,19 @@ double positionVarianceTrace(const ldop::DynamicObjectPredictionPoint& point) {
          point.model_covariance[2U * state_size + 2U];
 }
 
+double terminalPositionDistance(const ldop::DynamicObjectPredictionBranch& lhs,
+                                const ldop::DynamicObjectPredictionBranch& rhs) {
+  const auto& lhs_state = lhs.points.back().model_state;
+  const auto& rhs_state = rhs.points.back().model_state;
+  const double dx = lhs_state[0] - rhs_state[0];
+  const double dy = lhs_state[1] - rhs_state[1];
+  const double dz = lhs_state[2] - rhs_state[2];
+  return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+std::size_t countMarkersByNamespace(const visualization_msgs::MarkerArray& markers,
+                                    const std::string& marker_namespace);
+
 const ldop::DynamicObjectPredictionBranch* firstBranch(
     const ldop::DynamicObjectPrediction& prediction,
     const std::uint8_t behavior_type) {
@@ -479,6 +552,381 @@ const ldop::DynamicObjectPredictionBranch* firstBranch(
     }
   }
   return nullptr;
+}
+
+TEST(DynamicObjectPredictorTest, InteractionCorrectionKeepsFirstPredictedPointAnchored) {
+  DynamicObjectPredictorConfig baseline_config;
+  baseline_config.prediction_horizon = 0.5;
+  baseline_config.filter_config.default_dt = 0.1;
+  baseline_config.max_branches = 1U;
+  baseline_config.min_branch_probability = 0.0;
+  baseline_config.interaction_config.enabled = false;
+  DynamicObjectPredictor baseline_predictor(baseline_config);
+
+  DynamicObjectPredictorConfig interaction_config = baseline_config;
+  interaction_config.interaction_config.enabled = true;
+  interaction_config.interaction_config.pair_interaction_weight = 3.0;
+  interaction_config.interaction_config.map_interaction_weight = 0.0;
+  interaction_config.interaction_config.corridor_interaction_weight = 0.0;
+  interaction_config.interaction_config.max_correction_distance = 0.2;
+  DynamicObjectPredictor interaction_predictor(interaction_config);
+
+  TrackPredictionInput first = makeCvInput();
+  first.id = 31U;
+  first.object_class = ObjectClass::Other;
+  first.hits = 8U;
+  first.age = 8U;
+  appendCvLinearHistory(first, 170.0, 8, 1.0, 0.0);
+
+  TrackPredictionInput second = makeCvInput();
+  second.id = 32U;
+  second.object_class = ObjectClass::Other;
+  second.model_state(0) = 0.45;
+  second.model_state(3) = -1.0;
+  second.hits = 8U;
+  second.age = 8U;
+  appendCvLinearHistory(second, 170.0, 8, -1.0, 0.0);
+  for (auto& sample : second.history) {
+    sample.model_state(0) += 0.45;
+  }
+
+  std_msgs::Header header;
+  header.stamp = ros::Time(171.0);
+  header.frame_id = "map";
+  const auto baseline = baseline_predictor.predict(header, {first, second});
+  const auto interacted = interaction_predictor.predict(header, {first, second});
+
+  ASSERT_EQ(interacted.predictions_msg.predictions.size(),
+            baseline.predictions_msg.predictions.size());
+  EXPECT_GT(interacted.interaction_diagnostics.near_pair_branch_count, 0U);
+
+  for (std::size_t prediction_index = 0U;
+       prediction_index < baseline.predictions_msg.predictions.size();
+       ++prediction_index) {
+    const auto& baseline_branch =
+        baseline.predictions_msg.predictions[prediction_index].branches.front();
+    const auto& interacted_branch =
+        interacted.predictions_msg.predictions[prediction_index].branches.front();
+    ASSERT_EQ(interacted_branch.points.size(), baseline_branch.points.size());
+    ASSERT_FALSE(interacted_branch.points.empty());
+
+    // 交互修正只能改变未来局部趋势，不能把预测线的起点从当前目标附近整段平移出去。
+    for (std::size_t axis = 0U; axis < 3U; ++axis) {
+      EXPECT_NEAR(interacted_branch.points.front().model_state[axis],
+                  baseline_branch.points.front().model_state[axis],
+                  1e-9);
+    }
+    EXPECT_GT(terminalPositionDistance(interacted_branch, baseline_branch), 1e-6);
+  }
+}
+
+TEST(DynamicObjectPredictorTest, InteractionCorrectionRerolloutAvoidsLocalPositionKink) {
+  DynamicObjectPredictorConfig baseline_config;
+  baseline_config.prediction_horizon = 0.5;
+  baseline_config.filter_config.default_dt = 0.1;
+  baseline_config.max_branches = 1U;
+  baseline_config.interaction_config.enabled = false;
+  DynamicObjectPredictor baseline_predictor(baseline_config);
+
+  DynamicObjectPredictorConfig interaction_config = baseline_config;
+  interaction_config.interaction_config.enabled = true;
+  interaction_config.interaction_config.pair_interaction_weight = 0.0;
+  interaction_config.interaction_config.map_interaction_weight = 3.0;
+  interaction_config.interaction_config.corridor_interaction_weight = 0.0;
+  interaction_config.interaction_config.max_correction_distance = 0.2;
+  DynamicObjectPredictor interaction_predictor(interaction_config);
+
+  TrackPredictionInput input = makeCvInput();
+  input.id = 41U;
+  input.object_class = ObjectClass::Other;
+  input.hits = 8U;
+  input.age = 8U;
+  appendCvLinearHistory(input, 180.0, 8, 1.0, 0.0);
+
+  PredictorFakeMapQuery map;
+  map.occupied_node_enabled_ = true;
+  map.occupied_min_x_ = 0.29;
+  map.occupied_max_x_ = 0.31;
+
+  std_msgs::Header header;
+  header.stamp = ros::Time(181.0);
+  header.frame_id = "map";
+  const auto baseline = baseline_predictor.predict(header, {input});
+  const auto interaction = interaction_predictor.predict(header, {input}, &map);
+
+  ASSERT_EQ(baseline.predictions_msg.predictions.size(), 1U);
+  ASSERT_EQ(interaction.predictions_msg.predictions.size(), 1U);
+  const auto& baseline_branch = baseline.predictions_msg.predictions.front().branches.front();
+  const auto& interaction_branch =
+      interaction.predictions_msg.predictions.front().branches.front();
+  ASSERT_EQ(interaction_branch.points.size(), baseline_branch.points.size());
+  ASSERT_GE(interaction_branch.points.size(), 4U);
+  EXPECT_GT(interaction.interaction_diagnostics.colliding_branch_count, 0U);
+  EXPECT_GT(terminalPositionDistance(interaction_branch, baseline_branch), 0.0);
+
+  // 局部地图冲突只应该变成时间上平滑的控制量；planner-facing 中心轨迹不应出现
+  // 先前进、再后退、再前进的离散折返。
+  for (std::size_t point_index = 1U;
+       point_index < interaction_branch.points.size();
+       ++point_index) {
+    const double step_x =
+        interaction_branch.points[point_index].model_state[0] -
+        interaction_branch.points[point_index - 1U].model_state[0];
+    EXPECT_GT(step_x, 0.0);
+  }
+}
+
+TEST(DynamicObjectPredictorTest, InteractionContextKeepsBranchProbabilitiesNormalized) {
+  DynamicObjectPredictorConfig config;
+  config.prediction_horizon = 0.5;
+  config.filter_config.default_dt = 0.1;
+  config.max_branches = 6U;
+  config.min_branch_probability = 0.0;
+  config.interaction_config.enabled = true;
+  config.interaction_config.pair_interaction_weight = 3.0;
+  config.interaction_config.map_interaction_weight = 0.0;
+  config.interaction_config.corridor_interaction_weight = 0.0;
+  DynamicObjectPredictor predictor(config);
+
+  TrackPredictionInput first = makeCvInput();
+  first.id = 1U;
+  first.object_class = ObjectClass::Human;
+  first.hits = 8U;
+  first.age = 8U;
+  appendCvLinearHistory(first, 140.0, 8, 1.0, 0.0);
+
+  TrackPredictionInput second = makeCvInput();
+  second.id = 2U;
+  second.object_class = ObjectClass::Human;
+  second.model_state(0) = 0.45;
+  second.model_state(3) = -1.0;
+  second.hits = 8U;
+  second.age = 8U;
+  appendCvLinearHistory(second, 140.0, 8, -1.0, 0.0);
+  for (auto& sample : second.history) {
+    sample.model_state(0) += 0.45;
+  }
+
+  std_msgs::Header header;
+  header.stamp = ros::Time(141.0);
+  header.frame_id = "map";
+  const auto result = predictor.predict(header, {first, second});
+
+  ASSERT_EQ(result.predictions_msg.predictions.size(), 2U);
+  EXPECT_GT(result.interaction_diagnostics.near_pair_branch_count, 0U);
+  for (const auto& prediction : result.predictions_msg.predictions) {
+    ASSERT_FALSE(prediction.branches.empty());
+    EXPECT_NEAR(probabilitySum(prediction), 1.0, 1e-9);
+  }
+}
+
+TEST(DynamicObjectPredictorTest, InteractionFallbackUsesBestLogScaledBranch) {
+  DynamicObjectPredictorConfig config;
+  config.prediction_horizon = 0.5;
+  config.filter_config.default_dt = 0.1;
+  config.max_branches = 2U;
+  config.min_branch_probability = 0.0;
+  config.stop_speed = 1.0;
+  config.interaction_config.enabled = true;
+  config.interaction_config.pair_interaction_weight = 0.0;
+  config.interaction_config.map_interaction_weight = 1.0;
+  config.interaction_config.corridor_interaction_weight = 0.0;
+  config.interaction_config.interaction_energy_tau = 1.0e-9;
+  DynamicObjectPredictor predictor(config);
+
+  TrackPredictionInput input = makeCvInput();
+  input.object_class = ObjectClass::Human;
+  input.hits = 8U;
+  input.age = 8U;
+  appendCvLinearHistory(input, 145.0, 8, 1.0, 0.0);
+
+  PredictorFakeMapQuery map;
+  map.occupied_node_enabled_ = true;
+  map.near_node_enabled_ = true;
+  map.occupied_min_x_ = 0.32;
+
+  std_msgs::Header header;
+  header.stamp = ros::Time(146.0);
+  header.frame_id = "map";
+  const auto result = predictor.predict(header, {input}, &map);
+
+  ASSERT_EQ(result.predictions_msg.predictions.size(), 1U);
+  const auto& prediction = result.predictions_msg.predictions.front();
+  ASSERT_EQ(prediction.branches.size(), 2U);
+  ASSERT_FALSE(prediction.branches[0].points.empty());
+  ASSERT_FALSE(prediction.branches[1].points.empty());
+  EXPECT_EQ(prediction.branches[0].probability, 0.0);
+  EXPECT_EQ(prediction.branches[1].probability, 1.0);
+}
+
+TEST(DynamicObjectPredictorTest, InteractionContextDoesNotShrinkModelCovariance) {
+  DynamicObjectPredictorConfig baseline_config;
+  baseline_config.prediction_horizon = 0.5;
+  baseline_config.filter_config.default_dt = 0.1;
+  baseline_config.max_branches = 6U;
+  baseline_config.min_branch_probability = 0.0;
+  baseline_config.interaction_config.enabled = false;
+  DynamicObjectPredictor baseline_predictor(baseline_config);
+
+  DynamicObjectPredictorConfig interaction_config = baseline_config;
+  interaction_config.interaction_config.enabled = true;
+  interaction_config.interaction_config.pair_interaction_weight = 3.0;
+  interaction_config.interaction_config.map_interaction_weight = 0.0;
+  interaction_config.interaction_config.corridor_interaction_weight = 0.0;
+  DynamicObjectPredictor interaction_predictor(interaction_config);
+
+  TrackPredictionInput first = makeCvInput();
+  first.id = 11U;
+  first.object_class = ObjectClass::Human;
+  first.hits = 8U;
+  first.age = 8U;
+  appendCvLinearHistory(first, 150.0, 8, 1.0, 0.0);
+
+  TrackPredictionInput second = makeCvInput();
+  second.id = 12U;
+  second.object_class = ObjectClass::Human;
+  second.model_state(0) = 0.45;
+  second.model_state(3) = -1.0;
+  second.hits = 8U;
+  second.age = 8U;
+  appendCvLinearHistory(second, 150.0, 8, -1.0, 0.0);
+  for (auto& sample : second.history) {
+    sample.model_state(0) += 0.45;
+  }
+
+  std_msgs::Header header;
+  header.stamp = ros::Time(151.0);
+  header.frame_id = "map";
+  const auto baseline = baseline_predictor.predict(header, {first, second});
+  const auto interaction = interaction_predictor.predict(header, {first, second});
+
+  ASSERT_EQ(interaction.predictions_msg.predictions.size(),
+            baseline.predictions_msg.predictions.size());
+  for (std::size_t prediction_index = 0U;
+       prediction_index < baseline.predictions_msg.predictions.size();
+       ++prediction_index) {
+    const auto& baseline_prediction =
+        baseline.predictions_msg.predictions[prediction_index];
+    const auto& interaction_prediction =
+        interaction.predictions_msg.predictions[prediction_index];
+    ASSERT_EQ(interaction_prediction.branches.size(), baseline_prediction.branches.size());
+    for (std::size_t branch_index = 0U;
+         branch_index < baseline_prediction.branches.size();
+         ++branch_index) {
+      const auto& baseline_branch = baseline_prediction.branches[branch_index];
+      const auto& interaction_branch = interaction_prediction.branches[branch_index];
+      ASSERT_EQ(interaction_branch.points.size(), baseline_branch.points.size());
+      for (std::size_t point_index = 0U;
+           point_index < baseline_branch.points.size();
+           ++point_index) {
+        const auto& baseline_covariance =
+            baseline_branch.points[point_index].model_covariance;
+        const auto& interaction_covariance =
+            interaction_branch.points[point_index].model_covariance;
+        ASSERT_EQ(interaction_covariance.size(), baseline_covariance.size());
+        for (std::size_t value_index = 0U;
+             value_index < baseline_covariance.size();
+             ++value_index) {
+          EXPECT_NEAR(interaction_covariance[value_index],
+                      baseline_covariance[value_index],
+                      1e-12);
+        }
+      }
+    }
+  }
+}
+
+TEST(DynamicObjectPredictorTest, InteractionContextStillBuildsOnlyPredictionLineMarkers) {
+  DynamicObjectPredictorConfig config;
+  config.prediction_horizon = 0.3;
+  config.filter_config.default_dt = 0.1;
+  config.max_branches = 6U;
+  config.min_branch_probability = 0.0;
+  config.interaction_config.enabled = true;
+  config.interaction_config.pair_interaction_weight = 2.0;
+  DynamicObjectPredictor predictor(config);
+
+  TrackPredictionInput first = makeCvInput();
+  first.id = 21U;
+  first.object_class = ObjectClass::Human;
+  first.hits = 8U;
+  first.age = 8U;
+  appendCvLinearHistory(first, 160.0, 8, 1.0, 0.0);
+
+  TrackPredictionInput second = makeCvInput();
+  second.id = 22U;
+  second.object_class = ObjectClass::Human;
+  second.model_state(0) = 0.35;
+  second.model_state(3) = -1.0;
+  second.hits = 8U;
+  second.age = 8U;
+  appendCvLinearHistory(second, 160.0, 8, -1.0, 0.0);
+  for (auto& sample : second.history) {
+    sample.model_state(0) += 0.35;
+  }
+
+  std_msgs::Header header;
+  header.stamp = ros::Time(161.0);
+  header.frame_id = "map";
+  const auto result = predictor.predict(header, {first, second});
+
+  std::size_t branch_count = 0U;
+  for (const auto& prediction : result.predictions_msg.predictions) {
+    branch_count += prediction.branches.size();
+  }
+  EXPECT_EQ(countMarkersByNamespace(result.prediction_markers_msg, "dynamic_prediction_line"),
+            branch_count);
+  EXPECT_EQ(countMarkersByNamespace(result.prediction_markers_msg, "dynamic_prediction_samples"), 0U);
+  EXPECT_EQ(countMarkersByNamespace(result.prediction_markers_msg,
+                                    "dynamic_prediction_uncertainty"),
+            0U);
+}
+
+TEST(DynamicObjectPredictorTest, InteractionContextMapCorrectionStaysWithinLimit) {
+  DynamicObjectPredictorConfig baseline_config;
+  baseline_config.prediction_horizon = 0.3;
+  baseline_config.filter_config.default_dt = 0.1;
+  baseline_config.max_branches = 1U;
+  baseline_config.interaction_config.enabled = false;
+  DynamicObjectPredictor baseline_predictor(baseline_config);
+
+  DynamicObjectPredictorConfig interaction_config = baseline_config;
+  interaction_config.interaction_config.enabled = true;
+  interaction_config.interaction_config.pair_interaction_weight = 0.0;
+  interaction_config.interaction_config.map_interaction_weight = 3.0;
+  interaction_config.interaction_config.corridor_interaction_weight = 0.0;
+  interaction_config.interaction_config.max_correction_distance = 0.05;
+  DynamicObjectPredictor interaction_predictor(interaction_config);
+
+  TrackPredictionInput input = makeCvInput();
+  input.id = 31U;
+  input.object_class = ObjectClass::Other;
+  input.hits = 8U;
+  input.age = 8U;
+  appendCvLinearHistory(input, 170.0, 8, 1.0, 0.0);
+
+  PredictorFakeMapQuery map;
+  map.occupied_node_enabled_ = true;
+
+  std_msgs::Header header;
+  header.stamp = ros::Time(171.0);
+  header.frame_id = "map";
+  const auto baseline = baseline_predictor.predict(header, {input});
+  const auto interaction = interaction_predictor.predict(header, {input}, &map);
+
+  ASSERT_EQ(baseline.predictions_msg.predictions.size(), 1U);
+  ASSERT_EQ(interaction.predictions_msg.predictions.size(), 1U);
+  ASSERT_FALSE(baseline.predictions_msg.predictions.front().branches.empty());
+  ASSERT_FALSE(interaction.predictions_msg.predictions.front().branches.empty());
+  const auto& baseline_branch = baseline.predictions_msg.predictions.front().branches.front();
+  const auto& interaction_branch =
+      interaction.predictions_msg.predictions.front().branches.front();
+  ASSERT_FALSE(baseline_branch.points.empty());
+  ASSERT_FALSE(interaction_branch.points.empty());
+  EXPECT_GT(interaction.interaction_diagnostics.colliding_branch_count, 0U);
+  EXPECT_GT(terminalPositionDistance(interaction_branch, baseline_branch), 0.0);
+  EXPECT_LE(terminalPositionDistance(interaction_branch, baseline_branch),
+            interaction_config.interaction_config.max_correction_distance + 1e-9);
 }
 
 TEST(DynamicObjectPredictorTest, HypothesisBranchesCarryLargerFutureCovarianceThanKeep) {

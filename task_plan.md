@@ -7,12 +7,14 @@
 ## 当前状态
 
 - 当前阶段：规划记录已重置为第三阶段轨迹预测专用记录。
-- 本轮目标：按当前 P2 代码事实同步轨迹预测规格、实现计划、创新笔记和总安排文档，避免旧 P1/P2 表述继续误导后续实现。
+- 本轮目标：基于当前 P2 已完成事实，使用 brainstorming 细化 P3/P4 后续需求，并用规划文件持续记录第三阶段后续推进。
 - 已完成基础：第一阶段动静态点云分割与静态地图、第二阶段动态点云聚类检测跟踪均已完成。
 - 已有预测输入：`DynamicObjectTrackerFrameResult::prediction_inputs` 和 `TrackPredictionInput` 已在 tracker 内部预留，包含稳定目标 ID、类别、运动模型、模型原生状态及协方差、历史样本和生命周期信息。
 - 已有文档：P1 设计规格 `docs/superpowers/specs/2026-05-14-dynamic-object-trajectory-prediction-design.md`，P1 实现计划 `docs/superpowers/plans/2026-05-14-dynamic-object-trajectory-prediction-implementation-plan.md`，P2 设计规格 `docs/superpowers/specs/2026-05-18-dynamic-object-intent-gmm-p2-design.md`，P2 实现计划 `docs/superpowers/plans/2026-05-18-dynamic-object-intent-gmm-p2-implementation-plan.md`。
-- 已实现：独立 predictor 模块、预测消息、预测话题、预测 marker、轨迹外推单分支预测，以及航向/意图 GMM 多分支预测。
-- 尚未实现：目标间/目标-地图交互能量、闭环预测误差统计、NIS 校准和概率反馈。
+- P3 设计规格：`docs/superpowers/specs/2026-05-19-dynamic-object-interaction-aware-gmm-p3-design.md` 已写入并按地图查询/缓存边界完成整理。
+- P3 实现计划：`docs/superpowers/plans/2026-05-19-dynamic-object-interaction-aware-gmm-p3-implementation-plan.md` 已写入并完成代码落地。
+- 已实现：独立 predictor 模块、预测消息、预测话题、预测 marker、轨迹外推单分支预测、航向/意图 GMM 多分支预测，以及目标间/目标-静态地图交互感知重权重、分支级地图查询预算与平滑控制 rerollout。
+- 尚未实现：闭环预测误差统计、NIS 校准和概率反馈。
 - 安排文档：`docs/superpowers/plans/2026-05-14-dynamic-object-trajectory-prediction-arrangement.md`。
 
 ## 阶段
@@ -24,11 +26,13 @@
 | 3 | complete | 新建轨迹预测安排文档，明确四个实现阶段和当前实现进展 |
 | 4 | complete | 按已生成实现计划落地轨迹外推，输出单条中心预测轨迹 |
 | 5 | complete | 引入航向/意图，输出简化高斯混合多轨迹 |
-| 6 | pending | 引入目标间和目标-地图交互，输出完整高斯混合多轨迹 |
+| 6 | complete | 引入目标间和目标-地图交互，输出完整高斯混合多轨迹 |
 | 7 | pending | 建立闭环评估与概率反馈，按误差和不确定性更新各轨迹概率 |
 | 8 | complete | 预测模块完善：耗时打印 + 四元数归一化 |
 | 9 | complete | 根据 2026-05-18 创新方案和当前代码事实，同步更新第三阶段轨迹预测安排文档 |
 | 10 | complete | 根据当前 P2 实现收口，更新设计规格、实现计划、创新笔记、总安排和根规划记录 |
+| 11 | complete | 将 P3 交互轨迹修正从逐点位置改写改为平滑控制 profile 后重新 rollout |
+| 12 | complete | 将 P3 交互上下文地图/corridor 查询从逐点查询优化为分支级查询预算 |
 
 ## 实现阶段安排
 
@@ -79,6 +83,20 @@
 | 2026-05-19 | 当前 P2 不再保留 `BEHAVIOR_BASELINE` | 所有预测分支都使用纵向、垂向、转向或横向行为族；P1 基线消融用分支数量和概率阈值控制 |
 | 2026-05-19 | P2 RViz 只显示真实分支中心状态线 | 不再显示 P1 椭球或仅用于可视化的采样轨迹；sample marker 没有实际使用价值，且会让可视化输出和预测消息语义分离 |
 | 2026-05-19 | P2 分支裁剪参数作用在 GMM component 上 | `prediction_max_branches` 和 `prediction_min_branch_probability` 控制每目标保留多少预测分支；每个分支内部只有一条中心状态轨迹和对应协方差序列 |
+| 2026-05-19 | 继续第三阶段前先细化 P3/P4 需求 | P2 已完成并收口，后续涉及交互输入边界、地图查询、概率更新和评估缓存；这些会影响接口和验证范围，设计批准前不修改实现代码 |
+| 2026-05-19 | P3 首版同时纳入目标间交互和静态地图约束 | 用户选择目标间交互与 UFOMap 静态地图约束一起进入交互预测设计，后续需明确概率重权重和轨迹修正边界 |
+| 2026-05-19 | P3 交互作用范围采用“概率为主 + 轻量轨迹修正” | 保留 P2 分支运动模型语义，同时允许对明显穿障、过近或迎面冲突的分支做小幅避让、减速或贴合可通行空间修正 |
+| 2026-05-19 | P3 地图约束采用占据/近障碍软代价 + free corridor 方向先验 | 地图约束既要降低穿障和贴近障碍分支概率，也要用局部可通行方向引导轻量修正，而不是只做硬删除 |
+| 2026-05-19 | P3 交互上下文采用独立 `PredictionInteractionContext` 模块 | 该模块聚合目标间关系、UFOMap 静态约束、free corridor、分支交互代价和局部风险摘要，服务预测分支重权重和轻量修正，也为第四阶段类 ROG-Map/risk map builder 提供可复用证据；它本身不是最终 planner-facing 地图 |
+| 2026-05-19 | `PredictionInteractionContext` 输出 predictor 内容和内部诊断统计 | 输出分支交互/地图代价、总能量和轻量修正建议，同时保留每帧最大代价、穿障分支数、近碰撞分支数、free corridor 命中率等内部统计；首版不新增默认 ROS 诊断话题 |
+| 2026-05-19 | P3 参数采用中等粒度暴露 | 暴露总开关、目标间/地图权重、安全距离、近障碍距离、TTC 安全阈值、free corridor 查询半径、轻量修正最大位移/减速比例和能量温度 `tau`；不把每个公式细节都变成 YAML 参数 |
+| 2026-05-19 | P3 验证采用单元测试 + 包级构建/运行测试 | 构造交叉、迎面、穿障、近障碍和 free corridor 场景验证代价、概率重权重和轻量修正方向；执行 `catkin build`、`catkin run_tests` 和 `catkin_test_results`，并回归预测 marker 仍只表达真实分支线 |
+| 2026-05-19 | P3 采用独立上下文方案进入正式设计 | 在“直接扩展 predictor”“独立交互上下文”“提前做规划风险上下文雏形”三种方案中，确认采用独立 `PredictionInteractionContext`，避免 predictor 膨胀，并为第四阶段独立风险/规划地图构建保留清晰边界 |
+| 2026-05-19 | `PredictionInteractionContext` 需要服务第四阶段类 ROG-Map 构建 | 该模块作为 P3/P4 共享的场景证据层，输出分支风险等级、最近障碍距离、occupied overlap、free corridor 方向/置信度、最近目标距离和最小 TTC 等摘要；第四阶段 builder 再负责转换为 planner-facing 时间索引风险/局部地图 |
+| 2026-05-19 | P3 实现计划已写入 | 实现计划覆盖 `PredictionInteractionContext`、UFOMap 静态区域查询封装、predictor 重权重/轻量修正、`Ldop` adapter、YAML 参数和测试验证；按仓库规则不包含中间提交步骤 |
+| 2026-05-19 | P3 交互感知预测实现已落地并验证 | 已实现 `PredictionInteractionContext`、UFOMap 静态只读邻域查询、predictor 重权重/轻量修正、`Ldop` adapter、YAML 参数和回归测试；`catkin build`、`catkin run_tests` 和 `catkin_test_results` 均通过 |
+| 2026-05-20 | P3 交互均值轨迹修正改为平滑控制后重新 rollout | 保留 `PredictionInteractionContext` 的逐点风险证据，但 predictor 不再直接改写离散采样点位置，而是先平滑成速度/减速/方向控制 profile，再交给 motion model 重新积分，减少 planner-facing 轨迹折线尖角 |
+| 2026-05-20 | P3 地图/corridor 查询预算收敛到分支级 | map cost 每分支只做一次局部 occupied 查询，再在内存中逐点计算距离；corridor 每分支只做 8 个 seenFree 探针，避免 `points * directions` 查询爆炸 |
 
 ## 待确认问题
 
@@ -87,9 +105,16 @@
 | 已收口 | 预测消息字段命名和结构 | 当前预测数组、目标预测、预测分支和预测采样点消息已存在；P2 仅清理旧 `BEHAVIOR_BASELINE` 枚举，不新增 sample 字段 |
 | 高 | 预测 horizon 与采样间隔 | 默认 1.0 秒 horizon；采样间隔默认复用 `tracking_default_dt`，当前配置中为 0.1 秒 |
 | 已收口 | 轨迹外推单轨迹的不确定性传播方式 | 消息保存完整模型协方差；P2 当前不显示椭球，后续风险/评估可从前三维位置协方差派生不确定性视图 |
-| 当前 | 代码实现顺序 | 下一步优先收口 P3 目标间/地图交互设计，再实现 P4 预测缓存、评估指标和 NIS/概率反馈 |
+| 已收口 | 代码实现顺序 | 下一步按 P3 实现计划落地目标间/地图交互预测；P4 预测缓存、评估指标和 NIS/概率反馈仍保持后续阶段 |
 | 已收口 | 航向/意图候选表达 | 当前用通用行为族和有符号参数表达候选预测分支，例如纵向减速/停止、垂向爬升/下降、左右转向和横向偏移；不继续使用 `BEHAVIOR_BASELINE` |
-| 后续 | 交互模型复杂度 | 先使用规则型几何约束，学习方法只作为后续扩展，不进入第三阶段首版实现 |
+| 已收口 | 交互模型复杂度 | P3 首版同时使用目标间规则型几何交互和静态地图约束；学习方法只作为后续扩展，不进入第三阶段首版实现 |
+| 已收口 | P3 交互作用范围 | 以分支概率重权重为主，对明显冲突分支允许小幅修正中心轨迹；修正先转为时间平滑控制再重新 rollout，不让交互逻辑逐点替代运动模型 |
+| 已收口 | P3 地图约束策略 | 同时使用 UFOMap 占据/近障碍软惩罚和局部 free corridor 方向先验；不采用只做硬碰撞过滤的首版 |
+| 已收口 | P3 交互上下文接入方式 | 新建独立 `PredictionInteractionContext` 聚合交互/地图证据；predictor 消费上下文，第四阶段规划地图模块再消费预测结果，不依赖 predictor 内部 helper |
+| 已收口 | P3 交互上下文输出边界 | 给 predictor 的代价/修正建议和内部诊断统计都保留；诊断用于日志、测试和后续评估，不新增默认 ROS 话题 |
+| 已收口 | P3 参数暴露策略 | 采用中等粒度参数；必要可调项进入 `*Params` 默认值和 `loadParameters()`，公式内部常数保持实现内聚 |
+| 已收口 | P3 验证范围 | 单元测试覆盖交互/地图关键场景，加 `catkin build`、`catkin run_tests`、`catkin_test_results`；RViz 手工场景不作为完成硬门槛 |
+| 已收口 | P3 总体落地方案 | 采用独立 `PredictionInteractionContext`，predictor 消费上下文输出；不直接把地图查询和交互逻辑塞进 predictor |
 
 ## 沟通约束
 

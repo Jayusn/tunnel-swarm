@@ -3,8 +3,76 @@
 
 #include <algorithm>
 #include <chrono>
+#include <optional>
+#include <vector>
 
 namespace ldopcore {
+
+namespace {
+
+Eigen::Vector3d fromUfoPoint(const ufo::Point& point) {
+  return Eigen::Vector3d(point.x, point.y, point.z);
+}
+
+ufo::Point toUfoPoint(const Eigen::Vector3d& point) {
+  return ufo::Point(static_cast<float>(point.x()),
+                    static_cast<float>(point.y()),
+                    static_cast<float>(point.z()));
+}
+
+class UfomapPredictionMapQuery final : public PredictionMapQuery {
+ public:
+  explicit UfomapPredictionMapQuery(const UfomapMapper& mapper)
+      : mapper_(mapper) {}
+
+  bool available() const override { return true; }
+
+  std::optional<PredictionMapNodeQuery> queryNode(
+      const Eigen::Vector3d& point) const override {
+    const auto result = mapper_.queryNode(toUfoPoint(point));
+    if (!result.has_value()) {
+      return std::nullopt;
+    }
+
+    PredictionMapNodeQuery node;
+    node.exists = result->exists;
+    node.occupied = result->occupied;
+    node.center = fromUfoPoint(result->center);
+    node.voxel_size = result->voxel_size;
+    return node;
+  }
+
+  bool seenFree(const Eigen::Vector3d& point) const override {
+    return mapper_.seenFree(toUfoPoint(point));
+  }
+
+  std::vector<PredictionLocalOccupiedNode> queryLocalOccupied(
+      const Eigen::Vector3d& center,
+      const double radius,
+      const std::size_t max_results) const override {
+    UfomapLocalOccupiedQuery query;
+    query.min_hits = 1U;
+    query.max_results = max_results;
+    query.intersects.emplace_back(toUfoPoint(center), static_cast<float>(radius));
+
+    const auto occupied_nodes = mapper_.queryLocalOccupied(query);
+    std::vector<PredictionLocalOccupiedNode> converted_nodes;
+    converted_nodes.reserve(occupied_nodes.size());
+    for (const auto& occupied : occupied_nodes) {
+      PredictionLocalOccupiedNode converted;
+      converted.center = fromUfoPoint(occupied.center);
+      converted.voxel_size = occupied.voxel_size;
+      converted.hits = occupied.hits;
+      converted_nodes.push_back(converted);
+    }
+    return converted_nodes;
+  }
+
+ private:
+  const UfomapMapper& mapper_;
+};
+
+}  // namespace
 
 Ldop::Ldop(ros::NodeHandle& nh, ros::NodeHandle& pnh)
     : nh_(nh),
@@ -211,9 +279,11 @@ Ldop::ProcessedFrame Ldop::processFrame(const InputFrame& frame) {
   processed.dynamic_track_markers_msg = std::move(tracking_result.dynamic_track_markers_msg);
 
   // 轨迹预测：消费 tracker 的稳定输出，生成未来轨迹预测和可视化 marker。
+  UfomapPredictionMapQuery prediction_map_query(*ufomap_mapper_);
   DynamicObjectPredictorFrameResult prediction_result =
       dynamic_object_predictor_->predict(processed.dynamic_cloud_msg.header,
-                                         tracking_result.prediction_inputs);
+                                         tracking_result.prediction_inputs,
+                                         &prediction_map_query);
   processed.dynamic_predictions_msg = std::move(prediction_result.predictions_msg);
   processed.dynamic_prediction_markers_msg = std::move(prediction_result.prediction_markers_msg);
 

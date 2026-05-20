@@ -133,6 +133,7 @@ struct UfomapNodeQueryResult {
   bool occupied{false};
   ufo::Point center{};
   ufo::depth_t depth{0};
+  double voxel_size{0.0};
 };
 
 struct UfomapCandidateQuery {
@@ -151,6 +152,21 @@ struct UfomapCandidateNode {
   std::uint32_t hits{0};
   std::uint32_t label{0};
   bool seen_free{false};
+};
+
+struct UfomapLocalOccupiedQuery {
+  // depth=0 保持 UFOMap 叶子查询语义；P3 只读取静态占据证据，不混入动态 label 语义。
+  ufo::depth_t depth{0};
+  std::uint32_t min_hits{1};
+  std::size_t max_results{0};
+  std::vector<ufo::Sphere> intersects;
+};
+
+struct UfomapLocalOccupiedNode {
+  ufo::Point center{};
+  ufo::depth_t depth{0};
+  double voxel_size{0.0};
+  std::uint32_t hits{0};
 };
 
 class UfomapMapper {
@@ -173,6 +189,9 @@ class UfomapMapper {
   // 暴露 UFOMap 中 seenFree / label 等基础查询能力，供上层构建更高层逻辑。
   std::vector<UfomapCandidateNode> queryDynamicCandidates(
       const UfomapCandidateQuery& query) const;
+  // 中性静态占据邻域查询：P3 用它查询预测点膨胀半径内的 occupied/near obstacle。
+  std::vector<UfomapLocalOccupiedNode> queryLocalOccupied(
+      const UfomapLocalOccupiedQuery& query) const;
   UfomapFrameResult processInputCloud(const sensor_msgs::PointCloud2& cloud_msg,
                                       const nav_msgs::Odometry& odom_msg);
 

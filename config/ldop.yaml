@@ -61,6 +61,17 @@ prediction_lateral_speed: 0.4  # 横向避让意图使用的法向速度幅值
 prediction_vertical_speed: 0.3  # UAV 垂向意图使用的 z 速度幅值
 prediction_history_quality_noise_scale: 1.5  # 短历史/漏检/不稳定轨迹的未来噪声放大上限
 prediction_hypothesis_noise_scale: 1.3  # 假设性分支相对 keep 分支的未来噪声尺度
+prediction_enable_interaction_context: true  # 启用P3交互感知预测：目标间交互、静态地图约束和free corridor方向先验
+prediction_pair_interaction_weight: 1.0  # 目标间距离/TTC/交叉冲突代价权重
+prediction_map_interaction_weight: 1.0  # 静态occupied/near obstacle代价权重
+prediction_corridor_interaction_weight: 0.4  # free corridor方向先验权重
+prediction_interaction_safe_distance: 0.4  # 目标尺寸膨胀后的额外安全距离，单位m
+prediction_near_obstacle_distance: 0.6  # 静态障碍近邻软惩罚半径，单位m
+prediction_ttc_safe_time: 1.5  # TTC低于该值时提高迎面/交叉冲突惩罚，单位s
+prediction_free_corridor_query_radius: 1.2  # 局部free corridor方向估计采样半径，单位m
+prediction_max_correction_distance: 0.2  # 单个预测点均值位置最大修正距离，单位m
+prediction_max_deceleration_ratio: 0.35  # 单个预测点速度最大衰减比例
+prediction_interaction_energy_tau: 1.0  # 交互能量转概率缩放的温度参数
 
 # 动态目标类别分类参数
 classification_start_frame: 10  # 轨迹累计命中到该帧数后才开始给类别证据积分

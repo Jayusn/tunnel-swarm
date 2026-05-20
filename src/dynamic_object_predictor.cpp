@@ -5,6 +5,7 @@
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <numeric>
 
@@ -24,6 +25,10 @@ constexpr double kCoastingAlpha = 0.4;
 // 预测线宽沿用 tracker 历史线的量级，避免 MAP 分支在 RViz 中压过目标框和历史轨迹。
 constexpr double kPredictionLineWidth = 0.04;
 constexpr double kMinMarkerAlpha = 0.05;
+// 交互修正从当前目标状态向未来逐步生效，避免把整条轨迹刚体平移到离开当前目标的位置。
+constexpr double kCorrectionAnchorRampPoints = 2.0;
+// 交互控制在时间上做局部平滑，避免单个冲突采样点把 planner-facing 轨迹折成尖角。
+constexpr std::size_t kInteractionControlSmoothingRadius = 2U;
 
 // 影响权重：前半段保持 1.0，后半段线性衰减到 kMinInfluenceWeight。
 double computeInfluenceWeight(const double time_from_start,
@@ -131,6 +136,22 @@ struct PredictionMode {
   double score{0.0};
   double probability{0.0};
   double mode_uncertainty_scale{1.0};
+};
+
+struct BranchRolloutContext {
+  const TrackPredictionInput* input{nullptr};
+  MotionHistoryFeatures features;
+  std::vector<PredictionMode> modes;
+};
+
+struct SmoothInteractionControlSample {
+  Eigen::Vector3d position_offset{Eigen::Vector3d::Zero()};
+  double deceleration_ratio{0.0};
+  Eigen::Vector3d direction_bias{Eigen::Vector3d::Zero()};
+};
+
+struct SmoothInteractionControlProfile {
+  std::vector<SmoothInteractionControlSample> samples;
 };
 
 // 从运动模型状态中提取三维速度向量。
@@ -459,6 +480,15 @@ void setHorizontalVelocity(const MotionModelType model_type,
   }
 }
 
+double correctionAnchorScale(const std::size_t point_index) {
+  if (point_index == 0U) {
+    return 0.0;
+  }
+  return std::clamp(static_cast<double>(point_index) / kCorrectionAnchorRampPoints,
+                    0.0,
+                    1.0);
+}
+
 // 按模型类型设置垂直速度分量。
 void setVerticalVelocity(const MotionModelType model_type,
                          Eigen::VectorXd& state,
@@ -469,6 +499,195 @@ void setVerticalVelocity(const MotionModelType model_type,
   }
   if (model_type == MotionModelType::CA3D && state.size() >= 9) {
     state(8) = 0.0;
+  }
+}
+
+Eigen::Vector3d clampVectorNorm(const Eigen::Vector3d& vector,
+                                const double max_norm) {
+  if (max_norm <= 0.0) {
+    return Eigen::Vector3d::Zero();
+  }
+  const double norm = vector.norm();
+  if (norm <= max_norm || norm <= 1e-9) {
+    return vector;
+  }
+  return vector * (max_norm / norm);
+}
+
+double interactionSmoothingWeight(const std::size_t lhs,
+                                  const std::size_t rhs) {
+  const std::size_t distance = lhs > rhs ? lhs - rhs : rhs - lhs;
+  if (distance > kInteractionControlSmoothingRadius) {
+    return 0.0;
+  }
+  return static_cast<double>(kInteractionControlSmoothingRadius + 1U - distance);
+}
+
+SmoothInteractionControlProfile buildSmoothInteractionControlProfile(
+    const PredictionBranchInteraction& interaction,
+    const DynamicObjectPredictorConfig& config) {
+  SmoothInteractionControlProfile profile;
+  profile.samples.resize(interaction.point_correction_hints.size());
+
+  for (std::size_t point_index = 0U;
+       point_index < interaction.point_correction_hints.size();
+       ++point_index) {
+    double weight_sum = 0.0;
+    Eigen::Vector3d position_offset = Eigen::Vector3d::Zero();
+    double deceleration_ratio = 0.0;
+    Eigen::Vector3d direction_bias = Eigen::Vector3d::Zero();
+
+    for (std::size_t hint_index = 0U;
+         hint_index < interaction.point_correction_hints.size();
+         ++hint_index) {
+      const double weight = interactionSmoothingWeight(point_index, hint_index);
+      if (weight <= 0.0) {
+        continue;
+      }
+      weight_sum += weight;
+      const auto& hint = interaction.point_correction_hints[hint_index];
+      if (hint.has_position_offset) {
+        position_offset += weight * hint.position_offset;
+      }
+      if (hint.has_deceleration) {
+        deceleration_ratio += weight * hint.deceleration_ratio;
+      }
+      if (hint.has_direction_bias) {
+        direction_bias += weight * hint.direction_bias;
+      }
+    }
+
+    if (weight_sum <= 0.0) {
+      continue;
+    }
+
+    const double anchor_scale = correctionAnchorScale(point_index);
+    auto& sample = profile.samples[point_index];
+    sample.position_offset = clampVectorNorm(
+        anchor_scale * position_offset / weight_sum,
+        config.interaction_config.max_correction_distance);
+    sample.deceleration_ratio = std::clamp(
+        anchor_scale * deceleration_ratio / weight_sum,
+        0.0,
+        config.interaction_config.max_deceleration_ratio);
+    sample.direction_bias = clampVectorNorm(
+        anchor_scale * direction_bias / weight_sum,
+        1.0);
+  }
+
+  return profile;
+}
+
+bool hasInteractionControl(const SmoothInteractionControlProfile& profile) {
+  for (const auto& sample : profile.samples) {
+    if (sample.position_offset.squaredNorm() > 1e-12 ||
+        sample.deceleration_ratio > 1e-9 ||
+        sample.direction_bias.squaredNorm() > 1e-12) {
+      return true;
+    }
+  }
+  return false;
+}
+
+Eigen::Vector3d positionVelocityControlDelta(
+    const SmoothInteractionControlProfile& profile,
+    const std::size_t point_index,
+    const double dt) {
+  if (dt <= 0.0 || point_index >= profile.samples.size()) {
+    return Eigen::Vector3d::Zero();
+  }
+  const Eigen::Vector3d current_offset = profile.samples[point_index].position_offset;
+  const Eigen::Vector3d previous_offset =
+      point_index > 0U ? profile.samples[point_index - 1U].position_offset
+                       : Eigen::Vector3d::Zero();
+  const Eigen::Vector3d before_previous_offset =
+      point_index > 1U ? profile.samples[point_index - 2U].position_offset
+                       : Eigen::Vector3d::Zero();
+  const Eigen::Vector3d current_control_velocity =
+      (current_offset - previous_offset) / dt;
+  Eigen::Vector3d previous_control_velocity = Eigen::Vector3d::Zero();
+  if (point_index > 0U) {
+    previous_control_velocity = (previous_offset - before_previous_offset) / dt;
+  }
+  return current_control_velocity - previous_control_velocity;
+}
+
+void applySmoothInteractionControl(const SmoothInteractionControlProfile& profile,
+                                   const std::size_t point_index,
+                                   const double dt,
+                                   const MotionModelType model_type,
+                                   Eigen::VectorXd& state) {
+  if (point_index >= profile.samples.size()) {
+    return;
+  }
+
+  Eigen::Vector3d velocity = velocityFromState(model_type, state);
+  // 位置 hint 先转成速度控制的变化量，让模型积分生成平滑中心轨迹，而不是逐点改写位置。
+  velocity += positionVelocityControlDelta(profile, point_index, dt);
+
+  const double current_ratio = profile.samples[point_index].deceleration_ratio;
+  const double previous_ratio =
+      point_index > 0U ? profile.samples[point_index - 1U].deceleration_ratio : 0.0;
+  const double current_scale = std::max(0.0, 1.0 - current_ratio);
+  const double previous_scale = std::max(1e-6, 1.0 - previous_ratio);
+  velocity.head<2>() *= current_scale / previous_scale;
+
+  const Eigen::Vector2d bias(profile.samples[point_index].direction_bias.x(),
+                             profile.samples[point_index].direction_bias.y());
+  Eigen::Vector2d horizontal_velocity(velocity.x(), velocity.y());
+  const double speed = horizontal_velocity.norm();
+  if (speed > 1e-9 && bias.norm() > 1e-9) {
+    const Eigen::Vector2d biased_direction = horizontal_velocity.normalized() + bias;
+    if (biased_direction.norm() > 1e-9) {
+      horizontal_velocity = biased_direction.normalized() * speed;
+    }
+  }
+
+  setHorizontalVelocity(model_type, state, horizontal_velocity);
+  setVerticalVelocity(model_type, state, velocity.z());
+}
+
+std::size_t maxPriorProbabilityBranchIndex(
+    const ldop::DynamicObjectPrediction& prediction) {
+  std::size_t best_index = 0U;
+  double best_probability = -std::numeric_limits<double>::infinity();
+  for (std::size_t index = 0U; index < prediction.branches.size(); ++index) {
+    const double probability = prediction.branches[index].probability;
+    if (std::isfinite(probability) && probability > best_probability) {
+      best_probability = probability;
+      best_index = index;
+    }
+  }
+  return best_index;
+}
+
+void renormalizeBranchProbabilities(ldop::DynamicObjectPrediction& prediction,
+                                    const std::size_t fallback_index) {
+  if (prediction.branches.empty()) {
+    return;
+  }
+
+  double probability_sum = 0.0;
+  for (auto& branch : prediction.branches) {
+    if (!std::isfinite(branch.probability) || branch.probability < 0.0) {
+      branch.probability = 0.0;
+    }
+    probability_sum += branch.probability;
+  }
+
+  if (probability_sum > 1e-12 && std::isfinite(probability_sum)) {
+    for (auto& branch : prediction.branches) {
+      branch.probability /= probability_sum;
+    }
+    return;
+  }
+
+  // 极端缩放下仍保留一个明确 MAP 分支，避免下游收到全零或 NaN 的 GMM 权重。
+  const std::size_t clamped_fallback_index =
+      std::min(fallback_index, prediction.branches.size() - 1U);
+  for (std::size_t index = 0U; index < prediction.branches.size(); ++index) {
+    prediction.branches[index].probability =
+        index == clamped_fallback_index ? 1.0 : 0.0;
   }
 }
 
@@ -537,12 +756,13 @@ void applyModeControl(const PredictionMode& mode,
   }
 }
 
-// 按给定模式滚出一条预测分支；每步传播前根据模式类型对状态施加控制修正。
+// 按给定模式滚出一条预测分支；每步传播前根据模式类型和可选交互控制修正状态。
 ldop::DynamicObjectPredictionBranch rollOutMode(
     const TrackPredictionInput& input,
     const PredictionMode& mode,
     const MotionHistoryFeatures& features,
-    const DynamicObjectPredictorConfig& config) {
+    const DynamicObjectPredictorConfig& config,
+    const SmoothInteractionControlProfile* interaction_control = nullptr) {
   std::shared_ptr<MotionModel> model =
       createMotionModel(input.motion_model_type, config.filter_config);
   model->setDt(config.filter_config.default_dt);
@@ -558,10 +778,18 @@ ldop::DynamicObjectPredictionBranch rollOutMode(
   branch.behavior_value = mode.behavior_value;
   branch.probability = mode.probability;
 
+  std::size_t point_index = 0U;
   for (double elapsed = config.filter_config.default_dt;
        elapsed <= config.prediction_horizon + kTimeEpsilon;
-       elapsed += config.filter_config.default_dt) {
+       elapsed += config.filter_config.default_dt, ++point_index) {
     applyModeControl(mode, features, config, config.filter_config.default_dt, input.motion_model_type, state);
+    if (interaction_control != nullptr) {
+      applySmoothInteractionControl(*interaction_control,
+                                    point_index,
+                                    config.filter_config.default_dt,
+                                    input.motion_model_type,
+                                    state);
+    }
     const Eigen::VectorXd previous_state = state;
     const Eigen::MatrixXd transition = model->getTransitionF(previous_state);
     state = model->stateTransition(previous_state);
@@ -581,6 +809,67 @@ ldop::DynamicObjectPredictionBranch rollOutMode(
   }
 
   return branch;
+}
+
+void applyInteractionResult(const PredictionInteractionResult& interaction_result,
+                            const DynamicObjectPredictorConfig& config,
+                            const std::vector<BranchRolloutContext>& rollout_contexts,
+                            ldop::DynamicObjectPredictionArray& predictions) {
+  const double interaction_tau =
+      config.interaction_config.interaction_energy_tau > 0.0
+          ? config.interaction_config.interaction_energy_tau
+          : 1.0;
+  const std::size_t prediction_count = std::min(
+      {predictions.predictions.size(),
+       interaction_result.interactions_by_prediction.size(),
+       rollout_contexts.size()});
+  for (std::size_t prediction_index = 0U;
+       prediction_index < prediction_count;
+       ++prediction_index) {
+    auto& prediction = predictions.predictions[prediction_index];
+    const auto& interactions =
+        interaction_result.interactions_by_prediction[prediction_index];
+    const auto& rollout_context = rollout_contexts[prediction_index];
+    const std::size_t branch_count =
+        std::min({prediction.branches.size(),
+                  interactions.size(),
+                  rollout_context.modes.size()});
+    const std::size_t prior_fallback_index = maxPriorProbabilityBranchIndex(prediction);
+    std::size_t fallback_index = prior_fallback_index;
+    double best_log_score = -std::numeric_limits<double>::infinity();
+
+    for (std::size_t branch_index = 0U; branch_index < branch_count; ++branch_index) {
+      auto& branch = prediction.branches[branch_index];
+      const auto& interaction = interactions[branch_index];
+      const double prior_probability = branch.probability;
+      if (prior_probability > 0.0 && std::isfinite(prior_probability) &&
+          std::isfinite(interaction.total_energy)) {
+        // fallback 必须基于缩放前的 log 权重判断；直接用 total_energy/tau 可覆盖
+        // probability_scale 本身下溢为 0 的极端情况。
+        const double log_score =
+            std::log(prior_probability) - interaction.total_energy / interaction_tau;
+        if (log_score > best_log_score) {
+          best_log_score = log_score;
+          fallback_index = branch_index;
+        }
+      }
+
+      const double scaled_probability = branch.probability * interaction.probability_scale;
+      const SmoothInteractionControlProfile control_profile =
+          buildSmoothInteractionControlProfile(interaction, config);
+      if (rollout_context.input != nullptr && hasInteractionControl(control_profile)) {
+        // 交互修正先变成平滑控制 profile，再交回运动模型积分。这样 planner-facing
+        // 均值轨迹仍是模型 rollout 结果，而不是互不连续的逐点位置改写。
+        branch = rollOutMode(*rollout_context.input,
+                             rollout_context.modes[branch_index],
+                             rollout_context.features,
+                             config,
+                             &control_profile);
+      }
+      branch.probability = scaled_probability;
+    }
+    renormalizeBranchProbabilities(prediction, fallback_index);
+  }
 }
 
 }  // namespace
@@ -617,6 +906,7 @@ DynamicObjectPredictorConfig buildPredictorConfig(
       params.hypothesis_noise_scale >= 1.0 ? params.hypothesis_noise_scale
                                            : defaults.hypothesis_noise_scale;
   config.filter_config = buildMultiModelKalmanFilterConfig(params.filter);
+  config.interaction_config = buildPredictionInteractionConfig(params.interaction);
   return config;
 }
 
@@ -654,6 +944,39 @@ void DynamicObjectPredictor::loadParameters() {
   pnh_.param("prediction_hypothesis_noise_scale",
              params_.hypothesis_noise_scale,
              defaults.hypothesis_noise_scale);
+  pnh_.param("prediction_enable_interaction_context",
+             params_.interaction.enabled,
+             defaults.interaction.enabled);
+  pnh_.param("prediction_pair_interaction_weight",
+             params_.interaction.pair_interaction_weight,
+             defaults.interaction.pair_interaction_weight);
+  pnh_.param("prediction_map_interaction_weight",
+             params_.interaction.map_interaction_weight,
+             defaults.interaction.map_interaction_weight);
+  pnh_.param("prediction_corridor_interaction_weight",
+             params_.interaction.corridor_interaction_weight,
+             defaults.interaction.corridor_interaction_weight);
+  pnh_.param("prediction_interaction_safe_distance",
+             params_.interaction.interaction_safe_distance,
+             defaults.interaction.interaction_safe_distance);
+  pnh_.param("prediction_near_obstacle_distance",
+             params_.interaction.near_obstacle_distance,
+             defaults.interaction.near_obstacle_distance);
+  pnh_.param("prediction_ttc_safe_time",
+             params_.interaction.ttc_safe_time,
+             defaults.interaction.ttc_safe_time);
+  pnh_.param("prediction_free_corridor_query_radius",
+             params_.interaction.free_corridor_query_radius,
+             defaults.interaction.free_corridor_query_radius);
+  pnh_.param("prediction_max_correction_distance",
+             params_.interaction.max_correction_distance,
+             defaults.interaction.max_correction_distance);
+  pnh_.param("prediction_max_deceleration_ratio",
+             params_.interaction.max_deceleration_ratio,
+             defaults.interaction.max_deceleration_ratio);
+  pnh_.param("prediction_interaction_energy_tau",
+             params_.interaction.interaction_energy_tau,
+             defaults.interaction.interaction_energy_tau);
   pnh_.param("tracking_default_dt", params_.filter.default_dt, defaults.filter.default_dt);
   pnh_.param("kalman_filter/adaptive_window_size", params_.filter.adaptive_window_size, defaults.filter.adaptive_window_size);
   pnh_.param("kalman_filter/adaptive_alpha", params_.filter.adaptive_alpha, defaults.filter.adaptive_alpha);
@@ -681,11 +1004,14 @@ void DynamicObjectPredictor::loadParameters() {
 
 DynamicObjectPredictorFrameResult DynamicObjectPredictor::predict(
     const std_msgs::Header& header,
-    const std::vector<TrackPredictionInput>& inputs) const {
+    const std::vector<TrackPredictionInput>& inputs,
+    const PredictionMapQuery* map_query) const {
   const auto total_start = std::chrono::steady_clock::now();
   DynamicObjectPredictorFrameResult result;
   result.predictions_msg.header = header;
   result.predictions_msg.predictions.reserve(inputs.size());
+  std::vector<BranchRolloutContext> rollout_contexts;
+  rollout_contexts.reserve(inputs.size());
 
   for (const TrackPredictionInput& input : inputs) {
     ldop::DynamicObjectPrediction prediction;
@@ -696,18 +1022,35 @@ DynamicObjectPredictorFrameResult DynamicObjectPredictor::predict(
     prediction.matched_in_current_frame = input.matched_in_current_frame;
 
     // GMM 意图分支路径：提取历史特征，生成多模式假设，逐模式滚出分支。
-    const MotionHistoryFeatures features = estimateHistoryFeatures(input, config_);
-    const std::vector<PredictionMode> modes = generatePredictionModes(input, features, config_);
+    BranchRolloutContext rollout_context;
+    rollout_context.input = &input;
+    rollout_context.features = estimateHistoryFeatures(input, config_);
+    rollout_context.modes = generatePredictionModes(input, rollout_context.features, config_);
 
-    for (const PredictionMode& mode : modes) {
-      prediction.branches.push_back(rollOutMode(input, mode, features, config_));
+    for (const PredictionMode& mode : rollout_context.modes) {
+      prediction.branches.push_back(
+          rollOutMode(input, mode, rollout_context.features, config_));
     }
 
     result.predictions_msg.predictions.push_back(std::move(prediction));
+    rollout_contexts.push_back(std::move(rollout_context));
   }
 
   result.timing.predict_dynamic_objects_ms =
       elapsedMs(total_start, std::chrono::steady_clock::now());
+
+  if (config_.interaction_config.enabled && !result.predictions_msg.predictions.empty()) {
+    const auto interaction_start = std::chrono::steady_clock::now();
+    // P3 交互先重标定分支概率，再把局部修正证据转为平滑控制并重新 rollout；
+    // 协方差继续由 motion model rollout 负责，不因交互代价被人为缩小。
+    PredictionInteractionContext context(config_.interaction_config);
+    const PredictionInteractionResult interaction_result =
+        context.evaluate(header, inputs, result.predictions_msg, map_query);
+    applyInteractionResult(interaction_result, config_, rollout_contexts, result.predictions_msg);
+    result.interaction_diagnostics = interaction_result.diagnostics;
+    result.timing.apply_interaction_context_ms =
+        elapsedMs(interaction_start, std::chrono::steady_clock::now());
+  }
 
   // 构建预测可视化 marker。
   const auto marker_start = std::chrono::steady_clock::now();
@@ -723,6 +1066,8 @@ DynamicObjectPredictorFrameResult DynamicObjectPredictor::predict(
                                        << formatFloatMs(result.timing.predict_total_ms)
                                        << "ms, predictDynamicObjects="
                                        << formatFloatMs(result.timing.predict_dynamic_objects_ms)
+                                       << "ms, applyInteractionContext="
+                                       << formatFloatMs(result.timing.apply_interaction_context_ms)
                                        << "ms, buildPredictionMarkers="
                                        << formatFloatMs(result.timing.build_prediction_markers_ms)
                                        << "ms, inputs=" << inputs.size()

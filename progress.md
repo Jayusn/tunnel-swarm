@@ -95,3 +95,93 @@
 - 已更新 `docs/superpowers/specs/2026-05-18-dynamic-object-intent-gmm-p2-design.md`、`docs/superpowers/plans/2026-05-18-dynamic-object-intent-gmm-p2-implementation-plan.md`、`docs/superpowers/plans/2026-05-14-dynamic-object-trajectory-prediction-arrangement.md` 和 `docs/note/2026-05-18_intent_prediction_trajectory_innovation.md`。
 - 已同步根目录规划记录：`task_plan.md` 标记航向/意图 GMM 阶段完成，`findings.md` 记录当前 P2 代码事实。
 - 进一步明确：删除的是仅用于可视化的额外采样轨迹，因为它没有实际规划或评估消费者；后续主线不默认恢复 sample marker 或 sample 消息字段。
+
+## 2026-05-19 P3/P4 需求细化启动
+
+- 用户要求继续完成 LDOP 第三阶段，并明确先使用 `superpowers:brainstorming` 细化需求，再用 `planning-with-files-zh` 记录规划进展。
+- 已读取两个技能说明，确认 brainstorming 的硬门槛：设计获得用户批准前不修改 C++、ROS msg、配置或构建脚本等实现内容。
+- 已恢复 `task_plan.md`、`findings.md`、`progress.md`，并运行 `session-catchup.py`；当前没有未同步恢复输出。
+- 已阅读第三阶段安排文档、2026-05-18 创新方案、P2 设计规格、P2 实现计划、predictor 头文件/实现、`ldop.yaml`、最近提交和工作区状态。
+- 当前判断：P1 轨迹外推和 P2 航向/意图 GMM 已完成；本轮应细化 P3 目标间/目标-地图交互预测和 P4 闭环评估/概率反馈的边界。
+- 已把 `task_plan.md` 的阶段 6 标记为 `in_progress`，并在 `findings.md` 记录 P3/P4 相关代码事实。
+- 已补读 `DynamicObjectPredictor` 主流程、预测消息、`Ldop::processFrame()` 和 `UfomapMapper` 查询接口；确认 P3 的接口关键是如何把只读交互/地图上下文接入 predictor，而不是修改 tracker 输出或预测消息主结构。
+- 已记录：现有预测消息可继续承载重权重后的 branch-level GMM；interaction cost、NIS、评估指标等诊断信息不应默认塞进 planner-facing prediction message。
+- 用户选择 P3 首版范围为“目标间交互 + 静态地图约束”同时进入设计。
+- 已同步 `task_plan.md` 决策记录和 `findings.md` 本轮用户选择；下一步需要确认交互首版只调概率，还是也允许轻量修正分支中心轨迹。
+- 用户选择 P3 交互作用范围为“概率为主，允许轻量修正”：先做分支概率重权重，对明显穿障、过近或迎面冲突分支允许小幅避让、减速或贴合可通行空间修正。
+- 已更新 `task_plan.md` 和 `findings.md`，把相关“待确认”措辞改为已确认决策。
+- 用户选择 P3 静态地图约束策略为“占据/近障碍惩罚 + 局部 free corridor 方向先验”。
+- 已同步 `task_plan.md` 和 `findings.md`，记录地图约束不是只做硬碰撞过滤，而是软代价与可通行方向引导并用。
+- 用户确认 P3 交互上下文采用独立 `PredictionInteractionContext` 模块，并要求说明它与第四阶段类 ROG-Map 规划地图构建的关系。
+- 已同步 `task_plan.md` 和 `findings.md`：`PredictionInteractionContext` 聚合目标间/地图/free corridor 约束证据并服务 predictor；它不是第四阶段 planner-facing 地图，后续类 ROG-Map 风险/局部地图 builder 应独立消费预测结果和风险摘要。
+- 用户选择 `PredictionInteractionContext` 输出边界为“predictor 内容 + 内部诊断统计”，不默认新增 ROS 诊断话题。
+- 已同步 `task_plan.md` 和 `findings.md`：上下文输出分支代价、总能量和轻量修正建议，同时保留最大交互代价、穿障分支数、近碰撞分支数、free corridor 命中率等内部统计。
+- 用户选择 P3 参数暴露策略为中等粒度：额外暴露 TTC 安全阈值、free corridor 查询半径、轻量修正最大位移/减速比例、能量温度 `tau` 等关键调参项。
+- 已同步 `task_plan.md` 和 `findings.md`：参数集中写入对应 `*Params` 默认值并经 `loadParameters()` 导入，公式内部细节不全部暴露到 YAML。
+- 用户选择 P3 验证范围为“单元测试 + 包级构建/运行测试”：覆盖交叉、迎面、穿障、近障碍、free corridor 场景，并执行 `catkin build`、`catkin run_tests` 和 `catkin_test_results`。
+- 已同步 `task_plan.md` 和 `findings.md`：P3 需要回归预测 marker 仍只是真实 GMM 分支中心状态线，不恢复 sample marker，也不把 RViz 手工场景作为完成硬门槛。
+- 用户确认 P3 在三种落地方式中采用独立 `PredictionInteractionContext` 方案。
+- 已同步 `task_plan.md` 和 `findings.md`：正式设计从独立上下文方案展开，避免直接扩展 predictor 或过早引入第四阶段规划风险地图雏形。
+- 用户确认 P3 架构边界：`PredictionInteractionContext` 位于 tracker/P2 candidate branches 与 predictor 重权重之间，作为预测阶段交互/地图约束上下文；第四阶段类 ROG-Map/risk map builder 独立消费预测结果，不依赖 predictor 内部 helper。
+- 用户确认 P3 组件与数据结构：新增 `prediction_interaction_context` 小模块，使用内部 C++ 结构表达参数、每分支交互结果、轻量修正建议和内部诊断统计，不新增 ROS msg 或默认诊断话题。
+- 用户确认 P3 交互能量与轻量修正规则：总能量由目标间代价、地图占据/近障碍代价和 free corridor 方向代价组成；概率按 `exp(-energy/tau)` 重权重，高风险分支允许受上限约束的小幅推离、减速或朝可通行方向偏置，协方差不人为缩小。
+- 用户确认 P3 数据流和边界处理：predictor 先生成 P2 candidate branches，`PredictionInteractionContext` 做交互/地图评估，再由 predictor 应用概率缩放、轻量修正和目标内归一化；地图查询通过只读 adapter 隔离 UFOMap 类型，缺图或查询失败时退化为只用目标间交互。
+- 用户询问 P3 地图查询是否使用 UFOMap 接口、是否需要缓存地图；已明确设计为通过 `UfomapMapper` 只读查询 adapter 访问 UFOMap，不缓存完整地图，只在单帧上下文内缓存局部查询结果。
+- 用户进一步指出地图查询策略应说明为什么由 `Ldop` 或上层构造 adapter，而不是 `PredictionInteractionContext` 自己构建，并明确不同场景使用哪些 UFOMap 查询函数。
+- 已更新 P3 设计规格：`PredictionInteractionContext` 定义抽象查询语义和单帧局部缓存；`Ldop`/上层注入 concrete adapter；`queryNode()` 用于占据判断，`seenFree()` 用于 free/corridor 采样，近障碍邻域查询应新增中性只读区域查询封装，写接口不用于 P3。
+- 用户进一步说明新增 `PredictionInteractionContext` 也要给 LDOP 第四阶段类 ROG-Map 地图构建使用；已补充设计边界：该模块作为 P3/P4 共享场景证据层，输出局部风险摘要，第四阶段独立 builder 再转换为 planner-facing 时间索引风险/局部地图。
+- 用户指出 UFOMap 有区域查询接口，且动态体素查询不适合判断预测点膨胀半径内的动态障碍；已澄清设计：静态近障碍使用 UFOMap 区域查询封装，动态目标风险使用 tracker/P2 预测分支和目标尺寸，不从 UFOMap 动态体素反推未来动态风险。
+- 用户询问“地图查询与缓存策略”是否需要整理；已将该节整理为职责边界、查询接口选择、静态/动态来源分离、单帧局部缓存和性能扩展五个小节，不改变已确认设计结论。
+- 用户确认 P3 测试与验证设计：`PredictionInteractionContext` 纯单元测试覆盖交叉、迎面、追随、穿障、近障碍、free corridor 和地图不可用；predictor 集成测试覆盖概率归一化、极端惩罚、修正上限、marker 语义和协方差不缩小；最终执行 catkin 构建和测试。
+- 已写入 P3 设计规格：`docs/superpowers/specs/2026-05-19-dynamic-object-interaction-aware-gmm-p3-design.md`。
+- 已自审 P3 设计规格：精确占位词扫描无 `TBD/TODO/待定/待确认/placeholder/FIXME`；`git diff --check` 通过；未发现规格内部矛盾。按仓库规则未创建中间提交。
+
+## 2026-05-19 P3 实现计划生成
+
+- 用户询问是否还有补充，以及下一步是否使用 `superpowers:writing-plans` 写计划文档。
+- 已使用 `superpowers:writing-plans`，基于 P3 设计规格和当前代码接口生成实现计划：`docs/superpowers/plans/2026-05-19-dynamic-object-interaction-aware-gmm-p3-implementation-plan.md`。
+- 计划覆盖 `PredictionInteractionContext`、UFOMap 静态只读区域查询封装、predictor 交互重权重/轻量修正、`Ldop` 地图查询 adapter、YAML 参数、CMake 注册和单元/集成测试。
+- 已同步 `task_plan.md` 和 `findings.md`，记录 P3 设计与实现计划均已生成，下一步进入执行方式选择。
+- 已对实现计划执行精确占位词扫描，未发现问题；已执行 `git diff --check -- docs/superpowers/plans/2026-05-19-dynamic-object-interaction-aware-gmm-p3-implementation-plan.md`，结果通过。
+
+## 2026-05-19 P3 交互感知预测实现
+
+- 用户要求使用 `superpowers:subagent-driven-development` 执行 P3 实现计划。
+- 已按计划实现 `PredictionInteractionContext`、UFOMap 中性静态只读邻域查询、predictor 概率重权重/受限均值轨迹修正、`Ldop` UFOMap 查询 adapter、YAML 参数和回归测试。
+- `PredictionInteractionContext` 作为 P3/P4 共享场景证据层，输出每分支 pair/map/corridor cost、`total_energy`、`probability_scale`、轻量修正建议、最近障碍距离、occupied overlap、near obstacle、free corridor 方向/置信度、最近目标距离和最小 TTC。
+- 地图查询边界已落地：`PredictionInteractionContext` 只依赖 `PredictionMapQuery`；`Ldop` 在 `processFrame()` 中构造栈上 `UfomapPredictionMapQuery` adapter；静态近障碍使用新增 `UfomapMapper::queryLocalOccupied()`，动态目标风险继续来自 tracker/predictor 分支，不使用 UFOMap dynamic candidate 查询反推未来风险。
+- predictor 应用交互结果时只调整 branch probability 和受限均值轨迹；`model_covariance` 仍保持运动模型 rollout 的不确定性语义，已用回归测试逐元素比较协方差。
+- RViz 预测 marker 仍只生成 `dynamic_prediction_line`；`dynamic_prediction_samples` 和 `dynamic_prediction_uncertainty` 只在回归测试中作为“不应出现”的命名空间检查。
+- 子代理执行记录：Task 1-4 已经过实现、规格审查和质量审查；Task 5 最后一轮质量复审和 Task 6 worker 因子代理 usage limit 阻塞，后续由主线按同一任务边界完成静态审查、实现和验证。
+- 沙箱内首次 `catkin run_tests ldop --no-status` 因 ROS/XMLRPC socket 被禁用而卡住，日志反复出现 `XmlRpcClient::doConnect: Could not create socket (Operation not permitted)`；随后已终止卡住进程，并在沙箱外用相同命令完成测试。
+- 已验证：`catkin build ldop --no-status` 成功；`catkin run_tests ldop --no-status` 成功；`catkin_test_results /home/st/ldop_ws/build/ldop` 输出 `Summary: 72 tests, 0 errors, 0 failures, 0 skipped`。
+- 已验证：`git diff --check` 通过；marker 命名扫描确认未新增 sample/uncertainty marker 或默认诊断发布器。
+
+## 2026-05-20 P3 交互轨迹平滑 rerollout
+
+- 用户指出交互后的预测轨迹仍显折线，希望改交互预测本身，而不是只做 RViz 插值。
+- 已按 TDD 新增回归测试 `InteractionCorrectionRerolloutAvoidsLocalPositionKink`：构造局部地图冲突，要求交互修正后的 planner-facing 中心轨迹不能出现 x 方向前进后退折返。
+- 红灯验证：旧逐点位置修正实现下该测试失败，出现 `step_x = -0.1`。
+- 已将 predictor 应用交互结果的方式改为：保留 `PredictionInteractionContext` 的逐点风险证据，先平滑成位置/减速/方向控制 profile，再在对应 `PredictionMode` 上重新调用 motion model rollout。
+- `model_covariance` 仍由重新 rollout 的运动模型传播，不因交互代价被人为缩小；RViz marker 仍只输出真实分支的 `dynamic_prediction_line`。
+- 已运行 `catkin build ldop --no-status --make-args tests`，构建测试目标通过。
+- 已运行 `/home/st/ldop_ws/devel/lib/ldop/test_dynamic_object_predictor --gtest_filter=DynamicObjectPredictorTest.InteractionCorrectionRerolloutAvoidsLocalPositionKink`，新增聚焦测试通过。
+- 已运行 `/home/st/ldop_ws/devel/lib/ldop/test_dynamic_object_predictor`，24 个 predictor 回归测试全部通过。
+- 已运行 `catkin build ldop --no-status`，构建通过。
+- 已在沙箱外运行 `catkin run_tests ldop --no-status`，结果通过；`catkin_test_results /home/st/ldop_ws/build/ldop` 输出 `Summary: 76 tests, 0 errors, 0 failures, 0 skipped`。
+- 已运行 `git diff --check`，结果通过。
+
+## 2026-05-20 P3 交互上下文查询预算优化
+
+- 用户报告现场日志中 `applyInteractionContext=10.937ms`，目标是压到 2ms 内。
+- 已用查询计数回归测试复现热点：7 个目标、每目标 3 分支、每分支 10 个点时，旧实现触发 `localOccupied=1760`、`seenFree=1680`、`queryNode=210` 次地图访问。
+- 已将 map cost 改为分支级查询：每条分支构造覆盖短时 rollout、目标外接圆和近障碍半径的局部查询球，只调用一次 `queryLocalOccupied()`，再在内存中对各采样点计算 signed distance、occupied overlap 和 near-obstacle 代价。
+- 已将 corridor cost 改为分支级方向探针：每条分支使用时间中点作为代表点，只做 8 个 `seenFree()` 探针；多方向同为 free 时用分支运动方向做 tie-break，全方向 free 时不注入任意方向偏置。
+- 交互修正仍保持平滑控制 rerollout：map cost 保留逐点计分，但控制 hint 只取该分支最强局部证据，避免分支级 occupied 候选把整条轨迹推成满幅修正。
+- 新增 `UsesBranchLevelMapQueryBudget` 回归测试，预算约束为 local occupied 查询不超过分支数、`seenFree()` 不超过分支数乘 8、`queryNode()` 为 0。
+- 已运行 `catkin build ldop --no-status --make-args tests`，构建测试目标通过。
+- 已运行 `/home/st/ldop_ws/devel/lib/ldop/test_prediction_interaction_context`，15 个交互上下文测试全部通过。
+- 已运行 `/home/st/ldop_ws/devel/lib/ldop/test_dynamic_object_predictor`，24 个 predictor 回归测试全部通过。
+- 已运行 `catkin build ldop --no-status`，完整构建通过。
+- 已运行 `catkin run_tests ldop --no-status`，包级测试通过；`catkin_test_results /home/st/ldop_ws/build/ldop` 输出 `Summary: 78 tests, 0 errors, 0 failures, 0 skipped`。
+- 已运行 `git diff --check`，结果通过。

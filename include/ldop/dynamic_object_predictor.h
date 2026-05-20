@@ -5,6 +5,7 @@
 #include <ldop/DynamicObjectPredictionArray.h>
 #include <ldop/dynamic_object_tracker.h>
 #include <ldop/multi_model_kalman_filter.h>
+#include <ldop/prediction_interaction_context.h>
 #include <ros/node_handle.h>
 #include <std_msgs/Header.h>
 #include <visualization_msgs/MarkerArray.h>
@@ -25,6 +26,7 @@ struct DynamicObjectPredictorParams {
   double history_quality_noise_scale{1.5};     // >=1，短历史/漏检/不稳定轨迹的未来噪声放大上限。
   double hypothesis_noise_scale{1.3};          // >=1，假设性更强 mode 的未来噪声放大尺度。
   MultiModelKalmanFilterParams filter;
+  PredictionInteractionParams interaction;
 };
 
 // 运行时配置；构造阶段由 ROS 参数快照转换而来。
@@ -41,10 +43,12 @@ struct DynamicObjectPredictorConfig {
   double history_quality_noise_scale{1.5};
   double hypothesis_noise_scale{1.3};
   MultiModelKalmanFilterConfig filter_config;
+  PredictionInteractionConfig interaction_config;
 };
 
 struct DynamicObjectPredictorTimingStats {
   double predict_dynamic_objects_ms{0.0};
+  double apply_interaction_context_ms{0.0};
   double build_prediction_markers_ms{0.0};
   double predict_total_ms{0.0};
 };
@@ -53,6 +57,7 @@ struct DynamicObjectPredictorTimingStats {
 struct DynamicObjectPredictorFrameResult {
   ldop::DynamicObjectPredictionArray predictions_msg;
   visualization_msgs::MarkerArray prediction_markers_msg;
+  PredictionInteractionDiagnostics interaction_diagnostics;
   DynamicObjectPredictorTimingStats timing;
 };
 
@@ -67,7 +72,8 @@ class DynamicObjectPredictor {
   // 预测模块主流程：对 tracker 输出的稳定目标做轨迹外推，返回预测消息和 marker。
   DynamicObjectPredictorFrameResult predict(
       const std_msgs::Header& header,
-      const std::vector<TrackPredictionInput>& inputs) const;
+      const std::vector<TrackPredictionInput>& inputs,
+      const PredictionMapQuery* map_query = nullptr) const;
 
  private:
   void loadParameters();
