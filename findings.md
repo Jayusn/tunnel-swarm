@@ -64,6 +64,7 @@
   - `PredictionInteractionContext` 已作为独立模块落地，使用 `PredictionMapQuery` 抽象读取地图证据；当前实现不复制完整 UFOMap，也不再做逐点地图查询，而是用分支级 occupied 查询预算和每分支 8 方向 corridor 探针控制耗时。
   - P3 静态地图约束通过 `PredictionMapQuery` 抽象读取 UFOMap；动态目标交互继续来自 tracker/predictor 的稳定目标状态、尺寸和预测分支，不使用 UFOMap dynamic candidate 查询反推未来动态风险。
   - `DynamicObjectPredictor` 应用交互结果时先调整 branch probability，再把逐点修正 hint 平滑成速度/减速/方向控制 profile，并用原 `MotionModel` 重新 rollout 分支；不再直接改写离散采样点位置，也不缩小 `model_covariance`。
+  - `PredictionBranchInteraction` 已新增内部 `PredictionBranchRiskLevel::{Low, Medium, High, Critical}`，由 occupied overlap、TTC、pair/map/corridor cost 和 total energy 派生；该字段不进入 ROS prediction message，作为 P4 风险地图 builder 的快速分层摘要。
   - `Ldop` 的 UFOMap adapter 是 `processFrame()` 内的栈上对象，所有读查询仍走 `UfomapMapper` 自身锁语义。
   - `config/ldop.yaml` 已加入 P3 中等粒度参数：交互开关、目标间/地图/corridor 权重、安全距离、近障碍距离、TTC 阈值、free corridor 半径、修正上限和能量温度。
 
@@ -102,7 +103,7 @@
 - P3 交互能量与轻量修正规则已确认：`total_energy = w_pair * pair_cost + w_map * map_cost + w_corridor * corridor_cost`；概率按 `exp(-total_energy / tau)` 重权重后归一化；轨迹只做受限的小幅推离、减速或朝 free corridor 偏置；协方差不因交互代价被人为缩小。
 - P3 数据流和边界处理已确认：P2 candidate branches 先生成，`PredictionInteractionContext` 评估交互/地图证据，predictor 再应用概率缩放、平滑控制 rerollout 和归一化；地图查询通过只读 adapter 隔离 UFOMap 类型，地图不可用时 `map_cost = 0`。
 - P3 地图查询与预算策略已确认：运行时 adapter 使用 `UfomapMapper` 只读查询接口，不复制完整 UFOMap；当前 `PredictionInteractionContext` 按分支构造局部 occupied 查询球，corridor 使用分支代表点做 8 方向 `seenFree()` 探针，避免查询次数随 `points * directions` 放大。
-- P3 地图 adapter 构造边界已澄清：`PredictionInteractionContext` 定义抽象查询语义和本帧局部缓存，不持有 `UfomapMapper`；由 `Ldop` 或上层将现有 `UfomapMapper` 包装为 adapter 注入。
+- P3 地图 adapter 构造边界已澄清：`PredictionInteractionContext` 定义抽象查询语义，不持有 `UfomapMapper`；由 `Ldop` 或上层将现有 `UfomapMapper` 包装为 adapter 注入。当前性能优化采用分支级查询预算，而不是 `LocalOccupiedCacheKey` / `unordered_map` 缓存。
 - P3 UFOMap 查询函数场景已澄清：`queryLocalOccupied()` 是当前静态 occupied/near-obstacle 主路径，内部使用 UFOMap `Intersects` 等区域查询能力；`seenFree()` 用于已知 free 与 free corridor 采样；`queryNode()` 保留在抽象接口中供后续点查询使用，但当前性能优化后的 P3 主路径不再逐点调用它。
 - P3 静态/动态来源分离已澄清：静态障碍和 free corridor 来自 UFOMap 静态/占据查询；动态目标风险来自 tracker 传入的 `TrackPredictionInput[]`、目标尺寸和 GMM 预测分支，不从 UFOMap 动态体素或动态候选查询反推未来动态风险。
 - P3 为第四阶段类 ROG-Map/risk map builder 保留的 context 摘要包括：分支风险等级、最近障碍距离、occupied overlap、near-obstacle 标记、free corridor 方向和置信度、最近目标距离、最小 TTC。

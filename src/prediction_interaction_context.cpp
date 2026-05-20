@@ -652,6 +652,34 @@ void evaluateCorridorCosts(const ldop::DynamicObjectPredictionArray& predictions
   }
 }
 
+PredictionBranchRiskLevel classifyRiskLevel(
+    const PredictionBranchInteraction& interaction,
+    const PredictionInteractionConfig& config) {
+  if (interaction.occupied_overlap) {
+    return PredictionBranchRiskLevel::Critical;
+  }
+
+  const bool imminent_ttc =
+      interaction.minimum_ttc <= 0.5 * std::max(config.ttc_safe_time, kMinDistance);
+  const bool high_pair_risk = interaction.pair_cost >= 0.5;
+  const bool high_map_risk = interaction.map_cost >= 0.5;
+  const bool high_energy = interaction.total_energy >= 1.0;
+  if (imminent_ttc || high_pair_risk || high_map_risk || high_energy) {
+    return PredictionBranchRiskLevel::High;
+  }
+
+  const bool ttc_inside_gate = interaction.minimum_ttc <= config.ttc_safe_time;
+  const bool any_pair_risk = interaction.pair_cost > 0.0;
+  const bool any_map_risk = interaction.near_obstacle || interaction.map_cost > 0.0;
+  const bool corridor_bias =
+      interaction.corridor_cost > 0.0 || interaction.free_corridor_confidence > 0.0;
+  if (ttc_inside_gate || any_pair_risk || any_map_risk || corridor_bias) {
+    return PredictionBranchRiskLevel::Medium;
+  }
+
+  return PredictionBranchRiskLevel::Low;
+}
+
 void finalizeInteractions(const PredictionInteractionConfig& config,
                           PredictionInteractionResult& result) {
   const bool map_unavailable = result.diagnostics.map_unavailable;
@@ -667,6 +695,7 @@ void finalizeInteractions(const PredictionInteractionConfig& config,
       const double tau =
           config.interaction_energy_tau > 0.0 ? config.interaction_energy_tau : 1.0;
       interaction.probability_scale = std::exp(-interaction.total_energy / tau);
+      interaction.risk_level = classifyRiskLevel(interaction, config);
       updateDiagnostics(result.diagnostics, interaction);
     }
   }

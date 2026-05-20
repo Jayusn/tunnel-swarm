@@ -78,6 +78,13 @@ struct TrajectoryCorrectionHint {
   Eigen::Vector3d direction_bias{Eigen::Vector3d::Zero()};
 };
 
+enum class PredictionBranchRiskLevel : std::uint8_t {
+  Low = 0,
+  Medium = 1,
+  High = 2,
+  Critical = 3,
+};
+
 struct PredictionBranchInteraction {
   std::uint32_t object_id{0U};
   std::size_t branch_index{0U};
@@ -86,6 +93,7 @@ struct PredictionBranchInteraction {
   double corridor_cost{0.0};
   double total_energy{0.0};
   double probability_scale{1.0};
+  PredictionBranchRiskLevel risk_level{PredictionBranchRiskLevel::Low};
   double nearest_obstacle_distance{std::numeric_limits<double>::infinity()};
   bool occupied_overlap{false};
   bool near_obstacle{false};

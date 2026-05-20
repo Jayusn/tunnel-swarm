@@ -23,18 +23,19 @@ Repository rule override: the general planning skill suggests frequent commits, 
 - Do not restore sample markers, uncertainty ellipsoids, or default diagnostic ROS topics.
 - Use tracker/predictor state for dynamic targets; do not infer future dynamic risk from UFOMap dynamic candidates.
 - Use UFOMap only for static occupied/near-obstacle/free-space evidence.
-- Do not cache a full UFOMap copy. Cache only per-frame local query results inside `PredictionInteractionContext`.
+- Do not cache a full UFOMap copy. Runtime implementation uses branch-level query budgets inside `PredictionInteractionContext`: one local occupied query per branch and 8 horizontal `seenFree()` corridor probes per branch.
 - Do not shrink `model_covariance` because of interaction confidence. Modify branch probability and bounded mean trajectory only.
 
 ## File Structure
 
 - Create `include/ldop/prediction_interaction_context.h`
   - Owns P3 params/config structs, read-only map-query abstraction, per-branch interaction results, diagnostics, and `PredictionInteractionContext`.
+  - Exposes `PredictionBranchRiskLevel::{Low, Medium, High, Critical}` as an internal P4-facing branch risk summary; it is not added to ROS prediction messages.
   - Depends on Eigen, ROS header/time types, prediction messages, and tracker input structs.
   - Does not include UFOMap headers.
 
 - Create `src/prediction_interaction_context.cpp`
-  - Implements target-target costs, map/near-obstacle costs, free-corridor prior, correction hints, and per-frame local query cache.
+  - Implements target-target costs, map/near-obstacle costs, free-corridor prior, correction hints, branch-level query budgets, and branch risk level classification.
   - Does not read ROS params and does not access `UfomapMapper`.
 
 - Create `test/test_prediction_interaction_context.cpp`
@@ -208,13 +209,11 @@ Create `include/ldop/prediction_interaction_context.h` with this API:
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
-#include <string>
-#include <unordered_map>
 #include <vector>
 
 #include <Eigen/Core>
-#include <geometry_msgs/Vector3.h>
 #include <ldop/DynamicObjectPredictionArray.h>
 #include <ldop/dynamic_object_tracker.h>
 #include <std_msgs/Header.h>
@@ -1245,47 +1244,16 @@ In `PredictionInteractionContext::evaluate()`, call these after pair costs and b
   evaluateCorridorCosts(predictions, map_query, config_, result);
 ```
 
-- [ ] **Step 6: Add per-frame query cache after correctness passes**
+- [ ] **Step 6: Enforce branch-level query budget after correctness passes**
 
-Once tests pass, reduce repeated local queries by adding a local cache inside `evaluateMapCosts()` and `evaluateCorridorCosts()`:
+Once tests pass, reduce repeated local queries by bounding query count directly instead of relying on cache hit rate:
 
-```cpp
-struct LocalOccupiedCacheKey {
-  int x{0};
-  int y{0};
-  int z{0};
-  int radius_bucket{0};
-};
+- In `evaluateMapCosts()`, build one local sphere per branch that covers the short rollout, object circumscribed radius, and near-obstacle radius.
+- Call `PredictionMapQuery::queryLocalOccupied()` once per branch, then compute each sample's signed distance, occupied overlap, near-obstacle cost, and strongest local correction hint in memory.
+- In `evaluateCorridorCosts()`, use the branch representative point and probe exactly 8 horizontal `seenFree()` directions per branch.
+- Do not call `queryNode()` in the optimized P3 main path.
 
-struct LocalOccupiedCacheKeyHash {
-  std::size_t operator()(const LocalOccupiedCacheKey& key) const {
-    std::size_t seed = static_cast<std::size_t>(key.x);
-    seed = seed * 1315423911U + static_cast<std::size_t>(key.y);
-    seed = seed * 1315423911U + static_cast<std::size_t>(key.z);
-    seed = seed * 1315423911U + static_cast<std::size_t>(key.radius_bucket);
-    return seed;
-  }
-};
-
-bool operator==(const LocalOccupiedCacheKey& lhs,
-                const LocalOccupiedCacheKey& rhs) {
-  return lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z &&
-         lhs.radius_bucket == rhs.radius_bucket;
-}
-
-LocalOccupiedCacheKey makeLocalOccupiedCacheKey(const Eigen::Vector3d& center,
-                                                const double radius,
-                                                const double resolution) {
-  return LocalOccupiedCacheKey{
-      static_cast<int>(std::floor(center.x() / resolution)),
-      static_cast<int>(std::floor(center.y() / resolution)),
-      static_cast<int>(std::floor(center.z() / resolution)),
-      static_cast<int>(std::ceil(radius / resolution)),
-  };
-}
-```
-
-Use `std::unordered_map<LocalOccupiedCacheKey, std::vector<PredictionLocalOccupiedNode>, LocalOccupiedCacheKeyHash>` inside a helper object that lives only during one `evaluate()` call. Set `resolution` to `0.2` for the first pass because it matches current default UFOMap resolution; later P4 work can pass map resolution explicitly if needed.
+The earlier `LocalOccupiedCacheKey` / `std::unordered_map` idea is superseded by this branch-level budget because the runtime issue was query-count explosion (`points * directions`), not merely repeated keys. If P4 later needs 26-neighborhood or 3D UAV corridor probes, add it as a configurable mode and rerun timing verification.
 
 - [ ] **Step 7: Run map and corridor tests**
 
@@ -1917,6 +1885,7 @@ Update `findings.md` with implementation facts after code exists:
 ```markdown
 - P3 静态地图约束通过 `PredictionMapQuery` 抽象读取 UFOMap；动态目标交互继续来自 tracker/predictor 的稳定目标状态、尺寸和预测分支，不使用 UFOMap dynamic candidate 查询反推未来动态风险。
 - `DynamicObjectPredictor` 应用交互结果时调整 branch probability，并把局部 correction hint 平滑成速度/减速/方向控制 profile 后重新 rollout 分支；不逐点硬改轨迹，也不缩小 `model_covariance`。
+- `PredictionBranchInteraction` 保留连续证据和 `PredictionBranchRiskLevel` 离散摘要；P4 可用 `Low/Medium/High/Critical` 快速分层，再结合连续代价、TTC、最近障碍距离等计算 planner-facing 风险。
 ```
 
 Update `progress.md` with verification results:
@@ -1924,7 +1893,7 @@ Update `progress.md` with verification results:
 ```markdown
 ## 2026-05-19 P3 交互感知预测实现
 
-- 已实现 `PredictionInteractionContext`、UFOMap 静态只读邻域查询、Ldop 查询 adapter、predictor 概率重权重和平滑控制重新 rollout。
+- 已实现 `PredictionInteractionContext`、UFOMap 静态只读邻域查询、Ldop 查询 adapter、predictor 概率重权重、平滑控制重新 rollout、分支级查询预算和 `branch_risk_level` 内部风险摘要。
 - 已验证：`catkin build ldop --no-status`、`catkin run_tests ldop --no-status`、`catkin_test_results /home/st/ldop_ws/build/ldop`。
 ```
 

@@ -200,6 +200,8 @@ TEST(PredictionInteractionContextTest, DisabledContextReturnsIdentityScales) {
   ASSERT_EQ(result.interactions_by_prediction.front().size(), 1U);
   EXPECT_DOUBLE_EQ(result.interactions_by_prediction.front().front().probability_scale, 1.0);
   EXPECT_DOUBLE_EQ(result.interactions_by_prediction.front().front().total_energy, 0.0);
+  EXPECT_EQ(result.interactions_by_prediction.front().front().risk_level,
+            PredictionBranchRiskLevel::Low);
 }
 
 TEST(PredictionInteractionContextTest, CrossingBranchesGetHigherPairCostThanSeparatedBranches) {
@@ -257,6 +259,7 @@ TEST(PredictionInteractionContextTest, HeadOnBranchGetsTtcCostAndCorrectionHint)
 
   EXPECT_GT(interaction.pair_cost, 0.0);
   EXPECT_LT(interaction.minimum_ttc, params.ttc_safe_time);
+  EXPECT_EQ(interaction.risk_level, PredictionBranchRiskLevel::High);
   EXPECT_TRUE(interaction.correction_hint.has_deceleration ||
               interaction.correction_hint.has_position_offset);
   if (interaction.correction_hint.has_deceleration) {
@@ -430,6 +433,7 @@ TEST(PredictionInteractionContextTest, OccupiedBranchGetsMapCostAndCollisionDiag
 
   EXPECT_GT(interaction.map_cost, 0.0);
   EXPECT_TRUE(interaction.occupied_overlap);
+  EXPECT_EQ(interaction.risk_level, PredictionBranchRiskLevel::Critical);
   EXPECT_EQ(result.diagnostics.colliding_branch_count, 1U);
   EXPECT_TRUE(interaction.correction_hint.has_position_offset);
 }
@@ -455,6 +459,8 @@ TEST(PredictionInteractionContextTest, NearObstacleCostsLessThanOccupied) {
   EXPECT_GT(near.map_cost, free.map_cost);
   EXPECT_TRUE(near.near_obstacle);
   EXPECT_FALSE(near.occupied_overlap);
+  EXPECT_NE(near.risk_level, PredictionBranchRiskLevel::Low);
+  EXPECT_NE(near.risk_level, PredictionBranchRiskLevel::Critical);
 }
 
 TEST(PredictionInteractionContextTest, RectangularObjectDiagonalCornerUsesCircumscribedRadius) {

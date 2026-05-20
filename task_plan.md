@@ -11,7 +11,7 @@
 - 已完成基础：第一阶段动静态点云分割与静态地图、第二阶段动态点云聚类检测跟踪均已完成。
 - 已有预测输入：`DynamicObjectTrackerFrameResult::prediction_inputs` 和 `TrackPredictionInput` 已在 tracker 内部预留，包含稳定目标 ID、类别、运动模型、模型原生状态及协方差、历史样本和生命周期信息。
 - 已有文档：P1 设计规格 `docs/superpowers/specs/2026-05-14-dynamic-object-trajectory-prediction-design.md`，P1 实现计划 `docs/superpowers/plans/2026-05-14-dynamic-object-trajectory-prediction-implementation-plan.md`，P2 设计规格 `docs/superpowers/specs/2026-05-18-dynamic-object-intent-gmm-p2-design.md`，P2 实现计划 `docs/superpowers/plans/2026-05-18-dynamic-object-intent-gmm-p2-implementation-plan.md`。
-- P3 设计规格：`docs/superpowers/specs/2026-05-19-dynamic-object-interaction-aware-gmm-p3-design.md` 已写入并按地图查询/缓存边界完成整理。
+- P3 设计规格：`docs/superpowers/specs/2026-05-19-dynamic-object-interaction-aware-gmm-p3-design.md` 已写入并按地图查询/分支级预算边界完成整理。
 - P3 实现计划：`docs/superpowers/plans/2026-05-19-dynamic-object-interaction-aware-gmm-p3-implementation-plan.md` 已写入并完成代码落地。
 - 已实现：独立 predictor 模块、预测消息、预测话题、预测 marker、轨迹外推单分支预测、航向/意图 GMM 多分支预测，以及目标间/目标-静态地图交互感知重权重、分支级地图查询预算与平滑控制 rerollout。
 - 尚未实现：闭环预测误差统计、NIS 校准和概率反馈。
@@ -97,6 +97,8 @@
 | 2026-05-19 | P3 交互感知预测实现已落地并验证 | 已实现 `PredictionInteractionContext`、UFOMap 静态只读邻域查询、predictor 重权重/轻量修正、`Ldop` adapter、YAML 参数和回归测试；`catkin build`、`catkin run_tests` 和 `catkin_test_results` 均通过 |
 | 2026-05-20 | P3 交互均值轨迹修正改为平滑控制后重新 rollout | 保留 `PredictionInteractionContext` 的逐点风险证据，但 predictor 不再直接改写离散采样点位置，而是先平滑成速度/减速/方向控制 profile，再交给 motion model 重新积分，减少 planner-facing 轨迹折线尖角 |
 | 2026-05-20 | P3 地图/corridor 查询预算收敛到分支级 | map cost 每分支只做一次局部 occupied 查询，再在内存中逐点计算距离；corridor 每分支只做 8 个 seenFree 探针，避免 `points * directions` 查询爆炸 |
+| 2026-05-20 | P3 单帧 query cache 方案被分支级查询预算取代 | 前期 `LocalOccupiedCacheKey` / `unordered_map` 缓存设想依赖命中率；现场瓶颈来自查询数量爆炸，因此当前实现直接约束每分支查询上限，更利于把 `applyInteractionContext` 压到实时预算内 |
+| 2026-05-20 | P3 新增内部 `branch_risk_level` 摘要 | `PredictionBranchInteraction` 已加入 `PredictionBranchRiskLevel::{Low, Medium, High, Critical}`；该字段不进入 ROS msg，供 P4 快速分层，连续风险强度仍由 cost、TTC、最近障碍距离等指标计算 |
 
 ## 待确认问题
 

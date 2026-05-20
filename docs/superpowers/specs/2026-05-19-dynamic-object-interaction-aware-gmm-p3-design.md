@@ -122,7 +122,7 @@ nearest_pair_distance
 minimum_ttc
 ```
 
-这些字段不是 ROS prediction message 的默认输出；它们是 C++ 内部结构，供 predictor、测试和后续 P4 risk/local map builder 复用。P4 builder 后续可以把这些证据与预测分支的 `points[]`、概率、协方差、`size` 和 `influence_weight` 结合，生成时间索引的动态风险或类 ROG-Map 局部地图。
+这些字段不是 ROS prediction message 的默认输出；它们是 C++ 内部结构，供 predictor、测试和后续 P4 risk/local map builder 复用。当前 `branch_risk_level` 已落地为内部枚举 `PredictionBranchRiskLevel::{Low, Medium, High, Critical}`，由 occupied overlap、TTC、pair/map/corridor cost 和 total energy 派生；P4 builder 后续可以把该离散摘要与预测分支的 `points[]`、概率、协方差、`size`、`influence_weight` 和连续风险证据结合，生成时间索引的动态风险或类 ROG-Map 局部地图。
 
 `TrajectoryCorrectionHint` 只表达轻量建议，例如：
 
@@ -249,7 +249,7 @@ P3 保持两段式流程，避免交互逻辑侵入 P2 mode 生成：
 
 地图查询通过只读 adapter 隔离 UFOMap 类型。上下文模块只依赖“给定点和膨胀半径，返回 occupied / near obstacle / free direction”的抽象查询能力。测试中使用假地图 adapter，运行时由 `Ldop` 或上层构造 UFOMap adapter。
 
-## 地图查询与缓存策略
+## 地图查询与预算策略
 
 ### 职责边界
 
@@ -268,10 +268,10 @@ P3 使用现有 `UfomapMapper` 的只读查询能力，但 predictor 和 `Predic
 
 | 场景 | 建议查询 | 用途 |
 |------|----------|------|
-| 预测采样点或目标膨胀中心是否落在 occupied 体素 | `UfomapMapper::queryNode(point)` | 获取节点是否存在、是否 occupied、节点中心和 depth，用于 `occupied_penalty` |
+| 预测采样点或目标膨胀中心是否落在 occupied 体素 | `UfomapMapper::queryNode(point)` | 保留为抽象点查询能力；当前性能优化后的 P3 主路径不逐点调用它 |
 | 预测点是否位于已知 free 区域 | `UfomapMapper::seenFree(point)` | 区分 free 与 unknown/occupied，用于 free corridor 采样和未知空间保守处理 |
 | 预测点膨胀半径内是否有静态 occupied/near obstacle 节点 | 新增中性只读区域查询封装，例如 `UfomapMapper::queryLocalOccupied(query)`，内部使用 UFOMap 空间谓词 `Intersects(Sphere(center, radius))`、`Leaf(depth)`、`HitsMin(1)` | 做静态近障碍软代价、最近障碍距离近似和 occupied overlap 估计 |
-| 局部 free corridor 方向估计 | 多方向采样点组合调用 `seenFree()` 和必要的邻域查询 | 比较候选方向上 free/near obstacle 证据，得到 `free_corridor_direction` 和置信度 |
+| 局部 free corridor 方向估计 | 每个分支代表点周围 8 个水平 `seenFree()` 探针 | 比较候选方向上的 free 证据，得到 `free_corridor_direction` 和置信度；不使用 `points * directions` 查询 |
 
 P3 不使用 `setNodeLabel()`、`clearAllLabels()` 等写接口，也不把 `queryDynamicCandidates()` 作为静态近障碍查询主接口。`queryDynamicCandidates()` 当前带有 dynamic candidate / label / seenFree 语义，更适合当前动静态分割或动态候选点流程；P3 的地图代价需要查询静态占据或近障碍区域，应新增命名中性的只读区域查询封装。该封装可以直接在 `UfomapMapper` 内部使用 UFOMap 的区域查询能力，例如 `map.query(Leaf && HitsMin && Intersects(...))`，必要时后续再补最近邻查询或批量查询接口。
 
@@ -283,7 +283,7 @@ P3 不使用 `setNodeLabel()`、`clearAllLabels()` 等写接口，也不把 `que
 - 动态目标之间的距离、TTC、occupied overlap 和风险来自 tracker 传入的 `TrackPredictionInput[]`、目标 `size` 以及 predictor 已生成的未来 GMM 分支。
 - 不从 UFOMap 的动态体素或动态候选查询中反推未来动态目标风险；这类信息会比 tracker 的稳定 ID、模型状态、尺寸和预测分支更粗糙，也容易把当前帧动态点云语义和未来预测语义混在一起。
 
-### 单帧局部缓存
+### 分支级查询预算
 
 P3 不缓存一整份 UFOMap 地图：
 
@@ -291,11 +291,11 @@ P3 不缓存一整份 UFOMap 地图：
 - 完整复制地图会增加内存和同步成本，并可能让预测使用过期地图。
 - P3 只需要未来分支附近的局部占据、近障碍和可通行方向信息。
 
-可缓存的是单帧局部查询结果：
+当前实现采用分支级查询预算，而不是 `LocalOccupiedCacheKey` / `unordered_map` 形式的单帧局部缓存：
 
-- 按体素 key 或离散化坐标缓存 `occupied / near obstacle` 查询，避免同一帧多个分支重复查同一邻域。
-- 对每个目标或分支附近缓存一次 free corridor 方向估计，供概率代价和轻量修正共用。
-- 这些缓存只在一次 `PredictionInteractionContext` 评估中有效，下一帧丢弃，避免地图更新后的陈旧信息影响预测。
+- map cost 每个预测分支只做一次 `queryLocalOccupied()`：构造覆盖短时 rollout、目标外接圆和近障碍半径的局部查询球，再在内存中对各采样点计算 signed distance、occupied overlap 和 near-obstacle 代价。
+- free corridor 每个预测分支只做 8 个水平 `seenFree()` 探针：使用分支时间中点作为代表点，避免查询次数随 `points * directions` 放大。
+- 这个预算比缓存更稳定：它直接限制地图查询上限，不依赖不同分支是否刚好命中相同离散 key。若后续 P4 或 3D UAV 场景需要 26 邻域，应作为可配置增强，并重新评估 `applyInteractionContext` 耗时。
 
 ### 性能扩展
 

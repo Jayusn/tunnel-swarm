@@ -126,12 +126,12 @@
 - 用户确认 P3 组件与数据结构：新增 `prediction_interaction_context` 小模块，使用内部 C++ 结构表达参数、每分支交互结果、轻量修正建议和内部诊断统计，不新增 ROS msg 或默认诊断话题。
 - 用户确认 P3 交互能量与轻量修正规则：总能量由目标间代价、地图占据/近障碍代价和 free corridor 方向代价组成；概率按 `exp(-energy/tau)` 重权重，高风险分支允许受上限约束的小幅推离、减速或朝可通行方向偏置，协方差不人为缩小。
 - 用户确认 P3 数据流和边界处理：predictor 先生成 P2 candidate branches，`PredictionInteractionContext` 做交互/地图评估，再由 predictor 应用概率缩放、轻量修正和目标内归一化；地图查询通过只读 adapter 隔离 UFOMap 类型，缺图或查询失败时退化为只用目标间交互。
-- 用户询问 P3 地图查询是否使用 UFOMap 接口、是否需要缓存地图；已明确设计为通过 `UfomapMapper` 只读查询 adapter 访问 UFOMap，不缓存完整地图，只在单帧上下文内缓存局部查询结果。
+- 用户询问 P3 地图查询是否使用 UFOMap 接口、是否需要缓存地图；当时设计明确为通过 `UfomapMapper` 只读查询 adapter 访问 UFOMap、不缓存完整地图。后续性能优化已将“单帧局部缓存”设想替换为分支级查询预算。
 - 用户进一步指出地图查询策略应说明为什么由 `Ldop` 或上层构造 adapter，而不是 `PredictionInteractionContext` 自己构建，并明确不同场景使用哪些 UFOMap 查询函数。
-- 已更新 P3 设计规格：`PredictionInteractionContext` 定义抽象查询语义和单帧局部缓存；`Ldop`/上层注入 concrete adapter；`queryNode()` 用于占据判断，`seenFree()` 用于 free/corridor 采样，近障碍邻域查询应新增中性只读区域查询封装，写接口不用于 P3。
+- 已更新 P3 设计规格：`PredictionInteractionContext` 定义抽象查询语义；`Ldop`/上层注入 concrete adapter；`queryNode()` 保留为点查询能力，`seenFree()` 用于 free/corridor 采样，近障碍邻域查询应新增中性只读区域查询封装，写接口不用于 P3。后续实现主路径已改为分支级 `queryLocalOccupied()` 和 8 方向 corridor 探针。
 - 用户进一步说明新增 `PredictionInteractionContext` 也要给 LDOP 第四阶段类 ROG-Map 地图构建使用；已补充设计边界：该模块作为 P3/P4 共享场景证据层，输出局部风险摘要，第四阶段独立 builder 再转换为 planner-facing 时间索引风险/局部地图。
 - 用户指出 UFOMap 有区域查询接口，且动态体素查询不适合判断预测点膨胀半径内的动态障碍；已澄清设计：静态近障碍使用 UFOMap 区域查询封装，动态目标风险使用 tracker/P2 预测分支和目标尺寸，不从 UFOMap 动态体素反推未来动态风险。
-- 用户询问“地图查询与缓存策略”是否需要整理；已将该节整理为职责边界、查询接口选择、静态/动态来源分离、单帧局部缓存和性能扩展五个小节，不改变已确认设计结论。
+- 用户询问“地图查询与缓存策略”是否需要整理；已将该节整理为职责边界、查询接口选择、静态/动态来源分离、查询预算和性能扩展几个部分，并在后续文档同步中移除对 `LocalOccupiedCacheKey` 缓存实现的默认要求。
 - 用户确认 P3 测试与验证设计：`PredictionInteractionContext` 纯单元测试覆盖交叉、迎面、追随、穿障、近障碍、free corridor 和地图不可用；predictor 集成测试覆盖概率归一化、极端惩罚、修正上限、marker 语义和协方差不缩小；最终执行 catkin 构建和测试。
 - 已写入 P3 设计规格：`docs/superpowers/specs/2026-05-19-dynamic-object-interaction-aware-gmm-p3-design.md`。
 - 已自审 P3 设计规格：精确占位词扫描无 `TBD/TODO/待定/待确认/placeholder/FIXME`；`git diff --check` 通过；未发现规格内部矛盾。按仓库规则未创建中间提交。
@@ -179,9 +179,19 @@
 - 已将 corridor cost 改为分支级方向探针：每条分支使用时间中点作为代表点，只做 8 个 `seenFree()` 探针；多方向同为 free 时用分支运动方向做 tie-break，全方向 free 时不注入任意方向偏置。
 - 交互修正仍保持平滑控制 rerollout：map cost 保留逐点计分，但控制 hint 只取该分支最强局部证据，避免分支级 occupied 候选把整条轨迹推成满幅修正。
 - 新增 `UsesBranchLevelMapQueryBudget` 回归测试，预算约束为 local occupied 查询不超过分支数、`seenFree()` 不超过分支数乘 8、`queryNode()` 为 0。
+- 该实现取代早期设计中的 `LocalOccupiedCacheKey` / `unordered_map` 单帧局部缓存方案：当前瓶颈是查询数量爆炸，直接限制每分支查询上限比依赖缓存命中率更稳定。
 - 已运行 `catkin build ldop --no-status --make-args tests`，构建测试目标通过。
 - 已运行 `/home/st/ldop_ws/devel/lib/ldop/test_prediction_interaction_context`，15 个交互上下文测试全部通过。
 - 已运行 `/home/st/ldop_ws/devel/lib/ldop/test_dynamic_object_predictor`，24 个 predictor 回归测试全部通过。
 - 已运行 `catkin build ldop --no-status`，完整构建通过。
 - 已运行 `catkin run_tests ldop --no-status`，包级测试通过；`catkin_test_results /home/st/ldop_ws/build/ldop` 输出 `Summary: 78 tests, 0 errors, 0 failures, 0 skipped`。
 - 已运行 `git diff --check`，结果通过。
+
+## 2026-05-20 P3 branch risk level 摘要
+
+- 已实现内部 `PredictionBranchRiskLevel::{Low, Medium, High, Critical}`，并加入 `PredictionBranchInteraction::risk_level`。
+- 分级规则保留连续证据不变：occupied overlap 为 `Critical`；短 TTC、高 pair/map cost 或高 total energy 为 `High`；near obstacle、轻 pair risk 或 corridor bias 为 `Medium`；其余为 `Low`。
+- 该字段不新增 ROS msg，也不替代 `pair_cost`、`map_cost`、`corridor_cost`、`nearest_obstacle_distance`、`minimum_ttc` 等连续指标；P4 可用它做快速分层，再用连续证据计算 planner-facing 风险强度。
+- 已补充 `test_prediction_interaction_context.cpp` 对 `Low/High/Critical` 和近障碍非低风险的断言。
+- 已运行 `catkin build ldop --no-status`，构建通过。
+- 已运行 `catkin run_tests ldop --no-status`，包级测试通过；`catkin_test_results /home/st/ldop_ws/build/ldop` 输出 `Summary: 78 tests, 0 errors, 0 failures, 0 skipped`。
