@@ -19,7 +19,7 @@
 - 分布本体：保留可被下游直接消费的 GMM components；不把仅用于可视化的额外采样轨迹作为预测输出。
 - 闭环评估：预测残差反过来更新 mode probability、过程噪声和不确定性校准。
 
-当前 LDOP 实现切分如下：P2 已先发布 branch-level trajectory-level GMM，预测话题和 RViz 只表达真实保留的 GMM branch；此前仅用于可视化的额外采样轨迹已删除，因为它不服务实际规划或评估契约。后续若某个算法内部确实需要 Monte Carlo samples，应由该消费者从 GMM 临时派生，不进入 predictor 默认消息或 RViz marker。目标间/地图交互能量和 NIS 闭环反馈仍属于后续 P3/P4。
+当前 LDOP 实现切分如下：P2 已发布 branch-level trajectory-level GMM，P3 已加入目标间/地图交互能量、free corridor 方向先验和轻量 rerollout，P4 已在 predictor 内部用上一轮预测 residual / NIS / likelihood 闭环更新下一帧同语义分支概率先验和未来过程噪声尺度。预测话题和 RViz 只表达真实保留的 GMM branch；此前仅用于可视化的额外采样轨迹已删除，因为它不服务实际规划或评估契约。后续若某个算法内部确实需要 Monte Carlo samples，应由该消费者从 GMM 临时派生，不进入 predictor 默认消息或 RViz marker。离线多 horizon evaluator 和 LDOP 第四阶段 planner-facing 风险地图仍作为后续工作独立推进。
 
 ## Worth-Doing Gate
 

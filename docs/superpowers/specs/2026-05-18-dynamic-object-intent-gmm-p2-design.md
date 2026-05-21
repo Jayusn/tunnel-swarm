@@ -6,6 +6,8 @@
 
 当前代码已经按本文档的 P2 主线落地：`DynamicObjectPredictor` 直接生成多条航向/意图预测分支，旧 `BEHAVIOR_BASELINE` 枚举已移除，RViz 只显示真实保留的 GMM 分支中心状态线，不再显示协方差椭球或额外采样轨迹。
 
+2026-05-21 状态补充：本文档仍只描述 P2 的设计边界；后续 P3 交互感知预测和 P4 predictor 内部在线闭环反馈已经另文实现，LDOP 第三阶段轨迹预测内容已完成。
+
 本设计基于以下既有边界：
 
 - P1 已实现 `DynamicObjectPredictor`，并在 tracker 后接入 LDOP 主流程。
@@ -207,7 +209,7 @@ P_next = F * P * F^T + Q_future
 - `P0` 表示 tracker 当前状态估计不确定性。
 - `Q_future` 表示未来候选意图假设的不确定性。
 - P2 不与 tracker filter 内部实现强耦合。
-- P4 仍可在以后用 NIS 或残差闭环校准概率和过程噪声尺度。
+- 后续 P4 已用 NIS / residual / likelihood 闭环校准下一帧同语义分支概率和 predictor 未来过程噪声尺度；这不改变本文档中的 P2 概率初始化语义。
 
 ## 参数
 

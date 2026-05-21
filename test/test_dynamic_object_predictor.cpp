@@ -326,6 +326,27 @@ const ldop::DynamicObjectPredictionBranch* findBranchWithBehaviorValue(
   return nullptr;
 }
 
+std::optional<std::size_t> branchIndexWithBehaviorValue(
+    const ldop::DynamicObjectPrediction& prediction,
+    const std::uint8_t behavior_type,
+    const double behavior_value) {
+  for (std::size_t index = 0U; index < prediction.branches.size(); ++index) {
+    const auto& branch = prediction.branches[index];
+    if (branch.behavior_type == behavior_type &&
+        std::abs(branch.behavior_value - behavior_value) < 1e-9) {
+      return index;
+    }
+  }
+  return std::nullopt;
+}
+
+double branchProbabilityOrZero(const ldop::DynamicObjectPrediction& prediction,
+                               const std::uint8_t behavior_type,
+                               const double behavior_value) {
+  const auto* branch = findBranchWithBehaviorValue(prediction, behavior_type, behavior_value);
+  return branch != nullptr ? branch->probability : 0.0;
+}
+
 TrackPredictionInput makeCtraInput() {
   TrackPredictionInput input;
   input.id = 84U;
@@ -528,6 +549,811 @@ double positionVarianceTrace(const ldop::DynamicObjectPredictionPoint& point) {
   return point.model_covariance[0U * state_size + 0U] +
          point.model_covariance[1U * state_size + 1U] +
          point.model_covariance[2U * state_size + 2U];
+}
+
+TEST(DynamicObjectPredictorTest, FeedbackDisabledMatchesFreshPredictorAcrossFrames) {
+  DynamicObjectPredictorConfig config;
+  config.prediction_horizon = 0.3;
+  config.filter_config.default_dt = 0.1;
+  config.min_branch_probability = 0.0;
+  config.max_branches = 6U;
+  config.feedback_config.enabled = false;
+  config.interaction_config.enabled = false;
+
+  DynamicObjectPredictor cached_predictor(config);
+  DynamicObjectPredictor fresh_predictor(config);
+
+  TrackPredictionInput first = makeCvInput();
+  first.id = 501U;
+  first.object_class = ObjectClass::Human;
+  first.hits = 8U;
+  first.age = 8U;
+  appendCvLinearHistory(first, 300.0, 8, 1.0, 0.0);
+
+  std_msgs::Header first_header;
+  first_header.stamp = ros::Time(301.0);
+  first_header.frame_id = "map";
+  static_cast<void>(cached_predictor.predict(first_header, {first}));
+
+  TrackPredictionInput second = first;
+  second.stamp = ros::Time(301.1);
+  second.model_state(0) += 0.1;
+  for (auto& sample : second.history) {
+    sample.model_state(0) += 0.1;
+    sample.stamp += ros::Duration(0.1);
+  }
+
+  std_msgs::Header second_header;
+  second_header.stamp = ros::Time(301.1);
+  second_header.frame_id = "map";
+  const auto cached = cached_predictor.predict(second_header, {second});
+  const auto fresh = fresh_predictor.predict(second_header, {second});
+
+  ASSERT_EQ(cached.predictions_msg.predictions.size(),
+            fresh.predictions_msg.predictions.size());
+  const auto& cached_prediction = cached.predictions_msg.predictions.front();
+  const auto& fresh_prediction = fresh.predictions_msg.predictions.front();
+  ASSERT_EQ(cached_prediction.branches.size(), fresh_prediction.branches.size());
+  for (std::size_t branch_index = 0U;
+       branch_index < cached_prediction.branches.size();
+       ++branch_index) {
+    const auto& cached_branch = cached_prediction.branches[branch_index];
+    const auto& fresh_branch = fresh_prediction.branches[branch_index];
+    EXPECT_EQ(cached_branch.behavior_type, fresh_branch.behavior_type);
+    EXPECT_NEAR(cached_branch.behavior_value, fresh_branch.behavior_value, 1e-12);
+    EXPECT_NEAR(cached_branch.probability, fresh_branch.probability, 1e-12);
+    ASSERT_EQ(cached_branch.points.size(), fresh_branch.points.size());
+    EXPECT_NEAR(positionVarianceTrace(cached_branch.points.back()),
+                positionVarianceTrace(fresh_branch.points.back()),
+                1e-12);
+  }
+  EXPECT_EQ(cached.feedback_diagnostics.feedback_updated_branch_count, 0U);
+}
+
+TEST(DynamicObjectPredictorTest, FeedbackStateExpiresAfterConfiguredMaxAge) {
+  DynamicObjectPredictorConfig config;
+  config.prediction_horizon = 0.3;
+  config.filter_config.default_dt = 0.1;
+  config.min_branch_probability = 0.0;
+  config.max_branches = 1U;
+  config.feedback_config.enabled = true;
+  config.feedback_config.max_age = 0.2;
+  config.interaction_config.enabled = false;
+  DynamicObjectPredictor predictor(config);
+
+  TrackPredictionInput input = makeCvInput();
+  input.id = 511U;
+  input.object_class = ObjectClass::Other;
+  input.hits = 8U;
+  input.age = 8U;
+  appendCvLinearHistory(input, 310.0, 8, 1.0, 0.0);
+
+  std_msgs::Header first_header;
+  first_header.stamp = ros::Time(311.0);
+  first_header.frame_id = "map";
+  static_cast<void>(predictor.predict(first_header, {input}));
+
+  std_msgs::Header second_header;
+  second_header.stamp = ros::Time(311.5);
+  second_header.frame_id = "map";
+  input.model_state(0) += 0.5;
+  const auto result = predictor.predict(second_header, {input});
+
+  EXPECT_EQ(result.feedback_diagnostics.feedback_updated_branch_count, 0U);
+  EXPECT_GT(result.feedback_diagnostics.expired_state_count, 0U);
+}
+
+TEST(DynamicObjectPredictorTest, FeedbackSkipsUnmatchedCurrentObservation) {
+  DynamicObjectPredictorConfig config;
+  config.prediction_horizon = 0.3;
+  config.filter_config.default_dt = 0.1;
+  config.min_branch_probability = 0.0;
+  config.max_branches = 1U;
+  config.feedback_config.enabled = true;
+  config.interaction_config.enabled = false;
+  DynamicObjectPredictor predictor(config);
+
+  TrackPredictionInput input = makeCvInput();
+  input.id = 512U;
+  input.object_class = ObjectClass::Other;
+  input.hits = 8U;
+  input.age = 8U;
+  appendCvLinearHistory(input, 320.0, 8, 1.0, 0.0);
+
+  std_msgs::Header first_header;
+  first_header.stamp = ros::Time(321.0);
+  first_header.frame_id = "map";
+  static_cast<void>(predictor.predict(first_header, {input}));
+
+  TrackPredictionInput unmatched = input;
+  unmatched.matched_in_current_frame = false;
+  unmatched.model_state(0) += 0.1;
+  std_msgs::Header second_header;
+  second_header.stamp = ros::Time(321.1);
+  second_header.frame_id = "map";
+  const auto result = predictor.predict(second_header, {unmatched});
+
+  EXPECT_EQ(result.feedback_diagnostics.feedback_updated_branch_count, 0U);
+  EXPECT_GT(result.feedback_diagnostics.feedback_skipped_object_count, 0U);
+}
+
+TEST(DynamicObjectPredictorTest, FeedbackRaisesProbabilityForMatchedSemanticBranch) {
+  DynamicObjectPredictorConfig config;
+  config.prediction_horizon = 0.3;
+  config.filter_config.default_dt = 0.1;
+  config.min_branch_probability = 0.0;
+  config.max_branches = 8U;
+  config.feedback_config.enabled = true;
+  config.feedback_config.probability_gain = 2.0;
+  config.feedback_config.noise_gain = 0.0;
+  config.interaction_config.enabled = false;
+
+  DynamicObjectPredictor feedback_predictor(config);
+
+  DynamicObjectPredictorConfig baseline_config = config;
+  baseline_config.feedback_config.enabled = false;
+  DynamicObjectPredictor baseline_predictor(baseline_config);
+
+  TrackPredictionInput first = makeCvInput();
+  first.id = 521U;
+  first.object_class = ObjectClass::Human;
+  first.hits = 8U;
+  first.age = 8U;
+  appendCvLinearHistory(first, 330.0, 8, 1.0, 0.0);
+
+  std_msgs::Header first_header;
+  first_header.stamp = ros::Time(331.0);
+  first_header.frame_id = "map";
+  const auto first_result = feedback_predictor.predict(first_header, {first});
+  const auto& first_prediction = first_result.predictions_msg.predictions.front();
+  const auto* lateral_left = findBranchWithBehaviorValue(
+      first_prediction, ldop::DynamicObjectPredictionBranch::BEHAVIOR_LATERAL, 1.0);
+  ASSERT_NE(lateral_left, nullptr);
+  ASSERT_FALSE(lateral_left->points.empty());
+
+  TrackPredictionInput second = first;
+  second.model_state(0) = lateral_left->points.front().model_state[0];
+  second.model_state(1) = lateral_left->points.front().model_state[1];
+  second.history.push_back(makeHistorySample(
+      331.1, MotionModelType::CV3D, second.model_state));
+
+  std_msgs::Header second_header;
+  second_header.stamp = ros::Time(331.1);
+  second_header.frame_id = "map";
+  const auto feedback = feedback_predictor.predict(second_header, {second});
+  const auto baseline = baseline_predictor.predict(second_header, {second});
+
+  const double feedback_probability = branchProbabilityOrZero(
+      feedback.predictions_msg.predictions.front(),
+      ldop::DynamicObjectPredictionBranch::BEHAVIOR_LATERAL,
+      1.0);
+  const double baseline_probability = branchProbabilityOrZero(
+      baseline.predictions_msg.predictions.front(),
+      ldop::DynamicObjectPredictionBranch::BEHAVIOR_LATERAL,
+      1.0);
+
+  EXPECT_GT(feedback.feedback_diagnostics.feedback_updated_branch_count, 0U);
+  EXPECT_GT(feedback.feedback_diagnostics.max_abs_probability_bias, 0.0);
+  EXPECT_GT(feedback_probability, baseline_probability);
+}
+
+TEST(DynamicObjectPredictorTest, FeedbackDiagnosticsUseAppliedProbabilityBias) {
+  DynamicObjectPredictorConfig config;
+  config.prediction_horizon = 0.3;
+  config.filter_config.default_dt = 0.1;
+  config.min_branch_probability = 0.0;
+  config.max_branches = 8U;
+  config.feedback_config.enabled = true;
+  config.feedback_config.probability_gain = 0.0;
+  config.feedback_config.noise_gain = 0.0;
+  config.interaction_config.enabled = false;
+
+  DynamicObjectPredictor feedback_predictor(config);
+
+  DynamicObjectPredictorConfig baseline_config = config;
+  baseline_config.feedback_config.enabled = false;
+  DynamicObjectPredictor baseline_predictor(baseline_config);
+
+  TrackPredictionInput first = makeCvInput();
+  first.id = 525U;
+  first.object_class = ObjectClass::Human;
+  first.hits = 8U;
+  first.age = 8U;
+  appendCvLinearHistory(first, 342.0, 8, 1.0, 0.0);
+
+  std_msgs::Header first_header;
+  first_header.stamp = ros::Time(343.0);
+  first_header.frame_id = "map";
+  const auto first_result = feedback_predictor.predict(first_header, {first});
+  const auto& first_prediction = first_result.predictions_msg.predictions.front();
+  const auto* lateral_left = findBranchWithBehaviorValue(
+      first_prediction, ldop::DynamicObjectPredictionBranch::BEHAVIOR_LATERAL, 1.0);
+  ASSERT_NE(lateral_left, nullptr);
+  ASSERT_FALSE(lateral_left->points.empty());
+
+  TrackPredictionInput second = first;
+  second.model_state(0) = lateral_left->points.front().model_state[0];
+  second.model_state(1) = lateral_left->points.front().model_state[1];
+  second.history.push_back(makeHistorySample(
+      343.1, MotionModelType::CV3D, second.model_state));
+
+  std_msgs::Header second_header;
+  second_header.stamp = ros::Time(343.1);
+  second_header.frame_id = "map";
+  const auto feedback = feedback_predictor.predict(second_header, {second});
+  const auto baseline = baseline_predictor.predict(second_header, {second});
+
+  ASSERT_EQ(feedback.predictions_msg.predictions.size(), 1U);
+  ASSERT_EQ(baseline.predictions_msg.predictions.size(), 1U);
+  const auto& feedback_prediction = feedback.predictions_msg.predictions.front();
+  const auto& baseline_prediction = baseline.predictions_msg.predictions.front();
+  ASSERT_EQ(feedback_prediction.branches.size(), baseline_prediction.branches.size());
+  for (std::size_t branch_index = 0U;
+       branch_index < feedback_prediction.branches.size();
+       ++branch_index) {
+    const auto& feedback_branch = feedback_prediction.branches[branch_index];
+    const auto& baseline_branch = baseline_prediction.branches[branch_index];
+    EXPECT_EQ(feedback_branch.behavior_type, baseline_branch.behavior_type);
+    EXPECT_NEAR(feedback_branch.behavior_value, baseline_branch.behavior_value, 1e-12);
+    EXPECT_NEAR(feedback_branch.probability, baseline_branch.probability, 1e-12);
+  }
+  EXPECT_GT(feedback.feedback_diagnostics.feedback_updated_branch_count, 0U);
+  EXPECT_EQ(feedback.feedback_diagnostics.max_abs_probability_bias, 0.0);
+}
+
+TEST(DynamicObjectPredictorTest, FeedbackDiagnosticsExposeResidualAndCovarianceScale) {
+  DynamicObjectPredictorConfig config;
+  config.prediction_horizon = 0.3;
+  config.filter_config.default_dt = 0.1;
+  config.max_branches = 1U;
+  config.feedback_config.enabled = true;
+  config.feedback_config.probability_gain = 0.0;
+  config.feedback_config.noise_gain = 0.0;
+  config.interaction_config.enabled = false;
+  DynamicObjectPredictor predictor(config);
+
+  TrackPredictionInput first = makeCvInput();
+  first.id = 527U;
+  first.object_class = ObjectClass::Other;
+  first.hits = 8U;
+  first.age = 8U;
+  appendCvLinearHistory(first, 346.0, 8, 1.0, 0.0);
+
+  std_msgs::Header first_header;
+  first_header.stamp = ros::Time(347.0);
+  first_header.frame_id = "map";
+  const auto first_result = predictor.predict(first_header, {first});
+  const auto& first_branch = first_result.predictions_msg.predictions.front().branches.front();
+  ASSERT_FALSE(first_branch.points.empty());
+  const auto& predicted_point = first_branch.points.front();
+  const double predicted_trace = positionVarianceTrace(predicted_point);
+
+  TrackPredictionInput second = first;
+  second.model_state(0) = predicted_point.model_state[0] + 0.25;
+  second.model_state(1) = predicted_point.model_state[1];
+  second.model_state(2) = predicted_point.model_state[2];
+  second.model_covariance.topLeftCorner<3, 3>() =
+      2.0 * Eigen::Matrix3d::Identity();
+  second.history.push_back(makeHistorySample(
+      347.1, MotionModelType::CV3D, second.model_state));
+
+  std_msgs::Header second_header;
+  second_header.stamp = ros::Time(347.1);
+  second_header.frame_id = "map";
+  const auto result = predictor.predict(second_header, {second});
+
+  // NIS 单独偏低时无法判断是 residual 小还是协方差大；这些诊断给现场日志提供拆解依据。
+  EXPECT_EQ(result.feedback_diagnostics.feedback_updated_branch_count, 1U);
+  EXPECT_NEAR(result.feedback_diagnostics.mean_residual_norm, 0.25, 1e-12);
+  EXPECT_NEAR(result.feedback_diagnostics.max_residual_norm, 0.25, 1e-12);
+  EXPECT_NEAR(result.feedback_diagnostics.mean_predicted_position_covariance_trace,
+              predicted_trace,
+              1e-12);
+  EXPECT_NEAR(result.feedback_diagnostics.mean_observed_position_covariance_trace,
+              6.0,
+              1e-12);
+  EXPECT_NEAR(result.feedback_diagnostics.mean_innovation_covariance_trace,
+              predicted_trace + 6.0,
+              1e-12);
+}
+
+TEST(DynamicObjectPredictorTest, FeedbackSkipsBranchWhenInnovationCovarianceIsNotPositiveDefinite) {
+  DynamicObjectPredictorConfig config;
+  config.prediction_horizon = 0.3;
+  config.filter_config.default_dt = 0.1;
+  config.min_branch_probability = 0.0;
+  config.max_branches = 8U;
+  config.feedback_config.enabled = true;
+  config.feedback_config.noise_gain = 0.0;
+  config.interaction_config.enabled = false;
+
+  DynamicObjectPredictor feedback_predictor(config);
+
+  DynamicObjectPredictorConfig baseline_config = config;
+  baseline_config.feedback_config.enabled = false;
+  DynamicObjectPredictor baseline_predictor(baseline_config);
+
+  TrackPredictionInput first = makeCvInput();
+  first.id = 522U;
+  first.object_class = ObjectClass::Human;
+  first.hits = 8U;
+  first.age = 8U;
+  appendCvLinearHistory(first, 340.0, 8, 1.0, 0.0);
+
+  std_msgs::Header first_header;
+  first_header.stamp = ros::Time(341.0);
+  first_header.frame_id = "map";
+  static_cast<void>(feedback_predictor.predict(first_header, {first}));
+
+  TrackPredictionInput second = first;
+  second.model_state(0) += 0.1;
+  second.history.push_back(makeHistorySample(
+      341.1, MotionModelType::CV3D, second.model_state));
+  // 该协方差只用于构造回归场景：上一轮预测协方差与当前观测协方差相加后非正定，
+  // LLT 必须跳过反馈，而不是把无效 likelihood 继续传播到 hints。
+  second.model_covariance.topLeftCorner<3, 3>() = -10.0 * Eigen::Matrix3d::Identity();
+
+  std_msgs::Header second_header;
+  second_header.stamp = ros::Time(341.1);
+  second_header.frame_id = "map";
+  const auto feedback = feedback_predictor.predict(second_header, {second});
+  const auto baseline = baseline_predictor.predict(second_header, {second});
+
+  ASSERT_EQ(feedback.predictions_msg.predictions.size(), 1U);
+  ASSERT_EQ(baseline.predictions_msg.predictions.size(), 1U);
+  const auto& feedback_prediction = feedback.predictions_msg.predictions.front();
+  const auto& baseline_prediction = baseline.predictions_msg.predictions.front();
+  ASSERT_EQ(feedback_prediction.branches.size(), baseline_prediction.branches.size());
+  for (std::size_t branch_index = 0U;
+       branch_index < feedback_prediction.branches.size();
+       ++branch_index) {
+    const auto& feedback_branch = feedback_prediction.branches[branch_index];
+    const auto& baseline_branch = baseline_prediction.branches[branch_index];
+    EXPECT_EQ(feedback_branch.behavior_type, baseline_branch.behavior_type);
+    EXPECT_NEAR(feedback_branch.behavior_value, baseline_branch.behavior_value, 1e-12);
+    EXPECT_NEAR(feedback_branch.probability, baseline_branch.probability, 1e-12);
+  }
+  EXPECT_EQ(feedback.feedback_diagnostics.feedback_updated_branch_count, 0U);
+  EXPECT_GT(feedback.feedback_diagnostics.feedback_skipped_branch_count, 0U);
+  EXPECT_EQ(feedback.feedback_diagnostics.max_abs_probability_bias, 0.0);
+}
+
+TEST(DynamicObjectPredictorTest, FeedbackSkipsBranchWhenObservationCovarianceIsNotFinite) {
+  DynamicObjectPredictorConfig config;
+  config.prediction_horizon = 0.3;
+  config.filter_config.default_dt = 0.1;
+  config.min_branch_probability = 0.0;
+  config.max_branches = 8U;
+  config.feedback_config.enabled = true;
+  config.feedback_config.probability_gain = 2.0;
+  config.feedback_config.noise_gain = 0.5;
+  config.interaction_config.enabled = false;
+
+  DynamicObjectPredictor feedback_predictor(config);
+
+  DynamicObjectPredictorConfig baseline_config = config;
+  baseline_config.feedback_config.enabled = false;
+  DynamicObjectPredictor baseline_predictor(baseline_config);
+
+  TrackPredictionInput first = makeCvInput();
+  first.id = 526U;
+  first.object_class = ObjectClass::Human;
+  first.hits = 8U;
+  first.age = 8U;
+  appendCvLinearHistory(first, 344.0, 8, 1.0, 0.0);
+
+  std_msgs::Header first_header;
+  first_header.stamp = ros::Time(345.0);
+  first_header.frame_id = "map";
+  static_cast<void>(feedback_predictor.predict(first_header, {first}));
+
+  TrackPredictionInput second = first;
+  second.model_state(0) += 0.1;
+  second.history.push_back(makeHistorySample(
+      345.1, MotionModelType::CV3D, second.model_state));
+  // 当前 tracker 协方差是跨模块输入；含 NaN 时只能跳过 feedback，不能 clamp 成看似合法的似然。
+  second.model_covariance(0, 0) = std::numeric_limits<double>::quiet_NaN();
+
+  std_msgs::Header second_header;
+  second_header.stamp = ros::Time(345.1);
+  second_header.frame_id = "map";
+  const auto feedback = feedback_predictor.predict(second_header, {second});
+  const auto baseline = baseline_predictor.predict(second_header, {second});
+
+  ASSERT_EQ(feedback.predictions_msg.predictions.size(), 1U);
+  ASSERT_EQ(baseline.predictions_msg.predictions.size(), 1U);
+  const auto& feedback_prediction = feedback.predictions_msg.predictions.front();
+  const auto& baseline_prediction = baseline.predictions_msg.predictions.front();
+  ASSERT_EQ(feedback_prediction.branches.size(), baseline_prediction.branches.size());
+  for (std::size_t branch_index = 0U;
+       branch_index < feedback_prediction.branches.size();
+       ++branch_index) {
+    const auto& feedback_branch = feedback_prediction.branches[branch_index];
+    const auto& baseline_branch = baseline_prediction.branches[branch_index];
+    EXPECT_EQ(feedback_branch.behavior_type, baseline_branch.behavior_type);
+    EXPECT_NEAR(feedback_branch.behavior_value, baseline_branch.behavior_value, 1e-12);
+    EXPECT_NEAR(feedback_branch.probability, baseline_branch.probability, 1e-12);
+    ASSERT_EQ(feedback_branch.points.size(), baseline_branch.points.size());
+    EXPECT_EQ(feedback_branch.points.back().model_covariance.size(),
+              baseline_branch.points.back().model_covariance.size());
+    for (std::size_t covariance_index = 0U;
+         covariance_index < feedback_branch.points.back().model_covariance.size();
+         ++covariance_index) {
+      const double feedback_value =
+          feedback_branch.points.back().model_covariance[covariance_index];
+      const double baseline_value =
+          baseline_branch.points.back().model_covariance[covariance_index];
+      if (std::isfinite(feedback_value) || std::isfinite(baseline_value)) {
+        EXPECT_NEAR(feedback_value, baseline_value, 1e-12);
+      } else {
+        EXPECT_EQ(std::isnan(feedback_value), std::isnan(baseline_value));
+        EXPECT_EQ(std::isinf(feedback_value), std::isinf(baseline_value));
+      }
+    }
+  }
+  EXPECT_EQ(feedback.feedback_diagnostics.feedback_updated_branch_count, 0U);
+  EXPECT_GT(feedback.feedback_diagnostics.feedback_skipped_branch_count, 0U);
+  EXPECT_EQ(feedback.feedback_diagnostics.max_abs_probability_bias, 0.0);
+}
+
+TEST(DynamicObjectPredictorTest, FeedbackDiagnosticsUseActualIncreasedNoiseScaleRange) {
+  DynamicObjectPredictorConfig config;
+  config.prediction_horizon = 0.3;
+  config.filter_config.default_dt = 0.1;
+  config.max_branches = 1U;
+  config.feedback_config.enabled = true;
+  config.feedback_config.noise_gain = 0.5;
+  config.feedback_config.probability_gain = 0.0;
+  config.feedback_config.max_noise_scale = 3.0;
+  config.interaction_config.enabled = false;
+  DynamicObjectPredictor predictor(config);
+
+  TrackPredictionInput first = makeCvInput();
+  first.id = 523U;
+  first.object_class = ObjectClass::Other;
+  first.hits = 8U;
+  first.age = 8U;
+  appendCvLinearHistory(first, 350.0, 8, 1.0, 0.0);
+
+  std_msgs::Header first_header;
+  first_header.stamp = ros::Time(351.0);
+  first_header.frame_id = "map";
+  static_cast<void>(predictor.predict(first_header, {first}));
+
+  TrackPredictionInput second = first;
+  second.model_state(0) += 2.0;
+  second.history.push_back(makeHistorySample(
+      351.1, MotionModelType::CV3D, second.model_state));
+
+  std_msgs::Header second_header;
+  second_header.stamp = ros::Time(351.1);
+  second_header.frame_id = "map";
+  const auto result = predictor.predict(second_header, {second});
+
+  // 单分支反馈被放大时，帧级 min 也应来自实际更新值，而不是保留默认 1.0。
+  EXPECT_EQ(result.feedback_diagnostics.feedback_updated_branch_count, 1U);
+  EXPECT_GT(result.feedback_diagnostics.min_process_noise_scale, 1.0);
+  EXPECT_GT(result.feedback_diagnostics.max_process_noise_scale, 1.0);
+}
+
+TEST(DynamicObjectPredictorTest, FeedbackIncreasesFutureCovarianceForHighNis) {
+  DynamicObjectPredictorConfig config;
+  config.prediction_horizon = 0.3;
+  config.filter_config.default_dt = 0.1;
+  config.max_branches = 1U;
+  config.feedback_config.enabled = true;
+  config.feedback_config.noise_gain = 0.5;
+  config.feedback_config.probability_gain = 0.0;
+  config.interaction_config.enabled = false;
+  DynamicObjectPredictor feedback_predictor(config);
+
+  DynamicObjectPredictorConfig baseline_config = config;
+  baseline_config.feedback_config.enabled = false;
+  DynamicObjectPredictor baseline_predictor(baseline_config);
+
+  TrackPredictionInput first = makeCvInput();
+  first.id = 531U;
+  first.object_class = ObjectClass::Other;
+  first.hits = 8U;
+  first.age = 8U;
+  appendCvLinearHistory(first, 370.0, 8, 1.0, 0.0);
+
+  std_msgs::Header first_header;
+  first_header.stamp = ros::Time(371.0);
+  first_header.frame_id = "map";
+  static_cast<void>(feedback_predictor.predict(first_header, {first}));
+
+  TrackPredictionInput second = first;
+  second.model_state(0) += 2.0;
+  second.history.push_back(makeHistorySample(
+      371.1, MotionModelType::CV3D, second.model_state));
+
+  std_msgs::Header second_header;
+  second_header.stamp = ros::Time(371.1);
+  second_header.frame_id = "map";
+  const auto feedback = feedback_predictor.predict(second_header, {second});
+  const auto baseline = baseline_predictor.predict(second_header, {second});
+
+  const auto& feedback_branch = feedback.predictions_msg.predictions.front().branches.front();
+  const auto& baseline_branch = baseline.predictions_msg.predictions.front().branches.front();
+  EXPECT_GT(feedback.feedback_diagnostics.max_process_noise_scale, 1.0);
+  EXPECT_GT(positionVarianceTrace(feedback_branch.points.back()),
+            positionVarianceTrace(baseline_branch.points.back()));
+}
+
+TEST(DynamicObjectPredictorTest, FeedbackDiagnosticsUseActualReducedNoiseScaleRange) {
+  DynamicObjectPredictorConfig config;
+  config.prediction_horizon = 0.3;
+  config.filter_config.default_dt = 0.1;
+  config.max_branches = 1U;
+  config.feedback_config.enabled = true;
+  config.feedback_config.noise_gain = 0.5;
+  config.feedback_config.probability_gain = 0.0;
+  config.feedback_config.max_noise_scale = 3.0;
+  config.interaction_config.enabled = false;
+  DynamicObjectPredictor predictor(config);
+
+  TrackPredictionInput input = makeCvInput();
+  input.id = 524U;
+  input.object_class = ObjectClass::Other;
+  input.hits = 8U;
+  input.age = 8U;
+  appendCvLinearHistory(input, 360.0, 8, 1.0, 0.0);
+
+  std_msgs::Header header;
+  header.frame_id = "map";
+  header.stamp = ros::Time(361.0);
+  auto result = predictor.predict(header, {input});
+
+  for (int frame = 1; frame <= 6; ++frame) {
+    const auto& previous_branch =
+        result.predictions_msg.predictions.front().branches.front();
+    input.model_state(0) = previous_branch.points.front().model_state[0];
+    input.model_state(1) = previous_branch.points.front().model_state[1];
+    input.model_state(2) = previous_branch.points.front().model_state[2];
+    input.history.push_back(makeHistorySample(
+        361.0 + 0.1 * static_cast<double>(frame),
+        MotionModelType::CV3D,
+        input.model_state));
+    header.stamp = ros::Time(361.0 + 0.1 * static_cast<double>(frame));
+    result = predictor.predict(header, {input});
+  }
+
+  // 单分支反馈被收缩时，帧级 max 也应来自实际更新值，而不是保留默认 1.0。
+  EXPECT_EQ(result.feedback_diagnostics.feedback_updated_branch_count, 1U);
+  EXPECT_LT(result.feedback_diagnostics.min_process_noise_scale, 1.0);
+  EXPECT_LT(result.feedback_diagnostics.max_process_noise_scale, 1.0);
+  EXPECT_GE(result.feedback_diagnostics.min_process_noise_scale, 0.3);
+}
+
+TEST(DynamicObjectPredictorTest, FeedbackCanReduceFutureCovarianceButKeepsFixedFloor) {
+  DynamicObjectPredictorConfig config;
+  config.prediction_horizon = 0.3;
+  config.filter_config.default_dt = 0.1;
+  config.max_branches = 1U;
+  config.feedback_config.enabled = true;
+  config.feedback_config.noise_gain = 0.5;
+  config.feedback_config.probability_gain = 0.0;
+  config.feedback_config.max_noise_scale = 3.0;
+  config.interaction_config.enabled = false;
+  DynamicObjectPredictor feedback_predictor(config);
+
+  DynamicObjectPredictorConfig baseline_config = config;
+  baseline_config.feedback_config.enabled = false;
+  DynamicObjectPredictor baseline_predictor(baseline_config);
+
+  TrackPredictionInput input = makeCvInput();
+  input.id = 532U;
+  input.object_class = ObjectClass::Other;
+  input.hits = 8U;
+  input.age = 8U;
+  appendCvLinearHistory(input, 380.0, 8, 1.0, 0.0);
+
+  std_msgs::Header header;
+  header.frame_id = "map";
+  header.stamp = ros::Time(381.0);
+  auto previous_feedback = feedback_predictor.predict(header, {input});
+
+  for (int frame = 1; frame <= 6; ++frame) {
+    const auto& previous_branch =
+        previous_feedback.predictions_msg.predictions.front().branches.front();
+    input.model_state(0) = previous_branch.points.front().model_state[0];
+    input.model_state(1) = previous_branch.points.front().model_state[1];
+    input.model_state(2) = previous_branch.points.front().model_state[2];
+    input.history.push_back(makeHistorySample(
+        381.0 + 0.1 * static_cast<double>(frame),
+        MotionModelType::CV3D,
+        input.model_state));
+    header.stamp = ros::Time(381.0 + 0.1 * static_cast<double>(frame));
+    previous_feedback = feedback_predictor.predict(header, {input});
+  }
+
+  const auto baseline = baseline_predictor.predict(header, {input});
+  const auto& feedback_branch =
+      previous_feedback.predictions_msg.predictions.front().branches.front();
+  const auto& baseline_branch = baseline.predictions_msg.predictions.front().branches.front();
+
+  EXPECT_LT(previous_feedback.feedback_diagnostics.min_process_noise_scale, 1.0);
+  EXPECT_GE(previous_feedback.feedback_diagnostics.min_process_noise_scale, 0.3);
+  EXPECT_LT(positionVarianceTrace(feedback_branch.points.back()),
+            positionVarianceTrace(baseline_branch.points.back()));
+}
+
+TEST(DynamicObjectPredictorTest, FeedbackMatchesBranchesByBehaviorKeyAfterSorting) {
+  DynamicObjectPredictorConfig config;
+  config.prediction_horizon = 0.3;
+  config.filter_config.default_dt = 0.1;
+  config.min_branch_probability = 0.0;
+  config.max_branches = 8U;
+  config.feedback_config.enabled = true;
+  config.feedback_config.probability_gain = 2.0;
+  config.feedback_config.noise_gain = 0.0;
+  config.interaction_config.enabled = false;
+  DynamicObjectPredictor predictor(config);
+  DynamicObjectPredictorConfig baseline_config = config;
+  baseline_config.feedback_config.enabled = false;
+  DynamicObjectPredictor baseline_predictor(baseline_config);
+
+  TrackPredictionInput first = makeCvInput();
+  first.id = 541U;
+  first.object_class = ObjectClass::Human;
+  first.hits = 8U;
+  first.age = 8U;
+  appendCvLinearHistory(first, 390.0, 8, 1.0, 0.0);
+
+  std_msgs::Header first_header;
+  first_header.stamp = ros::Time(391.0);
+  first_header.frame_id = "map";
+  const auto first_result = predictor.predict(first_header, {first});
+  const auto& first_prediction = first_result.predictions_msg.predictions.front();
+  const auto first_turn_right_index = branchIndexWithBehaviorValue(
+      first_prediction,
+      ldop::DynamicObjectPredictionBranch::BEHAVIOR_TURNING,
+      -1.0);
+  ASSERT_TRUE(first_turn_right_index.has_value());
+  // turn-right 首帧不是默认首分支，测试才会覆盖“上一轮排序 index”和语义 key 分离的场景。
+  EXPECT_NE(*first_turn_right_index, 0U);
+  const auto* turn_right = findBranchWithBehaviorValue(
+      first_prediction,
+      ldop::DynamicObjectPredictionBranch::BEHAVIOR_TURNING,
+      -1.0);
+  ASSERT_NE(turn_right, nullptr);
+  ASSERT_FALSE(turn_right->points.empty());
+
+  TrackPredictionInput second = first;
+  ASSERT_FALSE(turn_right->points.back().model_state.empty());
+  second.model_state(0) = turn_right->points.back().model_state[0];
+  second.model_state(1) = turn_right->points.back().model_state[1];
+  second.model_state(2) = turn_right->points.back().model_state[2];
+  second.history.push_back(makeHistorySample(
+      391.3, MotionModelType::CV3D, second.model_state));
+
+  std_msgs::Header second_header;
+  second_header.stamp = ros::Time(391.3);
+  second_header.frame_id = "map";
+  const auto result = predictor.predict(second_header, {second});
+  const auto baseline_result = baseline_predictor.predict(second_header, {second});
+
+  const auto& feedback_prediction = result.predictions_msg.predictions.front();
+  const auto& baseline_prediction = baseline_result.predictions_msg.predictions.front();
+  const auto* boosted_turn_right = findBranchWithBehaviorValue(
+      feedback_prediction,
+      ldop::DynamicObjectPredictionBranch::BEHAVIOR_TURNING,
+      -1.0);
+  const auto* baseline_turn_right = findBranchWithBehaviorValue(
+      baseline_prediction,
+      ldop::DynamicObjectPredictionBranch::BEHAVIOR_TURNING,
+      -1.0);
+  const auto* boosted_turn_left = findBranchWithBehaviorValue(
+      feedback_prediction,
+      ldop::DynamicObjectPredictionBranch::BEHAVIOR_TURNING,
+      1.0);
+  const auto* baseline_turn_left = findBranchWithBehaviorValue(
+      baseline_prediction,
+      ldop::DynamicObjectPredictionBranch::BEHAVIOR_TURNING,
+      1.0);
+  ASSERT_NE(boosted_turn_right, nullptr);
+  ASSERT_NE(baseline_turn_right, nullptr);
+  ASSERT_NE(boosted_turn_left, nullptr);
+  ASSERT_NE(baseline_turn_left, nullptr);
+
+  const double turn_right_gain =
+      boosted_turn_right->probability - baseline_turn_right->probability;
+  const double turn_left_gain =
+      boosted_turn_left->probability - baseline_turn_left->probability;
+  // 旧输出 index 不是语义契约；若实现把排序后的 index 误用到新一轮候选，
+  // 最容易把证据落到相反 turning 分支，因此这里直接比较两个 turning key 的增益。
+  EXPECT_GT(boosted_turn_right->probability, baseline_turn_right->probability);
+  EXPECT_GT(turn_right_gain, 1e-6);
+  EXPECT_GT(turn_right_gain, turn_left_gain + 1e-6);
+  EXPECT_GT(result.feedback_diagnostics.feedback_updated_branch_count, 0U);
+  EXPECT_GT(result.feedback_diagnostics.max_abs_probability_bias, 0.0);
+}
+
+TEST(DynamicObjectPredictorTest, FeedbackPriorStillAllowsInteractionReweighting) {
+  DynamicObjectPredictorConfig config;
+  config.prediction_horizon = 0.5;
+  config.filter_config.default_dt = 0.1;
+  config.max_branches = 6U;
+  config.min_branch_probability = 0.0;
+  config.feedback_config.enabled = true;
+  config.feedback_config.probability_gain = 2.0;
+  config.interaction_config.enabled = true;
+  config.interaction_config.pair_interaction_weight = 3.0;
+  config.interaction_config.map_interaction_weight = 0.0;
+  config.interaction_config.corridor_interaction_weight = 0.0;
+  DynamicObjectPredictor predictor(config);
+  DynamicObjectPredictorConfig no_interaction_config = config;
+  no_interaction_config.interaction_config.enabled = false;
+  DynamicObjectPredictor no_interaction_predictor(no_interaction_config);
+
+  TrackPredictionInput first = makeCvInput();
+  first.id = 551U;
+  first.object_class = ObjectClass::Human;
+  first.hits = 8U;
+  first.age = 8U;
+  appendCvLinearHistory(first, 400.0, 8, 1.0, 0.0);
+
+  std_msgs::Header first_header;
+  first_header.stamp = ros::Time(401.0);
+  first_header.frame_id = "map";
+  static_cast<void>(predictor.predict(first_header, {first}));
+  static_cast<void>(no_interaction_predictor.predict(first_header, {first}));
+
+  TrackPredictionInput second = first;
+  second.model_state(0) += 0.1;
+  second.history.push_back(makeHistorySample(
+      401.1, MotionModelType::CV3D, second.model_state));
+
+  TrackPredictionInput opposing = makeCvInput();
+  opposing.id = 552U;
+  opposing.object_class = ObjectClass::Human;
+  opposing.model_state(0) = 0.45;
+  opposing.model_state(3) = -1.0;
+  opposing.hits = 8U;
+  opposing.age = 8U;
+  appendCvLinearHistory(opposing, 400.0, 8, -1.0, 0.0);
+  for (auto& sample : opposing.history) {
+    sample.model_state(0) += 0.45;
+  }
+
+  std_msgs::Header second_header;
+  second_header.stamp = ros::Time(401.1);
+  second_header.frame_id = "map";
+  const auto result = predictor.predict(second_header, {second, opposing});
+  const auto no_interaction_result =
+      no_interaction_predictor.predict(second_header, {second, opposing});
+
+  EXPECT_GT(result.feedback_diagnostics.feedback_updated_branch_count, 0U);
+  EXPECT_GT(result.interaction_diagnostics.near_pair_branch_count, 0U);
+  EXPECT_EQ(no_interaction_result.interaction_diagnostics.near_pair_branch_count, 0U);
+  ASSERT_EQ(result.predictions_msg.predictions.size(),
+            no_interaction_result.predictions_msg.predictions.size());
+
+  bool interaction_changed_branch_probability = false;
+  for (std::size_t prediction_index = 0U;
+       prediction_index < result.predictions_msg.predictions.size();
+       ++prediction_index) {
+    const auto& interacted_prediction = result.predictions_msg.predictions[prediction_index];
+    const auto& no_interaction_prediction =
+        no_interaction_result.predictions_msg.predictions[prediction_index];
+    EXPECT_EQ(interacted_prediction.id, no_interaction_prediction.id);
+    EXPECT_NEAR(probabilitySum(interacted_prediction), 1.0, 1e-9);
+    EXPECT_NEAR(probabilitySum(no_interaction_prediction), 1.0, 1e-9);
+
+    for (const auto& no_interaction_branch : no_interaction_prediction.branches) {
+      const auto* interacted_branch = findBranchWithBehaviorValue(
+          interacted_prediction,
+          no_interaction_branch.behavior_type,
+          no_interaction_branch.behavior_value);
+      ASSERT_NE(interacted_branch, nullptr);
+      if (std::abs(interacted_branch->probability -
+                   no_interaction_branch.probability) > 1e-6) {
+        interaction_changed_branch_probability = true;
+      }
+    }
+  }
+  EXPECT_TRUE(interaction_changed_branch_probability);
 }
 
 double terminalPositionDistance(const ldop::DynamicObjectPredictionBranch& lhs,

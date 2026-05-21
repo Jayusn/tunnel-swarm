@@ -4,7 +4,7 @@
 
 - 面向用户和文档的自然语言默认使用简体中文；代码标识符、消息字段、参数名和 ROS 话题名保留英文。
 - 第一阶段动静态点云分割与静态地图已经完成。
-- 第二阶段动态点云聚类、检测与跟踪已经完成，当前主线进入第三阶段动态目标短时轨迹预测。
+- 第二阶段动态点云聚类、检测与跟踪已经完成，LDOP 第三阶段动态目标短时轨迹预测也已完成，当前主线可转入后续评估工具或第四阶段风险地图。
 - 第三阶段预测应只消费第二阶段稳定跟踪目标，不直接对未聚类动态点云做规划级预测。
 - 预测结果应通过独立消息和独立话题发布，不回填到 `DynamicObject.msg`。
 
@@ -17,7 +17,7 @@
   - `model_covariance`
   - `object_class`
   - `motion_model_type`
-- `DynamicObject.msg` 中没有预测数组；未来预测需要新增独立消息。
+- `DynamicObject.msg` 中没有预测数组；当前预测已通过 `DynamicObjectPrediction*` 独立消息和独立预测话题表达，不回填 tracker 当前状态消息。
 - `include/ldop/dynamic_object_tracker.h` 中已经存在 `TrackPredictionInput`，它是 tracker 预留给未来 predictor 的内部快照。
 - `TrackPredictionInput` 已包含预测所需的关键输入：
   - `stamp`
@@ -32,13 +32,13 @@
   - `hits`
   - `missed_frames`
   - `matched_in_current_frame`
-- `DynamicObjectTrackerFrameResult` 已包含 `prediction_inputs`，当前仍只在 C++ 内部流转，没有新增预测话题。
+- `DynamicObjectTrackerFrameResult` 已包含 `prediction_inputs`，当前由 `DynamicObjectPredictor` 消费，并通过独立预测话题和预测 marker 输出结果。
 - `docs/note/LDOP_design.md` 已明确第三阶段目标是对第二阶段稳定跟踪目标做 1-3 秒短时预测，并输出独立预测话题和可视化。
 - 最近提交 `d0dfaec 轨迹预测的准备` 已把当前主线推进到预测准备状态；本轮开始时工作区只有 `task_plan.md` 和 `progress.md` 由本轮流程更新。
-- `src/ldop.cpp` 当前已经发布动态对象 bbox marker、稳定轨迹 marker 和静态地图 marker；预测 marker 应按相同 `MarkerArray` 模式接入 `Ldop::publishFrame()`。
-- 预测第一阶段的代码范围大概率集中在新增 predictor、预测 msg、`Ldop` 持有/调用/发布、`config/ldop.yaml` 参数和 `CMakeLists.txt` 消息构建。
-- `Ldop::processFrame()` 当前顺序是 UFOMap -> clusterer -> tracker -> 装入 `ProcessedFrame`；轨迹外推 predictor 最贴合的位置是在 `dynamic_object_tracker_->processDynamicTracks(...)` 之后消费 `tracking_result.prediction_inputs`。
-- `Ldop::publishFrame()` 是所有输出的统一发布点；轨迹外推预测需要在 `ProcessedFrame` 中新增预测消息和预测 `MarkerArray`，并增加对应 publisher/topic 参数。
+- `src/ldop.cpp` 当前已经发布动态对象 bbox marker、稳定轨迹 marker、静态地图 marker 和预测 marker；预测 marker 按 `MarkerArray` 模式由 `Ldop::publishFrame()` 统一发布。
+- 预测主线代码范围集中在 predictor、预测 msg、`Ldop` 持有/调用/发布、`config/ldop.yaml` 参数和相关测试。
+- `Ldop::processFrame()` 当前顺序是 UFOMap -> clusterer -> tracker -> predictor -> 装入 `ProcessedFrame`；predictor 在 tracker 后消费 `tracking_result.prediction_inputs`。
+- `Ldop::publishFrame()` 是所有输出的统一发布点；预测消息和预测 `MarkerArray` 已接入该发布边界。
 - `buildPredictionInputs()` 与 `buildOutput()` 使用同一 `min_hits_to_publish` 过滤策略，因此 predictor 默认只处理已经对外发布的稳定轨迹；coasting 轨迹仍可能进入预测输入。
 - 所有运动模型的中心位置都固定在 `model_state[0..2]`：
   - `CA2D`: `[x,y,z,vx,vy,ax,ay]`，z 位置保持，水平面 constant acceleration。
@@ -57,16 +57,23 @@
 - `DynamicObjectPredictor::predict()` 当前接收 `header`、`TrackPredictionInput[]` 和可选 `PredictionMapQuery*`；地图约束通过只读 adapter 注入，predictor 不拥有 UFOMap runtime。
 - `UfomapMapper` 当前提供 `queryNode()`、`seenFree()`、`queryDynamicCandidates()` 和中性静态邻域查询 `queryLocalOccupied()`；P3 静态近障碍查询使用 `queryLocalOccupied()`，不把 dynamic candidate / label 语义混入预测地图代价。
 - `Ldop::processFrame()` 当前顺序为 UFOMap、clusterer、tracker、predictor；P3 在 tracker 后构造栈上 `UfomapPredictionMapQuery` adapter，供 predictor 查询静态占据、近障碍和 free corridor 证据。
-- `DynamicObjectPredictorTimingStats` 目前区分预测对象、应用交互上下文和 marker 构建耗时；P4 若加入闭环评估，可继续细分 `evaluation` 或 `feedback` 耗时。
-- 预测消息当前没有 interaction cost、map cost、NIS 或 evaluator 指标字段；如果 P3/P4 只改变分支概率和协方差，现有消息可继续承载 planner-facing 输出，诊断信息应优先放日志、统计结构或独立诊断话题，而不是污染默认预测消息。
-- 当前 P2 的私有数据流是 `MotionHistoryFeatures -> PredictionMode[] -> DynamicObjectPredictionBranch[]`；P3 可以在 `PredictionMode` 概率归一化之后、rollout 之后或 branch 输出前加入交互能量。若需要基于未来轨迹相互影响，rollout 后重权重更直接。
+- `DynamicObjectPredictorTimingStats` 目前区分预测对象、应用交互上下文和 marker 构建耗时；P4 在线反馈诊断通过 `PredictionFeedbackDiagnostics` 和 `verbose` 日志暴露，不新增默认 ROS 诊断 topic。
+- 预测消息当前没有 interaction cost、map cost、NIS 或 evaluator 指标字段；P3/P4 只改变分支概率、未来协方差传播或内部反馈状态时，现有消息可继续承载 planner-facing 输出，诊断信息优先放日志和统计结构，而不是污染默认预测消息。
+- 当前 P3 的私有数据流是 `MotionHistoryFeatures -> PredictionMode[] -> DynamicObjectPredictionBranch[] -> PredictionInteractionContext -> final branches`；交互能量在候选分支 rollout 后评估，再由 predictor 应用概率重权重、平滑控制 rerollout 和目标内概率归一化。
 - P3 当前代码事实：
   - `PredictionInteractionContext` 已作为独立模块落地，使用 `PredictionMapQuery` 抽象读取地图证据；当前实现不复制完整 UFOMap，也不再做逐点地图查询，而是用分支级 occupied 查询预算和每分支 8 方向 corridor 探针控制耗时。
   - P3 静态地图约束通过 `PredictionMapQuery` 抽象读取 UFOMap；动态目标交互继续来自 tracker/predictor 的稳定目标状态、尺寸和预测分支，不使用 UFOMap dynamic candidate 查询反推未来动态风险。
   - `DynamicObjectPredictor` 应用交互结果时先调整 branch probability，再把逐点修正 hint 平滑成速度/减速/方向控制 profile，并用原 `MotionModel` 重新 rollout 分支；不再直接改写离散采样点位置，也不缩小 `model_covariance`。
-  - `PredictionBranchInteraction` 已新增内部 `PredictionBranchRiskLevel::{Low, Medium, High, Critical}`，由 occupied overlap、TTC、pair/map/corridor cost 和 total energy 派生；该字段不进入 ROS prediction message，作为 P4 风险地图 builder 的快速分层摘要。
+  - `PredictionBranchInteraction` 已新增内部 `PredictionBranchRiskLevel::{Low, Medium, High, Critical}`，由 occupied overlap、TTC、pair/map/corridor cost 和 total energy 派生；该字段不进入 ROS prediction message，作为 LDOP 第四阶段风险地图 builder 的快速分层摘要。
   - `Ldop` 的 UFOMap adapter 是 `processFrame()` 内的栈上对象，所有读查询仍走 `UfomapMapper` 自身锁语义。
   - `config/ldop.yaml` 已加入 P3 中等粒度参数：交互开关、目标间/地图/corridor 权重、安全距离、近障碍距离、TTC 阈值、free corridor 半径、修正上限和能量温度。
+- P4 当前代码事实：
+  - P4 闭环反馈状态位于 `DynamicObjectPredictor` 内部，而不是 `Ldop` 或 tracker。反馈按 `object_id` 生效，当前 tracker 观测对齐上一轮预测快照后计算 residual、NIS 和 log-likelihood。
+  - 分支通过 `behavior_type + behavior_value` 近似桶匹配，避免依赖 branch index；feedback 只作为下一帧同语义 mode score bias 和未来 `Q_future` 尺度。
+  - P4 的噪声反馈只乘到 predictor 未来 rollout 的 `Q_future`；无反馈时 `process_noise_scale` 为 1.0，闭环下界固定 0.3，上界为 `prediction_feedback_max_noise_scale`。
+  - 0.3 不暴露为 YAML 参数；当前不恢复 `prediction_feedback_history_size`，也不新增 `prediction_feedback_min_noise_scale`。
+  - P3 interaction reweighting 仍在 P2/P4 之后执行；P4 不新增 ROS msg、默认诊断 topic 或 tracker 反馈链路。
+- 第三阶段完成结论：P1/P2/P3/P4 predictor 在线能力均已落地；预测消息、RViz 分支线、交互重权重/修正和 P4 feedback 都保持现有边界，不新增 ROS prediction msg 或 tracker 反馈链路。
 
 ## 用户给出的第三阶段思路
 
@@ -79,20 +86,22 @@
 
 ## 阶段性实现结论
 
-- 第一阶段应先实现轨迹外推，得到单条中心轨迹；这是最小可运行预测链路。
-- 第二阶段在单轨迹基础上加入航向/意图，得到简化版高斯混合分布的多条轨迹。
-- 第三阶段加入交互，得到完整高斯混合分布的多条轨迹。
-- 第四阶段完成闭环评估和概率反馈，使不同轨迹模式的概率能随观测误差调整。
+- LDOP 第三阶段轨迹预测内容已完成；P1-P4 构成当前 predictor 在线能力闭环。
+- 第一阶段 P1 已实现轨迹外推，得到单条中心轨迹；这是最小可运行预测链路。
+- 第二阶段 P2 已在单轨迹基础上加入航向/意图，得到简化版高斯混合分布的多条轨迹。
+- 第三阶段 P3 已加入交互，得到受目标间/地图约束影响的完整高斯混合分布多条轨迹。
+- 第四阶段 P4 已完成 predictor 内部在线闭环反馈，使不同轨迹模式的下一帧概率先验和未来过程噪声尺度能随观测误差调整。
+- 后续未实现：多 horizon `ADE/FDE/minADE/minFDE/NLL/ECE/Brier/coverage` 离线 evaluator 和 LDOP 第四阶段 planner-facing 风险地图。
 
 ## 待核实内容
 
 - 已确认预测消息内部直接预留多预测分支结构；轨迹外推单轨迹阶段只填一条 `trajectory_extrapolation` 分支，概率为 1.0。这里的预测分支表示同一目标未来的一种候选走法，例如保持当前方向、轻微左偏或轻微右偏。
-- RViz 预测 marker 默认话题名已确定为 `/ldop/dynamic_prediction_markers`；当前 P2 样式为每条真实 GMM 分支一条中心状态轨迹线，漏检延续目标降低透明度。
+- RViz 预测 marker 默认话题名已确定为 `/ldop/dynamic_prediction_markers`；当前 P3 仍保持每条真实 GMM 分支一条中心状态轨迹线，漏检延续目标降低透明度。
 - P3 交互预测的首版范围已确认：目标间交互与目标-地图占据/近障碍约束同时进入设计。
 - P3 交互作用范围已确认：以分支概率重权重为主，允许对明显穿障、过近或迎面冲突的分支做轻量中心轨迹修正。
 - P3 地图约束策略已确认：同时使用 UFOMap 占据/近障碍软代价和局部 free corridor 方向先验。
 - P3 交互上下文接入方式已确认：新建独立 `PredictionInteractionContext` 模块聚合目标间关系、UFOMap 静态约束、free corridor 和分支交互代价，再交给 predictor 消费。
-- `PredictionInteractionContext` 不等同于第四阶段 planner-facing 类 ROG-Map 地图。它是 P3/P4 可复用的场景证据层；第四阶段应单独实现风险/局部地图 builder，消费预测结果、分支概率、协方差、目标尺寸、`influence_weight` 和 context 输出的局部风险摘要。
+- `PredictionInteractionContext` 不等同于第四阶段 planner-facing 类 ROG-Map 地图。它是 P3 和后续 LDOP 第四阶段可复用的场景证据层；第四阶段应单独实现风险/局部地图 builder，消费预测结果、分支概率、协方差、目标尺寸、`influence_weight` 和 context 输出的局部风险摘要。
 - P3 交互上下文输出边界已确认：输出给 predictor 的交互/地图代价、总能量和轻量修正建议，同时保留内部诊断统计；首版不新增默认 ROS 诊断话题。
 - P3 参数暴露策略已确认：采用中等粒度参数，包括总开关、目标间权重、地图权重、安全距离、近障碍距离、TTC 安全阈值、free corridor 查询半径、轻量修正最大位移/减速比例、能量温度 `tau`。
 - P3 验证范围已确认：单元测试覆盖目标交叉、迎面、穿障、近障碍和 free corridor 场景；再执行包级构建和测试，包括 `catkin build ldop --no-status`、`catkin run_tests ldop --no-status`、`catkin_test_results /home/st/ldop_ws/build/ldop`。
@@ -111,8 +120,9 @@
 - P3 设计规格已写入 `docs/superpowers/specs/2026-05-19-dynamic-object-interaction-aware-gmm-p3-design.md`。
 - P3 实现计划已写入 `docs/superpowers/plans/2026-05-19-dynamic-object-interaction-aware-gmm-p3-implementation-plan.md`，计划中把 `PredictionInteractionContext`、UFOMap 静态只读区域查询、predictor 应用逻辑、`Ldop` adapter 和回归测试拆成独立任务。
 - P3 实现计划明确：新增中性 `UfomapMapper::queryLocalOccupied()` 只服务静态 occupied/near-obstacle 查询；`queryDynamicCandidates()` 不作为 P3 静态近障碍主接口。
-- P3 实现已完成并通过验证：`catkin build ldop --no-status`、`catkin run_tests ldop --no-status` 和 `catkin_test_results /home/st/ldop_ws/build/ldop`；最终汇总为 72 tests, 0 errors, 0 failures。
-- 第四阶段闭环评估所需的真实轨迹缓存窗口和目标匹配策略尚未设计。
+- P3 实现已完成并通过验证：`catkin build ldop --no-status`、`catkin run_tests ldop --no-status` 和 `catkin_test_results /home/st/ldop_ws/build/ldop`；当前记录的最终汇总为 78 tests, 0 errors, 0 failures, 0 skipped。
+- P3 完成范围已确认：目标间/地图交互、概率重权重、平滑控制 rerollout、分支级地图/corridor 查询预算和内部 `branch_risk_level` 摘要均已落地；后续 LDOP 第四阶段可把这些输出作为风险地图输入继续消费。
+- 轨迹预测内部 P4 已采用 predictor 内部上一轮快照 + `object_id` 对齐完成在线短期 feedback，因此 LDOP 第三阶段轨迹预测内容已完成；离线多 horizon evaluator 的缓存窗口、样本对齐和 rosbag 统计输出仍作为后续工具另行设计。
 
 ## 本轮用户选择
 
@@ -136,18 +146,18 @@
 | 默认预测未来 1.0 秒，采样间隔复用 `tracking_default_dt` | 当前先服务短时动态风险表达；采样间隔沿用 tracker 默认时间步长，减少重复参数并让预测采样粒度与跟踪时间粒度一致 |
 | 漏检延续但尚未删除的稳定轨迹继续预测 | tracker 当前会继续发布满足命中阈值且未删除的 coasting 轨迹；预测侧保持同一目标集合，消息保留，marker 透明度降低 |
 | 不为低速或近似静止目标单独退化 | 当前系统只跟踪动态目标；速度大小是动态目标状态的一部分，预测模块不额外引入低速/静止分支判断 |
-| 预测消息保存模型原生状态和模型原生协方差 | 预测输出与当前 tracker 消息的状态语义一致，不在消息层只保留三维位置不确定性；RViz 椭球从前三维位置协方差派生 |
+| 预测消息保存模型原生状态和模型原生协方差 | 预测输出与当前 tracker 消息的状态语义一致，不在消息层只保留三维位置不确定性；历史 P1 版本 RViz 椭球从前三维位置协方差派生，当前 P2/P3/P4 默认不显示椭球 |
 | 未来采样点单独建消息类型 | 每个采样点把相对时间、模型原生状态和模型原生协方差打包在一起，比多个并行数组更不容易产生索引错位 |
 | 预测分支类型改为通用行为族方向 | 分支类型不绑定实现阶段，也不枚举具体方向；上升/下降、前进/后退、转弯等应作为运动行为族，方向和强度由有符号参数表达 |
 | 当前基础能力命名为轨迹外推而非线性外推 | 保持直行时线性外推表述成立，但目标航向变化或 CTRA 转弯时轨迹传播不是线性的；轨迹外推能覆盖所有当前运动模型 |
-| `BEHAVIOR_BASELINE` 只用于第一阶段基准预测 | 第一阶段需要一个不额外假设意图的基准分支来跑通链路；后续多意图/交互阶段只使用明确行为族分支 |
+| 历史 P1 版本曾使用 `BEHAVIOR_BASELINE` 作为基准预测 | 当时需要一个不额外假设意图的基准分支来跑通链路；P2 已移除该枚举，当前多意图/交互/闭环反馈只使用明确行为族分支 |
 | `behavior_value` 使用归一化有符号行为强度 | 避免同一字段在不同分支类型下混用不同物理单位；真实轨迹由 `points[].model_state` 表达，行为强度只说明分支偏向 |
 | 模型不确定性和规划影响权重分开表达 | 协方差继续表示模型传播出来的不确定性；规划影响由采样点 `influence_weight` 控制，避免远端大协方差直接压缩可通行区域 |
 | 影响权重按预测总时长一半分段 | 前半段权重保持 1.0，后半段线性衰减到 0.3；分段点由 `prediction_horizon * 0.5` 得到，最小尾部权重写死为 0.3，不新增影响权重参数 |
 | 不设置预测目标数量限制 | predictor 不额外裁剪目标集合；tracker 已经用稳定发布策略控制预测输入，后续若有性能压力再考虑限额参数 |
-| RViz 预测可视化包含轨迹线和不确定性椭球 | 预测线使用采样点中心；椭球大小来自模型原生协方差前三维位置子块，透明度由采样点 `influence_weight` 和目标是否漏检延续共同决定 |
-| 不确定性椭球由 3x3 位置协方差特征分解生成 | RViz `SPHERE` marker 可通过姿态和 scale 表达旋转椭球；特征分解能保留位置协方差主轴方向和相关性 |
-| 不确定性椭球默认显示 1σ | 对位置协方差特征值取平方根得到标准差；RViz `SPHERE` 的 scale 表示直径，因此每个轴使用 `2 * sqrt(lambda)` |
+| 历史 P1 版本 RViz 预测可视化包含轨迹线和不确定性椭球 | 当时预测线使用采样点中心；当前 P2/P3/P4 默认只显示真实保留分支中心状态线，不显示协方差椭球 |
+| 历史 P1 版本不确定性椭球由 3x3 位置协方差特征分解生成 | 若后续重新引入不确定性视图，RViz `SPHERE` marker 仍可通过姿态和 scale 表达旋转椭球，并保留位置协方差主轴方向和相关性 |
+| 历史 P1 版本不确定性椭球默认显示 1σ | 若后续重新引入不确定性视图，仍可按 RViz `SPHERE` 直径语义使用 `2 * sqrt(lambda)` |
 | 预测目标消息保留 `size` 和 `matched_in_current_frame` | `size` 让规划风险层能把实体尺寸和位置不确定性一起考虑；`matched_in_current_frame` 让下游区分当前帧匹配目标和漏检延续目标 |
 | 预测目标消息复用当前目标类别和运动模型常量 | `DynamicObjectPrediction.msg` 中保留与 `DynamicObject.msg` 一致的 `CLASS_*` 与 `MOTION_MODEL_*` 常量，方便测试和下游消费预测消息 |
 | 顶层 `motion_model_type` 用于解释采样点状态布局 | 预测目标顶层不保存单独协方差；每个预测分支采样点保存随时间传播的 `model_state/model_covariance`，顶层运动模型类型是解释这些数组布局的键 |
@@ -161,6 +171,11 @@
 | P2 使用航向/意图 GMM 作为当前 predictor 主路径 | 当前分支由历史特征、类别策略和启发式 score 生成，softmax 后按概率阈值和最大分支数裁剪 |
 | P2 不再保留 `BEHAVIOR_BASELINE` | 所有预测分支都必须属于明确行为族；P1 基线消融通过分支数量和概率阈值控制 |
 | P2 不发布采样轨迹或椭球 marker | 当前可视化只表达真实保留分支中心状态线；仅用于可视化的 sample marker 没有实际使用价值，避免被误认为 planner-facing prediction |
+| P4 闭环反馈放在 `DynamicObjectPredictor` 内部 | feedback 只需要上一轮预测快照和当前 tracker 观测，对同一 `object_id` 生效；放入 predictor 可避免污染 tracker 状态或 `Ldop` 串接层 |
+| P4 分支匹配使用 `behavior_type + behavior_value` 近似桶 | P2/P4 softmax、阈值过滤和剪枝可能改变 branch index；按行为语义匹配能让上一轮反馈落回相近 mode |
+| P4 只调整同语义 mode score bias 和未来 Q 尺度 | 反馈不覆盖 P3 interaction 的最终概率重权重，不写回 tracker 的 `model_state/model_covariance` |
+| P4 过程噪声尺度下界固定为 0.3 | 该下界只保护 predictor 未来 `Q_future` 不被闭环压到 0，不是 tracker 当前协方差参数，因此不暴露为 YAML 参数 |
+| P4 诊断不新增默认 ROS topic | 当前通过 `PredictionFeedbackDiagnostics` 和 `verbose` 日志满足测试与调试；默认预测消息保持 planner-facing 输出简洁 |
 
 ## 错误与风险
 
@@ -179,4 +194,4 @@
 
 ## 沟通约束
 
-- 面向用户交流和后续规格文档中，避免使用依赖过程文档的阶段简称；直接写明当前目标和能力边界，例如“轨迹外推单轨迹预测”“航向/意图多轨迹预测”“目标间和地图交互预测”。
+- 面向用户交流和后续规格文档中，避免使用依赖过程文档的阶段简称；直接写明当前目标和能力边界，例如“LDOP 第三阶段轨迹预测已完成”“轨迹外推单轨迹预测已实现”“航向/意图多轨迹预测已实现”“目标间和地图交互预测已实现”“predictor 内部在线闭环反馈已实现”“离线 evaluator 和 planner-facing 风险地图仍是后续”。

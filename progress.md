@@ -129,7 +129,7 @@
 - 用户询问 P3 地图查询是否使用 UFOMap 接口、是否需要缓存地图；当时设计明确为通过 `UfomapMapper` 只读查询 adapter 访问 UFOMap、不缓存完整地图。后续性能优化已将“单帧局部缓存”设想替换为分支级查询预算。
 - 用户进一步指出地图查询策略应说明为什么由 `Ldop` 或上层构造 adapter，而不是 `PredictionInteractionContext` 自己构建，并明确不同场景使用哪些 UFOMap 查询函数。
 - 已更新 P3 设计规格：`PredictionInteractionContext` 定义抽象查询语义；`Ldop`/上层注入 concrete adapter；`queryNode()` 保留为点查询能力，`seenFree()` 用于 free/corridor 采样，近障碍邻域查询应新增中性只读区域查询封装，写接口不用于 P3。后续实现主路径已改为分支级 `queryLocalOccupied()` 和 8 方向 corridor 探针。
-- 用户进一步说明新增 `PredictionInteractionContext` 也要给 LDOP 第四阶段类 ROG-Map 地图构建使用；已补充设计边界：该模块作为 P3/P4 共享场景证据层，输出局部风险摘要，第四阶段独立 builder 再转换为 planner-facing 时间索引风险/局部地图。
+- 用户进一步说明新增 `PredictionInteractionContext` 也要给 LDOP 第四阶段类 ROG-Map 地图构建使用；已补充设计边界：该模块作为 P3 与后续 LDOP 第四阶段可复用的场景证据层，输出局部风险摘要，第四阶段独立 builder 再转换为 planner-facing 时间索引风险/局部地图。
 - 用户指出 UFOMap 有区域查询接口，且动态体素查询不适合判断预测点膨胀半径内的动态障碍；已澄清设计：静态近障碍使用 UFOMap 区域查询封装，动态目标风险使用 tracker/P2 预测分支和目标尺寸，不从 UFOMap 动态体素反推未来动态风险。
 - 用户询问“地图查询与缓存策略”是否需要整理；已将该节整理为职责边界、查询接口选择、静态/动态来源分离、查询预算和性能扩展几个部分，并在后续文档同步中移除对 `LocalOccupiedCacheKey` 缓存实现的默认要求。
 - 用户确认 P3 测试与验证设计：`PredictionInteractionContext` 纯单元测试覆盖交叉、迎面、追随、穿障、近障碍、free corridor 和地图不可用；predictor 集成测试覆盖概率归一化、极端惩罚、修正上限、marker 语义和协方差不缩小；最终执行 catkin 构建和测试。
@@ -148,7 +148,7 @@
 
 - 用户要求使用 `superpowers:subagent-driven-development` 执行 P3 实现计划。
 - 已按计划实现 `PredictionInteractionContext`、UFOMap 中性静态只读邻域查询、predictor 概率重权重/受限均值轨迹修正、`Ldop` UFOMap 查询 adapter、YAML 参数和回归测试。
-- `PredictionInteractionContext` 作为 P3/P4 共享场景证据层，输出每分支 pair/map/corridor cost、`total_energy`、`probability_scale`、轻量修正建议、最近障碍距离、occupied overlap、near obstacle、free corridor 方向/置信度、最近目标距离和最小 TTC。
+- `PredictionInteractionContext` 作为 P3 与后续 LDOP 第四阶段可复用的场景证据层，输出每分支 pair/map/corridor cost、`total_energy`、`probability_scale`、轻量修正建议、最近障碍距离、occupied overlap、near obstacle、free corridor 方向/置信度、最近目标距离和最小 TTC。
 - 地图查询边界已落地：`PredictionInteractionContext` 只依赖 `PredictionMapQuery`；`Ldop` 在 `processFrame()` 中构造栈上 `UfomapPredictionMapQuery` adapter；静态近障碍使用新增 `UfomapMapper::queryLocalOccupied()`，动态目标风险继续来自 tracker/predictor 分支，不使用 UFOMap dynamic candidate 查询反推未来风险。
 - predictor 应用交互结果时只调整 branch probability 和受限均值轨迹；`model_covariance` 仍保持运动模型 rollout 的不确定性语义，已用回归测试逐元素比较协方差。
 - RViz 预测 marker 仍只生成 `dynamic_prediction_line`；`dynamic_prediction_samples` 和 `dynamic_prediction_uncertainty` 只在回归测试中作为“不应出现”的命名空间检查。
@@ -191,7 +191,35 @@
 
 - 已实现内部 `PredictionBranchRiskLevel::{Low, Medium, High, Critical}`，并加入 `PredictionBranchInteraction::risk_level`。
 - 分级规则保留连续证据不变：occupied overlap 为 `Critical`；短 TTC、高 pair/map cost 或高 total energy 为 `High`；near obstacle、轻 pair risk 或 corridor bias 为 `Medium`；其余为 `Low`。
-- 该字段不新增 ROS msg，也不替代 `pair_cost`、`map_cost`、`corridor_cost`、`nearest_obstacle_distance`、`minimum_ttc` 等连续指标；P4 可用它做快速分层，再用连续证据计算 planner-facing 风险强度。
+- 该字段不新增 ROS msg，也不替代 `pair_cost`、`map_cost`、`corridor_cost`、`nearest_obstacle_distance`、`minimum_ttc` 等连续指标；后续 LDOP 第四阶段风险地图 builder 可用它做快速分层，再用连续证据计算 planner-facing 风险强度。
 - 已补充 `test_prediction_interaction_context.cpp` 对 `Low/High/Critical` 和近障碍非低风险的断言。
 - 已运行 `catkin build ldop --no-status`，构建通过。
 - 已运行 `catkin run_tests ldop --no-status`，包级测试通过；`catkin_test_results /home/st/ldop_ws/build/ldop` 输出 `Summary: 78 tests, 0 errors, 0 failures, 0 skipped`。
+
+## 2026-05-20 P3 完成状态文档同步
+
+- 已按当前代码事实把轨迹预测内部 P3 标记为完成：目标间/地图交互、分支概率重权重、平滑控制 rerollout、分支级查询预算和内部 `branch_risk_level` 摘要均已落地；`branch_risk_level` 服务后续 LDOP 第四阶段风险地图快速分层，不属于 predictor 内部 P4 闭环反馈。
+- 已同步总安排文档、根规划记录、发现记录和 P3 实现计划状态说明。
+- 当时后续推进边界收敛为 P4 闭环预测误差统计、NIS 校准和概率反馈；planner-facing 风险地图消费仍属于 LDOP 第四阶段。
+
+## 2026-05-20 P4 predictor 内部闭环反馈实现
+
+- 已完成 P4 在线闭环反馈：`DynamicObjectPredictor` 内部按 `object_id` 缓存上一轮预测快照，用当前 tracker 观测对齐上一轮分支并计算 residual、NIS 和 log-likelihood。
+- feedback 只作用于下一帧同语义分支的 mode score bias 和 predictor 未来 `Q_future` 尺度；分支通过 `behavior_type + behavior_value` 近似桶匹配，不依赖 branch index。
+- P4 不新增 ROS 预测消息字段或默认诊断 topic，不修改 tracker 当前 `model_state/model_covariance`；诊断通过 `PredictionFeedbackDiagnostics` 和 `verbose` 日志暴露。
+- `process_noise_scale = 1.0` 表示基础 predictor Q；闭环可降到固定下界 0.3，也可升到 `prediction_feedback_max_noise_scale`。0.3 不暴露为 YAML 参数，且未恢复 `prediction_feedback_history_size` 或新增 `prediction_feedback_min_noise_scale`。
+- P3 interaction reweighting 仍在 P2/P4 之后执行；当前 P4 不把 LDOP 第四阶段 planner-facing 风险地图视为已实现。
+- 多 horizon `ADE/FDE/minADE/minFDE/NLL/ECE/Brier/coverage` 等离线 rosbag evaluator 仍是后续扩展。
+- 本轮复核已验证通过：`git diff --cached --check`、`catkin build ldop --no-status`、`catkin run_tests ldop --no-status` 和 `catkin_test_results /home/st/ldop_ws/build/ldop`，汇总为 106 tests, 0 errors, 0 failures, 0 skipped。
+
+## 2026-05-21 LDOP 第三阶段轨迹预测完成状态同步
+
+- 用户确认：轨迹预测内部 P4 已实现，因此 LDOP 第三阶段动态目标短时轨迹预测内容视为完成。
+- 已将总安排文档、根规划记录和发现记录同步为“第三阶段轨迹预测已完成”；后续离线多 horizon evaluator 与 LDOP 第四阶段 planner-facing 风险地图/动态风险层不再作为第三阶段完成条件。
+- 当前第三阶段完成边界：P1 轨迹外推、P2 航向/意图 GMM、P3 目标间/地图交互感知预测、P4 predictor 内部在线闭环反馈均已落地；预测输出仍保持独立 prediction msg 和 `dynamic_prediction_line` RViz marker。
+
+## 2026-05-21 面向阅读者文档状态补充同步
+
+- 用户指出 `docs/note/LDOP_design.md` 和 `README.md` 等入口仍未同步第三阶段完成状态。
+- 已补充同步 `README.md`、`docs/note/LDOP_design.md`、`docs/note/2026-05-18_intent_prediction_trajectory_innovation.md`，以及 P2/P3/P4 设计规格顶部状态说明。
+- 已把“P4 尚未完成”“第三阶段进行中”等旧口径改为“P1-P4 已完成，LDOP 第三阶段短时轨迹预测已完成”；离线 evaluator 和 planner-facing 风险地图继续作为后续工具或 LDOP 第四阶段工作。

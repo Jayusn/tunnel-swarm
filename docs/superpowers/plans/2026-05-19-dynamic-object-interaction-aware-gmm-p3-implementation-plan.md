@@ -1,5 +1,7 @@
 # Dynamic Object Interaction-Aware GMM P3 Implementation Plan
 
+**Status:** Completed. The checklist below is retained as the historical execution plan; it no longer indicates open P3 work. Runtime P3 now includes `PredictionInteractionContext`, UFOMap read-only adapter wiring, probability reweighting, smooth-control rerollout, branch-level map/corridor query budgets, and internal `branch_risk_level` summaries.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build LDOP third-stage P3 interaction-aware GMM trajectory prediction by adding target-target interaction, static UFOMap constraints, free-corridor priors, probability reweighting, and bounded mean-trajectory corrections.
@@ -12,7 +14,7 @@
 
 ## Scope Check
 
-This plan implements one subsystem: P3 interaction-aware prediction. It produces working software on its own by modifying the current prediction pipeline and tests. It does not implement the P4 planner-facing class-ROGMAP/risk-map builder, but it intentionally exposes structured interaction evidence that P4 can consume later.
+This plan implements one subsystem: P3 interaction-aware prediction. That subsystem is now complete in the current codebase. It does not implement the P4 planner-facing class-ROGMAP/risk-map builder, but it intentionally exposes structured interaction evidence that P4 can consume later.
 
 Repository rule override: the general planning skill suggests frequent commits, but this repository explicitly says not to create intermediate commits during the task. Execute all steps without committing; after verification, ask the user before creating any commit.
 
@@ -1933,7 +1935,7 @@ Expected: all commands succeed and test results show no failures.
 
 ## Self-Review Record
 
-- Spec coverage: this plan maps the P3 design to concrete files and tasks for target-target interaction, static UFOMap occupied/near-obstacle evidence, free-corridor prior, probability reweighting, bounded correction hints, local query caching, predictor integration, `Ldop` adapter wiring, YAML params, and tests.
+- Spec coverage: this plan maps the P3 design to concrete files and tasks for target-target interaction, static UFOMap occupied/near-obstacle evidence, free-corridor prior, probability reweighting, bounded correction hints, branch-level query budgets, predictor integration, `Ldop` adapter wiring, YAML params, and tests.
 - P4 boundary: the plan keeps `PredictionInteractionContext` as a shared scene-evidence layer and leaves planner-facing class-ROGMAP/risk-map building outside this implementation.
 - Type consistency: `PredictionMapQuery`, `PredictionInteractionContext`, `PredictionInteractionResult`, and `PredictionInteractionDiagnostics` are defined before predictor and `Ldop` tasks reference them.
 - Repository consistency: ROS params remain in `DynamicObjectPredictorParams`, loaded through three-argument `pnh_.param()` calls, and converted through `buildPredictorConfig()`.

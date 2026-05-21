@@ -8,6 +8,7 @@
 #include <limits>
 #include <memory>
 #include <numeric>
+#include <optional>
 
 #include <visualization_msgs/Marker.h>
 
@@ -29,6 +30,9 @@ constexpr double kMinMarkerAlpha = 0.05;
 constexpr double kCorrectionAnchorRampPoints = 2.0;
 // 交互控制在时间上做局部平滑，避免单个冲突采样点把 planner-facing 轨迹折成尖角。
 constexpr std::size_t kInteractionControlSmoothingRadius = 2U;
+// P4 的闭环尺度必须保留非零下界，避免短期反馈把未来 Q 收缩到不可恢复的零不确定性。
+constexpr double kMinFeedbackProcessNoiseScale = 0.3;
+constexpr double kNisPositionDof = 3.0;
 
 // 影响权重：前半段保持 1.0，后半段线性衰减到 kMinInfluenceWeight。
 double computeInfluenceWeight(const double time_from_start,
@@ -62,6 +66,42 @@ std::vector<double> eigenMatrixToRowMajorStdVector(const Eigen::MatrixXd& matrix
     }
   }
   return values;
+}
+
+// P4 只比较位置子空间，避免把不同运动模型的速度/加速度维度误当成统一观测。
+std::optional<Eigen::Matrix3d> positionCovarianceFromPoint(
+    const ldop::DynamicObjectPredictionPoint& point) {
+  const std::size_t state_size = point.model_state.size();
+  if (state_size < 3U || point.model_covariance.size() != state_size * state_size) {
+    return std::nullopt;
+  }
+  Eigen::Matrix3d covariance = Eigen::Matrix3d::Zero();
+  for (std::size_t row = 0U; row < 3U; ++row) {
+    for (std::size_t col = 0U; col < 3U; ++col) {
+      covariance(static_cast<int>(row), static_cast<int>(col)) =
+          point.model_covariance[row * state_size + col];
+    }
+  }
+  return covariance;
+}
+
+// 当前观测快照沿用 tracker 的模型原生协方差，仅截取位置块给后续 NIS 任务使用。
+[[maybe_unused]] std::optional<Eigen::Matrix3d> positionCovarianceFromInput(
+    const TrackPredictionInput& input) {
+  if (input.model_state.size() < 3 || input.model_covariance.rows() < 3 ||
+      input.model_covariance.cols() < 3) {
+    return std::nullopt;
+  }
+  return input.model_covariance.topLeftCorner<3, 3>();
+}
+
+// 位置读取保持为独立 helper，是为了让后续反馈评估和 snapshot 使用同一套输入边界。
+[[maybe_unused]] std::optional<Eigen::Vector3d> positionFromInput(
+    const TrackPredictionInput& input) {
+  if (input.model_state.size() < 3) {
+    return std::nullopt;
+  }
+  return input.model_state.segment<3>(0);
 }
 
 // 根据分支行为类型和概率设置 marker 颜色；概率越高透明度越大，便于区分主次分支。
@@ -134,6 +174,7 @@ struct PredictionMode {
   std::uint8_t behavior_type{ldop::DynamicObjectPredictionBranch::BEHAVIOR_LONGITUDINAL};
   double behavior_value{0.0};
   double score{0.0};
+  double feedback_noise_scale{1.0};
   double probability{0.0};
   double mode_uncertainty_scale{1.0};
 };
@@ -273,6 +314,49 @@ PredictionMode makeMode(const PredictionModeKind kind,
   return mode;
 }
 
+int feedbackBehaviorValueBucket(const double behavior_value,
+                                const DynamicObjectPredictorConfig& config) {
+  const double bucket_size = config.feedback_config.behavior_value_bucket;
+  assert(bucket_size > 0.0);
+  return static_cast<int>(std::lround(behavior_value / bucket_size));
+}
+
+template <typename FeedbackBranchKey>
+FeedbackBranchKey makeFeedbackBranchKeyFromConfig(
+    const std::uint8_t behavior_type,
+    const double behavior_value,
+    const DynamicObjectPredictorConfig& config) {
+  FeedbackBranchKey key;
+  key.behavior_type = behavior_type;
+  key.behavior_value_bucket = feedbackBehaviorValueBucket(behavior_value, config);
+  return key;
+}
+
+template <typename FeedbackHintMap>
+void applyFeedbackHintsToModes(std::vector<PredictionMode>& modes,
+                               const FeedbackHintMap* hints,
+                               const DynamicObjectPredictorConfig& config) {
+  if (hints == nullptr) {
+    return;
+  }
+
+  for (PredictionMode& mode : modes) {
+    const auto key = makeFeedbackBranchKeyFromConfig<typename FeedbackHintMap::key_type>(
+        mode.behavior_type, mode.behavior_value, config);
+    const auto hint_iter = hints->find(key);
+    if (hint_iter == hints->end() || !hint_iter->second.has_feedback) {
+      continue;
+    }
+
+    // P4 反馈只作为下一轮 mode prior：score 进入既有 softmax/剪枝流程，
+    // Q 尺度留给 rollout 使用，避免绕开 P2/P3 的概率归一化边界。
+    mode.score += config.feedback_config.probability_gain * hint_iter->second.score_bias;
+    mode.feedback_noise_scale = std::clamp(hint_iter->second.process_noise_scale,
+                                           kMinFeedbackProcessNoiseScale,
+                                           config.feedback_config.max_noise_scale);
+  }
+}
+
 // 对模式列表做 softmax 归一化、按概率排序、剪枝并重新归一化。
 void normalizeAndPruneModes(std::vector<PredictionMode>& modes,
                             const DynamicObjectPredictorConfig& config) {
@@ -329,10 +413,12 @@ void normalizeAndPruneModes(std::vector<PredictionMode>& modes,
 }
 
 // 根据输入和历史特征生成所有候选预测模式。
+template <typename FeedbackHintMap>
 std::vector<PredictionMode> generatePredictionModes(
     const TrackPredictionInput& input,
     const MotionHistoryFeatures& features,
-    const DynamicObjectPredictorConfig& config) {
+    const DynamicObjectPredictorConfig& config,
+    const FeedbackHintMap* feedback_hints) {
   std::vector<PredictionMode> modes;
   const bool stable_heading = features.heading_instability <= config.heading_stable_angle;
   const bool slowing = features.speed_delta < -0.05;
@@ -440,6 +526,7 @@ std::vector<PredictionMode> generatePredictionModes(
       break;
   }
 
+  applyFeedbackHintsToModes(modes, feedback_hints, config);
   normalizeAndPruneModes(modes, config);
   return modes;
 }
@@ -795,7 +882,11 @@ ldop::DynamicObjectPredictionBranch rollOutMode(
     state = model->stateTransition(previous_state);
     model->normalizeYaw(state);
     // P0 已经携带 tracker 当前滤波不确定性；这里的尺度只表达未来意图假设和历史质量带来的额外不确定性。
-    const double noise_scale = features.history_quality_scale * mode.mode_uncertainty_scale;
+    const double feedback_noise_scale = std::clamp(mode.feedback_noise_scale,
+                                                   kMinFeedbackProcessNoiseScale,
+                                                   config.feedback_config.max_noise_scale);
+    const double noise_scale =
+        features.history_quality_scale * mode.mode_uncertainty_scale * feedback_noise_scale;
     const Eigen::MatrixXd process_noise = noise_scale * model->getProcessNoiseQ();
     covariance = transition * covariance * transition.transpose() + process_noise;
     covariance = 0.5 * (covariance + covariance.transpose());
@@ -874,6 +965,32 @@ void applyInteractionResult(const PredictionInteractionResult& interaction_resul
 
 }  // namespace
 
+// 这里只做 Params -> Config 的语义转换；无效参数回退到默认语义，避免把 P4 反馈
+// 后续算法写成隐式数值清洗层。
+PredictionFeedbackConfig buildPredictionFeedbackConfig(
+    const PredictionFeedbackParams& params) {
+  const PredictionFeedbackParams defaults;
+  PredictionFeedbackConfig config;
+  config.enabled = params.enabled;
+  config.max_age = params.max_age > 0.0 ? params.max_age : defaults.max_age;
+  config.probability_gain =
+      params.probability_gain >= 0.0 ? params.probability_gain : defaults.probability_gain;
+  config.noise_gain = params.noise_gain >= 0.0 ? params.noise_gain : defaults.noise_gain;
+  config.max_noise_scale =
+      params.max_noise_scale >= 1.0 ? params.max_noise_scale : defaults.max_noise_scale;
+  config.smoothing_alpha =
+      (params.smoothing_alpha > 0.0 && params.smoothing_alpha <= 1.0)
+          ? params.smoothing_alpha
+          : defaults.smoothing_alpha;
+  config.behavior_value_bucket =
+      params.behavior_value_bucket > 0.0 ? params.behavior_value_bucket
+                                         : defaults.behavior_value_bucket;
+  config.max_sample_time_error =
+      params.max_sample_time_error > 0.0 ? params.max_sample_time_error
+                                         : defaults.max_sample_time_error;
+  return config;
+}
+
 DynamicObjectPredictorConfig buildPredictorConfig(
     const DynamicObjectPredictorParams& params) {
   const DynamicObjectPredictorParams defaults;
@@ -905,6 +1022,7 @@ DynamicObjectPredictorConfig buildPredictorConfig(
   config.hypothesis_noise_scale =
       params.hypothesis_noise_scale >= 1.0 ? params.hypothesis_noise_scale
                                            : defaults.hypothesis_noise_scale;
+  config.feedback_config = buildPredictionFeedbackConfig(params.feedback);
   config.filter_config = buildMultiModelKalmanFilterConfig(params.filter);
   config.interaction_config = buildPredictionInteractionConfig(params.interaction);
   return config;
@@ -944,6 +1062,30 @@ void DynamicObjectPredictor::loadParameters() {
   pnh_.param("prediction_hypothesis_noise_scale",
              params_.hypothesis_noise_scale,
              defaults.hypothesis_noise_scale);
+  pnh_.param("prediction_enable_feedback",
+             params_.feedback.enabled,
+             defaults.feedback.enabled);
+  pnh_.param("prediction_feedback_max_age",
+             params_.feedback.max_age,
+             defaults.feedback.max_age);
+  pnh_.param("prediction_feedback_probability_gain",
+             params_.feedback.probability_gain,
+             defaults.feedback.probability_gain);
+  pnh_.param("prediction_feedback_noise_gain",
+             params_.feedback.noise_gain,
+             defaults.feedback.noise_gain);
+  pnh_.param("prediction_feedback_max_noise_scale",
+             params_.feedback.max_noise_scale,
+             defaults.feedback.max_noise_scale);
+  pnh_.param("prediction_feedback_smoothing_alpha",
+             params_.feedback.smoothing_alpha,
+             defaults.feedback.smoothing_alpha);
+  pnh_.param("prediction_feedback_behavior_value_bucket",
+             params_.feedback.behavior_value_bucket,
+             defaults.feedback.behavior_value_bucket);
+  pnh_.param("prediction_feedback_max_sample_time_error",
+             params_.feedback.max_sample_time_error,
+             defaults.feedback.max_sample_time_error);
   pnh_.param("prediction_enable_interaction_context",
              params_.interaction.enabled,
              defaults.interaction.enabled);
@@ -1005,13 +1147,20 @@ void DynamicObjectPredictor::loadParameters() {
 DynamicObjectPredictorFrameResult DynamicObjectPredictor::predict(
     const std_msgs::Header& header,
     const std::vector<TrackPredictionInput>& inputs,
-    const PredictionMapQuery* map_query) const {
+    const PredictionMapQuery* map_query) {
   const auto total_start = std::chrono::steady_clock::now();
   DynamicObjectPredictorFrameResult result;
   result.predictions_msg.header = header;
   result.predictions_msg.predictions.reserve(inputs.size());
   std::vector<BranchRolloutContext> rollout_contexts;
   rollout_contexts.reserve(inputs.size());
+  std::unordered_map<std::uint32_t, PredictionFeedbackModeHintMap> feedback_hints_by_object;
+
+  if (config_.feedback_config.enabled) {
+    cleanupExpiredFeedbackStates(header.stamp, inputs, result.feedback_diagnostics);
+    feedback_hints_by_object =
+        buildFeedbackHints(header, inputs, result.feedback_diagnostics);
+  }
 
   for (const TrackPredictionInput& input : inputs) {
     ldop::DynamicObjectPrediction prediction;
@@ -1025,7 +1174,13 @@ DynamicObjectPredictorFrameResult DynamicObjectPredictor::predict(
     BranchRolloutContext rollout_context;
     rollout_context.input = &input;
     rollout_context.features = estimateHistoryFeatures(input, config_);
-    rollout_context.modes = generatePredictionModes(input, rollout_context.features, config_);
+    const PredictionFeedbackModeHintMap* feedback_hints = nullptr;
+    const auto hint_iter = feedback_hints_by_object.find(input.id);
+    if (hint_iter != feedback_hints_by_object.end()) {
+      feedback_hints = &hint_iter->second;
+    }
+    rollout_context.modes =
+        generatePredictionModes(input, rollout_context.features, config_, feedback_hints);
 
     for (const PredictionMode& mode : rollout_context.modes) {
       prediction.branches.push_back(
@@ -1058,9 +1213,12 @@ DynamicObjectPredictorFrameResult DynamicObjectPredictor::predict(
   result.timing.build_prediction_markers_ms =
       elapsedMs(marker_start, std::chrono::steady_clock::now());
 
+  storeFeedbackSnapshots(header, result.predictions_msg);
+
   result.timing.predict_total_ms = elapsedMs(total_start, std::chrono::steady_clock::now());
 
   if (verbose_) {
+    const auto& feedback = result.feedback_diagnostics;
     ROS_INFO_STREAM_THROTTLE(1.0, "Dynamic object predictor timing"
                                        << ": total="
                                        << formatFloatMs(result.timing.predict_total_ms)
@@ -1072,7 +1230,23 @@ DynamicObjectPredictorFrameResult DynamicObjectPredictor::predict(
                                        << formatFloatMs(result.timing.build_prediction_markers_ms)
                                        << "ms, inputs=" << inputs.size()
                                        << ", predictions="
-                                       << result.predictions_msg.predictions.size());
+                                       << result.predictions_msg.predictions.size()
+                                       << ", feedbackUpdatedBranches="
+                                       << feedback.feedback_updated_branch_count
+                                       << ", feedbackMaxNis=" << feedback.max_nis
+                                       << ", feedbackNoiseScale=["
+                                       << feedback.min_process_noise_scale
+                                       << ", " << feedback.max_process_noise_scale
+                                       << "]"
+                                       << ", feedbackResidualNorm=["
+                                       << feedback.mean_residual_norm
+                                       << ", " << feedback.max_residual_norm
+                                       << "]"
+                                       << ", feedbackCovTrace=["
+                                       << feedback.mean_predicted_position_covariance_trace
+                                       << ", " << feedback.mean_observed_position_covariance_trace
+                                       << ", " << feedback.mean_innovation_covariance_trace
+                                       << "]");
   }
 
   return result;
@@ -1120,6 +1294,317 @@ visualization_msgs::MarkerArray DynamicObjectPredictor::buildPredictionMarkers(
   }
 
   return markers;
+}
+
+DynamicObjectPredictor::PredictionFeedbackBranchKey
+DynamicObjectPredictor::makeFeedbackBranchKey(const std::uint8_t behavior_type,
+                                              const double behavior_value) const {
+  return makeFeedbackBranchKeyFromConfig<PredictionFeedbackBranchKey>(
+      behavior_type, behavior_value, config_);
+}
+
+void DynamicObjectPredictor::storeFeedbackSnapshots(
+    const std_msgs::Header& header,
+    const ldop::DynamicObjectPredictionArray& predictions) {
+  if (!config_.feedback_config.enabled) {
+    return;
+  }
+
+  for (const auto& prediction : predictions.predictions) {
+    PredictionFeedbackObjectState& state = feedback_states_[prediction.id];
+    state.last_stamp = header.stamp;
+    state.last_prediction.clear();
+    state.last_prediction.reserve(prediction.branches.size());
+
+    for (const auto& branch : prediction.branches) {
+      PredictionFeedbackBranchSnapshot snapshot;
+      snapshot.key = makeFeedbackBranchKey(branch.behavior_type, branch.behavior_value);
+      snapshot.samples.reserve(branch.points.size());
+
+      for (const auto& point : branch.points) {
+        if (point.model_state.size() < 3U) {
+          continue;
+        }
+        const auto covariance = positionCovarianceFromPoint(point);
+        if (!covariance.has_value()) {
+          continue;
+        }
+        PredictionFeedbackSampleSnapshot sample;
+        sample.time_from_start = point.time_from_start.toSec();
+        sample.position = Eigen::Vector3d(
+            point.model_state[0], point.model_state[1], point.model_state[2]);
+        sample.position_covariance = *covariance;
+        snapshot.samples.push_back(sample);
+      }
+
+      if (!snapshot.samples.empty()) {
+        state.last_prediction.push_back(std::move(snapshot));
+      }
+    }
+  }
+}
+
+void DynamicObjectPredictor::cleanupExpiredFeedbackStates(
+    const ros::Time& stamp,
+    const std::vector<TrackPredictionInput>& inputs,
+    PredictionFeedbackDiagnostics& diagnostics) {
+  std::vector<std::uint32_t> active_ids;
+  active_ids.reserve(inputs.size());
+  for (const auto& input : inputs) {
+    active_ids.push_back(input.id);
+  }
+
+  for (auto iter = feedback_states_.begin(); iter != feedback_states_.end();) {
+    const bool active = std::find(active_ids.begin(), active_ids.end(), iter->first) !=
+                        active_ids.end();
+    const double age = (stamp - iter->second.last_stamp).toSec();
+    if (!active || age > config_.feedback_config.max_age) {
+      iter = feedback_states_.erase(iter);
+      ++diagnostics.expired_state_count;
+      continue;
+    }
+    ++iter;
+  }
+}
+
+const DynamicObjectPredictor::PredictionFeedbackSampleSnapshot*
+DynamicObjectPredictor::closestFeedbackSample(
+    const PredictionFeedbackBranchSnapshot& branch,
+    const double dt) const {
+  const PredictionFeedbackSampleSnapshot* best = nullptr;
+  double best_error = std::numeric_limits<double>::infinity();
+  for (const auto& sample : branch.samples) {
+    const double error = std::abs(sample.time_from_start - dt);
+    if (error < best_error) {
+      best = &sample;
+      best_error = error;
+    }
+  }
+  if (best == nullptr || best_error > config_.feedback_config.max_sample_time_error) {
+    return nullptr;
+  }
+  return best;
+}
+
+std::optional<DynamicObjectPredictor::PredictionFeedbackEvaluation>
+DynamicObjectPredictor::computeFeedbackEvaluation(
+    const Eigen::Vector3d& observed_position,
+    const Eigen::Matrix3d& observed_covariance,
+    const PredictionFeedbackSampleSnapshot& sample) const {
+  if (!observed_position.allFinite() || !observed_covariance.allFinite() ||
+      !sample.position.allFinite() || !sample.position_covariance.allFinite()) {
+    return std::nullopt;
+  }
+
+  const Eigen::Matrix3d innovation_covariance =
+      sample.position_covariance + observed_covariance;
+  if (!innovation_covariance.allFinite()) {
+    return std::nullopt;
+  }
+  const Eigen::LLT<Eigen::Matrix3d> llt(innovation_covariance);
+  if (llt.info() != Eigen::Success) {
+    return std::nullopt;
+  }
+
+  const Eigen::Vector3d innovation = observed_position - sample.position;
+  if (!innovation.allFinite()) {
+    return std::nullopt;
+  }
+  const Eigen::Vector3d solved = llt.solve(innovation);
+  if (!solved.allFinite()) {
+    return std::nullopt;
+  }
+  const double nis = innovation.dot(solved);
+  if (!std::isfinite(nis)) {
+    return std::nullopt;
+  }
+  const Eigen::Matrix3d l = llt.matrixL();
+  double log_det = 0.0;
+  for (int index = 0; index < 3; ++index) {
+    const double diagonal = l(index, index);
+    if (!std::isfinite(diagonal) || diagonal <= 0.0) {
+      return std::nullopt;
+    }
+    log_det += 2.0 * std::log(diagonal);
+  }
+  if (!std::isfinite(log_det)) {
+    return std::nullopt;
+  }
+  constexpr double kLogTwoPi = 1.8378770664093453;
+  const double log_likelihood =
+      -0.5 * (nis + log_det + kNisPositionDof * kLogTwoPi);
+  if (!std::isfinite(log_likelihood)) {
+    return std::nullopt;
+  }
+
+  PredictionFeedbackEvaluation evaluation;
+  evaluation.nis = nis;
+  evaluation.log_likelihood = log_likelihood;
+  evaluation.residual_norm = innovation.norm();
+  evaluation.predicted_position_covariance_trace = sample.position_covariance.trace();
+  evaluation.observed_position_covariance_trace = observed_covariance.trace();
+  evaluation.innovation_covariance_trace = innovation_covariance.trace();
+  return evaluation;
+}
+
+double DynamicObjectPredictor::smoothValue(const double previous,
+                                           const double observed,
+                                           const double alpha,
+                                           const bool initialized) const {
+  return initialized ? (1.0 - alpha) * previous + alpha * observed : observed;
+}
+
+std::unordered_map<std::uint32_t, DynamicObjectPredictor::PredictionFeedbackModeHintMap>
+DynamicObjectPredictor::buildFeedbackHints(
+    const std_msgs::Header& header,
+    const std::vector<TrackPredictionInput>& inputs,
+    PredictionFeedbackDiagnostics& diagnostics) {
+  std::unordered_map<std::uint32_t, PredictionFeedbackModeHintMap> hints_by_object;
+  if (!config_.feedback_config.enabled) {
+    return hints_by_object;
+  }
+
+  double nis_sum = 0.0;
+  double residual_norm_sum = 0.0;
+  double predicted_covariance_trace_sum = 0.0;
+  double observed_covariance_trace_sum = 0.0;
+  double innovation_covariance_trace_sum = 0.0;
+  std::size_t nis_count = 0U;
+  bool has_process_noise_scale = false;
+
+  for (const auto& input : inputs) {
+    const auto state_iter = feedback_states_.find(input.id);
+    if (state_iter == feedback_states_.end()) {
+      continue;
+    }
+    PredictionFeedbackObjectState& object_state = state_iter->second;
+    const double dt = (header.stamp - object_state.last_stamp).toSec();
+    if (dt <= 0.0 || dt > config_.feedback_config.max_age ||
+        !input.matched_in_current_frame) {
+      ++diagnostics.feedback_skipped_object_count;
+      continue;
+    }
+
+    const auto observed_position = positionFromInput(input);
+    const auto observed_covariance = positionCovarianceFromInput(input);
+    if (!observed_position.has_value() || !observed_covariance.has_value()) {
+      ++diagnostics.feedback_skipped_object_count;
+      continue;
+    }
+
+    ++diagnostics.feedback_evaluated_object_count;
+    std::vector<std::pair<PredictionFeedbackBranchKey, double>> smoothed_log_likelihoods;
+    smoothed_log_likelihoods.reserve(object_state.last_prediction.size());
+
+    for (const auto& branch : object_state.last_prediction) {
+      const auto* sample = closestFeedbackSample(branch, dt);
+      if (sample == nullptr) {
+        ++diagnostics.feedback_skipped_branch_count;
+        continue;
+      }
+      const auto evaluation =
+          computeFeedbackEvaluation(*observed_position, *observed_covariance, *sample);
+      if (!evaluation.has_value()) {
+        ++diagnostics.feedback_skipped_branch_count;
+        continue;
+      }
+
+      const double nis = evaluation->nis;
+      const double log_likelihood = evaluation->log_likelihood;
+
+      PredictionFeedbackBranchState& branch_state = object_state.branch_states[branch.key];
+      branch_state.smoothed_nis = smoothValue(branch_state.smoothed_nis,
+                                              nis,
+                                              config_.feedback_config.smoothing_alpha,
+                                              branch_state.initialized);
+      branch_state.smoothed_log_likelihood =
+          smoothValue(branch_state.smoothed_log_likelihood,
+                      log_likelihood,
+                      config_.feedback_config.smoothing_alpha,
+                      branch_state.initialized);
+
+      // NIS 期望值等于位置维度自由度；偏大说明上一轮预测解释不了当前观测，应放大未来 Q。
+      const double nis_ratio = branch_state.smoothed_nis / kNisPositionDof;
+      const double scale_delta =
+          std::clamp(config_.feedback_config.noise_gain * (nis_ratio - 1.0),
+                     -0.5,
+                     0.5);
+      branch_state.process_noise_scale = std::clamp(
+          branch_state.process_noise_scale * std::exp(scale_delta),
+          kMinFeedbackProcessNoiseScale,
+          config_.feedback_config.max_noise_scale);
+      branch_state.initialized = true;
+      smoothed_log_likelihoods.emplace_back(branch.key,
+                                            branch_state.smoothed_log_likelihood);
+
+      diagnostics.max_nis = std::max(diagnostics.max_nis, nis);
+      if (!has_process_noise_scale) {
+        diagnostics.min_process_noise_scale = branch_state.process_noise_scale;
+        diagnostics.max_process_noise_scale = branch_state.process_noise_scale;
+        has_process_noise_scale = true;
+      } else {
+        diagnostics.min_process_noise_scale =
+            std::min(diagnostics.min_process_noise_scale, branch_state.process_noise_scale);
+        diagnostics.max_process_noise_scale =
+            std::max(diagnostics.max_process_noise_scale, branch_state.process_noise_scale);
+      }
+      nis_sum += nis;
+      residual_norm_sum += evaluation->residual_norm;
+      predicted_covariance_trace_sum +=
+          evaluation->predicted_position_covariance_trace;
+      observed_covariance_trace_sum += evaluation->observed_position_covariance_trace;
+      innovation_covariance_trace_sum += evaluation->innovation_covariance_trace;
+      diagnostics.max_residual_norm =
+          std::max(diagnostics.max_residual_norm, evaluation->residual_norm);
+      ++nis_count;
+      ++diagnostics.feedback_updated_branch_count;
+    }
+
+    if (smoothed_log_likelihoods.empty()) {
+      continue;
+    }
+    // probability bias 要在同一个平滑口径内居中；否则一个分支有历史平滑、
+    // 另一个分支是当前 raw likelihood 时，bias 会混入时间尺度差异。
+    const double mean_smoothed_log_likelihood =
+        std::accumulate(smoothed_log_likelihoods.begin(),
+                        smoothed_log_likelihoods.end(),
+                        0.0,
+                        [](const double sum, const auto& item) {
+                          return sum + item.second;
+                        }) /
+        static_cast<double>(smoothed_log_likelihoods.size());
+
+    auto& hints = hints_by_object[input.id];
+    for (const auto& item : smoothed_log_likelihoods) {
+      PredictionFeedbackBranchState& branch_state = object_state.branch_states[item.first];
+      branch_state.probability_score_bias =
+          branch_state.smoothed_log_likelihood - mean_smoothed_log_likelihood;
+      PredictionFeedbackModeHint hint;
+      hint.score_bias = branch_state.probability_score_bias;
+      hint.process_noise_scale = branch_state.process_noise_scale;
+      hint.has_feedback = true;
+      hints[item.first] = hint;
+      // diagnostics 暴露的是实际进入 P2 mode score 的偏置；gain=0 时 raw hint 仍可存在，
+      // 但它没有改变分支概率，因此不应被记录为已应用的概率反馈。
+      const double applied_probability_bias =
+          config_.feedback_config.probability_gain * hint.score_bias;
+      diagnostics.max_abs_probability_bias =
+          std::max(diagnostics.max_abs_probability_bias, std::abs(applied_probability_bias));
+    }
+  }
+
+  if (nis_count > 0U) {
+    const double feedback_count = static_cast<double>(nis_count);
+    diagnostics.mean_nis = nis_sum / feedback_count;
+    diagnostics.mean_residual_norm = residual_norm_sum / feedback_count;
+    diagnostics.mean_predicted_position_covariance_trace =
+        predicted_covariance_trace_sum / feedback_count;
+    diagnostics.mean_observed_position_covariance_trace =
+        observed_covariance_trace_sum / feedback_count;
+    diagnostics.mean_innovation_covariance_trace =
+        innovation_covariance_trace_sum / feedback_count;
+  }
+  return hints_by_object;
 }
 
 }  // namespace ldopcore

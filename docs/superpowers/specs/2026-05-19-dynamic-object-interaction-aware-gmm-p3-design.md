@@ -8,7 +8,7 @@
 
 - P1 轨迹外推已完成。
 - P2 航向/意图 GMM 已完成，predictor 当前输出 branch-level trajectory-level GMM。
-- P3 交互感知预测已完成后，LDOP 第三阶段仍未完整结束；P4 闭环预测误差反馈、NIS 校准和概率反馈属于后续工作。
+- P3 交互感知预测已完成；后续 P4 predictor 内部在线闭环反馈也已另文实现，因此 LDOP 第三阶段轨迹预测内容已经完成。
 - RViz 预测 marker 当前只显示真实保留 GMM 分支中心状态线，不恢复额外 sample marker。
 - P3 不修改 `DynamicObject.msg`，不把未来预测回填到 tracker 当前状态消息。
 - P3 首版不新增默认 ROS 诊断话题，内部诊断统计用于日志、测试和后续评估衔接。
@@ -24,7 +24,7 @@
 
 ## 非目标
 
-- 不实现闭环预测误差缓存、NIS 校准或概率反馈；这些属于后续 P4。
+- 不在本文档的 P3 范围内实现闭环预测误差缓存、NIS 校准或概率反馈；这些已由后续 P4 predictor 内部在线反馈另文实现。
 - 不实现第四阶段 planner-facing 类 ROG-Map 或风险地图构建器。
 - 不新增预测 sample 消息字段、sample marker 或默认诊断 marker。
 - 不引入学习式 interaction encoder。
@@ -122,7 +122,7 @@ nearest_pair_distance
 minimum_ttc
 ```
 
-这些字段不是 ROS prediction message 的默认输出；它们是 C++ 内部结构，供 predictor、测试和后续 P4 risk/local map builder 复用。当前 `branch_risk_level` 已落地为内部枚举 `PredictionBranchRiskLevel::{Low, Medium, High, Critical}`，由 occupied overlap、TTC、pair/map/corridor cost 和 total energy 派生；P4 builder 后续可以把该离散摘要与预测分支的 `points[]`、概率、协方差、`size`、`influence_weight` 和连续风险证据结合，生成时间索引的动态风险或类 ROG-Map 局部地图。
+这些字段不是 ROS prediction message 的默认输出；它们是 C++ 内部结构，供 predictor、测试和后续 LDOP 第四阶段 risk/local map builder 复用。当前 `branch_risk_level` 已落地为内部枚举 `PredictionBranchRiskLevel::{Low, Medium, High, Critical}`，由 occupied overlap、TTC、pair/map/corridor cost 和 total energy 派生；第四阶段 builder 后续可以把该离散摘要与预测分支的 `points[]`、概率、协方差、`size`、`influence_weight` 和连续风险证据结合，生成时间索引的动态风险或类 ROG-Map 局部地图。
 
 `TrajectoryCorrectionHint` 只表达轻量建议，例如：
 
@@ -295,7 +295,7 @@ P3 不缓存一整份 UFOMap 地图：
 
 - map cost 每个预测分支只做一次 `queryLocalOccupied()`：构造覆盖短时 rollout、目标外接圆和近障碍半径的局部查询球，再在内存中对各采样点计算 signed distance、occupied overlap 和 near-obstacle 代价。
 - free corridor 每个预测分支只做 8 个水平 `seenFree()` 探针：使用分支时间中点作为代表点，避免查询次数随 `points * directions` 放大。
-- 这个预算比缓存更稳定：它直接限制地图查询上限，不依赖不同分支是否刚好命中相同离散 key。若后续 P4 或 3D UAV 场景需要 26 邻域，应作为可配置增强，并重新评估 `applyInteractionContext` 耗时。
+- 这个预算比缓存更稳定：它直接限制地图查询上限，不依赖不同分支是否刚好命中相同离散 key。若后续 LDOP 第四阶段风险地图或 3D UAV 场景需要 26 邻域，应作为可配置增强，并重新评估 `applyInteractionContext` 耗时。
 
 ### 性能扩展
 
