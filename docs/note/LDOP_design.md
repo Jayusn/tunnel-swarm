@@ -17,6 +17,7 @@
 ### 第一阶段：动静态点云分割与静态地图构建
 - 当前状态：
   - 已完成。当前 `LDOP` 已经发布当前帧静态点云、当前帧动态点云，并通过 `/ldop/static_map_markers` 输出静态体素地图 RViz 可视化。
+  - 已为第四阶段打下基础查询能力：`UfomapMapper` 能返回显式 `Unknown/Free/Occupied/OutOfMap` 状态，支持按 query depth 的局部 occupied 查询和最近 occupied 查询；这些是 planner-facing 接口的底层能力，不等同于第四阶段 service 已完成。
 - 目标：
   - 基于 DUFOMap `seenFree()` / void-region 思路判别每帧点云中的静态点和动态点。
   - 基于 UFOMap 底层地图构建可观察的静态体素地图。
@@ -26,6 +27,7 @@
 - 主要处理：
   - 点云插入 UFOMap
   - 基于 `seenFree(point)` 做动静态判别
+  - 对内部使用方提供只读 UFOMap 查询，包括显式状态查询、局部 occupied 查询和最近 occupied 查询
   - 输出当前帧静态点云
   - 输出当前帧动态点云
   - 遍历 UFOMap 静态占用体素并生成可视化
@@ -71,6 +73,7 @@
 ### 第三阶段：动态目标短时轨迹预测
 - 当前状态：
   - 已完成。轨迹预测内部的 P1 轨迹外推、P2 航向/意图 GMM 多分支、P3 交互感知预测、P4 predictor 内部在线闭环反馈均已落地。
+  - 已通过 `PredictionMapQuery` 复用第一阶段 UFOMap 查询基础：P3 地图交互可以读取显式地图状态、按 `prediction_map_query_depth` 调整查询深度，并查询最近 occupied 证据。该能力用于预测交互和 P4 复用基础，不代表第四阶段规划地图接口已经完成。
 - 目标：
   - 对第二阶段稳定跟踪到的动态目标进行 1-3 秒短时预测。
   - 为规划器提供未来动态障碍物位置和风险演化。
@@ -81,6 +84,7 @@
   - 基于当前运动模型的轨迹外推
   - 航向/意图 GMM 多分支预测
   - 目标间交互、静态地图约束和 free corridor 方向先验
+  - 通过只读地图 adapter 使用显式 occupancy state、coarse/fine query depth 和最近 occupied 证据，保持 predictor 不拥有或修改 UFOMap
   - 分支概率重权重，并把局部交互修正转成时间平滑控制后重新 rollout
   - 基于上一轮预测 residual / NIS / likelihood 的同语义分支概率反馈和未来过程噪声尺度校准
   - 预测时间采样
@@ -96,6 +100,10 @@
   - 下一帧同一目标的同语义分支概率和未来 `Q` 尺度能随上一轮预测误差校准
 
 ### 第四阶段：规划可用的膨胀地图或 ESDF / 风险地图
+- 当前状态：
+  - 尚未实现 planner-facing ROS service/msg、planning map 或 risk map。
+  - UFOMap 应用层借鉴点中的 1、3、4 已作为前三阶段可复用基础落地：显式地图状态、query depth 调节和最近 occupied 查询。
+  - 借鉴点 2、5、6 仍归入第四阶段：`BoundingVolume-lite` 几何查询抽象、swept-volume 辅助线段检查、完整/局部地图发布后置增强。
 - 目标：
   - 将静态地图和动态预测融合为无人机运动规划可直接使用的安全表达。
   - 地图越强大越好，但必须保持静态层和动态层语义清晰。
@@ -104,7 +112,11 @@
   - 第三阶段动态目标预测
   - 无人机位姿/规划范围
 - 主要处理：
+  - 将已落地的底层 occupancy state 和 query depth 包装成稳定 planner-facing 查询语义
+  - 批量点、box 或局部范围查询
+  - 线段/轨迹边碰撞检查
   - 静态障碍物膨胀
+  - unknown 策略和 `INFLATED_OCCUPIED` 状态定义
   - 静态 ESDF 或等价距离场构建
   - 动态障碍物未来位置膨胀
   - 动态风险随预测时间衰减或叠加
@@ -147,5 +159,7 @@
   - `/ldop/dynamic_track_markers`：跨帧轨迹历史、头部点和目标标签
 - 第三阶段动态目标短时轨迹预测已经完成：
   - 已完成预测内部 P1/P2/P3/P4：轨迹外推、航向/意图 GMM 多分支、交互感知概率重权重和平滑控制重新 rollout、predictor 内部在线闭环反馈。
+  - 已完成 UFOMap 应用层 1、3、4 的跨阶段基础：显式地图状态、可配置 query depth 和最近 occupied 查询；这些能力已经服务 P3 地图交互，并留给第四阶段 planner-facing 接口复用。
   - 离线多 horizon evaluator 仍可后续补充，用于量化 `ADE/FDE/NLL/ECE/Brier/coverage` 等指标，但不再作为第三阶段完成门槛。
 - 第三阶段预测只消费第二阶段稳定目标输出，不应直接对未聚类动态点云做规划级预测；第四阶段规划地图再融合第一阶段静态地图和第三阶段动态预测。
+- 下一步第四阶段应优先落地 planner-facing 的 2、5、6：`BoundingVolume-lite` 查询抽象、swept-volume 辅助线段检查、完整/局部地图发布后置增强；静态膨胀、unknown 策略和批量点/范围查询仍是 P4-A/P4-B 的接口内容，但不作为单独 UFOMap 借鉴点编号。

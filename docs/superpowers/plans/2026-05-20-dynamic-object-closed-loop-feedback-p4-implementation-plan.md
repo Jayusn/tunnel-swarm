@@ -53,7 +53,7 @@ Status: complete as of 2026-05-21 local verification. The implemented scope is t
   - Add P4 feedback parameters beside existing `prediction_*` parameters, without adding a min-noise-scale parameter.
 
 - Modify planning docs after code passes:
-  - `docs/superpowers/plans/2026-05-14-dynamic-object-trajectory-prediction-arrangement.md`
+  - `docs/note/动态目标短时轨迹预测实施安排.md`
   - `task_plan.md`
   - `progress.md`
   - `findings.md`
@@ -1393,14 +1393,14 @@ Expected: all predictor and interaction context tests pass.
 ## Task 6: Documentation and Planning Sync
 
 **Files:**
-- Modify: `docs/superpowers/plans/2026-05-14-dynamic-object-trajectory-prediction-arrangement.md`
+- Modify: `docs/note/动态目标短时轨迹预测实施安排.md`
 - Modify: `task_plan.md`
 - Modify: `progress.md`
 - Modify: `findings.md`
 
 - [x] **Step 1: Update arrangement doc P4 status**
 
-In `docs/superpowers/plans/2026-05-14-dynamic-object-trajectory-prediction-arrangement.md`, update P4 wording from future tense to implemented/active once code passes:
+In `docs/note/动态目标短时轨迹预测实施安排.md`, update P4 wording from future tense to implemented/active once code passes:
 
 ```markdown
 ### P4：闭环评估与概率反馈（已实现）
@@ -1450,7 +1450,7 @@ Add implementation facts:
 Run from `/home/st/ldop_ws/src/LDOP`:
 
 ```bash
-git diff --check -- docs/superpowers/plans/2026-05-14-dynamic-object-trajectory-prediction-arrangement.md task_plan.md progress.md findings.md
+git diff --check -- docs/note/动态目标短时轨迹预测实施安排.md task_plan.md progress.md findings.md
 ```
 
 Expected: no output.

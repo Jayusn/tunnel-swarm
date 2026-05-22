@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <future>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -166,6 +167,32 @@ ufo::DownSamplingMethod toUfoDownSamplingMethod(const std::string& method) {
     return ufo::DownSamplingMethod::UNIFORM;
   }
   return ufo::DownSamplingMethod::CENTER;
+}
+
+ufo::depth_t clampQueryDepth(const DufomapMapType& map, const ufo::depth_t depth) {
+  return std::min(depth, static_cast<ufo::depth_t>(map.depthLevels()));
+}
+
+UfomapOccupancyState classifyPlannerOccupancyState(const DufomapMapType& map,
+                                                   const ufo::Node node) {
+  // 当前 DUFOMap 运行时没有使用概率占据层；静态占据来自 reflection hits，
+  // planner-facing free 只能由 SEEN_FREE 的射线穿越证据表达，且必须让 hit 优先生效。
+  if (map.hits(node) > 0) {
+    return UfomapOccupancyState::Occupied;
+  }
+  if (map.seenFree(node)) {
+    return UfomapOccupancyState::Free;
+  }
+  return UfomapOccupancyState::Unknown;
+}
+
+void applyOccupancyStateFlags(const UfomapOccupancyState state,
+                              UfomapNodeQueryResult& result) {
+  result.state = state;
+  result.occupied = state == UfomapOccupancyState::Occupied;
+  result.free = state == UfomapOccupancyState::Free;
+  result.unknown = state == UfomapOccupancyState::Unknown;
+  result.out_of_map = state == UfomapOccupancyState::OutOfMap;
 }
 
 UfomapMapperConfig buildUfomapConfig(const UfomapMapperParams& params) {
@@ -483,25 +510,42 @@ bool UfomapMapper::seenFree(const ufo::Point& point) const {
   return runtimeLocked().map.seenFree(point);
 }
 
-std::optional<UfomapNodeQueryResult> UfomapMapper::queryNode(const ufo::Point& point) const {
+UfomapNodeQueryResult UfomapMapper::queryNode(const ufo::Point& point,
+                                              const ufo::depth_t depth) const {
   std::shared_lock<std::shared_mutex> lock(map_mutex_);
   const auto& runtime = runtimeLocked();
+  const ufo::depth_t query_depth = clampQueryDepth(runtime.map, depth);
 
-  const auto code = runtime.map.toCodeChecked(point);
+  UfomapNodeQueryResult result;
+  result.depth = query_depth;
+  result.voxel_size = runtime.map.size(query_depth);
+
+  const auto code = runtime.map.toCodeChecked(point, query_depth);
   if (!code.has_value()) {
-    return std::nullopt;
+    result.center = point;
+    applyOccupancyStateFlags(UfomapOccupancyState::OutOfMap, result);
+    return result;
   }
 
+  result.center = runtime.map.toCoord(*code);
+  result.seen_free = runtime.map.seenFree(point, query_depth);
   if (!runtime.map.exists(*code)) {
-    return std::nullopt;
+    if (result.seen_free) {
+      // 对规划层而言，射线穿越证据已经足以表达 FREE；
+      // 即使 exact code 未物化为普通节点，也不应退化成 UNKNOWN。
+      result.exists = true;
+      applyOccupancyStateFlags(UfomapOccupancyState::Free, result);
+    } else {
+      applyOccupancyStateFlags(UfomapOccupancyState::Unknown, result);
+    }
+    return result;
   }
 
   const auto node = runtime.map(*code);
 
-  UfomapNodeQueryResult result;
   result.exists = true;
-  result.occupied = runtime.map.hits(node) > 0;
-  result.center = runtime.map.center(node);
+  result.seen_free = runtime.map.seenFree(node);
+  applyOccupancyStateFlags(classifyPlannerOccupancyState(runtime.map, node), result);
   result.depth = node.depth();
   result.voxel_size = runtime.map.size(node.depth());
   return result;
@@ -576,7 +620,7 @@ std::vector<UfomapCandidateNode> UfomapMapper::queryDynamicCandidates(
   std::vector<UfomapCandidateNode> candidates;
   const auto& runtime = runtimeLocked();
 
-  const auto leaf = ufo::pred::Leaf(query.depth);
+  const auto leaf = ufo::pred::Leaf(clampQueryDepth(runtime.map, query.depth));
   const auto hits = ufo::pred::HitsMin(static_cast<ufo::count_t>(query.min_hits));
   const auto label = ufo::pred::Label(static_cast<ufo::label_t>(query.label));
   // intersects 为空时走全局查询；非空时附加空间约束查询。
@@ -609,7 +653,7 @@ std::vector<UfomapLocalOccupiedNode> UfomapMapper::queryLocalOccupied(
   std::vector<UfomapLocalOccupiedNode> occupied_nodes;
   const auto& runtime = runtimeLocked();
 
-  const auto leaf = ufo::pred::Leaf(query.depth);
+  const auto leaf = ufo::pred::Leaf(clampQueryDepth(runtime.map, query.depth));
   const auto hits = ufo::pred::HitsMin(static_cast<ufo::count_t>(query.min_hits));
   // P3 只需要静态占据证据；这里不叠加 label/SeenFree，避免把动态候选语义泄漏给规划侧。
   if (query.intersects.empty()) {
@@ -622,6 +666,38 @@ std::vector<UfomapLocalOccupiedNode> UfomapMapper::queryLocalOccupied(
                            query.max_results,
                            occupied_nodes);
   return occupied_nodes;
+}
+
+std::optional<UfomapLocalOccupiedNode> UfomapMapper::queryNearestOccupied(
+    const ufo::Point& center,
+    const double radius,
+    const ufo::depth_t depth,
+    const std::uint32_t min_hits) const {
+  if (radius < 0.0) {
+    return std::nullopt;
+  }
+
+  UfomapLocalOccupiedQuery query;
+  query.depth = depth;
+  query.min_hits = min_hits;
+  query.intersects.emplace_back(center, static_cast<float>(radius));
+  const auto occupied_nodes = queryLocalOccupied(query);
+
+  std::optional<UfomapLocalOccupiedNode> nearest;
+  double nearest_surface_distance = std::numeric_limits<double>::infinity();
+  for (const auto& occupied : occupied_nodes) {
+    const double surface_distance =
+        static_cast<double>(center.distance(occupied.center)) -
+        std::max(0.0, occupied.voxel_size) * 0.5;
+    if (surface_distance > radius) {
+      continue;
+    }
+    if (surface_distance < nearest_surface_distance) {
+      nearest_surface_distance = surface_distance;
+      nearest = occupied;
+    }
+  }
+  return nearest;
 }
 
 }  // namespace ldopcore

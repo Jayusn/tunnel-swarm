@@ -1104,6 +1104,9 @@ void DynamicObjectPredictor::loadParameters() {
   pnh_.param("prediction_near_obstacle_distance",
              params_.interaction.near_obstacle_distance,
              defaults.interaction.near_obstacle_distance);
+  pnh_.param("prediction_map_query_depth",
+             params_.interaction.map_query_depth,
+             defaults.interaction.map_query_depth);
   pnh_.param("prediction_ttc_safe_time",
              params_.interaction.ttc_safe_time,
              defaults.interaction.ttc_safe_time);

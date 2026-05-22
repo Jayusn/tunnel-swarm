@@ -9,6 +9,7 @@
 - P1 轨迹外推已完成。
 - P2 航向/意图 GMM 已完成，predictor 当前输出 branch-level trajectory-level GMM。
 - P3 交互感知预测已完成；后续 P4 predictor 内部在线闭环反馈也已另文实现，因此 LDOP 第三阶段轨迹预测内容已经完成。
+- UFOMap 应用层借鉴点 1、3、4 已作为 P3/P4 跨阶段基础落地：显式 `Unknown/Free/Occupied/OutOfMap` 状态、可配置 query depth 和最近 occupied 查询。
 - RViz 预测 marker 当前只显示真实保留 GMM 分支中心状态线，不恢复额外 sample marker。
 - P3 不修改 `DynamicObject.msg`，不把未来预测回填到 tracker 当前状态消息。
 - P3 首版不新增默认 ROS 诊断话题，内部诊断统计用于日志、测试和后续评估衔接。
@@ -21,11 +22,13 @@
 - 新建独立 `PredictionInteractionContext` 模块聚合交互/地图证据，避免 `DynamicObjectPredictor` 直接承担地图查询和场景理解职责。
 - 保持 `/ldop/dynamic_object_predictions` 的 planner-facing GMM 输出结构不变。
 - 为第四阶段类 ROG-Map 风险/局部地图构建保留清晰边界。
+- 让 P3 地图交互使用已经落地的基础 UFOMap 查询能力，但不把静态膨胀、批量 service、线段检查或 ESDF/local map 提前混入 predictor。
 
 ## 非目标
 
 - 不在本文档的 P3 范围内实现闭环预测误差缓存、NIS 校准或概率反馈；这些已由后续 P4 predictor 内部在线反馈另文实现。
 - 不实现第四阶段 planner-facing 类 ROG-Map 或风险地图构建器。
+- 不实现 UFOMap 应用层借鉴点 2、5、6：`BoundingVolume-lite` 几何查询抽象、swept-volume 辅助线段检查、完整/局部地图发布后置增强。
 - 不新增预测 sample 消息字段、sample marker 或默认诊断 marker。
 - 不引入学习式 interaction encoder。
 - 不把每个能量项公式细节全部暴露为 YAML 参数。
@@ -51,7 +54,7 @@ P2 candidate branches
   -> /ldop/dynamic_prediction_markers
 ```
 
-`PredictionInteractionContext` 是预测阶段的交互/地图约束上下文，不是第四阶段 planner-facing 类 ROG-Map 地图。第四阶段应单独实现风险/局部地图 builder，但该 builder 可以复用 `PredictionInteractionContext` 输出的局部交互证据、地图约束证据和风险摘要，避免重复实现目标间关系、近障碍查询和 free corridor 估计。
+`PredictionInteractionContext` 是预测阶段的交互/地图约束上下文，不是第四阶段 planner-facing 类 ROG-Map 地图。第四阶段应单独实现风险/局部地图 builder，但该 builder 可以复用 `PredictionInteractionContext` 输出的局部交互证据、地图约束证据、显式 occupancy state、query-depth 策略、最近 occupied 证据和风险摘要，避免重复实现目标间关系、近障碍查询和 free corridor 估计。
 
 边界应保持为：
 
@@ -268,9 +271,10 @@ P3 使用现有 `UfomapMapper` 的只读查询能力，但 predictor 和 `Predic
 
 | 场景 | 建议查询 | 用途 |
 |------|----------|------|
-| 预测采样点或目标膨胀中心是否落在 occupied 体素 | `UfomapMapper::queryNode(point)` | 保留为抽象点查询能力；当前性能优化后的 P3 主路径不逐点调用它 |
-| 预测点是否位于已知 free 区域 | `UfomapMapper::seenFree(point)` | 区分 free 与 unknown/occupied，用于 free corridor 采样和未知空间保守处理 |
-| 预测点膨胀半径内是否有静态 occupied/near obstacle 节点 | 新增中性只读区域查询封装，例如 `UfomapMapper::queryLocalOccupied(query)`，内部使用 UFOMap 空间谓词 `Intersects(Sphere(center, radius))`、`Leaf(depth)`、`HitsMin(1)` | 做静态近障碍软代价、最近障碍距离近似和 occupied overlap 估计 |
+| 预测采样点或目标膨胀中心是否落在 occupied / free / unknown / out-of-map 体素 | `UfomapMapper::queryNode(point)` | 保留为抽象点查询能力；当前已返回显式 occupancy state，性能优化后的 P3 主路径不逐点调用它 |
+| 预测点是否位于已知 free 区域 | `UfomapMapper::seenFree(point)` 和 `queryNode()` 中的 `Free` 状态 | 区分 free 与 unknown/occupied，用于 free corridor 采样和未知空间保守处理；`seenFree()` 仍是动静态判别证据，不等同于 P4 planner-facing `FREE` |
+| 预测点膨胀半径内是否有静态 occupied/near obstacle 节点 | `UfomapMapper::queryLocalOccupied(query)`，内部使用 UFOMap 空间谓词 `Intersects(Sphere(center, radius))`、`Leaf(depth)`、`HitsMin(1)` | 做静态近障碍软代价、最近障碍距离近似和 occupied overlap 估计；`prediction_map_query_depth` 可调节 coarse/fine 查询 |
+| 局部最近静态 occupied 证据 | `UfomapMapper::queryNearestOccupied(center, radius, max_results, query_depth)` | 为 P3 地图代价和 P4 后续距离接口提供 bounded nearest-obstacle 近似；不承诺 ESDF 的连续 signed distance 或 gradient |
 | 局部 free corridor 方向估计 | 每个分支代表点周围 8 个水平 `seenFree()` 探针 | 比较候选方向上的 free 证据，得到 `free_corridor_direction` 和置信度；不使用 `points * directions` 查询 |
 
 P3 不使用 `setNodeLabel()`、`clearAllLabels()` 等写接口，也不把 `queryDynamicCandidates()` 作为静态近障碍查询主接口。`queryDynamicCandidates()` 当前带有 dynamic candidate / label / seenFree 语义，更适合当前动静态分割或动态候选点流程；P3 的地图代价需要查询静态占据或近障碍区域，应新增命名中性的只读区域查询封装。该封装可以直接在 `UfomapMapper` 内部使用 UFOMap 的区域查询能力，例如 `map.query(Leaf && HitsMin && Intersects(...))`，必要时后续再补最近邻查询或批量查询接口。
@@ -294,6 +298,7 @@ P3 不缓存一整份 UFOMap 地图：
 当前实现采用分支级查询预算，而不是 `LocalOccupiedCacheKey` / `unordered_map` 形式的单帧局部缓存：
 
 - map cost 每个预测分支只做一次 `queryLocalOccupied()`：构造覆盖短时 rollout、目标外接圆和近障碍半径的局部查询球，再在内存中对各采样点计算 signed distance、occupied overlap 和 near-obstacle 代价。
+- P3 主路径需要最近 occupied 证据时，优先在同一次 `queryLocalOccupied()` 返回的局部列表里内存计算最近障碍，避免额外查询；`queryNearestOccupied()` 作为直接查询接口保留下来，供 P4 planner-facing 距离摘要或调试路径复用。
 - free corridor 每个预测分支只做 8 个水平 `seenFree()` 探针：使用分支时间中点作为代表点，避免查询次数随 `points * directions` 放大。
 - 这个预算比缓存更稳定：它直接限制地图查询上限，不依赖不同分支是否刚好命中相同离散 key。若后续 LDOP 第四阶段风险地图或 3D UAV 场景需要 26 邻域，应作为可配置增强，并重新评估 `applyInteractionContext` 耗时。
 

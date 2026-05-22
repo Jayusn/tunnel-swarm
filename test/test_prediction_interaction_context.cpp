@@ -87,12 +87,25 @@ class FakePredictionMapQuery final : public PredictionMapQuery {
     return nodes;
   }
 
+  std::vector<PredictionLocalOccupiedNode> queryLocalOccupied(
+      const Eigen::Vector3d& center,
+      const double radius,
+      const std::size_t max_results,
+      const std::uint8_t query_depth) const override {
+    last_local_occupied_query_depth_ = query_depth;
+    return queryLocalOccupied(center, radius, max_results);
+  }
+
   std::size_t queryNodeCount() const { return query_node_count_; }
 
   std::size_t seenFreeCount() const { return seen_free_count_; }
 
   std::size_t localOccupiedQueryCount() const {
     return local_occupied_query_count_;
+  }
+
+  std::uint8_t lastLocalOccupiedQueryDepth() const {
+    return last_local_occupied_query_depth_;
   }
 
  private:
@@ -103,6 +116,7 @@ class FakePredictionMapQuery final : public PredictionMapQuery {
   mutable std::size_t query_node_count_{0U};
   mutable std::size_t seen_free_count_{0U};
   mutable std::size_t local_occupied_query_count_{0U};
+  mutable std::uint8_t last_local_occupied_query_depth_{0U};
 };
 
 [[maybe_unused]] TrackPredictionInput makeInput(const std::uint32_t id,
@@ -436,6 +450,22 @@ TEST(PredictionInteractionContextTest, OccupiedBranchGetsMapCostAndCollisionDiag
   EXPECT_EQ(interaction.risk_level, PredictionBranchRiskLevel::Critical);
   EXPECT_EQ(result.diagnostics.colliding_branch_count, 1U);
   EXPECT_TRUE(interaction.correction_hint.has_position_offset);
+}
+
+TEST(PredictionInteractionContextTest, MapQueryDepthIsForwardedToOccupiedLookup) {
+  PredictionInteractionParams params;
+  params.map_query_depth = 2;
+  PredictionInteractionContext context(buildPredictionInteractionConfig(params));
+  FakePredictionMapQuery map;
+  map.addOccupiedNode(Eigen::Vector3d(0.4, 0.0, 0.0), 0.4, 5U);
+  const auto predictions = makePredictions({
+      {1U, makeBranch({Eigen::Vector3d(0.4, 0.0, 0.0)})},
+  });
+
+  static_cast<void>(context.evaluate(predictions.header, {}, predictions, &map));
+
+  EXPECT_GT(map.localOccupiedQueryCount(), 0U);
+  EXPECT_EQ(map.lastLocalOccupiedQueryDepth(), 2U);
 }
 
 TEST(PredictionInteractionContextTest, NearObstacleCostsLessThanOccupied) {

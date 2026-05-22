@@ -158,6 +158,8 @@ if (!map.seenFree(p)) {
 2. 在线流程新增的“当前帧输出口径”参数
 3. 工程层面的性能 / 内存参数
 
+第三阶段轨迹预测还新增了一个只读地图查询参数：`prediction_map_query_depth`。它不是 DUFOMap 积分参数，也不会改变 UFOMap 中 hit / miss / seenFree 的写入结果；它只控制 `PredictionMapQuery` 读取静态地图时采用叶子还是更粗深度，用于在 P3 地图交互和后续 P4 planner-facing 查询之间复用同一套 coarse/fine 查询基础。
+
 ## 3. 官方 DUFOMap 参数和 LDOP 参数的对应关系
 
 | 官方 DUFOMap | 当前 LDOP | 说明 |
@@ -696,7 +698,10 @@ ufomap_num_threads: 0
 - `config/ldop.yaml`
 - `include/ldop/ufomap_mapper.h`
 - `src/ufomap_mapper.cpp`
+- `include/ldop/prediction_interaction_context.h`
+- `src/prediction_interaction_context.cpp`
 - `docs/note/LDOP_design.md`
+- `docs/note/第四阶段规划地图接口设计草案.md`
 
 外部参考：
 

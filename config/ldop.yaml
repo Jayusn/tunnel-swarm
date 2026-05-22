@@ -75,6 +75,7 @@ prediction_map_interaction_weight: 1.0  # 静态occupied/near obstacle代价权�
 prediction_corridor_interaction_weight: 0.4  # free corridor方向先验权重
 prediction_interaction_safe_distance: 0.4  # 目标尺寸膨胀后的额外安全距离，单位m
 prediction_near_obstacle_distance: 0.6  # 静态障碍近邻软惩罚半径，单位m
+prediction_map_query_depth: 0  # 静态地图交互查询深度，0为叶子；调大可用更粗体素降低局部查询成本
 prediction_ttc_safe_time: 1.5  # TTC低于该值时提高迎面/交叉冲突惩罚，单位s
 prediction_free_corridor_query_radius: 1.2  # 局部free corridor方向估计采样半径，单位m
 prediction_max_correction_distance: 0.2  # 单个预测点均值位置最大修正距离，单位m

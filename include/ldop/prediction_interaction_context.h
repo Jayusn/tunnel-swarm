@@ -21,6 +21,7 @@ struct PredictionInteractionParams {
   double corridor_interaction_weight{0.4};  // free corridor 方向先验只作为轻量偏置，避免覆盖运动模型语义。
   double interaction_safe_distance{0.4};    // 在目标尺寸外额外保留的安全距离，单位 m。
   double near_obstacle_distance{0.6};       // 近障碍软惩罚半径，单位 m；穿障仍由 occupied 单独表达。
+  int map_query_depth{0};                   // UFOMap 查询深度，0 为叶子；调大可用更粗体素降低局部查询成本。
   double ttc_safe_time{1.5};                // TTC 低于该时间时认为分支存在短时碰撞风险。
   double free_corridor_query_radius{1.2};   // 局部可通行方向采样半径，单位 m。
   double max_correction_distance{0.2};      // 单点均值轨迹最大位置修正，限制交互逻辑不替代 rollout。
@@ -35,6 +36,7 @@ struct PredictionInteractionConfig {
   double corridor_interaction_weight{0.4};
   double interaction_safe_distance{0.4};
   double near_obstacle_distance{0.6};
+  std::uint8_t map_query_depth{0U};
   double ttc_safe_time{1.5};
   double free_corridor_query_radius{1.2};
   double max_correction_distance{0.2};
@@ -43,8 +45,20 @@ struct PredictionInteractionConfig {
 };
 
 struct PredictionMapNodeQuery {
+  enum class OccupancyState : std::uint8_t {
+    Unknown = 0,
+    Free = 1,
+    Occupied = 2,
+    OutOfMap = 3,
+  };
+
+  OccupancyState state{OccupancyState::Unknown};
   bool exists{false};
   bool occupied{false};
+  bool free{false};
+  bool unknown{true};
+  bool out_of_map{false};
+  bool seen_free{false};
   Eigen::Vector3d center{Eigen::Vector3d::Zero()};
   double voxel_size{0.0};
 };
@@ -67,6 +81,15 @@ class PredictionMapQuery {
       const Eigen::Vector3d& center,
       double radius,
       std::size_t max_results) const = 0;
+  virtual std::vector<PredictionLocalOccupiedNode> queryLocalOccupied(
+      const Eigen::Vector3d& center,
+      double radius,
+      std::size_t max_results,
+      std::uint8_t query_depth) const;
+  virtual std::optional<PredictionLocalOccupiedNode> queryNearestOccupied(
+      const Eigen::Vector3d& center,
+      double radius,
+      std::uint8_t query_depth = 0U) const;
 };
 
 struct TrajectoryCorrectionHint {

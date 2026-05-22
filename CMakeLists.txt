@@ -151,4 +151,15 @@ if(CATKIN_ENABLE_TESTING)
       gtest
     )
   endif()
+
+  catkin_add_gtest(test_ufomap_mapper
+    test/test_ufomap_mapper.cpp
+  )
+  if(TARGET test_ufomap_mapper)
+    target_link_libraries(test_ufomap_mapper
+      ldop_core
+      ${catkin_LIBRARIES}
+      gtest
+    )
+  endif()
 endif()

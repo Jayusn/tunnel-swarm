@@ -295,7 +295,7 @@ expired_state_count
 
 必要时同步：
 
-- `docs/superpowers/plans/2026-05-14-dynamic-object-trajectory-prediction-arrangement.md`
+- `docs/note/动态目标短时轨迹预测实施安排.md`
 - `task_plan.md`
 - `progress.md`
 - `findings.md`

@@ -8,6 +8,33 @@
 #include <vector>
 
 namespace ldopcore {
+
+std::vector<PredictionLocalOccupiedNode> PredictionMapQuery::queryLocalOccupied(
+    const Eigen::Vector3d& center,
+    const double radius,
+    const std::size_t max_results,
+    const std::uint8_t /*query_depth*/) const {
+  return queryLocalOccupied(center, radius, max_results);
+}
+
+std::optional<PredictionLocalOccupiedNode> PredictionMapQuery::queryNearestOccupied(
+    const Eigen::Vector3d& center,
+    const double radius,
+    const std::uint8_t query_depth) const {
+  const auto occupied_nodes = queryLocalOccupied(center, radius, 0U, query_depth);
+  std::optional<PredictionLocalOccupiedNode> nearest;
+  double nearest_surface_distance = std::numeric_limits<double>::infinity();
+  for (const auto& node : occupied_nodes) {
+    const double surface_distance =
+        (node.center - center).norm() - std::max(0.0, node.voxel_size) * 0.5;
+    if (surface_distance < nearest_surface_distance) {
+      nearest_surface_distance = surface_distance;
+      nearest = node;
+    }
+  }
+  return nearest;
+}
+
 namespace {
 
 constexpr double kMinDistance{1.0e-6};
@@ -490,7 +517,10 @@ void evaluateMapCosts(const ldop::DynamicObjectPredictionArray& predictions,
         continue;
       }
       const auto occupied_nodes = map_query->queryLocalOccupied(
-          query_region->center, query_region->radius, kMaxBranchOccupiedResults);
+          query_region->center,
+          query_region->radius,
+          kMaxBranchOccupiedResults,
+          config.map_query_depth);
       double cost_sum = 0.0;
       bool has_correction_hint = false;
       double correction_severity = 0.0;
@@ -724,6 +754,8 @@ PredictionInteractionConfig buildPredictionInteractionConfig(
   config.near_obstacle_distance =
       params.near_obstacle_distance >= 0.0 ? params.near_obstacle_distance
                                            : defaults.near_obstacle_distance;
+  config.map_query_depth =
+      static_cast<std::uint8_t>(std::clamp(params.map_query_depth, 0, 255));
   config.ttc_safe_time =
       params.ttc_safe_time > 0.0 ? params.ttc_safe_time : defaults.ttc_safe_time;
   config.free_corridor_query_radius =

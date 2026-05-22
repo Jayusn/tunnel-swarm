@@ -128,9 +128,22 @@ struct UfomapFrameResult {
   UfomapTimingStats timing;
 };
 
+enum class UfomapOccupancyState : std::uint8_t {
+  Unknown = 0,
+  Free = 1,
+  Occupied = 2,
+  OutOfMap = 3,
+};
+
 struct UfomapNodeQueryResult {
+  // state 是 planner-facing 的主语义；下面的 bool 字段保留给现有调用点做低成本迁移。
+  UfomapOccupancyState state{UfomapOccupancyState::Unknown};
   bool exists{false};
   bool occupied{false};
+  bool free{false};
+  bool unknown{true};
+  bool out_of_map{false};
+  bool seen_free{false};
   ufo::Point center{};
   ufo::depth_t depth{0};
   double voxel_size{0.0};
@@ -181,7 +194,7 @@ class UfomapMapper {
   void clearMap();
   void propagateModified();
   bool seenFree(const ufo::Point& point) const;
-  std::optional<UfomapNodeQueryResult> queryNode(const ufo::Point& point) const;
+  UfomapNodeQueryResult queryNode(const ufo::Point& point, ufo::depth_t depth = 0) const;
   void setNodeLabel(const ufo::Point& point, std::uint32_t label, bool propagate = true);
   std::uint32_t nodeLabel(const ufo::Point& point) const;
   void clearAllLabels();
@@ -192,6 +205,12 @@ class UfomapMapper {
   // 中性静态占据邻域查询：P3 用它查询预测点膨胀半径内的 occupied/near obstacle。
   std::vector<UfomapLocalOccupiedNode> queryLocalOccupied(
       const UfomapLocalOccupiedQuery& query) const;
+  // 最近 occupied 查询只返回静态占据证据；动态风险仍由预测层单独计算，避免污染静态地图语义。
+  std::optional<UfomapLocalOccupiedNode> queryNearestOccupied(
+      const ufo::Point& center,
+      double radius,
+      ufo::depth_t depth = 0,
+      std::uint32_t min_hits = 1U) const;
   UfomapFrameResult processInputCloud(const sensor_msgs::PointCloud2& cloud_msg,
                                       const nav_msgs::Odometry& odom_msg);
 

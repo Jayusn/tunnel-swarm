@@ -1,6 +1,6 @@
 # Dynamic Object Interaction-Aware GMM P3 Implementation Plan
 
-**Status:** Completed. The checklist below is retained as the historical execution plan; it no longer indicates open P3 work. Runtime P3 now includes `PredictionInteractionContext`, UFOMap read-only adapter wiring, probability reweighting, smooth-control rerollout, branch-level map/corridor query budgets, and internal `branch_risk_level` summaries.
+**Status:** Completed. The checklist below is retained as the historical execution plan; it no longer indicates open P3 work. Runtime P3 now includes `PredictionInteractionContext`, UFOMap read-only adapter wiring, probability reweighting, smooth-control rerollout, branch-level map/corridor query budgets, internal `branch_risk_level` summaries, explicit occupancy-state map queries, query-depth control, and nearest occupied evidence.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -14,7 +14,7 @@
 
 ## Scope Check
 
-This plan implements one subsystem: P3 interaction-aware prediction. That subsystem is now complete in the current codebase. It does not implement the P4 planner-facing class-ROGMAP/risk-map builder, but it intentionally exposes structured interaction evidence that P4 can consume later.
+This plan implements one subsystem: P3 interaction-aware prediction. That subsystem is now complete in the current codebase. It does not implement the P4 planner-facing class-ROGMAP/risk-map builder, but it intentionally exposes structured interaction evidence and reusable UFOMap query foundations that P4 can consume later.
 
 Repository rule override: the general planning skill suggests frequent commits, but this repository explicitly says not to create intermediate commits during the task. Execute all steps without committing; after verification, ask the user before creating any commit.
 
@@ -25,7 +25,8 @@ Repository rule override: the general planning skill suggests frequent commits, 
 - Do not restore sample markers, uncertainty ellipsoids, or default diagnostic ROS topics.
 - Use tracker/predictor state for dynamic targets; do not infer future dynamic risk from UFOMap dynamic candidates.
 - Use UFOMap only for static occupied/near-obstacle/free-space evidence.
-- Do not cache a full UFOMap copy. Runtime implementation uses branch-level query budgets inside `PredictionInteractionContext`: one local occupied query per branch and 8 horizontal `seenFree()` corridor probes per branch.
+- Do not cache a full UFOMap copy. Runtime implementation uses branch-level query budgets inside `PredictionInteractionContext`: one local occupied query per branch, nearest occupied evidence where useful, and 8 horizontal `seenFree()` corridor probes per branch.
+- Treat UFOMap application-layer borrowings 1/3/4 as cross-stage foundations: explicit `Unknown/Free/Occupied/OutOfMap` state, configurable query depth, and nearest occupied query are implemented for P3/P4 reuse; planner-facing inflation, batch services, line checks, and ESDF/local-map products remain P4 work.
 - Do not shrink `model_covariance` because of interaction confidence. Modify branch probability and bounded mean trajectory only.
 
 ## File Structure
@@ -45,11 +46,13 @@ Repository rule override: the general planning skill suggests frequent commits, 
   - Covers crossing, head-on, following, occupied, near obstacle, free corridor, and unavailable map cases.
 
 - Modify `include/ldop/ufomap_mapper.h`
-  - Add neutral static local occupied query structs and method.
-  - Add voxel size to point query results so the adapter can report obstacle footprint evidence.
+  - Add neutral static local occupied query structs and methods.
+  - Add explicit occupancy state to point query results so the adapter can preserve `Unknown/Free/Occupied/OutOfMap`.
+  - Add nearest occupied query and query-depth plumbing so P3 can tune coarse/fine map evidence and P4 can reuse the same foundation.
 
 - Modify `src/ufomap_mapper.cpp`
   - Implement `queryLocalOccupied()` using UFOMap region predicates: `Leaf(depth)`, `HitsMin(min_hits)`, and `Intersects(spheres)`.
+  - Implement `queryNearestOccupied()` on top of local occupied query results for a bounded nearest-obstacle approximation.
   - Keep dynamic-candidate query semantics separate.
 
 - Modify `include/ldop/dynamic_object_predictor.h`
@@ -1879,13 +1882,13 @@ Update `task_plan.md`:
 
 ```markdown
 - P3 实现计划：`docs/superpowers/plans/2026-05-19-dynamic-object-interaction-aware-gmm-p3-implementation-plan.md` 已生成。
-- P3 执行边界：实现 `PredictionInteractionContext`、UFOMap 静态只读邻域查询、predictor 重权重/轻量修正、Ldop adapter 和回归测试；不实现 P4 planner-facing 类 ROG-Map builder。
+- P3 执行边界：实现 `PredictionInteractionContext`、UFOMap 静态只读邻域查询、predictor 重权重/轻量修正、Ldop adapter、UFOMap 应用层 1/3/4 跨阶段基础和回归测试；不实现 P4 planner-facing 类 ROG-Map builder。
 ```
 
 Update `findings.md` with implementation facts after code exists:
 
 ```markdown
-- P3 静态地图约束通过 `PredictionMapQuery` 抽象读取 UFOMap；动态目标交互继续来自 tracker/predictor 的稳定目标状态、尺寸和预测分支，不使用 UFOMap dynamic candidate 查询反推未来动态风险。
+- P3 静态地图约束通过 `PredictionMapQuery` 抽象读取 UFOMap；该抽象当前保留显式 occupancy state、query depth 和最近 occupied 证据。动态目标交互继续来自 tracker/predictor 的稳定目标状态、尺寸和预测分支，不使用 UFOMap dynamic candidate 查询反推未来动态风险。
 - `DynamicObjectPredictor` 应用交互结果时调整 branch probability，并把局部 correction hint 平滑成速度/减速/方向控制 profile 后重新 rollout 分支；不逐点硬改轨迹，也不缩小 `model_covariance`。
 - `PredictionBranchInteraction` 保留连续证据和 `PredictionBranchRiskLevel` 离散摘要；P4 可用 `Low/Medium/High/Critical` 快速分层，再结合连续代价、TTC、最近障碍距离等计算 planner-facing 风险。
 ```
@@ -1895,7 +1898,8 @@ Update `progress.md` with verification results:
 ```markdown
 ## 2026-05-19 P3 交互感知预测实现
 
-- 已实现 `PredictionInteractionContext`、UFOMap 静态只读邻域查询、Ldop 查询 adapter、predictor 概率重权重、平滑控制重新 rollout、分支级查询预算和 `branch_risk_level` 内部风险摘要。
+- 已实现 `PredictionInteractionContext`、UFOMap 静态只读邻域查询、显式地图状态、`prediction_map_query_depth`、最近 occupied 查询、Ldop 查询 adapter、predictor 概率重权重、平滑控制重新 rollout、分支级查询预算和 `branch_risk_level` 内部风险摘要。
+- 已明确 UFOMap 应用层 2/5/6 不属于当前 P3：`BoundingVolume-lite` 几何查询抽象、swept-volume 辅助线段检查、完整/局部地图发布后置增强需要第四阶段接口开始后再实现。
 - 已验证：`catkin build ldop --no-status`、`catkin run_tests ldop --no-status`、`catkin_test_results /home/st/ldop_ws/build/ldop`。
 ```
 

@@ -20,6 +20,21 @@ ufo::Point toUfoPoint(const Eigen::Vector3d& point) {
                     static_cast<float>(point.z()));
 }
 
+PredictionMapNodeQuery::OccupancyState toPredictionOccupancyState(
+    const UfomapOccupancyState state) {
+  switch (state) {
+    case UfomapOccupancyState::Free:
+      return PredictionMapNodeQuery::OccupancyState::Free;
+    case UfomapOccupancyState::Occupied:
+      return PredictionMapNodeQuery::OccupancyState::Occupied;
+    case UfomapOccupancyState::OutOfMap:
+      return PredictionMapNodeQuery::OccupancyState::OutOfMap;
+    case UfomapOccupancyState::Unknown:
+    default:
+      return PredictionMapNodeQuery::OccupancyState::Unknown;
+  }
+}
+
 class UfomapPredictionMapQuery final : public PredictionMapQuery {
  public:
   explicit UfomapPredictionMapQuery(const UfomapMapper& mapper)
@@ -30,15 +45,17 @@ class UfomapPredictionMapQuery final : public PredictionMapQuery {
   std::optional<PredictionMapNodeQuery> queryNode(
       const Eigen::Vector3d& point) const override {
     const auto result = mapper_.queryNode(toUfoPoint(point));
-    if (!result.has_value()) {
-      return std::nullopt;
-    }
 
     PredictionMapNodeQuery node;
-    node.exists = result->exists;
-    node.occupied = result->occupied;
-    node.center = fromUfoPoint(result->center);
-    node.voxel_size = result->voxel_size;
+    node.state = toPredictionOccupancyState(result.state);
+    node.exists = result.exists;
+    node.occupied = result.occupied;
+    node.free = result.free;
+    node.unknown = result.unknown;
+    node.out_of_map = result.out_of_map;
+    node.seen_free = result.seen_free;
+    node.center = fromUfoPoint(result.center);
+    node.voxel_size = result.voxel_size;
     return node;
   }
 
@@ -50,7 +67,16 @@ class UfomapPredictionMapQuery final : public PredictionMapQuery {
       const Eigen::Vector3d& center,
       const double radius,
       const std::size_t max_results) const override {
+    return queryLocalOccupied(center, radius, max_results, 0U);
+  }
+
+  std::vector<PredictionLocalOccupiedNode> queryLocalOccupied(
+      const Eigen::Vector3d& center,
+      const double radius,
+      const std::size_t max_results,
+      const std::uint8_t query_depth) const override {
     UfomapLocalOccupiedQuery query;
+    query.depth = static_cast<ufo::depth_t>(query_depth);
     query.min_hits = 1U;
     query.max_results = max_results;
     query.intersects.emplace_back(toUfoPoint(center), static_cast<float>(radius));
@@ -66,6 +92,22 @@ class UfomapPredictionMapQuery final : public PredictionMapQuery {
       converted_nodes.push_back(converted);
     }
     return converted_nodes;
+  }
+
+  std::optional<PredictionLocalOccupiedNode> queryNearestOccupied(
+      const Eigen::Vector3d& center,
+      const double radius,
+      const std::uint8_t query_depth = 0U) const override {
+    const auto occupied = mapper_.queryNearestOccupied(
+        toUfoPoint(center), radius, static_cast<ufo::depth_t>(query_depth), 1U);
+    if (!occupied.has_value()) {
+      return std::nullopt;
+    }
+    PredictionLocalOccupiedNode converted;
+    converted.center = fromUfoPoint(occupied->center);
+    converted.voxel_size = occupied->voxel_size;
+    converted.hits = occupied->hits;
+    return converted;
   }
 
  private:
