@@ -82,7 +82,7 @@
 
 ## 4. 当前阶段状态
 
-阶段划分以 `docs/note/LDOP_design.md` 的“四阶段路线图”为准。
+阶段划分以 `docs/design/LDOP_design.md` 的“四阶段路线图”为准。
 
 按这个定义，当前 `LDOP` 的第一阶段“动静态点云分割与静态地图构建”已经完成：
 
@@ -186,7 +186,7 @@
 
 ## 7. LDOP 应该怎样和 rog_map 连接
 
-这里也沿用 `docs/note/LDOP_design.md` 的四阶段路线。
+这里也沿用 `docs/design/LDOP_design.md` 的四阶段路线。
 
 ### 第一阶段：动静态点云分割与静态地图构建
 

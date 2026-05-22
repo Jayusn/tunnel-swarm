@@ -700,8 +700,8 @@ ufomap_num_threads: 0
 - `src/ufomap_mapper.cpp`
 - `include/ldop/prediction_interaction_context.h`
 - `src/prediction_interaction_context.cpp`
-- `docs/note/LDOP_design.md`
-- `docs/note/第四阶段规划地图接口设计草案.md`
+- `docs/design/LDOP_design.md`
+- `docs/design/第四阶段规划地图接口设计草案.md`
 
 外部参考：
 
