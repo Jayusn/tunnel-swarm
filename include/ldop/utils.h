@@ -152,4 +152,28 @@ inline std::string formatFloatMs(const double value) {
   return stream.str();
 }
 
+struct LdopProcessingTimingTotals {
+  // 非 verbose 日志只保留用户需要的模块主流程耗时；这里不混入发布耗时和回调耗时，
+  // 避免“模块耗时”和 LDOP 外层调度耗时两个口径互相污染。
+  double map_module_ms{0.0};
+  double cluster_module_ms{0.0};
+  double tracking_module_ms{0.0};
+  double prediction_module_ms{0.0};
+  double ldop_total_ms{0.0};
+};
+
+// 非 verbose 汇总行是运行时排查性能的固定契约，集中格式化能避免 processingLoop 里堆叠字符串细节。
+inline std::string formatLdopProcessingTimingSummary(
+    const std::uint64_t sequence,
+    const LdopProcessingTimingTotals& timing) {
+  std::ostringstream stream;
+  stream << "LDOP timing summary frame #" << sequence
+         << ": mapModule=" << formatFloatMs(timing.map_module_ms)
+         << "ms, clusterModule=" << formatFloatMs(timing.cluster_module_ms)
+         << "ms, trackingModule=" << formatFloatMs(timing.tracking_module_ms)
+         << "ms, predictionModule=" << formatFloatMs(timing.prediction_module_ms)
+         << "ms, total=" << formatFloatMs(timing.ldop_total_ms) << "ms";
+  return stream.str();
+}
+
 }  // namespace ldopcore

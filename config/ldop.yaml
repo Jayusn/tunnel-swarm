@@ -10,7 +10,7 @@ dynamic_predictions_topic: /ldop/dynamic_object_predictions  # 动态目标轨�
 dynamic_prediction_markers_topic: /ldop/dynamic_prediction_markers  # 动态目标轨迹预测 MarkerArray 输出
 static_map_markers_topic: /ldop/static_map_markers  # 静态体素地图 MarkerArray 输出
 static_map_visualization_max_z: 3.0  # 仅限制静态体素地图RViz可视化高度，不改变UFOMap地图内容
-verbose: true  
+verbose: false  
 
 ufomap_resolution: 0.2  # 叶子体素尺寸
 ufomap_depth_levels: 16  # 八叉树层级规模
@@ -50,6 +50,7 @@ tracking_spawn_suppression_distance: 0.5  # 马氏距离关联失败后的第一
 tracking_spawn_suppression_iou_threshold: 0.5  # 马氏距离关联失败后的第二层回退条件：只有 distance 已经过阈值时，才检查 IoU；若最终仍未匹配，也继续抑制建新轨迹；0 表示关闭
 tracking_default_dt: 0.1  # 时间戳异常时回退使用的预测时间步长（秒）
 tracking_max_dt: 0.5  # 预测时间步长上限（秒），防止大间隔导致发散
+
 prediction_horizon: 1.0  # 预测未来时长，采样间隔复用 tracking_default_dt
 prediction_max_branches: 3  # 每个目标最多保留的 GMM 分支数量，分支内只有一条中心状态轨迹
 prediction_min_branch_probability: 0.05  # 低于该概率的 GMM 分支过滤后重新归一化
@@ -61,7 +62,8 @@ prediction_lateral_speed: 0.4  # 横向避让意图使用的法向速度幅值
 prediction_vertical_speed: 0.3  # UAV 垂向意图使用的 z 速度幅值
 prediction_history_quality_noise_scale: 1.5  # 短历史/漏检/不稳定轨迹的未来噪声放大上限
 prediction_hypothesis_noise_scale: 1.3  # 假设性分支相对 keep 分支的未来噪声尺度
-prediction_enable_feedback: true  # 启用P4闭环反馈：用上一轮预测残差/NIS调整同一目标的下一帧分支概率和未来Q尺度
+
+prediction_enable_feedback: false  # 启用P4闭环反馈：用上一轮预测残差/NIS调整同一目标的下一帧分支概率和未来Q尺度
 prediction_feedback_max_age: 1.5  # 超过该时间差的预测缓存不再用于反馈，单位s
 prediction_feedback_probability_gain: 1.0  # likelihood bias对下一轮mode score的影响强度
 prediction_feedback_noise_gain: 0.25  # NIS偏离期望值时未来过程噪声尺度的调整速度
@@ -69,6 +71,7 @@ prediction_feedback_max_noise_scale: 3.0  # predictor未来Q的最大闭环放�
 prediction_feedback_smoothing_alpha: 0.35  # NIS和likelihood反馈的指数平滑权重
 prediction_feedback_behavior_value_bucket: 0.25  # 行为强度近似匹配粒度，用于跨帧匹配同语义分支
 prediction_feedback_max_sample_time_error: 0.15  # 预测采样点与当前dt的最大允许时间偏差，单位s
+
 prediction_enable_interaction_context: true  # 启用P3交互感知预测：目标间交互、静态地图约束和free corridor方向先验
 prediction_pair_interaction_weight: 1.0  # 目标间距离/TTC/交叉冲突代价权重
 prediction_map_interaction_weight: 1.0  # 静态occupied/near obstacle代价权重
@@ -94,6 +97,27 @@ classification_size_change_confirm_frames: 5  # 尺寸/点数变化持续超过�
 classify_human_threshold: [1.1, 0.8]  # [高度相对水平尺寸比例, 质心高度相对目标高度比例]
 classify_vehicle_threshold: [1.5, 0.7]  # [水平尺寸相对高度比例, 质心高度相对目标高度比例]
 classify_uav_threshold: [0.6, 1.5]  # [最大尺寸阈值, 质心高度相对目标高度比例]
+
+# mocap 辅助动态目标融合参数
+fusion_mocap_topics:
+  - /mocap/target_0/pose
+fusion_mocap_to_ldop_translation: [0.0, 0.0, 0.0]
+fusion_mocap_sync_tolerance: 0.03
+fusion_association_max_distance: 1.0
+fusion_offset_alpha: 0.2
+fusion_offset_observation_max_norm: 2.0
+fusion_offset_update_max_delta: 0.3
+fusion_lidar_anchor_timeout: 0.5
+fusion_bspline_min_samples: 8
+fusion_bspline_future_samples: 2
+fusion_bspline_reset_translation_delta: 0.2
+fusion_mocap_nominal_rate: 50.0
+fusion_virtual_imu_rate_hz: 200.0
+fusion_mocap_dt_jitter_tolerance: 0.005
+fusion_gravity_z: -9.80665
+fusion_objects_topic: /ldop/fused_dynamic_objects
+fusion_virtual_imu_topic: /ldop/fused_dynamic_object_virtual_imu
+fusion_marker_topic: /ldop/fused_dynamic_object_markers
 
 # 多运动模型 Kalman 参数；按 LDOT 的类别/模型分组，tracker 根据类别选择 CA2D/CTRA/CA3D/CV3D。
 kalman_filter:

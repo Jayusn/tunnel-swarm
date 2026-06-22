@@ -6,17 +6,22 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include <ldop/DynamicObjectArray.h>
 #include <ldop/DynamicObjectPredictionArray.h>
+#include <ldop/FusedDynamicObjectArray.h>
+#include <ldop/FusedDynamicObjectVirtualImuArray.h>
 #include <ldop/dynamic_object_clusterer.h>
+#include <ldop/dynamic_object_pose_fusion.h>
 #include <ldop/dynamic_object_predictor.h>
 #include <ldop/dynamic_object_tracker.h>
 #include <ldop/utils.h>
 #include <ldop/ufomap_mapper.h>
+#include <geometry_msgs/PoseStamped.h>
 #include <nav_msgs/Odometry.h>
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
@@ -37,6 +42,7 @@ class Ldop {
     double processing_loop_ms{0.0};
     double process_frame_ms{0.0};
     double publish_frame_ms{0.0};
+    LdopProcessingTimingTotals processing_summary;
   };
 
   // 输入队列中的原始数据帧，点云到来时顺带缓存一份最近里程计快照。
@@ -57,6 +63,9 @@ class Ldop {
     visualization_msgs::MarkerArray dynamic_track_markers_msg;
     ldop::DynamicObjectPredictionArray dynamic_predictions_msg;
     visualization_msgs::MarkerArray dynamic_prediction_markers_msg;
+    std::optional<ldop::FusedDynamicObjectArray> fused_objects_msg;
+    std::optional<ldop::FusedDynamicObjectVirtualImuArray> fused_virtual_imu_msg;
+    std::optional<visualization_msgs::MarkerArray> fused_markers_msg;
     std::vector<UfomapDynamicClusterPoint> dynamic_cluster_points;
     visualization_msgs::MarkerArray static_map_markers_msg;
     UfomapRuntimeStats ufomap_runtime_stats;
@@ -72,6 +81,8 @@ class Ldop {
   // ROS 回调：缓存最新里程计，并把有效的点云/里程计数据对送入输入队列。
   void odomCallback(const nav_msgs::OdometryConstPtr& odom_msg);
   void pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr& cloud_msg);
+  void mocapPoseCallback(const geometry_msgs::PoseStampedConstPtr& pose_msg,
+                         std::size_t source_index);
 
   // 工作线程：按输入队列顺序消费，处理完成后在同一线程里直接发布。
   void processingLoop();
@@ -85,6 +96,7 @@ class Ldop {
   ros::NodeHandle pnh_;
   ros::Subscriber cloud_sub_;
   ros::Subscriber odom_sub_;
+  std::vector<ros::Subscriber> mocap_pose_subs_;
   ros::Publisher static_cloud_pub_;
   ros::Publisher dynamic_cloud_pub_;
   ros::Publisher dynamic_objects_pub_;
@@ -93,6 +105,9 @@ class Ldop {
   ros::Publisher dynamic_predictions_pub_;
   ros::Publisher dynamic_prediction_markers_pub_;
   ros::Publisher static_map_markers_pub_;
+  ros::Publisher fused_objects_pub_;
+  ros::Publisher fused_virtual_imu_pub_;
+  ros::Publisher fused_markers_pub_;
 
   // 参数服务器读取的话题名与运行配置。
   std::string input_cloud_topic_;
@@ -147,6 +162,9 @@ class Ldop {
 
   // 动态目标轨迹预测模块，消费 tracker 的稳定输出并生成未来轨迹预测。
   std::unique_ptr<DynamicObjectPredictor> dynamic_object_predictor_;
+
+  // mocap 辅助融合模块；内部自带锁，允许点云处理线程和 mocap 回调同时驱动状态更新。
+  std::unique_ptr<DynamicObjectPoseFusion> dynamic_object_pose_fusion_;
 
   // 是否已经缓存过至少一帧可用于配对的最新里程计。
   bool has_latest_odom_;

@@ -56,6 +56,10 @@ add_message_files(
   DynamicObjectPredictionBranch.msg
   DynamicObjectPrediction.msg
   DynamicObjectPredictionArray.msg
+  FusedDynamicObject.msg
+  FusedDynamicObjectArray.msg
+  FusedDynamicObjectVirtualImu.msg
+  FusedDynamicObjectVirtualImuArray.msg
 )
 
 generate_messages(
@@ -90,6 +94,7 @@ include_directories(
 add_library(ldop_core
   src/ldop.cpp
   src/dynamic_object_clusterer.cpp
+  src/dynamic_object_pose_fusion.cpp
   src/dynamic_object_tracker.cpp
   src/dynamic_object_predictor.cpp
   src/prediction_interaction_context.cpp
@@ -157,6 +162,27 @@ if(CATKIN_ENABLE_TESTING)
   )
   if(TARGET test_ufomap_mapper)
     target_link_libraries(test_ufomap_mapper
+      ldop_core
+      ${catkin_LIBRARIES}
+      gtest
+    )
+  endif()
+
+  catkin_add_gtest(test_ldop_timing_log
+    test/test_ldop_timing_log.cpp
+  )
+  if(TARGET test_ldop_timing_log)
+    target_link_libraries(test_ldop_timing_log
+      ${catkin_LIBRARIES}
+      gtest
+    )
+  endif()
+
+  catkin_add_gtest(test_dynamic_object_pose_fusion
+    test/test_dynamic_object_pose_fusion.cpp
+  )
+  if(TARGET test_dynamic_object_pose_fusion)
+    target_link_libraries(test_dynamic_object_pose_fusion
       ldop_core
       ${catkin_LIBRARIES}
       gtest

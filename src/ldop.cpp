@@ -128,11 +128,12 @@ Ldop::Ldop(ros::NodeHandle& nh, ros::NodeHandle& pnh)
       dropped_cloud_count_(0U),
       has_latest_odom_(false) {
   loadParameters();
-  setupRosInterfaces();
   ufomap_mapper_ = std::make_unique<UfomapMapper>(nh_, pnh_, verbose_);
   dynamic_object_clusterer_ = std::make_unique<DynamicObjectClusterer>(pnh_, verbose_);
   dynamic_object_tracker_ = std::make_unique<DynamicObjectTracker>(pnh_, verbose_);
   dynamic_object_predictor_ = std::make_unique<DynamicObjectPredictor>(pnh_, verbose_);
+  dynamic_object_pose_fusion_ = std::make_unique<DynamicObjectPoseFusion>(pnh_, verbose_);
+  setupRosInterfaces();
   // 当前只有一个后台处理线程，构造阶段直接启动比再包一层单调用函数更容易按初始化顺序阅读。
   processing_thread_ = std::thread(&Ldop::processingLoop, this);
 
@@ -147,6 +148,9 @@ Ldop::Ldop(ros::NodeHandle& nh, ros::NodeHandle& pnh)
   ROS_INFO_STREAM("  dynamic predictions: " << dynamic_predictions_topic_);
   ROS_INFO_STREAM("  dynamic prediction markers: " << dynamic_prediction_markers_topic_);
   ROS_INFO_STREAM("  static voxel markers: " << static_map_markers_topic_);
+  ROS_INFO_STREAM("  fused objects: " << dynamic_object_pose_fusion_->fusedObjectsTopic());
+  ROS_INFO_STREAM("  fused virtual IMU: " << dynamic_object_pose_fusion_->virtualImuTopic());
+  ROS_INFO_STREAM("  fused markers: " << dynamic_object_pose_fusion_->markerTopic());
 }
 
 Ldop::~Ldop() {
@@ -178,6 +182,19 @@ void Ldop::setupRosInterfaces() {
   // 订阅输入，并提前创建 LDOP 自己负责的输出通道。
   cloud_sub_ = nh_.subscribe(input_cloud_topic_, 50, &Ldop::pointCloudCallback, this);
   odom_sub_ = nh_.subscribe(odom_topic_, 200, &Ldop::odomCallback, this);
+  mocap_pose_subs_.clear();
+  const std::vector<std::string>& mocap_topics = dynamic_object_pose_fusion_->mocapTopics();
+  mocap_pose_subs_.reserve(mocap_topics.size());
+  for (std::size_t source_index = 0U; source_index < mocap_topics.size(); ++source_index) {
+    const std::string& topic = mocap_topics[source_index];
+    // source_index 是融合状态的外部身份索引，订阅时固定下来，避免回调里再按 topic 查找。
+    mocap_pose_subs_.push_back(nh_.subscribe<geometry_msgs::PoseStamped>(
+        topic,
+        200,
+        [this, source_index](const geometry_msgs::PoseStampedConstPtr& pose_msg) {
+          mocapPoseCallback(pose_msg, source_index);
+        }));
+  }
 
   static_cloud_pub_ = nh_.advertise<sensor_msgs::PointCloud2>(static_cloud_topic_, 10);
   dynamic_cloud_pub_ = nh_.advertise<sensor_msgs::PointCloud2>(dynamic_cloud_topic_, 10);
@@ -187,6 +204,12 @@ void Ldop::setupRosInterfaces() {
   dynamic_predictions_pub_ = nh_.advertise<ldop::DynamicObjectPredictionArray>(dynamic_predictions_topic_, 10);
   dynamic_prediction_markers_pub_ = nh_.advertise<visualization_msgs::MarkerArray>(dynamic_prediction_markers_topic_, 10);
   static_map_markers_pub_ = nh_.advertise<visualization_msgs::MarkerArray>(static_map_markers_topic_, 10, true);
+  fused_objects_pub_ =
+      nh_.advertise<ldop::FusedDynamicObjectArray>(dynamic_object_pose_fusion_->fusedObjectsTopic(), 10);
+  fused_virtual_imu_pub_ = nh_.advertise<ldop::FusedDynamicObjectVirtualImuArray>(
+      dynamic_object_pose_fusion_->virtualImuTopic(), 10);
+  fused_markers_pub_ =
+      nh_.advertise<visualization_msgs::MarkerArray>(dynamic_object_pose_fusion_->markerTopic(), 10);
 }
 
 void Ldop::odomCallback(const nav_msgs::OdometryConstPtr& odom_msg) {
@@ -245,6 +268,19 @@ void Ldop::pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr& cloud_msg)
   input_cv_.notify_one();
 }
 
+void Ldop::mocapPoseCallback(const geometry_msgs::PoseStampedConstPtr& pose_msg,
+                             const std::size_t source_index) {
+  if (pose_msg == nullptr) {
+    return;
+  }
+
+  DynamicObjectPoseFusionSnapshot snapshot =
+      dynamic_object_pose_fusion_->processMocapPose(source_index, *pose_msg);
+  fused_objects_pub_.publish(*snapshot.fused_objects);
+  fused_virtual_imu_pub_.publish(*snapshot.virtual_imu);
+  fused_markers_pub_.publish(*snapshot.markers);
+}
+
 void Ldop::processingLoop() {
   while (true) {
     InputFrame frame;
@@ -267,8 +303,14 @@ void Ldop::processingLoop() {
     processed_cloud_count_.fetch_add(1U);
     publishFrame(processed);
     processed.timing.processing_loop_ms = elapsedMs(loop_start, std::chrono::steady_clock::now());
+    processed.timing.processing_summary.ldop_total_ms = processed.timing.processing_loop_ms;
 
-    if (verbose_) {
+    if (!verbose_) {
+      ROS_INFO_STREAM_THROTTLE(
+          1.0,
+          formatLdopProcessingTimingSummary(processed.sequence,
+                                            processed.timing.processing_summary));
+    } else {
       ROS_INFO_STREAM_THROTTLE(1.0, "LDOP timing frame #" << processed.sequence
                                     << ": odomCloudDt="
                                     << formatFloatMs(processed.odom_cloud_dt_ms)
@@ -305,6 +347,8 @@ Ldop::ProcessedFrame Ldop::processFrame(const InputFrame& frame) {
 
   UfomapFrameResult ufomap_result =
       ufomap_mapper_->processInputCloud(frame.cloud_msg, frame.odom_msg);
+  processed.timing.processing_summary.map_module_ms =
+      ufomap_result.timing.process_input_cloud_ms;
   processed.static_map_cloud_msg = std::move(ufomap_result.static_map_cloud_msg);
   processed.static_map_markers_msg = std::move(ufomap_result.static_map_markers);
   processed.ufomap_runtime_stats = ufomap_result.runtime_stats;
@@ -313,21 +357,18 @@ Ldop::ProcessedFrame Ldop::processFrame(const InputFrame& frame) {
   DynamicObjectClustererFrameResult cluster_result =
       dynamic_object_clusterer_->processDynamicObjects(processed.dynamic_cloud_msg.header,
                                                       processed.dynamic_cluster_points);
-  DynamicObjectTrackerFrameResult tracking_result =
-      dynamic_object_tracker_->processDynamicTracks(processed.dynamic_cloud_msg.header,
-                                                    cluster_result.detections);
-  processed.dynamic_objects_msg = std::move(tracking_result.dynamic_objects_msg);
+  processed.timing.processing_summary.cluster_module_ms =
+      cluster_result.timing.process_dynamic_objects_ms;
   processed.dynamic_object_markers_msg = std::move(cluster_result.dynamic_object_markers_msg);
-  processed.dynamic_track_markers_msg = std::move(tracking_result.dynamic_track_markers_msg);
-
-  // 轨迹预测：消费 tracker 的稳定输出，生成未来轨迹预测和可视化 marker。
-  UfomapPredictionMapQuery prediction_map_query(*ufomap_mapper_);
-  DynamicObjectPredictorFrameResult prediction_result =
-      dynamic_object_predictor_->predict(processed.dynamic_cloud_msg.header,
-                                         tracking_result.prediction_inputs,
-                                         &prediction_map_query);
-  processed.dynamic_predictions_msg = std::move(prediction_result.predictions_msg);
-  processed.dynamic_prediction_markers_msg = std::move(prediction_result.prediction_markers_msg);
+  DynamicObjectPoseFusionSnapshot fusion_snapshot =
+      dynamic_object_pose_fusion_->updateLidarAnchors(processed.dynamic_cloud_msg.header,
+                                                     cluster_result.detections);
+  processed.fused_objects_msg = std::move(fusion_snapshot.fused_objects);
+  processed.fused_virtual_imu_msg = std::move(fusion_snapshot.virtual_imu);
+  processed.fused_markers_msg = std::move(fusion_snapshot.markers);
+  // 当前 mocap 融合阶段先暂停 tracker/predictor 主输出；保留模块初始化，便于后续阶段重新接回。
+  processed.timing.processing_summary.tracking_module_ms = 0.0;
+  processed.timing.processing_summary.prediction_module_ms = 0.0;
 
   processed.timing.process_frame_ms =
       elapsedMs(processing_start, std::chrono::steady_clock::now());
@@ -339,11 +380,9 @@ void Ldop::publishFrame(ProcessedFrame& frame) {
   const auto publish_start = std::chrono::steady_clock::now();
   static_cloud_pub_.publish(frame.static_map_cloud_msg);
   dynamic_cloud_pub_.publish(frame.dynamic_cloud_msg);
-  dynamic_objects_pub_.publish(frame.dynamic_objects_msg);
-  dynamic_object_markers_pub_.publish(frame.dynamic_object_markers_msg);
-  dynamic_track_markers_pub_.publish(frame.dynamic_track_markers_msg);
-  dynamic_predictions_pub_.publish(frame.dynamic_predictions_msg);
-  dynamic_prediction_markers_pub_.publish(frame.dynamic_prediction_markers_msg);
+  fused_objects_pub_.publish(*frame.fused_objects_msg);
+  fused_virtual_imu_pub_.publish(*frame.fused_virtual_imu_msg);
+  fused_markers_pub_.publish(*frame.fused_markers_msg);
   static_map_markers_pub_.publish(frame.static_map_markers_msg);
   frame.timing.publish_frame_ms =
       elapsedMs(publish_start, std::chrono::steady_clock::now());
