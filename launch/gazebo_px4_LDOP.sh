@@ -39,5 +39,9 @@ sleep 20
 start_launch roslaunch external_pos_fusion fusion_mapping_mid360.launch
 sleep 5
 
+# Gazebo ground truth 桥接：将 p3d 插件的 Odometry 转为 PoseStamped
+start_launch roslaunch ground_truth_bridge gt_bridge.launch
+sleep 1
+
 start_launch roslaunch ldop run_ldop.launch
 wait

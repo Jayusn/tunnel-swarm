@@ -40,6 +40,14 @@
           <waypoint>-7.0 8.0 0.0</waypoint>
         </path>
       </plugin>
+      <!-- Gazebo ground truth：发布 person1 位姿，供桥接节点转换为 PoseStamped -->
+      <plugin name="ground_truth_p3d" filename="libgazebo_ros_p3d.so">
+        <updateRate>50.0</updateRate>
+        <bodyName>link</bodyName>
+        <topicName>/gazebo/person1/pose</topicName>
+        <frameName>world</frameName>
+        <gaussianNoise>0.0</gaussianNoise>
+      </plugin>
     </model>
 
     <model name="person2_0.5_0.5_1.8">
@@ -78,6 +86,13 @@
           <waypoint>-8.5 2.0 0.0</waypoint>
           <waypoint>-8.5 -2.0 0.0</waypoint>
         </path>
+      </plugin>
+      <plugin name="ground_truth_p3d" filename="libgazebo_ros_p3d.so">
+        <updateRate>50.0</updateRate>
+        <bodyName>link</bodyName>
+        <topicName>/gazebo/person2/pose</topicName>
+        <frameName>world</frameName>
+        <gaussianNoise>0.0</gaussianNoise>
       </plugin>
     </model>
 
@@ -120,6 +135,13 @@
           <waypoint>1.5 -1.5 0.0</waypoint>
         </path>
       </plugin>
+      <plugin name="ground_truth_p3d" filename="libgazebo_ros_p3d.so">
+        <updateRate>50.0</updateRate>
+        <bodyName>link</bodyName>
+        <topicName>/gazebo/person3/pose</topicName>
+        <frameName>world</frameName>
+        <gaussianNoise>0.0</gaussianNoise>
+      </plugin>
     </model>
 
     <model name="person4_0.5_0.5_1.8">
@@ -159,6 +181,13 @@
           <waypoint>5.5 -3.0 0.0</waypoint>
         </path>
       </plugin>
+      <plugin name="ground_truth_p3d" filename="libgazebo_ros_p3d.so">
+        <updateRate>50.0</updateRate>
+        <bodyName>link</bodyName>
+        <topicName>/gazebo/person4/pose</topicName>
+        <frameName>world</frameName>
+        <gaussianNoise>0.0</gaussianNoise>
+      </plugin>
     </model>
 
     <model name="person5_0.5_0.5_1.8">
@@ -197,6 +226,13 @@
           <waypoint>2.0 5.0 0.0</waypoint>
           <waypoint>5.0 4.0 0.0</waypoint>
         </path>
+      </plugin>
+      <plugin name="ground_truth_p3d" filename="libgazebo_ros_p3d.so">
+        <updateRate>50.0</updateRate>
+        <bodyName>link</bodyName>
+        <topicName>/gazebo/person5/pose</topicName>
+        <frameName>world</frameName>
+        <gaussianNoise>0.0</gaussianNoise>
       </plugin>
     </model>
 
@@ -238,6 +274,13 @@
           <waypoint>8.0 -4.0 0.0</waypoint>
         </path>
       </plugin>
+      <plugin name="ground_truth_p3d" filename="libgazebo_ros_p3d.so">
+        <updateRate>50.0</updateRate>
+        <bodyName>link</bodyName>
+        <topicName>/gazebo/person6/pose</topicName>
+        <frameName>world</frameName>
+        <gaussianNoise>0.0</gaussianNoise>
+      </plugin>
     </model>
 
     <model name="person7_0.5_0.5_1.8">
@@ -277,6 +320,13 @@
           <waypoint>-4.0 -7.0 0.0</waypoint>
         </path>
       </plugin>
+      <plugin name="ground_truth_p3d" filename="libgazebo_ros_p3d.so">
+        <updateRate>50.0</updateRate>
+        <bodyName>link</bodyName>
+        <topicName>/gazebo/person7/pose</topicName>
+        <frameName>world</frameName>
+        <gaussianNoise>0.0</gaussianNoise>
+      </plugin>
     </model>
 
     <model name="person8_0.5_0.5_1.8">
@@ -315,6 +365,13 @@
           <waypoint>-5.5 4.0 0.0</waypoint>
           <waypoint>-2.0 4.0 0.0</waypoint>
         </path>
+      </plugin>
+      <plugin name="ground_truth_p3d" filename="libgazebo_ros_p3d.so">
+        <updateRate>50.0</updateRate>
+        <bodyName>link</bodyName>
+        <topicName>/gazebo/person8/pose</topicName>
+        <frameName>world</frameName>
+        <gaussianNoise>0.0</gaussianNoise>
       </plugin>
     </model>
 
@@ -566,6 +623,34 @@
             <layer>0</layer>
           </meta>
         </visual>
+        <pose>0 0 0 0 -0 0</pose>
+        <self_collide>0</self_collide>
+        <enable_wind>0</enable_wind>
+        <kinematic>0</kinematic>
+      </link>
+      <!-- 天花板（空气墙）- 激光雷达可以检测到 -->
+      <link name='Ceiling'>
+        <collision name='Ceiling_Collision'>
+          <geometry>
+            <box>
+              <size>21 21 0.15</size>
+            </box>
+          </geometry>
+          <pose>0 0 5 0 -0 0</pose>
+          <max_contacts>10</max_contacts>
+          <surface>
+            <contact>
+              <ode/>
+            </contact>
+            <bounce/>
+            <friction>
+              <torsional>
+                <ode/>
+              </torsional>
+              <ode/>
+            </friction>
+          </surface>
+        </collision>
         <pose>0 0 0 0 -0 0</pose>
         <self_collide>0</self_collide>
         <enable_wind>0</enable_wind>

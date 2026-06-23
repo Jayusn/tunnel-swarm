@@ -99,8 +99,16 @@ classify_vehicle_threshold: [1.5, 0.7]  # [水平尺寸相对高度比例, 质�
 classify_uav_threshold: [0.6, 1.5]  # [最大尺寸阈值, 质心高度相对目标高度比例]
 
 # mocap 辅助动态目标融合参数
+# 仿真时由 ground_truth_bridge 节点提供，真机时替换为实际动捕话题
 fusion_mocap_topics:
-  - /mocap/target_0/pose
+  - /mocap/person1/pose
+  - /mocap/person2/pose
+  - /mocap/person3/pose
+  - /mocap/person4/pose
+  - /mocap/person5/pose
+  - /mocap/person6/pose
+  - /mocap/person7/pose
+  - /mocap/person8/pose
 fusion_mocap_to_ldop_translation: [0.0, 0.0, 0.0]
 fusion_mocap_sync_tolerance: 0.03
 fusion_association_max_distance: 1.0
