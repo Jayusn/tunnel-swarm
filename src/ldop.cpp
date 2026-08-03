@@ -276,9 +276,15 @@ void Ldop::mocapPoseCallback(const geometry_msgs::PoseStampedConstPtr& pose_msg,
 
   DynamicObjectPoseFusionSnapshot snapshot =
       dynamic_object_pose_fusion_->processMocapPose(source_index, *pose_msg);
-  fused_objects_pub_.publish(*snapshot.fused_objects);
-  fused_virtual_imu_pub_.publish(*snapshot.virtual_imu);
-  fused_markers_pub_.publish(*snapshot.markers);
+  if (snapshot.fused_objects.has_value()) {
+    fused_objects_pub_.publish(*snapshot.fused_objects);
+  }
+  if (snapshot.virtual_imu.has_value()) {
+    fused_virtual_imu_pub_.publish(*snapshot.virtual_imu);
+  }
+  if (snapshot.markers.has_value()) {
+    fused_markers_pub_.publish(*snapshot.markers);
+  }
 }
 
 void Ldop::processingLoop() {
@@ -360,14 +366,22 @@ Ldop::ProcessedFrame Ldop::processFrame(const InputFrame& frame) {
   processed.timing.processing_summary.cluster_module_ms =
       cluster_result.timing.process_dynamic_objects_ms;
   processed.dynamic_object_markers_msg = std::move(cluster_result.dynamic_object_markers_msg);
+
+  DynamicObjectTrackerFrameResult tracker_result =
+      dynamic_object_tracker_->processDynamicTracks(processed.dynamic_cloud_msg.header,
+                                                    cluster_result.detections);
+  processed.timing.processing_summary.tracking_module_ms =
+      tracker_result.timing.process_dynamic_tracks_ms;
+  processed.dynamic_objects_msg = std::move(tracker_result.dynamic_objects_msg);
+  processed.dynamic_track_markers_msg = std::move(tracker_result.dynamic_track_markers_msg);
+
   DynamicObjectPoseFusionSnapshot fusion_snapshot =
       dynamic_object_pose_fusion_->updateLidarAnchors(processed.dynamic_cloud_msg.header,
-                                                     cluster_result.detections);
+                                                      cluster_result.detections);
   processed.fused_objects_msg = std::move(fusion_snapshot.fused_objects);
   processed.fused_virtual_imu_msg = std::move(fusion_snapshot.virtual_imu);
   processed.fused_markers_msg = std::move(fusion_snapshot.markers);
-  // 当前 mocap 融合阶段先暂停 tracker/predictor 主输出；保留模块初始化，便于后续阶段重新接回。
-  processed.timing.processing_summary.tracking_module_ms = 0.0;
+  // 当前预测模块仍暂不接入主输出；LiDAR cluster/tracker 检测链路保持独立可用。
   processed.timing.processing_summary.prediction_module_ms = 0.0;
 
   processed.timing.process_frame_ms =
@@ -380,9 +394,18 @@ void Ldop::publishFrame(ProcessedFrame& frame) {
   const auto publish_start = std::chrono::steady_clock::now();
   static_cloud_pub_.publish(frame.static_map_cloud_msg);
   dynamic_cloud_pub_.publish(frame.dynamic_cloud_msg);
-  fused_objects_pub_.publish(*frame.fused_objects_msg);
-  fused_virtual_imu_pub_.publish(*frame.fused_virtual_imu_msg);
-  fused_markers_pub_.publish(*frame.fused_markers_msg);
+  dynamic_objects_pub_.publish(frame.dynamic_objects_msg);
+  dynamic_object_markers_pub_.publish(frame.dynamic_object_markers_msg);
+  dynamic_track_markers_pub_.publish(frame.dynamic_track_markers_msg);
+  if (frame.fused_objects_msg.has_value()) {
+    fused_objects_pub_.publish(*frame.fused_objects_msg);
+  }
+  if (frame.fused_virtual_imu_msg.has_value()) {
+    fused_virtual_imu_pub_.publish(*frame.fused_virtual_imu_msg);
+  }
+  if (frame.fused_markers_msg.has_value()) {
+    fused_markers_pub_.publish(*frame.fused_markers_msg);
+  }
   static_map_markers_pub_.publish(frame.static_map_markers_msg);
   frame.timing.publish_frame_ms =
       elapsedMs(publish_start, std::chrono::steady_clock::now());
