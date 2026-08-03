@@ -21,7 +21,7 @@ ufomap_ray_passthrough_hits: false  # 射线是否穿过命中点
 ufomap_down_sampling_method: center  # 积分前降采样策略，可选 none、center、centroid、uniform
 ufomap_min_range: 0.5  # 近点过滤 / 最小积分距离
 ufomap_max_range: -1  # 最大积分距离，还影响当前帧分类输出半径；-1 表示不限制，其他非负值需大于 ufomap_min_range
-ufomap_input_max_z: 3.4  # 输入点云全局Z坐标上限；过滤天花板等高处点，-1表示关闭
+ufomap_input_max_z: 2.0  # 输入点云全局Z坐标上限；过滤天花板等高处点，-1表示关闭
 ufomap_insert_only_valid: false  # 仅对有效射线区段执行插入，即ufomap_max_range范围内点的射线段
 ufomap_insert_hit_depth: 0  # 命中点更新深度，0 表示沿用 UFOMap 默认值
 ufomap_insert_miss_depth: 0  # free / miss （失配）更新深度
