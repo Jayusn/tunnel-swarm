@@ -38,6 +38,17 @@ struct ClassificationSizeUpdate {
   bool reliable_for_classification{true};
 };
 
+geometry_msgs::Point lastMatchedTrackCenter(const TrackState& track) {
+  for (auto history_it = track.history.rbegin(); history_it != track.history.rend();
+       ++history_it) {
+    if (history_it->matched && history_it->model_state.size() >= 3) {
+      return makePoint(history_it->model_state(0), history_it->model_state(1),
+                       history_it->model_state(2));
+    }
+  }
+  return track.bbox.center;
+}
+
 std::size_t classScoreIndex(const ObjectClass object_class) {
   switch (object_class) {
     case ObjectClass::Human:
@@ -461,7 +472,9 @@ double computeFallbackAssociationCost(const DynamicObjectDetection& detection,
 
   double distance_penalty = 0.0;
   if (use_distance_fallback) {
-    const double center_distance = distance3D(detection.bbox.center, track.bbox.center);
+    // 预测状态可能在漏检帧中漂移到错误位置；回退重关联应优先参考最近一次真实观测。
+    const double center_distance =
+        distance3D(detection.bbox.center, lastMatchedTrackCenter(track));
     if (!(std::isfinite(center_distance) &&
           center_distance <= config.spawn_suppression_distance)) {
       return invalid_cost;
@@ -506,7 +519,7 @@ bool shouldSuppressTrackSpawn(const DynamicObjectDetection& detection,
       return true;
     }
     if (config.spawn_suppression_distance > 0.0 &&
-        distance3D(detection.bbox.center, track.bbox.center) <=
+        distance3D(detection.bbox.center, lastMatchedTrackCenter(track)) <=
             config.spawn_suppression_distance) {
       return true;
     }
