@@ -49,8 +49,8 @@ geometry_msgs::Point lastMatchedTrackCenter(const TrackState& track) {
   return track.bbox.center;
 }
 
-bool hasSimilarBoundingBoxSize(const DynamicObjectDetection& detection,
-                               const TrackState& track) {
+bool hasSimilarHorizontalBoundingBoxSize(const DynamicObjectDetection& detection,
+                                         const TrackState& track) {
   const auto sizeRatio = [](const double lhs, const double rhs) {
     if (!(std::isfinite(lhs) && std::isfinite(rhs)) || lhs <= 1e-6 || rhs <= 1e-6) {
       return 0.0;
@@ -58,12 +58,11 @@ bool hasSimilarBoundingBoxSize(const DynamicObjectDetection& detection,
     return std::min(lhs, rhs) / std::max(lhs, rhs);
   };
 
-  // 同一目标在点云稀疏时中心可能跳动，但三个方向的尺度通常仍保持相近；
-  // 用尺寸相似度承接 IoU 不重叠的情况，避免把细长固定杆并入小球轨迹。
+  // 同一目标在点云稀疏或被遮挡时中心和竖向尺寸可能跳动，水平占地通常更稳定；
+  // 用水平尺寸相似度承接 IoU 不重叠的情况，避免把细长固定杆并入小球轨迹。
   constexpr double kMinimumSizeRatio = 0.45;
   return sizeRatio(detection.bbox.size.x, track.bbox.size.x) >= kMinimumSizeRatio &&
-         sizeRatio(detection.bbox.size.y, track.bbox.size.y) >= kMinimumSizeRatio &&
-         sizeRatio(detection.bbox.size.z, track.bbox.size.z) >= kMinimumSizeRatio;
+         sizeRatio(detection.bbox.size.y, track.bbox.size.y) >= kMinimumSizeRatio;
 }
 
 std::size_t classScoreIndex(const ObjectClass object_class) {
@@ -509,7 +508,7 @@ double computeFallbackAssociationCost(const DynamicObjectDetection& detection,
     if (!(std::isfinite(iou) && iou >= config.spawn_suppression_iou_threshold)) {
       // 中心跳变会使水平 IoU 变为 0；成熟轨迹仍可在尺寸相似且距离合适时重关联。
       if (track.hits < config.min_hits_to_publish ||
-          !hasSimilarBoundingBoxSize(detection, track)) {
+          !hasSimilarHorizontalBoundingBoxSize(detection, track)) {
         return invalid_cost;
       }
       iou_penalty = 1.0;
@@ -546,7 +545,7 @@ bool shouldSuppressTrackSpawn(const DynamicObjectDetection& detection,
             config.spawn_suppression_distance) {
       if (config.spawn_suppression_iou_threshold <= 0.0 ||
           track.hits < config.min_hits_to_publish ||
-          hasSimilarBoundingBoxSize(detection, track)) {
+          hasSimilarHorizontalBoundingBoxSize(detection, track)) {
         return true;
       }
     }
