@@ -8,6 +8,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -52,8 +53,76 @@ struct StaticMapVisualizationSnapshot {
   std::vector<double> voxel_sizes_by_depth;
 };
 
+struct TemporalGridKey {
+  int x{0};
+  int y{0};
+  int z{0};
+
+  bool operator==(const TemporalGridKey& other) const {
+    return x == other.x && y == other.y && z == other.z;
+  }
+};
+
+struct TemporalGridKeyHash {
+  std::size_t operator()(const TemporalGridKey& key) const {
+    std::size_t hash = std::hash<int>{}(key.x);
+    hash ^= std::hash<int>{}(key.y) + static_cast<std::size_t>(0x9e3779b9U) +
+            (hash << 6U) + (hash >> 2U);
+    hash ^= std::hash<int>{}(key.z) + static_cast<std::size_t>(0x9e3779b9U) +
+            (hash << 6U) + (hash >> 2U);
+    return hash;
+  }
+};
+
+TemporalGridKey makeTemporalGridKey(const ufo::Point& point, const double cell_size) {
+  return TemporalGridKey{
+      static_cast<int>(std::floor(static_cast<double>(point.x) / cell_size)),
+      static_cast<int>(std::floor(static_cast<double>(point.y) / cell_size)),
+      static_cast<int>(std::floor(static_cast<double>(point.z) / cell_size))};
+}
+
+double medianValue(std::vector<double> values) {
+  if (values.empty()) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+
+  const auto middle = values.begin() + static_cast<std::ptrdiff_t>(values.size() / 2U);
+  std::nth_element(values.begin(), middle, values.end());
+  if (values.size() % 2U == 1U) {
+    return *middle;
+  }
+
+  const auto lower_middle = std::max_element(values.begin(), middle);
+  return (*lower_middle + *middle) * 0.5;
+}
+
 sensor_msgs::PointCloud2 buildCloudFromPoints(const std_msgs::Header& header,
                                               const ufo::PointCloud& points) {
+  sensor_msgs::PointCloud2 cloud;
+  cloud.header = header;
+
+  sensor_msgs::PointCloud2Modifier modifier(cloud);
+  modifier.setPointCloud2FieldsByString(1, "xyz");
+  modifier.resize(points.size());
+
+  sensor_msgs::PointCloud2Iterator<float> iter_x(cloud, "x");
+  sensor_msgs::PointCloud2Iterator<float> iter_y(cloud, "y");
+  sensor_msgs::PointCloud2Iterator<float> iter_z(cloud, "z");
+  for (const auto& point : points) {
+    *iter_x = point.x;
+    *iter_y = point.y;
+    *iter_z = point.z;
+    ++iter_x;
+    ++iter_y;
+    ++iter_z;
+  }
+
+  cloud.is_dense = true;
+  return cloud;
+}
+
+sensor_msgs::PointCloud2 buildCloudFromPointVector(const std_msgs::Header& header,
+                                                   const std::vector<ufo::Point>& points) {
   sensor_msgs::PointCloud2 cloud;
   cloud.header = header;
 
@@ -231,6 +300,23 @@ UfomapMapperConfig buildUfomapConfig(const UfomapMapperParams& params) {
     config.max_range = defaults.max_range > config.min_range ? defaults.max_range : -1.0;
   }
   config.input_max_z = params.input_max_z > 0.0 ? params.input_max_z : defaults.input_max_z;
+  config.ground_filter_enabled = params.ground_filter_enabled;
+  config.ground_estimation_frames = std::max(1, params.ground_estimation_frames);
+  config.ground_estimation_radius = params.ground_estimation_radius > 0.0
+      ? params.ground_estimation_radius : defaults.ground_estimation_radius;
+  config.ground_estimation_bin_size = params.ground_estimation_bin_size > 0.0
+      ? params.ground_estimation_bin_size : defaults.ground_estimation_bin_size;
+  config.ground_estimation_min_points = std::max(1, params.ground_estimation_min_points);
+  config.ground_filter_tolerance = params.ground_filter_tolerance > 0.0
+      ? params.ground_filter_tolerance : defaults.ground_filter_tolerance;
+  config.warmup_frames = std::max(0, params.warmup_frames);
+  config.temporal_motion_enabled = params.temporal_motion_enabled;
+  config.temporal_match_distance = params.temporal_match_distance > 0.0
+      ? params.temporal_match_distance : defaults.temporal_match_distance;
+  const double minimum_search_radius = config.temporal_match_distance * 1.5;
+  config.temporal_search_radius = params.temporal_search_radius > minimum_search_radius
+      ? params.temporal_search_radius
+      : std::max(defaults.temporal_search_radius, minimum_search_radius);
   config.num_threads = std::max(0, params.num_threads);
   config.only_valid = params.only_valid;
   config.inflate_unknown = std::max(0, params.inflate_unknown);
@@ -343,7 +429,12 @@ UfomapMapper::UfomapMapper(ros::NodeHandle& nh,
                   << ", depth levels: " << config_.depth_levels
                   << ", min range: " << config_.min_range
                   << ", max range: " << config_.max_range
-                  << ", input max z: " << config_.input_max_z);
+                  << ", input max z: " << config_.input_max_z
+                  << ", ground filter: " << (config_.ground_filter_enabled ? "on" : "off")
+                  << ", ground tolerance: " << config_.ground_filter_tolerance
+                  << ", warmup frames: " << config_.warmup_frames
+                  << ", temporal motion: "
+                  << (config_.temporal_motion_enabled ? "on" : "off"));
 }
 
 UfomapMapper::~UfomapMapper() = default;
@@ -356,6 +447,25 @@ void UfomapMapper::loadParameters() {
   pnh_.param("ufomap_min_range", params_.min_range, defaults.min_range);
   pnh_.param("ufomap_max_range", params_.max_range, defaults.max_range);
   pnh_.param("ufomap_input_max_z", params_.input_max_z, defaults.input_max_z);
+  pnh_.param("ufomap_ground_filter_enabled", params_.ground_filter_enabled,
+             defaults.ground_filter_enabled);
+  pnh_.param("ufomap_ground_estimation_frames", params_.ground_estimation_frames,
+             defaults.ground_estimation_frames);
+  pnh_.param("ufomap_ground_estimation_radius", params_.ground_estimation_radius,
+             defaults.ground_estimation_radius);
+  pnh_.param("ufomap_ground_estimation_bin_size", params_.ground_estimation_bin_size,
+             defaults.ground_estimation_bin_size);
+  pnh_.param("ufomap_ground_estimation_min_points", params_.ground_estimation_min_points,
+             defaults.ground_estimation_min_points);
+  pnh_.param("ufomap_ground_filter_tolerance", params_.ground_filter_tolerance,
+             defaults.ground_filter_tolerance);
+  pnh_.param("ufomap_warmup_frames", params_.warmup_frames, defaults.warmup_frames);
+  pnh_.param("ufomap_temporal_motion_enabled", params_.temporal_motion_enabled,
+             defaults.temporal_motion_enabled);
+  pnh_.param("ufomap_temporal_match_distance", params_.temporal_match_distance,
+             defaults.temporal_match_distance);
+  pnh_.param("ufomap_temporal_search_radius", params_.temporal_search_radius,
+             defaults.temporal_search_radius);
   pnh_.param("ufomap_insert_hit_depth", params_.insert_hit_depth, defaults.insert_hit_depth);
   pnh_.param("ufomap_insert_miss_depth", params_.insert_miss_depth, defaults.insert_miss_depth);
   pnh_.param("ufomap_ray_casting_depth", params_.ray_casting_depth, defaults.ray_casting_depth);
@@ -378,6 +488,11 @@ void UfomapMapper::loadParameters() {
 void UfomapMapper::configureUfomap() {
   // 该函数会在 clearMap() 后重建 runtime。
   ufomap_update_count_.store(0U);
+  processed_frame_count_ = 0U;
+  ground_plane_z_.reset();
+  ground_plane_samples_.clear();
+  ground_plane_locked_ = false;
+  previous_frame_points_.clear();
   runtime_ = std::make_unique<UfomapRuntime>(static_cast<ufo::node_size_t>(config_.resolution),
                                              static_cast<ufo::depth_t>(config_.depth_levels));
 
@@ -417,10 +532,213 @@ const UfomapMapper::UfomapRuntime& UfomapMapper::runtimeLocked() const {
   return *runtime_;
 }
 
+std::optional<double> UfomapMapper::estimateGroundPlaneZ(
+    const UfomapPointCloud& points,
+    const ufo::Point& sensor_origin) const {
+  if (!config_.ground_filter_enabled || points.empty()) {
+    return std::nullopt;
+  }
+
+  const double radius_sq = config_.ground_estimation_radius *
+                           config_.ground_estimation_radius;
+  const double candidate_min_z = static_cast<double>(sensor_origin.z) - 3.0;
+  const double candidate_max_z = static_cast<double>(sensor_origin.z) + 0.25;
+  const double bin_size = config_.ground_estimation_bin_size;
+  std::unordered_map<int, std::size_t> histogram;
+  histogram.reserve(points.size());
+
+  for (const auto& point : points) {
+    const double dx = static_cast<double>(point.x) - sensor_origin.x;
+    const double dy = static_cast<double>(point.y) - sensor_origin.y;
+    const double point_z = static_cast<double>(point.z);
+    if (dx * dx + dy * dy > radius_sq || point_z < candidate_min_z ||
+        point_z > candidate_max_z) {
+      continue;
+    }
+
+    const int bin = static_cast<int>(std::floor(point_z / bin_size));
+    ++histogram[bin];
+  }
+
+  int best_bin = 0;
+  std::size_t best_count = 0U;
+  for (const auto& entry : histogram) {
+    if (entry.second > best_count) {
+      best_bin = entry.first;
+      best_count = entry.second;
+    }
+  }
+  if (best_count < static_cast<std::size_t>(config_.ground_estimation_min_points)) {
+    return std::nullopt;
+  }
+
+  const double best_bin_center = (static_cast<double>(best_bin) + 0.5) * bin_size;
+  std::vector<double> inlier_z_values;
+  inlier_z_values.reserve(best_count);
+  const double inlier_half_width = bin_size * 1.5;
+  for (const auto& point : points) {
+    const double dx = static_cast<double>(point.x) - sensor_origin.x;
+    const double dy = static_cast<double>(point.y) - sensor_origin.y;
+    const double point_z = static_cast<double>(point.z);
+    if (dx * dx + dy * dy > radius_sq || point_z < candidate_min_z ||
+        point_z > candidate_max_z || std::abs(point_z - best_bin_center) > inlier_half_width) {
+      continue;
+    }
+    inlier_z_values.push_back(point_z);
+  }
+
+  if (inlier_z_values.size() < static_cast<std::size_t>(config_.ground_estimation_min_points)) {
+    return std::nullopt;
+  }
+  return medianValue(std::move(inlier_z_values));
+}
+
+void UfomapMapper::updateGroundPlane(const UfomapPointCloud& points,
+                                     const ufo::Point& sensor_origin) {
+  if (!config_.ground_filter_enabled || ground_plane_locked_) {
+    return;
+  }
+
+  const std::optional<double> sample = estimateGroundPlaneZ(points, sensor_origin);
+  if (!sample.has_value()) {
+    return;
+  }
+
+  if (ground_plane_z_.has_value() &&
+      std::abs(*sample - *ground_plane_z_) > 0.25) {
+    return;
+  }
+
+  ground_plane_samples_.push_back(*sample);
+  if (ground_plane_samples_.size() >
+      static_cast<std::size_t>(config_.ground_estimation_frames)) {
+    ground_plane_samples_.erase(ground_plane_samples_.begin());
+  }
+  ground_plane_z_ = medianValue(ground_plane_samples_);
+  if (ground_plane_samples_.size() >=
+      static_cast<std::size_t>(config_.ground_estimation_frames)) {
+    ground_plane_locked_ = true;
+    ROS_INFO_STREAM("Ground plane locked at z=" << *ground_plane_z_
+                    << " using " << ground_plane_samples_.size() << " frames");
+  }
+}
+
+UfomapMapper::UfomapPointCloud UfomapMapper::filterGroundPoints(
+    const UfomapPointCloud& points) const {
+  if (!config_.ground_filter_enabled || !ground_plane_z_.has_value()) {
+    return points;
+  }
+
+  UfomapPointCloud filtered_points;
+  filtered_points.reserve(points.size());
+  for (const auto& point : points) {
+    if (std::abs(static_cast<double>(point.z) - *ground_plane_z_) >
+        config_.ground_filter_tolerance) {
+      filtered_points.push_back(point);
+    }
+  }
+  return filtered_points;
+}
+
+std::vector<std::size_t> UfomapMapper::detectTemporalMotion(
+    const UfomapPointCloud& points) {
+  std::vector<std::size_t> motion_indices;
+  if (!config_.temporal_motion_enabled || points.empty() ||
+      previous_frame_points_.empty()) {
+    return motion_indices;
+  }
+
+  const double match_distance = config_.temporal_match_distance;
+  const double search_radius = config_.temporal_search_radius;
+  const double cell_size = std::max(match_distance, search_radius / 4.0);
+  const double match_distance_sq = match_distance * match_distance;
+  const double search_radius_sq = search_radius * search_radius;
+
+  using PreviousPointGrid =
+      std::unordered_map<TemporalGridKey, std::vector<std::size_t>, TemporalGridKeyHash>;
+  PreviousPointGrid previous_grid;
+  previous_grid.reserve(previous_frame_points_.size());
+  for (std::size_t index = 0U; index < previous_frame_points_.size(); ++index) {
+    previous_grid[makeTemporalGridKey(previous_frame_points_[index], cell_size)].push_back(index);
+  }
+
+  const auto hasNearbyPreviousPoint = [&](const ufo::Point& point,
+                                          const double radius_sq) {
+    const double radius = std::sqrt(radius_sq);
+    const TemporalGridKey min_key = makeTemporalGridKey(
+        ufo::Point(static_cast<float>(static_cast<double>(point.x) - radius),
+                   static_cast<float>(static_cast<double>(point.y) - radius),
+                   static_cast<float>(static_cast<double>(point.z) - radius)),
+        cell_size);
+    const TemporalGridKey max_key = makeTemporalGridKey(
+        ufo::Point(static_cast<float>(static_cast<double>(point.x) + radius),
+                   static_cast<float>(static_cast<double>(point.y) + radius),
+                   static_cast<float>(static_cast<double>(point.z) + radius)),
+        cell_size);
+
+    for (int x = min_key.x; x <= max_key.x; ++x) {
+      for (int y = min_key.y; y <= max_key.y; ++y) {
+        for (int z = min_key.z; z <= max_key.z; ++z) {
+          const auto found = previous_grid.find(TemporalGridKey{x, y, z});
+          if (found == previous_grid.end()) {
+            continue;
+          }
+          for (const std::size_t previous_index : found->second) {
+            const auto& previous_point = previous_frame_points_[previous_index];
+            const double dx = static_cast<double>(point.x) - previous_point.x;
+            const double dy = static_cast<double>(point.y) - previous_point.y;
+            const double dz = static_cast<double>(point.z) - previous_point.z;
+            if (dx * dx + dy * dy + dz * dz <= radius_sq) {
+              return true;
+            }
+          }
+        }
+      }
+    }
+    return false;
+  };
+
+  motion_indices.reserve(points.size() / 10U + 1U);
+  std::shared_lock<std::shared_mutex> map_lock(map_mutex_);
+  const auto& runtime = runtimeLocked();
+  for (std::size_t index = 0U; index < points.size(); ++index) {
+    const auto& point = points[index];
+    const ufo::Point current_point(point.x, point.y, point.z);
+    if (hasNearbyPreviousPoint(current_point, match_distance_sq)) {
+      continue;
+    }
+    const auto code = runtime.map.toCodeChecked(current_point);
+    if (code.has_value()) {
+      if (runtime.map.seenFree(current_point)) {
+        continue;
+      }
+      if (runtime.map.exists(*code)) {
+        const auto node = runtime.map(*code);
+        if (runtime.map.hits(node) > 0) {
+          continue;
+        }
+      }
+    }
+    if (hasNearbyPreviousPoint(current_point, search_radius_sq)) {
+      motion_indices.push_back(index);
+    }
+  }
+  return motion_indices;
+}
+
+void UfomapMapper::updatePreviousFrameSnapshot(const UfomapPointCloud& points) {
+  previous_frame_points_.clear();
+  previous_frame_points_.reserve(points.size());
+  for (const auto& point : points) {
+    previous_frame_points_.emplace_back(point.x, point.y, point.z);
+  }
+}
+
 UfomapFrameResult UfomapMapper::processInputCloud(const sensor_msgs::PointCloud2& cloud_msg,
                                                   const nav_msgs::Odometry& odom_msg) {
   const auto total_start = std::chrono::steady_clock::now();
   UfomapFrameResult result;
+  ++processed_frame_count_;
   const auto extract_start = std::chrono::steady_clock::now();
   const ExtractFinitePointsResult extracted = extractFinitePoints(cloud_msg);
   const auto extract_end = std::chrono::steady_clock::now();
@@ -444,7 +762,7 @@ UfomapFrameResult UfomapMapper::processInputCloud(const sensor_msgs::PointCloud2
     input_points = &filtered_input_points;
   }
 
-  const ufo::PointCloud* output_points = input_points;
+  const ufo::PointCloud* range_filtered_points = input_points;
   ufo::PointCloud filtered_output_points;
   if (config_.max_range > 0.0) {
     const float max_range_sq = static_cast<float>(config_.max_range * config_.max_range);
@@ -454,9 +772,95 @@ UfomapFrameResult UfomapMapper::processInputCloud(const sensor_msgs::PointCloud2
         filtered_output_points.push_back(point);
       }
     }
-    output_points = &filtered_output_points;
+    range_filtered_points = &filtered_output_points;
   }
+
+  updateGroundPlane(*range_filtered_points, sensor_origin);
+  const ufo::PointCloud ground_filtered_points = filterGroundPoints(*range_filtered_points);
+  const ufo::PointCloud* output_points = &ground_filtered_points;
+  const std::vector<std::size_t> temporal_motion_indices =
+      detectTemporalMotion(*output_points);
+  updatePreviousFrameSnapshot(*output_points);
+
   result.classification = classifyPoints(cloud_msg.header, *output_points);
+  std::vector<bool> dynamic_mask(output_points->size(), false);
+  for (const std::size_t index : result.classification.dynamic_indices) {
+    if (index < dynamic_mask.size()) {
+      dynamic_mask[index] = true;
+    }
+  }
+  for (const std::size_t index : temporal_motion_indices) {
+    if (index < dynamic_mask.size()) {
+      dynamic_mask[index] = true;
+    }
+  }
+
+  auto rebuildClassificationOutputs = [&]() {
+    auto& classification = result.classification;
+    classification.static_points.clear();
+    classification.dynamic_points.clear();
+    classification.dynamic_indices.clear();
+    classification.dynamic_cluster_points.clear();
+
+    ufo::PointCloud static_cloud_points;
+    ufo::PointCloud dynamic_cloud_points;
+    static_cloud_points.reserve(output_points->size());
+    dynamic_cloud_points.reserve(output_points->size());
+    classification.static_points.reserve(output_points->size());
+    classification.dynamic_points.reserve(output_points->size());
+    classification.dynamic_indices.reserve(output_points->size());
+    classification.dynamic_cluster_points.reserve(output_points->size());
+
+    {
+      std::shared_lock<std::shared_mutex> lock(map_mutex_);
+      const auto& runtime = runtimeLocked();
+      for (std::size_t index = 0U; index < output_points->size(); ++index) {
+        const auto& point = (*output_points)[index];
+        const ufo::Point point_value(point.x, point.y, point.z);
+        if (!dynamic_mask[index]) {
+          static_cloud_points.push_back(point);
+          classification.static_points.push_back(point_value);
+          continue;
+        }
+
+        dynamic_cloud_points.push_back(point);
+        classification.dynamic_points.push_back(point_value);
+        classification.dynamic_indices.push_back(index);
+        const auto code = runtime.map.toCodeChecked(point);
+        if (!code.has_value()) {
+          continue;
+        }
+        const ufo::Key key = *code;
+        UfomapDynamicClusterPoint cluster_point;
+        cluster_point.point = point;
+        cluster_point.voxel_code.raw_code = code->raw();
+        cluster_point.voxel_code.key_x = key.x();
+        cluster_point.voxel_code.key_y = key.y();
+        cluster_point.voxel_code.key_z = key.z();
+        cluster_point.voxel_code.depth = key.depth();
+        classification.dynamic_cluster_points.push_back(cluster_point);
+      }
+    }
+
+    classification.input_point_count = output_points->size();
+    classification.static_point_count = classification.static_points.size();
+    classification.dynamic_point_count = classification.dynamic_points.size();
+    classification.static_cloud_msg = buildCloudFromPoints(cloud_msg.header, static_cloud_points);
+    classification.dynamic_cloud_msg =
+        buildCloudFromPoints(cloud_msg.header, dynamic_cloud_points);
+  };
+
+  rebuildClassificationOutputs();
+  const bool warmup_ready =
+      processed_frame_count_ > static_cast<std::uint64_t>(config_.warmup_frames);
+  if (!warmup_ready) {
+    result.classification.dynamic_points.clear();
+    result.classification.dynamic_indices.clear();
+    result.classification.dynamic_cluster_points.clear();
+    result.classification.dynamic_point_count = 0U;
+    result.classification.dynamic_cloud_msg =
+        buildCloudFromPointVector(cloud_msg.header, std::vector<ufo::Point>{});
+  }
   const auto classify_current_end = std::chrono::steady_clock::now();
   result.timing.classify_current_frame_ms =
       elapsedMs(classify_current_start, classify_current_end);
@@ -469,21 +873,39 @@ UfomapFrameResult UfomapMapper::processInputCloud(const sensor_msgs::PointCloud2
   result.static_map_cloud_msg = result.classification.static_cloud_msg;
   result.dynamic_cloud_msg = result.classification.dynamic_cloud_msg;
 
+  UfomapPointCloud integration_points;
+  integration_points.reserve(output_points->size());
+  for (std::size_t index = 0U; index < output_points->size(); ++index) {
+    if (!dynamic_mask[index]) {
+      integration_points.push_back((*output_points)[index]);
+    }
+  }
+
   const auto update_start = std::chrono::steady_clock::now();
-  if (!input_points->empty()) {
+  if (!integration_points.empty()) {
     std::unique_lock<std::shared_mutex> lock(map_mutex_);
     auto& runtime = runtimeLocked();
     // 积分与统计更新在同一把锁内，保证 frame_result 与地图状态一致。
-    ufo::insertPointCloud(runtime.map, *input_points, sensor_origin,
+    ufo::insertPointCloud(runtime.map, integration_points, sensor_origin,
                           runtime.integration_params,
                           runtime.integration_params.propagate);
 
     const std::uint64_t update_count = ufomap_update_count_.fetch_add(1U) + 1U;
     result.runtime_stats.update_count = update_count;
-    result.runtime_stats.node_count = runtime.map.numNodes();
   }
   const auto update_end = std::chrono::steady_clock::now();
   result.timing.update_ufomap_ms = elapsedMs(update_start, update_end);
+
+  {
+    std::shared_lock<std::shared_mutex> lock(map_mutex_);
+    result.runtime_stats.update_count = ufomap_update_count_.load();
+    result.runtime_stats.node_count = runtimeLocked().map.numNodes();
+  }
+  result.runtime_stats.processed_frame_count = processed_frame_count_;
+  result.runtime_stats.ground_plane_ready = ground_plane_z_.has_value();
+  result.runtime_stats.ground_plane_z = ground_plane_z_.value_or(0.0);
+  result.runtime_stats.warmup_ready = warmup_ready;
+  result.runtime_stats.temporal_motion_point_count = temporal_motion_indices.size();
 
   const double static_map_visualization_max_z = config_.static_map_visualization_max_z;
   StaticMapVisualizationSnapshot static_map_snapshot;
@@ -509,8 +931,15 @@ UfomapFrameResult UfomapMapper::processInputCloud(const sensor_msgs::PointCloud2
                                       << formatFloatMs(result.timing.update_ufomap_ms)
                                       << "ms, classifyCurrentFrame="
                                       << formatFloatMs(
-                                             result.timing.classify_current_frame_ms)
-                                      << "ms");
+                                              result.timing.classify_current_frame_ms)
+                                      << "ms"
+                                      << ", groundZ="
+                                      << (ground_plane_z_.has_value()
+                                              ? std::to_string(*ground_plane_z_)
+                                              : std::string("unknown"))
+                                      << ", temporalMotionPoints="
+                                      << temporal_motion_indices.size()
+                                      << ", warmupReady=" << (warmup_ready ? "true" : "false"));
   }
   return result;
 }
@@ -605,15 +1034,21 @@ UfomapClassificationResult UfomapMapper::classifyPoints(
   ufo::PointCloud dynamic_points;
   static_points.reserve(points.size());
   dynamic_points.reserve(points.size());
+  result.static_points.reserve(points.size());
+  result.dynamic_points.reserve(points.size());
+  result.dynamic_indices.reserve(points.size());
   result.dynamic_cluster_points.reserve(points.size());
 
   {
     std::shared_lock<std::shared_mutex> lock(map_mutex_);
     result.input_point_count = points.size();
     const auto& runtime = runtimeLocked();
+    std::size_t point_index = 0U;
     for (const auto& point : points) {
       if (runtime.map.seenFree(point)) {
         dynamic_points.push_back(point);
+        result.dynamic_points.emplace_back(point.x, point.y, point.z);
+        result.dynamic_indices.push_back(point_index);
         const auto code = runtime.map.toCodeChecked(point);
         if (code.has_value()) {
           const ufo::Key key = *code;
@@ -628,16 +1063,14 @@ UfomapClassificationResult UfomapMapper::classifyPoints(
         }
       } else {
         static_points.push_back(point);
+        result.static_points.emplace_back(point.x, point.y, point.z);
       }
+      ++point_index;
     }
   }
 
   result.static_point_count = static_points.size();
   result.dynamic_point_count = dynamic_points.size();
-  result.static_points.reserve(static_points.size());
-  for (const auto& point : static_points) {
-    result.static_points.emplace_back(point.x, point.y, point.z);
-  }
   result.static_cloud_msg = buildCloudFromPoints(header, static_points);
   result.dynamic_cloud_msg = buildCloudFromPoints(header, dynamic_points);
   return result;

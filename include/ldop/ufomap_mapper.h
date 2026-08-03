@@ -34,6 +34,16 @@ struct UfomapMapperConfig {
   double min_range{0.5};
   double max_range{10.0};
   double input_max_z{-1.0};
+  bool ground_filter_enabled{true};
+  int ground_estimation_frames{30};
+  double ground_estimation_radius{4.0};
+  double ground_estimation_bin_size{0.02};
+  int ground_estimation_min_points{100};
+  double ground_filter_tolerance{0.05};
+  int warmup_frames{30};
+  bool temporal_motion_enabled{true};
+  double temporal_match_distance{0.10};
+  double temporal_search_radius{0.60};
   int insert_hit_depth{0};
   int insert_miss_depth{0};
   int ray_casting_depth{0};
@@ -54,6 +64,16 @@ struct UfomapMapperConfig {
 
 struct UfomapMapperParams {
   double input_max_z{-1.0};
+  bool ground_filter_enabled{true};
+  int ground_estimation_frames{30};
+  double ground_estimation_radius{4.0};
+  double ground_estimation_bin_size{0.02};
+  int ground_estimation_min_points{100};
+  double ground_filter_tolerance{0.05};
+  int warmup_frames{30};
+  bool temporal_motion_enabled{true};
+  double temporal_match_distance{0.10};
+  double temporal_search_radius{0.60};
   double resolution{0.2};             // 大于0.0，叶子体素尺寸
   int depth_levels{16};               // [2, 20]，由UFOMAP自身限制范围，八叉树层级规模    
   double min_range{0.5};              // 大于等于0.0，积分和查询的最小范围 
@@ -80,6 +100,11 @@ struct UfomapRuntimeStats {
   // 已完成 UFOMap 积分的帧数，以及当前地图节点规模。
   std::uint64_t update_count{0};
   std::size_t node_count{0};
+  std::uint64_t processed_frame_count{0};
+  bool ground_plane_ready{false};
+  double ground_plane_z{0.0};
+  bool warmup_ready{false};
+  std::size_t temporal_motion_point_count{0};
 };
 
 struct UfomapTimingStats {
@@ -114,8 +139,12 @@ struct UfomapClassificationResult {
   sensor_msgs::PointCloud2 dynamic_cloud_msg;
   // Current-frame static points for transient voxel visualization; not persistent UFOMap data.
   std::vector<ufo::Point> static_points;
+  // Current-frame dynamic points after map and temporal motion candidates are merged.
+  std::vector<ufo::Point> dynamic_points;
   // 当前帧动态点的结构化聚类输入；不改变 dynamic_cloud_msg 的 ROS 输出语义。
   std::vector<UfomapDynamicClusterPoint> dynamic_cluster_points;
+  // Indices refer to the filtered input cloud passed to classifyPoints().
+  std::vector<std::size_t> dynamic_indices;
   std::size_t static_point_count{0};
   std::size_t dynamic_point_count{0};
   std::size_t input_point_count{0};
@@ -227,6 +256,12 @@ class UfomapMapper {
   // 调用方需先持有地图读锁或写锁；当前实现中 runtime_ 在对象存活期内应始终有效。
   UfomapRuntime& runtimeLocked();
   const UfomapRuntime& runtimeLocked() const;
+  std::optional<double> estimateGroundPlaneZ(const UfomapPointCloud& points,
+                                              const ufo::Point& sensor_origin) const;
+  void updateGroundPlane(const UfomapPointCloud& points, const ufo::Point& sensor_origin);
+  UfomapPointCloud filterGroundPoints(const UfomapPointCloud& points) const;
+  std::vector<std::size_t> detectTemporalMotion(const UfomapPointCloud& points);
+  void updatePreviousFrameSnapshot(const UfomapPointCloud& points);
   UfomapClassificationResult classifyPoints(const std_msgs::Header& header,
                                             const UfomapPointCloud& points) const;
 
@@ -242,6 +277,11 @@ class UfomapMapper {
   mutable std::shared_mutex map_mutex_;
 
   std::unique_ptr<UfomapRuntime> runtime_;
+  std::uint64_t processed_frame_count_{0U};
+  std::optional<double> ground_plane_z_;
+  std::vector<double> ground_plane_samples_;
+  bool ground_plane_locked_{false};
+  std::vector<ufo::Point> previous_frame_points_;
 };
 
 }  // namespace ldopcore

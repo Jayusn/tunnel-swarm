@@ -22,6 +22,16 @@ ufomap_down_sampling_method: center  # 积分前降采样策略，可选 none、
 ufomap_min_range: 0.5  # 近点过滤 / 最小积分距离
 ufomap_max_range: -1  # 最大积分距离，还影响当前帧分类输出半径；-1 表示不限制，其他非负值需大于 ufomap_min_range
 ufomap_input_max_z: 3.0  # 仅保留输入点云中全局Z坐标小于3米的点；-1表示关闭
+ufomap_ground_filter_enabled: true  # 启用水平地面平面内点滤波
+ufomap_ground_estimation_frames: 30  # 启动阶段用于锁定地面高度的有效帧数
+ufomap_ground_estimation_radius: 4.0  # 地面高度估计使用的传感器周围半径，单位m
+ufomap_ground_estimation_bin_size: 0.02  # 地面候选高度直方图分辨率，单位m
+ufomap_ground_estimation_min_points: 100  # 地面高度峰值至少需要的点数
+ufomap_ground_filter_tolerance: 0.05  # 点到地面平面的距离容差，单位m；不是删除地面以上的高度带
+ufomap_warmup_frames: 30  # 预热帧数；预热期间不向跟踪器输出动态目标
+ufomap_temporal_motion_enabled: true  # 启用上一帧与当前帧的局部运动候选检测
+ufomap_temporal_match_distance: 0.10  # 认为同一点的最大跨帧距离，单位m
+ufomap_temporal_search_radius: 0.60  # 运动候选搜索上一帧点的最大半径，单位m
 ufomap_insert_only_valid: false  # 仅对有效射线区段执行插入，即ufomap_max_range范围内点的射线段
 ufomap_insert_hit_depth: 0  # 命中点更新深度，0 表示沿用 UFOMap 默认值
 ufomap_insert_miss_depth: 0  # free / miss （失配）更新深度
