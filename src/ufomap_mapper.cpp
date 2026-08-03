@@ -317,6 +317,9 @@ UfomapMapperConfig buildUfomapConfig(const UfomapMapperParams& params) {
   config.temporal_search_radius = params.temporal_search_radius > minimum_search_radius
       ? params.temporal_search_radius
       : std::max(defaults.temporal_search_radius, minimum_search_radius);
+  config.temporal_cluster_radius = params.temporal_cluster_radius > 0.0
+      ? params.temporal_cluster_radius : defaults.temporal_cluster_radius;
+  config.temporal_min_cluster_points = std::max(1, params.temporal_min_cluster_points);
   config.num_threads = std::max(0, params.num_threads);
   config.only_valid = params.only_valid;
   config.inflate_unknown = std::max(0, params.inflate_unknown);
@@ -466,6 +469,10 @@ void UfomapMapper::loadParameters() {
              defaults.temporal_match_distance);
   pnh_.param("ufomap_temporal_search_radius", params_.temporal_search_radius,
              defaults.temporal_search_radius);
+  pnh_.param("ufomap_temporal_cluster_radius", params_.temporal_cluster_radius,
+             defaults.temporal_cluster_radius);
+  pnh_.param("ufomap_temporal_min_cluster_points", params_.temporal_min_cluster_points,
+             defaults.temporal_min_cluster_points);
   pnh_.param("ufomap_insert_hit_depth", params_.insert_hit_depth, defaults.insert_hit_depth);
   pnh_.param("ufomap_insert_miss_depth", params_.insert_miss_depth, defaults.insert_miss_depth);
   pnh_.param("ufomap_ray_casting_depth", params_.ray_casting_depth, defaults.ray_casting_depth);
@@ -698,7 +705,8 @@ std::vector<std::size_t> UfomapMapper::detectTemporalMotion(
     return false;
   };
 
-  motion_indices.reserve(points.size() / 10U + 1U);
+  std::vector<std::size_t> raw_motion_indices;
+  raw_motion_indices.reserve(points.size() / 10U + 1U);
   std::shared_lock<std::shared_mutex> map_lock(map_mutex_);
   const auto& runtime = runtimeLocked();
   for (std::size_t index = 0U; index < points.size(); ++index) {
@@ -720,9 +728,75 @@ std::vector<std::size_t> UfomapMapper::detectTemporalMotion(
       }
     }
     if (hasNearbyPreviousPoint(current_point, search_radius_sq)) {
+      raw_motion_indices.push_back(index);
+    }
+  }
+
+  if (raw_motion_indices.empty()) {
+    return motion_indices;
+  }
+
+  const double cluster_radius = config_.temporal_cluster_radius;
+  const double cluster_radius_sq = cluster_radius * cluster_radius;
+  const double cluster_cell_size = std::max(cluster_radius / 2.0, match_distance);
+  PreviousPointGrid candidate_grid;
+  candidate_grid.reserve(raw_motion_indices.size());
+  for (const std::size_t index : raw_motion_indices) {
+    candidate_grid[makeTemporalGridKey(points[index], cluster_cell_size)].push_back(index);
+  }
+
+  const auto nearbyCandidateCount = [&](const std::size_t candidate_index) {
+    const auto& point = points[candidate_index];
+    const TemporalGridKey min_key = makeTemporalGridKey(
+        ufo::Point(static_cast<float>(static_cast<double>(point.x) - cluster_radius),
+                   static_cast<float>(static_cast<double>(point.y) - cluster_radius),
+                   static_cast<float>(static_cast<double>(point.z) - cluster_radius)),
+        cluster_cell_size);
+    const TemporalGridKey max_key = makeTemporalGridKey(
+        ufo::Point(static_cast<float>(static_cast<double>(point.x) + cluster_radius),
+                   static_cast<float>(static_cast<double>(point.y) + cluster_radius),
+                   static_cast<float>(static_cast<double>(point.z) + cluster_radius)),
+        cluster_cell_size);
+
+    std::size_t count = 0U;
+    for (int x = min_key.x; x <= max_key.x; ++x) {
+      for (int y = min_key.y; y <= max_key.y; ++y) {
+        for (int z = min_key.z; z <= max_key.z; ++z) {
+          const auto found = candidate_grid.find(TemporalGridKey{x, y, z});
+          if (found == candidate_grid.end()) {
+            continue;
+          }
+          for (const std::size_t neighbor_index : found->second) {
+            const auto& neighbor = points[neighbor_index];
+            const double dx = static_cast<double>(point.x) - neighbor.x;
+            const double dy = static_cast<double>(point.y) - neighbor.y;
+            const double dz = static_cast<double>(point.z) - neighbor.z;
+            if (dx * dx + dy * dy + dz * dz <= cluster_radius_sq) {
+              ++count;
+              if (count >= static_cast<std::size_t>(config_.temporal_min_cluster_points)) {
+                return count;
+              }
+            }
+          }
+        }
+      }
+    }
+    return count;
+  };
+
+  motion_indices.reserve(raw_motion_indices.size());
+  for (const std::size_t index : raw_motion_indices) {
+    if (nearbyCandidateCount(index) >=
+        static_cast<std::size_t>(config_.temporal_min_cluster_points)) {
       motion_indices.push_back(index);
     }
   }
+  ROS_INFO_STREAM_THROTTLE(
+      1.0, "Ufomap temporal candidates: raw=" << raw_motion_indices.size()
+                                               << ", clustered=" << motion_indices.size()
+                                               << ", radius=" << cluster_radius
+                                               << ", min_points="
+                                               << config_.temporal_min_cluster_points);
   return motion_indices;
 }
 

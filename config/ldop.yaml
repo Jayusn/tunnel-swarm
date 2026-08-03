@@ -32,6 +32,8 @@ ufomap_warmup_frames: 30  # 预热帧数；预热期间不向跟踪器输出动�
 ufomap_temporal_motion_enabled: true  # 启用上一帧与当前帧的局部运动候选检测
 ufomap_temporal_match_distance: 0.10  # 认为同一点的最大跨帧距离，单位m
 ufomap_temporal_search_radius: 0.35  # 运动候选搜索上一帧点的最大半径，单位m
+ufomap_temporal_cluster_radius: 0.35  # 跨帧运动候选需要相互支持的空间半径，单位m
+ufomap_temporal_min_cluster_points: 4  # 跨帧运动候选在支持半径内至少需要的点数
 ufomap_insert_only_valid: false  # 仅对有效射线区段执行插入，即ufomap_max_range范围内点的射线段
 ufomap_insert_hit_depth: 0  # 命中点更新深度，0 表示沿用 UFOMap 默认值
 ufomap_insert_miss_depth: 0  # free / miss （失配）更新深度

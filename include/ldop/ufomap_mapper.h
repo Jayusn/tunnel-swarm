@@ -44,6 +44,8 @@ struct UfomapMapperConfig {
   bool temporal_motion_enabled{true};
   double temporal_match_distance{0.10};
   double temporal_search_radius{0.60};
+  double temporal_cluster_radius{0.35};
+  int temporal_min_cluster_points{4};
   int insert_hit_depth{0};
   int insert_miss_depth{0};
   int ray_casting_depth{0};
@@ -74,6 +76,8 @@ struct UfomapMapperParams {
   bool temporal_motion_enabled{true};
   double temporal_match_distance{0.10};
   double temporal_search_radius{0.60};
+  double temporal_cluster_radius{0.35};
+  int temporal_min_cluster_points{4};
   double resolution{0.2};             // 大于0.0，叶子体素尺寸
   int depth_levels{16};               // [2, 20]，由UFOMAP自身限制范围，八叉树层级规模    
   double min_range{0.5};              // 大于等于0.0，积分和查询的最小范围 
