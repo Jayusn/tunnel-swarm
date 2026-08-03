@@ -437,7 +437,7 @@ UfomapFrameResult UfomapMapper::processInputCloud(const sensor_msgs::PointCloud2
     filtered_input_points.reserve(extracted.points.size());
     const float input_max_z = static_cast<float>(config_.input_max_z);
     for (const auto& point : extracted.points) {
-      if (point.z <= input_max_z) {
+      if (point.z < input_max_z) {
         filtered_input_points.push_back(point);
       }
     }
