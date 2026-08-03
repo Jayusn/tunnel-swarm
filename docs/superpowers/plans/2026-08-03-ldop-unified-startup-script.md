@@ -17,80 +17,13 @@
 - Fast-LIO 必须使用 `roslaunch fast_lio mapping_mid360.launch rviz:=false`；只有 `roslaunch ldop run_ldop.launch` 负责启动 RViz。
 - 远程用户和地址：`oem@192.168.31.163`。
 - Git 提交备注使用中文。
+- 本次按用户要求不新增自动化测试，采用远程实际启动和话题观察进行验收。
 
 ---
 
-### Task 1: 添加启动脚本静态验收测试
+### Task 1：自动化测试（按用户要求跳过）
 
-**Files:**
-- Create: `test/test_startup_scripts.py`
-
-**Interfaces:**
-- Consumes: `scripts/ros_start_lidar_only.sh` 和 `scripts/ros_start_ldop_detection.sh` 的文本内容。
-- Produces: 一个可用 `python3 test/test_startup_scripts.py` 执行的静态验收入口，验证文件存在、Fast-LIO 禁用 RViz、包装器复用现有雷达脚本并等待两个关键话题。
-
-- [ ] **Step 1: Write the failing test**
-
-创建以下测试。由于两个脚本尚未创建，第一次运行必须因文件不存在而失败：
-
-```python
-from pathlib import Path
-import unittest
-
-
-ROOT = Path(__file__).resolve().parents[1]
-LIDAR_SCRIPT = ROOT / "scripts" / "ros_start_lidar_only.sh"
-LDOP_SCRIPT = ROOT / "scripts" / "ros_start_ldop_detection.sh"
-
-
-class StartupScriptTest(unittest.TestCase):
-    def test_startup_scripts_exist(self):
-        self.assertTrue(LIDAR_SCRIPT.is_file())
-        self.assertTrue(LDOP_SCRIPT.is_file())
-
-    def test_lidar_script_disables_fastlio_rviz(self):
-        text = LIDAR_SCRIPT.read_text(encoding="utf-8")
-        self.assertIn(
-            "roslaunch fast_lio mapping_mid360.launch rviz:=false",
-            text,
-        )
-        self.assertNotIn(
-            "roslaunch fast_lio mapping_mid360.launch\"",
-            text,
-        )
-
-    def test_ldop_script_wraps_lidar_and_waits_for_topics(self):
-        text = LDOP_SCRIPT.read_text(encoding="utf-8")
-        self.assertIn("ros_start_lidar_only.sh", text)
-        self.assertIn("/home/oem/ldop_ws/ldop_env.sh", text)
-        self.assertIn("/cloud_registered", text)
-        self.assertIn("/Odometry", text)
-        self.assertIn("roslaunch ldop run_ldop.launch", text)
-        self.assertNotIn("mapping_mid360.launch", text)
-
-
-if __name__ == "__main__":
-    unittest.main()
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run from `E:/比赛功能包/LDOP`:
-
-```powershell
-python test/test_startup_scripts.py
-```
-
-Expected: FAIL because `scripts/ros_start_lidar_only.sh` and `scripts/ros_start_ldop_detection.sh` do not yet exist.
-
-- [ ] **Step 3: Sync the failing test to the remote checkout**
-
-Create the remote test directory if necessary and copy the exact file:
-
-```powershell
-ssh -i "C:/Users/Jayus/.ssh/id_ed25519_codex_guet2" oem@192.168.31.163 "mkdir -p /home/oem/ldop_ws/src/LDOP/test"
-scp -i "C:/Users/Jayus/.ssh/id_ed25519_codex_guet2" "E:/比赛功能包/LDOP/test/test_startup_scripts.py" "oem@192.168.31.163:/home/oem/ldop_ws/src/LDOP/test/test_startup_scripts.py"
-```
+用户已明确选择直接启动脚本观察，因此不创建、不同步自动化测试文件；启动结果以远程终端标签页、ROS 节点和关键话题的实际状态为准。
 
 ### Task 2: 修改雷达脚本并实现 LDOP 包装器
 
@@ -181,22 +114,15 @@ git update-index --chmod=+x scripts/ros_start_lidar_only.sh scripts/ros_start_ld
 
 随后使用 Git Bash 或远程 Linux 端确认两个文件的 Unix mode 为 `100755`；Windows 文件系统不保留传统 Unix 权限时，以 Git index 和远程 `chmod +x` 的结果为准。
 
-- [ ] **Step 4: Run the static test to verify it passes**
+- [ ] **Step 4: Review the two scripts before syncing**
 
-Run from `E:/比赛功能包/LDOP`:
-
-```powershell
-python test/test_startup_scripts.py
-```
-
-Expected: `Ran 3 tests` and `OK`。
+确认雷达脚本只有 `rviz:=false` 的 Fast-LIO 启动命令，包装器只在第五个终端中执行 `roslaunch ldop run_ldop.launch`，并且等待 `/cloud_registered` 与 `/Odometry` 的实际消息。
 
 ### Task 3: 同步脚本与验收测试到远程端
 
 **Files:**
 - Modify: `/home/oem/scripts/ros_start_lidar_only.sh`
 - Create: `/home/oem/scripts/ros_start_ldop_detection.sh`
-- Modify: `/home/oem/ldop_ws/src/LDOP/test/test_startup_scripts.py`
 
 **Interfaces:**
 - Consumes: Task 2 中本地仓库的两个脚本和 Task 1 中的测试。
@@ -219,18 +145,9 @@ scp -i "C:/Users/Jayus/.ssh/id_ed25519_codex_guet2" "E:/比赛功能包/LDOP/scr
 ssh -i "C:/Users/Jayus/.ssh/id_ed25519_codex_guet2" oem@192.168.31.163 "chmod +x /home/oem/scripts/ros_start_lidar_only.sh /home/oem/scripts/ros_start_ldop_detection.sh"
 ```
 
-- [ ] **Step 3: Copy the static test to the remote LDOP source**
-
-执行：
-
-```powershell
-scp -i "C:/Users/Jayus/.ssh/id_ed25519_codex_guet2" "E:/比赛功能包/LDOP/test/test_startup_scripts.py" "oem@192.168.31.163:/home/oem/ldop_ws/src/LDOP/test/test_startup_scripts.py"
-```
-
 ### Task 4: 运行静态、语法和内容一致性验证
 
 **Files:**
-- Test: `test/test_startup_scripts.py`
 - Test: `scripts/ros_start_lidar_only.sh`
 - Test: `scripts/ros_start_ldop_detection.sh`
 
@@ -238,16 +155,15 @@ scp -i "C:/Users/Jayus/.ssh/id_ed25519_codex_guet2" "E:/比赛功能包/LDOP/tes
 - Consumes: 本地和远程同步后的脚本。
 - Produces: 可审计的测试输出、Shell 语法结果、权限结果和 SHA-256 一致性结果。
 
-- [ ] **Step 1: Run local Python static tests and shell syntax checks**
+- [ ] **Step 1: Review script text and run shell syntax checks**
 
 ```powershell
-python test/test_startup_scripts.py
 bash -n scripts/ros_start_lidar_only.sh
 bash -n scripts/ros_start_ldop_detection.sh
 git diff --check
 ```
 
-Expected: Python 输出 `OK`，两个 `bash -n` 和 `git diff --check` 均返回退出码 0。
+确认两个脚本内容符合设计，两个 `bash -n` 和 `git diff --check` 均返回退出码 0。
 
 - [ ] **Step 2: Compare local and remote SHA-256 hashes**
 
@@ -259,20 +175,19 @@ ssh -i "C:/Users/Jayus/.ssh/id_ed25519_codex_guet2" oem@192.168.31.163 "sha256su
 
 Expected: 对应文件的哈希值完全一致。
 
-- [ ] **Step 3: Confirm remote executable mode and static test**
+- [ ] **Step 3: Confirm remote executable mode**
 
 ```powershell
 ssh -i "C:/Users/Jayus/.ssh/id_ed25519_codex_guet2" oem@192.168.31.163 "stat -c '%A %a %n' /home/oem/scripts/ros_start_lidar_only.sh /home/oem/scripts/ros_start_ldop_detection.sh"
-ssh -i "C:/Users/Jayus/.ssh/id_ed25519_codex_guet2" oem@192.168.31.163 "cd /home/oem/ldop_ws/src/LDOP && python3 test/test_startup_scripts.py"
 ```
 
-Expected: 两个脚本为 `-rwxr-xr-x 755`，远程测试输出 `OK`。
+Expected: 两个脚本为 `-rwxr-xr-x 755`。
 
 ### Task 5: 从空闲 ROS 状态验证完整启动
 
 **Files:**
-- Test: `/home/oem/scripts/ros_start_ldop_detection.sh`
-- Test: `/home/oem/scripts/ros_start_lidar_only.sh`
+- Launch: `/home/oem/scripts/ros_start_ldop_detection.sh`
+- Observe: `/home/oem/scripts/ros_start_lidar_only.sh`
 
 **Interfaces:**
 - Consumes: 已通过静态和语法检查的远程脚本。
@@ -323,7 +238,6 @@ rostopic hz /ldop/dynamic_object_markers
 **Files:**
 - Modify: `scripts/ros_start_lidar_only.sh`
 - Create: `scripts/ros_start_ldop_detection.sh`
-- Create: `test/test_startup_scripts.py`
 
 **Interfaces:**
 - Consumes: Task 1–5 的测试和验证结果。
@@ -341,7 +255,7 @@ git status --short
 - [ ] **Step 2: Stage and commit with a Chinese message**
 
 ```powershell
-git add -- scripts/ros_start_lidar_only.sh scripts/ros_start_ldop_detection.sh test/test_startup_scripts.py
+git add -- scripts/ros_start_lidar_only.sh scripts/ros_start_ldop_detection.sh
 git commit -m "脚本：新增 LDOP 一键启动"
 ```
 
@@ -359,5 +273,5 @@ Expected: 最新提交备注为中文，工作区干净；远程两个脚本的 
 - 设计文档中的方案 A 已覆盖：包装现有雷达脚本、第五个 LDOP 标签页、两个话题实际消息等待和仅保留 LDOP RViz。
 - 错误处理已覆盖：检查 `gnome-terminal`、雷达脚本、LDOP 环境脚本，并对等待过程支持 `Ctrl+C`。
 - 非目标已覆盖：不编译、不安装依赖、不改算法、不修改停止脚本。
-- 本地/远程同步已拆成明确步骤，包含脚本、测试、权限和 SHA-256 验证。
-- 所有提交命令使用中文备注；计划中没有占位符或未定义的接口。
+- 本地/远程同步已拆成明确步骤，包含脚本、权限和 SHA-256 验证。
+- 所有提交命令使用中文备注；验收以手动启动结果为准。
