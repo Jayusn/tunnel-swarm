@@ -25,12 +25,14 @@ fi
 "${LIDAR_SCRIPT}"
 
 gnome-terminal --tab --title="5_LDOP" -- bash -c '
-    set -uo pipefail
+    # ROS 的环境脚本可能引用尚未定义的变量，先不要启用 nounset。
+    set -o pipefail
     trap "exit 130" INT TERM
     if ! source "/home/oem/ldop_ws/ldop_env.sh"; then
         echo "错误：加载 LDOP 环境失败。"
         exec bash
     fi
+    set -u
 
     wait_for_topic() {
         local topic="$1"

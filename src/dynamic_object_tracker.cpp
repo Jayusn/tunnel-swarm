@@ -898,12 +898,11 @@ visualization_msgs::MarkerArray DynamicObjectTracker::buildTrackMarkers(
     label_marker.pose.position.z +=
         std::max(0.45, 0.5 * std::max(track.bbox.size.z, 0.0) + 0.30);
     label_marker.pose.orientation.w = 1.0;
-    // TEXT_VIEW_FACING 只用 scale.z 表达文字高度；文本单独使用更深的蓝青色，
-    // 避免沿用轨迹线的亮青色导致近距离观察时文字发浅。
-    label_marker.scale.z = 0.38;
-    label_marker.color.r = 0.02F;
-    label_marker.color.g = 0.26F;
-    label_marker.color.b = 0.38F;
+    // TEXT_VIEW_FACING 只用 scale.z 表达文字高度；使用白色提高 ID 在点云上的可读性。
+    label_marker.scale.z = 0.45;
+    label_marker.color.r = 1.0F;
+    label_marker.color.g = 1.0F;
+    label_marker.color.b = 1.0F;
     label_marker.color.a = coasting ? 0.45F : 1.0F;
     label_marker.text = makeTrackLabelText(track);
     markers.markers.push_back(std::move(label_marker));

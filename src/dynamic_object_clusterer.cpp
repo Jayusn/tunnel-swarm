@@ -498,10 +498,10 @@ visualization_msgs::MarkerArray DynamicObjectClusterer::buildObjectMarkers(
     marker.type = visualization_msgs::Marker::LINE_LIST;
     marker.action = visualization_msgs::Marker::ADD;
     marker.pose.orientation.w = 1.0;
-    marker.scale.x = 0.05;
-    marker.color.r = 0.95F;
-    marker.color.g = 0.35F;
-    marker.color.b = 0.10F;
+    marker.scale.x = 0.07;
+    marker.color.r = 1.0F;
+    marker.color.g = 0.90F;
+    marker.color.b = 0.05F;
     marker.color.a = 1.0F;
 
     appendBoundingBoxEdges(detection.bbox, marker);
