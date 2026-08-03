@@ -54,6 +54,7 @@ struct DynamicObjectTrackerConfig {
   // IoU 是距离判据通过后的第二层回退条件，不是与距离并列抢先判断的独立入口。
   // 参数范围为 (0,1]；未匹配 detection 的建轨抑制同样复用该阈值。
   double spawn_suppression_iou_threshold{0.5};
+  double duplicate_merge_distance{0.45};
   // 单帧预测 dt 上限，避免时间戳跳变把轨迹一次性外推过远。
   double max_dt{0.5};
   double invalid_cost{1e9}; // 数据关联中表示无效匹配的成本值，必须大于 gate 阈值。
@@ -86,6 +87,7 @@ struct DynamicObjectTrackerParams {
   double box_size_smoothing_alpha{0.5};                 // [0,1]
   double spawn_suppression_distance{0.5};               // >0
   double spawn_suppression_iou_threshold{0.5};          // (0,1]
+  double duplicate_merge_distance{0.45};                // >0 启用，<=0 关闭
   double default_dt{0.1};                               // >0, 用于初始预测和时间戳异常时的 fallback
   double max_dt{0.5};                                   // >0, 预测时的 dt 上限，避免时间跳变导致状态外推过远
   int classification_start_frame{10};                   // >0, 轨迹达到该帧数后开始尝试分类，避免过早分类导致频繁切换
@@ -186,6 +188,7 @@ class DynamicObjectTracker {
   void createTrack(const DynamicObjectDetection& detection, const ros::Time& stamp);
   // 漏检轨迹继续按预测状态维护，给后续帧重关联留窗口。
   void coastTrack(TrackState& track, const ros::Time& stamp);
+  void mergeDuplicateTracks();
   void deleteExpiredTracks();
   // 对外只发布命中次数达到阈值的稳定轨迹，减少一帧噪声 detection 直接暴露给下游。
   ldop::DynamicObjectArray buildOutput(const std_msgs::Header& header) const;

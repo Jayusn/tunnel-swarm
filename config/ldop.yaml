@@ -64,6 +64,7 @@ tracking_coasting_gate_relax_factor: 1.5  # 漏检轨迹重关联时的门限放
 tracking_box_size_smoothing_alpha: 0.5  # 目标尺寸指数平滑系数
 tracking_spawn_suppression_distance: 0.8  # 小球点簇中心抖动或短断帧后的回退关联距离；0 表示关闭
 tracking_spawn_suppression_iou_threshold: 0.2  # 回退关联的较宽松水平重叠阈值，适应小球点簇尺寸抖动；0 表示只使用距离
+tracking_duplicate_merge_distance: 0.45  # 同一目标碎片轨迹的三维中心合并距离；<=0 关闭
 tracking_default_dt: 0.1  # 时间戳异常时回退使用的预测时间步长（秒）
 tracking_max_dt: 0.5  # 预测时间步长上限（秒），防止大间隔导致发散
 

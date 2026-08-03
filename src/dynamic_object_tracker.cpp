@@ -135,6 +135,8 @@ DynamicObjectTrackerConfig buildTrackerConfig(const DynamicObjectTrackerParams& 
       params.spawn_suppression_distance > 0.0 ? params.spawn_suppression_distance : defaults.spawn_suppression_distance;
   config.spawn_suppression_iou_threshold = params.spawn_suppression_iou_threshold > 0.0
       ? std::min(params.spawn_suppression_iou_threshold, 1.0) : defaults.spawn_suppression_iou_threshold;
+  config.duplicate_merge_distance = params.duplicate_merge_distance > 0.0
+      ? params.duplicate_merge_distance : 0.0;
   config.max_dt = params.max_dt > 0.0 ? params.max_dt : defaults.max_dt;
   config.classification_start_frame = static_cast<std::size_t>(params.classification_start_frame > 0
       ? params.classification_start_frame : defaults.classification_start_frame);
@@ -700,6 +702,8 @@ void DynamicObjectTracker::loadParameters() {
   pnh_.param("tracking_box_size_smoothing_alpha", params_.box_size_smoothing_alpha, defaults.box_size_smoothing_alpha);
   pnh_.param("tracking_spawn_suppression_distance", params_.spawn_suppression_distance,  defaults.spawn_suppression_distance);
   pnh_.param("tracking_spawn_suppression_iou_threshold", params_.spawn_suppression_iou_threshold, defaults.spawn_suppression_iou_threshold);
+  pnh_.param("tracking_duplicate_merge_distance", params_.duplicate_merge_distance,
+             defaults.duplicate_merge_distance);
   pnh_.param("tracking_default_dt", params_.filter.default_dt, defaults.filter.default_dt);
   pnh_.param("tracking_max_dt", params_.max_dt, defaults.max_dt);
   pnh_.param("classification_start_frame", params_.classification_start_frame, defaults.classification_start_frame);
@@ -796,6 +800,7 @@ DynamicObjectTrackerFrameResult DynamicObjectTracker::processDynamicTracks(
     }
   }
 
+  mergeDuplicateTracks();
   deleteExpiredTracks();
   result.timing.update_tracks_ms = elapsedMs(update_tracks_start, std::chrono::steady_clock::now());
 
@@ -1042,6 +1047,56 @@ void DynamicObjectTracker::coastTrack(TrackState& track, const ros::Time& stamp)
   updateBBoxCenterFromFilter(track);
   // 漏检样本同样记录公共状态协方差；预测保活阶段的不确定性对后续调试和预测更关键。
   appendHistorySample(track, stamp, false, config_.max_history_size);
+}
+
+void DynamicObjectTracker::mergeDuplicateTracks() {
+  if (config_.duplicate_merge_distance <= 0.0 || tracks_.size() < 2U) {
+    return;
+  }
+
+  const auto is_preferred = [this](const TrackState& lhs, const TrackState& rhs) {
+    const bool lhs_publishable = lhs.hits >= config_.min_hits_to_publish;
+    const bool rhs_publishable = rhs.hits >= config_.min_hits_to_publish;
+    if (lhs_publishable != rhs_publishable) {
+      return lhs_publishable;
+    }
+    if (lhs.hits != rhs.hits) {
+      return lhs.hits > rhs.hits;
+    }
+    if (lhs.missed_frames != rhs.missed_frames) {
+      return lhs.missed_frames < rhs.missed_frames;
+    }
+    if (lhs.age != rhs.age) {
+      return lhs.age > rhs.age;
+    }
+    return lhs.id < rhs.id;
+  };
+
+  bool merged = true;
+  while (merged) {
+    merged = false;
+    for (std::size_t lhs_index = 0U;
+         lhs_index < tracks_.size() && !merged;
+         ++lhs_index) {
+      for (std::size_t rhs_index = lhs_index + 1U;
+           rhs_index < tracks_.size();
+           ++rhs_index) {
+        const double center_distance =
+            distance3D(tracks_[lhs_index].bbox.center, tracks_[rhs_index].bbox.center);
+        if (!(std::isfinite(center_distance) &&
+              center_distance <= config_.duplicate_merge_distance)) {
+          continue;
+        }
+
+        const std::size_t keep_index =
+            is_preferred(tracks_[lhs_index], tracks_[rhs_index]) ? lhs_index : rhs_index;
+        const std::size_t remove_index = keep_index == lhs_index ? rhs_index : lhs_index;
+        tracks_.erase(tracks_.begin() + static_cast<std::ptrdiff_t>(remove_index));
+        merged = true;
+        break;
+      }
+    }
+  }
 }
 
 void DynamicObjectTracker::deleteExpiredTracks() {
