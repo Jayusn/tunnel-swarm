@@ -1,11 +1,14 @@
 #include <ldop/ufomap_mapper.h>
 #include <ldop/utils.h>
 
+#include <Eigen/Dense>
+
 #include <algorithm>
 #include <cassert>
 #include <chrono>
 #include <cmath>
 #include <limits>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -307,6 +310,12 @@ UfomapMapperConfig buildUfomapConfig(const UfomapMapperParams& params) {
   config.ground_estimation_bin_size = params.ground_estimation_bin_size > 0.0
       ? params.ground_estimation_bin_size : defaults.ground_estimation_bin_size;
   config.ground_estimation_min_points = std::max(1, params.ground_estimation_min_points);
+  config.ground_estimation_candidate_band = params.ground_estimation_candidate_band > 0.0
+      ? params.ground_estimation_candidate_band : defaults.ground_estimation_candidate_band;
+  config.ground_estimation_inlier_threshold = params.ground_estimation_inlier_threshold > 0.0
+      ? params.ground_estimation_inlier_threshold : defaults.ground_estimation_inlier_threshold;
+  config.ground_estimation_max_slope = params.ground_estimation_max_slope > 0.0
+      ? params.ground_estimation_max_slope : defaults.ground_estimation_max_slope;
   config.warmup_frames = std::max(0, params.warmup_frames);
   config.temporal_motion_enabled = params.temporal_motion_enabled;
   config.temporal_match_distance = params.temporal_match_distance > 0.0
@@ -458,6 +467,12 @@ void UfomapMapper::loadParameters() {
              defaults.ground_estimation_bin_size);
   pnh_.param("ufomap_ground_estimation_min_points", params_.ground_estimation_min_points,
              defaults.ground_estimation_min_points);
+  pnh_.param("ufomap_ground_estimation_candidate_band", params_.ground_estimation_candidate_band,
+             defaults.ground_estimation_candidate_band);
+  pnh_.param("ufomap_ground_estimation_inlier_threshold", params_.ground_estimation_inlier_threshold,
+             defaults.ground_estimation_inlier_threshold);
+  pnh_.param("ufomap_ground_estimation_max_slope", params_.ground_estimation_max_slope,
+             defaults.ground_estimation_max_slope);
   pnh_.param("ufomap_warmup_frames", params_.warmup_frames, defaults.warmup_frames);
   pnh_.param("ufomap_temporal_motion_enabled", params_.temporal_motion_enabled,
              defaults.temporal_motion_enabled);
@@ -492,7 +507,7 @@ void UfomapMapper::configureUfomap() {
   // 该函数会在 clearMap() 后重建 runtime。
   ufomap_update_count_.store(0U);
   processed_frame_count_ = 0U;
-  ground_plane_z_.reset();
+  ground_plane_.reset();
   ground_plane_samples_.clear();
   ground_plane_locked_ = false;
   previous_frame_points_.clear();
@@ -535,7 +550,7 @@ const UfomapMapper::UfomapRuntime& UfomapMapper::runtimeLocked() const {
   return *runtime_;
 }
 
-std::optional<double> UfomapMapper::estimateGroundPlaneZ(
+std::optional<UfomapMapper::GroundPlaneModel> UfomapMapper::estimateGroundPlane(
     const UfomapPointCloud& points,
     const ufo::Point& sensor_origin) const {
   if (!config_.ground_filter_enabled || points.empty()) {
@@ -576,24 +591,140 @@ std::optional<double> UfomapMapper::estimateGroundPlaneZ(
   }
 
   const double best_bin_center = (static_cast<double>(best_bin) + 0.5) * bin_size;
-  std::vector<double> inlier_z_values;
-  inlier_z_values.reserve(best_count);
-  const double inlier_half_width = bin_size * 1.5;
+  struct GroundFitPoint {
+    double x{0.0};
+    double y{0.0};
+    double z{0.0};
+  };
+
+  std::vector<GroundFitPoint> candidates;
+  candidates.reserve(points.size());
+  const double candidate_half_width = config_.ground_estimation_candidate_band;
   for (const auto& point : points) {
     const double dx = static_cast<double>(point.x) - sensor_origin.x;
     const double dy = static_cast<double>(point.y) - sensor_origin.y;
     const double point_z = static_cast<double>(point.z);
     if (dx * dx + dy * dy > radius_sq || point_z < candidate_min_z ||
-        point_z > candidate_max_z || std::abs(point_z - best_bin_center) > inlier_half_width) {
+        point_z > candidate_max_z ||
+        std::abs(point_z - best_bin_center) > candidate_half_width) {
       continue;
     }
-    inlier_z_values.push_back(point_z);
+    candidates.push_back(GroundFitPoint{dx, dy, point_z});
   }
 
-  if (inlier_z_values.size() < static_cast<std::size_t>(config_.ground_estimation_min_points)) {
+  if (candidates.size() < static_cast<std::size_t>(config_.ground_estimation_min_points)) {
     return std::nullopt;
   }
-  return medianValue(std::move(inlier_z_values));
+
+  const double inlier_threshold = config_.ground_estimation_inlier_threshold;
+  const double max_slope = config_.ground_estimation_max_slope;
+
+  auto fitFromIndices = [&](const std::vector<std::size_t>& indices)
+      -> std::optional<GroundPlaneModel> {
+    if (indices.size() < 3U) {
+      return std::nullopt;
+    }
+
+    Eigen::Matrix3d normal = Eigen::Matrix3d::Zero();
+    Eigen::Vector3d rhs = Eigen::Vector3d::Zero();
+    for (const std::size_t index : indices) {
+      const GroundFitPoint& point = candidates[index];
+      const Eigen::Vector3d row(point.x, point.y, 1.0);
+      normal.noalias() += row * row.transpose();
+      rhs.noalias() += row * point.z;
+    }
+    const auto decomposition = normal.fullPivLu();
+    if (decomposition.rank() < 3) {
+      return std::nullopt;
+    }
+
+    const Eigen::Vector3d coefficients = decomposition.solve(rhs);
+    if (!coefficients.allFinite() ||
+        std::hypot(coefficients.x(), coefficients.y()) > max_slope) {
+      return std::nullopt;
+    }
+
+    GroundPlaneModel model;
+    model.slope_x = coefficients.x();
+    model.slope_y = coefficients.y();
+    model.intercept = coefficients.z() - model.slope_x * sensor_origin.x -
+                      model.slope_y * sensor_origin.y;
+    return model;
+  };
+
+  auto heightAtLocal = [&](const GroundPlaneModel& model,
+                           const GroundFitPoint& point) {
+    return model.heightAt(sensor_origin.x + point.x, sensor_origin.y + point.y);
+  };
+
+  std::mt19937 generator(static_cast<std::uint32_t>(candidates.size() * 2654435761U));
+  std::uniform_int_distribution<std::size_t> distribution(0U, candidates.size() - 1U);
+  constexpr std::size_t kRansacIterations = 160U;
+  std::vector<std::size_t> best_inliers;
+  double best_squared_error = std::numeric_limits<double>::infinity();
+
+  for (std::size_t iteration = 0U; iteration < kRansacIterations; ++iteration) {
+    const std::size_t first = distribution(generator);
+    std::size_t second = distribution(generator);
+    std::size_t third = distribution(generator);
+    if (first == second || first == third || second == third) {
+      continue;
+    }
+
+    const std::vector<std::size_t> sample_indices{first, second, third};
+    const std::optional<GroundPlaneModel> model = fitFromIndices(sample_indices);
+    if (!model.has_value()) {
+      continue;
+    }
+
+    std::vector<std::size_t> inliers;
+    inliers.reserve(candidates.size());
+    double squared_error = 0.0;
+    for (std::size_t index = 0U; index < candidates.size(); ++index) {
+      const double residual = candidates[index].z - heightAtLocal(*model, candidates[index]);
+      if (std::abs(residual) <= inlier_threshold) {
+        inliers.push_back(index);
+        squared_error += residual * residual;
+      }
+    }
+
+    if (inliers.size() > best_inliers.size() ||
+        (inliers.size() == best_inliers.size() && squared_error < best_squared_error)) {
+      best_inliers = std::move(inliers);
+      best_squared_error = squared_error;
+    }
+  }
+
+  if (best_inliers.size() < static_cast<std::size_t>(config_.ground_estimation_min_points)) {
+    return std::nullopt;
+  }
+
+  std::optional<GroundPlaneModel> refined_model = fitFromIndices(best_inliers);
+  if (!refined_model.has_value()) {
+    return std::nullopt;
+  }
+
+  for (int refinement = 0; refinement < 2; ++refinement) {
+    std::vector<std::size_t> refined_inliers;
+    refined_inliers.reserve(best_inliers.size());
+    for (std::size_t index = 0U; index < candidates.size(); ++index) {
+      const double residual = candidates[index].z -
+                              heightAtLocal(*refined_model, candidates[index]);
+      if (std::abs(residual) <= inlier_threshold) {
+        refined_inliers.push_back(index);
+      }
+    }
+    if (refined_inliers.size() <
+        static_cast<std::size_t>(config_.ground_estimation_min_points)) {
+      return std::nullopt;
+    }
+    refined_model = fitFromIndices(refined_inliers);
+    if (!refined_model.has_value()) {
+      return std::nullopt;
+    }
+  }
+
+  return refined_model;
 }
 
 void UfomapMapper::updateGroundPlane(const UfomapPointCloud& points,
@@ -602,13 +733,14 @@ void UfomapMapper::updateGroundPlane(const UfomapPointCloud& points,
     return;
   }
 
-  const std::optional<double> sample = estimateGroundPlaneZ(points, sensor_origin);
+  const std::optional<GroundPlaneModel> sample = estimateGroundPlane(points, sensor_origin);
   if (!sample.has_value()) {
     return;
   }
 
-  if (ground_plane_z_.has_value() &&
-      std::abs(*sample - *ground_plane_z_) > 0.25) {
+  if (ground_plane_.has_value() &&
+      std::abs(sample->heightAt(sensor_origin.x, sensor_origin.y) -
+               ground_plane_->heightAt(sensor_origin.x, sensor_origin.y)) > 0.25) {
     return;
   }
 
@@ -617,26 +749,52 @@ void UfomapMapper::updateGroundPlane(const UfomapPointCloud& points,
       static_cast<std::size_t>(config_.ground_estimation_frames)) {
     ground_plane_samples_.erase(ground_plane_samples_.begin());
   }
-  ground_plane_z_ = medianValue(ground_plane_samples_);
+  ground_plane_ = GroundPlaneModel{
+      medianValue([&]() {
+        std::vector<double> values;
+        values.reserve(ground_plane_samples_.size());
+        for (const auto& plane : ground_plane_samples_) {
+          values.push_back(plane.slope_x);
+        }
+        return values;
+      }()),
+      medianValue([&]() {
+        std::vector<double> values;
+        values.reserve(ground_plane_samples_.size());
+        for (const auto& plane : ground_plane_samples_) {
+          values.push_back(plane.slope_y);
+        }
+        return values;
+      }()),
+      medianValue([&]() {
+        std::vector<double> values;
+        values.reserve(ground_plane_samples_.size());
+        for (const auto& plane : ground_plane_samples_) {
+          values.push_back(plane.intercept);
+        }
+        return values;
+      }())};
   if (ground_plane_samples_.size() >=
       static_cast<std::size_t>(config_.ground_estimation_frames)) {
     ground_plane_locked_ = true;
-    ROS_INFO_STREAM("Ground plane locked at z=" << *ground_plane_z_
+    ROS_INFO_STREAM("Ground plane locked: z=" << ground_plane_->slope_x << "*x + "
+                    << ground_plane_->slope_y << "*y + " << ground_plane_->intercept
                     << " using " << ground_plane_samples_.size() << " frames");
   }
 }
 
 UfomapMapper::UfomapPointCloud UfomapMapper::filterGroundPoints(
     const UfomapPointCloud& points) const {
-  if (!config_.ground_filter_enabled || !ground_plane_z_.has_value()) {
+  if (!config_.ground_filter_enabled || !ground_plane_.has_value()) {
     return points;
   }
 
   UfomapPointCloud filtered_points;
   filtered_points.reserve(points.size());
   for (const auto& point : points) {
-    // 只删除地面及以下的点；地面以上的点全部保留，不使用对称高度带。
-    if (static_cast<double>(point.z) > *ground_plane_z_) {
+    // 只删除拟合地面及以下的点；地面以上的点全部保留，不使用对称高度带。
+    const double ground_height = ground_plane_->heightAt(point.x, point.y);
+    if (static_cast<double>(point.z) > ground_height) {
       filtered_points.push_back(point);
     }
   }
@@ -972,8 +1130,16 @@ UfomapFrameResult UfomapMapper::processInputCloud(const sensor_msgs::PointCloud2
     result.runtime_stats.node_count = runtimeLocked().map.numNodes();
   }
   result.runtime_stats.processed_frame_count = processed_frame_count_;
-  result.runtime_stats.ground_plane_ready = ground_plane_z_.has_value();
-  result.runtime_stats.ground_plane_z = ground_plane_z_.value_or(0.0);
+  result.runtime_stats.ground_plane_ready = ground_plane_.has_value();
+  result.runtime_stats.ground_plane_z = ground_plane_.has_value()
+                                            ? ground_plane_->intercept
+                                            : 0.0;
+  result.runtime_stats.ground_plane_slope_x = ground_plane_.has_value()
+                                                 ? ground_plane_->slope_x
+                                                 : 0.0;
+  result.runtime_stats.ground_plane_slope_y = ground_plane_.has_value()
+                                                 ? ground_plane_->slope_y
+                                                 : 0.0;
   result.runtime_stats.warmup_ready = warmup_ready;
   result.runtime_stats.temporal_motion_point_count = temporal_motion_indices.size();
 
@@ -1003,9 +1169,13 @@ UfomapFrameResult UfomapMapper::processInputCloud(const sensor_msgs::PointCloud2
                                       << formatFloatMs(
                                               result.timing.classify_current_frame_ms)
                                       << "ms"
-                                      << ", groundZ="
-                                      << (ground_plane_z_.has_value()
-                                              ? std::to_string(*ground_plane_z_)
+                                      << ", groundPlane="
+                                      << (ground_plane_.has_value()
+                                              ? (std::to_string(ground_plane_->slope_x) +
+                                                 "*x+" +
+                                                 std::to_string(ground_plane_->slope_y) +
+                                                 "*y+" +
+                                                 std::to_string(ground_plane_->intercept))
                                               : std::string("unknown"))
                                       << ", temporalMotionPoints="
                                       << temporal_motion_indices.size()

@@ -39,6 +39,9 @@ struct UfomapMapperConfig {
   double ground_estimation_radius{4.0};
   double ground_estimation_bin_size{0.02};
   int ground_estimation_min_points{100};
+  double ground_estimation_candidate_band{0.25};
+  double ground_estimation_inlier_threshold{0.04};
+  double ground_estimation_max_slope{0.35};
   int warmup_frames{30};
   bool temporal_motion_enabled{true};
   double temporal_match_distance{0.10};
@@ -70,6 +73,9 @@ struct UfomapMapperParams {
   double ground_estimation_radius{4.0};
   double ground_estimation_bin_size{0.02};
   int ground_estimation_min_points{100};
+  double ground_estimation_candidate_band{0.25};
+  double ground_estimation_inlier_threshold{0.04};
+  double ground_estimation_max_slope{0.35};
   int warmup_frames{30};
   bool temporal_motion_enabled{true};
   double temporal_match_distance{0.10};
@@ -105,6 +111,8 @@ struct UfomapRuntimeStats {
   std::uint64_t processed_frame_count{0};
   bool ground_plane_ready{false};
   double ground_plane_z{0.0};
+  double ground_plane_slope_x{0.0};
+  double ground_plane_slope_y{0.0};
   bool warmup_ready{false};
   std::size_t temporal_motion_point_count{0};
 };
@@ -253,13 +261,24 @@ class UfomapMapper {
   struct UfomapRuntime;
   using UfomapPointCloud = std::vector<ufo::CloudElement<ufo::Point>>;
 
+  struct GroundPlaneModel {
+    double slope_x{0.0};
+    double slope_y{0.0};
+    double intercept{0.0};
+
+    double heightAt(const double x, const double y) const {
+      return slope_x * x + slope_y * y + intercept;
+    }
+  };
+
   void loadParameters();
   void configureUfomap();
   // 调用方需先持有地图读锁或写锁；当前实现中 runtime_ 在对象存活期内应始终有效。
   UfomapRuntime& runtimeLocked();
   const UfomapRuntime& runtimeLocked() const;
-  std::optional<double> estimateGroundPlaneZ(const UfomapPointCloud& points,
-                                              const ufo::Point& sensor_origin) const;
+  std::optional<GroundPlaneModel> estimateGroundPlane(
+      const UfomapPointCloud& points,
+      const ufo::Point& sensor_origin) const;
   void updateGroundPlane(const UfomapPointCloud& points, const ufo::Point& sensor_origin);
   UfomapPointCloud filterGroundPoints(const UfomapPointCloud& points) const;
   std::vector<std::size_t> detectTemporalMotion(const UfomapPointCloud& points);
@@ -280,8 +299,8 @@ class UfomapMapper {
 
   std::unique_ptr<UfomapRuntime> runtime_;
   std::uint64_t processed_frame_count_{0U};
-  std::optional<double> ground_plane_z_;
-  std::vector<double> ground_plane_samples_;
+  std::optional<GroundPlaneModel> ground_plane_;
+  std::vector<GroundPlaneModel> ground_plane_samples_;
   bool ground_plane_locked_{false};
   std::vector<ufo::Point> previous_frame_points_;
 };

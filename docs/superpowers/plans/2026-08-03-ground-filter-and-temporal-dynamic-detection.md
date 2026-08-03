@@ -4,7 +4,7 @@
 
 **Goal:** 在不新增依赖的前提下，为 LDOP 增加地面平面内点滤波、预热状态、跨帧运动候选和动态地图积分保护。
 
-**Architecture:** 继续以 `UfomapMapper::processInputCloud()` 作为预处理和地图边界。输入点先经过有限值、距离、3 米天花板和水平地面平面过滤；随后同时运行现有 `seenFree` 分类与上一帧邻域运动检测，合并为当前帧动态掩码。只有掩码之外的点写入 UFOMap，最终动态候选继续交给现有 clusterer/tracker。
+**Architecture:** 继续以 `UfomapMapper::processInputCloud()` 作为预处理和地图边界。输入点先经过有限值、距离、2.5 米天花板和倾斜地面平面过滤；随后同时运行现有 `seenFree` 分类与上一帧邻域运动检测，合并为当前帧动态掩码。只有掩码之外的点写入 UFOMap，最终动态候选继续交给现有 clusterer/tracker。
 
 **Tech Stack:** ROS Noetic, C++20, UFOMap, `sensor_msgs::PointCloud2`, 现有 LDOP clusterer/tracker；不新增 PCL 或其他依赖。
 
@@ -14,7 +14,7 @@
 - 每次源代码或配置修改必须同步本地与远程。
 - Git 提交备注使用中文。
 - 用户明确不要求自动化测试；以远程编译和手动启动观察作为验证。
-- 保留 `ufomap_input_max_z=3.0` 且代码采用严格 `point.z < input_max_z`。
+- 保留 `ufomap_input_max_z=2.5` 且代码采用严格 `point.z < input_max_z`。
 
 ---
 
@@ -26,25 +26,25 @@
 
 **Interfaces:**
 - `UfomapMapperParams`/`UfomapMapperConfig` 提供地面估计、单侧地面截止、预热、跨帧匹配和搜索半径参数。
-- `UfomapMapper` 保存已处理帧数、锁定的地面高度、地面样本和上一帧预处理点。
+- `UfomapMapper` 保存已处理帧数、锁定的地面平面参数、地面样本和上一帧预处理点。
 
-- [ ] 在头文件中加入地面参数：`ground_filter_enabled`、`ground_estimation_frames`、`ground_estimation_radius`、`ground_estimation_bin_size`、`ground_estimation_min_points`。
+- [ ] 在头文件中加入地面参数：`ground_filter_enabled`、`ground_estimation_frames`、`ground_estimation_radius`、`ground_estimation_bin_size`、`ground_estimation_min_points`、候选带宽、内点阈值和最大坡度。
 - [ ] 加入动态预热和跨帧参数：`warmup_frames`、`temporal_motion_enabled`、`temporal_match_distance`、`temporal_search_radius`。
 - [ ] 加入 `dynamic_points` 和当前帧索引集合所需的分类结果字段，并保留现有 ROS 消息字段不变。
-- [ ] 在 YAML 中写入默认值和中文说明，保留 `ufomap_input_max_z: 3.0`。
+- [ ] 在 YAML 中写入默认值和中文说明，保留 `ufomap_input_max_z: 2.5`。
 
-### Task 2: 实现水平地面平面估计和滤波
+### Task 2: 实现倾斜地面平面估计和滤波
 
 **Files:**
 - Modify: `src/ufomap_mapper.cpp`
 
 **Interfaces:**
 - 在 `UfomapMapper` 内增加地面候选估计、样本锁定和点过滤的私有逻辑。
-- 地面判定只保留 `z > ground_z` 的点，不使用固定世界高度带或对称高度容差。
+- 地面判定只保留 `z > a*x + b*y + c` 的点，不使用固定世界高度带或对称高度容差。
 
-- [ ] 在有限值点和距离过滤之后，从传感器附近、传感器下方候选点的 Z 直方图中选取数量足够的地面峰值。
-- [ ] 通过连续样本中位数锁定地面高度，锁定后不被目标点短时变化覆盖。
-- [ ] 对点应用 `point.z <= ground_z` 的单侧地面过滤；估计未就绪时保留点并输出节流日志。
+- [ ] 在有限值点和距离过滤之后，从传感器附近、传感器下方候选点的 Z 直方图中选取数量足够的地面候选带。
+- [ ] 使用鲁棒平面拟合和连续样本中位数锁定 `a、b、c`，锁定后不被目标点短时变化覆盖。
+- [ ] 对点应用 `point.z <= a*x + b*y + c` 的单侧地面过滤；估计未就绪时保留点并输出节流日志。
 - [ ] 在 `clearMap()` 中同时清空地面状态、帧快照和帧计数。
 
 ### Task 3: 增加跨帧运动候选并保护静态地图
@@ -62,7 +62,7 @@
 - [ ] 预热期间更新快照但清空对外动态候选；预热结束后启用跨帧候选，继续让现有最小点数、聚类和跟踪确认生效。
 - [ ] 只积分非动态掩码点，避免动态候选污染 UFOMap。
 - [ ] 按最终掩码重建 `static_cloud_msg`、`dynamic_cloud_msg`、`static_points` 和 `dynamic_cluster_points`，确保 RViz 当前帧不会把运动候选继续显示为静态。
-- [ ] 在 verbose 日志中输出地面高度/就绪状态、预热状态和跨帧候选点数。
+- [ ] 在 verbose 日志中输出地面平面/就绪状态、预热状态和跨帧候选点数。
 
 ### Task 4: 编译、同步和运行核验
 
