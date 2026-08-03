@@ -14,7 +14,7 @@ verbose: false
 
 ufomap_resolution: 0.2  # 叶子体素尺寸
 ufomap_depth_levels: 16  # 八叉树层级规模
-ufomap_inflate_unknown: 1  # 按邻域膨胀d_p未知区域以容忍定位误差，单位为一个体素 
+ufomap_inflate_unknown: 2  # 按邻域膨胀d_p未知区域以容忍定位误差，单位为一个体素 
 ufomap_inflate_hits_dist: 0.4  # 沿射线扩展d_s命中区域以容忍测距噪声， 天花板/墙顶这种大平面在仿真雷达里容易被斜向射线、体素离散、测距噪声打出“边缘擦过”的情况。
 ufomap_inflate_unknown_compensation: true  # 是否补偿未知区域膨胀
 ufomap_ray_passthrough_hits: false  # 射线是否穿过命中点
