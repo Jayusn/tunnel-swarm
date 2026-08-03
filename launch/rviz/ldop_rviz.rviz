@@ -166,6 +166,7 @@ Visualization Manager:
       Name: DynamicTrackMarkers
       Namespaces:
         dynamic_track_head: true
+        dynamic_track_coast_bbox: true
         dynamic_track_history: false
         dynamic_track_label: true
       Queue Size: 10

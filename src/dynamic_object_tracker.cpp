@@ -2,6 +2,7 @@
 #include <ldop/utils.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <iomanip>
@@ -95,6 +96,36 @@ std::string makeTrackLabelText(const TrackState& track) {
       << "Class: " << objectClassDisplayName(track.object_class) << '\n'
       << "Speed: " << std::fixed << std::setprecision(2) << speed_mps << " m/s";
   return stream.str();
+}
+
+void appendTrackBoundingBoxEdges(const BoundingBox3D& bbox,
+                                 visualization_msgs::Marker& marker) {
+  const double half_x = bbox.size.x * 0.5;
+  const double half_y = bbox.size.y * 0.5;
+  const double half_z = bbox.size.z * 0.5;
+  const double min_x = bbox.center.x - half_x;
+  const double max_x = bbox.center.x + half_x;
+  const double min_y = bbox.center.y - half_y;
+  const double max_y = bbox.center.y + half_y;
+  const double min_z = bbox.center.z - half_z;
+  const double max_z = bbox.center.z + half_z;
+
+  const std::array<geometry_msgs::Point, 8> corners{
+      makePoint(min_x, min_y, min_z), makePoint(max_x, min_y, min_z),
+      makePoint(max_x, max_y, min_z), makePoint(min_x, max_y, min_z),
+      makePoint(min_x, min_y, max_z), makePoint(max_x, min_y, max_z),
+      makePoint(max_x, max_y, max_z), makePoint(min_x, max_y, max_z)};
+  constexpr std::array<std::array<std::size_t, 2>, 12> kEdges{{
+      {{0U, 1U}}, {{1U, 2U}}, {{2U, 3U}}, {{3U, 0U}},
+      {{4U, 5U}}, {{5U, 6U}}, {{6U, 7U}}, {{7U, 4U}},
+      {{0U, 4U}}, {{1U, 5U}}, {{2U, 6U}}, {{3U, 7U}},
+  }};
+
+  marker.points.reserve(kEdges.size() * 2U);
+  for (const auto& edge : kEdges) {
+    marker.points.push_back(corners[edge[0]]);
+    marker.points.push_back(corners[edge[1]]);
+  }
 }
 
 double chiSquare3DThresholdFromConfidence(const double confidence) {
@@ -886,6 +917,23 @@ visualization_msgs::MarkerArray DynamicObjectTracker::buildTrackMarkers(
     head_marker.scale.z = 0.18;
     head_marker.color = color;
     markers.markers.push_back(std::move(head_marker));
+
+    if (coasting) {
+      visualization_msgs::Marker coast_box_marker;
+      coast_box_marker.header = header;
+      coast_box_marker.ns = "dynamic_track_coast_bbox";
+      coast_box_marker.id = static_cast<int>(track.id);
+      coast_box_marker.type = visualization_msgs::Marker::LINE_LIST;
+      coast_box_marker.action = visualization_msgs::Marker::ADD;
+      coast_box_marker.pose.orientation.w = 1.0;
+      coast_box_marker.scale.x = 0.07;
+      coast_box_marker.color.r = 0.10F;
+      coast_box_marker.color.g = 0.90F;
+      coast_box_marker.color.b = 1.0F;
+      coast_box_marker.color.a = 0.85F;
+      appendTrackBoundingBoxEdges(track.bbox, coast_box_marker);
+      markers.markers.push_back(std::move(coast_box_marker));
+    }
 
     visualization_msgs::Marker label_marker;
     label_marker.header = header;
