@@ -33,6 +33,7 @@ struct UfomapMapperConfig {
   int depth_levels{16};
   double min_range{0.5};
   double max_range{10.0};
+  double input_max_z{-1.0};
   int insert_hit_depth{0};
   int insert_miss_depth{0};
   int ray_casting_depth{0};
@@ -52,6 +53,7 @@ struct UfomapMapperConfig {
 };
 
 struct UfomapMapperParams {
+  double input_max_z{-1.0};
   double resolution{0.2};             // 大于0.0，叶子体素尺寸
   int depth_levels{16};               // [2, 20]，由UFOMAP自身限制范围，八叉树层级规模    
   double min_range{0.5};              // 大于等于0.0，积分和查询的最小范围 

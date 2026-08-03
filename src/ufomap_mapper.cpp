@@ -217,6 +217,7 @@ UfomapMapperConfig buildUfomapConfig(const UfomapMapperParams& params) {
     // max_range 依赖已收束的 min_range；默认最大距离仍越界时退回 -1 的无上限语义。
     config.max_range = defaults.max_range > config.min_range ? defaults.max_range : -1.0;
   }
+  config.input_max_z = params.input_max_z > 0.0 ? params.input_max_z : defaults.input_max_z;
   config.num_threads = std::max(0, params.num_threads);
   config.only_valid = params.only_valid;
   config.inflate_unknown = std::max(0, params.inflate_unknown);
@@ -328,7 +329,8 @@ UfomapMapper::UfomapMapper(ros::NodeHandle& nh,
   ROS_INFO_STREAM("UFOMap module is ready. resolution: " << config_.resolution
                   << ", depth levels: " << config_.depth_levels
                   << ", min range: " << config_.min_range
-                  << ", max range: " << config_.max_range);
+                  << ", max range: " << config_.max_range
+                  << ", input max z: " << config_.input_max_z);
 }
 
 UfomapMapper::~UfomapMapper() = default;
@@ -340,6 +342,7 @@ void UfomapMapper::loadParameters() {
   pnh_.param("ufomap_depth_levels", params_.depth_levels, defaults.depth_levels);
   pnh_.param("ufomap_min_range", params_.min_range, defaults.min_range);
   pnh_.param("ufomap_max_range", params_.max_range, defaults.max_range);
+  pnh_.param("ufomap_input_max_z", params_.input_max_z, defaults.input_max_z);
   pnh_.param("ufomap_insert_hit_depth", params_.insert_hit_depth, defaults.insert_hit_depth);
   pnh_.param("ufomap_insert_miss_depth", params_.insert_miss_depth, defaults.insert_miss_depth);
   pnh_.param("ufomap_ray_casting_depth", params_.ray_casting_depth, defaults.ray_casting_depth);
@@ -430,12 +433,25 @@ UfomapFrameResult UfomapMapper::processInputCloud(const sensor_msgs::PointCloud2
 
   const auto classify_current_start = std::chrono::steady_clock::now();
   // 当前帧输出只关心配置工作半径内的点，避免对远处点做无意义的 seenFree 查询。
-  const ufo::PointCloud* output_points = &extracted.points;
+  const ufo::PointCloud* input_points = &extracted.points;
+  ufo::PointCloud filtered_input_points;
+  if (config_.input_max_z > 0.0) {
+    filtered_input_points.reserve(extracted.points.size());
+    const float input_max_z = static_cast<float>(config_.input_max_z);
+    for (const auto& point : extracted.points) {
+      if (point.z <= input_max_z) {
+        filtered_input_points.push_back(point);
+      }
+    }
+    input_points = &filtered_input_points;
+  }
+
+  const ufo::PointCloud* output_points = input_points;
   ufo::PointCloud filtered_output_points;
   if (config_.max_range > 0.0) {
     const float max_range_sq = static_cast<float>(config_.max_range * config_.max_range);
-    filtered_output_points.reserve(extracted.points.size());
-    for (const auto& point : extracted.points) {
+    filtered_output_points.reserve(input_points->size());
+    for (const auto& point : *input_points) {
       if (sensor_origin.squaredDistance(point) <= max_range_sq) {
         filtered_output_points.push_back(point);
       }
@@ -456,11 +472,11 @@ UfomapFrameResult UfomapMapper::processInputCloud(const sensor_msgs::PointCloud2
   result.dynamic_cloud_msg = result.classification.dynamic_cloud_msg;
 
   const auto update_start = std::chrono::steady_clock::now();
-  if (!extracted.points.empty()) {
+  if (!input_points->empty()) {
     std::unique_lock<std::shared_mutex> lock(map_mutex_);
     auto& runtime = runtimeLocked();
     // 积分与统计更新在同一把锁内，保证 frame_result 与地图状态一致。
-    ufo::insertPointCloud(runtime.map, extracted.points, sensor_origin,
+    ufo::insertPointCloud(runtime.map, *input_points, sensor_origin,
                           runtime.integration_params,
                           runtime.integration_params.propagate);
 
