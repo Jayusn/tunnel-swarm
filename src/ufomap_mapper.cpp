@@ -5,10 +5,10 @@
 #include <cassert>
 #include <chrono>
 #include <cmath>
-#include <future>
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 #include <utility>
 
 #include <geometry_msgs/Point.h>
@@ -79,6 +79,7 @@ sensor_msgs::PointCloud2 buildCloudFromPoints(const std_msgs::Header& header,
 
 StaticMapVisualizationSnapshot captureStaticMapVisualizationSnapshot(
     const DufomapMapType& map,
+    const std::vector<ufo::Point>& static_points,
     const double max_visualization_z) {
   const int max_depth = static_cast<int>(map.depthLevels());
   StaticMapVisualizationSnapshot snapshot;
@@ -89,24 +90,31 @@ StaticMapVisualizationSnapshot captureStaticMapVisualizationSnapshot(
         map.size(static_cast<ufo::depth_t>(depth));
   }
 
-  // 用 Leaf && HitsMin 先做树级剪枝，再在叶子层手动过滤 seenFree。
-  // 原因：!SeenFree 的 InnerCheck 会参与内部节点剪枝；在 seenFree 传播不完全时，
-  // 可能提前剪掉仍含有 !seenFree 叶子的分支，导致 RViz 看不到体素。
-  for (const auto node : map.query(ufo::pred::Leaf() && ufo::pred::HitsMin(1))) {
-    if (map.seenFree(node)) {
+  std::vector<std::unordered_set<ufo::code_t>> seen_codes_by_depth(
+      snapshot.points_by_depth.size());
+  for (const auto& point : static_points) {
+    if (max_visualization_z > 0.0 && point.z > max_visualization_z) {
       continue;
     }
 
-    const int depth = static_cast<int>(node.depth());
+    const auto code = map.toCodeChecked(point, 0);
+    if (!code.has_value()) {
+      continue;
+    }
+
+    const ufo::Key key = *code;
+    const int depth = static_cast<int>(key.depth());
     if (depth < 0 || depth > max_depth) {
       continue;
     }
 
+    if (!seen_codes_by_depth[static_cast<std::size_t>(depth)].insert(code->raw()).second) {
+      continue;
+    }
+
     geometry_msgs::Point center;
-    const auto node_center = map.center(node);
-    // 虚拟天花板等高处体素仍保留在 UFOMap 中；
-    // 这里只在最终 RViz marker 层隐藏超过上限的方块。
-    if (node_center.z > max_visualization_z) {
+    const auto node_center = map.toCoord(*code);
+    if (max_visualization_z > 0.0 && node_center.z > max_visualization_z) {
       continue;
     }
     center.x = node_center.x;
@@ -122,6 +130,11 @@ visualization_msgs::MarkerArray buildStaticMapVisualization(
     const std_msgs::Header& header,
     StaticMapVisualizationSnapshot snapshot) {
   visualization_msgs::MarkerArray static_map_markers;
+  visualization_msgs::Marker clear_marker;
+  clear_marker.header = header;
+  clear_marker.action = visualization_msgs::Marker::DELETEALL;
+  static_map_markers.markers.push_back(std::move(clear_marker));
+
   std::vector<visualization_msgs::Marker> markers_by_depth(snapshot.points_by_depth.size());
   for (std::size_t depth = 0; depth < markers_by_depth.size(); ++depth) {
     auto& marker = markers_by_depth[depth];
@@ -148,7 +161,7 @@ visualization_msgs::MarkerArray buildStaticMapVisualization(
     marker.points = std::move(snapshot.points_by_depth[depth]);
   }
 
-  static_map_markers.markers.reserve(markers_by_depth.size());
+  static_map_markers.markers.reserve(markers_by_depth.size() + 1U);
   for (auto& marker : markers_by_depth) {
     static_map_markers.markers.push_back(std::move(marker));
   }
@@ -416,21 +429,6 @@ UfomapFrameResult UfomapMapper::processInputCloud(const sensor_msgs::PointCloud2
   const ufo::Point sensor_origin(static_cast<float>(odom_msg.pose.pose.position.x),
                                 static_cast<float>(odom_msg.pose.pose.position.y),
                                 static_cast<float>(odom_msg.pose.pose.position.z));
-  // 先从更新前地图提取轻量可视化快照；允许 RViz 迟一帧，但避免当前帧积分污染分类。
-  // 这里把 UFOMap 树遍历放进短读锁里，MarkerArray 组装则留到锁外执行。
-  const double static_map_visualization_max_z = config_.static_map_visualization_max_z;
-  auto static_map_markers_future =
-      std::async(std::launch::async, [this, header = cloud_msg.header, static_map_visualization_max_z] {
-        StaticMapVisualizationSnapshot snapshot;
-        {
-          // 异步线程只在抓取旧地图快照时持有读锁，避免整段 marker 构建阻塞写入。
-          std::shared_lock<std::shared_mutex> lock(map_mutex_);
-          snapshot = captureStaticMapVisualizationSnapshot(
-              runtimeLocked().map, static_map_visualization_max_z);
-        }
-        return buildStaticMapVisualization(header, std::move(snapshot));
-      });
-
   const auto classify_current_start = std::chrono::steady_clock::now();
   // 当前帧输出只关心配置工作半径内的点，避免对远处点做无意义的 seenFree 查询。
   const ufo::PointCloud* input_points = &extracted.points;
@@ -467,7 +465,7 @@ UfomapFrameResult UfomapMapper::processInputCloud(const sensor_msgs::PointCloud2
     result.classification.static_cloud_msg.is_dense = false;
     result.classification.dynamic_cloud_msg.is_dense = false;
   }
-  // 当前阶段主流程只输出当前帧静态/动态点云，静态体素地图则在本函数内异步构建后随结果返回。
+  // 当前阶段主流程输出当前帧静态/动态点云；静态体素 marker 在地图更新后按当前帧静态点生成。
   result.static_map_cloud_msg = result.classification.static_cloud_msg;
   result.dynamic_cloud_msg = result.classification.dynamic_cloud_msg;
 
@@ -486,8 +484,19 @@ UfomapFrameResult UfomapMapper::processInputCloud(const sensor_msgs::PointCloud2
   }
   const auto update_end = std::chrono::steady_clock::now();
   result.timing.update_ufomap_ms = elapsedMs(update_start, update_end);
-  // updateUfomap 统计完成后，再回收锁外组装完成的旧地图 marker 结果。
-  result.static_map_markers = static_map_markers_future.get();
+
+  const double static_map_visualization_max_z = config_.static_map_visualization_max_z;
+  StaticMapVisualizationSnapshot static_map_snapshot;
+  {
+    // 只读取当前帧静态点对应的体素编码，不遍历持久化地图中的历史占据体素。
+    std::shared_lock<std::shared_mutex> lock(map_mutex_);
+    static_map_snapshot = captureStaticMapVisualizationSnapshot(
+        runtimeLocked().map,
+        result.classification.static_points,
+        static_map_visualization_max_z);
+  }
+  result.static_map_markers = buildStaticMapVisualization(
+      cloud_msg.header, std::move(static_map_snapshot));
 
   result.timing.process_input_cloud_ms = elapsedMs(total_start, std::chrono::steady_clock::now());
   if (verbose_) {
@@ -625,6 +634,10 @@ UfomapClassificationResult UfomapMapper::classifyPoints(
 
   result.static_point_count = static_points.size();
   result.dynamic_point_count = dynamic_points.size();
+  result.static_points.reserve(static_points.size());
+  for (const auto& point : static_points) {
+    result.static_points.emplace_back(point.x, point.y, point.z);
+  }
   result.static_cloud_msg = buildCloudFromPoints(header, static_points);
   result.dynamic_cloud_msg = buildCloudFromPoints(header, dynamic_points);
   return result;

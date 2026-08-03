@@ -89,7 +89,7 @@
 1. `/ldop/static_cloud` 发布当前帧静态点云
 2. `/ldop/dynamic_cloud` 发布当前帧动态点云
 3. `UfomapMapper` 维护 UFOMap，并基于 `seenFree(point)` 完成当前帧动静态判别
-4. `/ldop/static_map_markers` 输出静态体素地图 RViz 可视化
+4. `/ldop/static_map_markers` 输出当前帧静态体素 RViz 可视化；UFOMap 持久化地图仍由内部模块维护
 
 第二阶段“动态点云聚类、检测与跟踪”也已经完成：
 

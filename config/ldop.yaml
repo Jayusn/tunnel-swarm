@@ -8,7 +8,7 @@ dynamic_object_markers_topic: /ldop/dynamic_object_markers  # 当前帧动态目
 dynamic_track_markers_topic: /ldop/dynamic_track_markers  # 跨帧动态目标轨迹 MarkerArray 输出
 dynamic_predictions_topic: /ldop/dynamic_object_predictions  # 动态目标轨迹预测输出
 dynamic_prediction_markers_topic: /ldop/dynamic_prediction_markers  # 动态目标轨迹预测 MarkerArray 输出
-static_map_markers_topic: /ldop/static_map_markers  # 静态体素地图 MarkerArray 输出
+static_map_markers_topic: /ldop/static_map_markers  # 当前帧静态体素可视化 MarkerArray 输出
 static_map_visualization_max_z: 3.0  # 仅限制静态体素地图RViz可视化高度，不改变UFOMap地图内容
 verbose: false  
 

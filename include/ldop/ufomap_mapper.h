@@ -112,6 +112,8 @@ struct UfomapClassificationResult {
   // 当前在 LDOP 主流程中分别用于“当前帧静态点云 / 当前帧动态点云”。
   sensor_msgs::PointCloud2 static_cloud_msg;
   sensor_msgs::PointCloud2 dynamic_cloud_msg;
+  // Current-frame static points for transient voxel visualization; not persistent UFOMap data.
+  std::vector<ufo::Point> static_points;
   // 当前帧动态点的结构化聚类输入；不改变 dynamic_cloud_msg 的 ROS 输出语义。
   std::vector<UfomapDynamicClusterPoint> dynamic_cluster_points;
   std::size_t static_point_count{0};
