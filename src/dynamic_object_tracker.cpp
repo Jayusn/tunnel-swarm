@@ -116,6 +116,12 @@ DynamicObjectTrackerConfig buildTrackerConfig(const DynamicObjectTrackerParams& 
       static_cast<std::size_t>(params.history_size > 0 ? params.history_size : defaults.history_size);
   config.max_coast_frames =
       static_cast<std::size_t>(params.max_missed_frames > 0 ? params.max_missed_frames : defaults.max_missed_frames);
+  const int requested_publish_missed_frames =
+      params.max_publish_missed_frames >= 0
+          ? params.max_publish_missed_frames
+          : defaults.max_publish_missed_frames;
+  config.max_publish_missed_frames = std::min(
+      static_cast<std::size_t>(requested_publish_missed_frames), config.max_coast_frames);
   const std::size_t requested_min_hits =
       static_cast<std::size_t>(params.min_hits_to_publish > 0 ? params.min_hits_to_publish : defaults.min_hits_to_publish);
   const std::size_t max_publish_hits = config.max_history_size > 1U ? config.max_history_size - 1U : 1U;
@@ -686,6 +692,8 @@ void DynamicObjectTracker::loadParameters() {
   const DynamicObjectTrackerParams defaults;
   pnh_.param("tracking_history_size", params_.history_size, defaults.history_size);
   pnh_.param("tracking_max_missed_frames", params_.max_missed_frames, defaults.max_missed_frames);
+  pnh_.param("tracking_max_publish_missed_frames", params_.max_publish_missed_frames,
+             defaults.max_publish_missed_frames);
   pnh_.param("tracking_min_hits_to_publish", params_.min_hits_to_publish, defaults.min_hits_to_publish);
   pnh_.param("tracking_association_gate_confidence", params_.association_gate_confidence, defaults.association_gate_confidence);
   pnh_.param("tracking_coasting_gate_relax_factor", params_.coasting_gate_relax_factor, defaults.coasting_gate_relax_factor);
@@ -1061,8 +1069,9 @@ ldop::DynamicObjectArray DynamicObjectTracker::buildOutput(const std_msgs::Heade
 
   object_array.objects.reserve(ordered_tracks.size());
   for (const TrackState* track : ordered_tracks) {
-    // hits 阈值用于过滤只出现一两帧的候选轨迹，降低对外输出抖动。
-    if (track->hits < config_.min_hits_to_publish) {
+    // hits 阈值过滤短轨迹，漏检帧阈值限制对外预测保活时长。
+    if (track->hits < config_.min_hits_to_publish ||
+        track->missed_frames > config_.max_publish_missed_frames) {
       continue;
     }
     ldop::DynamicObject object;
@@ -1105,7 +1114,8 @@ std::vector<TrackPredictionInput> DynamicObjectTracker::buildPredictionInputs(
 
   for (const TrackState* track : ordered_tracks) {
     // 与 DynamicObjectArray 保持同一稳定轨迹过滤策略，避免 predictor 以后把临时噪声当作真实目标。
-    if (track->hits < config_.min_hits_to_publish) {
+    if (track->hits < config_.min_hits_to_publish ||
+        track->missed_frames > config_.max_publish_missed_frames) {
       continue;
     }
 

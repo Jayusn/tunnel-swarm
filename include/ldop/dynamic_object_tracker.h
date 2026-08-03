@@ -58,6 +58,8 @@ struct DynamicObjectTrackerConfig {
   double max_dt{0.5};
   double invalid_cost{1e9}; // 数据关联中表示无效匹配的成本值，必须大于 gate 阈值。
   std::size_t max_coast_frames{5U};
+  // 内部轨迹比对外发布多保留一段时间，用于目标短时断帧后恢复原 ID。
+  std::size_t max_publish_missed_frames{5U};
   std::size_t max_history_size{100U};
   std::size_t min_hits_to_publish{2U};
   std::size_t classification_start_frame{10U};
@@ -76,7 +78,8 @@ struct DynamicObjectTrackerConfig {
 // ROS 参数读取后的原始参数快照；默认值集中写在这里，运行时配置再由 tracker 构建。
 struct DynamicObjectTrackerParams {
   int history_size{100};                                // 大于0
-  int max_missed_frames{5};                             // 大于0
+  int max_missed_frames{15};                            // 大于0，内部轨迹保留帧数
+  int max_publish_missed_frames{5};                     // 大于等于0，对外保留预测目标的最多漏检帧数
   int min_hits_to_publish{2};                           // 大于0，且小于 history_size，轨迹发布的最小匹配次数
   double association_gate_confidence{0.7};              // (0,1) ，且由卡方分布分位数转换为门限值，不能直接等同于门限值。
   double coasting_gate_relax_factor{1.5};               // >=1.0

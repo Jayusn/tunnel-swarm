@@ -56,13 +56,14 @@ dynamic_cluster_vertical_merge_min_xy_overlap_ratio: 0.5  # 水平投影有面�
 
 # 动态目标跟踪参数
 tracking_history_size: 100  # 每条轨迹保留的历史样本数上限（位置、速度、公共状态协方差和匹配状态）
-tracking_max_missed_frames: 5  # 连续漏检超过该帧数后删除轨迹
+tracking_max_missed_frames: 15  # 连续漏检超过该帧数后删除内部轨迹
+tracking_max_publish_missed_frames: 5  # 对外最多保留预测目标5帧，避免短断帧换ID又避免目标离开后长期残留
 tracking_min_hits_to_publish: 2  # 轨迹至少命中该次数后才对外发布
 tracking_association_gate_confidence: 0.7  # 马氏距离卡方门限置信度（3 自由度）
 tracking_coasting_gate_relax_factor: 1.5  # 漏检轨迹重关联时的门限放宽倍数
 tracking_box_size_smoothing_alpha: 0.5  # 目标尺寸指数平滑系数
-tracking_spawn_suppression_distance: 0.5  # 马氏距离关联失败后的第一层回退条件：distance 先过，才继续看 IoU；若最终仍未匹配，也继续抑制建新轨迹；0 表示关闭
-tracking_spawn_suppression_iou_threshold: 0.5  # 马氏距离关联失败后的第二层回退条件：只有 distance 已经过阈值时，才检查 IoU；若最终仍未匹配，也继续抑制建新轨迹；0 表示关闭
+tracking_spawn_suppression_distance: 0.8  # 小球点簇中心抖动或短断帧后的回退关联距离；0 表示关闭
+tracking_spawn_suppression_iou_threshold: 0.2  # 回退关联的较宽松水平重叠阈值，适应小球点簇尺寸抖动；0 表示只使用距离
 tracking_default_dt: 0.1  # 时间戳异常时回退使用的预测时间步长（秒）
 tracking_max_dt: 0.5  # 预测时间步长上限（秒），防止大间隔导致发散
 
