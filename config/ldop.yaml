@@ -67,6 +67,7 @@ tracking_spawn_suppression_iou_threshold: 0.2  # 回退关联的较宽松水平�
 tracking_duplicate_merge_distance: 0.45  # 同一目标碎片轨迹的三维中心合并距离；<=0 关闭
 tracking_default_dt: 0.1  # 时间戳异常时回退使用的预测时间步长（秒）
 tracking_max_dt: 0.5  # 预测时间步长上限（秒），防止大间隔导致发散
+tracking_classification_enabled: false  # 当前只检测动态障碍物，不启用类别分类；目标保持 Unknown/CV3D
 
 prediction_horizon: 1.0  # 预测未来时长，采样间隔复用 tracking_default_dt
 prediction_max_branches: 3  # 每个目标最多保留的 GMM 分支数量，分支内只有一条中心状态轨迹
@@ -102,7 +103,7 @@ prediction_max_correction_distance: 0.2  # 单个预测点均值位置最大修�
 prediction_max_deceleration_ratio: 0.35  # 单个预测点速度最大衰减比例
 prediction_interaction_energy_tau: 1.0  # 交互能量转概率缩放的温度参数
 
-# 动态目标类别分类参数
+# 动态目标类别分类参数（分类开关关闭时保留兼容，不参与运行）
 classification_start_frame: 10  # 轨迹累计命中到该帧数后才开始给类别证据积分
 classification_score_decay: 0.85  # 可靠匹配帧更新类别证据前，对已有分数做 EMA 衰减
 classification_score_increment: 1.0  # 当前帧 bbox 分类命中某类别时增加的证据分

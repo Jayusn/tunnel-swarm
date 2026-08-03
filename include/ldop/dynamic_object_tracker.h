@@ -63,6 +63,7 @@ struct DynamicObjectTrackerConfig {
   std::size_t max_publish_missed_frames{5U};
   std::size_t max_history_size{100U};
   std::size_t min_hits_to_publish{2U};
+  bool classification_enabled{true};
   std::size_t classification_start_frame{10U};
   double classification_score_decay{0.85};
   double classification_score_increment{1.0};
@@ -78,6 +79,7 @@ struct DynamicObjectTrackerConfig {
 
 // ROS 参数读取后的原始参数快照；默认值集中写在这里，运行时配置再由 tracker 构建。
 struct DynamicObjectTrackerParams {
+  bool classification_enabled{true};
   int history_size{100};                                // 大于0
   int max_missed_frames{15};                            // 大于0，内部轨迹保留帧数
   int max_publish_missed_frames{5};                     // 大于等于0，对外保留预测目标的最多漏检帧数

@@ -197,6 +197,7 @@ DynamicObjectTrackerConfig buildTrackerConfig(const DynamicObjectTrackerParams& 
   config.duplicate_merge_distance = params.duplicate_merge_distance > 0.0
       ? params.duplicate_merge_distance : 0.0;
   config.max_dt = params.max_dt > 0.0 ? params.max_dt : defaults.max_dt;
+  config.classification_enabled = params.classification_enabled;
   config.classification_start_frame = static_cast<std::size_t>(params.classification_start_frame > 0
       ? params.classification_start_frame : defaults.classification_start_frame);
   config.classification_score_decay =
@@ -776,6 +777,8 @@ void DynamicObjectTracker::loadParameters() {
              defaults.duplicate_merge_distance);
   pnh_.param("tracking_default_dt", params_.filter.default_dt, defaults.filter.default_dt);
   pnh_.param("tracking_max_dt", params_.max_dt, defaults.max_dt);
+  pnh_.param("tracking_classification_enabled", params_.classification_enabled,
+             defaults.classification_enabled);
   pnh_.param("classification_start_frame", params_.classification_start_frame, defaults.classification_start_frame);
   pnh_.param("classification_score_decay", params_.classification_score_decay, defaults.classification_score_decay);
   pnh_.param("classification_score_increment", params_.classification_score_increment, defaults.classification_score_increment);
@@ -1016,8 +1019,12 @@ void DynamicObjectTracker::updateMatchedTrack(TrackState& track,
                                              const DynamicObjectDetection& detection,
                                              const ros::Time& stamp) {
   const std::size_t matched_hits = track.hits + 1U;
-  const geometry_msgs::Vector3 stable_size =
-      prepareMatchedTrackForUpdate(track, detection, matched_hits);
+  const geometry_msgs::Vector3 stable_size = config_.classification_enabled
+      ? prepareMatchedTrackForUpdate(track, detection, matched_hits)
+      : updateClassificationSizeState(track, detection, config_).stable_size;
+  if (!config_.classification_enabled) {
+    track.object_class = ObjectClass::Unknown;
+  }
 
   // filter 只接收 detection 中心作为 3D 位置观测；bbox 尺寸另行维护，不进入状态向量。
   track.filter->update(pointToEigen(detection.bbox.center));
