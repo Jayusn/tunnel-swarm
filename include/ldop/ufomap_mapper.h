@@ -39,7 +39,6 @@ struct UfomapMapperConfig {
   double ground_estimation_radius{4.0};
   double ground_estimation_bin_size{0.02};
   int ground_estimation_min_points{100};
-  double ground_filter_tolerance{0.05};
   int warmup_frames{30};
   bool temporal_motion_enabled{true};
   double temporal_match_distance{0.10};
@@ -71,7 +70,6 @@ struct UfomapMapperParams {
   double ground_estimation_radius{4.0};
   double ground_estimation_bin_size{0.02};
   int ground_estimation_min_points{100};
-  double ground_filter_tolerance{0.05};
   int warmup_frames{30};
   bool temporal_motion_enabled{true};
   double temporal_match_distance{0.10};

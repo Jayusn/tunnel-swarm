@@ -25,10 +25,10 @@
 - Modify: `config/ldop.yaml`
 
 **Interfaces:**
-- `UfomapMapperParams`/`UfomapMapperConfig` 提供地面估计、地面平面容差、预热、跨帧匹配和搜索半径参数。
+- `UfomapMapperParams`/`UfomapMapperConfig` 提供地面估计、单侧地面截止、预热、跨帧匹配和搜索半径参数。
 - `UfomapMapper` 保存已处理帧数、锁定的地面高度、地面样本和上一帧预处理点。
 
-- [ ] 在头文件中加入地面参数：`ground_filter_enabled`、`ground_estimation_frames`、`ground_estimation_radius`、`ground_estimation_bin_size`、`ground_estimation_min_points`、`ground_filter_tolerance`。
+- [ ] 在头文件中加入地面参数：`ground_filter_enabled`、`ground_estimation_frames`、`ground_estimation_radius`、`ground_estimation_bin_size`、`ground_estimation_min_points`。
 - [ ] 加入动态预热和跨帧参数：`warmup_frames`、`temporal_motion_enabled`、`temporal_match_distance`、`temporal_search_radius`。
 - [ ] 加入 `dynamic_points` 和当前帧索引集合所需的分类结果字段，并保留现有 ROS 消息字段不变。
 - [ ] 在 YAML 中写入默认值和中文说明，保留 `ufomap_input_max_z: 3.0`。
@@ -40,11 +40,11 @@
 
 **Interfaces:**
 - 在 `UfomapMapper` 内增加地面候选估计、样本锁定和点过滤的私有逻辑。
-- 地面判定使用点到 `z=ground_z` 平面的距离容差，不使用固定世界高度带。
+- 地面判定只保留 `z > ground_z` 的点，不使用固定世界高度带或对称高度容差。
 
 - [ ] 在有限值点和距离过滤之后，从传感器附近、传感器下方候选点的 Z 直方图中选取数量足够的地面峰值。
 - [ ] 通过连续样本中位数锁定地面高度，锁定后不被目标点短时变化覆盖。
-- [ ] 对点应用 `abs(point.z-ground_z) <= ground_filter_tolerance` 的平面内点过滤；估计未就绪时保留点并输出节流日志。
+- [ ] 对点应用 `point.z <= ground_z` 的单侧地面过滤；估计未就绪时保留点并输出节流日志。
 - [ ] 在 `clearMap()` 中同时清空地面状态、帧快照和帧计数。
 
 ### Task 3: 增加跨帧运动候选并保护静态地图

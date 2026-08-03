@@ -307,8 +307,6 @@ UfomapMapperConfig buildUfomapConfig(const UfomapMapperParams& params) {
   config.ground_estimation_bin_size = params.ground_estimation_bin_size > 0.0
       ? params.ground_estimation_bin_size : defaults.ground_estimation_bin_size;
   config.ground_estimation_min_points = std::max(1, params.ground_estimation_min_points);
-  config.ground_filter_tolerance = params.ground_filter_tolerance > 0.0
-      ? params.ground_filter_tolerance : defaults.ground_filter_tolerance;
   config.warmup_frames = std::max(0, params.warmup_frames);
   config.temporal_motion_enabled = params.temporal_motion_enabled;
   config.temporal_match_distance = params.temporal_match_distance > 0.0
@@ -434,7 +432,7 @@ UfomapMapper::UfomapMapper(ros::NodeHandle& nh,
                   << ", max range: " << config_.max_range
                   << ", input max z: " << config_.input_max_z
                   << ", ground filter: " << (config_.ground_filter_enabled ? "on" : "off")
-                  << ", ground tolerance: " << config_.ground_filter_tolerance
+                  << " (keep points above estimated ground plane)"
                   << ", warmup frames: " << config_.warmup_frames
                   << ", temporal motion: "
                   << (config_.temporal_motion_enabled ? "on" : "off"));
@@ -460,8 +458,6 @@ void UfomapMapper::loadParameters() {
              defaults.ground_estimation_bin_size);
   pnh_.param("ufomap_ground_estimation_min_points", params_.ground_estimation_min_points,
              defaults.ground_estimation_min_points);
-  pnh_.param("ufomap_ground_filter_tolerance", params_.ground_filter_tolerance,
-             defaults.ground_filter_tolerance);
   pnh_.param("ufomap_warmup_frames", params_.warmup_frames, defaults.warmup_frames);
   pnh_.param("ufomap_temporal_motion_enabled", params_.temporal_motion_enabled,
              defaults.temporal_motion_enabled);
@@ -639,8 +635,8 @@ UfomapMapper::UfomapPointCloud UfomapMapper::filterGroundPoints(
   UfomapPointCloud filtered_points;
   filtered_points.reserve(points.size());
   for (const auto& point : points) {
-    if (std::abs(static_cast<double>(point.z) - *ground_plane_z_) >
-        config_.ground_filter_tolerance) {
+    // 只删除地面及以下的点；地面以上的点全部保留，不使用对称高度带。
+    if (static_cast<double>(point.z) > *ground_plane_z_) {
       filtered_points.push_back(point);
     }
   }
