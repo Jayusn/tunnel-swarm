@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <exception>
 #include <optional>
 #include <vector>
 
@@ -375,15 +376,38 @@ Ldop::ProcessedFrame Ldop::processFrame(const InputFrame& frame) {
   processed.dynamic_objects_msg = std::move(tracker_result.dynamic_objects_msg);
   processed.dynamic_track_markers_msg = std::move(tracker_result.dynamic_track_markers_msg);
 
+  const auto prediction_start = std::chrono::steady_clock::now();
+  try {
+    const UfomapPredictionMapQuery prediction_map_query(*ufomap_mapper_);
+    const DynamicObjectPredictorFrameResult prediction_result =
+        dynamic_object_predictor_->predict(processed.dynamic_cloud_msg.header,
+                                            tracker_result.prediction_inputs,
+                                            &prediction_map_query);
+    processed.dynamic_predictions_msg = prediction_result.predictions_msg;
+    processed.dynamic_prediction_markers_msg = prediction_result.prediction_markers_msg;
+    processed.timing.processing_summary.prediction_module_ms =
+        prediction_result.timing.predict_total_ms;
+  } catch (const std::exception& ex) {
+    processed.dynamic_predictions_msg.header = processed.dynamic_cloud_msg.header;
+    visualization_msgs::Marker clear_prediction_marker;
+    clear_prediction_marker.header = processed.dynamic_cloud_msg.header;
+    clear_prediction_marker.ns = "dynamic_predictions";
+    clear_prediction_marker.action = visualization_msgs::Marker::DELETEALL;
+    processed.dynamic_prediction_markers_msg.markers.push_back(
+        std::move(clear_prediction_marker));
+    processed.timing.processing_summary.prediction_module_ms =
+        elapsedMs(prediction_start, std::chrono::steady_clock::now());
+    ROS_WARN_STREAM_THROTTLE(
+        1.0, "Dynamic object prediction failed; continuing detection pipeline: "
+                 << ex.what());
+  }
+
   DynamicObjectPoseFusionSnapshot fusion_snapshot =
       dynamic_object_pose_fusion_->updateLidarAnchors(processed.dynamic_cloud_msg.header,
                                                       cluster_result.detections);
   processed.fused_objects_msg = std::move(fusion_snapshot.fused_objects);
   processed.fused_virtual_imu_msg = std::move(fusion_snapshot.virtual_imu);
   processed.fused_markers_msg = std::move(fusion_snapshot.markers);
-  // 当前预测模块仍暂不接入主输出；LiDAR cluster/tracker 检测链路保持独立可用。
-  processed.timing.processing_summary.prediction_module_ms = 0.0;
-
   processed.timing.process_frame_ms =
       elapsedMs(processing_start, std::chrono::steady_clock::now());
   return processed;
