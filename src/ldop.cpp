@@ -421,6 +421,8 @@ void Ldop::publishFrame(ProcessedFrame& frame) {
   dynamic_objects_pub_.publish(frame.dynamic_objects_msg);
   dynamic_object_markers_pub_.publish(frame.dynamic_object_markers_msg);
   dynamic_track_markers_pub_.publish(frame.dynamic_track_markers_msg);
+  dynamic_predictions_pub_.publish(frame.dynamic_predictions_msg);
+  dynamic_prediction_markers_pub_.publish(frame.dynamic_prediction_markers_msg);
   if (frame.fused_objects_msg.has_value()) {
     fused_objects_pub_.publish(*frame.fused_objects_msg);
   }
