@@ -70,8 +70,8 @@ Visualization Manager:
           Scale: 1
           Value: true
         Value: true
-      Enabled: false
-      Keep: 100
+      Enabled: true
+      Keep: 1
       Name: Odometry
       Position Tolerance: 0.10000000149011612
       Queue Size: 10
@@ -87,9 +87,9 @@ Visualization Manager:
         Value: Axes
       Topic: /Odometry
       Unreliable: true
-      Value: false
+      Value: true
     - Class: rviz/MarkerArray
-      Enabled: false
+      Enabled: true
       Marker Topic: /ldop/static_map_markers
       Name: StaticVoxelMap
       Namespaces:
