@@ -60,9 +60,11 @@ struct DynamicObjectTrackerConfig {
   double invalid_cost{1e9}; // 数据关联中表示无效匹配的成本值，必须大于 gate 阈值。
   std::size_t max_coast_frames{5U};
   // 内部轨迹比对外发布多保留一段时间，用于目标短时断帧后恢复原 ID。
-  std::size_t max_publish_missed_frames{5U};
+  std::size_t max_publish_missed_frames{8U};
   std::size_t max_history_size{100U};
-  std::size_t min_hits_to_publish{2U};
+  std::size_t min_hits_to_publish{3U};
+  double motion_min_displacement{0.04};
+  std::size_t motion_min_evidence_frames{2U};
   bool classification_enabled{true};
   std::size_t classification_start_frame{10U};
   double classification_score_decay{0.85};
@@ -82,8 +84,10 @@ struct DynamicObjectTrackerParams {
   bool classification_enabled{true};
   int history_size{100};                                // 大于0
   int max_missed_frames{15};                            // 大于0，内部轨迹保留帧数
-  int max_publish_missed_frames{5};                     // 大于等于0，对外保留预测目标的最多漏检帧数
-  int min_hits_to_publish{2};                           // 大于0，且小于 history_size，轨迹发布的最小匹配次数
+  int max_publish_missed_frames{8};                     // 大于等于0，对外保留预测目标的最多漏检帧数
+  int min_hits_to_publish{3};                           // 大于0，且小于 history_size，轨迹发布的最小匹配次数
+  double motion_min_displacement{0.04};                 // >0，连续匹配被视为真实运动的最小中心位移，单位m
+  int motion_min_evidence_frames{2};                    // >0，对外发布前至少需要的运动证据帧数
   double association_gate_confidence{0.7};              // (0,1) ，且由卡方分布分位数转换为门限值，不能直接等同于门限值。
   double coasting_gate_relax_factor{1.5};               // >=1.0
   double box_size_smoothing_alpha{0.5};                 // [0,1]
@@ -149,6 +153,7 @@ struct TrackState {
   std::size_t age{0U};
   std::size_t hits{0U};
   std::size_t missed_frames{0U};
+  std::size_t motion_evidence_frames{0U};
   // 上次处理该轨迹的时间戳，用于下一帧计算预测 dt。
   ros::Time last_stamp;
   // 对外类别和内部证据分开：新轨迹先保持 Unknown，避免把 CV3D 默认模型误报为 Other。

@@ -57,8 +57,10 @@ dynamic_cluster_vertical_merge_min_xy_overlap_ratio: 0.5  # 水平投影有面�
 # 动态目标跟踪参数
 tracking_history_size: 100  # 每条轨迹保留的历史样本数上限（位置、速度、公共状态协方差和匹配状态）
 tracking_max_missed_frames: 15  # 连续漏检超过该帧数后删除内部轨迹
-tracking_max_publish_missed_frames: 5  # 对外最多保留预测目标5帧，避免短断帧换ID又避免目标离开后长期残留
-tracking_min_hits_to_publish: 2  # 轨迹至少命中该次数后才对外发布
+tracking_max_publish_missed_frames: 8  # 对外最多保留预测目标8帧，给球被短时遮挡后的原ID更多重关联时间
+tracking_min_hits_to_publish: 3  # 轨迹至少命中3次后才对外发布，抑制固定杆短暂误检
+tracking_motion_min_displacement: 0.04  # 连续匹配中心位移达到该值才计入真实运动证据，单位m
+tracking_motion_min_evidence_frames: 2  # 对外发布前至少需要的真实运动证据帧数
 tracking_association_gate_confidence: 0.7  # 马氏距离卡方门限置信度（3 自由度）
 tracking_coasting_gate_relax_factor: 1.5  # 漏检轨迹重关联时的门限放宽倍数
 tracking_box_size_smoothing_alpha: 0.5  # 目标尺寸指数平滑系数

@@ -60,7 +60,7 @@ bool hasSimilarHorizontalBoundingBoxSize(const DynamicObjectDetection& detection
 
   // 同一目标在点云稀疏或被遮挡时中心和竖向尺寸可能跳动，水平占地通常更稳定；
   // 用水平尺寸相似度承接 IoU 不重叠的情况，避免把细长固定杆并入小球轨迹。
-  constexpr double kMinimumSizeRatio = 0.45;
+  constexpr double kMinimumSizeRatio = 0.35;
   return sizeRatio(detection.bbox.size.x, track.bbox.size.x) >= kMinimumSizeRatio &&
          sizeRatio(detection.bbox.size.y, track.bbox.size.y) >= kMinimumSizeRatio;
 }
@@ -184,6 +184,16 @@ DynamicObjectTrackerConfig buildTrackerConfig(const DynamicObjectTrackerParams& 
       static_cast<std::size_t>(params.min_hits_to_publish > 0 ? params.min_hits_to_publish : defaults.min_hits_to_publish);
   const std::size_t max_publish_hits = config.max_history_size > 1U ? config.max_history_size - 1U : 1U;
   config.min_hits_to_publish = std::min(requested_min_hits, max_publish_hits);
+  config.motion_min_displacement =
+      params.motion_min_displacement > 0.0
+          ? params.motion_min_displacement
+          : defaults.motion_min_displacement;
+  const std::size_t requested_motion_evidence_frames =
+      static_cast<std::size_t>(params.motion_min_evidence_frames > 0
+                                   ? params.motion_min_evidence_frames
+                                   : defaults.motion_min_evidence_frames);
+  config.motion_min_evidence_frames =
+      std::min(requested_motion_evidence_frames, max_publish_hits);
   // 外部参数是置信度，tracker 内部关联使用 3 自由度卡方分布的马氏距离平方门限。
   config.association_gate_threshold = chiSquare3DThresholdFromConfidence(params.association_gate_confidence);
   config.coasting_gate_relax_factor =
@@ -767,6 +777,10 @@ void DynamicObjectTracker::loadParameters() {
   pnh_.param("tracking_max_publish_missed_frames", params_.max_publish_missed_frames,
              defaults.max_publish_missed_frames);
   pnh_.param("tracking_min_hits_to_publish", params_.min_hits_to_publish, defaults.min_hits_to_publish);
+  pnh_.param("tracking_motion_min_displacement", params_.motion_min_displacement,
+             defaults.motion_min_displacement);
+  pnh_.param("tracking_motion_min_evidence_frames", params_.motion_min_evidence_frames,
+             defaults.motion_min_evidence_frames);
   pnh_.param("tracking_association_gate_confidence", params_.association_gate_confidence, defaults.association_gate_confidence);
   pnh_.param("tracking_coasting_gate_relax_factor", params_.coasting_gate_relax_factor, defaults.coasting_gate_relax_factor);
   pnh_.param("tracking_box_size_smoothing_alpha", params_.box_size_smoothing_alpha, defaults.box_size_smoothing_alpha);
@@ -1018,6 +1032,12 @@ void DynamicObjectTracker::updateMatchedTrack(TrackState& track,
                                              const DynamicObjectDetection& detection,
                                              const ros::Time& stamp) {
   const std::size_t matched_hits = track.hits + 1U;
+  const double observed_displacement =
+      distance3D(detection.bbox.center, lastMatchedTrackCenter(track));
+  if (std::isfinite(observed_displacement) &&
+      observed_displacement >= config_.motion_min_displacement) {
+    ++track.motion_evidence_frames;
+  }
   const geometry_msgs::Vector3 stable_size = config_.classification_enabled
       ? prepareMatchedTrackForUpdate(track, detection, matched_hits)
       : updateClassificationSizeState(track, detection, config_).stable_size;
@@ -1147,6 +1167,13 @@ void DynamicObjectTracker::mergeDuplicateTracks() {
   }
 
   const auto is_preferred = [this](const TrackState& lhs, const TrackState& rhs) {
+    const bool lhs_has_motion =
+        lhs.motion_evidence_frames >= config_.motion_min_evidence_frames;
+    const bool rhs_has_motion =
+        rhs.motion_evidence_frames >= config_.motion_min_evidence_frames;
+    if (lhs_has_motion != rhs_has_motion) {
+      return lhs_has_motion;
+    }
     const bool lhs_publishable = lhs.hits >= config_.min_hits_to_publish;
     const bool rhs_publishable = rhs.hits >= config_.min_hits_to_publish;
     if (lhs_publishable != rhs_publishable) {
@@ -1218,6 +1245,7 @@ ldop::DynamicObjectArray DynamicObjectTracker::buildOutput(const std_msgs::Heade
   for (const TrackState* track : ordered_tracks) {
     // hits 阈值过滤短轨迹，漏检帧阈值限制对外预测保活时长。
     if (track->hits < config_.min_hits_to_publish ||
+        track->motion_evidence_frames < config_.motion_min_evidence_frames ||
         track->missed_frames > config_.max_publish_missed_frames) {
       continue;
     }
@@ -1262,6 +1290,7 @@ std::vector<TrackPredictionInput> DynamicObjectTracker::buildPredictionInputs(
   for (const TrackState* track : ordered_tracks) {
     // 与 DynamicObjectArray 保持同一稳定轨迹过滤策略，避免 predictor 以后把临时噪声当作真实目标。
     if (track->hits < config_.min_hits_to_publish ||
+        track->motion_evidence_frames < config_.motion_min_evidence_frames ||
         track->missed_frames > config_.max_publish_missed_frames) {
       continue;
     }
