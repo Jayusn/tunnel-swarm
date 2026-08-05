@@ -4,6 +4,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LIDAR_SCRIPT="${SCRIPT_DIR}/ros_start_lidar_only.sh"
 LDOP_ENV="/home/oem/ldop_ws/ldop_env.sh"
+LOGGER_SCRIPT="${SCRIPT_DIR}/ros_start_flight_logger.sh"
 
 if ! command -v gnome-terminal >/dev/null 2>&1; then
     echo "错误：找不到 gnome-terminal。" >&2
@@ -19,6 +20,10 @@ if [[ ! -x "${LIDAR_SCRIPT}" ]]; then
 fi
 if [[ ! -f "${LDOP_ENV}" ]]; then
     echo "错误：LDOP 环境脚本不存在：${LDOP_ENV}" >&2
+    exit 1
+fi
+if [[ ! -x "${LOGGER_SCRIPT}" ]]; then
+    echo "错误：飞行日志脚本不存在或不可执行：${LOGGER_SCRIPT}" >&2
     exit 1
 fi
 
@@ -50,3 +55,5 @@ gnome-terminal --tab --title="5_LDOP" -- bash -c '
     roslaunch ldop run_ldop.launch
     exec bash
 '
+
+gnome-terminal --tab --title="6_ID日志" -- bash -c "exec '${LOGGER_SCRIPT}'"
