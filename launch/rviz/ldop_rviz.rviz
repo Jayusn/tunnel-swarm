@@ -153,7 +153,7 @@ Visualization Manager:
       Use rainbow: false
       Value: true
     - Class: rviz/MarkerArray
-      Enabled: true
+      Enabled: false
       Marker Topic: /ldop/dynamic_object_markers
       Name: DynamicObjectBoxes
       Namespaces:
@@ -165,6 +165,7 @@ Visualization Manager:
       Marker Topic: /ldop/dynamic_track_markers
       Name: DynamicTrackMarkers
       Namespaces:
+        dynamic_track_bbox: true
         dynamic_track_head: true
         dynamic_track_coast_bbox: false
         dynamic_track_history: false

@@ -65,6 +65,7 @@ struct DynamicObjectTrackerConfig {
   std::size_t min_hits_to_publish{3U};
   double motion_min_displacement{0.04};
   std::size_t motion_min_evidence_frames{2U};
+  double motion_confirmation_speed{0.12};
   bool classification_enabled{true};
   std::size_t classification_start_frame{10U};
   double classification_score_decay{0.85};
@@ -88,6 +89,7 @@ struct DynamicObjectTrackerParams {
   int min_hits_to_publish{3};                           // 大于0，且小于 history_size，轨迹发布的最小匹配次数
   double motion_min_displacement{0.04};                 // >0，连续匹配被视为真实运动的最小中心位移，单位m
   int motion_min_evidence_frames{2};                    // >0，对外发布前至少需要的运动证据帧数
+  double motion_confirmation_speed{0.12};               // >0，滤波速度达到该值后锁定为动态轨迹，单位m/s
   double association_gate_confidence{0.7};              // (0,1) ，且由卡方分布分位数转换为门限值，不能直接等同于门限值。
   double coasting_gate_relax_factor{1.5};               // >=1.0
   double box_size_smoothing_alpha{0.5};                 // [0,1]
@@ -154,6 +156,7 @@ struct TrackState {
   std::size_t hits{0U};
   std::size_t missed_frames{0U};
   std::size_t motion_evidence_frames{0U};
+  bool motion_confirmed{false};
   // 上次处理该轨迹的时间戳，用于下一帧计算预测 dt。
   ros::Time last_stamp;
   // 对外类别和内部证据分开：新轨迹先保持 Unknown，避免把 CV3D 默认模型误报为 Other。

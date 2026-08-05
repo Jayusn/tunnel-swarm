@@ -61,12 +61,13 @@ tracking_max_publish_missed_frames: 8  # 对外最多保留预测目标8帧，�
 tracking_min_hits_to_publish: 3  # 轨迹至少命中3次后才对外发布，抑制固定杆短暂误检
 tracking_motion_min_displacement: 0.04  # 连续匹配中心位移达到该值才计入真实运动证据，单位m
 tracking_motion_min_evidence_frames: 2  # 对外发布前至少需要的真实运动证据帧数
+tracking_motion_confirmation_speed: 0.12  # 滤波速度达到该值后锁定为动态轨迹，单位m/s
 tracking_association_gate_confidence: 0.7  # 马氏距离卡方门限置信度（3 自由度）
 tracking_coasting_gate_relax_factor: 1.5  # 漏检轨迹重关联时的门限放宽倍数
 tracking_box_size_smoothing_alpha: 0.5  # 目标尺寸指数平滑系数
 tracking_spawn_suppression_distance: 1.0  # 成熟轨迹承接小球点簇中心抖动或短断帧的回退关联距离；0 表示关闭
 tracking_spawn_suppression_iou_threshold: 0.2  # 回退关联的较宽松水平重叠阈值，适应小球点簇尺寸抖动；0 表示只使用距离
-tracking_duplicate_merge_distance: 0.45  # 同一目标碎片轨迹的三维中心合并距离；<=0 关闭
+tracking_duplicate_merge_distance: 0.75  # 同一目标碎片轨迹的三维中心合并距离；<=0 关闭
 tracking_default_dt: 0.1  # 时间戳异常时回退使用的预测时间步长（秒）
 tracking_max_dt: 0.5  # 预测时间步长上限（秒），防止大间隔导致发散
 tracking_classification_enabled: false  # 当前只检测动态障碍物，不启用类别分类；目标保持 Unknown/CV3D

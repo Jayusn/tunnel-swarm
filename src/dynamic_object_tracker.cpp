@@ -60,9 +60,28 @@ bool hasSimilarHorizontalBoundingBoxSize(const DynamicObjectDetection& detection
 
   // 同一目标在点云稀疏或被遮挡时中心和竖向尺寸可能跳动，水平占地通常更稳定；
   // 用水平尺寸相似度承接 IoU 不重叠的情况，避免把细长固定杆并入小球轨迹。
-  constexpr double kMinimumSizeRatio = 0.35;
+  constexpr double kMinimumSizeRatio = 0.18;
   return sizeRatio(detection.bbox.size.x, track.bbox.size.x) >= kMinimumSizeRatio &&
          sizeRatio(detection.bbox.size.y, track.bbox.size.y) >= kMinimumSizeRatio;
+}
+
+double horizontalBoundingBoxSizeRatio(const geometry_msgs::Vector3& lhs,
+                                      const geometry_msgs::Vector3& rhs) {
+  const auto sizeRatio = [](const double first, const double second) {
+    if (!(std::isfinite(first) && std::isfinite(second)) || first <= 1e-6 || second <= 1e-6) {
+      return 0.0;
+    }
+    return std::min(first, second) / std::max(first, second);
+  };
+
+  return std::min(sizeRatio(lhs.x, rhs.x), sizeRatio(lhs.y, rhs.y));
+}
+
+bool isPublishableTrack(const TrackState& track,
+                        const DynamicObjectTrackerConfig& config) {
+  return track.hits >= config.min_hits_to_publish &&
+         track.motion_confirmed &&
+         track.missed_frames <= config.max_publish_missed_frames;
 }
 
 std::size_t classScoreIndex(const ObjectClass object_class) {
@@ -194,6 +213,10 @@ DynamicObjectTrackerConfig buildTrackerConfig(const DynamicObjectTrackerParams& 
                                    : defaults.motion_min_evidence_frames);
   config.motion_min_evidence_frames =
       std::min(requested_motion_evidence_frames, max_publish_hits);
+  config.motion_confirmation_speed =
+      params.motion_confirmation_speed > 0.0
+          ? params.motion_confirmation_speed
+          : defaults.motion_confirmation_speed;
   // 外部参数是置信度，tracker 内部关联使用 3 自由度卡方分布的马氏距离平方门限。
   config.association_gate_threshold = chiSquare3DThresholdFromConfidence(params.association_gate_confidence);
   config.coasting_gate_relax_factor =
@@ -517,8 +540,9 @@ double computeFallbackAssociationCost(const DynamicObjectDetection& detection,
     const double iou = computeHorizontalIntersectionOverUnion(detection.bbox, track.bbox);
     if (!(std::isfinite(iou) && iou >= config.spawn_suppression_iou_threshold)) {
       // 中心跳变会使水平 IoU 变为 0；成熟轨迹仍可在尺寸相似且距离合适时重关联。
-      if (track.hits < config.min_hits_to_publish ||
-          !hasSimilarHorizontalBoundingBoxSize(detection, track)) {
+      if (!track.motion_confirmed &&
+          (track.hits < config.min_hits_to_publish ||
+           !hasSimilarHorizontalBoundingBoxSize(detection, track))) {
         return invalid_cost;
       }
       iou_penalty = 1.0;
@@ -553,7 +577,8 @@ bool shouldSuppressTrackSpawn(const DynamicObjectDetection& detection,
     if (config.spawn_suppression_distance > 0.0 &&
         distance3D(detection.bbox.center, lastMatchedTrackCenter(track)) <=
             config.spawn_suppression_distance) {
-      if (config.spawn_suppression_iou_threshold <= 0.0 ||
+      if (track.motion_confirmed ||
+          config.spawn_suppression_iou_threshold <= 0.0 ||
           track.hits < config.min_hits_to_publish ||
           hasSimilarHorizontalBoundingBoxSize(detection, track)) {
         return true;
@@ -781,6 +806,8 @@ void DynamicObjectTracker::loadParameters() {
              defaults.motion_min_displacement);
   pnh_.param("tracking_motion_min_evidence_frames", params_.motion_min_evidence_frames,
              defaults.motion_min_evidence_frames);
+  pnh_.param("tracking_motion_confirmation_speed", params_.motion_confirmation_speed,
+             defaults.motion_confirmation_speed);
   pnh_.param("tracking_association_gate_confidence", params_.association_gate_confidence, defaults.association_gate_confidence);
   pnh_.param("tracking_coasting_gate_relax_factor", params_.coasting_gate_relax_factor, defaults.coasting_gate_relax_factor);
   pnh_.param("tracking_box_size_smoothing_alpha", params_.box_size_smoothing_alpha, defaults.box_size_smoothing_alpha);
@@ -927,10 +954,13 @@ DynamicObjectTrackerFrameResult DynamicObjectTracker::processDynamicTracks(
 visualization_msgs::MarkerArray DynamicObjectTracker::buildTrackMarkers(
     const std_msgs::Header& header) const {
   visualization_msgs::MarkerArray markers;
-  markers.markers.reserve(1U + tracks_.size() * 3U);
+  markers.markers.reserve(1U + tracks_.size() * 4U);
   markers.markers.push_back(makeDeleteAllMarker(header, "dynamic_tracks"));
 
   for (const auto& track : tracks_) {
+    if (!isPublishableTrack(track, config_)) {
+      continue;
+    }
     const bool coasting = track.missed_frames > 0U;
     std_msgs::ColorRGBA color;
     // 漏检轨迹保留同一颜色但降低透明度，方便 RViz 区分预测延续和本帧匹配。
@@ -938,6 +968,18 @@ visualization_msgs::MarkerArray DynamicObjectTracker::buildTrackMarkers(
     color.g = 0.80F;
     color.b = 0.95F;
     color.a = coasting ? 0.35F : 1.0F;
+
+    visualization_msgs::Marker bbox_marker;
+    bbox_marker.header = header;
+    bbox_marker.ns = "dynamic_track_bbox";
+    bbox_marker.id = static_cast<int>(track.id);
+    bbox_marker.type = visualization_msgs::Marker::LINE_LIST;
+    bbox_marker.action = visualization_msgs::Marker::ADD;
+    bbox_marker.pose.orientation.w = 1.0;
+    bbox_marker.scale.x = 0.08;
+    bbox_marker.color = color;
+    appendTrackBoundingBoxEdges(track.bbox, bbox_marker);
+    markers.markers.push_back(std::move(bbox_marker));
 
     visualization_msgs::Marker history_marker;
     history_marker.header = header;
@@ -1047,6 +1089,10 @@ void DynamicObjectTracker::updateMatchedTrack(TrackState& track,
 
   // filter 只接收 detection 中心作为 3D 位置观测；bbox 尺寸另行维护，不进入状态向量。
   track.filter->update(pointToEigen(detection.bbox.center));
+  if (track.motion_evidence_frames >= config_.motion_min_evidence_frames &&
+      track.filter->velocity().norm() >= config_.motion_confirmation_speed) {
+    track.motion_confirmed = true;
+  }
   const auto previous_size = track.bbox.size;
   track.bbox = detection.bbox;
   // 尺寸变化通常比中心位置更受点云稀疏/视角影响，因此只对 size 做指数平滑。
@@ -1167,10 +1213,8 @@ void DynamicObjectTracker::mergeDuplicateTracks() {
   }
 
   const auto is_preferred = [this](const TrackState& lhs, const TrackState& rhs) {
-    const bool lhs_has_motion =
-        lhs.motion_evidence_frames >= config_.motion_min_evidence_frames;
-    const bool rhs_has_motion =
-        rhs.motion_evidence_frames >= config_.motion_min_evidence_frames;
+    const bool lhs_has_motion = lhs.motion_confirmed;
+    const bool rhs_has_motion = rhs.motion_confirmed;
     if (lhs_has_motion != rhs_has_motion) {
       return lhs_has_motion;
     }
@@ -1204,6 +1248,20 @@ void DynamicObjectTracker::mergeDuplicateTracks() {
             distance3D(tracks_[lhs_index].bbox.center, tracks_[rhs_index].bbox.center);
         if (!(std::isfinite(center_distance) &&
               center_distance <= config_.duplicate_merge_distance)) {
+          continue;
+        }
+
+        const bool one_track_is_unconfirmed =
+            tracks_[lhs_index].motion_confirmed != tracks_[rhs_index].motion_confirmed;
+        const bool one_track_is_coasting =
+            tracks_[lhs_index].missed_frames > 0U || tracks_[rhs_index].missed_frames > 0U;
+        const bool likely_partial_fragment =
+            horizontalBoundingBoxSizeRatio(tracks_[lhs_index].bbox.size,
+                                            tracks_[rhs_index].bbox.size) < 0.65;
+        const bool can_merge_as_same_dynamic_target =
+            (tracks_[lhs_index].motion_confirmed || tracks_[rhs_index].motion_confirmed) &&
+            (one_track_is_unconfirmed || one_track_is_coasting || likely_partial_fragment);
+        if (!can_merge_as_same_dynamic_target) {
           continue;
         }
 
@@ -1244,9 +1302,7 @@ ldop::DynamicObjectArray DynamicObjectTracker::buildOutput(const std_msgs::Heade
   object_array.objects.reserve(ordered_tracks.size());
   for (const TrackState* track : ordered_tracks) {
     // hits 阈值过滤短轨迹，漏检帧阈值限制对外预测保活时长。
-    if (track->hits < config_.min_hits_to_publish ||
-        track->motion_evidence_frames < config_.motion_min_evidence_frames ||
-        track->missed_frames > config_.max_publish_missed_frames) {
+    if (!isPublishableTrack(*track, config_)) {
       continue;
     }
     ldop::DynamicObject object;
@@ -1289,9 +1345,7 @@ std::vector<TrackPredictionInput> DynamicObjectTracker::buildPredictionInputs(
 
   for (const TrackState* track : ordered_tracks) {
     // 与 DynamicObjectArray 保持同一稳定轨迹过滤策略，避免 predictor 以后把临时噪声当作真实目标。
-    if (track->hits < config_.min_hits_to_publish ||
-        track->motion_evidence_frames < config_.motion_min_evidence_frames ||
-        track->missed_frames > config_.max_publish_missed_frames) {
+    if (!isPublishableTrack(*track, config_)) {
       continue;
     }
 
