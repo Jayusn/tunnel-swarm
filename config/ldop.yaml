@@ -19,7 +19,7 @@ ufomap_inflate_hits_dist: 0.4  # 沿射线扩展d_s命中区域以容忍测距�
 ufomap_inflate_unknown_compensation: true  # 是否补偿未知区域膨胀
 ufomap_ray_passthrough_hits: false  # 射线是否穿过命中点
 ufomap_down_sampling_method: center  # 积分前降采样策略，可选 none、center、centroid、uniform
-ufomap_min_range: 0.5  # 近点过滤 / 最小积分距离
+ufomap_min_range: 0.3  # 近点过滤 / 最小积分距离
 ufomap_max_range: -1  # 最大积分距离，还影响当前帧分类输出半径；-1 表示不限制，其他非负值需大于 ufomap_min_range
 ufomap_input_max_z: 2.5  # 仅保留输入点云中全局Z坐标小于2.5米的点；-1表示关闭
 ufomap_ground_filter_enabled: true  # 启用倾斜地面平面内点滤波
