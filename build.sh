@@ -29,17 +29,18 @@ else
 fi
 echo "ROS version is: "$ROS_VERSION
 
-# clear `build/` folder.
-# TODO: Do not clear these folders, if the last build is based on the same ROS version.
-rm -rf ../../build/
-rm -rf ../../devel/
-rm -rf ../../install/
-# clear src/CMakeLists.txt if it exists.
-if [ -f ../CMakeLists.txt ]; then
-    rm -f ../CMakeLists.txt
+# ROS1 is part of the match_ws catkin workspace.  Do not erase the build
+# results of every other package when rebuilding only this driver.
+# ROS2 keeps the upstream clean-build behavior because it uses colcon and a
+# different generated package/launch layout.
+if [ "${ROS_VERSION}" = "${VERSION_ROS2}" ]; then
+    rm -rf ../../build/
+    rm -rf ../../devel/
+    rm -rf ../../install/
+    if [ -f ../CMakeLists.txt ]; then
+        rm -f ../CMakeLists.txt
+    fi
 fi
-
-# exit
 
 # substitute the files/folders: CMakeList.txt, package.xml(s)
 if [ ${ROS_VERSION} = ${VERSION_ROS1} ]; then
@@ -59,7 +60,7 @@ fi
 pushd `pwd` > /dev/null
 if [ $ROS_VERSION = ${VERSION_ROS1} ]; then
     cd ../../
-    catkin_make -DROS_EDITION=${VERSION_ROS1}
+    catkin_make -DROS_EDITION=${VERSION_ROS1} --pkg livox_ros_driver2
 elif [ $ROS_VERSION = ${VERSION_ROS2} ]; then
     cd ../../
     colcon build --cmake-args -DROS_EDITION=${VERSION_ROS2} -DDISTRO_ROS=${ROS_DISTRO}
