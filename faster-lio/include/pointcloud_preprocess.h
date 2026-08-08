@@ -1,7 +1,7 @@
 #ifndef FASTER_LIO_POINTCLOUD_PROCESSING_H
 #define FASTER_LIO_POINTCLOUD_PROCESSING_H
 
-#include <livox_ros_driver/CustomMsg.h>
+#include <livox_ros_driver2/CustomMsg.h>
 #include <pcl_conversions/pcl_conversions.h>
 
 #include <pcl/point_cloud.h>
@@ -90,7 +90,7 @@ class PointCloudPreprocess {
     ~PointCloudPreprocess() = default;
 
     /// processors
-    void Process(const livox_ros_driver::CustomMsg::ConstPtr &msg, PointCloudType::Ptr &pcl_out);
+    void Process(const livox_ros_driver2::CustomMsg::ConstPtr &msg, PointCloudType::Ptr &pcl_out);
     void Process(const sensor_msgs::PointCloud2::ConstPtr &msg, PointCloudType::Ptr &pcl_out);
     void Set(LidarType lid_type, double bld, int pfilt_num);
 
@@ -104,7 +104,7 @@ class PointCloudPreprocess {
     void SetLidarType(LidarType lt) { lidar_type_ = lt; }
 
    private:
-    void AviaHandler(const livox_ros_driver::CustomMsg::ConstPtr &msg);
+    void AviaHandler(const livox_ros_driver2::CustomMsg::ConstPtr &msg);
     void Oust64Handler(const sensor_msgs::PointCloud2::ConstPtr &msg);
     void VelodyneHandler(const sensor_msgs::PointCloud2::ConstPtr &msg);
     void HesaiHandler(const sensor_msgs::PointCloud2::ConstPtr &msg);

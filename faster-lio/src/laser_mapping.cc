@@ -289,8 +289,8 @@ void LaserMapping::SubAndPubToROS(ros::NodeHandle &nh) {
     nh.param<std::string>("common/imu_topic", imu_topic, "/livox/imu");
 
     if (preprocess_->GetLidarType() == LidarType::AVIA) {
-        sub_pcl_ = nh.subscribe<livox_ros_driver::CustomMsg>(
-            lidar_topic, 200000, [this](const livox_ros_driver::CustomMsg::ConstPtr &msg) { LivoxPCLCallBack(msg); });
+        sub_pcl_ = nh.subscribe<livox_ros_driver2::CustomMsg>(
+            lidar_topic, 200000, [this](const livox_ros_driver2::CustomMsg::ConstPtr &msg) { LivoxPCLCallBack(msg); });
     } else {
         sub_pcl_ = nh.subscribe<sensor_msgs::PointCloud2>(
             lidar_topic, 200000, [this](const sensor_msgs::PointCloud2::ConstPtr &msg) { StandardPCLCallBack(msg); });
@@ -434,7 +434,7 @@ void LaserMapping::StandardPCLCallBack(const sensor_msgs::PointCloud2::ConstPtr 
     mtx_buffer_.unlock();
 }
 
-void LaserMapping::LivoxPCLCallBack(const livox_ros_driver::CustomMsg::ConstPtr &msg) {
+void LaserMapping::LivoxPCLCallBack(const livox_ros_driver2::CustomMsg::ConstPtr &msg) {
     mtx_buffer_.lock();
     Timer::Evaluate(
         [&, this]() {

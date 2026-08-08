@@ -12,7 +12,8 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O3 ${CMAKE_CXX_FLAGS}")
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS}")
 
 add_definitions(-DROOT_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/\")
-add_subdirectory(thirdparty/livox_ros_driver)
+## 联合工作空间统一使用顶层 livox_ros_driver2（实机驱动及消息定义）。
+# add_subdirectory(thirdparty/livox_ros_driver)
 
 include(cmake/packages.cmake)
 
