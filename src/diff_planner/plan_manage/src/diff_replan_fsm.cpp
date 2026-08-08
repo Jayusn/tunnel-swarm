@@ -17,12 +17,24 @@ namespace diff_planner
     nh.param("fsm/flight_type", target_type_, -1);
     nh.param("fsm/thresh_replan_time", replan_thresh_, -1.0);
     nh.param("fsm/planning_horizon", planning_horizen_, -1.0);
+    // 2026-07-07: 允许按场景单独指定 waypoint 切换距离，避免沿默认经验值在窄通道里提前切段。
+    nh.param("fsm/waypoint_switch_dist", no_replan_thresh_, -1.0);
     nh.param("fsm/emergency_time", emergency_time_, 1.0);
     nh.param("fsm/realworld_experiment", flag_realworld_experiment_, false);
     nh.param("fsm/fail_safe", enable_fail_safe_, true);
     nh.param("fsm/ground_height_measurement", enable_ground_height_measurement_, false);
     nh.param("fsm/mondify_final_goal", mondify_final_goal_, true);
     nh.param("fsm/enable_stuck_detect", enable_stuck_detect_, true);
+    // 2026-07-28: 保留原生Diff编队默认行为；异构FUEL->Diff接力由launch显式关闭此前序轨迹门槛。
+    nh.param("fsm/require_pre_agent_trajectory", require_pre_agent_trajectory_, true);
+    // 2026-07-28: 默认保留Diff原行为；UAV1接力实例关闭随机初始化，避免不可行目标让规划回调阻塞并丢心跳。
+    nh.param("fsm/enable_random_global_init", enable_random_global_init_, true);
+    // 2026-07-07: 允许首飞阶段或外部触发后的短时间内跳过 stuck detect，避免 indoor1 首段轨迹因局部目标变化慢被误判卡死。
+    nh.param("fsm/stuck_detect_grace_time", stuck_detect_grace_time_, 6.0);
+    // 2026-07-08: 为“RViz 只触发、自动搜索单独下发子目标”模式新增独立子目标话题，避免和 /goal 的触发语义混用。
+    nh.param("fsm/search_subgoal_topic", search_subgoal_topic_, std::string("/corridor_search/subgoal"));
+    // 2026-07-28: 外部目标话题参数化；双机时后机只接收接力管理器发布的/UAV1/planning/goal。
+    nh.param("fsm/manual_goal_topic", manual_goal_topic_, std::string("/goal"));
 
     nh.param("fsm/waypoint_num", waypoint_num_, -1);
     for (int i = 0; i < waypoint_num_; i++)
@@ -39,11 +51,15 @@ namespace diff_planner
     planner_manager_->initPlanModules(nh, visualization_);
 
     have_trigger_ = !flag_realworld_experiment_;
-    no_replan_thresh_ = 0.5 * emergency_time_ * planner_manager_->pp_.max_vel_;
+    // 2026-07-07: 未显式给 waypoint_switch_dist 时保持原有经验公式，避免影响其他 launch 的默认行为。
+    if (no_replan_thresh_ < 0.0)
+      no_replan_thresh_ = 0.5 * emergency_time_ * planner_manager_->pp_.max_vel_;
 
     /* initialize  Anomaly Detection Parameters */
     last_local_target_pos_.setZero();
     last_target_change_time_ = ros::Time::now().toSec();
+    // 2026-07-07: 默认无豁免，仅在首段规划成功或外部触发后临时打开 stuck detect 豁免窗口。
+    stuck_detect_ignore_until_ = 0.0;
     replan_fail_count_ = 0;
     TARGET_STUCK_TIME = 1.5 * planning_horizen_ / planner_manager_->pp_.max_vel_;
     need_hover_stop_ = false;
@@ -65,14 +81,20 @@ namespace diff_planner
     poly_traj_pub_ = nh.advertise<traj_utils::PolyTraj>("planning/trajectory", 10);
     data_disp_pub_ = nh.advertise<traj_utils::DataDisp>("planning/data_display", 100);
     heartbeat_pub_ = nh.advertise<std_msgs::Empty>("planning/heartbeat", 10);
+    // 2026-07-28: 后机接力不能仅凭目标已发布判断Diff正在执行，增加锁存状态反馈。
+    planning_status_pub_ = nh.advertise<std_msgs::String>("planning/status", 10, true);
     ground_height_pub_ = nh.advertise<std_msgs::Float64>("/ground_height_measurement", 10);
 
     if (target_type_ == TARGET_TYPE::MANUAL_TARGET)
     {
-      waypoint_sub_ = nh.subscribe("/goal", 1, &DiffReplanFSM::waypointCallback, this);
+      // 2026-07-28: 不再把手动目标硬编码到全局/goal，防止UAV0的RViz目标误触发UAV1规划器。
+      waypoint_sub_ = nh.subscribe(manual_goal_topic_, 1, &DiffReplanFSM::waypointCallback, this);
     }
     else if (target_type_ == TARGET_TYPE::PRESET_TARGET)
     {
+      // 2026-07-07: 预设航点模式额外接受 RViz /goal 作为“开始执行”的触发信号，
+      // 只解锁 FSM，不改写已配置好的 waypoint 序列，方便起飞后点一次 2D Goal 进入规划阶段。
+      waypoint_sub_ = nh.subscribe("/goal", 1, &DiffReplanFSM::triggerCallback, this);
       trigger_sub_ = nh.subscribe("/traj_start_trigger", 1, &DiffReplanFSM::triggerCallback, this);
 
       ROS_INFO("Wait for 2 second.");
@@ -84,6 +106,13 @@ namespace diff_planner
       }
 
       readGivenWpsAndPlan();
+    }
+    else if (target_type_ == TARGET_TYPE::SEARCH_TARGET)
+    {
+      // 2026-07-08: 搜索模式沿用 RViz /goal 仅作“允许开始”的触发语义，真实自动子目标改由独立 search_subgoal_topic 输入。
+      waypoint_sub_ = nh.subscribe("/goal", 1, &DiffReplanFSM::triggerCallback, this);
+      trigger_sub_ = nh.subscribe("/traj_start_trigger", 1, &DiffReplanFSM::triggerCallback, this);
+      subgoal_sub_ = nh.subscribe(search_subgoal_topic_, 1, &DiffReplanFSM::searchSubgoalCallback, this);
     }
     else
       cout << "Wrong target_type_ value! target_type_=" << target_type_ << endl;
@@ -128,7 +157,9 @@ namespace diff_planner
 
     case SEQUENTIAL_START: // for swarm or single drone with drone_id = 0
     {
-      if (planner_manager_->pp_.drone_id <= 0 || (planner_manager_->pp_.drone_id >= 1 && have_recv_pre_agent_))
+      // 2026-07-28: UAV1由FUEL离散目标驱动时，前机不会广播Diff轨迹；关闭门槛后应立即基于自身地图规划。
+      if (!require_pre_agent_trajectory_ || planner_manager_->pp_.drone_id <= 0 ||
+          (planner_manager_->pp_.drone_id >= 1 && have_recv_pre_agent_))
       {
         if (!mondify_final_goal_ && planner_manager_->grid_map_->getInflateOccupancy(final_goal_))
         {
@@ -139,16 +170,21 @@ namespace diff_planner
         }
         else
         {
-          bool success = planFromGlobalTraj(10); // zx-todo
+          // 2026-07-28: 每个10ms FSM周期只做一次规划尝试，避免单回调内十连试阻塞心跳和新目标回调。
+          bool success = planFromGlobalTraj(1);
           if (success)
           {
             replan_fail_count_ = 0;
+            publishPlanningStatus("TRAJECTORY_PUBLISHED");  // 2026-07-28: 首轨迹生成成功反馈。
             changeFSMExecState(EXEC_TRAJ, "FSM");
           }
           else
           {
             ROS_WARN("Failed to generate the first trajectory, keep trying");
             replan_fail_count_++;
+            // 2026-07-28: 三次失败即通知上层切换已验证路线短子目标，避免原目标被机械重发到卡死。
+            if (replan_fail_count_ == 3 || replan_fail_count_ % 25 == 0)
+              publishPlanningStatus("PLANNING_FAILED");
             changeFSMExecState(SEQUENTIAL_START, "FSM"); // "changeFSMExecState" must be called each time planned
           }
         }
@@ -167,16 +203,21 @@ namespace diff_planner
       }
       else
       {
-        bool success = planFromGlobalTraj(10); // zx-todo
+        // 2026-07-28: 全局重规划同样单周期单次尝试，保证FSM能继续发心跳并接收替代目标。
+        bool success = planFromGlobalTraj(1);
         if (success)
         {
           replan_fail_count_ = 0;
+          publishPlanningStatus("TRAJECTORY_PUBLISHED");  // 2026-07-28: 全局重规划成功反馈。
           changeFSMExecState(EXEC_TRAJ, "FSM");
           flag_escape_emergency_ = true;
         }
         else
         {
           replan_fail_count_++;
+          // 2026-07-28: 全局轨迹连续失败时显式反馈，而不是让接力管理器无限重发同一点。
+          if (replan_fail_count_ == 3 || replan_fail_count_ % 25 == 0)
+            publishPlanningStatus("PLANNING_FAILED");
           changeFSMExecState(GEN_NEW_TRAJ, "FSM"); // "changeFSMExecState" must be called each time planned
         }
       }
@@ -194,6 +235,9 @@ namespace diff_planner
       else
       {
         replan_fail_count_++;
+        // 2026-07-28: 局部重规划持续失败同样触发安全子目标恢复。
+        if (replan_fail_count_ == 10 || replan_fail_count_ % 50 == 0)
+          publishPlanningStatus("PLANNING_FAILED");
         changeFSMExecState(REPLAN_TRAJ, "FSM");
       }
 
@@ -237,7 +281,11 @@ namespace diff_planner
       else if ((t_cur > info->duration - 1e-2) && touch_the_goal) // case 3: the final waypoint reached
       {
         have_target_ = false;
-        have_trigger_ = false;
+        // 2026-07-08: SEARCH_TARGET 模式下 RViz 触发语义应在整轮搜索期间持续有效，
+        // 不能像单次手动/预设任务那样在到达一个局部子目标后就清掉 trigger，
+        // 否则 corridor_search_manager 后续发布的子目标会全部被忽略，表现为卡在通道口不再前进。
+        if (target_type_ != TARGET_TYPE::SEARCH_TARGET)
+          have_trigger_ = false;
         if (target_type_ == TARGET_TYPE::PRESET_TARGET)
         {
           // prepare for next round
@@ -253,7 +301,9 @@ namespace diff_planner
         changeFSMExecState(REPLAN_TRAJ, "FSM");
       }
       // ROS_ERROR("AAAA");
-      if (enable_stuck_detect_)
+      // 2026-07-07: 首飞阶段和 RViz 2D 触发后的豁免窗口内不做 stuck detect，避免首段轨迹刚启动就进入 EMERGENCY_STOP。
+      const double now_sec = ros::Time::now().toSec();
+      if (enable_stuck_detect_ && now_sec >= stuck_detect_ignore_until_)
       {
         /* Avoid getting stuck wandering around large obstacles */
         static bool baseline_initialized = false;
@@ -275,7 +325,7 @@ namespace diff_planner
           double proj_len = (proj_pos - baseline_origin).norm();
           if (proj_len - last_proj_len < TARGET_STUCK_THRESH)
           {
-            if (ros::Time::now().toSec() - last_target_change_time_ > TARGET_STUCK_TIME)
+            if (now_sec - last_target_change_time_ > TARGET_STUCK_TIME)
             {
               ROS_WARN("Drone stuck! Obstacle too large and near final goal. Emergency stop.");
               need_hover_stop_ = true;
@@ -286,7 +336,7 @@ namespace diff_planner
           else
           {
             last_proj_len = proj_len;
-            last_target_change_time_ = ros::Time::now().toSec();
+            last_target_change_time_ = now_sec;
           }
 
           if (global2cur.norm() > planning_horizen_ * M_SQRT2)
@@ -302,7 +352,7 @@ namespace diff_planner
           baseline_initialized = false;
           if ((local_target_pt_ - last_local_target_pos_).norm() < TARGET_STUCK_THRESH)
           {
-            if (ros::Time::now().toSec() - last_target_change_time_ > TARGET_STUCK_TIME)
+            if (now_sec - last_target_change_time_ > TARGET_STUCK_TIME)
             {
               ROS_WARN("Drone stuck! Obstacle too large. Emergency stop.");
               need_hover_stop_ = true;
@@ -313,7 +363,7 @@ namespace diff_planner
           else
           {
             last_local_target_pos_ = local_target_pt_;
-            last_target_change_time_ = ros::Time::now().toSec();
+            last_target_change_time_ = now_sec;
           }
         }
       }
@@ -335,11 +385,23 @@ namespace diff_planner
         }
         else if (enable_fail_safe_ && need_hover_stop_ && odom_vel_.norm() < 0.1)
         {
-          ROS_INFO("Exiting EMERGENCY_STOP. Switching to WAIT_TARGET. Need a new target point !!!");
-          need_hover_stop_ = false;
-          have_target_ = false;
-          have_trigger_ = false;
-          changeFSMExecState(WAIT_TARGET, "EMERGENCY_EXIT"); 
+          // 2026-07-07: 对非 mandatory stop 的中途急停优先尝试自动恢复规划，避免录像里那种停住后直接丢失当前任务。
+          if (have_target_ && have_trigger_ && !mandatory_stop_)
+          {
+            ROS_INFO("Exiting EMERGENCY_STOP. Resume current target with GEN_NEW_TRAJ.");
+            need_hover_stop_ = false;
+            last_target_change_time_ = ros::Time::now().toSec();
+            stuck_detect_ignore_until_ = last_target_change_time_ + stuck_detect_grace_time_;
+            changeFSMExecState(GEN_NEW_TRAJ, "EMERGENCY_RESUME");
+          }
+          else
+          {
+            ROS_INFO("Exiting EMERGENCY_STOP. Switching to WAIT_TARGET. Need a new target point !!!");
+            need_hover_stop_ = false;
+            have_target_ = false;
+            have_trigger_ = false;
+            changeFSMExecState(WAIT_TARGET, "EMERGENCY_EXIT");
+          }
         }
       }
 
@@ -388,7 +450,10 @@ namespace diff_planner
     cout << "\r[FSM]: state: " + state_str[int(exec_state_)] << ", Drone:" << planner_manager_->pp_.drone_id;
 
     // some warnings
-    if (!have_odom_ || !have_target_ || !have_trigger_ || (planner_manager_->pp_.drone_id >= 1 && !have_recv_pre_agent_))
+    // 2026-07-28: 仅原生Diff顺序编队需要显示/等待前序轨迹，异构接力不再误报prev traj。
+    const bool waiting_pre_agent = require_pre_agent_trajectory_ &&
+        planner_manager_->pp_.drone_id >= 1 && !have_recv_pre_agent_;
+    if (!have_odom_ || !have_target_ || !have_trigger_ || waiting_pre_agent)
     {
       cout << ". Waiting for ";
     }
@@ -404,7 +469,7 @@ namespace diff_planner
     {
       cout << "trigger,";
     }
-    if (planner_manager_->pp_.drone_id >= 1 && !have_recv_pre_agent_)
+    if (waiting_pre_agent)
     {
       cout << "prev traj,";
     }
@@ -582,11 +647,9 @@ namespace diff_planner
     start_vel_ = odom_vel_;
     start_acc_.setZero();
 
-    bool flag_random_poly_init;
-    if (timesOfConsecutiveStateCalls().first == 1)
-      flag_random_poly_init = false;
-    else
-      flag_random_poly_init = true;
+    // 2026-07-28: 随机初始化由实例参数控制；UAV1失败时交给接力层换短目标，不进入曾导致节点失去心跳的阻塞分支。
+    const bool flag_random_poly_init =
+        enable_random_global_init_ && timesOfConsecutiveStateCalls().first > 1;
 
     for (int i = 0; i < trial_times; i++)
     {
@@ -643,6 +706,11 @@ namespace diff_planner
     if (success)
     {
       final_goal_ = next_wp;
+      // 2026-07-07: 预设航点模式在 WAIT_TARGET 里可能等待很久才触发，
+      // 这里统一刷新目标变更时间，避免一进入 EXEC_TRAJ 就被 stuck detect 误判为“长期没推进”。
+      last_target_change_time_ = ros::Time::now().toSec();
+      // 2026-07-07: 每次预设航点成功切换后重新给 stuck detect 一个短豁免窗口，避免切段初期局部目标尚未明显推进就被误判。
+      stuck_detect_ignore_until_ = last_target_change_time_ + stuck_detect_grace_time_;
       /*** display ***/
       constexpr double step_size_t = 0.1;
       int i_end = floor(planner_manager_->traj_.global_traj.duration / step_size_t);
@@ -731,6 +799,7 @@ namespace diff_planner
     if (planner_manager_->grid_map_->getInflateOccupancy(end_wp) == -1)
     {
       ROS_WARN("The goal is outside the safe fence, ignore this goal!");
+      publishPlanningStatus("GOAL_REJECTED_OUTSIDE_MAP");  // 2026-07-28: 区分目标接收与目标可规划。
       return;
     }
     ROS_INFO("Received goal: %f, %f, %f", end_wp(0), end_wp(1), end_wp(2));
@@ -739,6 +808,23 @@ namespace diff_planner
       last_target_change_time_ = ros::Time::now().toSec();
       have_trigger_ = true;
     }
+  }
+
+  void DiffReplanFSM::publishPlanningStatus(const std::string &status)
+  {
+    // 2026-07-28: 使用String保持现有消息依赖不变；成功时附带Diff实际接受的
+    // final_goal，避免上层仍等待已被占据的原始接力点而永久卡住。
+    std_msgs::String msg;
+    if (status == "TRAJECTORY_PUBLISHED")
+    {
+      std::ostringstream stream;
+      stream << status << " " << final_goal_.x() << " " << final_goal_.y() << " "
+             << final_goal_.z();
+      msg.data = stream.str();
+    }
+    else
+      msg.data = status;
+    planning_status_pub_.publish(msg);
   }
 
   void DiffReplanFSM::readGivenWpsAndPlan()
@@ -792,7 +878,35 @@ namespace diff_planner
   void DiffReplanFSM::triggerCallback(const geometry_msgs::PoseStampedPtr &msg)
   {
     have_trigger_ = true;
-    cout << "Triggered!" << endl;
+    // 2026-07-07: 外部触发（/traj_start_trigger 或 RViz /goal）后临时忽略 stuck detect，给首段轨迹和控制器起步留时间。
+    stuck_detect_ignore_until_ = ros::Time::now().toSec() + stuck_detect_grace_time_;
+    // 2026-07-07: 统一记录触发来源，便于区分是 /traj_start_trigger 还是 RViz /goal 把 flight_type=2 解锁。
+    cout << "Triggered! frame=" << msg->header.frame_id
+         << " pos=(" << msg->pose.position.x << ", " << msg->pose.position.y << ", " << msg->pose.position.z << ")"
+         << endl;
+  }
+
+  void DiffReplanFSM::searchSubgoalCallback(const geometry_msgs::PoseStampedPtr &msg)
+  {
+    Eigen::Vector3d end_wp(msg->pose.position.x, msg->pose.position.y, msg->pose.position.z);
+    if (planner_manager_->grid_map_->getInflateOccupancy(end_wp) == -1)
+    {
+      ROS_WARN("The search subgoal is outside the safe fence, ignore this goal!");
+      return;
+    }
+
+    // 2026-07-08: 搜索子目标只负责“去哪”，起飞许可仍由 triggerCallback 控制；未触发前先缓存/忽略自动子目标，避免地面阶段误规划。
+    if (!have_trigger_)
+    {
+      ROS_WARN_THROTTLE(1.0, "Search subgoal received before trigger, ignore until RViz trigger arrives.");
+      return;
+    }
+
+    ROS_INFO("Received search subgoal: %f, %f, %f", end_wp(0), end_wp(1), end_wp(2));
+    if (planNextWaypoint(end_wp, true))
+    {
+      last_target_change_time_ = ros::Time::now().toSec();
+    }
   }
 
   void DiffReplanFSM::RecvBroadcastMINCOTrajCallback(const traj_utils::MINCOTrajConstPtr &msg)

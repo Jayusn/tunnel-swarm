@@ -9,6 +9,7 @@ Panels:
         - /simulation_map1/Autocompute Value Bounds1
         - /drone01/Planning1
         - /drone01/Planning1/drone_path1/Offset1
+        - /drone01/Mapping1/map raw1
         - /drone01/Mapping1/map inflate1
         - /drone01/Simulation1/depth1
         - /drone11/Mapping1/map inflate1
@@ -342,6 +343,34 @@ Visualization Manager:
           Name: Planning
         - Class: rviz/Group
           Displays:
+            - Alpha: 1
+              Autocompute Intensity Bounds: true
+              Autocompute Value Bounds:
+                Max Value: 2.075000047683716
+                Min Value: -0.02500000037252903
+                Value: true
+              Axis: Z
+              Channel Name: intensity
+              Class: rviz/PointCloud2
+              Color: 0; 200; 120
+              Color Transformer: FlatColor
+              Decay Time: 0
+              Enabled: true
+              Invert Rainbow: false
+              Max Color: 255; 255; 255
+              Min Color: 0; 0; 0
+              Name: map raw
+              Position Transformer: XYZ
+              Queue Size: 10
+              Selectable: false
+              Size (Pixels): 2
+              Size (m): 0.05000000074505806
+              Style: Boxes
+              Topic: /drone_0_diff_planner_node/grid_map/occupancy
+              Unreliable: false
+              Use Fixed Frame: true
+              Use rainbow: false
+              Value: true
             - Alpha: 1
               Autocompute Intensity Bounds: true
               Autocompute Value Bounds:

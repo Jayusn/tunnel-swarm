@@ -54,6 +54,15 @@ namespace diff_planner
     // if ((start_pt - local_target_pt).norm() < 0.2)
     //   cout << "Close to goal" << endl;
 
+    // 2026-07-06: 补充重规划入口诊断日志，直接打印起终点坐标及其在膨胀占据图中的状态，便于定位 world/odom/cloud 错位。
+    const int start_occ = grid_map_->getInflateOccupancy(start_pt);
+    const int goal_occ = grid_map_->getInflateOccupancy(local_target_pt);
+    ROS_WARN_STREAM("[replan_diag] start_pt=" << start_pt.transpose()
+                    << " start_occ=" << start_occ
+                    << " goal_pt=" << local_target_pt.transpose()
+                    << " goal_occ=" << goal_occ
+                    << " touch_goal=" << touch_goal);
+
     /*** STEP 1: INIT ***/
     ploy_traj_opt_->setIfTouchGoal(touch_goal);
     double ts = pp_.polyTraj_piece_length / pp_.max_vel_;

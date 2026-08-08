@@ -32,6 +32,6 @@ add_executable(moving_obstacles
   )
 target_link_libraries(moving_obstacles 
   ${catkin_LIBRARIES}
+  ## 2026-07-07: 显式链接 Diff 侧唯一的可视化库，避免联合工作空间里误连到其他 traj_utils 实现。
+  diff_traj_utils
   )
-
-

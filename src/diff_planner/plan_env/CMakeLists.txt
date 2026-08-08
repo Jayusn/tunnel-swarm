@@ -21,11 +21,18 @@ find_package(catkin REQUIRED COMPONENTS
 find_package(Eigen3 REQUIRED)
 find_package(PCL 1.7 REQUIRED)
 
+# 7.28
+# catkin_package(
+#  INCLUDE_DIRS include
+#  LIBRARIES plan_env
+#  CATKIN_DEPENDS roscpp std_msgs
+# #  DEPENDS system_lib
+# )
+
 catkin_package(
- INCLUDE_DIRS include
- LIBRARIES plan_env
- CATKIN_DEPENDS roscpp std_msgs
-#  DEPENDS system_lib
+  INCLUDE_DIRS include
+  LIBRARIES diff_plan_env_target
+  CATKIN_DEPENDS roscpp std_msgs
 )
 
 include_directories( 
@@ -39,12 +46,14 @@ include_directories(
 
 link_directories(${PCL_LIBRARY_DIRS})
 
-add_library( plan_env 
+## 2026-07-07: 在联合工作空间里避开 FUEL/fuel_plan_env 导出的同名 CMake target 冲突，但仍输出 plan_env 库名供原依赖使用。
+add_library( diff_plan_env_target 
     src/grid_map.cpp 
     src/raycast.cpp
     )
+set_target_properties(diff_plan_env_target PROPERTIES OUTPUT_NAME plan_env)
 
-target_link_libraries( plan_env
+target_link_libraries( diff_plan_env_target
     ${catkin_LIBRARIES} 
     ${PCL_LIBRARIES}
     )  

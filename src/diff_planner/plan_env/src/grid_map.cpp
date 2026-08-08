@@ -18,6 +18,10 @@ void GridMap::initMap(ros::NodeHandle &nh)
   node_.param("grid_map/enable_virtual_wall", mp_.enable_virtual_wall_, false);
   node_.param("grid_map/virtual_ceil", mp_.virtual_ceil_, -1.0);
   node_.param("grid_map/virtual_ground", mp_.virtual_ground_, -1.0);
+  // 2026-07-06: 对 FAST-LIO /cloud_registered 这类已在 world/camera_init 系下的点云，默认允许通过参数关闭额外 init 偏移。
+  node_.param("grid_map/cloud_use_init_offset", mp_.cloud_use_init_offset_, true);
+  // 2026-07-07: 允许把局部 ring buffer 固定在初始世界窗口内，从而为小场景保留历史障碍供后续规划复用。
+  node_.param("grid_map/preserve_global_map", mp_.preserve_global_map_, false);
 
   node_.param("grid_map/fx", mp_.fx_, -1.0);
   node_.param("grid_map/fy", mp_.fy_, -1.0);
@@ -225,17 +229,25 @@ void GridMap::visCallback(const ros::TimerEvent & /*event*/)
 
 void GridMap::fadingCallback(const ros::TimerEvent & /*event*/)
 {
-  const double reduce = (mp_.clamp_max_log_ - mp_.min_occupancy_log_) / (mp_.fading_time_ * 2); // function called at 2Hz
-  const double low_thres = mp_.clamp_min_log_ + reduce;
+  // 2026-07-28: 激光点云融合后必须用lidar的log-odds上下限和占据阈值衰减；
+  // 旧代码固定使用深度相机阈值，会使配置的3s衰减实际拖延，膔胀层长时间保留鬼影。
+  const double clamp_max_log =
+      md_.use_lidar_prob_for_update_ ? mp_.lidar_clamp_max_log_ : mp_.clamp_max_log_;
+  const double clamp_min_log =
+      md_.use_lidar_prob_for_update_ ? mp_.lidar_clamp_min_log_ : mp_.clamp_min_log_;
+  const double occupancy_log =
+      md_.use_lidar_prob_for_update_ ? mp_.lidar_min_occupancy_log_ : mp_.min_occupancy_log_;
+  const double reduce = (clamp_max_log - occupancy_log) / (mp_.fading_time_ * 2); // function called at 2Hz
+  const double low_thres = clamp_min_log + reduce;
 
   ros::Time t0 = ros::Time::now();
   for (size_t i = 0; i < md_.occupancy_buffer_.size(); ++i)
   {
     if (md_.occupancy_buffer_[i] > low_thres)
     {
-      bool obs_flag = md_.occupancy_buffer_[i] >= mp_.min_occupancy_log_;
+      bool obs_flag = md_.occupancy_buffer_[i] >= occupancy_log;
       md_.occupancy_buffer_[i] -= reduce;
-      if (obs_flag && md_.occupancy_buffer_[i] < mp_.min_occupancy_log_)
+      if (obs_flag && md_.occupancy_buffer_[i] < occupancy_log)
       {
         Eigen::Vector3i idx = BufIdx2GlobalIdx(i);
         int inf_buf_idx = globalIdx2InfBufIdx(idx);
@@ -385,7 +397,11 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &msg)
   {
     if (!std::isfinite(pt.x + pt.y + pt.z))
       continue;
-    md_.proj_points_[md_.proj_points_cnt_++] = Eigen::Vector3d(pt.x + mp_.init_x_, pt.y + mp_.init_y_, pt.z + mp_.init_z_);
+    // 2026-07-06: 仅在点云仍是局部机体系时叠加 init 偏移；world 系注册点云直接使用原始坐标。
+    if (mp_.cloud_use_init_offset_)
+      md_.proj_points_[md_.proj_points_cnt_++] = Eigen::Vector3d(pt.x + mp_.init_x_, pt.y + mp_.init_y_, pt.z + mp_.init_z_);
+    else
+      md_.proj_points_[md_.proj_points_cnt_++] = Eigen::Vector3d(pt.x, pt.y, pt.z);
   }
   moveRingBuffer();          
   md_.use_lidar_prob_for_update_ = true;
@@ -412,6 +428,17 @@ void GridMap::moveRingBuffer()
 {
   if (!mp_.have_initialized_)
     initMapBoundary();
+
+  // 2026-07-07: 全局保留模式下固定世界窗口边界，避免随相机移动调用 clearBuffer 清掉历史障碍。
+  if (mp_.preserve_global_map_)
+  {
+    if (!isInBuf(md_.camera_pos_) && !md_.fixed_window_overflow_warned_)
+    {
+      md_.fixed_window_overflow_warned_ = true;
+      ROS_WARN("grid_map/preserve_global_map=true but camera moved outside the fixed world window. Increase local_map_size_x/y/z if planning starts losing map coverage.");
+    }
+    return;
+  }
 
   Eigen::Vector3i center_new = pos2GlobalIdx(md_.camera_pos_);
   Eigen::Vector3i ringbuffer_lowbound3i_new = center_new - mp_.local_update_range3i_;
@@ -810,6 +837,8 @@ void GridMap::initMapBoundary()
   md_.ringbuffer_inf_lowbound3d_ = md_.ringbuffer_lowbound3d_ - inf_grid3d;
   md_.ringbuffer_inf_upbound3i_ = md_.ringbuffer_upbound3i_ + inf_grid3i;
   md_.ringbuffer_inf_upbound3d_ = md_.ringbuffer_upbound3d_ + inf_grid3d;
+  // 2026-07-07: 初始化固定世界窗口越界告警状态，避免继承旧状态影响当前建图会话。
+  md_.fixed_window_overflow_warned_ = false;
 
   // cout << "md_.ringbuffer_lowbound3i_=" << md_.ringbuffer_lowbound3i_.transpose() << " md_.ringbuffer_lowbound3d_=" << md_.ringbuffer_lowbound3d_.transpose() << " md_.ringbuffer_upbound3i_=" << md_.ringbuffer_upbound3i_.transpose() << " md_.ringbuffer_upbound3d_=" << md_.ringbuffer_upbound3d_.transpose() << endl;
 
@@ -946,7 +975,8 @@ void GridMap::publishMap()
         for (double zd = lbz + mp_.resolution_ / 2; zd <= ubz; zd += mp_.resolution_)
         {
           Eigen::Vector3d relative_dir = (Eigen::Vector3d(xd, yd, zd) - md_.camera_pos_);
-          if (heading.dot(relative_dir.normalized()) > 0.5)
+          // 2026-07-07: 固定世界窗口保留模式下取消“只显示机头前方”裁剪，避免 RViz 误以为历史建图被清空。
+          if (mp_.preserve_global_map_ || heading.dot(relative_dir.normalized()) > 0.5)
           {
             if (md_.occupancy_buffer_[globalIdx2BufIdx(pos2GlobalIdx(Eigen::Vector3d(xd, yd, zd)))] >= mp_.min_occupancy_log_)
               cloud.push_back(pcl::PointXYZ(xd, yd, zd));
@@ -980,7 +1010,8 @@ void GridMap::publishMapInflate()
         for (double zd = lbz + mp_.resolution_ / 2; zd < ubz; zd += mp_.resolution_)
         {
           Eigen::Vector3d relative_dir = (Eigen::Vector3d(xd, yd, zd) - md_.camera_pos_);
-          if (heading.dot(relative_dir.normalized()) > 0.0)
+          // 2026-07-07: 固定世界窗口保留模式下完整发布膨胀占据图，便于直接观察历史障碍是否持续参与规划。
+          if (mp_.preserve_global_map_ || heading.dot(relative_dir.normalized()) > 0.0)
           {
             if (md_.occupancy_buffer_inflate_[globalIdx2InfBufIdx(pos2GlobalIdx(Eigen::Vector3d(xd, yd, zd)))])
               cloud.push_back(pcl::PointXYZ(xd, yd, zd));

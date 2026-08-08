@@ -9,6 +9,7 @@
 using namespace Eigen;
 
 ros::Publisher pos_cmd_pub;
+ros::Publisher traj_started_pub;
 
 quadrotor_msgs::PositionCommand cmd;
 // double pos_gain[3] = {0, 0, 0};
@@ -34,6 +35,7 @@ double YAW_DOT_DOT_MAX_PER_SEC = 5 * M_PI;
 
 bool receive_yaw_ = false;
 ros::Time receive_yaw_time_(0);
+bool traj_started_published_ = false;
 
 void heartbeatCallback(std_msgs::EmptyPtr msg)
 {
@@ -84,6 +86,8 @@ void polyTrajCallback(traj_utils::PolyTrajPtr msg)
   traj_id_ = msg->traj_id;
 
   receive_traj_ = true;
+  // 2026-07-07: 新轨迹到来时允许重新发一次 /planning/traj_started，兼容重规划与重复任务启动。
+  traj_started_published_ = false;
 }
 
 std::pair<double, double> calculate_yaw(double t_cur, Eigen::Vector3d &pos, double dt)
@@ -179,6 +183,14 @@ void publish_cmd(Vector3d p, Vector3d v, Vector3d a, Vector3d j, double y, doubl
   cmd.yaw = y;
   cmd.yaw_dot = yd;
   pos_cmd_pub.publish(cmd);
+  if (!traj_started_published_)
+  {
+    // 2026-07-07: 第一次真正发出 PositionCommand 时同步发布 latched /planning/traj_started，
+    // 用于通知 ego_start.py 停止重复发送 /start_after_hover，并让依赖该确认的话题链路解锁。
+    std_msgs::Empty started_msg;
+    traj_started_pub.publish(started_msg);
+    traj_started_published_ = true;
+  }
 
   last_pos_ = p;
 }
@@ -342,6 +354,7 @@ int main(int argc, char **argv)
   ros::Subscriber heartbeat_sub = nh.subscribe("heartbeat", 10, heartbeatCallback);
   
   pos_cmd_pub = nh.advertise<quadrotor_msgs::PositionCommand>("/position_cmd", 50);
+  traj_started_pub = nh.advertise<std_msgs::Empty>("/planning/traj_started", 1, true);
 
   ros::Timer cmd_timer = nh.createTimer(ros::Duration(0.01), cmdCallback);
 

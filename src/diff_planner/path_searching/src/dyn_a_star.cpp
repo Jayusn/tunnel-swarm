@@ -120,7 +120,8 @@ bool AStar::ConvertToIndexAndAdjustStartEndPoints(Vector3d start_pt, Vector3d en
         // ROS_WARN("End point is insdide an obstacle.");
         do
         {
-            end_pt = (end_pt - start_pt).normalized() * step_size_ + end_pt;
+            // 2026-07-07: 终点落在障碍/膨胀层里时，应沿着 start->end 反方向回退到最近自由点，避免继续向外推导致直接越出地图边界。
+            end_pt = end_pt - (end_pt - start_pt).normalized() * step_size_;
             // cout << "end_pt=" << end_pt.transpose() << endl;
             if (!Coord2Index(end_pt, end_idx))
             {

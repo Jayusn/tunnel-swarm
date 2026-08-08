@@ -31,6 +31,8 @@ add_message_files(
   TRPYCommand.msg
   Odometry.msg
   PolynomialTrajectory.msg
+  PolynomialMatrix.msg
+  PolynomialTraj.msg
   OptimalTimeAllocator.msg
   TrajectoryMatrix.msg
   ReplanCheck.msg
@@ -75,4 +77,3 @@ include_directories(${EIGEN3_INCLUDE_DIR})
 #     decode_msgs 
 #     encode_msgs
 # )
-

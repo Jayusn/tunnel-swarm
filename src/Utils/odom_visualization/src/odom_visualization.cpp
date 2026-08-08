@@ -17,6 +17,11 @@ using namespace std;
 
 static string mesh_resource;
 static double color_r, color_g, color_b, color_a, cov_scale, scale, rotate_yaw;
+static bool use_cmd_yaw_for_mesh = false;
+static double cmd_yaw_timeout = 0.5;
+static double last_cmd_yaw = 0.0;
+static bool has_cmd_yaw = false;
+static ros::Time last_cmd_yaw_stamp;
 
 bool cross_config = false;
 bool tf45 = false;
@@ -47,6 +52,15 @@ visualization_msgs::Marker meshROS;
 sensor_msgs::Range heightROS;
 string _frame_id;
 int _drone_id;
+
+double wrapYaw(double yaw)
+{
+  while (yaw > M_PI)
+    yaw -= 2.0 * M_PI;
+  while (yaw < -M_PI)
+    yaw += 2.0 * M_PI;
+  return yaw;
+}
 
 void odom_callback(const nav_msgs::Odometry::ConstPtr &msg)
 {
@@ -85,7 +99,8 @@ void odom_callback(const nav_msgs::Odometry::ConstPtr &msg)
   // Pose
   poseROS.header = msg->header;
   poseROS.header.stamp = msg->header.stamp;
-  poseROS.header.frame_id = string("world");
+  // 2026-07-14: 使用每架无人机配置的局部里程计 frame，由 RViz 通过 TF 统一到 world，避免双机轨迹重叠在原点。
+  poseROS.header.frame_id = _frame_id;
   poseROS.pose.position.x = pose(0);
   poseROS.pose.position.y = pose(1);
   poseROS.pose.position.z = pose(2);
@@ -102,7 +117,7 @@ void odom_callback(const nav_msgs::Odometry::ConstPtr &msg)
   yprVel(1) = -atan2(vel(2), norm(vel.rows(0, 1), 2));
   yprVel(2) = 0;
   q = R_to_quaternion(ypr_to_R(yprVel));
-  velROS.header.frame_id = string("world");
+  velROS.header.frame_id = _frame_id;
   velROS.header.stamp = msg->header.stamp;
   velROS.ns = string("velocity");
   velROS.id = _drone_id;
@@ -171,7 +186,7 @@ void odom_callback(const nav_msgs::Odometry::ConstPtr &msg)
         }
       }
     }
-    covROS.header.frame_id = string("world");
+    covROS.header.frame_id = _frame_id;
     covROS.header.stamp = msg->header.stamp;
     covROS.ns = string("covariance");
     covROS.id = _drone_id;
@@ -220,7 +235,7 @@ void odom_callback(const nav_msgs::Odometry::ConstPtr &msg)
         }
       }
     }
-    covVelROS.header.frame_id = string("world");
+    covVelROS.header.frame_id = _frame_id;
     covVelROS.header.stamp = msg->header.stamp;
     covVelROS.ns = string("covariance_velocity");
     covVelROS.id = _drone_id;
@@ -250,7 +265,7 @@ void odom_callback(const nav_msgs::Odometry::ConstPtr &msg)
   ros::Time t = msg->header.stamp;
   if ((t - pt).toSec() > 0.5)
   {
-    trajROS.header.frame_id = string("world");
+    trajROS.header.frame_id = _frame_id;
     trajROS.header.stamp = ros::Time::now();
     trajROS.ns = string("trajectory");
     trajROS.type = visualization_msgs::Marker::LINE_LIST;
@@ -291,7 +306,7 @@ void odom_callback(const nav_msgs::Odometry::ConstPtr &msg)
   }
 
   // Sensor availability
-  sensorROS.header.frame_id = string("world");
+  sensorROS.header.frame_id = _frame_id;
   sensorROS.header.stamp = msg->header.stamp;
   sensorROS.ns = string("sensor");
   sensorROS.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
@@ -340,6 +355,12 @@ void odom_callback(const nav_msgs::Odometry::ConstPtr &msg)
   q(2) = msg->pose.pose.orientation.y;
   q(3) = msg->pose.pose.orientation.z;
   colvec ypr = R_to_ypr(quaternion_to_R(q));
+  // 2026-07-08: 雷达探索模式下允许 RViz 机体模型优先跟随规划/控制期望 yaw，避免 /Odometry 姿态近似不变时机头显示一直不转。
+  if (use_cmd_yaw_for_mesh && has_cmd_yaw &&
+      (msg->header.stamp - last_cmd_yaw_stamp).toSec() < cmd_yaw_timeout)
+  {
+    ypr(0) = last_cmd_yaw;
+  }
   ypr(0) += rotate_yaw * PI / 180.0;
   q = R_to_quaternion(ypr_to_R(ypr));
   if (cross_config)
@@ -388,7 +409,7 @@ void odom_callback(const nav_msgs::Odometry::ConstPtr &msg)
     string vision_s = _drone_id == -1 ? string("vision") : string("vision") + std::to_string(_drone_id);
     string height_s = _drone_id == -1 ? string("height") : string("height") + std::to_string(_drone_id);
 
-    broadcaster->sendTransform(tf::StampedTransform(transform, msg->header.stamp, string("world"), base_s));
+    broadcaster->sendTransform(tf::StampedTransform(transform, msg->header.stamp, _frame_id, base_s));
     broadcaster->sendTransform(tf::StampedTransform(transform45, msg->header.stamp, base_s, laser_s));
     broadcaster->sendTransform(tf::StampedTransform(transform45, msg->header.stamp, base_s, vision_s));
     broadcaster->sendTransform(tf::StampedTransform(transform90, msg->header.stamp, base_s, height_s));
@@ -400,47 +421,13 @@ void cmd_callback(const quadrotor_msgs::PositionCommand cmd)
   if (cmd.header.frame_id == string("null"))
     return;
 
-  colvec pose(6);
-  pose(0) = cmd.position.x;
-  pose(1) = cmd.position.y;
-  pose(2) = cmd.position.z;
-  colvec q(4);
-  q(0) = 1.0;
-  q(1) = 0.0;
-  q(2) = 0.0;
-  q(3) = 0.0;
-  pose.rows(3, 5) = R_to_ypr(quaternion_to_R(q));
+  // 2026-07-08: 记录最近一次规划期望 yaw，供 odom_callback 在雷达模式下覆盖 mesh 朝向显示。
+  last_cmd_yaw = wrapYaw(cmd.yaw);
+  last_cmd_yaw_stamp = cmd.header.stamp;
+  has_cmd_yaw = true;
 
-  // Mesh model
-  meshROS.header.frame_id = _frame_id;
-  meshROS.header.stamp = cmd.header.stamp;
-  meshROS.ns = "drone";
-  meshROS.id = _drone_id;
-  meshROS.type = visualization_msgs::Marker::MESH_RESOURCE;
-  meshROS.action = visualization_msgs::Marker::ADD;
-  meshROS.pose.position.x = cmd.position.x;
-  meshROS.pose.position.y = cmd.position.y;
-  meshROS.pose.position.z = cmd.position.z;
-
-  if (cross_config)
-  {
-    colvec ypr = R_to_ypr(quaternion_to_R(q));
-    ypr(0) += 45.0 * PI / 180.0;
-    q = R_to_quaternion(ypr_to_R(ypr));
-  }
-  meshROS.pose.orientation.w = q(0);
-  meshROS.pose.orientation.x = q(1);
-  meshROS.pose.orientation.y = q(2);
-  meshROS.pose.orientation.z = q(3);
-  meshROS.scale.x = 2.0;
-  meshROS.scale.y = 2.0;
-  meshROS.scale.z = 2.0;
-  meshROS.color.a = color_a;
-  meshROS.color.r = color_r;
-  meshROS.color.g = color_g;
-  meshROS.color.b = color_b;
-  meshROS.mesh_resource = mesh_resource;
-  meshPub.publish(meshROS);
+  // 2026-07-16: PositionCommand 只缓存可选的规划 yaw，机体位置、尺寸和 Marker 始终由
+  // Odometry 回调发布；修复 use_cmd_yaw_for_mesh=false 时 2.0 倍大模型覆盖正常机体的问题。
 }
 
 int main(int argc, char **argv)
@@ -457,6 +444,9 @@ int main(int argc, char **argv)
   n.param("robot_scale", scale, 2.0);
   n.param("frame_id", _frame_id, string("world"));
   n.param("rotate_yaw_deg", rotate_yaw, 0.0);
+  // 2026-07-08: 新增开关，允许可视化机体机头跟随 /planning/pos_cmd.yaw，而不是仅跟随 /Odometry 姿态。
+  n.param("use_cmd_yaw_for_mesh", use_cmd_yaw_for_mesh, false);
+  n.param("cmd_yaw_timeout", cmd_yaw_timeout, 0.5);
 
   n.param("cross_config", cross_config, false);
   n.param("tf45", tf45, false);

@@ -18,12 +18,18 @@ find_package(catkin REQUIRED COMPONENTS
   cv_bridge
 )
 
+# 7.28
+# catkin_package(
+#  INCLUDE_DIRS include
+#  LIBRARIES path_searching
+#  CATKIN_DEPENDS plan_env
+# #  DEPENDS system_lib
+# )
 
 catkin_package(
- INCLUDE_DIRS include
- LIBRARIES path_searching
- CATKIN_DEPENDS plan_env
-#  DEPENDS system_lib
+  INCLUDE_DIRS include
+  LIBRARIES diff_path_searching_target
+  CATKIN_DEPENDS plan_env
 )
 
 include_directories( 
@@ -34,9 +40,11 @@ include_directories(
     ${PCL_INCLUDE_DIRS}
 )
 
-add_library( path_searching 
+## 2026-07-07: 在联合工作空间里避开 FUEL/fuel_path_searching 导出的同名 CMake target 冲突，但仍输出 path_searching 库名供原依赖使用。
+add_library( diff_path_searching_target 
     src/dyn_a_star.cpp
     )
-target_link_libraries( path_searching
+set_target_properties(diff_path_searching_target PROPERTIES OUTPUT_NAME path_searching)
+target_link_libraries( diff_path_searching_target
     ${catkin_LIBRARIES} 
     )  

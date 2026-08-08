@@ -47,6 +47,10 @@ struct MappingParameters
   bool enable_virtual_wall_;
   double virtual_ceil_, virtual_ground_;
   double init_x_, init_y_, init_z_;
+  // 2026-07-06: 允许按 launch 显式控制点云是否需要叠加出生点偏移，避免 world 系点云被二次平移。
+  bool cloud_use_init_offset_;
+  // 2026-07-07: 增加固定世界窗口保留模式，开启后停止随机体运动清空滑窗外历史障碍。
+  bool preserve_global_map_;
 
   /* camera parameters */
   double cx_, cy_, fx_, fy_;
@@ -96,6 +100,8 @@ struct MappingData
   Eigen::Vector3d ringbuffer_inf_upbound3d_;
   Eigen::Vector3i ringbuffer_inf_upbound3i_;
   Eigen::Vector3i ringbuffer_inf_size3i_;
+  // 2026-07-07: 记录固定世界窗口中心是否已越界告警，避免全局保留模式下重复刷屏。
+  bool fixed_window_overflow_warned_ = false;
 
   // main map data, occupancy of each voxel
 

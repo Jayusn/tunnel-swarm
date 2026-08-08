@@ -17,6 +17,7 @@ catkin_package(
 include_directories(
   ${EIGEN3_INCLUDE_DIR}
   ${catkin_INCLUDE_DIRS}
+  /usr/include/eigen3
   
 )
 
