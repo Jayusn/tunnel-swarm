@@ -129,7 +129,8 @@ public:
     nh_.param("search_manager/reissue_timeout", reissue_timeout_, 4.0);
     nh_.param("search_manager/stale_cloud_timeout", stale_cloud_timeout_, 1.0);
     nh_.param("search_manager/entry_detection_mode", entry_detection_mode_, std::string("a"));
-    if (entry_detection_mode_ != "a" && entry_detection_mode_ != "b") {
+    if (entry_detection_mode_ != "a" && entry_detection_mode_ != "b" &&
+        entry_detection_mode_ != "c") {
       ROS_ERROR("[corridor_search_manager] invalid entry_detection_mode='%s', fallback to mode a.",
                 entry_detection_mode_.c_str());
       entry_detection_mode_ = "a";
@@ -164,6 +165,9 @@ public:
     nh_.param("search_manager/door_prefer_width", door_prefer_width_, 1.2);
     nh_.param("search_manager/door_pass_dist", door_pass_dist_, 0.8);
     nh_.param("search_manager/door_cross_trigger_dist", door_cross_trigger_dist_, 0.25);
+    nh_.param("search_manager/door_x_offset", door_x_offset_, 0.0);
+    nh_.param("search_manager/max_entry_door_distance", max_entry_door_distance_, 2.5);
+    nh_.param("search_manager/entry_yaw_hold_radius", entry_yaw_hold_radius_, 0.25);
     nh_.param("search_manager/door_mid_free_margin", door_mid_free_margin_, 0.55);
     nh_.param("search_manager/door_mid_block_margin", door_mid_block_margin_, 0.20);
     nh_.param("search_manager/max_door_center_lateral", max_door_center_lateral_, 1.4);
@@ -203,7 +207,7 @@ public:
     // 2026-07-10: 比赛门可能不是墙体开洞，而是两根竖直柱形成的 portal。
     // 这种门两侧没有连续墙，必须单独按“竖向柱对 + 中间可通 + 后方可通”识别。
     nh_.param("search_manager/portal_min_post_height", portal_min_post_height_, 0.70);
-    nh_.param("search_manager/portal_max_depth_mismatch", portal_max_depth_mismatch_, 0.25);
+    nh_.param("search_manager/portal_max_depth_mismatch", portal_max_depth_mismatch_, 0.35);
     nh_.param("search_manager/portal_max_gap_occupied", portal_max_gap_occupied_, 1);
     // 2026-07-10: portal 不能只靠两根柱子成立，门后必须继续出现通道/侧墙结构；
     // 否则天花板投影或近处柱状碎片会被误认为入口。
@@ -213,7 +217,8 @@ public:
     // 这里增加地图预热和门候选连续确认，避免刚起飞就被一帧坏地图带跑。
     nh_.param("search_manager/map_ready_hold_sec", map_ready_hold_sec_, 1.8);
     nh_.param("search_manager/map_ready_min_points", map_ready_min_points_, 120);
-    nh_.param("search_manager/door_confirm_cycles", door_confirm_cycles_, 3);
+    nh_.param("search_manager/door_confirmation_enabled", door_confirmation_enabled_, true);
+    nh_.param("search_manager/door_confirm_cycles", door_confirm_cycles_, 2);
     nh_.param("search_manager/door_confirm_pos_tol", door_confirm_pos_tol_, 0.35);
     nh_.param("search_manager/door_confirm_width_tol", door_confirm_width_tol_, 0.30);
     // 2026-07-10: 前置阶段要找“第一道入口”，不是找通道里结构分最高/最深的截面；
@@ -239,7 +244,9 @@ public:
     nh_.param("search_manager/max_debug_reject_markers", max_debug_reject_markers_, 16);
 
     ROS_WARN("[corridor_search_manager] entry detector mode=%s (%s).",
-             entry_detection_mode_.c_str(), entry_detection_mode_ == "b" ? "soft frame" : "legacy");
+             entry_detection_mode_.c_str(),
+             entry_detection_mode_ == "c" ? "nearest geometric frame" :
+             (entry_detection_mode_ == "b" ? "soft frame" : "legacy"));
 
     odom_sub_ = nh_.subscribe(odom_topic_, 1, &CorridorSearchManager::odomCallback, this);
     cloud_sub_ = nh_.subscribe(cloud_topic_, 1, &CorridorSearchManager::cloudCallback, this);
@@ -447,6 +454,12 @@ private:
   }
 
   bool confirmDoorCandidate(const CandidateScore& candidate) {
+    if (!door_confirmation_enabled_) {
+      have_pending_door_ = false;
+      pending_door_confirm_count_ = 0;
+      return candidate.door_detected;
+    }
+
     if (!candidate.door_detected) {
       have_pending_door_ = false;
       pending_door_confirm_count_ = 0;
@@ -485,6 +498,19 @@ private:
     }
 
     return score > best.score;
+  }
+
+  bool shouldReplaceDoorCandidateForMode(double score, double progress,
+                                         const CandidateScore& best,
+                                         bool soft_frame_mode,
+                                         bool nearest_geometric_mode) const {
+    if (!best.door_detected) return true;
+    if (!soft_frame_mode) return shouldReplaceDoorCandidate(score, progress, best);
+    if (nearest_geometric_mode)
+      return diff_planner::entry_frame::modeCShouldReplaceDoor(
+          score, progress, best.score, best.ref_progress, 0.05);
+    return diff_planner::entry_frame::modeBShouldReplaceDoor(
+        score, progress, best.score, best.ref_progress, 0.10);
   }
 
   void timerCallback(const ros::TimerEvent&) {
@@ -534,11 +560,18 @@ private:
       CandidateScore candidate = detectEntryCandidate();
       const bool support_ok = candidate.support_count >= min_entry_support_points_;
       const bool progress_ok = candidate.ref_progress >= min_entry_progress_;
-      const bool door_confirmed = confirmDoorCandidate(candidate);
+      const double door_distance =
+          candidate.door_detected
+              ? std::hypot(candidate.door_point.x - odom_.pose.pose.position.x,
+                           candidate.door_point.y - odom_.pose.pose.position.y)
+              : std::numeric_limits<double>::infinity();
+      const bool distance_ok = door_distance <= max_entry_door_distance_;
+      const bool door_confirmed = distance_ok && confirmDoorCandidate(candidate);
       // 未经连续确认的入口候选只用于检测和调试，不能直接发给飞控。
       // 否则累计地图每次更新造成的门中心/航向小幅跳变，会通过 PositionCommand
       // 直接表现为无人机左右摆动。
-      const bool entry_ready = candidate.door_detected && support_ok && progress_ok && door_confirmed;
+      const bool entry_ready =
+          candidate.door_detected && support_ok && progress_ok && distance_ok && door_confirmed;
       if (entry_ready) {
         publishGoal(candidate, now, "confirmed_entry");
       } else {
@@ -557,12 +590,20 @@ private:
                           candidate.door_point.y, candidate.door_width, candidate.support_count,
                           candidate.ref_progress);
       }
+      if (candidate.door_detected && !distance_ok) {
+        ROS_WARN_THROTTLE(
+            0.8,
+            "[corridor_search_manager] door candidate %.2fm away; wait until within %.2fm before locking.",
+            door_distance, max_entry_door_distance_);
+      }
       if (entry_ready) {
         // 2026-07-08 19:26: 一旦在前向扇区里找到足够像门框的候选，就锁定入口，后续只准压着这个门过。
         locked_entry_goal_ = active_goal_;
         entry_locked_ = true;
         locked_door_detected_ = candidate.door_detected;
-        locked_door_point_ = candidate.door_point;
+        // 对外统一使用经过 door_x_offset 修正后的目标点作为门平面。触发位置、workspace
+        // 锁和 FUEL 禁回头边界必须共用同一坐标，不能再混用原始检测门中心。
+        locked_door_point_ = active_goal_.pose.position;
         locked_entry_yaw_ = candidate.yaw;
         locked_door_width_ = candidate.door_width;
         mission_stage_ = APPROACH_ENTRY;
@@ -706,7 +747,9 @@ private:
     // 2026-07-09: 显式找“左右墙柱 + 中间空隙”的门框几何。
     // 上一版把“开口”误写成“前方有足够远的点云”，这在雷达场景里会把真门口漏掉，
     // 因为门中间往往正是空的。这里改成直接找两侧近墙点和中间空隙。
-    CandidateScore door_candidate = detectDoorOpening(entry_detection_mode_ == "b");
+    CandidateScore door_candidate = detectDoorOpening(
+        entry_detection_mode_ == "b" || entry_detection_mode_ == "c",
+        entry_detection_mode_ == "c");
     if (door_candidate.door_detected) {
       return door_candidate;
     }
@@ -718,7 +761,8 @@ private:
     return makeHoldCandidate(entry_search_ref_yaw_);
   }
 
-  CandidateScore detectDoorOpening(bool soft_frame_mode) const {
+  CandidateScore detectDoorOpening(bool soft_frame_mode,
+                                   bool nearest_geometric_mode) const {
     // 2026-07-09: 门检测改成“局部二维栅格 + 连通域”。
     // 不再依赖角度 bin 的“墙-空-墙”瞬时几何，而是在前向局部地图里直接找
     // 被两侧占据夹出的可通行自由矩形，并验证其后方是否连到更深的自由区域。
@@ -823,6 +867,8 @@ private:
     const double active_entry_depth = soft_frame_mode ? frame_b_min_known_free_depth_ : entry_door_depth_min_;
     const int active_mid_blocked_bins =
         soft_frame_mode ? frame_b_max_mid_blocked_bins_ : max_door_mid_blocked_bins_;
+    const double door_safety_check_dist = diff_planner::entry_frame::doorSafetyCheckDistance(
+        soft_frame_mode, door_pass_dist_, door_cross_trigger_dist_);
 
     // 2026-07-09: 这里开始使用 /sdf_map/occupancy_all，而不是 /cloud_registered。
     // 先从累计地图里裁剪机体前方窗口，再在这个窗口中找门框/通道入口。
@@ -1080,18 +1126,22 @@ private:
             if (!gapClearNearDoor(door_row, left_col, right_col)) continue;
 
             const int through_row =
-                std::min(rows - 1, door_row + static_cast<int>(std::ceil(door_pass_dist_ / grid_res)));
-            if (!pathToThroughClear(door_row, through_row, center_col)) {
+                std::min(rows - 1, door_row + static_cast<int>(std::ceil(door_safety_check_dist / grid_res)));
+            if (!nearest_geometric_mode &&
+                !pathToThroughClear(door_row, through_row, center_col)) {
               ++stats.path;
               publishRejectMarker(door_row, center_col, "portal_path");
               continue;
             }
             int portal_exit_support_rows = 0;
-            if (!portalExitSupported(door_row, through_row, left_col, right_col, center_col,
-                                     portal_exit_support_rows)) {
+            const bool portal_exit_supported = portalExitSupported(
+                door_row, through_row, left_col, right_col, center_col, portal_exit_support_rows);
+            if (!portal_exit_supported) {
               ++stats.portal_exit;
-              publishRejectMarker(door_row, center_col, "portal_exit");
-              continue;
+              if (diff_planner::entry_frame::portalExitRequired(soft_frame_mode)) {
+                publishRejectMarker(door_row, center_col, "portal_exit");
+                continue;
+              }
             }
 
             geometry_msgs::Point center_pt = gridToWorld(door_row, center_col);
@@ -1114,7 +1164,8 @@ private:
                                  0.25 * static_cast<double>(portal_exit_support_rows) +
                                  0.08 * static_cast<double>(left_support + right_support) -
                                  1.2 * std::fabs(center_lateral);
-            if (!shouldReplaceDoorCandidate(score, progress, best)) continue;
+            if (!shouldReplaceDoorCandidateForMode(
+                    score, progress, best, soft_frame_mode, nearest_geometric_mode)) continue;
 
             best.score = score;
             best.yaw = entry_search_ref_yaw_;
@@ -1183,7 +1234,7 @@ private:
           if (std::fabs(center_lateral) > max_door_center_lateral_) continue;
 
           const int through_row =
-              std::min(rows - 1, row + static_cast<int>(std::ceil(door_pass_dist_ / grid_res)));
+              std::min(rows - 1, row + static_cast<int>(std::ceil(door_safety_check_dist / grid_res)));
           if (!pathToThroughClear(row, through_row, center_col)) {
             ++stats.path;
             publishRejectMarker(row, center_col, "path");
@@ -1209,7 +1260,8 @@ private:
           const double score = 4.2 * progress + 2.4 * open_depth + 1.8 * free_ratio +
                                0.08 * static_cast<double>(wall_support) -
                                1.0 * std::fabs(center_lateral);
-          if (!shouldReplaceDoorCandidate(score, progress, best)) continue;
+          if (!shouldReplaceDoorCandidateForMode(
+                  score, progress, best, soft_frame_mode, nearest_geometric_mode)) continue;
 
           geometry_msgs::Point inferred_post = gridToWorld(row, wall_col + gap_dir * gap_cells);
           best.score = score;
@@ -1305,7 +1357,8 @@ private:
         const int checked_rows = std::max(1, row_window - row + 1);
         const double free_ratio = static_cast<double>(free_like_rows) / static_cast<double>(checked_rows);
         const int required_support_rows = soft_frame_mode ? 1 : entry_door_support_rows_min_;
-        if (support_rows < required_support_rows || free_ratio < active_free_ratio) continue;
+        if (support_rows < required_support_rows ||
+            (!nearest_geometric_mode && free_ratio < active_free_ratio)) continue;
 
         geometry_msgs::Point left_post;
         geometry_msgs::Point right_post;
@@ -1374,10 +1427,11 @@ private:
         const bool is_frame_opening =
             width >= frame_opening_width_min_ &&
             frame_height >= active_post_height &&
-            open_depth >= (soft_frame_mode ? active_entry_depth : frame_opening_depth_min_) &&
+            (nearest_geometric_mode ||
+             open_depth >= (soft_frame_mode ? active_entry_depth : frame_opening_depth_min_)) &&
             (soft_frame_mode || unknown_ok);
         const bool is_entry_door =
-            open_depth >= active_entry_depth &&
+            (nearest_geometric_mode || open_depth >= active_entry_depth) &&
             support_rows >= required_support_rows &&
             (soft_frame_mode || unknown_ok);
         if (!is_frame_opening && !is_entry_door) continue;
@@ -1393,11 +1447,12 @@ private:
                              (soft_frame_mode ? frame_b_lintel_bonus_ * lintel_ratio : 0.0) +
                              (soft_frame_mode ? std::min(1.0, open_depth / frame_b_full_free_depth_) : 0.0) -
                              1.4 * std::fabs(real_center_lateral);
-        if (!shouldReplaceDoorCandidate(score, progress, best)) continue;
+        if (!shouldReplaceDoorCandidateForMode(
+                score, progress, best, soft_frame_mode, nearest_geometric_mode)) continue;
 
         const int through_row =
-            std::min(rows - 1, row + static_cast<int>(std::ceil(door_pass_dist_ / grid_res)));
-        if (!pathToThroughClear(row, through_row, center_col)) {
+            std::min(rows - 1, row + static_cast<int>(std::ceil(door_safety_check_dist / grid_res)));
+        if (!nearest_geometric_mode && !pathToThroughClear(row, through_row, center_col)) {
           ++stats.path;
           publishRejectMarker(row, center_col, "path");
           continue;
@@ -1502,7 +1557,7 @@ private:
           min_comp_row = std::min(min_comp_row, cr);
           max_comp_row = std::max(max_comp_row, cr);
         }
-        if (comp_cells < min_component_cells) {
+        if (!nearest_geometric_mode && comp_cells < min_component_cells) {
           ++stats.component;
           publishRejectMarker(row, seed_col, "component");
           continue;
@@ -1551,7 +1606,7 @@ private:
         }
         const double free_ratio =
             static_cast<double>(free_like_rows) / static_cast<double>(std::max(1, row_window - row + 1));
-        if (free_ratio < active_free_ratio) {
+        if (!nearest_geometric_mode && free_ratio < active_free_ratio) {
           ++stats.free_ratio;
           publishRejectMarker(row, seed_col, "free");
           continue;
@@ -1559,10 +1614,10 @@ private:
 
         geometry_msgs::Point center_pt = gridToWorld(row, seed_col);
         geometry_msgs::Point through_pt = gridToWorld(
-            std::min(rows - 1, row + static_cast<int>(std::ceil(door_pass_dist_ / grid_res))), seed_col);
+            std::min(rows - 1, row + static_cast<int>(std::ceil(door_safety_check_dist / grid_res))), seed_col);
         const int through_row =
-            std::min(rows - 1, row + static_cast<int>(std::ceil(door_pass_dist_ / grid_res)));
-        if (!pathToThroughClear(row, through_row, seed_col)) {
+            std::min(rows - 1, row + static_cast<int>(std::ceil(door_safety_check_dist / grid_res)));
+        if (!nearest_geometric_mode && !pathToThroughClear(row, through_row, seed_col)) {
           ++stats.path;
           publishRejectMarker(row, seed_col, "path");
           continue;
@@ -1629,12 +1684,13 @@ private:
         const bool is_frame_opening =
             width >= frame_opening_width_min_ &&
             frame_height >= (soft_frame_mode ? active_post_height : frame_opening_height_min_) &&
-            open_depth >= (soft_frame_mode ? active_entry_depth : frame_opening_depth_min_) &&
+            (nearest_geometric_mode ||
+             open_depth >= (soft_frame_mode ? active_entry_depth : frame_opening_depth_min_)) &&
             (soft_frame_mode || unknown_hits >= frame_unknown_hits_min_);
         const bool is_corridor_door =
             open_depth >= min_door_depth_ && support_rows >= std::max(2, min_depth_cells - 1);
         const bool is_entry_door =
-            open_depth >= active_entry_depth &&
+            (nearest_geometric_mode || open_depth >= active_entry_depth) &&
             support_rows >= (soft_frame_mode ? 1 : entry_door_support_rows_min_) &&
             (soft_frame_mode || unknown_hits >= entry_door_min_unknown_hits_);
         // 2026-07-09: 门分成三类：
@@ -1657,7 +1713,8 @@ private:
                              unknown_bias +
                              0.02 * static_cast<double>(left_support + right_support + comp_cells) -
                              1.2 * center_penalty;
-        if (!shouldReplaceDoorCandidate(score, progress, best)) continue;
+        if (!shouldReplaceDoorCandidateForMode(
+                score, progress, best, soft_frame_mode, nearest_geometric_mode)) continue;
 
         best.score = score;
         best.yaw = entry_search_ref_yaw_;
@@ -1679,6 +1736,10 @@ private:
       }
     }
 
+    if (best.door_detected) {
+      best.goal_point.x += door_x_offset_;
+    }
+
     ROS_WARN_THROTTLE(1.0,
                       "[corridor_search_manager][door_debug] occ=%d unknown=%d runs=%d accept=%d reject:"
                       " width=%d lateral=%d side=%d comp=%d progress=%d free=%d align=%d type=%d lintel=%d path=%d"
@@ -1686,7 +1747,8 @@ private:
                       stats.occ_window, stats.unknown_window, stats.runs, stats.accepted, stats.width,
                       stats.lateral, stats.side_wall, stats.component, stats.progress, stats.free_ratio,
                       stats.alignment, stats.semantic, stats.lintel, stats.path, stats.portal, stats.portal_exit,
-                      static_cast<int>(best.door_detected), soft_frame_mode ? "b" : "a");
+                      static_cast<int>(best.door_detected),
+                      nearest_geometric_mode ? "c" : (soft_frame_mode ? "b" : "a"));
     return best;
   }
 
@@ -1819,8 +1881,10 @@ private:
     if (entry_locked_ && locked_door_detected_) {
       const double dir_x = std::cos(locked_entry_yaw_);
       const double dir_y = std::sin(locked_entry_yaw_);
-      const double rel_x = odom_.pose.pose.position.x - locked_door_point_.x;
-      const double rel_y = odom_.pose.pose.position.y - locked_door_point_.y;
+      // 飞行目标允许相对检测门框做标定偏移；接管平面必须跟随实际目标，
+      // 否则目标停在门前而触发条件仍等待原始检测门坐标。
+      const double rel_x = odom_.pose.pose.position.x - locked_entry_goal_.pose.position.x;
+      const double rel_y = odom_.pose.pose.position.y - locked_entry_goal_.pose.position.y;
       const double cross_progress = rel_x * dir_x + rel_y * dir_y;
       const double lateral = std::fabs((-dir_y) * rel_x + dir_x * rel_y);
       if (cross_progress >= door_cross_trigger_dist_ &&
@@ -1844,6 +1908,9 @@ private:
     if (trigger_msg.pose.position.z < min_goal_z_) {
       trigger_msg.pose.position.z = min_goal_z_;
     }
+    // 交接瞬间用当前位置、零速度和当前航向覆盖旧入口目标。否则机体略微越过门前目标后，
+    // 旧目标会落到机尾，控制器在 FUEL 首条轨迹到达前把小幅回拉解释成 180 度掉头。
+    if (publish_pre_entry_pos_cmd_) publishPositionCommand(trigger_msg, now);
     exploration_trigger_pub_.publish(trigger_msg);
     exploration_triggered_ = true;
     mission_stage_ = HANDOFF_TO_EXPLORATION;
@@ -1862,7 +1929,7 @@ private:
 
     const double dx = goal.pose.position.x - odom_.pose.pose.position.x;
     const double dy = goal.pose.position.y - odom_.pose.pose.position.y;
-    if (std::hypot(dx, dy) > 0.05) {
+    if (std::hypot(dx, dy) > entry_yaw_hold_radius_) {
       cmd.yaw = std::atan2(dy, dx);
     } else {
       // 2026-07-09: 原地保持目标仍需要带 yaw，用于未识别到门时只转向扫图、不产生 XY 位移。
@@ -2183,6 +2250,9 @@ private:
   double door_prefer_width_{1.2};
   double door_pass_dist_{0.8};
   double door_cross_trigger_dist_{0.25};
+  double door_x_offset_{0.0};
+  double max_entry_door_distance_{2.5};
+  double entry_yaw_hold_radius_{0.25};
   double door_mid_free_margin_{0.55};
   double door_mid_block_margin_{0.20};
   double max_door_center_lateral_{1.4};
@@ -2194,7 +2264,7 @@ private:
   double frame_opening_height_min_{1.0};
   double frame_opening_depth_min_{0.45};
   double portal_min_post_height_{0.70};
-  double portal_max_depth_mismatch_{0.25};
+  double portal_max_depth_mismatch_{0.35};
   double portal_exit_probe_depth_{1.10};
 	  double map_ready_hold_sec_{1.8};
 	  double door_confirm_pos_tol_{0.35};
@@ -2224,7 +2294,8 @@ private:
   int frame_unknown_hits_min_{2};
   int portal_max_gap_occupied_{1};
   int portal_min_exit_support_rows_{4};
-	  int door_confirm_cycles_{3};
+	  int door_confirm_cycles_{2};
+	  bool door_confirmation_enabled_{true};
 	  int max_door_mid_blocked_bins_{1};
 	  int max_door_mid_near_bins_{0};
 	  int max_debug_reject_markers_{16};

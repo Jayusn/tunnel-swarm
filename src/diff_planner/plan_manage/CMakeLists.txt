@@ -66,5 +66,9 @@ target_link_libraries(goal_height_bridge ${catkin_LIBRARIES})
 ## 2026-07-08: 新增结构感知的走廊搜索管理器，用局部雷达点云给 Diff-Planner 提供“沿通道推进”的子目标，避免未知开阔区追地图边界。
 add_executable(corridor_search_manager src/corridor_search_manager.cpp)
 target_link_libraries(corridor_search_manager ${catkin_LIBRARIES} ${PCL_LIBRARIES})
+
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_nosetests(test/test_global_retention_launch.py)
+endif()
 # add_executable(monitor_node src/monitor_node.cpp)
 # target_link_libraries(monitor_node ${catkin_LIBRARIES})

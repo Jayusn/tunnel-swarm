@@ -19,6 +19,32 @@ inline bool oneSidedInferenceAllowed(bool soft_frame_mode) {
   return !soft_frame_mode;
 }
 
+inline double doorSafetyCheckDistance(bool soft_frame_mode, double pass_distance,
+                                      double handoff_distance) {
+  if (!soft_frame_mode) return pass_distance;
+  return std::min(pass_distance, std::max(0.0, handoff_distance));
+}
+
+inline bool portalExitRequired(bool soft_frame_mode) {
+  return !soft_frame_mode;
+}
+
+inline bool modeBShouldReplaceDoor(double candidate_score, double candidate_progress,
+                                   double best_score, double best_progress,
+                                   double same_plane_tolerance) {
+  if (candidate_progress + same_plane_tolerance < best_progress) return true;
+  if (candidate_progress > best_progress + same_plane_tolerance) return false;
+  return candidate_score > best_score;
+}
+
+inline bool modeCShouldReplaceDoor(double candidate_score, double candidate_progress,
+                                   double best_score, double best_progress,
+                                   double same_plane_tolerance) {
+  if (candidate_progress < best_progress - same_plane_tolerance) return true;
+  if (candidate_progress > best_progress + same_plane_tolerance) return false;
+  return candidate_score > best_score;
+}
+
 inline bool lintelHeightConsistent(double minimum_z, double maximum_z,
                                    double maximum_spread) {
   return maximum_z >= minimum_z && maximum_z - minimum_z <= maximum_spread;
