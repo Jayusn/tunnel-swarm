@@ -58,8 +58,9 @@
     <arg name="perception_max_dist" default="7.0"/>
 
     <!-- 2026-07-24: 障碍物触发扫描与位置轨迹并行，保留当前0.2m/s巡航上限；不再为全程环扫全局降速。 -->
-    <arg name="max_vel" default="0.5"/>
-    <arg name="max_acc" default="0.5"/>
+    <!-- 规划速度与简单控制器0.20m/s上限对齐，急弯不再产生控制器追不上的参考点。 -->
+    <arg name="max_vel" default="0.2"/>
+    <arg name="max_acc" default="0.35"/>
 
     <!-- 2026-07-07: FUEL exploration_manager 原始 launch 默认是深度相机，这里切到 cloud-only 雷达模式并直接使用 /Odometry 作为 sensor pose。 -->
     <include file="$(find exploration_manager)/launch/algorithm.xml">
@@ -136,6 +137,9 @@
     <rosparam param="/exploration_node/mission/door_back_margin">0.35</rosparam>
     <!-- 普通规划失败继续重试，不再通知控制器丢弃当前控制状态并锁点悬停。 -->
     <rosparam param="/exploration_node/fsm/hold_on_plan_failure">false</rosparam>
+    <!-- 下一轨迹未发布且旧轨迹真正到终点时，刹停并切到控制器XY PID锁点。 -->
+    <rosparam param="/exploration_node/fsm/endpoint_hold_enabled">true</rosparam>
+    <rosparam param="/exploration_node/fsm/endpoint_hold_lead_time">0.05</rosparam>
     <!-- 窄通道不按固定时间打断安全轨迹；临近终点、frontier失效和碰撞重规划仍保留。 -->
     <rosparam param="/exploration_node/fsm/periodic_replan_enabled">false</rosparam>
     <!-- 开启时同一体素需持续获得静态证据才锁存；默认关闭以避免历史点云持续过度膨胀。 -->
@@ -184,7 +188,11 @@
     <rosparam param="/exploration_node/mission/inflation_history_escape/history_spacing">0.03</rosparam>
     <rosparam param="/exploration_node/mission/inflation_history_escape/history_max_size">200</rosparam>
     <!-- 让轨迹尽量跨过窄段再结束，减少通道中途悬停；仍保留分段更新地图。 -->
-    <rosparam param="/exploration_node/mission/max_route_segment_length">1.20</rosparam>
+    <!-- 单段延长后尽量一次穿完整个障碍侧面，减少中途重规划提前向障碍物侧转回。 -->
+    <rosparam param="/exploration_node/mission/max_route_segment_length">1.60</rosparam>
+    <rosparam param="/exploration_node/mission/straight_run_extension/enabled">true</rosparam>
+    <rosparam param="/exploration_node/mission/straight_run_extension/distance">0.30</rosparam>
+    <rosparam param="/exploration_node/mission/straight_run_extension/min_turn_deg">35.0</rosparam>
     <!-- 2026-07-22: 规划失败后2Hz重试，禁止100Hz重复同一fallback并刷满RViz。 -->
     <rosparam param="/exploration_node/fsm/plan_failure_retry_interval">0.50</rosparam>
     <!-- 2026-07-13: 第二阶段改为任务搜索主导。已搜索覆盖和重复站点决定下一站，frontier 只保留低权重地图辅助。 -->
