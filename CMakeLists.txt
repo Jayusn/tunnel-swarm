@@ -4,16 +4,7 @@ project(ldop)
 get_filename_component(LDOP_WORKSPACE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 list(PREPEND CMAKE_PREFIX_PATH "/opt/ros/noetic")
 list(PREPEND CMAKE_PREFIX_PATH "${LDOP_WORKSPACE_ROOT}/external/install/ufomap")
-
-set(CMAKE_CXX_STANDARD 20)
-
-# 要求编译器必须支持上面的标准；如果不支持就直接报错，
-# 而不是偷偷降级成更老的标准。
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-# 关闭编译器的 GNU 扩展，尽量使用更标准的 C++ 语法。
-# 简单理解：让代码更“标准 C++”，减少平台差异。
-set(CMAKE_CXX_EXTENSIONS OFF)
+list(PREPEND CMAKE_PREFIX_PATH "${LDOP_WORKSPACE_ROOT}/external/install/lzf/usr")
 
 # 生成 compile_commands.json，clangd 会用它来知道
 # “每个源文件到底是怎么编译的”。
@@ -43,10 +34,16 @@ find_package(Threads REQUIRED)
 find_package(OpenMP REQUIRED)
 find_package(TBB REQUIRED)
 find_package(Eigen3 REQUIRED)
+find_package(liblzf CONFIG REQUIRED)
 find_package(ufomap CONFIG REQUIRED
   HINTS "${LDOP_WORKSPACE_ROOT}/external/install/ufomap"
   PATH_SUFFIXES lib/cmake/ufomap
 )
+
+# UFOMap 的公开头文件会包含 <liblzf/lzf.h>，但部分 liblzf CMake
+# 安装只导出了 .../include/liblzf。补充其父目录并显式链接动态库，
+# 避免依赖恰好安装在系统默认搜索路径中。
+get_filename_component(LIBLZF_INCLUDE_ROOT "${liblzf_INCLUDE_DIRS}" DIRECTORY)
 
 add_message_files(
   FILES
@@ -83,6 +80,7 @@ include_directories(
   ${catkin_INCLUDE_DIRS}
   ${EIGEN3_INCLUDE_DIR}
   ${EIGEN3_INCLUDE_DIRS}
+  ${LIBLZF_INCLUDE_ROOT}
 )
 
 # add_library(...) 定义一个“库”目标。
@@ -103,14 +101,20 @@ add_library(ldop_core
   src/ufomap_mapper.cpp
 )
 
+# 只让LDOP目标使用C++20，避免在catkin单体构建中把该标准泄漏给后续
+# 仍使用ROS Noetic/C++11的飞控与规划包。
+target_compile_features(ldop_core PUBLIC cxx_std_20)
+set_target_properties(ldop_core PROPERTIES CXX_EXTENSIONS OFF)
+
 # add_dependencies(...) 用来声明“编译顺序依赖”。
 add_dependencies(ldop_core ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 # target_link_libraries(...) 表示链接阶段要把哪些库连进来。
 # 这里 ldop_core 需要使用 roscpp、UFOMap 和线程库。
-target_link_libraries(ldop_core
+target_link_libraries(ldop_core PUBLIC
   ${catkin_LIBRARIES}
   UFO::Map
+  liblzf::liblzf
   ${CMAKE_THREAD_LIBS_INIT}
 )
 
