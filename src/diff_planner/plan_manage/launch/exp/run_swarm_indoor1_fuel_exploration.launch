@@ -11,8 +11,9 @@
     <arg name="enable_rviz" default="true"/>
     <!-- 纯显示适配：只把 target_reporting 观测转成 RViz 标记，不接入规划器。 -->
     <arg name="enable_detection_rviz" default="true"/>
-    <arg name="enable_ldop_detection" default="false"/>
-    <arg name="enable_follower_ldop_detection" default="true"/>
+    <!-- 本机为前机UAV0：默认启动前机LDOP；后机由其自身计算机按需启动。 -->
+    <arg name="enable_ldop_detection" default="true"/>
+    <arg name="enable_follower_ldop_detection" default="false"/>
     <!-- 2026-07-08 19:26: FUEL 的真正开始触发改为前置通道管理器内部发布，避免 RViz 一点击就直接让 exploration FSM 起跑。 -->
     <arg name="start_trigger_topic" default="/UAV0/corridor_search/exploration_trigger"/>
     <arg name="search_start_waypoint_type" default="point"/>
@@ -505,6 +506,15 @@
         <param name="diff_topic" value="/UAV0/diff/planning/pos_cmd"/>
         <param name="output_topic" value="/UAV0/planning/pos_cmd"/>
         <param name="stage_topic" value="/UAV0/mission/task_status"/>
+        <param name="odom_topic" value="$(arg odom_topic)"/>
+        <param name="dynamic_objects_topic" value="/UAV0/ldop/dynamic_objects"/>
+        <param name="emergency_brake_topic" value="/UAV0/planning/emergency_brake"/>
+        <param name="dynamic_avoidance_enabled" value="$(arg enable_ldop_detection)"/>
+        <param name="dynamic_object_timeout" value="0.60"/>
+        <param name="dynamic_safety_radius" value="0.45"/>
+        <param name="dynamic_vertical_margin" value="0.25"/>
+        <param name="dynamic_prediction_horizon" value="1.0"/>
+        <param name="dynamic_prediction_step" value="0.20"/>
     </node>
 
     <node pkg="diff_planner" name="landing_diff_search_manager" type="landing_diff_search_manager" output="screen">

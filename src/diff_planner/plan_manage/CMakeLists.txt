@@ -24,6 +24,7 @@ find_package(catkin REQUIRED COMPONENTS
   cv_bridge
   pcl_conversions
 )
+find_package(ldop REQUIRED)
 
 # catkin_package(CATKIN_DEPENDS message_runtime)
 catkin_package(
@@ -39,6 +40,7 @@ include_directories(
   ${catkin_INCLUDE_DIRS} ${PROJECT_SOURCE_DIR}/include
   ${EIGEN3_INCLUDE_DIR}
   ${PCL_INCLUDE_DIRS}
+  ${ldop_INCLUDE_DIRS}
 )
 
 
@@ -71,6 +73,7 @@ add_executable(landing_diff_search_manager src/landing_diff_search_manager.cpp)
 target_link_libraries(landing_diff_search_manager ${catkin_LIBRARIES})
 
 add_executable(planner_command_arbiter src/planner_command_arbiter.cpp)
+add_dependencies(planner_command_arbiter ${ldop_EXPORTED_TARGETS})
 target_link_libraries(planner_command_arbiter ${catkin_LIBRARIES})
 
 if(CATKIN_ENABLE_TESTING)

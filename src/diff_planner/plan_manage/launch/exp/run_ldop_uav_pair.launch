@@ -1,6 +1,6 @@
 <launch>
-  <arg name="enable_uav0" default="false"/>
-  <arg name="enable_uav1" default="true"/>
+  <arg name="enable_uav0" default="true"/>
+  <arg name="enable_uav1" default="false"/>
 
   <!-- 每架机使用独立输入、输出和私有参数，禁止两套LDOP写入同一个全局话题。 -->
   <node if="$(arg enable_uav0)" pkg="ldop" type="ldop_node"
