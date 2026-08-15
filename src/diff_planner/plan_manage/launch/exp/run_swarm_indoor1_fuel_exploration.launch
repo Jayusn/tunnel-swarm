@@ -11,10 +11,8 @@
     <arg name="enable_rviz" default="true"/>
     <!-- 纯显示适配：只把 target_reporting 观测转成 RViz 标记，不接入规划器。 -->
     <arg name="enable_detection_rviz" default="true"/>
-    <!-- 2026-07-27: 默认随前机规划链启动LDOT，避免漏开独立终端导致门内使能话题无人订阅。 -->
-    <arg name="enable_ldot_detection" default="false"/>
-    <!-- 2026-07-27: 后机默认同时启动独立UAV1 LDOT；可单独关闭以进行算力对比。 -->
-    <arg name="enable_follower_ldot_detection" default="true"/>
+    <arg name="enable_ldop_detection" default="false"/>
+    <arg name="enable_follower_ldop_detection" default="true"/>
     <!-- 2026-07-08 19:26: FUEL 的真正开始触发改为前置通道管理器内部发布，避免 RViz 一点击就直接让 exploration FSM 起跑。 -->
     <arg name="start_trigger_topic" default="/UAV0/corridor_search/exploration_trigger"/>
     <arg name="search_start_waypoint_type" default="point"/>
@@ -165,7 +163,7 @@
     <rosparam param="/exploration_node/mission/camera_obstacle_scan/wall_support_length">0.90</rosparam>
     <rosparam param="/exploration_node/mission/camera_obstacle_scan/wall_support_ratio">0.68</rosparam>
     <rosparam param="/exploration_node/mission/workspace_lock_topic">/UAV0/corridor_search/workspace_lock</rosparam>
-    <!-- 2026-07-27: FUEL 首条通道内轨迹发布后锁存开启 LDOT，任务状态确认门外后关闭。 -->
+    <!-- 保留检测阶段信号供任务面板；LDOP当前持续处理自身点云。 -->
     <rosparam param="/exploration_node/fsm/mission_status_topic">/mission/task_status</rosparam>
     <rosparam param="/exploration_node/fsm/dynamic_detection_enable_topic">/UAV0/corridor_search/dynamic_detection_enable</rosparam>
     <rosparam param="/exploration_node/mission/door_back_margin">0.35</rosparam>
@@ -740,14 +738,10 @@
         <param name="drone_id" value="1"/>
     </node>
 
-    <!-- 2026-07-27: LDOT与规划FSM同一launch启动；检测仍由门内Bool门控，门外只保持订阅不学习背景。 -->
-    <include if="$(arg enable_ldot_detection)"
-             file="$(find ldot_detector)/launch/run_detector_fuel_uav0.launch">
-        <arg name="use_rviz" value="false"/>
+    <include file="$(find diff_planner)/launch/exp/run_ldop_uav_pair.launch">
+        <arg name="enable_uav0" value="$(arg enable_ldop_detection)"/>
+        <arg name="enable_uav1" value="$(arg enable_follower_ldop_detection)"/>
     </include>
-    <!-- 2026-07-27: UAV1检测使用后机FAST-LIO机体系点云和后机独立门控，输出位于/UAV1/ldot_detector。 -->
-    <include if="$(arg enable_follower_ldot_detection)"
-             file="$(find ldot_detector)/launch/run_detector_fuel_uav1.launch"/>
 
     <!-- 2026-07-07: 验证探索版优先使用 FUEL 的 traj.rviz，能直接看到 frontier / bspline / exploration 可视化。 -->
     <node if="$(arg enable_rviz)" name="rviz" pkg="rviz" type="rviz"
