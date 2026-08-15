@@ -5,6 +5,7 @@
 
 #include <geometry_msgs/PoseStamped.h>
 #include <nav_msgs/Odometry.h>
+#include <quadrotor_msgs/PositionCommand.h>
 #include <ros/ros.h>
 #include <std_msgs/Bool.h>
 #include <std_msgs/String.h>
@@ -37,12 +38,14 @@ class LandingDiffSearchManager {
     std::string marker_topic("/UAV0/mission/detection/final_aruco");
     std::string subgoal_topic("/UAV0/landing_diff/subgoal");
     std::string trigger_topic("/UAV0/landing_diff/trigger");
+    std::string yaw_topic("/UAV0/landing_diff/yaw");
     std::string request_topic("/UAV0/mission/landing_request");
     private_nh_.param("odom_topic", odom_topic, odom_topic);
     private_nh_.param("stage_topic", stage_topic, stage_topic);
     private_nh_.param("marker_topic", marker_topic, marker_topic);
     private_nh_.param("subgoal_topic", subgoal_topic, subgoal_topic);
     private_nh_.param("trigger_topic", trigger_topic, trigger_topic);
+    private_nh_.param("yaw_topic", yaw_topic, yaw_topic);
     private_nh_.param("landing_request_topic", request_topic, request_topic);
 
     odom_sub_ = nh_.subscribe(odom_topic, 20, &LandingDiffSearchManager::odomCallback, this);
@@ -50,6 +53,7 @@ class LandingDiffSearchManager {
     marker_sub_ = nh_.subscribe(marker_topic, 10, &LandingDiffSearchManager::markerCallback, this);
     subgoal_pub_ = nh_.advertise<geometry_msgs::PoseStamped>(subgoal_topic, 2);
     trigger_pub_ = nh_.advertise<geometry_msgs::PoseStamped>(trigger_topic, 2, true);
+    yaw_pub_ = nh_.advertise<quadrotor_msgs::PositionCommand>(yaw_topic, 2);
     landing_request_pub_ = nh_.advertise<std_msgs::Bool>(request_topic, 2, true);
     state_pub_ = private_nh_.advertise<std_msgs::String>("state", 2, true);
     timer_ = nh_.createTimer(ros::Duration(0.10), &LandingDiffSearchManager::timerCallback, this);
@@ -88,6 +92,7 @@ class LandingDiffSearchManager {
     anchor_x_ = odom_.pose.pose.position.x;
     anchor_y_ = odom_.pose.pose.position.y;
     const double yaw = yawFromQuaternion(odom_.pose.pose.orientation);
+    locked_yaw_ = yaw;
     forward_x_ = std::cos(yaw);
     forward_y_ = std::sin(yaw);
     lateral_x_ = -forward_y_;
@@ -124,6 +129,7 @@ class LandingDiffSearchManager {
 
   void timerCallback(const ros::TimerEvent&) {
     if (!active_ || !have_odom_) return;
+    publishLockedYaw();
     publishTrigger();
     geometry_msgs::Point goal;
     if (have_marker_) {
@@ -160,7 +166,8 @@ class LandingDiffSearchManager {
     goal.header.stamp = ros::Time::now();
     goal.header.frame_id = "world";
     goal.pose.position = point;
-    goal.pose.orientation.w = 1.0;
+    goal.pose.orientation.w = std::cos(0.5 * locked_yaw_);
+    goal.pose.orientation.z = std::sin(0.5 * locked_yaw_);
     subgoal_pub_.publish(goal);
     last_goal_time_ = goal.header.stamp;
   }
@@ -183,6 +190,15 @@ class LandingDiffSearchManager {
     landing_requested_ = active;
   }
 
+  void publishLockedYaw() {
+    quadrotor_msgs::PositionCommand command;
+    command.header.stamp = ros::Time::now();
+    command.header.frame_id = "world";
+    command.yaw = locked_yaw_;
+    command.yaw_dot = 0.0;
+    yaw_pub_.publish(command);
+  }
+
   void publishState(const std::string& state) {
     std_msgs::String msg;
     msg.data = state;
@@ -191,7 +207,7 @@ class LandingDiffSearchManager {
 
   ros::NodeHandle nh_, private_nh_;
   ros::Subscriber odom_sub_, stage_sub_, marker_sub_;
-  ros::Publisher subgoal_pub_, trigger_pub_, landing_request_pub_, state_pub_;
+  ros::Publisher subgoal_pub_, trigger_pub_, yaw_pub_, landing_request_pub_, state_pub_;
   ros::Timer timer_;
   nav_msgs::Odometry odom_;
   geometry_msgs::PoseStamped marker_;
@@ -203,6 +219,7 @@ class LandingDiffSearchManager {
   double arrive_xy_{0.35}, arrive_z_{0.20}, goal_reissue_sec_{1.0};
   double anchor_x_{0.0}, anchor_y_{0.0}, forward_x_{1.0}, forward_y_{0.0};
   double lateral_x_{0.0}, lateral_y_{1.0};
+  double locked_yaw_{0.0};
   ros::Time last_goal_time_, last_trigger_time_;
 };
 

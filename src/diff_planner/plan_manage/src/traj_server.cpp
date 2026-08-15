@@ -44,6 +44,13 @@ void heartbeatCallback(std_msgs::EmptyPtr msg)
 
 void yawCallback(const quadrotor_msgs::PositionCommandPtr msg)
 {
+  // 首条Diff轨迹生成前直接采用外部锁定的机体偏航，避免FUEL切换到Diff时
+  // 先按历史默认值朝世界系0度误转一次。
+  if (!receive_yaw_ && !receive_traj_)
+  {
+    last_yaw_ = msg->yaw;
+    last_yawdot_ = 0.0;
+  }
   receive_yaw_ = true;
   receive_yaw_time_ = ros::Time::now();
   yaw_custom_ = msg->yaw;
@@ -154,8 +161,6 @@ std::pair<double, double> calculate_yaw(double t_cur, Eigen::Vector3d &pos, doub
 
   last_yaw_ = yaw_yawdot.first;
   last_yawdot_ = yaw_yawdot.second;
-
-  yaw_yawdot.second = yaw_temp;
 
   return yaw_yawdot;
 }
@@ -350,7 +355,8 @@ int main(int argc, char **argv)
   ros::NodeHandle nh("~");
 
   ros::Subscriber poly_traj_sub = nh.subscribe("planning/trajectory", 10, polyTrajCallback);
-  ros::Subscriber yaw_sub = nh.subscribe("/planning/yaw", 10, yawCallback);
+  // 使用私有相对话题，使每个规划器实例可通过launch映射接收独立偏航指令。
+  ros::Subscriber yaw_sub = nh.subscribe("planning/yaw", 10, yawCallback);
   ros::Subscriber heartbeat_sub = nh.subscribe("heartbeat", 10, heartbeatCallback);
   
   pos_cmd_pub = nh.advertise<quadrotor_msgs::PositionCommand>("/position_cmd", 50);

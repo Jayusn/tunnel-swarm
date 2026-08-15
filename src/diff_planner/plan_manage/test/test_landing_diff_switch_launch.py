@@ -17,11 +17,13 @@ def test_landing_search_switches_from_fuel_to_diff_with_separate_commands():
     diff_remaps = {item.attrib["from"]: item.attrib["to"] for item in nodes["landing_diff_traj_server"].findall("remap")}
     assert fuel_remaps["/position_cmd"] == "/UAV0/fuel/planning/pos_cmd"
     assert diff_remaps["position_cmd"] == "/UAV0/diff/planning/pos_cmd"
+    assert diff_remaps["~planning/yaw"] == "/UAV0/landing_diff/yaw"
 
     manager_params = {item.attrib["name"]: item.attrib["value"] for item in nodes["landing_diff_search_manager"].findall("param")}
     assert manager_params["search_height"] == "2.0"
     assert manager_params["subgoal_topic"] == "/UAV0/landing_diff/subgoal"
     assert manager_params["marker_topic"] == "/UAV0/mission/detection/final_aruco"
+    assert manager_params["yaw_topic"] == "/UAV0/landing_diff/yaw"
 
 
 def test_fuel_declares_external_landing_planner():
