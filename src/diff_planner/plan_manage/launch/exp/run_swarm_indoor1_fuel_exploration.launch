@@ -428,10 +428,10 @@
     <rosparam param="/exploration_node/mission/task_search/exit/pending_observation_min_move">0.22</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/outside_probe_distance">0.90</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/outside_min_nonoccupied_samples">3</rosparam>
-    <!-- 2026-07-21: 穿门按0.35m滚动，只飞累计地图已标FREE的点；越过门平面0.45m后才进入门外二维码搜索。 -->
+    <!-- 穿门按0.35m滚动，只飞累计地图已标FREE的点；里程计原点越过门平面0.60m后才允许切换到Diff搜索。 -->
     <rosparam param="/exploration_node/mission/task_search/exit/cross_step">0.35</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/cross_target_distance">0.90</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/cross_confirm_distance">0.45</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/cross_confirm_distance">0.60</rosparam>
     <!-- 2026-07-13: 该半径检查原始占据栅格，不再与 0.15m 膨胀重复相加，避免门后唯一目标被全部拒绝。 -->
     <!-- 2026-07-14: 与250机型 0.20m 周向包络一致，避免出口候选使用旧 0.22m 半径被额外拒绝。 -->
     <rosparam param="/exploration_node/mission/task_search/exit/footprint_extra_radius">0.20</rosparam>
