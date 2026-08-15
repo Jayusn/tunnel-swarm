@@ -51,7 +51,8 @@
     <arg name="box_min_z" default="-0.2"/>
     <arg name="box_max_x" default="7.5"/>
     <arg name="box_max_y" default="4.5"/>
-    <arg name="box_max_z" default="2.0"/>
+    <!-- 2.0m门外平台搜索目标需要位于地图边界内部，额外保留0.20m规划余量。 -->
+    <arg name="box_max_z" default="2.20"/>
     <!-- 2026-07-08 19:26: 这条混合探索链路的点云截断、射线建图和 active perception 视野主要由 FUEL 侧生效；
          针对“视频里周围点云距离偏近、窄道入口长期只在近处出现”的问题，先把搜索感知半径整体放大一档。 -->
     <arg name="raycast_max_dist" default="8.0"/>
@@ -202,13 +203,13 @@
     <rosparam param="/exploration_node/mission/task_search/revisit_radius">0.65</rosparam>
     <rosparam param="/exploration_node/mission/task_search/repeat_goal_radius">0.45</rosparam>
     <rosparam param="/exploration_node/mission/task_search/max_goal_repeats">2</rosparam>
-    <!-- 2026-07-28: 仿真通道顶板2.475m；允许三维A*上升到1.90m越过低障碍，保留0.575m顶部净空。 -->
+    <!-- 仿真通道顶板2.475m；门外搜索目标为2.0m，A*上限额外留0.10m规划余量。 -->
     <rosparam param="/exploration_node/mission/task_search/cruise_height">0.6</rosparam>
     <rosparam param="/exploration_node/mission/task_search/min_height">0.10</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/max_height">1.90</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/max_height">2.10</rosparam>
     <!-- 2026-07-28: 任务目标和A*中间节点共用高度带，禁止路径截断后掉到z=0附近撞地。 -->
     <rosparam param="/exploration_node/astar/min_search_height">0.10</rosparam>
-    <rosparam param="/exploration_node/astar/max_search_height">1.90</rosparam>
+    <rosparam param="/exploration_node/astar/max_search_height">2.10</rosparam>
     <!-- 水平恢复全部失败后才启用上下绕行；下绕固定XY/Yaw降到0.10m，确认前方0.20m后立即推进。 -->
     <rosparam param="/exploration_node/mission/vertical_detour/enabled">true</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/low_height">0.10</rosparam>
@@ -405,6 +406,8 @@
     <rosparam param="/exploration_node/mission/task_search/exit/footprint_samples">12</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/scan_radius">0.35</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/scan_dwell_time">1.2</rosparam>
+    <!-- 仅在确认穿出通道后爬升；通道内巡航高度仍保持0.6m。 -->
+    <rosparam param="/exploration_node/mission/task_search/exit/outside_landing_search_height">2.00</rosparam>
     <!-- 下视相机的 ArUco 世界位置需连续确认；仅有拓扑出口不得触发降落。 -->
     <rosparam param="/exploration_node/mission/task_search/final_landing_marker_topic">/UAV0/mission/detection/final_aruco</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/require_final_landing_marker">true</rosparam>
@@ -414,7 +417,7 @@
     <rosparam param="/exploration_node/mission/task_search/exit/frontier_max_distance_increase">0.45</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/final_landing_marker_confirmation_count">3</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/final_landing_marker_consistency_radius">0.20</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/landing_approach_height">0.65</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/landing_approach_height">2.00</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/landing_trigger_distance">0.35</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/landing_column_bottom_clearance">0.20</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/landing_column_step">0.10</rosparam>
