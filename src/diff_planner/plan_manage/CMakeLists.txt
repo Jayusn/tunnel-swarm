@@ -67,8 +67,15 @@ target_link_libraries(goal_height_bridge ${catkin_LIBRARIES})
 add_executable(corridor_search_manager src/corridor_search_manager.cpp)
 target_link_libraries(corridor_search_manager ${catkin_LIBRARIES} ${PCL_LIBRARIES})
 
+add_executable(landing_diff_search_manager src/landing_diff_search_manager.cpp)
+target_link_libraries(landing_diff_search_manager ${catkin_LIBRARIES})
+
+add_executable(planner_command_arbiter src/planner_command_arbiter.cpp)
+target_link_libraries(planner_command_arbiter ${catkin_LIBRARIES})
+
 if(CATKIN_ENABLE_TESTING)
   catkin_add_nosetests(test/test_global_retention_launch.py)
+  catkin_add_nosetests(test/test_landing_diff_switch_launch.py)
 endif()
 # add_executable(monitor_node src/monitor_node.cpp)
 # target_link_libraries(monitor_node ${catkin_LIBRARIES})

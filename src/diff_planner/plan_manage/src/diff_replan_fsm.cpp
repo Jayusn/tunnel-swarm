@@ -33,6 +33,8 @@ namespace diff_planner
     nh.param("fsm/stuck_detect_grace_time", stuck_detect_grace_time_, 6.0);
     // 2026-07-08: 为“RViz 只触发、自动搜索单独下发子目标”模式新增独立子目标话题，避免和 /goal 的触发语义混用。
     nh.param("fsm/search_subgoal_topic", search_subgoal_topic_, std::string("/corridor_search/subgoal"));
+    nh.param("fsm/search_trigger_topic", search_trigger_topic_, std::string("/traj_start_trigger"));
+    nh.param("fsm/search_goal_trigger_topic", search_goal_trigger_topic_, std::string("/goal"));
     // 2026-07-28: 外部目标话题参数化；双机时后机只接收接力管理器发布的/UAV1/planning/goal。
     nh.param("fsm/manual_goal_topic", manual_goal_topic_, std::string("/goal"));
 
@@ -110,8 +112,8 @@ namespace diff_planner
     else if (target_type_ == TARGET_TYPE::SEARCH_TARGET)
     {
       // 2026-07-08: 搜索模式沿用 RViz /goal 仅作“允许开始”的触发语义，真实自动子目标改由独立 search_subgoal_topic 输入。
-      waypoint_sub_ = nh.subscribe("/goal", 1, &DiffReplanFSM::triggerCallback, this);
-      trigger_sub_ = nh.subscribe("/traj_start_trigger", 1, &DiffReplanFSM::triggerCallback, this);
+      waypoint_sub_ = nh.subscribe(search_goal_trigger_topic_, 1, &DiffReplanFSM::triggerCallback, this);
+      trigger_sub_ = nh.subscribe(search_trigger_topic_, 1, &DiffReplanFSM::triggerCallback, this);
       subgoal_sub_ = nh.subscribe(search_subgoal_topic_, 1, &DiffReplanFSM::searchSubgoalCallback, this);
     }
     else

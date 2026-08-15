@@ -51,8 +51,7 @@
     <arg name="box_min_z" default="-0.2"/>
     <arg name="box_max_x" default="7.5"/>
     <arg name="box_max_y" default="4.5"/>
-    <!-- 2.0m门外平台搜索目标需要位于地图边界内部，额外保留0.20m规划余量。 -->
-    <arg name="box_max_z" default="2.20"/>
+    <arg name="box_max_z" default="2.0"/>
     <!-- 2026-07-08 19:26: 这条混合探索链路的点云截断、射线建图和 active perception 视野主要由 FUEL 侧生效；
          针对“视频里周围点云距离偏近、窄道入口长期只在近处出现”的问题，先把搜索感知半径整体放大一档。 -->
     <arg name="raycast_max_dist" default="8.0"/>
@@ -93,6 +92,40 @@
         <arg name="topic_prefix" value="$(arg topic_prefix)"/>
         <arg name="raycast_max_dist" value="$(arg raycast_max_dist)"/>
         <arg name="perception_max_dist" value="$(arg perception_max_dist)"/>
+    </include>
+
+    <!-- Diff从启动时即建立独立雷达占据图，但在出口切换信号到来前不接收搜索目标、不输出控制。 -->
+    <include file="$(find diff_planner)/launch/include/advanced_param_exp.xml">
+        <arg name="odom_topic" value="$(arg odom_topic)"/>
+        <arg name="drone_id" value="$(arg drone_id)"/>
+        <arg name="camera_pose_topic" value="no_use_diff_pose"/>
+        <arg name="depth_topic" value="no_use_diff_depth"/>
+        <arg name="cloud_topic" value="$(arg cloud_topic)"/>
+        <arg name="cx" value="319.31427001953125"/><arg name="cy" value="239.09725952148438"/>
+        <arg name="fx" value="386.2706298828125"/><arg name="fy" value="386.2706298828125"/>
+        <arg name="flight_type" value="4"/>
+        <arg name="point_num" value="1"/>
+        <arg name="point0_x" value="0.0"/><arg name="point0_y" value="0.0"/><arg name="point0_z" value="2.0"/>
+        <arg name="point1_x" value="0.0"/><arg name="point1_y" value="0.0"/><arg name="point1_z" value="2.0"/>
+        <arg name="point2_x" value="0.0"/><arg name="point2_y" value="0.0"/><arg name="point2_z" value="2.0"/>
+        <arg name="point3_x" value="0.0"/><arg name="point3_y" value="0.0"/><arg name="point3_z" value="2.0"/>
+        <arg name="point4_x" value="0.0"/><arg name="point4_y" value="0.0"/><arg name="point4_z" value="2.0"/>
+        <arg name="max_vel" value="$(arg max_vel)"/><arg name="max_acc" value="$(arg max_acc)"/>
+        <arg name="max_jer" value="2.0"/><arg name="planning_horizon" value="6.0"/>
+        <arg name="waypoint_switch_dist" value="0.25"/>
+        <arg name="local_map_size_x" value="$(arg map_size_x)"/>
+        <arg name="local_map_size_y" value="$(arg map_size_y)"/>
+        <arg name="local_map_size_z" value="$(arg map_size_z)"/>
+        <arg name="enable_virtual_wall" value="true"/><arg name="virtual_ceil" value="2.25"/>
+        <arg name="virtual_ground" value="0.10"/><arg name="map_resolution" value="0.15"/>
+        <arg name="inflation_size" value="0.15"/><arg name="obstacle_clearance" value="0.15"/>
+        <arg name="init_x" value="$(arg init_x)"/><arg name="init_y" value="$(arg init_y)"/><arg name="init_z" value="$(arg init_z)"/>
+        <arg name="cloud_use_init_offset" value="false"/><arg name="preserve_global_map" value="true"/>
+        <arg name="enable_stuck_detect" value="false"/><arg name="stuck_detect_grace_time" value="20.0"/>
+        <arg name="require_pre_agent_trajectory" value="false"/><arg name="enable_random_global_init" value="false"/>
+        <arg name="search_subgoal_topic" value="/UAV0/landing_diff/subgoal"/>
+        <arg name="search_trigger_topic" value="/UAV0/landing_diff/trigger"/>
+        <arg name="search_goal_trigger_topic" value="/UAV0/landing_diff/manual_trigger"/>
     </include>
 
     <!-- 2026-07-08 19:26: 按未来飞行器大赛 2.1 的任务目标，先把起飞区和搜索区语义显式参数化。
@@ -203,13 +236,13 @@
     <rosparam param="/exploration_node/mission/task_search/revisit_radius">0.65</rosparam>
     <rosparam param="/exploration_node/mission/task_search/repeat_goal_radius">0.45</rosparam>
     <rosparam param="/exploration_node/mission/task_search/max_goal_repeats">2</rosparam>
-    <!-- 仿真通道顶板2.475m；门外搜索目标为2.0m，A*上限额外留0.10m规划余量。 -->
+    <!-- FUEL只负责通道，继续保持原1.90m搜索上限；门外2.0m由独立Diff地图负责。 -->
     <rosparam param="/exploration_node/mission/task_search/cruise_height">0.6</rosparam>
     <rosparam param="/exploration_node/mission/task_search/min_height">0.10</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/max_height">2.10</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/max_height">1.90</rosparam>
     <!-- 2026-07-28: 任务目标和A*中间节点共用高度带，禁止路径截断后掉到z=0附近撞地。 -->
     <rosparam param="/exploration_node/astar/min_search_height">0.10</rosparam>
-    <rosparam param="/exploration_node/astar/max_search_height">2.10</rosparam>
+    <rosparam param="/exploration_node/astar/max_search_height">1.90</rosparam>
     <!-- 水平恢复全部失败后才启用上下绕行；下绕固定XY/Yaw降到0.10m，确认前方0.20m后立即推进。 -->
     <rosparam param="/exploration_node/mission/vertical_detour/enabled">true</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/low_height">0.10</rosparam>
@@ -406,8 +439,8 @@
     <rosparam param="/exploration_node/mission/task_search/exit/footprint_samples">12</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/scan_radius">0.35</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/scan_dwell_time">1.2</rosparam>
-    <!-- 仅在确认穿出通道后爬升；通道内巡航高度仍保持0.6m。 -->
-    <rosparam param="/exploration_node/mission/task_search/exit/outside_landing_search_height">2.00</rosparam>
+    <!-- 出口后只发布阶段切换，FUEL不再生成平台搜索、接近或降落请求。 -->
+    <rosparam param="/exploration_node/mission/task_search/exit/external_landing_planner">true</rosparam>
     <!-- 下视相机的 ArUco 世界位置需连续确认；仅有拓扑出口不得触发降落。 -->
     <rosparam param="/exploration_node/mission/task_search/final_landing_marker_topic">/UAV0/mission/detection/final_aruco</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/require_final_landing_marker">true</rosparam>
@@ -435,7 +468,7 @@
     <!-- 2026-07-07: 用 FUEL 自带 traj_server 执行 exploration_manager 发布的 /planning/bspline，并继续输出到现有控制器在用的 /planning/pos_cmd。 -->
     <node pkg="plan_manage" name="fuel_traj_server" type="traj_server" output="screen">
         <!-- 2026-07-27: FUEL traj_server 的绝对/相对单机话题全部接入 UAV0 规划链。 -->
-        <remap from="/position_cmd" to="/UAV0/planning/pos_cmd"/>
+        <remap from="/position_cmd" to="/UAV0/fuel/planning/pos_cmd"/>
         <remap from="/odom_world" to="$(arg odom_topic)"/>
         <remap from="planning/bspline" to="/UAV0/planning/bspline"/>
         <remap from="planning/replan" to="/UAV0/planning/replan"/>
@@ -456,6 +489,39 @@
         <!-- 2026-07-08 19:26: 与 exploration_node 侧保持一致，避免上层 frontier 评分已经看得更远，但 traj_server 仍按旧的短视距算可见约束。 -->
         <param name="perception_utils/max_dist" value="$(arg perception_max_dist)" type="double"/>
         <param name="perception_utils/vis_dist" value="1.0" type="double"/>
+    </node>
+
+    <!-- 两套规划器始终分话题输出；任务阶段仲裁器只允许当前所有者进入现有控制器。 -->
+    <node pkg="diff_planner" name="landing_diff_traj_server" type="traj_server" output="screen">
+        <remap from="position_cmd" to="/UAV0/diff/planning/pos_cmd"/>
+        <remap from="~planning/trajectory" to="/drone_$(arg drone_id)_planning/trajectory"/>
+        <remap from="~planning/yaw" to="/drone_$(arg drone_id)_planning/yaw"/>
+        <remap from="~heartbeat" to="/drone_$(arg drone_id)_traj_server/heartbeat"/>
+        <param name="traj_server/time_forward" value="1.0" type="double"/>
+        <param name="traj_server/yaw_dot_max" value="3.14" type="double"/>
+        <param name="traj_server/yaw_dot_dot_max" value="15.71" type="double"/>
+    </node>
+
+    <node pkg="diff_planner" name="planner_command_arbiter" type="planner_command_arbiter" output="screen">
+        <param name="fuel_topic" value="/UAV0/fuel/planning/pos_cmd"/>
+        <param name="diff_topic" value="/UAV0/diff/planning/pos_cmd"/>
+        <param name="output_topic" value="/UAV0/planning/pos_cmd"/>
+        <param name="stage_topic" value="/UAV0/mission/task_status"/>
+    </node>
+
+    <node pkg="diff_planner" name="landing_diff_search_manager" type="landing_diff_search_manager" output="screen">
+        <param name="odom_topic" value="$(arg odom_topic)"/>
+        <param name="stage_topic" value="/UAV0/mission/task_status"/>
+        <param name="marker_topic" value="/UAV0/mission/detection/final_aruco"/>
+        <param name="subgoal_topic" value="/UAV0/landing_diff/subgoal"/>
+        <param name="trigger_topic" value="/UAV0/landing_diff/trigger"/>
+        <param name="landing_request_topic" value="/UAV0/mission/landing_request"/>
+        <param name="search_height" value="2.0"/>
+        <param name="lane_spacing" value="1.0"/>
+        <param name="search_width" value="3.0"/>
+        <param name="search_depth" value="4.0"/>
+        <param name="arrive_xy" value="0.35"/>
+        <param name="arrive_z" value="0.20"/>
     </node>
 
     <!-- 2026-07-08 19:26: 新增前置通道进入管理器。

@@ -92,6 +92,8 @@ namespace diff_planner
     // 2026-07-28: 异构接力可禁用已确认会阻塞FSM的随机多项式初始化，失败改由上层安全子目标恢复。
     bool enable_random_global_init_;
     std::string search_subgoal_topic_;
+    std::string search_trigger_topic_;
+    std::string search_goal_trigger_topic_;
     std::string manual_goal_topic_; // 2026-07-28: UAV1接力规划使用独立目标话题，避免与前机全局/goal串线。
 
     bool have_trigger_, have_target_, have_odom_, have_new_target_, have_recv_pre_agent_, touch_goal_, mandatory_stop_;
