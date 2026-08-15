@@ -405,18 +405,19 @@
     <rosparam param="/exploration_node/mission/task_search/exit/footprint_samples">12</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/scan_radius">0.35</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/scan_dwell_time">1.2</rosparam>
-    <!-- 2026-07-13: 终点二维码接口需连续三帧位置一致才进入降落接近，未贴二维码时只在出口附近扫描。 -->
-    <rosparam param="/exploration_node/mission/task_search/final_qrcode_topic">/UAV0/mission/detection/final_qrcode</rosparam>
-    <!-- 2026-07-21: 比赛必须穿出通道并确认门外最终二维码后才能降落，禁止拓扑出口点直接触发AUTO.LAND。 -->
-    <rosparam param="/exploration_node/mission/task_search/exit/require_final_qrcode">true</rosparam>
+    <!-- 下视相机的 ArUco 世界位置需连续确认；仅有拓扑出口不得触发降落。 -->
+    <rosparam param="/exploration_node/mission/task_search/final_landing_marker_topic">/UAV0/mission/detection/final_aruco</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/require_final_landing_marker">true</rosparam>
     <!-- 2026-07-22: 出口未确认时不限制普通frontier；门框确认且门后外部FREE分支成立后，
          才允许出口1.2m内局部调整并禁止普通frontier再次远离出口。 -->
     <rosparam param="/exploration_node/mission/task_search/exit/frontier_local_adjust_radius">1.20</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/frontier_max_distance_increase">0.45</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/final_qrcode_confirmation_count">3</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/final_qrcode_consistency_radius">0.40</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/final_landing_marker_confirmation_count">3</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/final_landing_marker_consistency_radius">0.20</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/landing_approach_height">0.65</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/landing_trigger_distance">0.35</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/landing_column_bottom_clearance">0.20</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/landing_column_step">0.10</rosparam>
     <!-- 2026-07-08 19:26: indoor1 当前验证版先把入口子目标放在上下区域连接门洞附近，目标是缩短起飞后进入搜索区的时间。 -->
     <rosparam param="/exploration_node/mission/entry_goal">[-0.20, 1.15, 0.80]</rosparam>
     <rosparam param="/exploration_node/mission/entry_arrive_dist">0.65</rosparam>
