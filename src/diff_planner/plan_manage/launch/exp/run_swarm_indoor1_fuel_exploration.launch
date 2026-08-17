@@ -56,10 +56,11 @@
     <arg name="raycast_max_dist" default="8.0"/>
     <arg name="perception_max_dist" default="7.0"/>
 
-    <!-- 2026-07-24: 障碍物触发扫描与位置轨迹并行，保留当前0.2m/s巡航上限；不再为全程环扫全局降速。 -->
-    <!-- 规划速度与简单控制器0.20m/s上限对齐，急弯不再产生控制器追不上的参考点。 -->
-    <arg name="max_vel" default="0.2"/>
-    <arg name="max_acc" default="0.35"/>
+    <!-- 通道与常规探索保持保守速度；Diff只在出口后由仲裁器接管，可使用独立搜索速度。 -->
+    <arg name="fuel_max_vel" default="0.20"/>
+    <arg name="fuel_max_acc" default="0.35"/>
+    <arg name="landing_search_max_vel" default="0.50"/>
+    <arg name="landing_search_max_acc" default="0.60"/>
 
     <!-- 2026-07-07: FUEL exploration_manager 原始 launch 默认是深度相机，这里切到 cloud-only 雷达模式并直接使用 /Odometry 作为 sensor pose。 -->
     <include file="$(find exploration_manager)/launch/algorithm.xml">
@@ -85,8 +86,8 @@
         <arg name="fx" value="386.2706298828125"/>
         <arg name="fy" value="386.2706298828125"/>
 
-        <arg name="max_vel" value="$(arg max_vel)"/>
-        <arg name="max_acc" value="$(arg max_acc)"/>
+        <arg name="max_vel" value="$(arg fuel_max_vel)"/>
+        <arg name="max_acc" value="$(arg fuel_max_acc)"/>
         <arg name="vehicle_ns" value="$(arg vehicle_ns)"/>
         <arg name="topic_prefix" value="$(arg topic_prefix)"/>
         <arg name="raycast_max_dist" value="$(arg raycast_max_dist)"/>
@@ -109,7 +110,7 @@
         <arg name="point2_x" value="0.0"/><arg name="point2_y" value="0.0"/><arg name="point2_z" value="2.0"/>
         <arg name="point3_x" value="0.0"/><arg name="point3_y" value="0.0"/><arg name="point3_z" value="2.0"/>
         <arg name="point4_x" value="0.0"/><arg name="point4_y" value="0.0"/><arg name="point4_z" value="2.0"/>
-        <arg name="max_vel" value="$(arg max_vel)"/><arg name="max_acc" value="$(arg max_acc)"/>
+        <arg name="max_vel" value="$(arg landing_search_max_vel)"/><arg name="max_acc" value="$(arg landing_search_max_acc)"/>
         <arg name="max_jer" value="2.0"/><arg name="planning_horizon" value="6.0"/>
         <arg name="waypoint_switch_dist" value="0.25"/>
         <arg name="local_map_size_x" value="$(arg map_size_x)"/>
@@ -178,7 +179,7 @@
     <!-- 开启时同一体素需持续获得静态证据才锁存；默认关闭以避免历史点云持续过度膨胀。 -->
     <rosparam param="/exploration_node/sdf_map/static_retention_enabled" subst_value="true">$(arg retain_global_static_cloud)</rosparam>
     <rosparam param="/exploration_node/sdf_map/static_retention_required_hits">6</rosparam>
-    <!-- 关闭 FUEL 的全部锁点悬停；控制器内独立的降落悬停和 AUTO.LAND 接管仍保留。 -->
+    <!-- 关闭 FUEL 的全部锁点悬停；平台上方由控制器短暂锁点，随后交给精降节点。 -->
     <rosparam param="/exploration_node/fsm/safety_hold_enabled">false</rosparam>
     <!-- 2026-07-10: 门后搜索不再按最近 frontier 死板选点；优先沿动态门方向推进，frontier 为空时用安全短步前探继续建图。 -->
     <rosparam param="/exploration_node/mission/use_forward_progress_bias">true</rosparam>
@@ -521,6 +522,7 @@
         <param name="odom_topic" value="$(arg odom_topic)"/>
         <param name="stage_topic" value="/UAV0/mission/task_status"/>
         <param name="marker_topic" value="/UAV0/mission/detection/final_aruco"/>
+        <param name="front_hint_topic" value="/UAV0/landing/front_aruco_hint"/>
         <param name="subgoal_topic" value="/UAV0/landing_diff/subgoal"/>
         <param name="trigger_topic" value="/UAV0/landing_diff/trigger"/>
         <param name="yaw_topic" value="/UAV0/landing_diff/yaw"/>
@@ -531,6 +533,18 @@
         <param name="search_depth" value="4.0"/>
         <param name="arrive_xy" value="0.35"/>
         <param name="arrive_z" value="0.20"/>
+        <param name="front_hint_dwell_sec" value="2.0"/>
+        <param name="front_hint_initial_wait_sec" value="1.0"/>
+        <param name="front_yaw_scan_half_angle_rad" value="0.5236"/>
+        <param name="front_yaw_scan_rate_rad_s" value="0.35"/>
+        <param name="front_hint_forward_margin" value="1.0"/>
+        <param name="front_hint_lateral_margin" value="1.0"/>
+        <param name="front_hint_min_z" value="-0.50"/>
+        <param name="front_hint_max_z" value="1.50"/>
+        <param name="target_frame" value="world"/>
+        <param name="marker_timeout_sec" value="0.50"/>
+        <param name="front_hint_timeout_sec" value="0.50"/>
+        <param name="max_header_future_sec" value="0.05"/>
     </node>
 
     <!-- 2026-07-08 19:26: 新增前置通道进入管理器。
