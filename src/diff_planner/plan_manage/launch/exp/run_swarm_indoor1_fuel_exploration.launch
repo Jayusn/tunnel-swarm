@@ -330,8 +330,8 @@
     <rosparam param="/exploration_node/mission/task_search/color_topic">/UAV0/mission/detection/color</rosparam>
     <rosparam param="/exploration_node/mission/task_search/qrcode_topic">/UAV0/mission/detection/qrcode</rosparam>
     <rosparam param="/exploration_node/mission/task_search/thermal_topic">/UAV0/mission/detection/thermal</rosparam>
-    <!-- 2026-08-08: 当前场景关闭完整出口任务；FUEL穿过入口后只持续向前探索。 -->
-    <rosparam param="/exploration_node/mission/task_search/exit/enabled">false</rosparam>
+    <!-- 2026-08-17: 启用出口确认；穿出通道后自动切换至外部 Diff 平台搜索。 -->
+    <rosparam param="/exploration_node/mission/task_search/exit/enabled">true</rosparam>
     <!-- 2026-07-13: 第三阶段从累计 SDFMap 计算入口到可达自由区的拓扑最远端，稳定确认后去出口扫描终点二维码。 -->
     <rosparam param="/exploration_node/mission/task_search/exit/grid_resolution">0.20</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/inference_period">1.0</rosparam>
