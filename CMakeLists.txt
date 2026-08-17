@@ -2,9 +2,25 @@ cmake_minimum_required(VERSION 3.0.2)
 project(ldop)
 
 get_filename_component(LDOP_WORKSPACE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+set(LDOP_EXTERNAL_ROOT "${LDOP_WORKSPACE_ROOT}/external" CACHE PATH
+  "LDOP external dependency installation prefix")
+
+# Keep the workspace-local layout as the default, but allow an existing
+# sibling workspace installation to be reused when this checkout is a
+# verification workspace without its own external directory.
+if(NOT EXISTS "${LDOP_EXTERNAL_ROOT}/install/lzf/usr" AND
+   EXISTS "${LDOP_WORKSPACE_ROOT}/../rh_ws/external/install/lzf/usr")
+  set(LDOP_EXTERNAL_ROOT "${LDOP_WORKSPACE_ROOT}/../rh_ws/external" CACHE PATH
+    "LDOP external dependency installation prefix" FORCE)
+endif()
+
 list(PREPEND CMAKE_PREFIX_PATH "/opt/ros/noetic")
-list(PREPEND CMAKE_PREFIX_PATH "${LDOP_WORKSPACE_ROOT}/external/install/ufomap")
-list(PREPEND CMAKE_PREFIX_PATH "${LDOP_WORKSPACE_ROOT}/external/install/lzf/usr")
+list(PREPEND CMAKE_PREFIX_PATH "${LDOP_EXTERNAL_ROOT}/install/ufomap")
+list(PREPEND CMAKE_PREFIX_PATH "${LDOP_EXTERNAL_ROOT}/install/lzf/usr")
 
 # 生成 compile_commands.json，clangd 会用它来知道
 # “每个源文件到底是怎么编译的”。
