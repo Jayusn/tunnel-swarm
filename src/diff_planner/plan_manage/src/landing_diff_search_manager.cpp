@@ -174,7 +174,9 @@ class LandingDiffSearchManager {
     buildSweepGoals();
     publishTrigger();
     publishState("FRONT_ARUCO_INITIAL_WAIT");
-    ROS_ERROR("landing_diff_search: FUEL -> Diff switch latched at %.2f %.2f", anchor_x_, anchor_y_);
+    ROS_ERROR("landing_diff_search: FUEL -> Diff switch latched at "
+              "(%.2f, %.2f, %.2f), yaw=%.3f",
+              anchor_x_, anchor_y_, anchor_z_, locked_yaw_);
   }
 
   void buildSweepGoals() {
@@ -213,11 +215,8 @@ class LandingDiffSearchManager {
     if (holdingForInitialFrontSearch()) {
       publishSearchYaw();
       publishTrigger();
-      geometry_msgs::Point hold;
-      hold.x = anchor_x_;
-      hold.y = anchor_y_;
-      hold.z = anchor_z_;
-      publishGoalIfDue(hold);
+      // 控制器在没有Diff轨迹时会自行保持当前位置。这里不能把当前位置
+      // 作为子目标交给MINCO，否则零长度轨迹会产生零时长并触发断言。
       return;
     }
     publishSearchYaw();

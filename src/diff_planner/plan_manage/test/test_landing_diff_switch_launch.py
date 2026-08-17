@@ -78,3 +78,27 @@ def test_validated_front_hint_is_latched_while_approaching():
     )[0]
     assert 'validTarget(marker_, marker_timeout_sec_, "final ArUco")' in expiry
     assert "validTarget(front_hint_" not in expiry
+
+
+def test_initial_front_scan_does_not_send_zero_length_diff_goal():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src/landing_diff_search_manager.cpp"
+    ).read_text()
+    initial_hold = source.split(
+        "if (holdingForInitialFrontSearch())", maxsplit=1
+    )[1].split("geometry_msgs::Point goal;", maxsplit=1)[0]
+    assert "publishGoal" not in initial_hold
+
+
+def test_diff_rejects_invalid_and_near_zero_planning_inputs():
+    package = Path(__file__).resolve().parents[1]
+    fsm_source = (package / "src/diff_replan_fsm.cpp").read_text()
+    manager_source = (package / "src/planner_manager.cpp").read_text()
+    assert "GOAL_REJECTED_NO_ODOM" in fsm_source
+    assert "GOAL_REJECTED_NONFINITE" in fsm_source
+    assert "START_REJECTED_OUTSIDE_MAP" in fsm_source
+    assert "GOAL_SKIPPED_TOO_CLOSE" in fsm_source
+    assert "waypoints.empty()" in manager_source
+    assert "segment_distance <= 1.0e-4" in manager_source
+    assert "time_vec.allFinite()" in manager_source

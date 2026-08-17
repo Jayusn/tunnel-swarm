@@ -1,5 +1,6 @@
 // #include <fstream>
 #include <plan_manage/planner_manager.h>
+#include <cmath>
 #include <thread>
 #include "visualization_msgs/Marker.h" // zx-todo
 
@@ -437,6 +438,36 @@ namespace diff_planner
       const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc)
   {
 
+    if (waypoints.empty())
+    {
+      ROS_ERROR("Cannot generate a global trajectory without waypoints.");
+      return false;
+    }
+    if (!start_pos.allFinite() || !start_vel.allFinite() ||
+        !start_acc.allFinite() || !end_vel.allFinite() ||
+        !end_acc.allFinite() || !std::isfinite(pp_.max_vel_) ||
+        pp_.max_vel_ <= 1.0e-3)
+    {
+      ROS_ERROR("Reject invalid global trajectory state or max velocity.");
+      return false;
+    }
+
+    Eigen::Vector3d previous = start_pos;
+    for (std::size_t index = 0; index < waypoints.size(); ++index)
+    {
+      const Eigen::Vector3d& waypoint = waypoints[index];
+      const double segment_distance = (waypoint - previous).norm();
+      if (!waypoint.allFinite() || !std::isfinite(segment_distance) ||
+          segment_distance <= 1.0e-4)
+      {
+        ROS_ERROR_STREAM("Reject invalid or zero-length global trajectory "
+                         "segment " << index << ": distance="
+                         << segment_distance);
+        return false;
+      }
+      previous = waypoint;
+    }
+
     poly_traj::MinJerkOpt globalMJO;
     Eigen::Matrix<double, 3, 3> headState, tailState;
     headState << start_pos, start_vel, start_acc;
@@ -471,6 +502,13 @@ namespace diff_planner
       {
         time_vec(i) = (i == 0) ? (waypoints[0] - start_pos).norm() / des_vel
                                : (waypoints[i] - waypoints[i - 1]).norm() / des_vel;
+      }
+
+      if (!time_vec.allFinite() || (time_vec.array() <= 1.0e-4).any())
+      {
+        ROS_ERROR_STREAM("Reject invalid global trajectory durations: "
+                         << time_vec.transpose());
+        return false;
       }
 
       globalMJO.generate(innerPts, time_vec);

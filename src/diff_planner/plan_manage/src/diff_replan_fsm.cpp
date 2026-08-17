@@ -1,6 +1,8 @@
 
 #include <plan_manage/diff_replan_fsm.h>
 
+#include <cmath>
+
 namespace diff_planner
 {
 
@@ -20,6 +22,7 @@ namespace diff_planner
     // 2026-07-07: 允许按场景单独指定 waypoint 切换距离，避免沿默认经验值在窄通道里提前切段。
     nh.param("fsm/waypoint_switch_dist", no_replan_thresh_, -1.0);
     nh.param("fsm/emergency_time", emergency_time_, 1.0);
+    nh.param("fsm/min_goal_distance", min_goal_distance_, 0.05);
     nh.param("fsm/realworld_experiment", flag_realworld_experiment_, false);
     nh.param("fsm/fail_safe", enable_fail_safe_, true);
     nh.param("fsm/ground_height_measurement", enable_ground_height_measurement_, false);
@@ -37,6 +40,13 @@ namespace diff_planner
     nh.param("fsm/search_goal_trigger_topic", search_goal_trigger_topic_, std::string("/goal"));
     // 2026-07-28: 外部目标话题参数化；双机时后机只接收接力管理器发布的/UAV1/planning/goal。
     nh.param("fsm/manual_goal_topic", manual_goal_topic_, std::string("/goal"));
+
+    if (!std::isfinite(min_goal_distance_) || min_goal_distance_ <= 0.0)
+    {
+      ROS_WARN("Invalid fsm/min_goal_distance=%.3f; use 0.05 m.",
+               min_goal_distance_);
+      min_goal_distance_ = 0.05;
+    }
 
     nh.param("fsm/waypoint_num", waypoint_num_, -1);
     for (int i = 0; i < waypoint_num_; i++)
@@ -698,6 +708,51 @@ namespace diff_planner
 
     bool DiffReplanFSM::planNextWaypoint(const Eigen::Vector3d next_wp, bool flag_2replan)
   {
+    if (!have_odom_)
+    {
+      ROS_WARN("Reject goal before receiving odometry.");
+      publishPlanningStatus("GOAL_REJECTED_NO_ODOM");
+      return false;
+    }
+    if (!odom_pos_.allFinite() || !odom_vel_.allFinite() || !next_wp.allFinite())
+    {
+      ROS_ERROR_STREAM("Reject non-finite planning input: start="
+                       << odom_pos_.transpose() << " velocity="
+                       << odom_vel_.transpose() << " goal="
+                       << next_wp.transpose());
+      publishPlanningStatus("GOAL_REJECTED_NONFINITE");
+      return false;
+    }
+
+    const int start_occupancy =
+        planner_manager_->grid_map_->getInflateOccupancy(odom_pos_);
+    const int goal_occupancy =
+        planner_manager_->grid_map_->getInflateOccupancy(next_wp);
+    if (start_occupancy == -1)
+    {
+      ROS_ERROR_STREAM("Reject goal because current odometry is outside the "
+                       "Diff safety fence: start=" << odom_pos_.transpose());
+      publishPlanningStatus("START_REJECTED_OUTSIDE_MAP");
+      return false;
+    }
+    if (goal_occupancy == -1)
+    {
+      ROS_WARN_STREAM("Reject goal outside the Diff safety fence: goal="
+                      << next_wp.transpose());
+      publishPlanningStatus("GOAL_REJECTED_OUTSIDE_MAP");
+      return false;
+    }
+
+    const double goal_distance = (next_wp - odom_pos_).norm();
+    if (!std::isfinite(goal_distance) || goal_distance < min_goal_distance_)
+    {
+      ROS_WARN_STREAM("Skip near-zero Diff goal: distance=" << goal_distance
+                      << " m, start=" << odom_pos_.transpose()
+                      << " goal=" << next_wp.transpose());
+      publishPlanningStatus("GOAL_SKIPPED_TOO_CLOSE");
+      return false;
+    }
+
     bool success = false;
     std::vector<Eigen::Vector3d> one_pt_wps;
     one_pt_wps.push_back(next_wp);
