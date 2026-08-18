@@ -38,7 +38,7 @@ class LandingDiffSearchManager {
     private_nh_.param("front_hint_initial_wait_sec",
                       front_hint_initial_wait_sec_, 1.0);
     private_nh_.param("front_yaw_scan_half_angle_rad",
-                      front_yaw_scan_half_angle_rad_, 0.52359877560);
+                      front_yaw_scan_half_angle_rad_, 0.78539816339);
     private_nh_.param("front_yaw_scan_rate_rad_s",
                       front_yaw_scan_rate_rad_s_, 0.35);
     private_nh_.param("front_hint_forward_margin", front_hint_forward_margin_, 1.0);
@@ -471,7 +471,7 @@ class LandingDiffSearchManager {
   double arrive_xy_{0.35}, arrive_z_{0.20}, goal_reissue_sec_{1.0};
   double front_hint_dwell_sec_{2.0}, front_hint_forward_margin_{1.0};
   double front_hint_initial_wait_sec_{1.0};
-  double front_yaw_scan_half_angle_rad_{0.52359877560};
+  double front_yaw_scan_half_angle_rad_{0.78539816339};
   double front_yaw_scan_rate_rad_s_{0.35};
   double front_hint_lateral_margin_{1.0}, front_hint_min_z_{-0.50};
   double front_hint_max_z_{1.50};

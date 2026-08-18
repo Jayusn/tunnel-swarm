@@ -31,7 +31,7 @@ def test_landing_search_switches_from_fuel_to_diff_with_separate_commands():
     assert manager_params["yaw_topic"] == "/UAV0/landing_diff/yaw"
     assert manager_params["front_hint_dwell_sec"] == "2.0"
     assert manager_params["front_hint_initial_wait_sec"] == "1.0"
-    assert manager_params["front_yaw_scan_half_angle_rad"] == "0.5236"
+    assert manager_params["front_yaw_scan_half_angle_rad"] == "0.7854"
     assert manager_params["front_yaw_scan_rate_rad_s"] == "0.35"
     assert manager_params["target_frame"] == "world"
     assert manager_params["marker_timeout_sec"] == "0.50"
