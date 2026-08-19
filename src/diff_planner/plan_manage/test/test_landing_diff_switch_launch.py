@@ -44,6 +44,16 @@ def test_fuel_declares_external_landing_planner():
     assert values["/exploration_node/mission/task_search/exit/external_landing_planner"] == "true"
 
 
+def test_follower_frame_alignment_is_not_duplicated_in_planner_launch():
+    root = ET.parse(LAUNCH).getroot()
+    args = {item.attrib["name"] for item in root.findall("arg")}
+    nodes = {node.attrib.get("name") for node in root.findall("node")}
+    assert "follower_offset_x" not in args
+    assert "follower_offset_y" not in args
+    assert "follower_offset_z" not in args
+    assert "world_to_UAV1_camera_init" not in nodes
+
+
 def test_landing_targets_require_fresh_world_frame_and_finite_position():
     source = (
         Path(__file__).resolve().parents[1]

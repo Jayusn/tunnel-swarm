@@ -29,10 +29,6 @@
     <arg name="follower_odom_topic" default="/UAV1/fast_lio/Odometry"/>
     <arg name="follower_world_frame" default="UAV1/camera_init"/>
     <arg name="follower_body_frame" default="UAV1/body"/>
-    <!-- 2026-07-14: 根据实际 RViz/地图轴向校正后机出生队形；iris_1 位于 iris_0 后方 1 m，对应公共地图 -X。 -->
-    <arg name="follower_offset_x" default="-1.0"/>
-    <arg name="follower_offset_y" default="0.0"/>
-    <arg name="follower_offset_z" default="0.0"/>
     <!-- 2026-07-08: RViz 目标点只保留给“允许开始前置通道进入任务”；不再直接触发 exploration FSM。 -->
     <arg name="rviz_goal_topic" default="/UAV0/move_base_simple/goal"/>
 
@@ -695,9 +691,7 @@
         args="0 0 0 0 0 0 world UAV0/camera_init" />
     <node pkg="tf2_ros" type="static_transform_publisher" name="body_to_base_link"
         args="0 0 0 0 0 0 UAV0/body UAV0/base_link" />
-    <!-- 2026-07-14: 将后机 FAST-LIO 局部原点放到前机 world 中；当前默认 (0,+1,0)，后续实机改为标定结果。 -->
-    <node pkg="tf2_ros" type="static_transform_publisher" name="world_to_UAV1_camera_init"
-        args="$(arg follower_offset_x) $(arg follower_offset_y) $(arg follower_offset_z) 0 0 0 world $(arg follower_world_frame)" />
+    <!-- 后机 FAST-LIO 原点由 exploration_control 的统一对齐配置发布，禁止在这里维护第二份偏移。 -->
     <node pkg="tf2_ros" type="static_transform_publisher" name="UAV1_body_to_base_link"
         args="0 0 0 0 0 0 $(arg follower_body_frame) UAV1/base_link" />
     <!-- 2026-07-07: FUEL traj.rviz 里会用到 navigation 坐标系，这里补一个 world->navigation 的单位变换。 -->
