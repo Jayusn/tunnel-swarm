@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <sstream>
@@ -35,8 +34,6 @@ class LandingDiffSearchManager {
     private_nh_.param("arrive_xy", arrive_xy_, 0.35);
     private_nh_.param("arrive_z", arrive_z_, 0.20);
     private_nh_.param("goal_reissue_sec", goal_reissue_sec_, 1.0);
-    private_nh_.param("goal_dwell_sec", goal_dwell_sec_, 0.50);
-    private_nh_.param("max_goal_step", max_goal_step_, 0.60);
     private_nh_.param("front_hint_dwell_sec", front_hint_dwell_sec_, 2.0);
     private_nh_.param("front_hint_initial_wait_sec",
                       front_hint_initial_wait_sec_, 1.0);
@@ -50,13 +47,9 @@ class LandingDiffSearchManager {
     private_nh_.param("front_hint_max_z", front_hint_max_z_, 1.50);
     private_nh_.param("marker_timeout_sec", marker_timeout_sec_, 0.50);
     private_nh_.param("front_hint_timeout_sec", front_hint_timeout_sec_, 0.50);
-    private_nh_.param("front_hint_confirm_sec", front_hint_confirm_sec_, 0.80);
-    private_nh_.param("front_hint_confirm_count", front_hint_confirm_count_, 5);
-    private_nh_.param("front_hint_confirm_radius", front_hint_confirm_radius_, 0.25);
-    private_nh_.param("front_hint_confirm_gap_sec", front_hint_confirm_gap_sec_, 0.25);
     private_nh_.param("max_header_future_sec", max_header_future_sec_, 0.05);
 
-    std::string odom_topic("/UAV0/fast_lio/Odom_high_freq");
+    std::string odom_topic("/UAV0/fast_lio/Odometry");
     std::string stage_topic("/UAV0/mission/task_status");
     std::string marker_topic("/UAV0/mission/detection/final_aruco");
     std::string front_hint_topic("/UAV0/landing/front_aruco_hint");
@@ -80,11 +73,7 @@ class LandingDiffSearchManager {
         front_hint_timeout_sec_ <= 0.0 ||
         front_hint_initial_wait_sec_ < 0.0 ||
         front_yaw_scan_half_angle_rad_ < 0.0 ||
-        front_yaw_scan_rate_rad_s_ <= 0.0 || max_header_future_sec_ < 0.0 ||
-        goal_dwell_sec_ < 0.0 || max_goal_step_ <= 0.0 ||
-        lane_spacing_ <= 0.0 || search_width_ < 0.0 || search_depth_ < 0.0 ||
-        front_hint_confirm_sec_ < 0.0 || front_hint_confirm_count_ < 1 ||
-        front_hint_confirm_radius_ <= 0.0 || front_hint_confirm_gap_sec_ <= 0.0) {
+        front_yaw_scan_rate_rad_s_ <= 0.0 || max_header_future_sec_ < 0.0) {
       throw std::runtime_error("landing_diff_search: invalid target freshness parameters");
     }
 
@@ -151,32 +140,13 @@ class LandingDiffSearchManager {
           forward, lateral);
       return;
     }
-    const ros::Time now = ros::Time::now();
-    const bool candidate_continuous = have_front_hint_candidate_ &&
-        (now - last_front_hint_candidate_time_).toSec() <= front_hint_confirm_gap_sec_ &&
-        std::hypot(point.x - front_hint_candidate_.pose.position.x,
-                   point.y - front_hint_candidate_.pose.position.y) <=
-            front_hint_confirm_radius_;
-    if (!candidate_continuous) {
-      front_hint_candidate_ = *msg;
-      front_hint_candidate_since_ = now;
-      front_hint_candidate_count_ = 1;
-      have_front_hint_candidate_ = true;
-      publishState("FRONT_ARUCO_HINT_CONFIRMING");
-    } else {
-      front_hint_candidate_ = *msg;
-      ++front_hint_candidate_count_;
+    if (!have_front_hint_ ||
+        std::hypot(point.x - front_hint_.pose.position.x,
+                   point.y - front_hint_.pose.position.y) > 0.20) {
+      front_hint_reached_since_ = ros::Time(0);
     }
-    last_front_hint_candidate_time_ = now;
-    if (front_hint_candidate_count_ < front_hint_confirm_count_ ||
-        (now - front_hint_candidate_since_).toSec() < front_hint_confirm_sec_) {
-      return;
-    }
-
-    front_hint_reached_since_ = ros::Time(0);
     front_hint_ = *msg;
     have_front_hint_ = true;
-    have_front_hint_candidate_ = false;
     front_hint_returning_ =
         std::fabs(front_yaw_scan_yaw_ - locked_yaw_) > 1.0e-3;
     publishState("FRONT_ARUCO_HINT_DIFF_APPROACH");
@@ -227,32 +197,10 @@ class LandingDiffSearchManager {
         point.x = anchor_x_ + forward * forward_x_ + lateral * lateral_x_;
         point.y = anchor_y_ + forward * forward_y_ + lateral * lateral_y_;
         point.z = search_height_;
-        appendSegmentedGoal(point);
+        sweep_goals_.push_back(point);
       }
     }
     sweep_index_ = 0;
-    goal_arrived_since_ = ros::Time(0);
-  }
-
-  void appendSegmentedGoal(const geometry_msgs::Point& target) {
-    if (sweep_goals_.empty()) {
-      sweep_goals_.push_back(target);
-      return;
-    }
-    const geometry_msgs::Point start = sweep_goals_.back();
-    const double dx = target.x - start.x;
-    const double dy = target.y - start.y;
-    const double dz = target.z - start.z;
-    const double distance = std::sqrt(dx * dx + dy * dy + dz * dz);
-    const int segments = std::max(1, static_cast<int>(std::ceil(distance / max_goal_step_)));
-    for (int segment = 1; segment <= segments; ++segment) {
-      const double ratio = static_cast<double>(segment) / segments;
-      geometry_msgs::Point point;
-      point.x = start.x + ratio * dx;
-      point.y = start.y + ratio * dy;
-      point.z = start.z + ratio * dz;
-      sweep_goals_.push_back(point);
-    }
   }
 
   void timerCallback(const ros::TimerEvent&) {
@@ -309,17 +257,7 @@ class LandingDiffSearchManager {
     } else {
       if (sweep_goals_.empty()) return;
       if (arrived(sweep_goals_[sweep_index_])) {
-        if (goal_arrived_since_.isZero()) {
-          goal_arrived_since_ = ros::Time::now();
-          publishState(sweep_index_ == 0U ? "SEARCH_HEIGHT_REACHED_STABILIZING"
-                                         : "SWEEP_GOAL_REACHED_STABILIZING");
-        } else if ((ros::Time::now() - goal_arrived_since_).toSec() >=
-                   goal_dwell_sec_) {
-          sweep_index_ = (sweep_index_ + 1) % sweep_goals_.size();
-          goal_arrived_since_ = ros::Time(0);
-        }
-      } else {
-        goal_arrived_since_ = ros::Time(0);
+        sweep_index_ = (sweep_index_ + 1) % sweep_goals_.size();
       }
       goal = sweep_goals_[sweep_index_];
     }
@@ -327,12 +265,6 @@ class LandingDiffSearchManager {
   }
 
   bool holdingForInitialFrontSearch() {
-    expireFrontHintCandidate();
-    // 候选提示确认期间暂停偏航，避免相机刚看到目标就继续转走；只有持续、
-    // 空间一致的提示才会升级为可执行的粗定位。
-    if (have_front_hint_candidate_ && !have_front_hint_) {
-      return true;
-    }
     if (front_hint_returning_) {
       return returnFrontYawToExitHeading();
     }
@@ -464,16 +396,6 @@ class LandingDiffSearchManager {
     // 必须锁存到到达或被下视 final ArUco 取代，不按消息年龄中途清除。
   }
 
-  void expireFrontHintCandidate() {
-    if (!have_front_hint_candidate_) return;
-    if ((ros::Time::now() - last_front_hint_candidate_time_).toSec() <=
-        front_hint_confirm_gap_sec_) return;
-    have_front_hint_candidate_ = false;
-    front_hint_candidate_count_ = 0;
-    front_hint_candidate_since_ = ros::Time(0);
-    publishState("FRONT_ARUCO_HINT_REJECTED_RESUME_YAW_SCAN");
-  }
-
   void publishGoal(const geometry_msgs::Point& point) {
     geometry_msgs::PoseStamped goal;
     goal.header.stamp = ros::Time::now();
@@ -540,16 +462,13 @@ class LandingDiffSearchManager {
   nav_msgs::Odometry odom_;
   geometry_msgs::PoseStamped marker_;
   geometry_msgs::PoseStamped front_hint_;
-  geometry_msgs::PoseStamped front_hint_candidate_;
   std::vector<geometry_msgs::Point> sweep_goals_;
   std::size_t sweep_index_{0};
   bool have_odom_{false}, switch_pending_{false}, switched_{false}, active_{false};
   bool have_marker_{false}, landing_requested_{false};
   bool have_front_hint_{false}, front_hint_exhausted_{false};
-  bool have_front_hint_candidate_{false};
   double search_height_{2.0}, lane_spacing_{1.0}, search_width_{3.0}, search_depth_{4.0};
   double arrive_xy_{0.35}, arrive_z_{0.20}, goal_reissue_sec_{1.0};
-  double goal_dwell_sec_{0.50}, max_goal_step_{0.60};
   double front_hint_dwell_sec_{2.0}, front_hint_forward_margin_{1.0};
   double front_hint_initial_wait_sec_{1.0};
   double front_yaw_scan_half_angle_rad_{0.78539816339};
@@ -557,9 +476,6 @@ class LandingDiffSearchManager {
   double front_hint_lateral_margin_{1.0}, front_hint_min_z_{-0.50};
   double front_hint_max_z_{1.50};
   double marker_timeout_sec_{0.50}, front_hint_timeout_sec_{0.50};
-  double front_hint_confirm_sec_{0.80}, front_hint_confirm_radius_{0.25};
-  double front_hint_confirm_gap_sec_{0.25};
-  int front_hint_confirm_count_{5};
   double max_header_future_sec_{0.05};
   double anchor_x_{0.0}, anchor_y_{0.0}, anchor_z_{0.0};
   double forward_x_{1.0}, forward_y_{0.0};
@@ -571,9 +487,7 @@ class LandingDiffSearchManager {
   int front_yaw_scan_phase_{0};
   double front_yaw_scan_yaw_{0.0};
   ros::Time activated_at_, last_goal_time_, last_trigger_time_,
-      front_hint_reached_since_, last_front_yaw_scan_update_, goal_arrived_since_;
-  ros::Time front_hint_candidate_since_, last_front_hint_candidate_time_;
-  int front_hint_candidate_count_{0};
+      front_hint_reached_since_, last_front_yaw_scan_update_;
 };
 
 }  // namespace

@@ -65,10 +65,10 @@
     <!-- 通道与常规探索保持保守速度；Diff只在出口后由仲裁器接管，可使用独立搜索速度。 -->
     <arg name="fuel_max_vel" default="0.20"/>
     <arg name="fuel_max_acc" default="0.35"/>
-    <arg name="landing_search_max_vel" default="0.30"/>
-    <arg name="landing_search_max_acc" default="0.35"/>
+    <arg name="landing_search_max_vel" default="0.50"/>
+    <arg name="landing_search_max_acc" default="0.60"/>
 
-    <!-- FUEL exploration_manager 使用 cloud-only 雷达模式，并以高频 Odom_high_freq 作为 sensor pose。 -->
+    <!-- 2026-07-07: FUEL exploration_manager 原始 launch 默认是深度相机，这里切到 cloud-only 雷达模式并直接使用 /Odometry 作为 sensor pose。 -->
     <include file="$(find exploration_manager)/launch/algorithm.xml">
         <arg name="map_size_x_" value="$(arg map_size_x)"/>
         <arg name="map_size_y_" value="$(arg map_size_y)"/>
@@ -551,8 +551,6 @@
         <param name="search_depth" value="4.0"/>
         <param name="arrive_xy" value="0.35"/>
         <param name="arrive_z" value="0.20"/>
-        <param name="goal_dwell_sec" value="0.50"/>
-        <param name="max_goal_step" value="0.60"/>
         <param name="front_hint_dwell_sec" value="2.0"/>
         <param name="front_hint_initial_wait_sec" value="1.0"/>
         <param name="front_yaw_scan_half_angle_rad" value="0.7854"/>
@@ -564,10 +562,6 @@
         <param name="target_frame" value="world"/>
         <param name="marker_timeout_sec" value="0.50"/>
         <param name="front_hint_timeout_sec" value="0.50"/>
-        <param name="front_hint_confirm_sec" value="0.80"/>
-        <param name="front_hint_confirm_count" value="5"/>
-        <param name="front_hint_confirm_radius" value="0.25"/>
-        <param name="front_hint_confirm_gap_sec" value="0.25"/>
         <param name="max_header_future_sec" value="0.05"/>
     </node>
 
