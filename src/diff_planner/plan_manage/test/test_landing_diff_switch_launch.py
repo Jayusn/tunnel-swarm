@@ -9,8 +9,8 @@ def test_landing_search_switches_from_fuel_to_diff_with_separate_commands():
     root = ET.parse(LAUNCH).getroot()
     args = {item.attrib["name"]: item.attrib["default"] for item in root.findall("arg")}
     assert args["fuel_max_vel"] == "0.20"
-    assert args["landing_search_max_vel"] == "0.50"
-    assert args["landing_search_max_acc"] == "0.60"
+    assert args["landing_search_max_vel"] == "0.30"
+    assert args["landing_search_max_acc"] == "0.35"
     assert args["enable_search_landing"] == "$(optenv UAV0_ENABLE_SEARCH_LANDING true)"
     nodes = {node.attrib.get("name"): node for node in root.findall("node")}
     assert "fuel_traj_server" in nodes
@@ -39,6 +39,12 @@ def test_landing_search_switches_from_fuel_to_diff_with_separate_commands():
     assert manager_params["target_frame"] == "world"
     assert manager_params["marker_timeout_sec"] == "0.50"
     assert manager_params["front_hint_timeout_sec"] == "0.50"
+    assert manager_params["front_hint_confirm_sec"] == "0.80"
+    assert manager_params["front_hint_confirm_count"] == "5"
+    assert manager_params["front_hint_confirm_radius"] == "0.25"
+    assert manager_params["front_hint_confirm_gap_sec"] == "0.25"
+    assert manager_params["goal_dwell_sec"] == "0.50"
+    assert manager_params["max_goal_step"] == "0.60"
 
 
 def test_fuel_declares_external_landing_planner():
@@ -142,6 +148,31 @@ def test_initial_front_scan_does_not_send_zero_length_diff_goal():
         "if (holdingForInitialFrontSearch())", maxsplit=1
     )[1].split("geometry_msgs::Point goal;", maxsplit=1)[0]
     assert "publishGoal" not in initial_hold
+
+
+def test_sweep_goals_are_segmented_and_stabilized_before_advancing():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src/landing_diff_search_manager.cpp"
+    ).read_text()
+    assert "appendSegmentedGoal(point)" in source
+    assert "distance / max_goal_step_" in source
+    assert "goal_arrived_since_" in source
+    assert "goal_dwell_sec_" in source
+
+
+def test_front_hint_must_be_continuous_before_it_can_move_the_uav():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src/landing_diff_search_manager.cpp"
+    ).read_text()
+    callback = source.split("void frontHintCallback", maxsplit=1)[1].split(
+        "void activate", maxsplit=1
+    )[0]
+    assert "front_hint_candidate_count_ < front_hint_confirm_count_" in callback
+    assert "front_hint_confirm_sec_" in callback
+    assert "front_hint_confirm_radius_" in callback
+    assert "have_front_hint_ = true" in callback
 
 
 def test_diff_rejects_invalid_and_near_zero_planning_inputs():
