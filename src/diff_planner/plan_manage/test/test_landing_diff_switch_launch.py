@@ -69,6 +69,34 @@ def test_follower_frame_alignment_is_not_duplicated_in_planner_launch():
     assert "world_to_UAV1_camera_init" not in nodes
 
 
+def test_dynamic_obstacle_detection_is_disabled_by_default():
+    root = ET.parse(LAUNCH).getroot()
+    args = {item.attrib["name"]: item.attrib["default"] for item in root.findall("arg")}
+    assert args["enable_uav0_dynamic_obstacle_detection"] == (
+        "$(optenv UAV0_ENABLE_DYNAMIC_OBSTACLE_DETECTION false)"
+    )
+    assert args["enable_uav1_dynamic_obstacle_detection"] == (
+        "$(optenv UAV1_ENABLE_DYNAMIC_OBSTACLE_DETECTION false)"
+    )
+
+    arbiter = next(
+        node for node in root.findall("node")
+        if node.attrib.get("name") == "planner_command_arbiter"
+    )
+    params = {item.attrib["name"]: item.attrib["value"] for item in arbiter.findall("param")}
+    assert params["dynamic_avoidance_enabled"] == (
+        "$(arg enable_uav0_dynamic_obstacle_detection)"
+    )
+
+    ldop_include = next(
+        item for item in root.findall("include")
+        if "run_ldop_uav_pair.launch" in item.attrib.get("file", "")
+    )
+    include_args = {item.attrib["name"]: item.attrib["value"] for item in ldop_include.findall("arg")}
+    assert include_args["enable_uav0"] == "$(arg enable_uav0_dynamic_obstacle_detection)"
+    assert include_args["enable_uav1"] == "$(arg enable_uav1_dynamic_obstacle_detection)"
+
+
 def test_landing_targets_require_fresh_world_frame_and_finite_position():
     source = (
         Path(__file__).resolve().parents[1]

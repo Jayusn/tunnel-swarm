@@ -14,6 +14,12 @@
     <!-- 本机为前机UAV0：默认启动前机LDOP；后机由其自身计算机按需启动。 -->
     <arg name="enable_ldop_detection" default="true"/>
     <arg name="enable_follower_ldop_detection" default="false"/>
+    <!-- LDOP尚未完成实飞验证：默认不启动两机动态检测，规划仲裁器也不消费动态目标。
+         后续分别设置对应环境变量为true并重启，才允许恢复。 -->
+    <arg name="enable_uav0_dynamic_obstacle_detection"
+         default="$(optenv UAV0_ENABLE_DYNAMIC_OBSTACLE_DETECTION false)"/>
+    <arg name="enable_uav1_dynamic_obstacle_detection"
+         default="$(optenv UAV1_ENABLE_DYNAMIC_OBSTACLE_DETECTION false)"/>
     <!-- 搜索降落链路默认待命，但自动出口识别保持关闭；UAV0 CH9 低->高持续0.5s后人工触发。
          维护时可设置 UAV0_ENABLE_SEARCH_LANDING=false 完全关闭该链路。 -->
     <arg name="enable_search_landing"
@@ -520,7 +526,8 @@
         <param name="odom_topic" value="$(arg odom_topic)"/>
         <param name="dynamic_objects_topic" value="/UAV0/ldop/dynamic_objects"/>
         <param name="emergency_brake_topic" value="/UAV0/planning/emergency_brake"/>
-        <param name="dynamic_avoidance_enabled" value="$(arg enable_ldop_detection)"/>
+        <param name="dynamic_avoidance_enabled"
+               value="$(arg enable_uav0_dynamic_obstacle_detection)"/>
         <param name="dynamic_object_timeout" value="0.60"/>
         <param name="dynamic_safety_radius" value="0.45"/>
         <param name="dynamic_vertical_margin" value="0.25"/>
@@ -773,8 +780,8 @@
     </node>
 
     <include file="$(find diff_planner)/launch/exp/run_ldop_uav_pair.launch">
-        <arg name="enable_uav0" value="$(arg enable_ldop_detection)"/>
-        <arg name="enable_uav1" value="$(arg enable_follower_ldop_detection)"/>
+        <arg name="enable_uav0" value="$(arg enable_uav0_dynamic_obstacle_detection)"/>
+        <arg name="enable_uav1" value="$(arg enable_uav1_dynamic_obstacle_detection)"/>
     </include>
 
     <!-- 2026-07-07: 验证探索版优先使用 FUEL 的 traj.rviz，能直接看到 frontier / bspline / exploration 可视化。 -->
