@@ -1,11 +1,14 @@
 <launch>
     <!-- 2026-07-28: 后机新增独立Diff接力规划器；接收前机释放的离散目标，使用UAV1自身里程计和点云避障。 -->
-    <arg name="odom_topic" default="/UAV1/fast_lio/Odometry"/>
+    <arg name="odom_topic" default="/UAV1/fast_lio/Odom_high_freq"/>
     <arg name="cloud_topic" default="/UAV1/fast_lio/cloud_registered"/>
     <arg name="goal_topic" default="/UAV1/planning/goal"/>
     <arg name="position_cmd_topic" default="/UAV1/planning/pos_cmd"/>
     <arg name="max_vel" default="0.50"/>
     <arg name="max_acc" default="1.00"/>
+    <!-- 由上层接力入口统一提供TF和RViz；保留参数供UAV1分支兼容。 -->
+    <arg name="publish_world_to_follower_tf" default="true"/>
+    <arg name="enable_rviz" default="true"/>
 
     <!-- 2026-07-28: flight_type=1启用运行时外部目标；占位航点不会在该模式执行。 -->
     <include file="$(find diff_planner)/launch/include/advanced_param_exp.xml">
