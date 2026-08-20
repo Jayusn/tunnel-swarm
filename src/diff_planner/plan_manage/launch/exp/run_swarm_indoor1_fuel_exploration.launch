@@ -65,7 +65,7 @@
     <!-- 通道与常规探索保持保守速度；Diff只在出口后由仲裁器接管，可使用独立搜索速度。 -->
     <arg name="fuel_max_vel" default="0.20"/>
     <arg name="fuel_max_acc" default="0.35"/>
-    <arg name="landing_search_max_vel" default="0.50"/>
+    <arg name="landing_search_max_vel" default="0.30"/>
     <arg name="landing_search_max_acc" default="0.60"/>
 
     <!-- 2026-07-07: FUEL exploration_manager 原始 launch 默认是深度相机，这里切到 cloud-only 雷达模式并直接使用 /Odometry 作为 sensor pose。 -->

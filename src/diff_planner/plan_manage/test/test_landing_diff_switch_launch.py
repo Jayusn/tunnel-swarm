@@ -9,7 +9,7 @@ def test_landing_search_switches_from_fuel_to_diff_with_separate_commands():
     root = ET.parse(LAUNCH).getroot()
     args = {item.attrib["name"]: item.attrib["default"] for item in root.findall("arg")}
     assert args["fuel_max_vel"] == "0.20"
-    assert args["landing_search_max_vel"] == "0.50"
+    assert args["landing_search_max_vel"] == "0.30"
     assert args["landing_search_max_acc"] == "0.60"
     assert args["enable_search_landing"] == "$(optenv UAV0_ENABLE_SEARCH_LANDING true)"
     nodes = {node.attrib.get("name"): node for node in root.findall("node")}
