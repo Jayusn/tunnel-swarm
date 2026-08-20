@@ -11,7 +11,7 @@ def test_landing_search_switches_from_fuel_to_diff_with_separate_commands():
     assert args["fuel_max_vel"] == "0.20"
     assert args["landing_search_max_vel"] == "0.50"
     assert args["landing_search_max_acc"] == "0.60"
-    assert args["enable_search_landing"] == "$(optenv UAV0_ENABLE_SEARCH_LANDING false)"
+    assert args["enable_search_landing"] == "$(optenv UAV0_ENABLE_SEARCH_LANDING true)"
     nodes = {node.attrib.get("name"): node for node in root.findall("node")}
     assert "fuel_traj_server" in nodes
     assert "landing_diff_traj_server" in nodes
@@ -44,8 +44,19 @@ def test_landing_search_switches_from_fuel_to_diff_with_separate_commands():
 def test_fuel_declares_external_landing_planner():
     root = ET.parse(LAUNCH).getroot()
     values = {item.attrib.get("param"): (item.text or "").strip() for item in root.findall("rosparam")}
+    params = {item.attrib.get("name"): item for item in root.findall("param")}
     assert values["/exploration_node/mission/task_search/exit/external_landing_planner"] == "true"
-    assert values["/exploration_node/mission/task_search/exit/enabled"] == "$(arg enable_search_landing)"
+    assert values["/exploration_node/mission/task_search/exit/enabled"] == "false"
+    assert params["/exploration_node/mission/task_search/exit/rc_trigger/enabled"].attrib == {
+        "name": "/exploration_node/mission/task_search/exit/rc_trigger/enabled",
+        "value": "$(arg enable_search_landing)",
+        "type": "bool",
+    }
+    assert values["/exploration_node/mission/task_search/exit/rc_trigger/topic"] == "/UAV0/mavros/rc/in"
+    assert values["/exploration_node/mission/task_search/exit/rc_trigger/channel_index"] == "8"
+    assert values["/exploration_node/mission/task_search/exit/rc_trigger/low_pwm"] == "1300"
+    assert values["/exploration_node/mission/task_search/exit/rc_trigger/high_pwm"] == "1800"
+    assert values["/exploration_node/mission/task_search/exit/rc_trigger/hold_sec"] == "0.5"
 
 
 def test_follower_frame_alignment_is_not_duplicated_in_planner_launch():
