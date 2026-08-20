@@ -11,11 +11,14 @@ def test_landing_search_switches_from_fuel_to_diff_with_separate_commands():
     assert args["fuel_max_vel"] == "0.20"
     assert args["landing_search_max_vel"] == "0.50"
     assert args["landing_search_max_acc"] == "0.60"
+    assert args["enable_search_landing"] == "$(optenv UAV0_ENABLE_SEARCH_LANDING false)"
     nodes = {node.attrib.get("name"): node for node in root.findall("node")}
     assert "fuel_traj_server" in nodes
     assert "landing_diff_traj_server" in nodes
     assert "planner_command_arbiter" in nodes
     assert "landing_diff_search_manager" in nodes
+    assert nodes["landing_diff_traj_server"].attrib["if"] == "$(arg enable_search_landing)"
+    assert nodes["landing_diff_search_manager"].attrib["if"] == "$(arg enable_search_landing)"
 
     fuel_remaps = {item.attrib["from"]: item.attrib["to"] for item in nodes["fuel_traj_server"].findall("remap")}
     diff_remaps = {item.attrib["from"]: item.attrib["to"] for item in nodes["landing_diff_traj_server"].findall("remap")}
@@ -42,6 +45,7 @@ def test_fuel_declares_external_landing_planner():
     root = ET.parse(LAUNCH).getroot()
     values = {item.attrib.get("param"): (item.text or "").strip() for item in root.findall("rosparam")}
     assert values["/exploration_node/mission/task_search/exit/external_landing_planner"] == "true"
+    assert values["/exploration_node/mission/task_search/exit/enabled"] == "$(arg enable_search_landing)"
 
 
 def test_follower_frame_alignment_is_not_duplicated_in_planner_launch():
