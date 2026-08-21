@@ -40,6 +40,8 @@ def test_landing_search_switches_from_fuel_to_diff_with_separate_commands():
     assert manager_params["subgoal_topic"] == "/UAV0/landing_diff/subgoal"
     assert manager_params["marker_topic"] == "/UAV0/mission/detection/final_aruco"
     assert manager_params["front_hint_topic"] == "/UAV0/landing/front_aruco_hint"
+    assert manager_params["assigned_target_topic"] == "/UAV0/landing/assigned_target"
+    assert manager_params["enable_single_front_hint_approach"] == "false"
     assert manager_params["yaw_topic"] == "/UAV0/landing_diff/yaw"
     assert manager_params["front_hint_dwell_sec"] == "2.0"
     assert manager_params["front_hint_initial_wait_sec"] == "1.0"
@@ -48,6 +50,17 @@ def test_landing_search_switches_from_fuel_to_diff_with_separate_commands():
     assert manager_params["target_frame"] == "world"
     assert manager_params["marker_timeout_sec"] == "0.50"
     assert manager_params["front_hint_timeout_sec"] == "0.50"
+    assert manager_params["assigned_target_timeout_sec"] == "0.50"
+
+    manager_source = (
+        Path(__file__).resolve().parents[1]
+        / "src/landing_diff_search_manager.cpp"
+    ).read_text()
+    assert "ASSIGNED_TARGET_REACHED_WAIT_DOWN_CONFIRMATION" in manager_source
+    assert "DIFF_APPROACH_REACHED_LANDING_REQUESTED" in manager_source
+    assert manager_source.index("if (have_marker_)") < manager_source.index(
+        "else if (have_assigned_target_)"
+    )
 
 
 def test_fuel_declares_external_landing_planner():

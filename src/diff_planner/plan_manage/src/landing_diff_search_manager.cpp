@@ -47,12 +47,17 @@ class LandingDiffSearchManager {
     private_nh_.param("front_hint_max_z", front_hint_max_z_, 1.50);
     private_nh_.param("marker_timeout_sec", marker_timeout_sec_, 0.50);
     private_nh_.param("front_hint_timeout_sec", front_hint_timeout_sec_, 0.50);
+    private_nh_.param("assigned_target_timeout_sec",
+                      assigned_target_timeout_sec_, 0.50);
+    private_nh_.param("enable_single_front_hint_approach",
+                      enable_single_front_hint_approach_, true);
     private_nh_.param("max_header_future_sec", max_header_future_sec_, 0.05);
 
     std::string odom_topic("/UAV0/fast_lio/Odometry");
     std::string stage_topic("/UAV0/mission/task_status");
     std::string marker_topic("/UAV0/mission/detection/final_aruco");
     std::string front_hint_topic("/UAV0/landing/front_aruco_hint");
+    std::string assigned_target_topic("/UAV0/landing/assigned_target");
     std::string subgoal_topic("/UAV0/landing_diff/subgoal");
     std::string trigger_topic("/UAV0/landing_diff/trigger");
     std::string yaw_topic("/UAV0/landing_diff/yaw");
@@ -62,6 +67,8 @@ class LandingDiffSearchManager {
     private_nh_.param("stage_topic", stage_topic, stage_topic);
     private_nh_.param("marker_topic", marker_topic, marker_topic);
     private_nh_.param("front_hint_topic", front_hint_topic, front_hint_topic);
+    private_nh_.param("assigned_target_topic", assigned_target_topic,
+                      assigned_target_topic);
     private_nh_.param("subgoal_topic", subgoal_topic, subgoal_topic);
     private_nh_.param("trigger_topic", trigger_topic, trigger_topic);
     private_nh_.param("yaw_topic", yaw_topic, yaw_topic);
@@ -70,7 +77,7 @@ class LandingDiffSearchManager {
     target_frame_ = target_frame;
 
     if (target_frame_.empty() || marker_timeout_sec_ <= 0.0 ||
-        front_hint_timeout_sec_ <= 0.0 ||
+        front_hint_timeout_sec_ <= 0.0 || assigned_target_timeout_sec_ <= 0.0 ||
         front_hint_initial_wait_sec_ < 0.0 ||
         front_yaw_scan_half_angle_rad_ < 0.0 ||
         front_yaw_scan_rate_rad_s_ <= 0.0 || max_header_future_sec_ < 0.0) {
@@ -82,6 +89,9 @@ class LandingDiffSearchManager {
     marker_sub_ = nh_.subscribe(marker_topic, 10, &LandingDiffSearchManager::markerCallback, this);
     front_hint_sub_ = nh_.subscribe(front_hint_topic, 10,
                                     &LandingDiffSearchManager::frontHintCallback, this);
+    assigned_target_sub_ = nh_.subscribe(
+        assigned_target_topic, 10,
+        &LandingDiffSearchManager::assignedTargetCallback, this);
     subgoal_pub_ = nh_.advertise<geometry_msgs::PoseStamped>(subgoal_topic, 2);
     trigger_pub_ = nh_.advertise<geometry_msgs::PoseStamped>(trigger_topic, 2, true);
     yaw_pub_ = nh_.advertise<quadrotor_msgs::PositionCommand>(yaw_topic, 2);
@@ -118,7 +128,8 @@ class LandingDiffSearchManager {
   }
 
   void frontHintCallback(const geometry_msgs::PoseStampedConstPtr& msg) {
-    if (!switched_ || front_hint_exhausted_ || have_marker_) return;
+    if (!enable_single_front_hint_approach_ || !switched_ ||
+        front_hint_exhausted_ || have_marker_ || have_assigned_target_) return;
     if (!validTarget(*msg, front_hint_timeout_sec_, "front ArUco hint")) return;
     const geometry_msgs::Point& point = msg->pose.position;
     if (!std::isfinite(point.x) || !std::isfinite(point.y) ||
@@ -150,6 +161,17 @@ class LandingDiffSearchManager {
     front_hint_returning_ =
         std::fabs(front_yaw_scan_yaw_ - locked_yaw_) > 1.0e-3;
     publishState("FRONT_ARUCO_HINT_DIFF_APPROACH");
+  }
+
+  void assignedTargetCallback(const geometry_msgs::PoseStampedConstPtr& msg) {
+    if (!switched_ || landing_requested_) return;
+    if (!validTarget(*msg, assigned_target_timeout_sec_,
+                     "assigned landing target")) return;
+    assigned_target_ = *msg;
+    have_assigned_target_ = true;
+    have_front_hint_ = false;
+    front_hint_returning_ = false;
+    publishState("TWO_ARUCOS_ASSIGNED_APPROACH_FAR_PLATFORM");
   }
 
   void activate() {
@@ -232,6 +254,12 @@ class LandingDiffSearchManager {
         }
         return;
       }
+    } else if (have_assigned_target_) {
+      goal = assigned_target_.pose.position;
+      goal.z += search_height_;
+      if (arrived(goal)) {
+        publishState("ASSIGNED_TARGET_REACHED_WAIT_DOWN_CONFIRMATION");
+      }
     } else if (have_front_hint_) {
       goal = front_hint_.pose.position;
       goal.z += search_height_;
@@ -268,7 +296,8 @@ class LandingDiffSearchManager {
     if (front_hint_returning_) {
       return returnFrontYawToExitHeading();
     }
-    if (initial_front_wait_complete_ || have_marker_ || have_front_hint_) {
+    if (initial_front_wait_complete_ || have_marker_ || have_front_hint_ ||
+        have_assigned_target_) {
       return !front_yaw_scan_complete_ && advanceFrontYawScan();
     }
     if ((ros::Time::now() - activated_at_).toSec() <
@@ -284,6 +313,7 @@ class LandingDiffSearchManager {
 
   bool advanceFrontYawScan() {
     if (front_yaw_scan_complete_ || have_marker_ || have_front_hint_ ||
+        have_assigned_target_ ||
         front_hint_exhausted_) {
       return false;
     }
@@ -435,6 +465,7 @@ class LandingDiffSearchManager {
   double commandedYaw() const {
     if (front_hint_returning_) return front_yaw_scan_yaw_;
     return front_yaw_scan_complete_ || have_marker_ || have_front_hint_ ||
+                   have_assigned_target_ ||
                    front_hint_exhausted_
                ? locked_yaw_
                : front_yaw_scan_yaw_;
@@ -456,17 +487,21 @@ class LandingDiffSearchManager {
   }
 
   ros::NodeHandle nh_, private_nh_;
-  ros::Subscriber odom_sub_, stage_sub_, marker_sub_, front_hint_sub_;
+  ros::Subscriber odom_sub_, stage_sub_, marker_sub_, front_hint_sub_,
+      assigned_target_sub_;
   ros::Publisher subgoal_pub_, trigger_pub_, yaw_pub_, landing_request_pub_, state_pub_;
   ros::Timer timer_;
   nav_msgs::Odometry odom_;
   geometry_msgs::PoseStamped marker_;
   geometry_msgs::PoseStamped front_hint_;
+  geometry_msgs::PoseStamped assigned_target_;
   std::vector<geometry_msgs::Point> sweep_goals_;
   std::size_t sweep_index_{0};
   bool have_odom_{false}, switch_pending_{false}, switched_{false}, active_{false};
   bool have_marker_{false}, landing_requested_{false};
   bool have_front_hint_{false}, front_hint_exhausted_{false};
+  bool have_assigned_target_{false};
+  bool enable_single_front_hint_approach_{true};
   double search_height_{2.0}, lane_spacing_{1.0}, search_width_{3.0}, search_depth_{4.0};
   double arrive_xy_{0.35}, arrive_z_{0.20}, goal_reissue_sec_{1.0};
   double front_hint_dwell_sec_{2.0}, front_hint_forward_margin_{1.0};
@@ -476,6 +511,7 @@ class LandingDiffSearchManager {
   double front_hint_lateral_margin_{1.0}, front_hint_min_z_{-0.50};
   double front_hint_max_z_{1.50};
   double marker_timeout_sec_{0.50}, front_hint_timeout_sec_{0.50};
+  double assigned_target_timeout_sec_{0.50};
   double max_header_future_sec_{0.05};
   double anchor_x_{0.0}, anchor_y_{0.0}, anchor_z_{0.0};
   double forward_x_{1.0}, forward_y_{0.0};
