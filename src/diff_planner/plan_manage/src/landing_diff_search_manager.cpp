@@ -202,20 +202,28 @@ class LandingDiffSearchManager {
     if (!switched_ || !front_approach_complete_ || landing_requested_) return;
     if (!validTarget(*msg, assigned_target_timeout_sec_,
                      "assigned landing target")) return;
+    // 协调器会周期性重发同一个分配目标以保持时间戳新鲜。目标保活只能更新
+    // 目标数据，不能反复重启回正流程，否则每条消息都会清零稳定驻留计时。
+    const bool start_yaw_return =
+        !front_yaw_scan_complete_ && !front_hint_returning_;
     assigned_target_ = *msg;
     have_assigned_target_ = true;
     have_front_hint_ = false;
     // 双码分配可以立即中断余下扫描，但只能先原地回到 CH9 锁定航向。
     // 回正且稳定前不发布远平台状态，避免 Diff 提前生成平移轨迹。
-    front_hint_returning_ = !front_yaw_scan_complete_;
-    front_yaw_return_stable_since_ = ros::Time(0);
     if (front_yaw_scan_complete_) {
       publishState("TWO_ARUCOS_ASSIGNED_APPROACH_FAR_PLATFORM");
-    } else {
+    } else if (start_yaw_return) {
+      front_hint_returning_ = true;
+      front_yaw_return_stable_since_ = ros::Time(0);
       publishState("FRONT_ARUCO_YAW_SCAN_RETURN");
-      ROS_INFO_THROTTLE(1.0,
-                        "landing_diff_search: two-ArUco assignment stored; "
-                        "interrupt scan and return to CH9 yaw before approach");
+      ROS_INFO("landing_diff_search: two-ArUco assignment stored; "
+               "interrupt scan and return to CH9 yaw before approach");
+    } else {
+      ROS_DEBUG_THROTTLE(
+          1.0,
+          "landing_diff_search: assigned target keepalive updated without "
+          "resetting CH9 yaw return dwell");
     }
   }
 

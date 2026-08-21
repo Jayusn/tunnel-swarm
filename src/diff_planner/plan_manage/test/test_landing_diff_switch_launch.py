@@ -245,14 +245,26 @@ def test_two_aruco_assignment_interrupts_scan_but_waits_for_ch9_yaw_return():
         "void activate()", maxsplit=1
     )[0]
     assert "have_assigned_target_ = true" in callback
-    assert "front_hint_returning_ = !front_yaw_scan_complete_" in callback
+    assert "!front_yaw_scan_complete_ && !front_hint_returning_" in callback
+    assert "if (start_yaw_return)" in callback
+    start_return = callback.split("if (start_yaw_return)", maxsplit=1)[1].split(
+        "} else {", maxsplit=1
+    )[0]
+    assert "front_hint_returning_ = true" in start_return
+    assert "front_yaw_return_stable_since_ = ros::Time(0)" in start_return
+    keepalive = callback.rsplit("} else {", maxsplit=1)[1]
+    assert "front_yaw_return_stable_since_ = ros::Time(0)" not in keepalive
+    assert "assigned target keepalive updated" in keepalive
+    assert "resetting CH9 yaw return dwell" in keepalive
     assert "if (front_yaw_scan_complete_)" in callback
     assert callback.index("have_assigned_target_ = true") < callback.index(
         "if (front_yaw_scan_complete_)"
     )
-    pending = callback.split("else {", maxsplit=1)[1]
-    assert 'publishState("FRONT_ARUCO_YAW_SCAN_RETURN")' in pending
-    assert 'publishState("TWO_ARUCOS_ASSIGNED_APPROACH_FAR_PLATFORM")' not in pending
+    assert 'publishState("FRONT_ARUCO_YAW_SCAN_RETURN")' in start_return
+    assert (
+        'publishState("TWO_ARUCOS_ASSIGNED_APPROACH_FAR_PLATFORM")'
+        not in start_return
+    )
 
     scan = source.split("bool advanceFrontYawScan()", maxsplit=1)[1].split(
         "bool returnFrontYawToExitHeading()", maxsplit=1
