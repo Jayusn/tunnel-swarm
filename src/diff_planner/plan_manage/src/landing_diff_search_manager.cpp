@@ -47,6 +47,8 @@ class LandingDiffSearchManager {
                       front_yaw_scan_rate_rad_s_, 0.35);
     private_nh_.param("front_yaw_arrive_tolerance_rad",
                       front_yaw_arrive_tolerance_rad_, 0.12);
+    private_nh_.param("front_yaw_return_dwell_sec",
+                      front_yaw_return_dwell_sec_, 0.50);
     private_nh_.param("front_hint_forward_margin", front_hint_forward_margin_, 1.0);
     private_nh_.param("front_hint_lateral_margin", front_hint_lateral_margin_, 1.0);
     private_nh_.param("front_hint_min_z", front_hint_min_z_, -0.50);
@@ -89,6 +91,7 @@ class LandingDiffSearchManager {
         front_yaw_scan_rate_rad_s_ <= 0.0 ||
         front_yaw_arrive_tolerance_rad_ <= 0.0 ||
         front_yaw_arrive_tolerance_rad_ > M_PI ||
+        front_yaw_return_dwell_sec_ < 0.0 ||
         max_header_future_sec_ < 0.0) {
       throw std::runtime_error("landing_diff_search: invalid target freshness parameters");
     }
@@ -137,7 +140,13 @@ class LandingDiffSearchManager {
     if (!validTarget(*msg, marker_timeout_sec_, "final ArUco")) return;
     marker_ = *msg;
     have_marker_ = true;
-    publishState("ARUCO_LOCKED_DIFF_APPROACH");
+    if (front_yaw_scan_complete_) {
+      publishState("ARUCO_LOCKED_DIFF_APPROACH");
+    } else {
+      ROS_INFO_THROTTLE(
+          1.0,
+          "landing_diff_search: final ArUco stored; wait for full yaw scan and return");
+    }
   }
 
   void frontHintCallback(const geometry_msgs::PoseStampedConstPtr& msg) {
@@ -171,9 +180,13 @@ class LandingDiffSearchManager {
     }
     front_hint_ = *msg;
     have_front_hint_ = true;
-    front_hint_returning_ =
-        std::fabs(front_yaw_scan_yaw_ - locked_yaw_) > 1.0e-3;
-    publishState("FRONT_ARUCO_HINT_DIFF_APPROACH");
+    if (front_yaw_scan_complete_) {
+      publishState("FRONT_ARUCO_HINT_DIFF_APPROACH");
+    } else {
+      ROS_INFO_THROTTLE(
+          1.0,
+          "landing_diff_search: front hint stored; wait for full yaw scan and return");
+    }
   }
 
   void assignedTargetCallback(const geometry_msgs::PoseStampedConstPtr& msg) {
@@ -183,8 +196,18 @@ class LandingDiffSearchManager {
     assigned_target_ = *msg;
     have_assigned_target_ = true;
     have_front_hint_ = false;
-    front_hint_returning_ = false;
-    publishState("TWO_ARUCOS_ASSIGNED_APPROACH_FAR_PLATFORM");
+    // 双码分配可以立即中断余下扫描，但只能先原地回到 CH9 锁定航向。
+    // 回正且稳定前不发布远平台状态，避免 Diff 提前生成平移轨迹。
+    front_hint_returning_ = !front_yaw_scan_complete_;
+    front_yaw_return_stable_since_ = ros::Time(0);
+    if (front_yaw_scan_complete_) {
+      publishState("TWO_ARUCOS_ASSIGNED_APPROACH_FAR_PLATFORM");
+    } else {
+      publishState("FRONT_ARUCO_YAW_SCAN_RETURN");
+      ROS_INFO_THROTTLE(1.0,
+                        "landing_diff_search: two-ArUco assignment stored; "
+                        "interrupt scan and return to CH9 yaw before approach");
+    }
   }
 
   void activate() {
@@ -201,6 +224,7 @@ class LandingDiffSearchManager {
     front_yaw_scan_yaw_ = locked_yaw_;
     front_yaw_scan_phase_ = 0;
     front_yaw_scan_complete_ = front_yaw_scan_half_angle_rad_ <= 0.0;
+    front_yaw_return_stable_since_ = ros::Time(0);
     last_front_yaw_scan_update_ = activated_at_;
     forward_x_ = std::cos(yaw);
     forward_y_ = std::sin(yaw);
@@ -309,25 +333,21 @@ class LandingDiffSearchManager {
     if (front_hint_returning_) {
       return returnFrontYawToExitHeading();
     }
-    if (initial_front_wait_complete_ || have_marker_ || have_front_hint_ ||
-        have_assigned_target_) {
-      return !front_yaw_scan_complete_ && advanceFrontYawScan();
-    }
-    if ((ros::Time::now() - activated_at_).toSec() <
-        front_hint_initial_wait_sec_) {
-      return true;
-    }
-    initial_front_wait_complete_ = true;
-    if (!front_yaw_scan_complete_) {
-      publishState("FRONT_ARUCO_YAW_SCAN_LEFT");
+    if (!initial_front_wait_complete_) {
+      if ((ros::Time::now() - activated_at_).toSec() <
+          front_hint_initial_wait_sec_) {
+        return true;
+      }
+      initial_front_wait_complete_ = true;
+      if (!front_yaw_scan_complete_) {
+        publishState("FRONT_ARUCO_YAW_SCAN_LEFT");
+      }
     }
     return !front_yaw_scan_complete_ && advanceFrontYawScan();
   }
 
   bool advanceFrontYawScan() {
-    if (front_yaw_scan_complete_ || have_marker_ || have_front_hint_ ||
-        have_assigned_target_ ||
-        front_hint_exhausted_) {
+    if (front_yaw_scan_complete_) {
       return false;
     }
     const ros::Time now = ros::Time::now();
@@ -337,11 +357,15 @@ class LandingDiffSearchManager {
 
     double target_yaw = locked_yaw_;
     if (front_yaw_scan_phase_ == 0) {
-      target_yaw = locked_yaw_ - front_yaw_scan_half_angle_rad_;
+      // ENU 中 yaw 正方向为逆时针（从上往下看向左转）。
+      target_yaw = std::remainder(
+          locked_yaw_ + front_yaw_scan_half_angle_rad_, 2.0 * M_PI);
     } else if (front_yaw_scan_phase_ == 1) {
-      target_yaw = locked_yaw_ + front_yaw_scan_half_angle_rad_;
+      target_yaw = std::remainder(
+          locked_yaw_ - front_yaw_scan_half_angle_rad_, 2.0 * M_PI);
     }
-    const double remaining = target_yaw - front_yaw_scan_yaw_;
+    const double remaining =
+        shortestYawDifference(front_yaw_scan_yaw_, target_yaw);
     const double step = front_yaw_scan_rate_rad_s_ * elapsed;
     if (std::fabs(remaining) <= step) {
       front_yaw_scan_yaw_ = target_yaw;
@@ -352,6 +376,7 @@ class LandingDiffSearchManager {
           std::fabs(shortestYawDifference(actual_yaw, target_yaw));
       if (!std::isfinite(actual_yaw) || !std::isfinite(actual_error) ||
           actual_error > front_yaw_arrive_tolerance_rad_) {
+        front_yaw_return_stable_since_ = ros::Time(0);
         ROS_WARN_THROTTLE(
             1.0,
             "landing_diff_search: waiting actual yaw at scan endpoint "
@@ -360,10 +385,30 @@ class LandingDiffSearchManager {
             front_yaw_arrive_tolerance_rad_);
         return true;
       }
+      // 最后一段回到 CH9 航向后持续稳定一段时间，才能释放平移目标。
+      if (front_yaw_scan_phase_ == 2 && front_yaw_return_dwell_sec_ > 0.0) {
+        if (front_yaw_return_stable_since_.isZero()) {
+          front_yaw_return_stable_since_ = now;
+          return true;
+        }
+        if ((now - front_yaw_return_stable_since_).toSec() <
+            front_yaw_return_dwell_sec_) {
+          return true;
+        }
+      }
+      front_yaw_return_stable_since_ = ros::Time(0);
       ++front_yaw_scan_phase_;
       if (front_yaw_scan_phase_ >= 3) {
         front_yaw_scan_complete_ = true;
-        publishState("FRONT_ARUCO_YAW_SCAN_COMPLETE_START_DOWN_SWEEP");
+        if (have_marker_) {
+          publishState("ARUCO_LOCKED_DIFF_APPROACH");
+        } else if (have_assigned_target_) {
+          publishState("TWO_ARUCOS_ASSIGNED_APPROACH_FAR_PLATFORM");
+        } else if (have_front_hint_) {
+          publishState("FRONT_ARUCO_HINT_DIFF_APPROACH");
+        } else {
+          publishState("FRONT_ARUCO_YAW_SCAN_COMPLETE_START_DOWN_SWEEP");
+        }
         return false;
       }
       if (front_yaw_scan_phase_ == 1) {
@@ -372,7 +417,10 @@ class LandingDiffSearchManager {
         publishState("FRONT_ARUCO_YAW_SCAN_RETURN");
       }
     } else {
-      front_yaw_scan_yaw_ += std::copysign(step, remaining);
+      front_yaw_return_stable_since_ = ros::Time(0);
+      front_yaw_scan_yaw_ = std::remainder(
+          front_yaw_scan_yaw_ + std::copysign(step, remaining),
+          2.0 * M_PI);
     }
     return true;
   }
@@ -382,15 +430,53 @@ class LandingDiffSearchManager {
     const double elapsed = std::max(
         0.0, (now - last_front_yaw_scan_update_).toSec());
     last_front_yaw_scan_update_ = now;
-    const double remaining = locked_yaw_ - front_yaw_scan_yaw_;
+    const double remaining =
+        shortestYawDifference(front_yaw_scan_yaw_, locked_yaw_);
     const double step = front_yaw_scan_rate_rad_s_ * elapsed;
     if (std::fabs(remaining) <= step) {
       front_yaw_scan_yaw_ = locked_yaw_;
+      const double actual_yaw = yawFromQuaternion(odom_.pose.pose.orientation);
+      const double actual_error =
+          std::fabs(shortestYawDifference(actual_yaw, locked_yaw_));
+      if (!std::isfinite(actual_yaw) || !std::isfinite(actual_error) ||
+          actual_error > front_yaw_arrive_tolerance_rad_) {
+        front_yaw_return_stable_since_ = ros::Time(0);
+        ROS_WARN_THROTTLE(
+            1.0,
+            "landing_diff_search: assignment pending; waiting return yaw "
+            "target=%.3f actual=%.3f error=%.3f tolerance=%.3f",
+            locked_yaw_, actual_yaw, actual_error,
+            front_yaw_arrive_tolerance_rad_);
+        return true;
+      }
+      if (front_yaw_return_dwell_sec_ > 0.0) {
+        if (front_yaw_return_stable_since_.isZero()) {
+          front_yaw_return_stable_since_ = now;
+          return true;
+        }
+        if ((now - front_yaw_return_stable_since_).toSec() <
+            front_yaw_return_dwell_sec_) {
+          return true;
+        }
+      }
+      front_yaw_return_stable_since_ = ros::Time(0);
       front_hint_returning_ = false;
-      publishState("FRONT_ARUCO_HINT_RETURN_COMPLETE_APPROACH");
+      front_yaw_scan_complete_ = true;
+      if (have_marker_) {
+        publishState("ARUCO_LOCKED_DIFF_APPROACH");
+      } else if (have_assigned_target_) {
+        publishState("TWO_ARUCOS_ASSIGNED_APPROACH_FAR_PLATFORM");
+      } else if (have_front_hint_) {
+        publishState("FRONT_ARUCO_HINT_RETURN_COMPLETE_APPROACH");
+      } else {
+        publishState("FRONT_ARUCO_YAW_SCAN_COMPLETE_START_DOWN_SWEEP");
+      }
       return false;
     }
-    front_yaw_scan_yaw_ += std::copysign(step, remaining);
+    front_yaw_return_stable_since_ = ros::Time(0);
+    front_yaw_scan_yaw_ = std::remainder(
+        front_yaw_scan_yaw_ + std::copysign(step, remaining),
+        2.0 * M_PI);
     return true;
   }
 
@@ -447,7 +533,9 @@ class LandingDiffSearchManager {
   void expireTargets() {
     if (have_marker_ && !validTarget(marker_, marker_timeout_sec_, "final ArUco")) {
       have_marker_ = false;
-      publishState("FINAL_ARUCO_TIMEOUT_FALLBACK_DOWN_SWEEP");
+      if (front_yaw_scan_complete_) {
+        publishState("FINAL_ARUCO_TIMEOUT_FALLBACK_DOWN_SWEEP");
+      }
     }
     // 前视相机提示在接收时已经过时间戳、世界系和搜索边界校验。
     // 平台在世界系中静止，飞近后离开 D435 视野是正常现象，因此粗提示
@@ -492,11 +580,8 @@ class LandingDiffSearchManager {
 
   double commandedYaw() const {
     if (front_hint_returning_) return front_yaw_scan_yaw_;
-    return front_yaw_scan_complete_ || have_marker_ || have_front_hint_ ||
-                   have_assigned_target_ ||
-                   front_hint_exhausted_
-               ? locked_yaw_
-               : front_yaw_scan_yaw_;
+    // 未检测齐两个码时完成左扫、右扫和回正；双码分配后则走上面的回正路径。
+    return front_yaw_scan_complete_ ? locked_yaw_ : front_yaw_scan_yaw_;
   }
 
   void publishSearchYaw() {
@@ -537,6 +622,7 @@ class LandingDiffSearchManager {
   double front_yaw_scan_half_angle_rad_{0.78539816339};
   double front_yaw_scan_rate_rad_s_{0.35};
   double front_yaw_arrive_tolerance_rad_{0.12};
+  double front_yaw_return_dwell_sec_{0.50};
   double front_hint_lateral_margin_{1.0}, front_hint_min_z_{-0.50};
   double front_hint_max_z_{1.50};
   double marker_timeout_sec_{0.50}, front_hint_timeout_sec_{0.50};
@@ -548,6 +634,7 @@ class LandingDiffSearchManager {
   double locked_yaw_{0.0};
   std::string target_frame_{"world"};
   bool initial_front_wait_complete_{false}, front_yaw_scan_complete_{false};
+  ros::Time front_yaw_return_stable_since_{0};
   bool front_hint_returning_{false};
   int front_yaw_scan_phase_{0};
   double front_yaw_scan_yaw_{0.0};

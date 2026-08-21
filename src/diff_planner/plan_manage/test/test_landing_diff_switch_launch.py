@@ -52,6 +52,7 @@ def test_landing_search_switches_from_fuel_to_diff_with_separate_commands():
     assert manager_params["front_yaw_scan_half_angle_rad"] == "0.7854"
     assert manager_params["front_yaw_scan_rate_rad_s"] == "0.35"
     assert manager_params["front_yaw_arrive_tolerance_rad"] == "0.12"
+    assert manager_params["front_yaw_return_dwell_sec"] == "0.50"
     assert manager_params["target_frame"] == "world"
     assert manager_params["marker_timeout_sec"] == "0.50"
     assert manager_params["front_hint_timeout_sec"] == "0.50"
@@ -166,6 +167,70 @@ def test_yaw_scan_waits_for_measured_yaw_before_advancing():
     assert 'publishState("FRONT_ARUCO_YAW_SCAN_COMPLETE_START_DOWN_SWEEP")' in scan
     assert scan.index("actual_error > front_yaw_arrive_tolerance_rad_") < scan.index(
         'publishState("FRONT_ARUCO_YAW_SCAN_COMPLETE_START_DOWN_SWEEP")'
+    )
+
+
+def test_yaw_scan_turns_left_then_right_when_two_codes_are_not_ready():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src/landing_diff_search_manager.cpp"
+    ).read_text()
+    scan = source.split("bool advanceFrontYawScan()", maxsplit=1)[1].split(
+        "bool returnFrontYawToExitHeading()", maxsplit=1
+    )[0]
+    assert "locked_yaw_ + front_yaw_scan_half_angle_rad_" in scan
+    assert "locked_yaw_ - front_yaw_scan_half_angle_rad_" in scan
+    assert scan.index("locked_yaw_ + front_yaw_scan_half_angle_rad_") < scan.index(
+        "locked_yaw_ - front_yaw_scan_half_angle_rad_"
+    )
+    commanded = source.split("double commandedYaw() const", maxsplit=1)[1].split(
+        "void publishSearchYaw()", maxsplit=1
+    )[0]
+    assert "if (front_hint_returning_) return front_yaw_scan_yaw_" in commanded
+    assert "front_yaw_scan_complete_ ? locked_yaw_ : front_yaw_scan_yaw_" in commanded
+
+
+def test_two_aruco_assignment_interrupts_scan_but_waits_for_ch9_yaw_return():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src/landing_diff_search_manager.cpp"
+    ).read_text()
+    callback = source.split("void assignedTargetCallback", maxsplit=1)[1].split(
+        "void activate()", maxsplit=1
+    )[0]
+    assert "have_assigned_target_ = true" in callback
+    assert "front_hint_returning_ = !front_yaw_scan_complete_" in callback
+    assert "if (front_yaw_scan_complete_)" in callback
+    assert callback.index("have_assigned_target_ = true") < callback.index(
+        "if (front_yaw_scan_complete_)"
+    )
+    pending = callback.split("else {", maxsplit=1)[1]
+    assert 'publishState("FRONT_ARUCO_YAW_SCAN_RETURN")' in pending
+    assert 'publishState("TWO_ARUCOS_ASSIGNED_APPROACH_FAR_PLATFORM")' not in pending
+
+    scan = source.split("bool advanceFrontYawScan()", maxsplit=1)[1].split(
+        "bool returnFrontYawToExitHeading()", maxsplit=1
+    )[0]
+    completion = scan.split("if (front_yaw_scan_phase_ >= 3)", maxsplit=1)[1]
+    assert "front_yaw_scan_complete_ = true" in completion
+    assert 'publishState("TWO_ARUCOS_ASSIGNED_APPROACH_FAR_PLATFORM")' in completion
+    assert completion.index("front_yaw_scan_complete_ = true") < completion.index(
+        'publishState("TWO_ARUCOS_ASSIGNED_APPROACH_FAR_PLATFORM")'
+    )
+    assert "front_yaw_return_stable_since_" in scan
+    assert "front_yaw_return_dwell_sec_" in scan
+    assert scan.index("front_yaw_return_dwell_sec_") < scan.index(
+        "front_yaw_scan_complete_ = true"
+    )
+
+    returning = source.split("bool returnFrontYawToExitHeading()", maxsplit=1)[1].split(
+        "void selectNearestSweepGoal()", maxsplit=1
+    )[0]
+    assert "shortestYawDifference(actual_yaw, locked_yaw_)" in returning
+    assert "front_yaw_return_dwell_sec_" in returning
+    assert "front_yaw_scan_complete_ = true" in returning
+    assert returning.index("front_yaw_scan_complete_ = true") < returning.index(
+        'publishState("TWO_ARUCOS_ASSIGNED_APPROACH_FAR_PLATFORM")'
     )
 
 
