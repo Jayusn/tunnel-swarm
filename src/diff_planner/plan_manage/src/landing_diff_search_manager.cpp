@@ -24,6 +24,10 @@ double yawFromQuaternion(const geometry_msgs::Quaternion& q) {
                     1.0 - 2.0 * (q.y * q.y + q.z * q.z));
 }
 
+double shortestYawDifference(double from, double to) {
+  return std::remainder(to - from, 2.0 * M_PI);
+}
+
 class LandingDiffSearchManager {
  public:
   LandingDiffSearchManager() : nh_(), private_nh_("~") {
@@ -41,6 +45,8 @@ class LandingDiffSearchManager {
                       front_yaw_scan_half_angle_rad_, 0.78539816339);
     private_nh_.param("front_yaw_scan_rate_rad_s",
                       front_yaw_scan_rate_rad_s_, 0.35);
+    private_nh_.param("front_yaw_arrive_tolerance_rad",
+                      front_yaw_arrive_tolerance_rad_, 0.12);
     private_nh_.param("front_hint_forward_margin", front_hint_forward_margin_, 1.0);
     private_nh_.param("front_hint_lateral_margin", front_hint_lateral_margin_, 1.0);
     private_nh_.param("front_hint_min_z", front_hint_min_z_, -0.50);
@@ -80,7 +86,10 @@ class LandingDiffSearchManager {
         front_hint_timeout_sec_ <= 0.0 || assigned_target_timeout_sec_ <= 0.0 ||
         front_hint_initial_wait_sec_ < 0.0 ||
         front_yaw_scan_half_angle_rad_ < 0.0 ||
-        front_yaw_scan_rate_rad_s_ <= 0.0 || max_header_future_sec_ < 0.0) {
+        front_yaw_scan_rate_rad_s_ <= 0.0 ||
+        front_yaw_arrive_tolerance_rad_ <= 0.0 ||
+        front_yaw_arrive_tolerance_rad_ > M_PI ||
+        max_header_future_sec_ < 0.0) {
       throw std::runtime_error("landing_diff_search: invalid target freshness parameters");
     }
 
@@ -332,6 +341,21 @@ class LandingDiffSearchManager {
     const double step = front_yaw_scan_rate_rad_s_ * elapsed;
     if (std::fabs(remaining) <= step) {
       front_yaw_scan_yaw_ = target_yaw;
+      // 不能只按指令时间假定偏航已经完成。AutoTrans 必须把机体实际航向
+      // 转到当前端点附近后，状态机才进入下一段或开始下视蛇形搜索。
+      const double actual_yaw = yawFromQuaternion(odom_.pose.pose.orientation);
+      const double actual_error =
+          std::fabs(shortestYawDifference(actual_yaw, target_yaw));
+      if (!std::isfinite(actual_yaw) || !std::isfinite(actual_error) ||
+          actual_error > front_yaw_arrive_tolerance_rad_) {
+        ROS_WARN_THROTTLE(
+            1.0,
+            "landing_diff_search: waiting actual yaw at scan endpoint "
+            "target=%.3f actual=%.3f error=%.3f tolerance=%.3f",
+            target_yaw, actual_yaw, actual_error,
+            front_yaw_arrive_tolerance_rad_);
+        return true;
+      }
       ++front_yaw_scan_phase_;
       if (front_yaw_scan_phase_ >= 3) {
         front_yaw_scan_complete_ = true;
@@ -508,6 +532,7 @@ class LandingDiffSearchManager {
   double front_hint_initial_wait_sec_{1.0};
   double front_yaw_scan_half_angle_rad_{0.78539816339};
   double front_yaw_scan_rate_rad_s_{0.35};
+  double front_yaw_arrive_tolerance_rad_{0.12};
   double front_hint_lateral_margin_{1.0}, front_hint_min_z_{-0.50};
   double front_hint_max_z_{1.50};
   double marker_timeout_sec_{0.50}, front_hint_timeout_sec_{0.50};

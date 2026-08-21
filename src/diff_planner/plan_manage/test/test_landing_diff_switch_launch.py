@@ -51,6 +51,7 @@ def test_landing_search_switches_from_fuel_to_diff_with_separate_commands():
     assert manager_params["front_hint_initial_wait_sec"] == "1.0"
     assert manager_params["front_yaw_scan_half_angle_rad"] == "0.7854"
     assert manager_params["front_yaw_scan_rate_rad_s"] == "0.35"
+    assert manager_params["front_yaw_arrive_tolerance_rad"] == "0.12"
     assert manager_params["target_frame"] == "world"
     assert manager_params["marker_timeout_sec"] == "0.50"
     assert manager_params["front_hint_timeout_sec"] == "0.50"
@@ -144,6 +145,23 @@ def test_yaw_scan_starts_from_the_exit_locked_yaw():
     )[0]
     assert activate.index("locked_yaw_ = yaw") < activate.index(
         "front_yaw_scan_yaw_ = locked_yaw_"
+    )
+
+
+def test_yaw_scan_waits_for_measured_yaw_before_advancing():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src/landing_diff_search_manager.cpp"
+    ).read_text()
+    scan = source.split("bool advanceFrontYawScan()", maxsplit=1)[1].split(
+        "bool returnFrontYawToExitHeading()", maxsplit=1
+    )[0]
+    assert "yawFromQuaternion(odom_.pose.pose.orientation)" in scan
+    assert "shortestYawDifference(actual_yaw, target_yaw)" in scan
+    assert "!std::isfinite(actual_yaw)" in scan
+    assert "actual_error > front_yaw_arrive_tolerance_rad_" in scan
+    assert scan.index("actual_error > front_yaw_arrive_tolerance_rad_") < scan.index(
+        "++front_yaw_scan_phase_"
     )
 
 
