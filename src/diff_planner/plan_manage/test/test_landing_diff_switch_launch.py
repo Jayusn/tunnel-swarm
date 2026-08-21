@@ -12,6 +12,10 @@ TRAJ_CONTAINER = (
     Path(__file__).resolve().parents[2]
     / "traj_utils/include/traj_utils/plan_container.hpp"
 )
+UAV1_RELAY_LAUNCH = (
+    Path(__file__).resolve().parents[1]
+    / "launch/exp/run_uav1_relay_diff.launch"
+)
 
 
 def test_landing_search_switches_from_fuel_to_diff_with_separate_commands():
@@ -228,3 +232,38 @@ def test_local_trajectory_id_is_not_reset_when_global_goal_changes():
     )[0]
     assert "local_traj.traj_id = 0;" not in set_global
     assert "local_traj.traj_id++;" in source
+
+
+def test_uav1_duplicate_relay_goal_is_acknowledged_without_replanning():
+    package = Path(__file__).resolve().parents[1]
+    source = (package / "src/diff_replan_fsm.cpp").read_text()
+    callback = source.split(
+        "void DiffReplanFSM::waypointCallback", maxsplit=1
+    )[1].split(
+        "void DiffReplanFSM::publishPlanningStatus", maxsplit=1
+    )[0]
+
+    assert 'nh.param("fsm/manual_goal_update_distance"' in source
+    assert "exec_state_ != WAIT_TARGET" in callback
+    assert "exec_state_ != EMERGENCY_STOP" in callback
+    assert "(end_wp - final_goal_).norm()" in callback
+    assert 'publishPlanningStatus("TRAJECTORY_PUBLISHED")' in callback
+    duplicate_branch = callback.split(
+        "if (manual_goal_update_distance_ > 0.0", maxsplit=1
+    )[1].split('ROS_INFO("Received goal', maxsplit=1)[0]
+    assert duplicate_branch.index('publishPlanningStatus("TRAJECTORY_PUBLISHED")') < duplicate_branch.index("return;")
+    assert "planNextWaypoint" not in duplicate_branch
+
+
+def test_uav1_relay_explicitly_enables_manual_goal_deduplication():
+    root = ET.parse(UAV1_RELAY_LAUNCH).getroot()
+    diff_include = next(
+        item for item in root.findall("include")
+        if "advanced_param_exp.xml" in item.attrib.get("file", "")
+    )
+    include_args = {
+        item.attrib["name"]: item.attrib["value"]
+        for item in diff_include.findall("arg")
+    }
+    assert include_args["flight_type"] == "1"
+    assert include_args["manual_goal_update_distance"] == "0.15"

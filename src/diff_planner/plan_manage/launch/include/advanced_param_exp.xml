@@ -48,6 +48,7 @@
     <arg name="manual_goal_topic" default="/goal"/>
     <arg name="search_subgoal_topic" default="/corridor_search/subgoal"/>
     <arg name="search_subgoal_update_distance" default="0.15"/>
+    <arg name="manual_goal_update_distance" default="0.0"/>
     <arg name="search_trigger_topic" default="/traj_start_trigger"/>
     <arg name="search_goal_trigger_topic" default="/goal"/>
     <!-- 2026-07-28: 原生Diff编队默认等待前序轨迹；FUEL->Diff异构接力可单独关闭。 -->
@@ -87,6 +88,7 @@
         <param name="fsm/manual_goal_topic" value="$(arg manual_goal_topic)"/>
         <param name="fsm/search_subgoal_topic" value="$(arg search_subgoal_topic)"/>
         <param name="fsm/search_subgoal_update_distance" value="$(arg search_subgoal_update_distance)" type="double"/>
+        <param name="fsm/manual_goal_update_distance" value="$(arg manual_goal_update_distance)" type="double"/>
         <param name="fsm/search_trigger_topic" value="$(arg search_trigger_topic)"/>
         <param name="fsm/search_goal_trigger_topic" value="$(arg search_goal_trigger_topic)"/>
         <!-- 2026-07-28: 将前序轨迹门槛传入FSM，避免把drone_id误等同于必须参加Diff顺序编队。 -->

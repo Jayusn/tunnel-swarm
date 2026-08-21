@@ -26,6 +26,8 @@ namespace diff_planner
     // SEARCH_TARGET 的上层会周期性重发当前子目标。只有目标位置发生实质变化时才重建全局轨迹，
     // 避免保活消息打断局部重规划并造成参考轨迹导数跳变。
     nh.param("fsm/search_subgoal_update_distance", search_subgoal_update_distance_, 0.15);
+    // 手动/接力目标默认不去重；UAV1 接力实例显式开启，避免重发同一请求时重建轨迹。
+    nh.param("fsm/manual_goal_update_distance", manual_goal_update_distance_, 0.0);
     nh.param("fsm/realworld_experiment", flag_realworld_experiment_, false);
     nh.param("fsm/fail_safe", enable_fail_safe_, true);
     nh.param("fsm/ground_height_measurement", enable_ground_height_measurement_, false);
@@ -55,6 +57,12 @@ namespace diff_planner
       ROS_WARN("Invalid fsm/search_subgoal_update_distance=%.3f; use 0.15 m.",
                search_subgoal_update_distance_);
       search_subgoal_update_distance_ = 0.15;
+    }
+    if (!std::isfinite(manual_goal_update_distance_) || manual_goal_update_distance_ < 0.0)
+    {
+      ROS_WARN("Invalid fsm/manual_goal_update_distance=%.3f; disable manual goal deduplication.",
+               manual_goal_update_distance_);
+      manual_goal_update_distance_ = 0.0;
     }
 
     nh.param("fsm/waypoint_num", waypoint_num_, -1);
@@ -868,6 +876,23 @@ namespace diff_planner
       publishPlanningStatus("GOAL_REJECTED_OUTSIDE_MAP");  // 2026-07-28: 区分目标接收与目标可规划。
       return;
     }
+
+    // UAV1 上层会在规划响应丢失时重发同一接力目标。执行中的重复请求只补发成功状态，
+    // 不重建全局轨迹；WAIT_TARGET/EMERGENCY_STOP 时仍允许原位置重新规划以恢复失活轨迹。
+    if (manual_goal_update_distance_ > 0.0 && have_target_ &&
+        exec_state_ != WAIT_TARGET && exec_state_ != EMERGENCY_STOP)
+    {
+      const double goal_delta = (end_wp - final_goal_).norm();
+      if (goal_delta < manual_goal_update_distance_)
+      {
+        ROS_INFO_THROTTLE(1.0,
+                          "Acknowledge duplicate manual goal without replanning: delta=%.3f m, threshold=%.3f m.",
+                          goal_delta, manual_goal_update_distance_);
+        publishPlanningStatus("TRAJECTORY_PUBLISHED");
+        return;
+      }
+    }
+
     ROS_INFO("Received goal: %f, %f, %f", end_wp(0), end_wp(1), end_wp(2));
     if (planNextWaypoint(end_wp, true))
     {

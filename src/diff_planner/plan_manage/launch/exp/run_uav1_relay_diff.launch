@@ -54,6 +54,7 @@
         <arg name="preserve_global_map" value="false"/>
         <arg name="flight_type" value="1"/>
         <arg name="manual_goal_topic" value="$(arg goal_topic)"/>
+        <arg name="manual_goal_update_distance" value="0.15"/>
         <!-- 2026-07-28: 前机是FUEL而非Diff，不会发送prev traj；后机收到接力点后直接用自身Diff规划。 -->
         <arg name="require_pre_agent_trajectory" value="false"/>
         <!-- 2026-07-28: 后机规划失败由safe_follower改发已验证短子目标，禁用会阻塞FSM并导致Lost heartbeat的随机初始化。 -->
