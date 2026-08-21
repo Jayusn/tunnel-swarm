@@ -163,6 +163,26 @@ def test_yaw_scan_waits_for_measured_yaw_before_advancing():
     assert scan.index("actual_error > front_yaw_arrive_tolerance_rad_") < scan.index(
         "++front_yaw_scan_phase_"
     )
+    assert 'publishState("FRONT_ARUCO_YAW_SCAN_COMPLETE_START_DOWN_SWEEP")' in scan
+    assert scan.index("actual_error > front_yaw_arrive_tolerance_rad_") < scan.index(
+        'publishState("FRONT_ARUCO_YAW_SCAN_COMPLETE_START_DOWN_SWEEP")'
+    )
+
+
+def test_down_sweep_keeps_ch9_locked_yaw_until_landing_handoff():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src/landing_diff_search_manager.cpp"
+    ).read_text()
+    commanded = source.split("double commandedYaw() const", maxsplit=1)[1].split(
+        "void publishSearchYaw()", maxsplit=1
+    )[0]
+    assert "front_yaw_scan_complete_" in commanded
+    assert "? locked_yaw_" in commanded
+    stage = source.split("void stageCallback", maxsplit=1)[1].split(
+        "void markerCallback", maxsplit=1
+    )[0]
+    assert 'publishState("LANDING_HANDOFF")' in stage
 
 
 def test_validated_front_hint_is_latched_while_approaching():

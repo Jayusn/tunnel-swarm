@@ -125,7 +125,11 @@ class LandingDiffSearchManager {
       switch_pending_ = true;
       if (have_odom_) activate();
     }
-    if (switched_ && stage == "LANDING") active_ = false;
+    if (switched_ && stage == "LANDING") {
+      active_ = false;
+      // 通知 AutoTrans 搜索航向锁定已结束；后续由精降控制链接管。
+      publishState("LANDING_HANDOFF");
+    }
   }
 
   void markerCallback(const geometry_msgs::PoseStampedConstPtr& msg) {
