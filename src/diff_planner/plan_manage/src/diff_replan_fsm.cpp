@@ -23,6 +23,9 @@ namespace diff_planner
     nh.param("fsm/waypoint_switch_dist", no_replan_thresh_, -1.0);
     nh.param("fsm/emergency_time", emergency_time_, 1.0);
     nh.param("fsm/min_goal_distance", min_goal_distance_, 0.05);
+    // SEARCH_TARGET 的上层会周期性重发当前子目标。只有目标位置发生实质变化时才重建全局轨迹，
+    // 避免保活消息打断局部重规划并造成参考轨迹导数跳变。
+    nh.param("fsm/search_subgoal_update_distance", search_subgoal_update_distance_, 0.15);
     nh.param("fsm/realworld_experiment", flag_realworld_experiment_, false);
     nh.param("fsm/fail_safe", enable_fail_safe_, true);
     nh.param("fsm/ground_height_measurement", enable_ground_height_measurement_, false);
@@ -46,6 +49,12 @@ namespace diff_planner
       ROS_WARN("Invalid fsm/min_goal_distance=%.3f; use 0.05 m.",
                min_goal_distance_);
       min_goal_distance_ = 0.05;
+    }
+    if (!std::isfinite(search_subgoal_update_distance_) || search_subgoal_update_distance_ <= 0.0)
+    {
+      ROS_WARN("Invalid fsm/search_subgoal_update_distance=%.3f; use 0.15 m.",
+               search_subgoal_update_distance_);
+      search_subgoal_update_distance_ = 0.15;
     }
 
     nh.param("fsm/waypoint_num", waypoint_num_, -1);
@@ -957,6 +966,20 @@ namespace diff_planner
     {
       ROS_WARN_THROTTLE(1.0, "Search subgoal received before trigger, ignore until RViz trigger arrives.");
       return;
+    }
+
+    // landing_diff_search_manager 每秒重发当前目标用于保活。已成功规划的目标在阈值内没有
+    // 实质变化时直接忽略；不要刷新 last_target_change_time_，否则会掩盖 stuck detection。
+    if (have_target_)
+    {
+      const double goal_delta = (end_wp - final_goal_).norm();
+      if (goal_delta < search_subgoal_update_distance_)
+      {
+        ROS_INFO_THROTTLE(1.0,
+                          "Ignore duplicate search subgoal: delta=%.3f m, threshold=%.3f m.",
+                          goal_delta, search_subgoal_update_distance_);
+        return;
+      }
     }
 
     ROS_INFO("Received search subgoal: %f, %f, %f", end_wp(0), end_wp(1), end_wp(2));

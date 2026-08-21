@@ -81,6 +81,7 @@ namespace diff_planner
     double planning_horizen_;
     double emergency_time_;
     double min_goal_distance_;
+    double search_subgoal_update_distance_;
     bool flag_realworld_experiment_;
     bool enable_fail_safe_;
     bool enable_ground_height_measurement_;

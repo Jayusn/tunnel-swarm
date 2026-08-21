@@ -69,7 +69,8 @@ namespace diff_planner
 
       local_traj.drone_id = -1;
       local_traj.duration = 0.0;
-      local_traj.traj_id = 0;
+      // traj_id 标识节点生命周期内发布轨迹的新旧关系。切换全局目标时保持单调递增，
+      // 避免下游收到较新的局部轨迹后又看到 id 回退到 1。
     }
 
     void setLocalTraj(const poly_traj::Trajectory &trajectory, const PtsChk_t &pts_to_chk, const double &world_time, const int drone_id = -1)

@@ -3,6 +3,15 @@ import xml.etree.ElementTree as ET
 
 
 LAUNCH = Path(__file__).resolve().parents[1] / "launch/exp/run_swarm_indoor1_fuel_exploration.launch"
+ADVANCED_PARAMS = Path(__file__).resolve().parents[1] / "launch/include/advanced_param_exp.xml"
+UAV0_TEST_LAUNCH = (
+    Path(__file__).resolve().parents[5]
+    / "uav0_competition_bringup/launch/uav0_search_landing_test.launch"
+)
+TRAJ_CONTAINER = (
+    Path(__file__).resolve().parents[2]
+    / "traj_utils/include/traj_utils/plan_container.hpp"
+)
 
 
 def test_landing_search_switches_from_fuel_to_diff_with_separate_commands():
@@ -155,3 +164,54 @@ def test_diff_rejects_invalid_and_near_zero_planning_inputs():
     assert "waypoints.empty()" in manager_source
     assert "segment_distance <= 1.0e-4" in manager_source
     assert "time_vec.allFinite()" in manager_source
+
+
+def test_search_subgoal_keepalive_is_deduplicated_without_masking_stuck_detection():
+    package = Path(__file__).resolve().parents[1]
+    source = (package / "src/diff_replan_fsm.cpp").read_text()
+    callback = source.split(
+        "void DiffReplanFSM::searchSubgoalCallback", maxsplit=1
+    )[1].split(
+        "void DiffReplanFSM::RecvBroadcastMINCOTrajCallback", maxsplit=1
+    )[0]
+
+    assert 'nh.param("fsm/search_subgoal_update_distance"' in source
+    assert "if (have_target_)" in callback
+    assert "(end_wp - final_goal_).norm()" in callback
+    assert "goal_delta < search_subgoal_update_distance_" in callback
+    duplicate_branch = callback.split("if (have_target_)", maxsplit=1)[1].split(
+        'ROS_INFO("Received search subgoal', maxsplit=1
+    )[0]
+    assert "return;" in duplicate_branch
+    assert "last_target_change_time_" not in duplicate_branch
+
+
+def test_search_subgoal_dedup_distance_is_explicit_in_uav0_launches():
+    advanced_root = ET.parse(ADVANCED_PARAMS).getroot()
+    advanced_args = {
+        item.attrib["name"]: item.attrib.get("default")
+        for item in advanced_root.findall("arg")
+    }
+    assert advanced_args["search_subgoal_update_distance"] == "0.15"
+
+    for launch_path in (LAUNCH, UAV0_TEST_LAUNCH):
+        root = ET.parse(launch_path).getroot()
+        diff_include = next(
+            item for item in root.findall("include")
+            if "advanced_param_exp.xml" in item.attrib.get("file", "")
+        )
+        include_args = {
+            item.attrib["name"]: item.attrib["value"]
+            for item in diff_include.findall("arg")
+        }
+        assert include_args["search_subgoal_update_distance"] == "0.15"
+
+
+def test_local_trajectory_id_is_not_reset_when_global_goal_changes():
+    source = TRAJ_CONTAINER.read_text()
+    assert source.count("local_traj.traj_id = 0;") == 1
+    set_global = source.split("void setGlobalTraj", maxsplit=1)[1].split(
+        "void setLocalTraj", maxsplit=1
+    )[0]
+    assert "local_traj.traj_id = 0;" not in set_global
+    assert "local_traj.traj_id++;" in source
