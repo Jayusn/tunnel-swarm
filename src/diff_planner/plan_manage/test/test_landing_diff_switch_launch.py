@@ -41,6 +41,11 @@ def test_landing_search_switches_from_fuel_to_diff_with_separate_commands():
 
     manager_params = {item.attrib["name"]: item.attrib["value"] for item in nodes["landing_diff_search_manager"].findall("param")}
     assert manager_params["search_height"] == "2.0"
+    assert manager_params["front_approach_distance"] == "1.0"
+    assert manager_params["front_approach_arrive_xy"] == "0.15"
+    assert manager_params["front_scan_anchor_topic"] == (
+        "/UAV0/landing/front_scan_anchor"
+    )
     assert manager_params["subgoal_topic"] == "/UAV0/landing_diff/subgoal"
     assert manager_params["marker_topic"] == "/UAV0/mission/detection/final_aruco"
     assert manager_params["front_hint_topic"] == "/UAV0/landing/front_aruco_hint"
@@ -147,6 +152,47 @@ def test_yaw_scan_starts_from_the_exit_locked_yaw():
     assert activate.index("locked_yaw_ = yaw") < activate.index(
         "front_yaw_scan_yaw_ = locked_yaw_"
     )
+
+
+def test_ch9_moves_one_meter_forward_before_front_scan():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "src/landing_diff_search_manager.cpp"
+    ).read_text()
+    activate = source.split("void activate()", maxsplit=1)[1].split(
+        "void beginFrontScan()", maxsplit=1
+    )[0]
+    assert "front_approach_distance_ * forward_x_" in activate
+    assert "front_approach_distance_ * forward_y_" in activate
+    assert 'publishState("FRONT_ARUCO_FORWARD_APPROACH")' in activate
+    assert 'publishState("FRONT_ARUCO_INITIAL_WAIT")' not in activate
+
+    timer = source.split("void timerCallback", maxsplit=1)[1].split(
+        "bool holdingForInitialFrontSearch", maxsplit=1
+    )[0]
+    approach = timer.split("if (!front_approach_complete_)", maxsplit=1)[1]
+    assert "publishSearchYaw()" in approach
+    assert "frontApproachArrived()" in approach
+    assert "publishGoalIfDue(front_approach_goal_)" in approach
+    assert approach.index("frontApproachArrived()") < approach.index(
+        "beginFrontScan()"
+    )
+
+    begin = source.split("void beginFrontScan()", maxsplit=1)[1].split(
+        "void buildSweepGoals()", maxsplit=1
+    )[0]
+    assert "publishFrontScanAnchor()" in begin
+    assert 'publishState("FRONT_ARUCO_INITIAL_WAIT")' in begin
+
+    for callback_name, callback_end in (
+        ("void markerCallback", "void frontHintCallback"),
+        ("void frontHintCallback", "void assignedTargetCallback"),
+        ("void assignedTargetCallback", "void activate()"),
+    ):
+        callback = source.split(callback_name, maxsplit=1)[1].split(
+            callback_end, maxsplit=1
+        )[0]
+        assert "!front_approach_complete_" in callback
 
 
 def test_yaw_scan_waits_for_measured_yaw_before_advancing():

@@ -548,6 +548,10 @@
         <param name="trigger_topic" value="/UAV0/landing_diff/trigger"/>
         <param name="yaw_topic" value="/UAV0/landing_diff/yaw"/>
         <param name="landing_request_topic" value="/UAV0/mission/landing_request"/>
+        <!-- CH9触发后保持锁存航向和当前高度前移1m；到达容差15cm后才允许前视检测和偏航扫描。 -->
+        <param name="front_approach_distance" value="1.0"/>
+        <param name="front_approach_arrive_xy" value="0.15"/>
+        <param name="front_scan_anchor_topic" value="/UAV0/landing/front_scan_anchor"/>
         <param name="search_height" value="2.0"/>
         <param name="lane_spacing" value="1.0"/>
         <param name="search_width" value="3.0"/>

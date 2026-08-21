@@ -32,6 +32,8 @@ class LandingDiffSearchManager {
  public:
   LandingDiffSearchManager() : nh_(), private_nh_("~") {
     private_nh_.param("search_height", search_height_, 2.0);
+    private_nh_.param("front_approach_distance", front_approach_distance_, 1.0);
+    private_nh_.param("front_approach_arrive_xy", front_approach_arrive_xy_, 0.15);
     private_nh_.param("lane_spacing", lane_spacing_, 1.0);
     private_nh_.param("search_width", search_width_, 3.0);
     private_nh_.param("search_depth", search_depth_, 4.0);
@@ -69,6 +71,7 @@ class LandingDiffSearchManager {
     std::string subgoal_topic("/UAV0/landing_diff/subgoal");
     std::string trigger_topic("/UAV0/landing_diff/trigger");
     std::string yaw_topic("/UAV0/landing_diff/yaw");
+    std::string front_scan_anchor_topic("/UAV0/landing/front_scan_anchor");
     std::string request_topic("/UAV0/mission/landing_request");
     std::string target_frame("world");
     private_nh_.param("odom_topic", odom_topic, odom_topic);
@@ -80,13 +83,16 @@ class LandingDiffSearchManager {
     private_nh_.param("subgoal_topic", subgoal_topic, subgoal_topic);
     private_nh_.param("trigger_topic", trigger_topic, trigger_topic);
     private_nh_.param("yaw_topic", yaw_topic, yaw_topic);
+    private_nh_.param("front_scan_anchor_topic", front_scan_anchor_topic,
+                      front_scan_anchor_topic);
     private_nh_.param("landing_request_topic", request_topic, request_topic);
     private_nh_.param("target_frame", target_frame, target_frame);
     target_frame_ = target_frame;
 
     if (target_frame_.empty() || marker_timeout_sec_ <= 0.0 ||
         front_hint_timeout_sec_ <= 0.0 || assigned_target_timeout_sec_ <= 0.0 ||
-        front_hint_initial_wait_sec_ < 0.0 ||
+        front_hint_initial_wait_sec_ < 0.0 || front_approach_distance_ < 0.0 ||
+        front_approach_arrive_xy_ <= 0.0 ||
         front_yaw_scan_half_angle_rad_ < 0.0 ||
         front_yaw_scan_rate_rad_s_ <= 0.0 ||
         front_yaw_arrive_tolerance_rad_ <= 0.0 ||
@@ -107,6 +113,8 @@ class LandingDiffSearchManager {
     subgoal_pub_ = nh_.advertise<geometry_msgs::PoseStamped>(subgoal_topic, 2);
     trigger_pub_ = nh_.advertise<geometry_msgs::PoseStamped>(trigger_topic, 2, true);
     yaw_pub_ = nh_.advertise<quadrotor_msgs::PositionCommand>(yaw_topic, 2);
+    front_scan_anchor_pub_ =
+        nh_.advertise<geometry_msgs::PoseStamped>(front_scan_anchor_topic, 1, true);
     landing_request_pub_ = nh_.advertise<std_msgs::Bool>(request_topic, 2, true);
     state_pub_ = private_nh_.advertise<std_msgs::String>("state", 2, true);
     timer_ = nh_.createTimer(ros::Duration(0.10), &LandingDiffSearchManager::timerCallback, this);
@@ -136,7 +144,7 @@ class LandingDiffSearchManager {
   }
 
   void markerCallback(const geometry_msgs::PoseStampedConstPtr& msg) {
-    if (!switched_) return;
+    if (!switched_ || !front_approach_complete_) return;
     if (!validTarget(*msg, marker_timeout_sec_, "final ArUco")) return;
     marker_ = *msg;
     have_marker_ = true;
@@ -151,6 +159,7 @@ class LandingDiffSearchManager {
 
   void frontHintCallback(const geometry_msgs::PoseStampedConstPtr& msg) {
     if (!enable_single_front_hint_approach_ || !switched_ ||
+        !front_approach_complete_ ||
         front_hint_exhausted_ || have_marker_ || have_assigned_target_) return;
     if (!validTarget(*msg, front_hint_timeout_sec_, "front ArUco hint")) return;
     const geometry_msgs::Point& point = msg->pose.position;
@@ -190,7 +199,7 @@ class LandingDiffSearchManager {
   }
 
   void assignedTargetCallback(const geometry_msgs::PoseStampedConstPtr& msg) {
-    if (!switched_ || landing_requested_) return;
+    if (!switched_ || !front_approach_complete_ || landing_requested_) return;
     if (!validTarget(*msg, assigned_target_timeout_sec_,
                      "assigned landing target")) return;
     assigned_target_ = *msg;
@@ -214,11 +223,35 @@ class LandingDiffSearchManager {
     switched_ = true;
     active_ = true;
     switch_pending_ = false;
-    anchor_x_ = odom_.pose.pose.position.x;
-    anchor_y_ = odom_.pose.pose.position.y;
     anchor_z_ = odom_.pose.pose.position.z;
     const double yaw = yawFromQuaternion(odom_.pose.pose.orientation);
     locked_yaw_ = yaw;
+    forward_x_ = std::cos(yaw);
+    forward_y_ = std::sin(yaw);
+    lateral_x_ = -forward_y_;
+    lateral_y_ = forward_x_;
+    anchor_x_ = odom_.pose.pose.position.x + front_approach_distance_ * forward_x_;
+    anchor_y_ = odom_.pose.pose.position.y + front_approach_distance_ * forward_y_;
+    front_approach_goal_.x = anchor_x_;
+    front_approach_goal_.y = anchor_y_;
+    front_approach_goal_.z = anchor_z_;
+    front_yaw_scan_yaw_ = locked_yaw_;
+    buildSweepGoals();
+    publishTrigger();
+    if (front_approach_distance_ <= front_approach_arrive_xy_) {
+      beginFrontScan();
+    } else {
+      publishState("FRONT_ARUCO_FORWARD_APPROACH");
+    }
+    ROS_ERROR("landing_diff_search: FUEL -> Diff switch latched at "
+              "(%.2f, %.2f, %.2f), keep yaw=%.3f and move %.2fm forward to "
+              "front-scan anchor (%.2f, %.2f, %.2f)",
+              odom_.pose.pose.position.x, odom_.pose.pose.position.y, anchor_z_,
+              locked_yaw_, front_approach_distance_, anchor_x_, anchor_y_, anchor_z_);
+  }
+
+  void beginFrontScan() {
+    front_approach_complete_ = true;
     activated_at_ = ros::Time::now();
     initial_front_wait_complete_ = front_hint_initial_wait_sec_ <= 0.0;
     front_yaw_scan_yaw_ = locked_yaw_;
@@ -226,15 +259,11 @@ class LandingDiffSearchManager {
     front_yaw_scan_complete_ = front_yaw_scan_half_angle_rad_ <= 0.0;
     front_yaw_return_stable_since_ = ros::Time(0);
     last_front_yaw_scan_update_ = activated_at_;
-    forward_x_ = std::cos(yaw);
-    forward_y_ = std::sin(yaw);
-    lateral_x_ = -forward_y_;
-    lateral_y_ = forward_x_;
-    buildSweepGoals();
-    publishTrigger();
+    last_goal_time_ = ros::Time(0);
+    publishFrontScanAnchor();
     publishState("FRONT_ARUCO_INITIAL_WAIT");
-    ROS_ERROR("landing_diff_search: FUEL -> Diff switch latched at "
-              "(%.2f, %.2f, %.2f), yaw=%.3f",
+    ROS_ERROR("landing_diff_search: reached front-scan anchor "
+              "(%.2f, %.2f, %.2f); start front ArUco scan at locked yaw %.3f",
               anchor_x_, anchor_y_, anchor_z_, locked_yaw_);
   }
 
@@ -268,6 +297,16 @@ class LandingDiffSearchManager {
     if (landing_requested_) {
       publishSearchYaw();
       publishTrigger();
+      return;
+    }
+    if (!front_approach_complete_) {
+      publishSearchYaw();
+      publishTrigger();
+      if (frontApproachArrived()) {
+        beginFrontScan();
+      } else {
+        publishGoalIfDue(front_approach_goal_);
+      }
       return;
     }
     expireTargets();
@@ -503,6 +542,14 @@ class LandingDiffSearchManager {
            std::fabs(current.z - goal.z) <= arrive_z_;
   }
 
+  bool frontApproachArrived() const {
+    const geometry_msgs::Point& current = odom_.pose.pose.position;
+    return std::hypot(current.x - front_approach_goal_.x,
+                      current.y - front_approach_goal_.y) <=
+               front_approach_arrive_xy_ &&
+           std::fabs(current.z - front_approach_goal_.z) <= arrive_z_;
+  }
+
   bool validTarget(const geometry_msgs::PoseStamped& target,
                    double timeout_sec,
                    const char* label) const {
@@ -571,6 +618,16 @@ class LandingDiffSearchManager {
     last_trigger_time_ = trigger.header.stamp;
   }
 
+  void publishFrontScanAnchor() {
+    geometry_msgs::PoseStamped anchor;
+    anchor.header.stamp = ros::Time::now();
+    anchor.header.frame_id = target_frame_;
+    anchor.pose.position = front_approach_goal_;
+    anchor.pose.orientation.w = std::cos(0.5 * locked_yaw_);
+    anchor.pose.orientation.z = std::sin(0.5 * locked_yaw_);
+    front_scan_anchor_pub_.publish(anchor);
+  }
+
   void publishRequest(bool active) {
     std_msgs::Bool request;
     request.data = active;
@@ -602,20 +659,24 @@ class LandingDiffSearchManager {
   ros::NodeHandle nh_, private_nh_;
   ros::Subscriber odom_sub_, stage_sub_, marker_sub_, front_hint_sub_,
       assigned_target_sub_;
-  ros::Publisher subgoal_pub_, trigger_pub_, yaw_pub_, landing_request_pub_, state_pub_;
+  ros::Publisher subgoal_pub_, trigger_pub_, yaw_pub_, front_scan_anchor_pub_,
+      landing_request_pub_, state_pub_;
   ros::Timer timer_;
   nav_msgs::Odometry odom_;
   geometry_msgs::PoseStamped marker_;
   geometry_msgs::PoseStamped front_hint_;
   geometry_msgs::PoseStamped assigned_target_;
+  geometry_msgs::Point front_approach_goal_;
   std::vector<geometry_msgs::Point> sweep_goals_;
   std::size_t sweep_index_{0};
   bool have_odom_{false}, switch_pending_{false}, switched_{false}, active_{false};
+  bool front_approach_complete_{false};
   bool have_marker_{false}, landing_requested_{false};
   bool have_front_hint_{false}, front_hint_exhausted_{false};
   bool have_assigned_target_{false};
   bool enable_single_front_hint_approach_{true};
   double search_height_{2.0}, lane_spacing_{1.0}, search_width_{3.0}, search_depth_{4.0};
+  double front_approach_distance_{1.0}, front_approach_arrive_xy_{0.15};
   double arrive_xy_{0.35}, arrive_z_{0.20}, goal_reissue_sec_{1.0};
   double front_hint_dwell_sec_{2.0}, front_hint_forward_margin_{1.0};
   double front_hint_initial_wait_sec_{1.0};
