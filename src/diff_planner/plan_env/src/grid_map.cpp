@@ -1,5 +1,49 @@
 #include "plan_env/grid_map.h"
 
+void GridMap::setExplorationMotionConstraint(
+    const exploration_constraint::State &state)
+{
+  std::shared_ptr<const exploration_constraint::State> snapshot(
+      new exploration_constraint::State(state));
+  std::atomic_store(&exploration_constraint_, snapshot);
+}
+
+void GridMap::clearExplorationMotionConstraint()
+{
+  std::shared_ptr<const exploration_constraint::State> empty;
+  std::atomic_store(&exploration_constraint_, empty);
+}
+
+exploration_constraint::State GridMap::getExplorationMotionConstraint() const
+{
+  const auto snapshot = std::atomic_load(&exploration_constraint_);
+  return snapshot ? *snapshot : exploration_constraint::State();
+}
+
+void GridMap::advanceExplorationHighWater(const Eigen::Vector3d &position)
+{
+  const auto snapshot = std::atomic_load(&exploration_constraint_);
+  if (!snapshot || !snapshot->enabled || snapshot->transition_active ||
+      !position.allFinite())
+    return;
+  exploration_constraint::State updated = *snapshot;
+  const double progress =
+      (position.head<2>() - updated.segment_origin)
+          .dot(updated.segment_direction.normalized());
+  if (progress <= updated.segment_high_water + 1e-3) return;
+  updated.segment_high_water = progress;
+  setExplorationMotionConstraint(updated);
+}
+
+bool GridMap::isExplorationSegmentAllowed(const Eigen::Vector3d &start,
+                                          const Eigen::Vector3d &end) const
+{
+  const auto snapshot = std::atomic_load(&exploration_constraint_);
+  return !snapshot || !snapshot->enabled ||
+         exploration_constraint::segmentAllowed(*snapshot, start.head<2>(),
+                                                end.head<2>());
+}
+
 void GridMap::initMap(ros::NodeHandle &nh)
 {
   node_ = nh;

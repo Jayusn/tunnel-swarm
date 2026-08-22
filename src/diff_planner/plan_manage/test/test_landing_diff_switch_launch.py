@@ -24,14 +24,16 @@ def test_landing_search_switches_from_fuel_to_diff_with_separate_commands():
     assert args["fuel_max_vel"] == "0.20"
     assert args["landing_search_max_vel"] == "0.30"
     assert args["landing_search_max_acc"] == "0.60"
+    assert args["use_diff_for_fuel_exploration"] == "true"
     assert args["enable_search_landing"] == "$(optenv UAV0_ENABLE_SEARCH_LANDING true)"
     nodes = {node.attrib.get("name"): node for node in root.findall("node")}
     assert "fuel_traj_server" in nodes
     assert "landing_diff_traj_server" in nodes
     assert "planner_command_arbiter" in nodes
     assert "landing_diff_search_manager" in nodes
-    assert nodes["landing_diff_traj_server"].attrib["if"] == "$(arg enable_search_landing)"
+    assert "if" not in nodes["landing_diff_traj_server"].attrib
     assert nodes["landing_diff_search_manager"].attrib["if"] == "$(arg enable_search_landing)"
+    assert nodes["fuel_traj_server"].attrib["if"] == "$(eval not arg('use_diff_for_fuel_exploration'))"
 
     fuel_remaps = {item.attrib["from"]: item.attrib["to"] for item in nodes["fuel_traj_server"].findall("remap")}
     diff_remaps = {item.attrib["from"]: item.attrib["to"] for item in nodes["landing_diff_traj_server"].findall("remap")}

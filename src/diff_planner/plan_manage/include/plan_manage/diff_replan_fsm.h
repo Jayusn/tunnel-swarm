@@ -13,11 +13,16 @@
 #include <std_msgs/String.h>
 #include <vector>
 #include <visualization_msgs/Marker.h>
+#include <limits>
+#include <cstdint>
 
 #include <optimizer/poly_traj_optimizer.h>
 #include <plan_env/grid_map.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <quadrotor_msgs/GoalSet.h>
+#include <quadrotor_msgs/ExplorationCancel.h>
+#include <quadrotor_msgs/ExplorationGoal.h>
+#include <quadrotor_msgs/ExplorationGoalStatus.h>
 #include <traj_utils/DataDisp.h>
 #include <plan_manage/planner_manager.h>
 #include <traj_utils/planning_visualization.h>
@@ -98,6 +103,13 @@ namespace diff_planner
     std::string search_trigger_topic_;
     std::string search_goal_trigger_topic_;
     std::string manual_goal_topic_; // 2026-07-28: UAV1接力规划使用独立目标话题，避免与前机全局/goal串线。
+    std::string exploration_goal_topic_, exploration_status_topic_;
+    std::string exploration_cancel_topic_, exploration_trigger_topic_;
+    std::string mission_stage_topic_, exploration_yaw_topic_;
+    double exploration_arrival_xy_, exploration_arrival_z_;
+    double exploration_arrival_velocity_, exploration_arrival_dwell_;
+    double exploration_arrival_yaw_, exploration_tracking_timeout_;
+    double exploration_trajectory_sample_time_, exploration_trajectory_sample_distance_;
 
     bool have_trigger_, have_target_, have_odom_, have_new_target_, have_recv_pre_agent_, touch_goal_, mandatory_stop_;
     FSM_EXEC_STATE exec_state_;
@@ -107,14 +119,46 @@ namespace diff_planner
     Eigen::Vector3d final_goal_;                             // goal state
     Eigen::Vector3d local_target_pt_, local_target_vel_; // local target state
     Eigen::Vector3d odom_pos_, odom_vel_, odom_acc_;     // odometry state
+    double odom_yaw_{0.0};
     std::vector<Eigen::Vector3d> wps_;
+
+    enum ACTIVE_TARGET_SOURCE
+    {
+      SOURCE_NONE,
+      SOURCE_FUEL,
+      SOURCE_LANDING
+    };
+    ACTIVE_TARGET_SOURCE active_target_source_{SOURCE_NONE};
+    bool exploration_triggered_{false};
+    bool landing_phase_latched_{false};
+    bool exploration_goal_active_{false};
+    bool exploration_goal_executing_{false};
+    bool exploration_goal_yaw_only_{false};
+    bool exploration_goal_enforce_yaw_{false};
+    bool exploration_dwell_active_{false};
+    uint64_t exploration_session_id_{0};
+    uint64_t exploration_goal_id_{0};
+    uint64_t highest_exploration_session_id_{0};
+    uint64_t highest_exploration_goal_id_{0};
+    double exploration_goal_yaw_{0.0};
+    double exploration_dwell_start_{0.0};
+    double exploration_execution_deadline_{std::numeric_limits<double>::infinity()};
+    geometry_msgs::Pose exploration_requested_pose_;
+    geometry_msgs::Pose exploration_accepted_pose_;
+    quadrotor_msgs::ExplorationGoal last_exploration_goal_;
+    quadrotor_msgs::ExplorationGoalStatus last_exploration_status_;
+    bool have_last_exploration_goal_{false};
 
     /* ROS utils */
     ros::NodeHandle node_;
     ros::Timer exec_timer_, safety_timer_;
     ros::Subscriber waypoint_sub_, odom_sub_, trigger_sub_, subgoal_sub_, broadcast_ploytraj_sub_, mandatory_stop_sub_;
+    ros::Subscriber exploration_goal_sub_, exploration_cancel_sub_;
+    ros::Subscriber exploration_trigger_sub_, mission_stage_sub_;
     ros::Publisher poly_traj_pub_, data_disp_pub_, broadcast_ploytraj_pub_, heartbeat_pub_, ground_height_pub_;
     ros::Publisher planning_status_pub_;  // 2026-07-28: 向接力管理器反馈Diff规划成功/连续失败。
+    ros::Publisher exploration_status_pub_;
+    ros::Publisher exploration_yaw_pub_;
 
     /* state machine functions */
     void execFSMCallback(const ros::TimerEvent &e);
@@ -143,9 +187,29 @@ namespace diff_planner
     void odometryCallback(const nav_msgs::OdometryConstPtr &msg);
     void triggerCallback(const geometry_msgs::PoseStampedPtr &msg);
     void searchSubgoalCallback(const geometry_msgs::PoseStampedPtr &msg);
+    void explorationGoalCallback(const quadrotor_msgs::ExplorationGoalConstPtr &msg);
+    void explorationCancelCallback(const quadrotor_msgs::ExplorationCancelConstPtr &msg);
+    void explorationTriggerCallback(const geometry_msgs::PoseStampedConstPtr &msg);
+    void missionStageCallback(const std_msgs::StringConstPtr &msg);
     void RecvBroadcastMINCOTrajCallback(const traj_utils::MINCOTrajConstPtr &msg);
     void polyTraj2ROSMsg(traj_utils::PolyTraj &poly_msg, traj_utils::MINCOTraj &MINCO_msg);
     void publishPlanningStatus(const std::string &status);  // 2026-07-28: 结构化规划状态输出。
+    bool explorationGoalPayloadEqual(const quadrotor_msgs::ExplorationGoal &lhs,
+                                     const quadrotor_msgs::ExplorationGoal &rhs) const;
+    bool convertExplorationConstraint(
+        const quadrotor_msgs::ExplorationMotionConstraint &msg,
+        exploration_constraint::State &state, std::string &error) const;
+    void publishExplorationStatus(uint8_t state, uint8_t reason,
+                                  const std::string &detail,
+                                  uint32_t trajectory_id = 0);
+    void publishExplorationStatusFor(const quadrotor_msgs::ExplorationGoal &goal,
+                                     uint8_t state, uint8_t reason,
+                                     const std::string &detail);
+    void preemptExplorationForLanding(const std::string &detail);
+    void clearExplorationGoal(bool clear_constraint);
+    void updateExplorationArrival();
+    bool validateExplorationTrajectory(std::string &error) const;
+    double odometryYaw() const;
 
     /* ground height measurement */
     bool measureGroundHeight(double &height);

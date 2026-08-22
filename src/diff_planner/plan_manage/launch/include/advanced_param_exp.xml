@@ -51,6 +51,14 @@
     <arg name="manual_goal_update_distance" default="0.0"/>
     <arg name="search_trigger_topic" default="/traj_start_trigger"/>
     <arg name="search_goal_trigger_topic" default="/goal"/>
+    <arg name="exploration_goal_topic" default="/fuel_diff/exploration_goal"/>
+    <arg name="exploration_status_topic" default="/fuel_diff/exploration_status"/>
+    <arg name="exploration_cancel_topic" default="/fuel_diff/exploration_cancel"/>
+    <arg name="exploration_trigger_topic" default="/fuel_diff/exploration_trigger"/>
+    <arg name="mission_stage_topic" default="/mission/task_status"/>
+    <arg name="exploration_arrival_radius" default="0.35"/>
+    <arg name="exploration_arrival_speed" default="0.20"/>
+    <arg name="exploration_trajectory_sample_dt" default="0.05"/>
     <!-- 2026-07-28: 原生Diff编队默认等待前序轨迹；FUEL->Diff异构接力可单独关闭。 -->
     <arg name="require_pre_agent_trajectory" default="true"/>
     <!-- 2026-07-28: 允许接力实例关闭可能长时间阻塞的随机全局轨迹初始化，默认兼容原Diff。 -->
@@ -91,6 +99,14 @@
         <param name="fsm/manual_goal_update_distance" value="$(arg manual_goal_update_distance)" type="double"/>
         <param name="fsm/search_trigger_topic" value="$(arg search_trigger_topic)"/>
         <param name="fsm/search_goal_trigger_topic" value="$(arg search_goal_trigger_topic)"/>
+        <param name="fsm/exploration_goal_topic" value="$(arg exploration_goal_topic)"/>
+        <param name="fsm/exploration_status_topic" value="$(arg exploration_status_topic)"/>
+        <param name="fsm/exploration_cancel_topic" value="$(arg exploration_cancel_topic)"/>
+        <param name="fsm/exploration_trigger_topic" value="$(arg exploration_trigger_topic)"/>
+        <param name="fsm/mission_stage_topic" value="$(arg mission_stage_topic)"/>
+        <param name="fsm/exploration_arrival_radius" value="$(arg exploration_arrival_radius)" type="double"/>
+        <param name="fsm/exploration_arrival_speed" value="$(arg exploration_arrival_speed)" type="double"/>
+        <param name="fsm/exploration_trajectory_sample_dt" value="$(arg exploration_trajectory_sample_dt)" type="double"/>
         <!-- 2026-07-28: 将前序轨迹门槛传入FSM，避免把drone_id误等同于必须参加Diff顺序编队。 -->
         <param name="fsm/require_pre_agent_trajectory" value="$(arg require_pre_agent_trajectory)" type="bool"/>
         <!-- 2026-07-28: 将随机初始化策略按无人机实例传入FSM。 -->

@@ -2,6 +2,35 @@
 #include <plan_manage/diff_replan_fsm.h>
 
 #include <cmath>
+#include <iomanip>
+
+namespace
+{
+  bool sameScalar(double lhs, double rhs, double tolerance = 1e-9)
+  {
+    return std::isfinite(lhs) && std::isfinite(rhs) &&
+           std::fabs(lhs - rhs) <= tolerance;
+  }
+
+  bool samePoint(const geometry_msgs::Point &lhs, const geometry_msgs::Point &rhs)
+  {
+    return sameScalar(lhs.x, rhs.x) && sameScalar(lhs.y, rhs.y) &&
+           sameScalar(lhs.z, rhs.z);
+  }
+
+  bool sameVector(const geometry_msgs::Vector3 &lhs, const geometry_msgs::Vector3 &rhs)
+  {
+    return sameScalar(lhs.x, rhs.x) && sameScalar(lhs.y, rhs.y) &&
+           sameScalar(lhs.z, rhs.z);
+  }
+
+  bool sameQuaternion(const geometry_msgs::Quaternion &lhs,
+                      const geometry_msgs::Quaternion &rhs)
+  {
+    return sameScalar(lhs.x, rhs.x) && sameScalar(lhs.y, rhs.y) &&
+           sameScalar(lhs.z, rhs.z) && sameScalar(lhs.w, rhs.w);
+  }
+}
 
 namespace diff_planner
 {
@@ -45,6 +74,26 @@ namespace diff_planner
     nh.param("fsm/search_goal_trigger_topic", search_goal_trigger_topic_, std::string("/goal"));
     // 2026-07-28: 外部目标话题参数化；双机时后机只接收接力管理器发布的/UAV1/planning/goal。
     nh.param("fsm/manual_goal_topic", manual_goal_topic_, std::string("/goal"));
+    nh.param("fsm/exploration_goal_topic", exploration_goal_topic_,
+             std::string("/UAV0/fuel_diff/goal"));
+    nh.param("fsm/exploration_status_topic", exploration_status_topic_,
+             std::string("/UAV0/fuel_diff/status"));
+    nh.param("fsm/exploration_cancel_topic", exploration_cancel_topic_,
+             std::string("/UAV0/fuel_diff/cancel"));
+    nh.param("fsm/exploration_trigger_topic", exploration_trigger_topic_,
+             std::string("/UAV0/corridor_search/exploration_trigger"));
+    nh.param("fsm/mission_stage_topic", mission_stage_topic_,
+             std::string("/UAV0/mission/task_status"));
+    nh.param("fsm/exploration_yaw_topic", exploration_yaw_topic_,
+             std::string("/UAV0/fuel_diff/yaw"));
+    nh.param("fsm/exploration_arrival_xy", exploration_arrival_xy_, 0.30);
+    nh.param("fsm/exploration_arrival_z", exploration_arrival_z_, 0.20);
+    nh.param("fsm/exploration_arrival_velocity", exploration_arrival_velocity_, 0.10);
+    nh.param("fsm/exploration_arrival_dwell", exploration_arrival_dwell_, 0.30);
+    nh.param("fsm/exploration_arrival_yaw", exploration_arrival_yaw_, 0.15);
+    nh.param("fsm/exploration_tracking_timeout", exploration_tracking_timeout_, 2.0);
+    nh.param("fsm/exploration_trajectory_sample_time", exploration_trajectory_sample_time_, 0.03);
+    nh.param("fsm/exploration_trajectory_sample_distance", exploration_trajectory_sample_distance_, 0.05);
 
     if (!std::isfinite(min_goal_distance_) || min_goal_distance_ <= 0.0)
     {
@@ -64,6 +113,24 @@ namespace diff_planner
                manual_goal_update_distance_);
       manual_goal_update_distance_ = 0.0;
     }
+    if (!std::isfinite(exploration_arrival_xy_) || exploration_arrival_xy_ <= 0.0)
+      exploration_arrival_xy_ = 0.30;
+    if (!std::isfinite(exploration_arrival_z_) || exploration_arrival_z_ <= 0.0)
+      exploration_arrival_z_ = 0.20;
+    if (!std::isfinite(exploration_arrival_velocity_) || exploration_arrival_velocity_ <= 0.0)
+      exploration_arrival_velocity_ = 0.10;
+    if (!std::isfinite(exploration_arrival_dwell_) || exploration_arrival_dwell_ <= 0.0)
+      exploration_arrival_dwell_ = 0.30;
+    if (!std::isfinite(exploration_arrival_yaw_) || exploration_arrival_yaw_ <= 0.0)
+      exploration_arrival_yaw_ = 0.15;
+    if (!std::isfinite(exploration_tracking_timeout_) || exploration_tracking_timeout_ <= 0.0)
+      exploration_tracking_timeout_ = 2.0;
+    if (!std::isfinite(exploration_trajectory_sample_time_) ||
+        exploration_trajectory_sample_time_ <= 0.0)
+      exploration_trajectory_sample_time_ = 0.03;
+    if (!std::isfinite(exploration_trajectory_sample_distance_) ||
+        exploration_trajectory_sample_distance_ <= 0.0)
+      exploration_trajectory_sample_distance_ = 0.05;
 
     nh.param("fsm/waypoint_num", waypoint_num_, -1);
     for (int i = 0; i < waypoint_num_; i++)
@@ -112,7 +179,20 @@ namespace diff_planner
     heartbeat_pub_ = nh.advertise<std_msgs::Empty>("planning/heartbeat", 10);
     // 2026-07-28: 后机接力不能仅凭目标已发布判断Diff正在执行，增加锁存状态反馈。
     planning_status_pub_ = nh.advertise<std_msgs::String>("planning/status", 10, true);
+    exploration_status_pub_ =
+        nh.advertise<quadrotor_msgs::ExplorationGoalStatus>(
+            exploration_status_topic_, 10, true);
+    exploration_yaw_pub_ = nh.advertise<std_msgs::Float64>(exploration_yaw_topic_, 2, true);
     ground_height_pub_ = nh.advertise<std_msgs::Float64>("/ground_height_measurement", 10);
+
+    exploration_goal_sub_ = nh.subscribe(
+        exploration_goal_topic_, 10, &DiffReplanFSM::explorationGoalCallback, this);
+    exploration_cancel_sub_ = nh.subscribe(
+        exploration_cancel_topic_, 10, &DiffReplanFSM::explorationCancelCallback, this);
+    exploration_trigger_sub_ = nh.subscribe(
+        exploration_trigger_topic_, 2, &DiffReplanFSM::explorationTriggerCallback, this);
+    mission_stage_sub_ = nh.subscribe(
+        mission_stage_topic_, 10, &DiffReplanFSM::missionStageCallback, this);
 
     if (target_type_ == TARGET_TYPE::MANUAL_TARGET)
     {
@@ -211,6 +291,11 @@ namespace diff_planner
           {
             ROS_WARN("Failed to generate the first trajectory, keep trying");
             replan_fail_count_++;
+            if (exploration_goal_active_ && replan_fail_count_ == 3)
+              publishExplorationStatus(
+                  quadrotor_msgs::ExplorationGoalStatus::STATE_PLANNING_FAILED,
+                  quadrotor_msgs::ExplorationGoalStatus::REASON_LOCAL_TRAJECTORY_FAILED,
+                  "DIFF local trajectory generation failed");
             // 2026-07-28: 三次失败即通知上层切换已验证路线短子目标，避免原目标被机械重发到卡死。
             if (replan_fail_count_ == 3 || replan_fail_count_ % 25 == 0)
               publishPlanningStatus("PLANNING_FAILED");
@@ -244,6 +329,11 @@ namespace diff_planner
         else
         {
           replan_fail_count_++;
+          if (exploration_goal_active_ && replan_fail_count_ == 3)
+            publishExplorationStatus(
+                quadrotor_msgs::ExplorationGoalStatus::STATE_PLANNING_FAILED,
+                quadrotor_msgs::ExplorationGoalStatus::REASON_GLOBAL_PATH_FAILED,
+                "DIFF global trajectory generation failed");
           // 2026-07-28: 全局轨迹连续失败时显式反馈，而不是让接力管理器无限重发同一点。
           if (replan_fail_count_ == 3 || replan_fail_count_ % 25 == 0)
             publishPlanningStatus("PLANNING_FAILED");
@@ -264,6 +354,11 @@ namespace diff_planner
       else
       {
         replan_fail_count_++;
+        if (exploration_goal_active_ && replan_fail_count_ == 10)
+          publishExplorationStatus(
+              quadrotor_msgs::ExplorationGoalStatus::STATE_PLANNING_FAILED,
+              quadrotor_msgs::ExplorationGoalStatus::REASON_REPLAN_FAILED,
+              "DIFF local replan failed");
         // 2026-07-28: 局部重规划持续失败同样触发安全子目标恢复。
         if (replan_fail_count_ == 10 || replan_fail_count_ % 50 == 0)
           publishPlanningStatus("PLANNING_FAILED");
@@ -281,6 +376,26 @@ namespace diff_planner
       t_cur = min(info->duration, t_cur);
       Eigen::Vector3d pos = info->traj.getPos(t_cur);
       bool touch_the_goal = ((local_target_pt_ - final_goal_).norm() < 1e-2);
+
+      if (exploration_goal_active_ && exploration_goal_executing_)
+      {
+        updateExplorationArrival();
+        if (!exploration_goal_active_ || exec_state_ != EXEC_TRAJ)
+          break;
+        if (ros::Time::now().toSec() > exploration_execution_deadline_)
+        {
+          publishExplorationStatus(
+              quadrotor_msgs::ExplorationGoalStatus::STATE_ABORTED,
+              quadrotor_msgs::ExplorationGoalStatus::REASON_TRACKING_TIMEOUT,
+              "trajectory ended without reaching the exploration viewpoint");
+          clearExplorationGoal(true);
+          have_target_ = false;
+          need_hover_stop_ = true;
+          flag_escape_emergency_ = true;
+          changeFSMExecState(EMERGENCY_STOP, "EXPLORATION_TRACKING_TIMEOUT");
+          break;
+        }
+      }
 
       const PtsChk_t *chk_ptr = &planner_manager_->traj_.local_traj.pts_chk;
       bool close_to_current_traj_end = (chk_ptr->size() >= 1 && chk_ptr->back().size() >= 1) ? chk_ptr->back().back().first - t_cur < emergency_time_ : 0; // In case of empty vector
@@ -659,11 +774,36 @@ namespace diff_planner
 
     if (plan_success)
     {
+      if (exploration_goal_active_)
+      {
+        std::string trajectory_error;
+        if (!validateExplorationTrajectory(trajectory_error))
+        {
+          ROS_ERROR("Reject DIFF exploration trajectory: %s", trajectory_error.c_str());
+          plan_success = false;
+        }
+      }
+    }
+
+    if (plan_success)
+    {
       traj_utils::PolyTraj poly_msg;
       traj_utils::MINCOTraj MINCO_msg;
       polyTraj2ROSMsg(poly_msg, MINCO_msg);
       poly_traj_pub_.publish(poly_msg);
       broadcast_ploytraj_pub_.publish(MINCO_msg);
+      if (exploration_goal_active_)
+      {
+        exploration_goal_executing_ = true;
+        exploration_execution_deadline_ = ros::Time::now().toSec() +
+            planner_manager_->traj_.local_traj.duration +
+            exploration_tracking_timeout_;
+        publishExplorationStatus(
+            quadrotor_msgs::ExplorationGoalStatus::STATE_EXECUTING,
+            quadrotor_msgs::ExplorationGoalStatus::REASON_NONE,
+            "DIFF trajectory published",
+            static_cast<uint32_t>(planner_manager_->traj_.local_traj.traj_id));
+      }
     }
 
     return plan_success;
@@ -918,6 +1058,274 @@ namespace diff_planner
     planning_status_pub_.publish(msg);
   }
 
+  double DiffReplanFSM::odometryYaw() const
+  {
+    return odom_yaw_;
+  }
+
+  bool DiffReplanFSM::explorationGoalPayloadEqual(
+      const quadrotor_msgs::ExplorationGoal &lhs,
+      const quadrotor_msgs::ExplorationGoal &rhs) const
+  {
+    if (lhs.session_id != rhs.session_id || lhs.goal_id != rhs.goal_id ||
+        lhs.target_type != rhs.target_type || lhs.motion_type != rhs.motion_type ||
+        lhs.enforce_yaw != rhs.enforce_yaw ||
+        lhs.header.frame_id != rhs.header.frame_id)
+      return false;
+    if (!samePoint(lhs.target_pose.position, rhs.target_pose.position) ||
+        !sameQuaternion(lhs.target_pose.orientation, rhs.target_pose.orientation))
+      return false;
+
+    const auto &a = lhs.motion_constraint;
+    const auto &b = rhs.motion_constraint;
+    if (a.enabled != b.enabled ||
+        !sameScalar(a.exploration_initial_yaw, b.exploration_initial_yaw) ||
+        !sameScalar(a.entry_inside_yaw, b.entry_inside_yaw) ||
+        a.entry_plane_active != b.entry_plane_active ||
+        !samePoint(a.entry_origin, b.entry_origin) ||
+        !sameVector(a.entry_direction, b.entry_direction) ||
+        !sameScalar(a.entry_back_margin, b.entry_back_margin) ||
+        !samePoint(a.segment_origin, b.segment_origin) ||
+        !sameVector(a.segment_direction, b.segment_direction) ||
+        !sameScalar(a.segment_high_water, b.segment_high_water) ||
+        !sameScalar(a.segment_regression_margin, b.segment_regression_margin) ||
+        a.transition_active != b.transition_active ||
+        !samePoint(a.transition_anchor, b.transition_anchor) ||
+        !sameVector(a.transition_incoming_direction, b.transition_incoming_direction) ||
+        !sameVector(a.transition_outgoing_direction, b.transition_outgoing_direction) ||
+        !sameScalar(a.transition_old_high_water, b.transition_old_high_water) ||
+        !sameScalar(a.transition_regression_margin, b.transition_regression_margin) ||
+        !sameScalar(a.transition_radius, b.transition_radius) ||
+        !sameScalar(a.transition_corridor_half_width, b.transition_corridor_half_width) ||
+        a.completed_gates.size() != b.completed_gates.size())
+      return false;
+    for (size_t i = 0; i < a.completed_gates.size(); ++i)
+    {
+      const auto &ga = a.completed_gates[i];
+      const auto &gb = b.completed_gates[i];
+      if (ga.sequence != gb.sequence || !samePoint(ga.center, gb.center) ||
+          !sameVector(ga.normal, gb.normal) ||
+          !sameScalar(ga.left_extent, gb.left_extent) ||
+          !sameScalar(ga.right_extent, gb.right_extent) ||
+          !sameScalar(ga.thickness, gb.thickness))
+        return false;
+    }
+    return true;
+  }
+
+  bool DiffReplanFSM::convertExplorationConstraint(
+      const quadrotor_msgs::ExplorationMotionConstraint &msg,
+      exploration_constraint::State &state, std::string &error) const
+  {
+    state = exploration_constraint::State();
+    state.enabled = msg.enabled;
+    state.exploration_initial_yaw = msg.exploration_initial_yaw;
+    state.entry_inside_yaw = msg.entry_inside_yaw;
+    state.entry_plane_active = msg.entry_plane_active;
+    state.entry_origin = Eigen::Vector2d(msg.entry_origin.x, msg.entry_origin.y);
+    state.entry_direction = Eigen::Vector2d(msg.entry_direction.x, msg.entry_direction.y);
+    state.entry_back_margin = msg.entry_back_margin;
+    state.segment_origin = Eigen::Vector2d(msg.segment_origin.x, msg.segment_origin.y);
+    state.segment_direction = Eigen::Vector2d(msg.segment_direction.x, msg.segment_direction.y);
+    state.segment_high_water = msg.segment_high_water;
+    state.segment_regression_margin = msg.segment_regression_margin;
+    state.transition_active = msg.transition_active;
+    state.transition_anchor = Eigen::Vector2d(msg.transition_anchor.x, msg.transition_anchor.y);
+    state.transition_incoming_direction =
+        Eigen::Vector2d(msg.transition_incoming_direction.x,
+                        msg.transition_incoming_direction.y);
+    state.transition_outgoing_direction =
+        Eigen::Vector2d(msg.transition_outgoing_direction.x,
+                        msg.transition_outgoing_direction.y);
+    state.transition_old_high_water = msg.transition_old_high_water;
+    state.transition_regression_margin = msg.transition_regression_margin;
+    state.transition_radius = msg.transition_radius;
+    state.transition_corridor_half_width = msg.transition_corridor_half_width;
+    for (const auto &gate_msg : msg.completed_gates)
+    {
+      exploration_constraint::Gate gate;
+      gate.sequence = gate_msg.sequence;
+      gate.center = Eigen::Vector2d(gate_msg.center.x, gate_msg.center.y);
+      gate.normal = Eigen::Vector2d(gate_msg.normal.x, gate_msg.normal.y);
+      gate.left_extent = gate_msg.left_extent;
+      gate.right_extent = gate_msg.right_extent;
+      gate.thickness = gate_msg.thickness;
+      state.completed_gates.push_back(gate);
+    }
+    if (!exploration_constraint::validState(state))
+    {
+      error = "invalid or non-finite exploration motion constraint";
+      return false;
+    }
+    if (state.enabled && state.completed_gates.size() > 128)
+    {
+      error = "too many completed exploration gates";
+      return false;
+    }
+    return true;
+  }
+
+  void DiffReplanFSM::publishExplorationStatusFor(
+      const quadrotor_msgs::ExplorationGoal &goal, uint8_t state,
+      uint8_t reason, const std::string &detail)
+  {
+    quadrotor_msgs::ExplorationGoalStatus status;
+    status.header.stamp = ros::Time::now();
+    status.header.frame_id = goal.header.frame_id;
+    status.session_id = goal.session_id;
+    status.goal_id = goal.goal_id;
+    status.source = quadrotor_msgs::ExplorationGoalStatus::SOURCE_FUEL_EXPLORATION;
+    status.state = state;
+    status.reason = reason;
+    status.trajectory_id = planner_manager_ ?
+        static_cast<uint32_t>(planner_manager_->traj_.local_traj.traj_id) : 0U;
+    status.requested_pose = goal.target_pose;
+    status.accepted_pose = exploration_accepted_pose_;
+    status.detail = detail;
+    last_exploration_status_ = status;
+    exploration_status_pub_.publish(status);
+  }
+
+  void DiffReplanFSM::publishExplorationStatus(uint8_t state, uint8_t reason,
+                                                const std::string &detail,
+                                                uint32_t trajectory_id)
+  {
+    if (!exploration_goal_active_ && !have_last_exploration_goal_)
+      return;
+    quadrotor_msgs::ExplorationGoalStatus status = last_exploration_status_;
+    status.header.stamp = ros::Time::now();
+    status.session_id = exploration_session_id_;
+    status.goal_id = exploration_goal_id_;
+    status.source = quadrotor_msgs::ExplorationGoalStatus::SOURCE_FUEL_EXPLORATION;
+    status.state = state;
+    status.reason = reason;
+    status.trajectory_id = trajectory_id != 0 ? trajectory_id :
+        static_cast<uint32_t>(planner_manager_->traj_.local_traj.traj_id);
+    status.requested_pose = exploration_requested_pose_;
+    status.accepted_pose = exploration_accepted_pose_;
+    status.detail = detail;
+    last_exploration_status_ = status;
+    exploration_status_pub_.publish(status);
+  }
+
+  void DiffReplanFSM::clearExplorationGoal(bool clear_constraint)
+  {
+    exploration_goal_active_ = false;
+    exploration_goal_executing_ = false;
+    exploration_dwell_active_ = false;
+    exploration_execution_deadline_ = std::numeric_limits<double>::infinity();
+    active_target_source_ = SOURCE_NONE;
+    if (clear_constraint)
+      planner_manager_->grid_map_->clearExplorationMotionConstraint();
+  }
+
+  void DiffReplanFSM::preemptExplorationForLanding(const std::string &detail)
+  {
+    landing_phase_latched_ = true;
+    active_target_source_ = SOURCE_LANDING;
+    if (exploration_goal_active_)
+      publishExplorationStatus(quadrotor_msgs::ExplorationGoalStatus::STATE_PREEMPTED,
+                               quadrotor_msgs::ExplorationGoalStatus::REASON_LANDING_HANDOFF,
+                               detail);
+    clearExplorationGoal(true);
+    have_target_ = false;
+    have_new_target_ = false;
+    if (exec_state_ == EXEC_TRAJ || exec_state_ == REPLAN_TRAJ ||
+        exec_state_ == GEN_NEW_TRAJ || exec_state_ == SEQUENTIAL_START)
+    {
+      need_hover_stop_ = true;
+      flag_escape_emergency_ = true;
+      changeFSMExecState(EMERGENCY_STOP, "LANDING_HANDOFF");
+    }
+  }
+
+  void DiffReplanFSM::updateExplorationArrival()
+  {
+    if (!exploration_goal_active_ || !exploration_goal_executing_ || !have_odom_)
+      return;
+    const Eigen::Vector3d target(exploration_accepted_pose_.position.x,
+                                 exploration_accepted_pose_.position.y,
+                                 exploration_accepted_pose_.position.z);
+    const Eigen::Vector3d delta = odom_pos_ - target;
+    bool reached = delta.head<2>().norm() <= exploration_arrival_xy_ &&
+                   std::fabs(delta.z()) <= exploration_arrival_z_ &&
+                   odom_vel_.norm() <= exploration_arrival_velocity_;
+    if (exploration_goal_enforce_yaw_)
+    {
+      double yaw_error = std::atan2(std::sin(odometryYaw() - exploration_goal_yaw_),
+                                    std::cos(odometryYaw() - exploration_goal_yaw_));
+      reached = reached && std::fabs(yaw_error) <= exploration_arrival_yaw_;
+    }
+    const double now = ros::Time::now().toSec();
+    if (reached)
+    {
+      if (!exploration_dwell_active_)
+      {
+        exploration_dwell_active_ = true;
+        exploration_dwell_start_ = now;
+      }
+      if (now - exploration_dwell_start_ >= exploration_arrival_dwell_)
+      {
+        publishExplorationStatus(quadrotor_msgs::ExplorationGoalStatus::STATE_REACHED,
+                                 quadrotor_msgs::ExplorationGoalStatus::REASON_NONE,
+                                 "viewpoint reached and settled");
+        clearExplorationGoal(true);
+        have_target_ = false;
+        if (target_type_ != TARGET_TYPE::SEARCH_TARGET)
+          have_trigger_ = false;
+        changeFSMExecState(WAIT_TARGET, "EXPLORATION_REACHED");
+      }
+    }
+    else
+      exploration_dwell_active_ = false;
+  }
+
+  bool DiffReplanFSM::validateExplorationTrajectory(std::string &error) const
+  {
+    if (!exploration_goal_active_ || !planner_manager_->traj_.local_traj.traj_id)
+      return true;
+    const auto &traj = planner_manager_->traj_.local_traj.traj;
+    const double duration = traj.getTotalDuration();
+    if (!std::isfinite(duration) || duration <= 0.0)
+    {
+      error = "trajectory has no positive duration";
+      return false;
+    }
+    const double dt = std::max(1e-3, exploration_trajectory_sample_time_);
+    const Eigen::Vector3d first = traj.getPos(0.0);
+    Eigen::Vector3d previous = first;
+    if (!planner_manager_->grid_map_->isExplorationSegmentAllowed(first, first))
+    {
+      error = "trajectory start violates exploration constraint";
+      return false;
+    }
+    for (double t = dt; t <= duration + 1e-9; t += dt)
+    {
+      const double sample_t = std::min(duration, t);
+      const Eigen::Vector3d current = traj.getPos(sample_t);
+      const double length = (current - previous).norm();
+      const int subdivisions = std::max(1, static_cast<int>(std::ceil(
+          length / exploration_trajectory_sample_distance_)));
+      for (int i = 1; i <= subdivisions; ++i)
+      {
+        const Eigen::Vector3d point = previous +
+            (current - previous) * (static_cast<double>(i) / subdivisions);
+        const Eigen::Vector3d prior = previous +
+            (current - previous) * (static_cast<double>(i - 1) / subdivisions);
+        if (planner_manager_->grid_map_->getInflateOccupancy(point) != 0 ||
+            !planner_manager_->grid_map_->isExplorationSegmentAllowed(prior, point))
+        {
+          error = "trajectory sample violates map or exploration gate";
+          return false;
+        }
+      }
+      previous = current;
+      if (sample_t >= duration)
+        break;
+    }
+    return true;
+  }
+
   void DiffReplanFSM::readGivenWpsAndPlan()
   {
     if (waypoint_num_ <= 0)
@@ -963,7 +1371,14 @@ namespace diff_planner
     odom_vel_(1) = msg->twist.twist.linear.y;
     odom_vel_(2) = msg->twist.twist.linear.z;
 
+    const auto &q = msg->pose.pose.orientation;
+    odom_yaw_ = std::atan2(2.0 * (q.w * q.z + q.x * q.y),
+                           1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+
     have_odom_ = true;
+    if (planner_manager_ && planner_manager_->grid_map_)
+      planner_manager_->grid_map_->advanceExplorationHighWater(odom_pos_);
+    updateExplorationArrival();
   }
 
   void DiffReplanFSM::triggerCallback(const geometry_msgs::PoseStampedPtr &msg)
@@ -1011,6 +1426,200 @@ namespace diff_planner
     if (planNextWaypoint(end_wp, true))
     {
       last_target_change_time_ = ros::Time::now().toSec();
+    }
+  }
+
+  void DiffReplanFSM::explorationTriggerCallback(
+      const geometry_msgs::PoseStampedConstPtr &msg)
+  {
+    (void)msg;
+    if (landing_phase_latched_)
+      return;
+    exploration_triggered_ = true;
+    have_trigger_ = true;
+    active_target_source_ = SOURCE_FUEL;
+    stuck_detect_ignore_until_ = ros::Time::now().toSec() + stuck_detect_grace_time_;
+  }
+
+  void DiffReplanFSM::missionStageCallback(const std_msgs::StringConstPtr &msg)
+  {
+    const std::string stage = msg->data.substr(0, msg->data.find_first_of(" \t\r\n"));
+    if (stage == "SEARCH_OUTSIDE_LANDING" || stage == "SEARCH_OUTSIDE_QR" ||
+        stage == "APPROACH_LANDING" || stage == "LANDING")
+      preemptExplorationForLanding("mission stage changed to " + stage);
+  }
+
+  void DiffReplanFSM::explorationCancelCallback(
+      const quadrotor_msgs::ExplorationCancelConstPtr &msg)
+  {
+    if (landing_phase_latched_ || !exploration_goal_active_ ||
+        msg->session_id != exploration_session_id_ ||
+        msg->goal_id != exploration_goal_id_)
+      return;
+    publishExplorationStatus(quadrotor_msgs::ExplorationGoalStatus::STATE_CANCELED,
+                             quadrotor_msgs::ExplorationGoalStatus::REASON_NONE,
+                             msg->reason.empty() ? "cancelled by FUEL" : msg->reason);
+    clearExplorationGoal(true);
+    have_target_ = false;
+    need_hover_stop_ = true;
+    flag_escape_emergency_ = true;
+    changeFSMExecState(EMERGENCY_STOP, "FUEL_CANCEL");
+  }
+
+  void DiffReplanFSM::explorationGoalCallback(
+      const quadrotor_msgs::ExplorationGoalConstPtr &msg)
+  {
+    const auto reject = [&](uint8_t reason, const std::string &detail) {
+      publishExplorationStatusFor(*msg,
+          quadrotor_msgs::ExplorationGoalStatus::STATE_REJECTED, reason, detail);
+    };
+    if (have_last_exploration_goal_ && msg->session_id == last_exploration_goal_.session_id &&
+        msg->goal_id == last_exploration_goal_.goal_id)
+    {
+      if (explorationGoalPayloadEqual(*msg, last_exploration_goal_))
+      {
+        exploration_status_pub_.publish(last_exploration_status_);
+        return;
+      }
+      reject(quadrotor_msgs::ExplorationGoalStatus::REASON_ID_CONFLICT,
+             "same session and goal id carries different payload");
+      return;
+    }
+    if (landing_phase_latched_)
+    {
+      reject(quadrotor_msgs::ExplorationGoalStatus::REASON_LANDING_HANDOFF,
+             "exploration is permanently preempted by landing");
+      return;
+    }
+    if ((msg->session_id < highest_exploration_session_id_) ||
+        (msg->session_id == highest_exploration_session_id_ &&
+         msg->goal_id < highest_exploration_goal_id_))
+    {
+      reject(quadrotor_msgs::ExplorationGoalStatus::REASON_STALE_ID,
+             "goal id is older than the accepted exploration sequence");
+      return;
+    }
+    if (!exploration_triggered_)
+    {
+      reject(quadrotor_msgs::ExplorationGoalStatus::REASON_NOT_TRIGGERED,
+             "exploration trigger has not been latched");
+      return;
+    }
+    if (!have_odom_)
+    {
+      reject(quadrotor_msgs::ExplorationGoalStatus::REASON_NO_ODOM,
+             "no odometry has been received");
+      return;
+    }
+    const auto &pose = msg->target_pose;
+    const bool finite_pose = std::isfinite(pose.position.x) &&
+        std::isfinite(pose.position.y) && std::isfinite(pose.position.z) &&
+        std::isfinite(pose.orientation.x) && std::isfinite(pose.orientation.y) &&
+        std::isfinite(pose.orientation.z) && std::isfinite(pose.orientation.w);
+    if (!finite_pose || (msg->motion_type != quadrotor_msgs::ExplorationGoal::MOTION_MOVE &&
+                         msg->motion_type != quadrotor_msgs::ExplorationGoal::MOTION_YAW_ONLY) ||
+        msg->target_type > quadrotor_msgs::ExplorationGoal::TARGET_TURN_ALIGNMENT)
+    {
+      reject(quadrotor_msgs::ExplorationGoalStatus::REASON_INVALID_GOAL,
+             "invalid target pose, motion type, or target type");
+      return;
+    }
+    if (msg->enforce_yaw &&
+        std::sqrt(pose.orientation.x * pose.orientation.x +
+                  pose.orientation.y * pose.orientation.y +
+                  pose.orientation.z * pose.orientation.z +
+                  pose.orientation.w * pose.orientation.w) < 1e-6)
+    {
+      reject(quadrotor_msgs::ExplorationGoalStatus::REASON_INVALID_GOAL,
+             "enforced yaw requires a valid quaternion");
+      return;
+    }
+
+    exploration_constraint::State constraint;
+    std::string constraint_error;
+    if (!convertExplorationConstraint(msg->motion_constraint, constraint,
+                                      constraint_error))
+    {
+      reject(quadrotor_msgs::ExplorationGoalStatus::REASON_MISSION_CONSTRAINT,
+             constraint_error);
+      return;
+    }
+    const Eigen::Vector3d target(pose.position.x, pose.position.y, pose.position.z);
+    const int occupancy = planner_manager_->grid_map_->getInflateOccupancy(target);
+    if (occupancy == -1)
+    {
+      reject(quadrotor_msgs::ExplorationGoalStatus::REASON_OUTSIDE_MAP,
+             "goal is outside Diff safety fence");
+      return;
+    }
+    if (occupancy != 0)
+    {
+      reject(quadrotor_msgs::ExplorationGoalStatus::REASON_GOAL_OCCUPIED,
+             "goal is occupied after inflation");
+      return;
+    }
+    if (constraint.enabled &&
+        !exploration_constraint::pointAllowed(constraint, target.head<2>()))
+    {
+      reject(quadrotor_msgs::ExplorationGoalStatus::REASON_MISSION_CONSTRAINT,
+             "goal violates the exploration motion constraint");
+      return;
+    }
+    if (exploration_goal_active_)
+      publishExplorationStatus(quadrotor_msgs::ExplorationGoalStatus::STATE_PREEMPTED,
+                               quadrotor_msgs::ExplorationGoalStatus::REASON_NONE,
+                               "superseded by a newer FUEL exploration goal");
+
+    last_exploration_goal_ = *msg;
+    have_last_exploration_goal_ = true;
+    exploration_session_id_ = msg->session_id;
+    exploration_goal_id_ = msg->goal_id;
+    highest_exploration_session_id_ = msg->session_id;
+    highest_exploration_goal_id_ = msg->goal_id;
+    exploration_requested_pose_ = msg->target_pose;
+    exploration_accepted_pose_ = msg->target_pose;
+    exploration_goal_enforce_yaw_ = msg->enforce_yaw;
+    exploration_goal_yaw_ = std::atan2(
+        2.0 * (pose.orientation.w * pose.orientation.z +
+               pose.orientation.x * pose.orientation.y),
+        1.0 - 2.0 * (pose.orientation.y * pose.orientation.y +
+                      pose.orientation.z * pose.orientation.z));
+    exploration_goal_yaw_only_ =
+        msg->motion_type == quadrotor_msgs::ExplorationGoal::MOTION_YAW_ONLY;
+    exploration_goal_active_ = true;
+    exploration_goal_executing_ = false;
+    exploration_dwell_active_ = false;
+    active_target_source_ = SOURCE_FUEL;
+    planner_manager_->grid_map_->setExplorationMotionConstraint(constraint);
+    have_trigger_ = true;
+
+    publishExplorationStatus(quadrotor_msgs::ExplorationGoalStatus::STATE_ACCEPTED,
+                             quadrotor_msgs::ExplorationGoalStatus::REASON_NONE,
+                             "goal accepted; waiting for DIFF trajectory");
+
+    const double distance = (target - odom_pos_).norm();
+    if (exploration_goal_yaw_only_ || distance < min_goal_distance_)
+    {
+      final_goal_ = target;
+      have_target_ = true;
+      have_new_target_ = false;
+      exploration_goal_executing_ = true;
+      exploration_execution_deadline_ = ros::Time::now().toSec() +
+          exploration_tracking_timeout_;
+      publishExplorationStatus(quadrotor_msgs::ExplorationGoalStatus::STATE_EXECUTING,
+                               quadrotor_msgs::ExplorationGoalStatus::REASON_NONE,
+                               "zero-distance or yaw-only viewpoint held without MINCO");
+      updateExplorationArrival();
+      return;
+    }
+
+    if (!planNextWaypoint(target, true))
+    {
+      publishExplorationStatus(quadrotor_msgs::ExplorationGoalStatus::STATE_PLANNING_FAILED,
+                               quadrotor_msgs::ExplorationGoalStatus::REASON_GLOBAL_PATH_FAILED,
+                               "DIFF global path generation failed");
+      clearExplorationGoal(true);
+      have_target_ = false;
     }
   }
 

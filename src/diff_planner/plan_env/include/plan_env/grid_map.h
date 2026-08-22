@@ -6,6 +6,7 @@
 #include <cv_bridge/cv_bridge.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <iostream>
+#include <memory>
 #include <random>
 #include <nav_msgs/Odometry.h>
 #include <queue>
@@ -23,6 +24,7 @@
 #include <message_filters/time_synchronizer.h>
 
 #include <plan_env/raycast.h>
+#include <plan_env/exploration_motion_constraint.h>
 
 #define logit(x) (log((x) / (1 - (x))))
 #define GRID_MAP_OBS_FLAG 32767
@@ -157,6 +159,12 @@ public:
   inline int getOccupancy(Eigen::Vector3d pos);
   inline int getInflateOccupancy(Eigen::Vector3d pos);
   inline double getResolution();
+  void setExplorationMotionConstraint(const exploration_constraint::State &state);
+  void clearExplorationMotionConstraint();
+  exploration_constraint::State getExplorationMotionConstraint() const;
+  void advanceExplorationHighWater(const Eigen::Vector3d &position);
+  bool isExplorationSegmentAllowed(const Eigen::Vector3d &start,
+                                   const Eigen::Vector3d &end) const;
   bool getOdomDepthTimeout() { return md_.flag_depth_odom_timeout_; }
 
   typedef std::shared_ptr<GridMap> Ptr;
@@ -166,6 +174,7 @@ public:
 private:
   MappingParameters mp_;
   MappingData md_;
+  std::shared_ptr<const exploration_constraint::State> exploration_constraint_;
 
   enum
   {
@@ -422,6 +431,10 @@ inline int GridMap::getOccupancy(Eigen::Vector3d pos)
 
 inline int GridMap::getInflateOccupancy(Eigen::Vector3d pos)
 {
+  const auto constraint = std::atomic_load(&exploration_constraint_);
+  if (constraint && constraint->enabled &&
+      !exploration_constraint::pointAllowed(*constraint, pos.head<2>()))
+    return 1;
   if (mp_.enable_virtual_wall_ && (pos(2) >= mp_.virtual_ceil_ || pos(2) <= mp_.virtual_ground_))
     return -1;
   

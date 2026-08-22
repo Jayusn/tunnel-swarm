@@ -6,6 +6,7 @@
 #include <ldop/DynamicObjectArray.h>
 #include <nav_msgs/Odometry.h>
 #include <quadrotor_msgs/PositionCommand.h>
+#include <quadrotor_msgs/ExplorationGoal.h>
 #include <ros/ros.h>
 #include <std_msgs/Bool.h>
 #include <std_msgs/Int32.h>
@@ -27,6 +28,7 @@ class PlannerCommandArbiter {
     std::string odom_topic("/UAV0/fast_lio/Odometry");
     std::string dynamic_objects_topic("/UAV0/ldop/dynamic_objects");
     std::string emergency_brake_topic("/UAV0/planning/emergency_brake");
+    std::string exploration_goal_topic("/UAV0/fuel_diff/exploration_goal");
     private_nh_.param("fuel_topic", fuel_topic, fuel_topic);
     private_nh_.param("diff_topic", diff_topic, diff_topic);
     private_nh_.param("output_topic", output_topic, output_topic);
@@ -36,6 +38,8 @@ class PlannerCommandArbiter {
                       dynamic_objects_topic);
     private_nh_.param("emergency_brake_topic", emergency_brake_topic,
                       emergency_brake_topic);
+    private_nh_.param("exploration_goal_topic", exploration_goal_topic,
+                      exploration_goal_topic);
     private_nh_.param("dynamic_avoidance_enabled", dynamic_avoidance_enabled_, true);
     private_nh_.param("dynamic_object_timeout", dynamic_object_timeout_, 0.60);
     private_nh_.param("dynamic_safety_radius", dynamic_safety_radius_, 0.45);
@@ -49,6 +53,8 @@ class PlannerCommandArbiter {
     fuel_sub_ = nh_.subscribe(fuel_topic, 20, &PlannerCommandArbiter::fuelCallback, this);
     diff_sub_ = nh_.subscribe(diff_topic, 20, &PlannerCommandArbiter::diffCallback, this);
     stage_sub_ = nh_.subscribe(stage_topic, 10, &PlannerCommandArbiter::stageCallback, this);
+    exploration_goal_sub_ = nh_.subscribe(
+        exploration_goal_topic, 10, &PlannerCommandArbiter::explorationGoalCallback, this);
     odom_sub_ = nh_.subscribe(odom_topic, 20, &PlannerCommandArbiter::odomCallback, this);
     dynamic_objects_sub_ = nh_.subscribe(dynamic_objects_topic, 10,
                                          &PlannerCommandArbiter::dynamicObjectsCallback, this);
@@ -73,6 +79,18 @@ class PlannerCommandArbiter {
       diff_owned_ = true;
       publishOwner();
       ROS_ERROR("planner_command_arbiter: control ownership latched FUEL -> DIFF");
+    }
+  }
+  void explorationGoalCallback(const quadrotor_msgs::ExplorationGoalConstPtr& msg) {
+    if (msg->target_type > quadrotor_msgs::ExplorationGoal::TARGET_TURN_ALIGNMENT) {
+      return;
+    }
+    if (!diff_owned_) {
+      diff_owned_ = true;
+      publishOwner();
+      ROS_WARN("planner_command_arbiter: DIFF owns control for FUEL viewpoint session=%llu id=%llu",
+               static_cast<unsigned long long>(msg->session_id),
+               static_cast<unsigned long long>(msg->goal_id));
     }
   }
   void fuelCallback(const quadrotor_msgs::PositionCommandConstPtr& msg) {
@@ -224,7 +242,8 @@ class PlannerCommandArbiter {
   }
 
   ros::NodeHandle nh_, private_nh_;
-  ros::Subscriber fuel_sub_, diff_sub_, stage_sub_, odom_sub_, dynamic_objects_sub_;
+  ros::Subscriber fuel_sub_, diff_sub_, stage_sub_, exploration_goal_sub_, odom_sub_,
+      dynamic_objects_sub_;
   ros::Publisher output_pub_, owner_pub_, dynamic_hold_pub_, emergency_brake_pub_;
   nav_msgs::Odometry odom_;
   std::vector<DynamicSample> dynamic_samples_;

@@ -32,6 +32,7 @@ double time_forward_;
 double yaw_custom_;
 double YAW_DOT_MAX_PER_SEC = 2 * M_PI;
 double YAW_DOT_DOT_MAX_PER_SEC = 5 * M_PI;
+bool hold_after_trajectory_ = true;
 
 bool receive_yaw_ = false;
 ros::Time receive_yaw_time_(0);
@@ -219,6 +220,7 @@ void cmdCallback(const ros::TimerEvent &e)
 
     receive_traj_ = false;
     publish_cmd(last_pos_, Vector3d::Zero(), Vector3d::Zero(), Vector3d::Zero(), last_yaw_, 0);
+    return;
   }
 
   double t_cur = (time_now - start_time_).toSec();
@@ -346,6 +348,21 @@ void cmdCallback(const ros::TimerEvent &e)
     publish_cmd(pos, vel, acc, jer, yaw_yawdot.first, yaw_yawdot.second);
   }
 #endif
+
+#if !FLIP_YAW_AT_END && !TURN_YAW_TO_CENTER_AT_END
+  else if (t_cur >= traj_duration_)
+  {
+    if (!hold_after_trajectory_) return;
+    // Keep publishing a zero-velocity command at the exact endpoint. This is
+    // required when FUEL is waiting for the next DIFF viewpoint/status.
+    pos = traj_->getPos(traj_duration_);
+    last_pos_ = pos;
+    vel.setZero();
+    acc.setZero();
+    jer.setZero();
+    publish_cmd(pos, vel, acc, jer, last_yaw_, 0.0);
+  }
+#endif
 }
 
 int main(int argc, char **argv)
@@ -367,6 +384,7 @@ int main(int argc, char **argv)
   nh.param("traj_server/time_forward", time_forward_, -1.0);
   nh.param("traj_server/yaw_dot_max", YAW_DOT_MAX_PER_SEC, YAW_DOT_MAX_PER_SEC);
   nh.param("traj_server/yaw_dot_dot_max", YAW_DOT_DOT_MAX_PER_SEC, YAW_DOT_DOT_MAX_PER_SEC);
+  nh.param("traj_server/hold_after_trajectory", hold_after_trajectory_, true);
   last_yaw_ = 0.0;
   last_yawdot_ = 0.0;
 
