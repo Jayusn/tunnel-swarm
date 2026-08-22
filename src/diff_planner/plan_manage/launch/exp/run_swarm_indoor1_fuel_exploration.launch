@@ -62,7 +62,7 @@
     <arg name="raycast_max_dist" default="8.0"/>
     <arg name="perception_max_dist" default="7.0"/>
 
-    <!-- 通道与常规探索保持保守速度；Diff只在出口后由仲裁器接管，可使用独立搜索速度。 -->
+    <!-- 通道与常规探索保持保守速度；FUEL只选点，DIFF执行每个完整视点。 -->
     <arg name="fuel_max_vel" default="0.20"/>
     <arg name="fuel_max_acc" default="0.35"/>
     <arg name="use_diff_for_fuel_exploration" default="true"/>
@@ -112,7 +112,7 @@
     <rosparam param="/exploration_node/fsm/fuel_diff_cancel_topic">$(arg fuel_diff_cancel_topic)</rosparam>
     <rosparam param="/exploration_node/fsm/mission_status_topic">/mission/task_status</rosparam>
 
-    <!-- Diff从启动时即建立独立雷达占据图，但在出口切换信号到来前不接收搜索目标、不输出控制。 -->
+    <!-- Diff从启动时即建立独立雷达占据图，接收FUEL视点并由仲裁器输出控制。 -->
     <include file="$(find diff_planner)/launch/include/advanced_param_exp.xml">
         <arg name="odom_topic" value="$(arg odom_topic)"/>
         <arg name="drone_id" value="$(arg drone_id)"/>
