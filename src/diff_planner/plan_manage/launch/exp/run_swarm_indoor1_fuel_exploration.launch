@@ -48,14 +48,14 @@
     <arg name="init_z" default="0.15"/>
 
     <!-- 2026-07-07: 先给验证版一个覆盖 indoor1 的探索盒和地图尺寸，后续再按真实场地继续放大。 -->
-    <arg name="map_size_x" default="15.0"/>
-    <arg name="map_size_y" default="9.0"/>
+    <arg name="map_size_x" default="20.0"/>
+    <arg name="map_size_y" default="12"/>
     <arg name="map_size_z" default="3.0"/>
-    <arg name="box_min_x" default="-7.5"/>
-    <arg name="box_min_y" default="-4.5"/>
-    <arg name="box_min_z" default="-0.2"/>
-    <arg name="box_max_x" default="7.5"/>
-    <arg name="box_max_y" default="4.5"/>
+    <arg name="box_min_x" default="-10.0"/>
+    <arg name="box_min_y" default="-6"/>
+    <arg name="box_min_z" default="0.05"/>
+    <arg name="box_max_x" default="10"/>
+    <arg name="box_max_y" default="6"/>
     <arg name="box_max_z" default="2.0"/>
     <!-- 2026-07-08 19:26: 这条混合探索链路的点云截断、射线建图和 active perception 视野主要由 FUEL 侧生效；
          针对“视频里周围点云距离偏近、窄道入口长期只在近处出现”的问题，先把搜索感知半径整体放大一档。 -->
