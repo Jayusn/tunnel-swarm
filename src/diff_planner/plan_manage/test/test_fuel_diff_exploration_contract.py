@@ -2,7 +2,7 @@ from pathlib import Path
 import xml.etree.ElementTree as ET
 
 
-LAUNCH = Path(__file__).resolve().parents[1] / "launch/exp/run_swarm_indoor1_fuel_exploration.launch"
+LAUNCH = Path(__file__).resolve().parents[1] / "launch/exp/run_swarm_indoor1_fuel_diff_exploration.launch"
 ADVANCED = Path(__file__).resolve().parents[1] / "launch/include/advanced_param_exp.xml"
 
 

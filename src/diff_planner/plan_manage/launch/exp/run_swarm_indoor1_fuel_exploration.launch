@@ -62,14 +62,9 @@
     <arg name="raycast_max_dist" default="8.0"/>
     <arg name="perception_max_dist" default="7.0"/>
 
-    <!-- 通道与常规探索保持保守速度；FUEL只选点，DIFF执行每个完整视点。 -->
+    <!-- 通道与常规探索保持保守速度；Diff只在出口后由仲裁器接管，可使用独立搜索速度。 -->
     <arg name="fuel_max_vel" default="0.20"/>
     <arg name="fuel_max_acc" default="0.35"/>
-    <arg name="use_diff_for_fuel_exploration" default="true"/>
-    <arg name="fuel_diff_goal_topic" default="/UAV0/fuel_diff/exploration_goal"/>
-    <arg name="fuel_diff_status_topic" default="/UAV0/fuel_diff/exploration_status"/>
-    <arg name="fuel_diff_cancel_topic" default="/UAV0/fuel_diff/exploration_cancel"/>
-    <arg name="fuel_diff_trigger_topic" default="/UAV0/fuel_diff/exploration_trigger"/>
     <arg name="landing_search_max_vel" default="0.30"/>
     <arg name="landing_search_max_acc" default="0.60"/>
 
@@ -105,22 +100,9 @@
         <arg name="perception_max_dist" value="$(arg perception_max_dist)"/>
     </include>
 
-    <!-- Hybrid ownership: FUEL keeps frontier scoring, DIFF receives each complete viewpoint. -->
-    <param name="/exploration_node/fsm/use_diff_for_fuel_exploration"
-           value="$(arg use_diff_for_fuel_exploration)" type="bool"/>
-    <param name="/exploration_node/fsm/fuel_diff_goal_topic"
-           value="$(arg fuel_diff_goal_topic)" type="string"/>
-    <param name="/exploration_node/fsm/fuel_diff_status_topic"
-           value="$(arg fuel_diff_status_topic)" type="string"/>
-    <param name="/exploration_node/fsm/fuel_diff_cancel_topic"
-           value="$(arg fuel_diff_cancel_topic)" type="string"/>
-    <param name="/exploration_node/fsm/fuel_diff_trigger_topic"
-           value="$(arg fuel_diff_trigger_topic)" type="string"/>
-    <param name="/exploration_node/fsm/mission_status_topic"
-           value="/mission/task_status" type="string"/>
-
-    <!-- Diff从启动时即建立独立雷达占据图，接收FUEL视点并由仲裁器输出控制。 -->
-    <include file="$(find diff_planner)/launch/include/advanced_param_exp.xml">
+    <!-- Diff从启动时即建立独立雷达占据图，但在出口切换信号到来前不接收搜索目标、不输出控制。 -->
+    <include if="$(arg enable_search_landing)"
+             file="$(find diff_planner)/launch/include/advanced_param_exp.xml">
         <arg name="odom_topic" value="$(arg odom_topic)"/>
         <arg name="drone_id" value="$(arg drone_id)"/>
         <arg name="camera_pose_topic" value="no_use_diff_pose"/>
@@ -142,7 +124,7 @@
         <arg name="local_map_size_y" value="$(arg map_size_y)"/>
         <arg name="local_map_size_z" value="$(arg map_size_z)"/>
         <arg name="enable_virtual_wall" value="true"/><arg name="virtual_ceil" value="2.25"/>
-        <arg name="virtual_ground" value="0.10"/><arg name="map_resolution" value="0.10"/>
+        <arg name="virtual_ground" value="0.10"/><arg name="map_resolution" value="0.15"/>
         <arg name="inflation_size" value="0.15"/><arg name="obstacle_clearance" value="0.15"/>
         <arg name="init_x" value="$(arg init_x)"/><arg name="init_y" value="$(arg init_y)"/><arg name="init_z" value="$(arg init_z)"/>
         <arg name="cloud_use_init_offset" value="false"/><arg name="preserve_global_map" value="true"/>
@@ -152,19 +134,6 @@
         <arg name="search_subgoal_update_distance" value="0.15"/>
         <arg name="search_trigger_topic" value="/UAV0/landing_diff/trigger"/>
         <arg name="search_goal_trigger_topic" value="/UAV0/landing_diff/manual_trigger"/>
-        <arg name="exploration_goal_topic" value="$(arg fuel_diff_goal_topic)"/>
-        <arg name="exploration_status_topic" value="$(arg fuel_diff_status_topic)"/>
-        <arg name="exploration_cancel_topic" value="$(arg fuel_diff_cancel_topic)"/>
-        <arg name="exploration_trigger_topic" value="$(arg fuel_diff_trigger_topic)"/>
-        <arg name="mission_stage_topic" value="/UAV0/mission/task_status"/>
-        <arg name="exploration_arrival_xy" value="0.35"/>
-        <arg name="exploration_arrival_z" value="0.20"/>
-        <arg name="exploration_arrival_velocity" value="0.20"/>
-        <arg name="exploration_arrival_dwell" value="0.30"/>
-        <arg name="exploration_arrival_yaw" value="0.15"/>
-        <arg name="exploration_tracking_timeout" value="2.0"/>
-        <arg name="exploration_trajectory_sample_time" value="0.05"/>
-        <arg name="exploration_trajectory_sample_distance" value="0.05"/>
     </include>
 
     <!-- 2026-07-08 19:26: 按未来飞行器大赛 2.1 的任务目标，先把起飞区和搜索区语义显式参数化。
@@ -205,6 +174,7 @@
     <rosparam param="/exploration_node/mission/camera_obstacle_scan/wall_support_ratio">0.68</rosparam>
     <rosparam param="/exploration_node/mission/workspace_lock_topic">/UAV0/corridor_search/workspace_lock</rosparam>
     <!-- 保留检测阶段信号供任务面板；LDOP当前持续处理自身点云。 -->
+    <rosparam param="/exploration_node/fsm/mission_status_topic">/mission/task_status</rosparam>
     <rosparam param="/exploration_node/fsm/dynamic_detection_enable_topic">/UAV0/corridor_search/dynamic_detection_enable</rosparam>
     <rosparam param="/exploration_node/mission/door_back_margin">0.35</rosparam>
     <!-- 普通规划失败继续重试，不再通知控制器丢弃当前控制状态并锁点悬停。 -->
@@ -345,7 +315,7 @@
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_confirmation_angle_deg">15.0</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_confirmation_accumulation_window">8.0</rosparam>
     <!-- 两票确认后先停住，以约40deg/s原地对准新通道，再恢复平移规划。 -->
-    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_enabled">false</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_enabled">true</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_yaw_rate_deg">40.0</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_min_duration">1.0</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_max_duration">4.0</rosparam>
@@ -512,7 +482,7 @@
     <rosparam param="/exploration_node/mission/search_region_max">[6.20, 6.80, 1.80]</rosparam>
 
     <!-- 2026-07-07: 用 FUEL 自带 traj_server 执行 exploration_manager 发布的 /planning/bspline，并继续输出到现有控制器在用的 /planning/pos_cmd。 -->
-    <node if="$(eval not arg('use_diff_for_fuel_exploration'))" pkg="plan_manage" name="fuel_traj_server" type="traj_server" output="screen">
+    <node pkg="plan_manage" name="fuel_traj_server" type="traj_server" output="screen">
         <!-- 2026-07-27: FUEL traj_server 的绝对/相对单机话题全部接入 UAV0 规划链。 -->
         <remap from="/position_cmd" to="/UAV0/fuel/planning/pos_cmd"/>
         <remap from="/odom_world" to="$(arg odom_topic)"/>
@@ -538,7 +508,7 @@
     </node>
 
     <!-- 两套规划器始终分话题输出；任务阶段仲裁器只允许当前所有者进入现有控制器。 -->
-    <node pkg="diff_planner"
+    <node if="$(arg enable_search_landing)" pkg="diff_planner"
           name="landing_diff_traj_server" type="traj_server" output="screen">
         <remap from="position_cmd" to="/UAV0/diff/planning/pos_cmd"/>
         <remap from="~planning/trajectory" to="/drone_$(arg drone_id)_planning/trajectory"/>
@@ -557,7 +527,6 @@
         <param name="odom_topic" value="$(arg odom_topic)"/>
         <param name="dynamic_objects_topic" value="/UAV0/ldop/dynamic_objects"/>
         <param name="emergency_brake_topic" value="/UAV0/planning/emergency_brake"/>
-        <param name="exploration_goal_topic" value="$(arg fuel_diff_goal_topic)"/>
         <param name="dynamic_avoidance_enabled"
                value="$(arg enable_uav0_dynamic_obstacle_detection)"/>
         <param name="dynamic_object_timeout" value="0.60"/>
@@ -565,7 +534,6 @@
         <param name="dynamic_vertical_margin" value="0.25"/>
         <param name="dynamic_prediction_horizon" value="1.0"/>
         <param name="dynamic_prediction_step" value="0.20"/>
-        <param name="diff_command_timeout" value="0.25"/>
     </node>
 
     <node if="$(arg enable_search_landing)" pkg="diff_planner"
