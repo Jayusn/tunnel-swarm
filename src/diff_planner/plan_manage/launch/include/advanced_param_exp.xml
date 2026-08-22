@@ -56,9 +56,14 @@
     <arg name="exploration_cancel_topic" default="/fuel_diff/exploration_cancel"/>
     <arg name="exploration_trigger_topic" default="/fuel_diff/exploration_trigger"/>
     <arg name="mission_stage_topic" default="/mission/task_status"/>
-    <arg name="exploration_arrival_radius" default="0.35"/>
-    <arg name="exploration_arrival_speed" default="0.20"/>
-    <arg name="exploration_trajectory_sample_dt" default="0.05"/>
+    <arg name="exploration_arrival_xy" default="0.35"/>
+    <arg name="exploration_arrival_z" default="0.20"/>
+    <arg name="exploration_arrival_velocity" default="0.20"/>
+    <arg name="exploration_arrival_dwell" default="0.30"/>
+    <arg name="exploration_arrival_yaw" default="0.15"/>
+    <arg name="exploration_tracking_timeout" default="2.0"/>
+    <arg name="exploration_trajectory_sample_time" default="0.05"/>
+    <arg name="exploration_trajectory_sample_distance" default="0.05"/>
     <!-- 2026-07-28: 原生Diff编队默认等待前序轨迹；FUEL->Diff异构接力可单独关闭。 -->
     <arg name="require_pre_agent_trajectory" default="true"/>
     <!-- 2026-07-28: 允许接力实例关闭可能长时间阻塞的随机全局轨迹初始化，默认兼容原Diff。 -->
@@ -104,9 +109,14 @@
         <param name="fsm/exploration_cancel_topic" value="$(arg exploration_cancel_topic)"/>
         <param name="fsm/exploration_trigger_topic" value="$(arg exploration_trigger_topic)"/>
         <param name="fsm/mission_stage_topic" value="$(arg mission_stage_topic)"/>
-        <param name="fsm/exploration_arrival_radius" value="$(arg exploration_arrival_radius)" type="double"/>
-        <param name="fsm/exploration_arrival_speed" value="$(arg exploration_arrival_speed)" type="double"/>
-        <param name="fsm/exploration_trajectory_sample_dt" value="$(arg exploration_trajectory_sample_dt)" type="double"/>
+        <param name="fsm/exploration_arrival_xy" value="$(arg exploration_arrival_xy)" type="double"/>
+        <param name="fsm/exploration_arrival_z" value="$(arg exploration_arrival_z)" type="double"/>
+        <param name="fsm/exploration_arrival_velocity" value="$(arg exploration_arrival_velocity)" type="double"/>
+        <param name="fsm/exploration_arrival_dwell" value="$(arg exploration_arrival_dwell)" type="double"/>
+        <param name="fsm/exploration_arrival_yaw" value="$(arg exploration_arrival_yaw)" type="double"/>
+        <param name="fsm/exploration_tracking_timeout" value="$(arg exploration_tracking_timeout)" type="double"/>
+        <param name="fsm/exploration_trajectory_sample_time" value="$(arg exploration_trajectory_sample_time)" type="double"/>
+        <param name="fsm/exploration_trajectory_sample_distance" value="$(arg exploration_trajectory_sample_distance)" type="double"/>
         <!-- 2026-07-28: 将前序轨迹门槛传入FSM，避免把drone_id误等同于必须参加Diff顺序编队。 -->
         <param name="fsm/require_pre_agent_trajectory" value="$(arg require_pre_agent_trajectory)" type="bool"/>
         <!-- 2026-07-28: 将随机初始化策略按无人机实例传入FSM。 -->

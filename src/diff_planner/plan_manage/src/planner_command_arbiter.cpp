@@ -46,6 +46,7 @@ class PlannerCommandArbiter {
     private_nh_.param("dynamic_vertical_margin", dynamic_vertical_margin_, 0.25);
     private_nh_.param("dynamic_prediction_horizon", dynamic_prediction_horizon_, 1.0);
     private_nh_.param("dynamic_prediction_step", dynamic_prediction_step_, 0.20);
+    private_nh_.param("diff_command_timeout", diff_command_timeout_, 0.25);
     output_pub_ = nh_.advertise<quadrotor_msgs::PositionCommand>(output_topic, 10);
     owner_pub_ = private_nh_.advertise<std_msgs::String>("owner", 2, true);
     dynamic_hold_pub_ = private_nh_.advertise<std_msgs::Bool>("dynamic_hold", 2, true);
@@ -58,6 +59,8 @@ class PlannerCommandArbiter {
     odom_sub_ = nh_.subscribe(odom_topic, 20, &PlannerCommandArbiter::odomCallback, this);
     dynamic_objects_sub_ = nh_.subscribe(dynamic_objects_topic, 10,
                                          &PlannerCommandArbiter::dynamicObjectsCallback, this);
+    hold_timer_ = nh_.createTimer(ros::Duration(0.02),
+                                  &PlannerCommandArbiter::holdTimerCallback, this);
     publishOwner();
     publishDynamicHold(false);
   }
@@ -78,6 +81,8 @@ class PlannerCommandArbiter {
                          stage == "APPROACH_LANDING" || stage == "LANDING")) {
       diff_owned_ = true;
       publishOwner();
+      have_diff_command_ = false;
+      publishStaticHold(0U);
       ROS_ERROR("planner_command_arbiter: control ownership latched FUEL -> DIFF");
     }
   }
@@ -88,6 +93,8 @@ class PlannerCommandArbiter {
     if (!diff_owned_) {
       diff_owned_ = true;
       publishOwner();
+      have_diff_command_ = false;
+      publishStaticHold(0U);
       ROS_WARN("planner_command_arbiter: DIFF owns control for FUEL viewpoint session=%llu id=%llu",
                static_cast<unsigned long long>(msg->session_id),
                static_cast<unsigned long long>(msg->goal_id));
@@ -123,7 +130,11 @@ class PlannerCommandArbiter {
     output_pub_.publish(*msg);
   }
   void diffCallback(const quadrotor_msgs::PositionCommandConstPtr& msg) {
-    if (diff_owned_) output_pub_.publish(*msg);
+    if (!diff_owned_) return;
+    output_pub_.publish(*msg);
+    have_diff_command_ = true;
+    last_diff_command_time_ = ros::Time::now();
+    last_diff_trajectory_id_ = msg->trajectory_id;
   }
   void publishOwner() {
     std_msgs::String msg;
@@ -140,6 +151,31 @@ class PlannerCommandArbiter {
   void odomCallback(const nav_msgs::OdometryConstPtr& msg) {
     odom_ = *msg;
     have_odom_ = true;
+  }
+
+  void holdTimerCallback(const ros::TimerEvent&) {
+    if (!diff_owned_ || !have_odom_) return;
+    if (!have_diff_command_ ||
+        (ros::Time::now() - last_diff_command_time_).toSec() > diff_command_timeout_)
+      publishStaticHold(last_diff_trajectory_id_);
+  }
+
+  void publishStaticHold(uint32_t trajectory_id) {
+    if (!have_odom_) return;
+    quadrotor_msgs::PositionCommand hold;
+    hold.header.stamp = ros::Time::now();
+    hold.header.frame_id = odom_.header.frame_id;
+    hold.position = odom_.pose.pose.position;
+    hold.velocity.x = hold.velocity.y = hold.velocity.z = 0.0;
+    hold.acceleration.x = hold.acceleration.y = hold.acceleration.z = 0.0;
+    hold.jerk.x = hold.jerk.y = hold.jerk.z = 0.0;
+    const auto& q = odom_.pose.pose.orientation;
+    hold.yaw = std::atan2(2.0 * (q.w * q.z + q.x * q.y),
+                          1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+    hold.yaw_dot = 0.0;
+    hold.trajectory_id = trajectory_id;
+    hold.trajectory_flag = quadrotor_msgs::PositionCommand::TRAJECTORY_STATUS_READY;
+    output_pub_.publish(hold);
   }
 
   void dynamicObjectsCallback(const ldop::DynamicObjectArrayConstPtr& msg) {
@@ -244,12 +280,16 @@ class PlannerCommandArbiter {
   ros::NodeHandle nh_, private_nh_;
   ros::Subscriber fuel_sub_, diff_sub_, stage_sub_, exploration_goal_sub_, odom_sub_,
       dynamic_objects_sub_;
+  ros::Timer hold_timer_;
   ros::Publisher output_pub_, owner_pub_, dynamic_hold_pub_, emergency_brake_pub_;
   nav_msgs::Odometry odom_;
   std::vector<DynamicSample> dynamic_samples_;
   ros::Time dynamic_objects_stamp_;
   bool diff_owned_{false};
   bool have_odom_{false};
+  bool have_diff_command_{false};
+  ros::Time last_diff_command_time_;
+  uint32_t last_diff_trajectory_id_{0U};
   bool dynamic_hold_{false};
   bool dynamic_avoidance_enabled_{true};
   double dynamic_object_timeout_{0.60};
@@ -257,6 +297,7 @@ class PlannerCommandArbiter {
   double dynamic_vertical_margin_{0.25};
   double dynamic_prediction_horizon_{1.0};
   double dynamic_prediction_step_{0.20};
+  double diff_command_timeout_{0.25};
 };
 }  // namespace
 
