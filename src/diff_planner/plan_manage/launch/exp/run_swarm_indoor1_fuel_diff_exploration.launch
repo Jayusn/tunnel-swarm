@@ -36,7 +36,7 @@
     <arg name="odom_topic" default="/UAV0/fast_lio/Odometry"/>
     <arg name="cloud_topic" default="/UAV0/fast_lio/cloud_registered"/>
     <!-- 2026-07-14: 第二架只接入公共 RViz，不启动第二套规划。 -->
-    <arg name="follower_odom_topic" default="/UAV1/fast_lio/Odometry"/>
+    <arg name="follower_odom_topic" default="/UAV1/fast_lio/Odom_high_freq"/>
     <arg name="follower_world_frame" default="UAV1/camera_init"/>
     <arg name="follower_body_frame" default="UAV1/body"/>
     <!-- 2026-07-08: RViz 目标点只保留给“允许开始前置通道进入任务”；不再直接触发 exploration FSM。 -->
@@ -794,7 +794,9 @@
     </node>
 
     <!-- 2026-07-14: 第二架显示自身 FAST-LIO 轨迹；跟随阶段接入安全历史路径指令的 yaw。 -->
-    <node pkg="odom_visualization" name="drone_1_odom_visualization" type="odom_visualization" output="screen">
+    <!-- 公共 RViz 的后机模型节点使用独立名称，避免与 UAV1 Diff 自带的
+         /drone_1_odom_visualization 在共享 Master 下互相顶掉。 -->
+    <node pkg="odom_visualization" name="uav1_shared_odom_visualization" type="odom_visualization" output="screen">
         <remap from="~odom" to="$(arg follower_odom_topic)"/>
         <!-- 2026-07-27: 后机开始跟随后，蓝色机头使用 /UAV1/planning/pos_cmd 航向。 -->
         <!-- 2026-07-27: 后机 RViz 命令、marker 和轨迹话题统一切换到 UAV1。 -->
