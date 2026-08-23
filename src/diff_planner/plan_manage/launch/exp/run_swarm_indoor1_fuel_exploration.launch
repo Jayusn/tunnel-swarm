@@ -237,8 +237,8 @@
     <!-- 单段延长后尽量一次穿完整个障碍侧面，减少中途重规划提前向障碍物侧转回。 -->
     <rosparam param="/exploration_node/mission/max_route_segment_length">1.60</rosparam>
     <rosparam param="/exploration_node/mission/straight_run_extension/enabled">true</rosparam>
-    <rosparam param="/exploration_node/mission/straight_run_extension/distance">0.30</rosparam>
-    <rosparam param="/exploration_node/mission/straight_run_extension/min_turn_deg">35.0</rosparam>
+    <rosparam param="/exploration_node/mission/straight_run_extension/distance">0.20</rosparam>
+    <rosparam param="/exploration_node/mission/straight_run_extension/min_turn_deg">45.0</rosparam>
     <!-- 2026-07-22: 规划失败后2Hz重试，禁止100Hz重复同一fallback并刷满RViz。 -->
     <rosparam param="/exploration_node/fsm/plan_failure_retry_interval">0.50</rosparam>
     <!-- 2026-07-13: 第二阶段改为任务搜索主导。已搜索覆盖和重复站点决定下一站，frontier 只保留低权重地图辅助。 -->
@@ -318,12 +318,14 @@
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_confirmation_min_interval">0.15</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_confirmation_angle_deg">15.0</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_confirmation_accumulation_window">8.0</rosparam>
-    <!-- 首次确认后先停住，以30deg/s、每段最多30度对准新通道；实际yaw稳定达标后恢复平移。 -->
+    <!-- 首次确认后先刹停并连续静止0.15s；每段从最新里程计锚点以30deg/s、最多45度对准新通道。 -->
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_enabled">true</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_yaw_rate_deg">30.0</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_max_segment_angle_deg">30.0</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_completion_tolerance_deg">6.0</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_completion_confirm_time">0.25</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_max_segment_angle_deg">45.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_completion_tolerance_deg">8.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_completion_confirm_time">0.15</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_max_stationary_speed">0.12</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_still_confirm_time">0.15</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_min_duration">1.0</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_max_duration">4.0</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_long_view_length">4.50</rosparam>
