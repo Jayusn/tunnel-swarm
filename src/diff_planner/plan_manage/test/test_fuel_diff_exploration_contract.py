@@ -62,7 +62,7 @@ def test_fuel_turn_and_ground_recovery_contract():
     }
     assert params[
         "/exploration_node/mission/task_search/recovery/turn_in_place_max_stationary_speed"
-    ] == "0.12"
+    ] == "0.20"
     assert params[
         "/exploration_node/mission/task_search/recovery/turn_in_place_tracking_grace_time"
     ] == "1.0"

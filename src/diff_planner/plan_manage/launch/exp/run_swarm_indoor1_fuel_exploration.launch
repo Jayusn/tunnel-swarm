@@ -329,7 +329,7 @@
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_completion_confirm_time">0.15</rosparam>
     <!-- yaw参考到达硬终点后，给实机短暂跟踪时间；超时仍未进入8度范围才重新规划。 -->
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_tracking_grace_time">1.0</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_max_stationary_speed">0.12</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_max_stationary_speed">0.20</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_still_confirm_time">0.15</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_min_duration">1.0</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_max_duration">4.0</rosparam>
