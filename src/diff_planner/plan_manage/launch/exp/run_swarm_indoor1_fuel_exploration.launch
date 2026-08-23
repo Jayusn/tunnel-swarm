@@ -270,6 +270,15 @@
     <rosparam param="/exploration_node/mission/vertical_detour/required_confirmations">1</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/release_confirmations">2</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/footprint_radius">0.17</rosparam>
+    <!-- 低位下方足迹出现受支撑障碍时，优先刹停并固定XY/yaw直升到0.6m；
+         只有上升柱已知安全才接管，且其优先级高于水平历史逃逸。 -->
+    <rosparam param="/exploration_node/mission/ground_ascent/enabled">true</rosparam>
+    <rosparam param="/exploration_node/mission/ground_ascent/cruise_height">0.60</rosparam>
+    <rosparam param="/exploration_node/mission/ground_ascent/lower_probe_depth">0.20</rosparam>
+    <rosparam param="/exploration_node/mission/ground_ascent/min_lower_obstacles">2</rosparam>
+    <rosparam param="/exploration_node/mission/ground_ascent/max_stationary_speed">0.12</rosparam>
+    <rosparam param="/exploration_node/mission/ground_ascent/still_confirm_time">0.15</rosparam>
+    <rosparam param="/exploration_node/mission/ground_ascent/height_tolerance">0.06</rosparam>
     <!-- 2026-07-28: frontier可逐次抬高0.30m，恢复搜索另外主动枚举0.30m高度层。 -->
     <rosparam param="/exploration_node/mission/task_search/max_goal_climb">0.30</rosparam>
     <rosparam param="/exploration_node/mission/task_search/max_goal_descent">0.10</rosparam>
@@ -323,6 +332,8 @@
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_yaw_rate_deg">30.0</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_completion_tolerance_deg">8.0</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_completion_confirm_time">0.15</rosparam>
+    <!-- yaw参考到达硬终点后，给实机短暂跟踪时间；超时仍未进入8度范围才重新规划。 -->
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_tracking_grace_time">1.0</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_max_stationary_speed">0.12</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_still_confirm_time">0.15</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_min_duration">1.0</rosparam>

@@ -4,6 +4,10 @@ import xml.etree.ElementTree as ET
 
 LAUNCH = Path(__file__).resolve().parents[1] / "launch/exp/run_swarm_indoor1_fuel_diff_exploration.launch"
 ADVANCED = Path(__file__).resolve().parents[1] / "launch/include/advanced_param_exp.xml"
+FUEL_LAUNCH = (
+    Path(__file__).resolve().parents[1]
+    / "launch/exp/run_swarm_indoor1_fuel_exploration.launch"
+)
 
 
 def test_hybrid_launch_routes_fuel_viewpoints_to_diff_and_uses_ten_cm_map():
@@ -48,3 +52,22 @@ def test_diff_trajectory_server_holds_endpoint_after_a_viewpoint():
     source = (Path(__file__).resolve().parents[1] / "src/traj_server.cpp").read_text()
     assert "hold_after_trajectory_" in source
     assert "Keep publishing a zero-velocity command" in source
+
+
+def test_fuel_turn_and_ground_recovery_contract():
+    root = ET.parse(FUEL_LAUNCH).getroot()
+    params = {
+        item.attrib["param"]: (item.text or "").strip()
+        for item in root.findall("rosparam")
+    }
+    assert params[
+        "/exploration_node/mission/task_search/recovery/turn_in_place_max_stationary_speed"
+    ] == "0.12"
+    assert params[
+        "/exploration_node/mission/task_search/recovery/turn_in_place_tracking_grace_time"
+    ] == "1.0"
+    assert params["/exploration_node/mission/ground_ascent/enabled"] == "true"
+    assert params["/exploration_node/mission/ground_ascent/cruise_height"] == "0.60"
+    assert params[
+        "/exploration_node/mission/ground_ascent/min_lower_obstacles"
+    ] == "2"
