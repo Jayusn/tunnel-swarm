@@ -344,9 +344,12 @@
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_confirmation_min_interval">0.15</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_confirmation_angle_deg">15.0</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_confirmation_accumulation_window">8.0</rosparam>
-    <!-- 两票确认后先停住，以约40deg/s原地对准新通道，再恢复平移规划。 -->
-    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_enabled">false</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_yaw_rate_deg">40.0</rosparam>
+    <!-- 首次确认后先停住，以30deg/s、每段最多30度对准新通道；实际yaw稳定达标后恢复平移。 -->
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_enabled">true</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_yaw_rate_deg">30.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_max_segment_angle_deg">30.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_completion_tolerance_deg">6.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_completion_confirm_time">0.25</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_min_duration">1.0</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_max_duration">4.0</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_long_view_length">4.50</rosparam>
