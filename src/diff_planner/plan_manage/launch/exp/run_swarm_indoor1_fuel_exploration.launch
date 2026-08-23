@@ -318,10 +318,9 @@
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_confirmation_min_interval">0.15</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_confirmation_angle_deg">15.0</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_confirmation_accumulation_window">8.0</rosparam>
-    <!-- 首次确认后先刹停并连续静止0.15s；每段从最新里程计锚点以30deg/s、最多45度对准新通道。 -->
+    <!-- 首次确认后先刹停并连续静止0.15s；从最新里程计锚点以30deg/s一次直接对准新通道最终航向。 -->
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_enabled">true</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_yaw_rate_deg">30.0</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_max_segment_angle_deg">45.0</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_completion_tolerance_deg">8.0</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_completion_confirm_time">0.15</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_max_stationary_speed">0.12</rosparam>
