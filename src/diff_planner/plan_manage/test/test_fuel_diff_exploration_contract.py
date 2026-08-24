@@ -71,3 +71,54 @@ def test_fuel_turn_and_ground_recovery_contract():
     assert params[
         "/exploration_node/mission/ground_ascent/min_lower_obstacles"
     ] == "2"
+
+
+def test_fuel_launch_records_lightweight_planner_diagnostics_on_start():
+    root = ET.parse(FUEL_LAUNCH).getroot()
+    args = {
+        item.attrib["name"]: item.attrib.get("default")
+        for item in root.findall("arg")
+    }
+    assert args["enable_planner_rosbag"] == "true"
+    assert args["planner_rosbag_prefix"] == "fuel_planner_$(arg vehicle_ns)"
+    assert args["planner_rosbag_split_size_mb"] == "1024"
+
+    recorder = next(
+        node for node in root.findall("node")
+        if node.attrib.get("name") == "fuel_planner_recorder"
+    )
+    assert recorder.attrib["pkg"] == "rosbag"
+    assert recorder.attrib["type"] == "record"
+    assert recorder.attrib["if"] == "$(arg enable_planner_rosbag)"
+    assert recorder.attrib["cwd"] == "ROS_HOME"
+
+    record_args = recorder.attrib["args"]
+    for option in (
+        "--lz4",
+        "--split",
+        "--size=$(arg planner_rosbag_split_size_mb)",
+        "-o $(arg planner_rosbag_prefix)",
+    ):
+        assert option in record_args
+    for topic in (
+        "$(arg odom_topic)",
+        "/UAV0/planning/bspline",
+        "/UAV0/planning/pos_cmd",
+        "/UAV0/planning/emergency_brake",
+        "/UAV0/planning/safety_hold",
+        "/UAV0/sdf_map/occupancy_local_inflate",
+        "/UAV0/planning_vis/frontier",
+        "/UAV0/planning_vis/trajectory",
+        "/UAV0/mission/task_status",
+        "/tf_static",
+        "/rosout",
+    ):
+        assert topic in record_args
+
+    for excluded in (
+        "cloud_registered",
+        "livox/lidar",
+        "image_raw",
+        "mpc/reference_trajectory",
+    ):
+        assert excluded not in record_args

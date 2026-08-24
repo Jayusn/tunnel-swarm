@@ -85,6 +85,7 @@
   <exec_depend>path_searching</exec_depend>
   <exec_depend>pcl_conversions</exec_depend>
   <exec_depend>ldop</exec_depend>
+  <exec_depend>rosbag</exec_depend>
   
 
 
