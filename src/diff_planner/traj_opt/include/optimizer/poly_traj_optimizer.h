@@ -79,6 +79,9 @@ namespace diff_planner
     int iter_num_;           // iteration of the solver
     std::vector<double> min_ellip_dist2_; // min trajectory distance in swarm
     bool touch_goal_;
+    // 仅供短距离局部脱困：允许轨迹从连续的起始膨胀接触段向自由空间退出。
+    bool allow_initial_contact_escape_{false};
+    double initial_contact_escape_max_distance_{0.0};
     struct MultitopologyData_t
     {
       bool use_multitopology_trajs{false}; 
@@ -121,6 +124,7 @@ namespace diff_planner
     void setSwarmTrajs(SwarmTrajData *swarm_trajs_ptr);
     void setDroneId(const int drone_id);
     void setIfTouchGoal(const bool touch_goal);
+    void setInitialContactEscape(bool enabled, double max_distance);
     void setConstraintPoints(ConstraintPoints cps);
     void setUseMultitopologyTrajs(bool use_multitopology_trajs);
 

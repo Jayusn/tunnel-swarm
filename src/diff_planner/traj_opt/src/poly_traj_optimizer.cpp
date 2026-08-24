@@ -9,6 +9,13 @@ using namespace std;
 
 namespace diff_planner
 {
+  void PolyTrajOptimizer::setInitialContactEscape(bool enabled,
+                                                   double max_distance)
+  {
+    allow_initial_contact_escape_ = enabled;
+    initial_contact_escape_max_distance_ = std::max(0.0, max_distance);
+  }
+
   /* main planning API */
   bool PolyTrajOptimizer::optimizeTrajectory(
       const Eigen::MatrixXd &iniState, const Eigen::MatrixXd &finState,
@@ -335,6 +342,22 @@ namespace diff_planner
       }
     }
 
+    // 后机已经接触膨胀层时，普通 A* 会拿占据起点作为终点反向搜索并必然失败。
+    // 只豁免短距离轨迹中连续的起始接触段；离开后再次进入障碍仍保留为普通碰撞段。
+    if (allow_initial_contact_escape_ && !segment_ids.empty() &&
+        segment_ids.front().first == 0) {
+      const int free_id = segment_ids.front().second;
+      const double escape_distance =
+          (init_points.col(free_id) - init_points.col(0)).norm();
+      if (escape_distance <= initial_contact_escape_max_distance_ + 1e-6) {
+        ROS_WARN_THROTTLE(0.5,
+                          "[local_escape] allow %.2fm continuous initial contact "
+                          "prefix; all later collision segments remain enforced.",
+                          escape_distance);
+        segment_ids.erase(segment_ids.begin());
+      }
+    }
+
     /* Collision free and return in advance */
     if (segment_ids.size() == 0)
     {
@@ -643,6 +666,25 @@ namespace diff_planner
         }
         if (j < 0) // fail to get the obs free point
         {
+          int first_free_id = -1;
+          for (int k = i + 1; k < cps_.cp_size; ++k) {
+            if (!grid_map_->getInflateOccupancy(cps_.points.col(k))) {
+              first_free_id = k;
+              break;
+            }
+          }
+          const bool short_initial_escape =
+              allow_initial_contact_escape_ && first_free_id > 0 &&
+              (cps_.points.col(first_free_id) - cps_.points.col(0)).norm() <=
+                  initial_contact_escape_max_distance_ + 1e-6;
+          if (short_initial_escape) {
+            ROS_WARN_THROTTLE(0.5,
+                              "[local_escape] optimizer keeps continuous initial "
+                              "contact prefix until control point %d.",
+                              first_free_id);
+            i = first_free_id;
+            continue;
+          }
           ROS_ERROR("The drone is in obstacle. It means a crash in real-world.");
           in_id = 0;
         }

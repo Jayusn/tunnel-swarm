@@ -58,6 +58,12 @@ namespace diff_planner
     // 2026-07-06: 补充重规划入口诊断日志，直接打印起终点坐标及其在膨胀占据图中的状态，便于定位 world/odom/cloud 错位。
     const int start_occ = grid_map_->getInflateOccupancy(start_pt);
     const int goal_occ = grid_map_->getInflateOccupancy(local_target_pt);
+    const bool allow_local_contact_escape =
+        start_occ > 0 && goal_occ == 0 &&
+        (local_target_pt - start_pt).norm() <= local_contact_escape_max_distance_;
+    ploy_traj_opt_->setInitialContactEscape(allow_local_contact_escape,
+                                             local_contact_escape_max_distance_);
+    local_contact_escape_active_ = false;
     ROS_WARN_STREAM("[replan_diag] start_pt=" << start_pt.transpose()
                     << " start_occ=" << start_occ
                     << " goal_pt=" << local_target_pt.transpose()
@@ -182,6 +188,12 @@ namespace diff_planner
       //      << ",avg_time=" << sum_time / count_success << endl;
 
       setLocalTrajFromOpt(best_MJO, touch_goal);
+      local_contact_escape_active_ = allow_local_contact_escape;
+      if (local_contact_escape_active_) {
+        ROS_WARN("[local_escape] publish short trajectory from occupied start toward "
+                 "free target, distance=%.2fm.",
+                 (local_target_pt - start_pt).norm());
+      }
       cstr_pts = best_MJO.getInitConstraintPoints(ploy_traj_opt_->get_cps_num_prePiece_());
       visualization_->displayOptimalList(cstr_pts, 0);
 

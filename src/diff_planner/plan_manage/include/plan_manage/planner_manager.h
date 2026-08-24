@@ -52,6 +52,11 @@ namespace diff_planner
     bool setLocalTrajFromOpt(const poly_traj::MinJerkOpt &opt, const bool touch_goal);
     inline double getSwarmClearance(void) { return ploy_traj_opt_->get_swarm_clearance_(); }
     inline int getCpsNumPrePiece(void) { return ploy_traj_opt_->get_cps_num_prePiece_(); }
+    inline bool localContactEscapeActive() const { return local_contact_escape_active_; }
+    inline double localContactEscapeMaxDistance() const {
+      return local_contact_escape_max_distance_;
+    }
+    inline void clearLocalContactEscape() { local_contact_escape_active_ = false; }
     // inline PtsChk_t getPtsCheck(void) { return ploy_traj_opt_->get_pts_check_(); }
 
     PlanParameters pp_;
@@ -64,6 +69,8 @@ namespace diff_planner
     PolyTrajOptimizer::Ptr ploy_traj_opt_;
 
     int continous_failures_count_{0};
+    bool local_contact_escape_active_{false};
+    double local_contact_escape_max_distance_{0.50};
 
   public:
     typedef unique_ptr<DiffPlannerManager> Ptr;

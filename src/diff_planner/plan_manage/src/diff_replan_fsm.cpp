@@ -673,6 +673,15 @@ namespace diff_planner
     }
   find_ij_start:;
 
+    bool allow_initial_contact_prefix =
+        planner_manager_->localContactEscapeActive() &&
+        map->getInflateOccupancy(odom_pos_) > 0;
+    if (planner_manager_->localContactEscapeActive() &&
+        !allow_initial_contact_prefix) {
+      planner_manager_->clearLocalContactEscape();
+      ROS_WARN("[local_escape] current odometry is free; restore ordinary collision checks.");
+    }
+
     const bool touch_the_end = ((local_target_pt_ - final_goal_).norm() < 1e-2);
     size_t i_end = touch_the_end ? pts_chk.size() : pts_chk.size() * 3 / 4;
     for (size_t i = i_start; i < i_end; ++i)
@@ -684,7 +693,12 @@ namespace diff_planner
         Eigen::Vector3d p = pts_chk[i][j].second;
 
         bool dangerous = false;
-        dangerous |= map->getInflateOccupancy(p);
+        const bool occupied = map->getInflateOccupancy(p) != 0;
+        if (allow_initial_contact_prefix && !occupied) {
+          // 只允许一次从占据到自由的转换；之后再碰撞不能继续使用起点豁免。
+          allow_initial_contact_prefix = false;
+        }
+        dangerous |= occupied && allow_initial_contact_prefix == false;
 
         for (size_t id = 0; id < planner_manager_->traj_.swarm_traj.size(); id++)
         {
