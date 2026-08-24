@@ -24,10 +24,10 @@
          default="$(optenv UAV0_ENABLE_DYNAMIC_OBSTACLE_DETECTION false)"/>
     <arg name="enable_uav1_dynamic_obstacle_detection"
          default="$(optenv UAV1_ENABLE_DYNAMIC_OBSTACLE_DETECTION false)"/>
-    <!-- 搜索降落链路默认关闭；设置 UAV0_ENABLE_SEARCH_LANDING=true 后，
+    <!-- 搜索降落链路默认开启；如需临时关闭可设置 UAV0_ENABLE_SEARCH_LANDING=false。
          UAV0 CH9 低->高持续0.5s才会人工触发降落搜索模式。 -->
     <arg name="enable_search_landing"
-         default="$(optenv UAV0_ENABLE_SEARCH_LANDING false)"/>
+         default="$(optenv UAV0_ENABLE_SEARCH_LANDING true)"/>
     <!-- 2026-07-08 19:26: FUEL 的真正开始触发改为前置通道管理器内部发布，避免 RViz 一点击就直接让 exploration FSM 起跑。 -->
     <arg name="start_trigger_topic" default="/UAV0/corridor_search/exploration_trigger"/>
     <arg name="search_start_waypoint_type" default="point"/>
