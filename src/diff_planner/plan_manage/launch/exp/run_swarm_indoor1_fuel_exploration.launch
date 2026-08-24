@@ -184,7 +184,7 @@
     <!-- 保留检测阶段信号供任务面板；LDOP当前持续处理自身点云。 -->
     <rosparam param="/exploration_node/fsm/mission_status_topic">/mission/task_status</rosparam>
     <rosparam param="/exploration_node/fsm/dynamic_detection_enable_topic">/UAV0/corridor_search/dynamic_detection_enable</rosparam>
-    <rosparam param="/exploration_node/mission/door_back_margin">0.35</rosparam>
+    <rosparam param="/exploration_node/mission/door_back_margin">0.0</rosparam>
     <!-- 普通规划失败继续重试，不再通知控制器丢弃当前控制状态并锁点悬停。 -->
     <rosparam param="/exploration_node/fsm/hold_on_plan_failure">false</rosparam>
     <!-- 下一轨迹未发布且旧轨迹真正到终点时，刹停并切到控制器XY PID锁点。 -->
