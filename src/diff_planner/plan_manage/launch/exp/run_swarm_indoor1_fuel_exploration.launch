@@ -37,7 +37,7 @@
     <arg name="entry_detection_mode" default="c"/>
 
     <!-- 2026-07-07: 继续沿用 indoor1 当前稳定的雷达里程计和注册点云话题，验证“探索上层 + 雷达建图”而不是再用固定巡航。 -->
-    <arg name="odom_topic" default="/UAV0/fast_lio/Odometry"/>
+    <arg name="odom_topic" default="/UAV0/fast_lio/Odom_high_freq"/>
     <arg name="cloud_topic" default="/UAV0/fast_lio/cloud_registered"/>
     <!-- 2026-07-14: 第二架只接入公共 RViz，不启动第二套规划。 -->
     <arg name="follower_odom_topic" default="/UAV1/fast_lio/Odom_high_freq"/>
