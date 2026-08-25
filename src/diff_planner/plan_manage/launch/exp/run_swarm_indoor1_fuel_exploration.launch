@@ -67,8 +67,8 @@
     <arg name="perception_max_dist" default="7.0"/>
 
     <!-- 通道与常规探索保持保守速度；Diff只在出口后由仲裁器接管，可使用独立搜索速度。 -->
-    <arg name="fuel_max_vel" default="0.20"/>
-    <arg name="fuel_max_acc" default="0.35"/>
+    <arg name="fuel_max_vel" default="0.40"/>
+    <arg name="fuel_max_acc" default="0.50"/>
     <arg name="landing_search_max_vel" default="0.30"/>
     <arg name="landing_search_max_acc" default="0.60"/>
 
