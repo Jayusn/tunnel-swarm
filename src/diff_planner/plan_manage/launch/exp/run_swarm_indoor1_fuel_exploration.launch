@@ -287,6 +287,12 @@
     <rosparam param="/exploration_node/mission/task_search/max_goal_descent">0.10</rosparam>
     <rosparam param="/exploration_node/mission/task_search/novelty_weight">2.5</rosparam>
     <rosparam param="/exploration_node/mission/task_search/travel_weight">0.65</rosparam>
+    <!-- 远近frontier共同决定探索扇区；胜出扇区内优先选择1-2m目标，远点不剔除。 -->
+    <rosparam param="/exploration_node/mission/task_search/preferred_distance_min">1.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/preferred_distance_max">2.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/near_distance_weight">1.5</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/far_distance_weight">1.2</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/direction_sector_deg">30.0</rosparam>
     <!-- 2026-07-13: 高度评分只作候选排序，实际飞行高度还会经过水平巡航投影。 -->
     <rosparam param="/exploration_node/mission/task_search/height_weight">1.5</rosparam>
     <rosparam param="/exploration_node/mission/task_search/repeat_penalty">6.0</rosparam>
@@ -310,9 +316,11 @@
     <!-- 2026-07-21: 任务优先，FUEL只提供前方新frontier；距最近2m航迹之外的已完成通道历史frontier直接剔除。 -->
     <rosparam param="/exploration_node/mission/task_search/completed_route_exclusion_radius">0.90</rosparam>
     <rosparam param="/exploration_node/mission/task_search/completed_route_recent_arc_length">2.00</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/failed_goal_radius">0.55</rosparam>
-    <!-- 2026-07-14: 轨迹发布前已有完整足迹复检，失败点冷却降为 4s，避免全部候选被封禁后原地空转几十秒。 -->
-    <rosparam param="/exploration_node/mission/task_search/failed_goal_cooldown">4.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/failed_goal_radius">0.80</rosparam>
+    <!-- 相邻失败点短时共同封存；同方向连续失败两次后暂停该扇区3s，再从当前位置重选。 -->
+    <rosparam param="/exploration_node/mission/task_search/failed_goal_cooldown">6.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/failed_direction_threshold">2</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/failed_direction_pause">3.0</rosparam>
     <rosparam param="/exploration_node/mission/task_search/inside_return_margin">0.10</rosparam>
     <!-- 单通道转弯：旧通道轴线前方终止后，直接选择占据图中仍在延伸的自由分支。 -->
     <rosparam param="/exploration_node/mission/task_search/recovery/occupancy_turn_enabled">true</rosparam>
