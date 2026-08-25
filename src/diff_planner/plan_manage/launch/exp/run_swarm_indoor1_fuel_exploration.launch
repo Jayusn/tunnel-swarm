@@ -252,6 +252,8 @@
     <rosparam param="/exploration_node/mission/task_search/revisit_radius">0.65</rosparam>
     <rosparam param="/exploration_node/mission/task_search/repeat_goal_radius">0.45</rosparam>
     <rosparam param="/exploration_node/mission/task_search/max_goal_repeats">2</rosparam>
+    <!-- 常规搜索只接受当前位置水平1.2m内的frontier，禁止远点靠轨迹截断间接执行。 -->
+    <rosparam param="/exploration_node/mission/task_search/max_candidate_distance">1.20</rosparam>
     <!-- FUEL只负责通道，继续保持原1.90m搜索上限；门外2.0m由独立Diff地图负责。 -->
     <rosparam param="/exploration_node/mission/task_search/cruise_height">0.6</rosparam>
     <rosparam param="/exploration_node/mission/task_search/min_height">0.10</rosparam>
@@ -300,7 +302,7 @@
     <!-- 2026-07-13: 入口朝向仅约束刚过门后的 2m，随后允许依据搜索覆盖沿折线/U 型通道转弯。 -->
     <rosparam param="/exploration_node/mission/task_search/entry_forward_distance">2.0</rosparam>
     <rosparam param="/exploration_node/mission/task_search/entry_forward_weight">1.5</rosparam>
-    <!-- 门确认后、FUEL正式触发前预选首点；以门中心为零点，1.5m仅为软偏好。 -->
+    <!-- 门确认后、FUEL正式触发前预选首点；以门中心为零点，硬限制在门后1.5m内。 -->
     <rosparam param="/exploration_node/mission/task_search/initial_entry_target_distance">1.5</rosparam>
     <!-- 2026-07-21: 单通道正常搜索禁止回走已完成路段；暂无前向frontier时悬停等地图刷新，故障回撤需显式开启。 -->
     <rosparam param="/exploration_node/mission/task_search/prefer_motion_forward">true</rosparam>
