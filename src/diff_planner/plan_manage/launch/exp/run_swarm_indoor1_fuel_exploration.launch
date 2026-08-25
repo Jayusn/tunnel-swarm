@@ -328,8 +328,8 @@
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_probe_step">0.10</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_min_angle_deg">45.0</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_max_angle_deg">120.0</rosparam>
-    <!-- 自由分支需连续两次观测确认，避免只看到一角就过早转弯。 -->
-    <rosparam param="/exploration_node/mission/task_search/recovery/turn_confirmation_count">2</rosparam>
+    <!-- 单次地图确认即可转弯；除非用户明确要求，否则禁止改回2。 -->
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_confirmation_count">1</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_confirmation_min_interval">0.15</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_confirmation_angle_deg">15.0</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_confirmation_accumulation_window">8.0</rosparam>
