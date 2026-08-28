@@ -19,6 +19,19 @@
     <arg name="enable_ldop_detection" default="true"/>
     <arg name="enable_follower_ldop_detection" default="false"/>
     <arg name="ldop_input_rate" default="5.0"/>
+    <!-- 与后机 run_swarm.launch 的 LDOP 实飞覆盖值保持一致，并允许从主入口调整。 -->
+    <arg name="ufomap_resolution" default="0.05"/>
+    <arg name="ufomap_inflate_hits_dist" default="0.10"/>
+    <arg name="corridor_min_lateral_span" default="0.15"/>
+    <arg name="corridor_min_confirm_hits" default="3"/>
+    <arg name="corridor_min_cluster_points" default="4"/>
+    <arg name="corridor_max_cluster_extent" default="0.8"/>
+    <arg name="corridor_oversized_split_enabled" default="false"/>
+    <arg name="corridor_split_min_cluster_points" default="3"/>
+    <arg name="corridor_max_candidates" default="3"/>
+    <arg name="corridor_reject_candidate_count" default="5"/>
+    <arg name="corridor_wall_clearance" default="0.10"/>
+    <arg name="dynamic_cluster_detector_min_points" default="4"/>
     <!-- LDOP尚未完成实飞验证：默认不启动两机动态检测，规划仲裁器也不消费动态目标。
          后续分别设置对应环境变量为true并重启，才允许恢复。 -->
     <arg name="enable_uav0_dynamic_obstacle_detection"
@@ -815,6 +828,18 @@
         <arg name="uav1_cloud_topic" value="/UAV1/fast_lio/cloud_registered"/>
         <arg name="uav1_odom_topic" value="$(arg follower_odom_topic)"/>
         <arg name="ldop_input_rate" value="$(arg ldop_input_rate)"/>
+        <arg name="ufomap_resolution" value="$(arg ufomap_resolution)"/>
+        <arg name="ufomap_inflate_hits_dist" value="$(arg ufomap_inflate_hits_dist)"/>
+        <arg name="corridor_min_lateral_span" value="$(arg corridor_min_lateral_span)"/>
+        <arg name="corridor_min_confirm_hits" value="$(arg corridor_min_confirm_hits)"/>
+        <arg name="corridor_min_cluster_points" value="$(arg corridor_min_cluster_points)"/>
+        <arg name="corridor_max_cluster_extent" value="$(arg corridor_max_cluster_extent)"/>
+        <arg name="corridor_oversized_split_enabled" value="$(arg corridor_oversized_split_enabled)"/>
+        <arg name="corridor_split_min_cluster_points" value="$(arg corridor_split_min_cluster_points)"/>
+        <arg name="corridor_max_candidates" value="$(arg corridor_max_candidates)"/>
+        <arg name="corridor_reject_candidate_count" value="$(arg corridor_reject_candidate_count)"/>
+        <arg name="corridor_wall_clearance" value="$(arg corridor_wall_clearance)"/>
+        <arg name="dynamic_cluster_detector_min_points" value="$(arg dynamic_cluster_detector_min_points)"/>
     </include>
 
     <!--

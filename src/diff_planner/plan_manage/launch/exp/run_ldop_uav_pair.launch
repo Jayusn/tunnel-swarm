@@ -6,6 +6,18 @@
   <arg name="uav1_cloud_topic" default="/UAV1/fast_lio/cloud_registered"/>
   <arg name="uav1_odom_topic" default="/UAV1/fast_lio/Odom_high_freq"/>
   <arg name="ldop_input_rate" default="5.0"/>
+  <arg name="ufomap_resolution" default="0.05"/>
+  <arg name="ufomap_inflate_hits_dist" default="0.10"/>
+  <arg name="corridor_min_lateral_span" default="0.15"/>
+  <arg name="corridor_min_confirm_hits" default="3"/>
+  <arg name="corridor_min_cluster_points" default="4"/>
+  <arg name="corridor_max_cluster_extent" default="0.8"/>
+  <arg name="corridor_oversized_split_enabled" default="false"/>
+  <arg name="corridor_split_min_cluster_points" default="3"/>
+  <arg name="corridor_max_candidates" default="3"/>
+  <arg name="corridor_reject_candidate_count" default="5"/>
+  <arg name="corridor_wall_clearance" default="0.10"/>
+  <arg name="dynamic_cluster_detector_min_points" default="4"/>
 
   <!-- 规划地图继续使用原始点云；LDOP 独立限频，避免检测积压旧帧。 -->
   <node if="$(arg enable_uav0)" pkg="topic_tools" type="throttle"
@@ -33,18 +45,18 @@
     <param name="fusion_objects_topic" value="/UAV0/ldop/fused_dynamic_objects"/>
     <param name="fusion_virtual_imu_topic" value="/UAV0/ldop/fused_dynamic_object_virtual_imu"/>
     <param name="fusion_marker_topic" value="/UAV0/ldop/fused_dynamic_object_markers"/>
-    <param name="ufomap_resolution" value="0.05"/>
-    <param name="ufomap_inflate_hits_dist" value="0.10"/>
-    <param name="corridor_min_lateral_span" value="0.15"/>
-    <param name="corridor_min_confirm_hits" value="3"/>
-    <param name="corridor_min_cluster_points" value="4"/>
-    <param name="corridor_max_cluster_extent" value="0.8"/>
-    <param name="corridor_oversized_split_enabled" value="false"/>
-    <param name="corridor_split_min_cluster_points" value="3"/>
-    <param name="corridor_max_candidates" value="3"/>
-    <param name="corridor_reject_candidate_count" value="5"/>
-    <param name="corridor_wall_clearance" value="0.10"/>
-    <param name="dynamic_cluster_detector_min_points" value="4"/>
+    <param name="ufomap_resolution" value="$(arg ufomap_resolution)"/>
+    <param name="ufomap_inflate_hits_dist" value="$(arg ufomap_inflate_hits_dist)"/>
+    <param name="corridor_min_lateral_span" value="$(arg corridor_min_lateral_span)"/>
+    <param name="corridor_min_confirm_hits" value="$(arg corridor_min_confirm_hits)"/>
+    <param name="corridor_min_cluster_points" value="$(arg corridor_min_cluster_points)"/>
+    <param name="corridor_max_cluster_extent" value="$(arg corridor_max_cluster_extent)"/>
+    <param name="corridor_oversized_split_enabled" value="$(arg corridor_oversized_split_enabled)"/>
+    <param name="corridor_split_min_cluster_points" value="$(arg corridor_split_min_cluster_points)"/>
+    <param name="corridor_max_candidates" value="$(arg corridor_max_candidates)"/>
+    <param name="corridor_reject_candidate_count" value="$(arg corridor_reject_candidate_count)"/>
+    <param name="corridor_wall_clearance" value="$(arg corridor_wall_clearance)"/>
+    <param name="dynamic_cluster_detector_min_points" value="$(arg dynamic_cluster_detector_min_points)"/>
     <!-- LDOP会把空数组恢复为默认动捕话题；给每架机一个独立占位话题，
          防止比赛流程误订阅全局/mocap/target_0/pose。 -->
     <rosparam param="fusion_mocap_topics">[/UAV0/ldop/disabled_mocap]</rosparam>
@@ -66,18 +78,18 @@
     <param name="fusion_objects_topic" value="/UAV1/ldop/fused_dynamic_objects"/>
     <param name="fusion_virtual_imu_topic" value="/UAV1/ldop/fused_dynamic_object_virtual_imu"/>
     <param name="fusion_marker_topic" value="/UAV1/ldop/fused_dynamic_object_markers"/>
-    <param name="ufomap_resolution" value="0.05"/>
-    <param name="ufomap_inflate_hits_dist" value="0.10"/>
-    <param name="corridor_min_lateral_span" value="0.15"/>
-    <param name="corridor_min_confirm_hits" value="3"/>
-    <param name="corridor_min_cluster_points" value="4"/>
-    <param name="corridor_max_cluster_extent" value="0.8"/>
-    <param name="corridor_oversized_split_enabled" value="false"/>
-    <param name="corridor_split_min_cluster_points" value="3"/>
-    <param name="corridor_max_candidates" value="3"/>
-    <param name="corridor_reject_candidate_count" value="5"/>
-    <param name="corridor_wall_clearance" value="0.10"/>
-    <param name="dynamic_cluster_detector_min_points" value="4"/>
+    <param name="ufomap_resolution" value="$(arg ufomap_resolution)"/>
+    <param name="ufomap_inflate_hits_dist" value="$(arg ufomap_inflate_hits_dist)"/>
+    <param name="corridor_min_lateral_span" value="$(arg corridor_min_lateral_span)"/>
+    <param name="corridor_min_confirm_hits" value="$(arg corridor_min_confirm_hits)"/>
+    <param name="corridor_min_cluster_points" value="$(arg corridor_min_cluster_points)"/>
+    <param name="corridor_max_cluster_extent" value="$(arg corridor_max_cluster_extent)"/>
+    <param name="corridor_oversized_split_enabled" value="$(arg corridor_oversized_split_enabled)"/>
+    <param name="corridor_split_min_cluster_points" value="$(arg corridor_split_min_cluster_points)"/>
+    <param name="corridor_max_candidates" value="$(arg corridor_max_candidates)"/>
+    <param name="corridor_reject_candidate_count" value="$(arg corridor_reject_candidate_count)"/>
+    <param name="corridor_wall_clearance" value="$(arg corridor_wall_clearance)"/>
+    <param name="dynamic_cluster_detector_min_points" value="$(arg dynamic_cluster_detector_min_points)"/>
     <rosparam param="fusion_mocap_topics">[/UAV1/ldop/disabled_mocap]</rosparam>
   </node>
 </launch>
