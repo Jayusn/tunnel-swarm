@@ -44,11 +44,6 @@
     <node if="$(arg enable_diff_rviz)" name="UAV1_diff_rviz"
           pkg="rviz" type="rviz"
           args="-d $(find diff_planner)/launch/include/uav1_lite.rviz" output="screen">
-        <!-- NoMachine/NX 的 llvmpipe 在点云和多路图像并发渲染时会进入 swrast 段错误；
-             改用单线程 softpipe，优先保证实飞 RViz 稳定。 -->
-        <env name="GALLIUM_DRIVER" value="softpipe"/>
-        <env name="LP_NUM_THREADS" value="1"/>
-        <env name="MESA_GLTHREAD" value="false"/>
         <remap from="/move_base_simple/goal" to="/UAV1/planning/goal"/>
         <remap from="/drone__diff_planner_node/goal_point"
                to="/drone_1_diff_planner_node/goal_point"/>
