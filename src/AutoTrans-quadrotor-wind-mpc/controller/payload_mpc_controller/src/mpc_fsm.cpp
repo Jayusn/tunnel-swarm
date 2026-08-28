@@ -135,6 +135,9 @@ namespace PayloadMPC
 		pub_rmse_info_ = nh_.advertise<std_msgs::Float64MultiArray>("mpc/rmse_info", 1);
 
 		force_estimator_.init(params_);
+		vertical_disturbance_low_pass_.configure(
+			params_.ctrl_freq_max_,
+			params_.force_estimator_param_.cutoff_freq_applied_force_z);
 		force_input_synchronizer_.configure(
 			params_.force_estimator_param_.force_sync_history_duration,
 			params_.force_estimator_param_.force_sync_max_interp_gap,
@@ -160,6 +163,9 @@ namespace PayloadMPC
 				ROS_INFO("[FORCE] 补偿变化率上限：XY=%.2f N/s，Z=%.2f N/s。",
 					params_.force_estimator_param_.max_applied_force_rate_xy,
 					params_.force_estimator_param_.max_applied_force_rate_z);
+				ROS_INFO("[FORCE] 实际 Z 补偿低通：%s，截止频率=%.2f Hz。",
+					vertical_disturbance_low_pass_.enabled() ? "已启用" : "已旁路",
+					params_.force_estimator_param_.cutoff_freq_applied_force_z);
 			}
 			else
 				ROS_INFO("[FORCE] 外力估计已启用，当前仅记录，不参与补偿。");
@@ -1563,6 +1569,7 @@ namespace PayloadMPC
 
 	void MPCFSM::clearAppliedDisturbance()
 	{
+		vertical_disturbance_low_pass_.reset();
 		disturbance_slew_limiter_.reset();
 		last_disturbance_slew_update_time_ = ros::Time(0);
 		fq_applied_.setZero();
@@ -1849,6 +1856,18 @@ namespace PayloadMPC
 		if (gate_reason == DisturbanceGateReason::ACTIVE)
 		{
 			Eigen::Vector3d fq_target = fq_estimated_;
+			const VerticalDisturbanceLowPassResult filtered_z =
+				vertical_disturbance_low_pass_.update(fq_target.z());
+			if (!filtered_z.valid)
+			{
+				ROS_ERROR_THROTTLE(1.0, "[FORCE] Z 补偿低通输入或输出无效，补偿已清零。");
+				clearAppliedDisturbance();
+				fq_target.setZero();
+			}
+			else
+			{
+				fq_target.z() = filtered_z.value;
+			}
 			fq_target(0) *= params_.force_estimator_param_.force_axis_gain_x;
 			fq_target(1) *= params_.force_estimator_param_.force_axis_gain_y;
 			fq_target(2) *= params_.force_estimator_param_.force_axis_gain_z;

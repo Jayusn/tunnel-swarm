@@ -223,16 +223,19 @@ class Cav0SyncContractStaticTest(unittest.TestCase):
         for name, value in (
             ("max_applied_force_rate_xy", "2.0"),
             ("max_applied_force_rate_z", "3.0"),
+            ("cutoff_freq_applied_force_z", "0.7"),
         ):
             self.assertIn('read_essential_param(nh, "force_estimator/%s"' % name, params)
             self.assertIn("%s: %s" % (name, value), config)
 
         update = fsm.split("void MPCFSM::setForceEstimation", 1)[1]
         update = update.split("void MPCFSM::", 1)[0]
+        z_filter_position = update.index("vertical_disturbance_low_pass_.update")
         gain_position = update.index("force_axis_gain_x")
         magnitude_position = update.index("estimated_norm > max_applied_force")
         slew_position = update.index("disturbance_slew_limiter_.update")
         publish_position = update.index("controller_.setExternalForce")
+        self.assertLess(z_filter_position, gain_position)
         self.assertLess(gain_position, magnitude_position)
         self.assertLess(magnitude_position, slew_position)
         self.assertLess(slew_position, publish_position)
@@ -242,6 +245,7 @@ class Cav0SyncContractStaticTest(unittest.TestCase):
 
         clear = fsm.split("void MPCFSM::clearAppliedDisturbance", 1)[1]
         clear = clear.split("void MPCFSM::", 1)[0]
+        self.assertIn("vertical_disturbance_low_pass_.reset()", clear)
         self.assertIn("disturbance_slew_limiter_.reset()", clear)
         self.assertIn("last_disturbance_slew_update_time_ = ros::Time(0)", clear)
         self.assertEqual(fsm.count("fq_applied_.setZero()"), 1)

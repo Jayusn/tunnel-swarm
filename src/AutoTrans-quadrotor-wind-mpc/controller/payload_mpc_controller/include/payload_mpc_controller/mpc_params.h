@@ -51,6 +51,8 @@ namespace PayloadMPC
 			// 实际补偿力的水平向量与垂直分量最大变化率，单位 N/s。
 			double max_applied_force_rate_xy;
 			double max_applied_force_rate_z;
+			// 实际 Z 补偿进入分轴增益前的二阶低通截止频率；0 表示旁路，单位 Hz。
+			double cutoff_freq_applied_force_z{0.0};
 			// 世界系外力补偿分轴增益；仅作用于写入 NMPC 的补偿量。
 			double force_axis_gain_x{1.0};
 			double force_axis_gain_y{1.0};
@@ -613,6 +615,7 @@ namespace PayloadMPC
 			read_essential_param(nh, "force_estimator/max_applied_force", force_estimator_param_.max_applied_force);
 			read_essential_param(nh, "force_estimator/max_applied_force_rate_xy", force_estimator_param_.max_applied_force_rate_xy);
 			read_essential_param(nh, "force_estimator/max_applied_force_rate_z", force_estimator_param_.max_applied_force_rate_z);
+			read_essential_param(nh, "force_estimator/cutoff_freq_applied_force_z", force_estimator_param_.cutoff_freq_applied_force_z);
 			read_essential_param(nh, "force_estimator/force_axis_gain_x", force_estimator_param_.force_axis_gain_x);
 			read_essential_param(nh, "force_estimator/force_axis_gain_y", force_estimator_param_.force_axis_gain_y);
 			read_essential_param(nh, "force_estimator/force_axis_gain_z", force_estimator_param_.force_axis_gain_z);
@@ -631,6 +634,13 @@ namespace PayloadMPC
 				force_estimator_param_.max_applied_force_rate_z <= 0.0)
 			{
 				ROS_ERROR("[参数] 外力补偿变化率上限必须为有限正数。");
+				ROS_BREAK();
+			}
+			if (!std::isfinite(force_estimator_param_.cutoff_freq_applied_force_z) ||
+				force_estimator_param_.cutoff_freq_applied_force_z < 0.0 ||
+				force_estimator_param_.cutoff_freq_applied_force_z >= ctrl_freq_max_ / 2.0)
+			{
+				ROS_ERROR("[参数] cutoff_freq_applied_force_z 必须位于 [0, ctrl_freq_max/2) Hz。");
 				ROS_BREAK();
 			}
 			if (!std::isfinite(force_estimator_param_.force_axis_gain_x) ||

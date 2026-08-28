@@ -50,6 +50,8 @@ FORCE_CONFIG_PARAMS = (
      "/mpc_controller_node/force_estimator/max_applied_force_rate_xy"),
     ("force_config_max_applied_force_rate_z",
      "/mpc_controller_node/force_estimator/max_applied_force_rate_z"),
+    ("force_config_cutoff_freq_applied_force_z",
+     "/mpc_controller_node/force_estimator/cutoff_freq_applied_force_z"),
     ("force_config_axis_gain_x",
      "/mpc_controller_node/force_estimator/force_axis_gain_x"),
     ("force_config_axis_gain_y",

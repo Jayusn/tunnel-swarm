@@ -20,6 +20,7 @@
 #include "force_attitude_aligner.h"
 #include "force_observer_input_synchronizer.h"
 #include "disturbance_slew_limiter.h"
+#include "vertical_disturbance_low_pass.h"
 #include "odom_spike_guard.h"
 #include "recovery_control.h"
 #include "polynomial_trajectory.h"
@@ -118,6 +119,7 @@ namespace PayloadMPC
 		MpcController &controller_;
 		MultiOptForceEstimator force_estimator_;
 		DisturbanceSlewLimiter disturbance_slew_limiter_;
+		VerticalDisturbanceLowPass vertical_disturbance_low_pass_;
 		ForceAttitudeAligner force_attitude_aligner_;
 		ForceObserverInputSynchronizer force_input_synchronizer_;
 		OdomSpikeGuard odom_spike_guard_;
