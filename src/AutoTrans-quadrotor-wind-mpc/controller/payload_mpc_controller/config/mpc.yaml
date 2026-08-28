@@ -115,6 +115,7 @@ force_estimator: # *
     enable_disturbance_compensation: true
     # true：控制姿态和外力估计姿态都复用主 FAST-LIO 高频 odom，不再单独订阅第二路姿态。
     force_attitude_from_odom: true
+    # 源 header.stamp 用于插值，本机 ROS 接收时间用于统一判断新鲜度，避免雷达与 PX4 时钟偏差导致误判过期。
     # 可关闭以使用相同雷达数据源测试原有“各路最新值”观察器输入。
     enable_input_sync: true
     force_sync_history_duration: 0.5  # 每路输入保留的时间戳历史，单位 s

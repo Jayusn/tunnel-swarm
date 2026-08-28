@@ -59,6 +59,26 @@ class Cav0SyncContractStaticTest(unittest.TestCase):
         self.assertIn("observer_acceleration", observer)
         self.assertIn("observer_attitude", observer)
         self.assertIn("observer_rpm", observer)
+        self.assertNotIn("synchronized_input_stale", observer)
+        self.assertNotIn("clearAppliedDisturbance", observer)
+
+        for dual_stamp_call in (
+            "msg->header.stamp.toSec(), candidate.rcv_stamp.toSec(), candidate.q",
+            "msg->header.stamp.toSec(), force_attitude_odom_data.rcv_stamp.toSec()",
+            "msg->header.stamp.toSec(), imu_data.rcv_stamp.toSec(), imu_data.filtered_a",
+            "msg->header.stamp.toSec(), rpm_data.rcv_stamp.toSec(), rpm_data.filtered_rpm",
+        ):
+            self.assertIn(dual_stamp_call, fsm)
+
+        rpm_callback = fsm.split("void MPCFSM::rpmCallback", 1)[1]
+        rpm_callback = rpm_callback.split("void MPCFSM::", 1)[0]
+        self.assertNotIn("previous_stamp", rpm_callback)
+        self.assertNotIn("msg.header.stamp !=", rpm_callback)
+
+        input_result = fsm.split("void MPCFSM::recordForceSyncInputResult", 1)[1]
+        input_result = input_result.split("void MPCFSM::", 1)[0]
+        self.assertNotIn("clearForceObserverState", input_result)
+        self.assertIn("保持上一外力状态", input_result)
 
         clear = fsm.split("void MPCFSM::clearForceObserverState", 1)[1]
         clear = clear.split("void MPCFSM::", 1)[0]

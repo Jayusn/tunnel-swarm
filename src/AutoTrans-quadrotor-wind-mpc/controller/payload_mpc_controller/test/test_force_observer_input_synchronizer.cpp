@@ -88,6 +88,31 @@ TEST(ForceObserverInputSynchronizer, RejectsLargeInterpolationGapAndStaleTarget)
     EXPECT_EQ(synchronizer.synchronize(4.11, output), ForceObserverSyncResult::STALE);
 }
 
+TEST(ForceObserverInputSynchronizer, UsesReceiveClockOnlyForFreshness)
+{
+    auto synchronizer = makeSynchronizer();
+    synchronizer.addAcceleration(10.00, 100.00, Eigen::Vector3d::Zero());
+    synchronizer.addAcceleration(10.02, 100.02, Eigen::Vector3d(2.0, 4.0, 6.0));
+    synchronizer.addAttitude(10.00, 100.01, Eigen::Quaterniond::Identity());
+    synchronizer.addAttitude(10.02, 100.03, Eigen::Quaterniond::Identity());
+    synchronizer.addRpm(10.01, 100.04, Eigen::Vector4d::Constant(1000.0));
+
+    ForceObserverSynchronizedInput output;
+    ASSERT_EQ(synchronizer.synchronize(100.05, output), ForceObserverSyncResult::READY);
+    EXPECT_NEAR(output.stamp, 10.01, 1.0e-12);
+    EXPECT_NEAR(output.age, 0.03, 1.0e-12);
+    EXPECT_NEAR(output.acceleration_offset, 0.0, 1.0e-12);
+    EXPECT_NEAR(output.attitude_offset, 0.01, 1.0e-12);
+    EXPECT_NEAR(output.rpm_offset, 0.02, 1.0e-12);
+    EXPECT_TRUE(output.acceleration.isApprox(Eigen::Vector3d(1.0, 2.0, 3.0), 1.0e-12));
+
+    synchronizer.reset();
+    synchronizer.addAcceleration(20.00, 200.00, Eigen::Vector3d::Zero());
+    synchronizer.addAttitude(20.00, 200.00, Eigen::Quaterniond::Identity());
+    synchronizer.addRpm(20.00, 200.00, Eigen::Vector4d::Constant(1000.0));
+    EXPECT_EQ(synchronizer.synchronize(200.11, output), ForceObserverSyncResult::STALE);
+}
+
 TEST(ForceObserverInputSynchronizer, RejectsMissingBracket)
 {
     auto synchronizer = makeSynchronizer();
@@ -105,6 +130,8 @@ TEST(ForceObserverInputSynchronizer, InvalidAndSmallBackjumpPreservesHistory)
     Eigen::Vector3d invalid = Eigen::Vector3d::Zero();
     invalid.x() = std::numeric_limits<double>::quiet_NaN();
     EXPECT_EQ(synchronizer.addAcceleration(0.0, Eigen::Vector3d::Zero()),
+              ForceObserverInputResult::INVALID);
+    EXPECT_EQ(synchronizer.addAcceleration(6.0, 0.0, Eigen::Vector3d::Zero()),
               ForceObserverInputResult::INVALID);
     EXPECT_EQ(synchronizer.addAcceleration(6.0, invalid),
               ForceObserverInputResult::INVALID);

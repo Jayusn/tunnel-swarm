@@ -78,19 +78,40 @@ public:
 
     ForceObserverInputResult addAcceleration(double stamp, const Eigen::Vector3d &value)
     {
-        return addSample(stamp, value, acceleration_samples_);
+        return addAcceleration(stamp, stamp, value);
+    }
+
+    ForceObserverInputResult addAcceleration(double source_stamp,
+                                             double receive_stamp,
+                                             const Eigen::Vector3d &value)
+    {
+        return addSample(source_stamp, receive_stamp, value, acceleration_samples_);
     }
 
     ForceObserverInputResult addAttitude(double stamp, const Eigen::Quaterniond &value)
     {
+        return addAttitude(stamp, stamp, value);
+    }
+
+    ForceObserverInputResult addAttitude(double source_stamp,
+                                         double receive_stamp,
+                                         const Eigen::Quaterniond &value)
+    {
         if (!value.coeffs().allFinite() || value.norm() <= 1.0e-9)
             return ForceObserverInputResult::INVALID;
-        return addSample(stamp, value.normalized(), attitude_samples_);
+        return addSample(source_stamp, receive_stamp, value.normalized(), attitude_samples_);
     }
 
     ForceObserverInputResult addRpm(double stamp, const Eigen::Vector4d &value)
     {
-        return addSample(stamp, value, rpm_samples_);
+        return addRpm(stamp, stamp, value);
+    }
+
+    ForceObserverInputResult addRpm(double source_stamp,
+                                    double receive_stamp,
+                                    const Eigen::Vector4d &value)
+    {
+        return addSample(source_stamp, receive_stamp, value, rpm_samples_);
     }
 
     ForceObserverSyncResult synchronize(double now, ForceObserverSynchronizedInput &output)
@@ -103,7 +124,12 @@ public:
             std::min(attitude_samples_.back().stamp, rpm_samples_.back().stamp));
         if (last_output_stamp_ > 0.0 && target <= last_output_stamp_ + kStampTolerance)
             return ForceObserverSyncResult::DUPLICATE_TARGET;
-        if (!std::isfinite(now) || now + kStampTolerance < target || now - target > max_age_)
+        const double target_receive_stamp = std::min(
+            acceleration_samples_.back().receive_stamp,
+            std::min(attitude_samples_.back().receive_stamp,
+                     rpm_samples_.back().receive_stamp));
+        if (!std::isfinite(now) || now + kStampTolerance < target_receive_stamp ||
+            now - target_receive_stamp > max_age_)
             return ForceObserverSyncResult::STALE;
 
         ForceObserverSyncResult result = interpolateVector(
@@ -123,10 +149,11 @@ public:
 
         output.attitude.normalize();
         output.stamp = target;
-        output.age = now - target;
-        output.acceleration_offset = acceleration_samples_.back().stamp - target;
-        output.attitude_offset = attitude_samples_.back().stamp - target;
-        output.rpm_offset = rpm_samples_.back().stamp - target;
+        output.age = now - target_receive_stamp;
+        output.acceleration_offset =
+            acceleration_samples_.back().receive_stamp - target_receive_stamp;
+        output.attitude_offset = attitude_samples_.back().receive_stamp - target_receive_stamp;
+        output.rpm_offset = rpm_samples_.back().receive_stamp - target_receive_stamp;
         last_output_stamp_ = target;
         return ForceObserverSyncResult::READY;
     }
@@ -151,6 +178,7 @@ private:
     {
         EIGEN_MAKE_ALIGNED_OPERATOR_NEW
         double stamp;
+        double receive_stamp;
         Value value;
     };
 
@@ -158,9 +186,13 @@ private:
     using SampleBuffer = std::vector<TimedSample<Value>, Eigen::aligned_allocator<TimedSample<Value>>>;
 
     template <typename Value>
-    ForceObserverInputResult addSample(double stamp, const Value &value, SampleBuffer<Value> &samples)
+    ForceObserverInputResult addSample(double stamp,
+                                       double receive_stamp,
+                                       const Value &value,
+                                       SampleBuffer<Value> &samples)
     {
-        if (!std::isfinite(stamp) || stamp <= 0.0 || !isFinite(value))
+        if (!std::isfinite(stamp) || stamp <= 0.0 ||
+            !std::isfinite(receive_stamp) || receive_stamp <= 0.0 || !isFinite(value))
             return ForceObserverInputResult::INVALID;
         if (!samples.empty())
         {
@@ -171,14 +203,17 @@ private:
                     return ForceObserverInputResult::OUT_OF_ORDER;
 
                 reset();
-                samples.push_back({stamp, value});
+                samples.push_back({stamp, receive_stamp, value});
                 return ForceObserverInputResult::SOURCE_RESET;
             }
             if (stamp <= samples.back().stamp + kStampTolerance)
+            {
+                samples.back().receive_stamp = receive_stamp;
                 return ForceObserverInputResult::DUPLICATE;
+            }
         }
 
-        samples.push_back({stamp, value});
+        samples.push_back({stamp, receive_stamp, value});
         const double cutoff = stamp - history_duration_;
         while (samples.size() > 2 && samples[1].stamp < cutoff)
             samples.erase(samples.begin());

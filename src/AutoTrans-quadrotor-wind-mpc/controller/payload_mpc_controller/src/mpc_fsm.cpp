@@ -149,7 +149,7 @@ namespace PayloadMPC
 				: (params_.force_estimator_param_.force_attitude_from_odom
 					   ? "主 FAST-LIO odom 姿态"
 					   : "独立 odom 姿态"));
-		ROS_INFO("[FORCE_SYNC] 时间戳同步%s：历史=%.3f s，最大插值间隔=%.3f s，最大年龄=%.3f s，重置回跳阈值=%.3f s。",
+		ROS_INFO("[FORCE_SYNC] 双时间戳同步%s：源时间用于插值，本机接收时间用于新鲜度；历史=%.3f s，最大插值间隔=%.3f s，最大年龄=%.3f s，重置回跳阈值=%.3f s。",
 			params_.force_estimator_param_.enable_input_sync ? "已启用" : "已关闭",
 			params_.force_estimator_param_.force_sync_history_duration,
 			params_.force_estimator_param_.force_sync_max_interp_gap,
@@ -209,7 +209,7 @@ namespace PayloadMPC
 				{
 					recordForceSyncInputResult(
 						force_input_synchronizer_.addAttitude(
-							msg->header.stamp.toSec(), candidate.q),
+							msg->header.stamp.toSec(), candidate.rcv_stamp.toSec(), candidate.q),
 						"FAST-LIO attitude");
 				}
 			}
@@ -241,7 +241,8 @@ namespace PayloadMPC
 		{
 			recordForceSyncInputResult(
 				force_input_synchronizer_.addAttitude(
-					msg->header.stamp.toSec(), force_attitude_odom_data.q),
+					msg->header.stamp.toSec(), force_attitude_odom_data.rcv_stamp.toSec(),
+					force_attitude_odom_data.q),
 				"force attitude odom");
 		}
 	}
@@ -253,21 +254,20 @@ namespace PayloadMPC
 		{
 			recordForceSyncInputResult(
 				force_input_synchronizer_.addAcceleration(
-					msg->header.stamp.toSec(), imu_data.filtered_a),
+					msg->header.stamp.toSec(), imu_data.rcv_stamp.toSec(), imu_data.filtered_a),
 				"IMU acceleration");
 		}
 	}
 
 	void MPCFSM::rpmCallback(const mavros_msgs::ESCStatus::ConstPtr &msg)
 	{
-		const ros::Time previous_stamp = rpm_data.msg.header.stamp;
 		rpm_data.feed(msg);
-		if (params_.force_estimator_param_.enable_input_sync &&
-			rpm_data.msg.header.stamp != previous_stamp)
+		if (params_.force_estimator_param_.enable_input_sync)
 		{
+			// header 时间保留 RPM 的采样时序，本机接收时间单独用于新鲜度判断。
 			recordForceSyncInputResult(
 				force_input_synchronizer_.addRpm(
-					msg->header.stamp.toSec(), rpm_data.filtered_rpm),
+					msg->header.stamp.toSec(), rpm_data.rcv_stamp.toSec(), rpm_data.filtered_rpm),
 				"ESC RPM");
 		}
 	}
@@ -1260,8 +1260,7 @@ namespace PayloadMPC
 	{
 		if (result == ForceObserverInputResult::SOURCE_RESET)
 		{
-			ROS_WARN("[FORCE_SYNC] %s 时间戳倒退，已清空全部同步历史和外力状态。", source);
-			clearForceObserverState();
+			ROS_WARN("[FORCE_SYNC] %s 时间戳大幅倒退，已重建同步历史并保持上一外力状态。", source);
 		}
 		else if (result == ForceObserverInputResult::INVALID)
 		{
@@ -1391,17 +1390,8 @@ namespace PayloadMPC
 				now);
 			if (sync_result != ForceObserverSyncResult::READY)
 			{
-				const bool synchronized_input_stale = last_force_sync_success_time_.isZero() ||
-					(now - last_force_sync_success_time_).toSec() >=
-						params_.force_estimator_param_.force_sync_max_age;
-				if (synchronized_input_stale)
-				{
-					force_estimator_.reset();
-					force_observer_input_valid_ = false;
-					fq_estimate_valid_ = false;
-					fq_estimated_.setZero();
-					clearAppliedDisturbance();
-				}
+				// 回调接收仍新鲜时，同步失败通常只是队列抖动或暂时缺少插值区间。
+				// 跳过本周期并保持上一估计；真实传感器超时由上面的 input_fresh 路径清零。
 				return;
 			}
 			observer_acceleration = synchronized_input.acceleration;

@@ -63,7 +63,7 @@ namespace PayloadMPC
 			bool enable_disturbance_compensation;
 			// true：NMPC 控制姿态和外力观察器姿态均复用主 FAST-LIO odom。
 			bool force_attitude_from_odom;
-			// true：按消息时间戳插值对齐加速度、姿态和 RPM；false：使用各路最新值。
+			// true：源时间用于插值，本机接收时间用于统一判断新鲜度；false：使用各路最新值。
 			bool enable_input_sync;
 			double force_sync_history_duration;
 			double force_sync_max_interp_gap;
