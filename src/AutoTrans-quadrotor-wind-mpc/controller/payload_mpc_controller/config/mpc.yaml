@@ -78,7 +78,7 @@ max_angle: 30  # Attitude angle limit in degree. A negative value means no limit
 low_voltage: -0.1
 
 filter:
-    # /mavros/imu/data 实测为 200 Hz；加速度单位 m/s^2、角速度单位 rad/s，均为机体系数据。
+    # /UAV0/livox/imu_mps2 实测约 200 Hz；加速度单位 m/s^2、角速度单位 rad/s，均为机体系数据。
     # sample_freq_* 仅用于按真实输入频率计算低通滤波器系数，不是 NMPC 或外力估计器执行频率。
     sample_freq_quad_acc: 200.0
     sample_freq_quad_omg: 200.0
@@ -101,7 +101,7 @@ filter:
 
 force_estimator: # *
     # kf 将当前 CAV0 四个电机的机械转速平方和换算为总推力，单位 N/rpm^2；由 1.817 kg 实机稳定悬停日志标定。
-    kf: 1.745e-8 # 用于世界系外力估计和 thrust_model 模式 1 的 RPM 推力反馈。
+    kf: 1.706e-8 # 用于世界系外力估计和 thrust_model 模式 1 的 RPM 推力反馈。
 
     # f_Q 由外力观察器以 100 Hz 更新；该频率用于最终 f_Q 二阶低通滤波器系数。
     sample_freq_fq: 100.0
@@ -112,7 +112,7 @@ force_estimator: # *
     imu_body_length: 0.66844507
     # 只估计模式：计算并记录世界系外力 f_Q（单位 N），但不把它传入 NMPC。
     enable_force_estimation: true
-    enable_disturbance_compensation: false
+    enable_disturbance_compensation: true
     # true：控制姿态和外力估计姿态都复用主 FAST-LIO 高频 odom，不再单独订阅第二路姿态。
     force_attitude_from_odom: true
     # 可关闭以使用相同雷达数据源测试原有“各路最新值”观察器输入。
@@ -148,7 +148,7 @@ force_estimator: # *
     force_axis_gain_z: 1.0
     # 外力观察器每 10 ms 加入一组同时间戳 IMU/姿态/RPM 样本并更新 f_Q，即 100 Hz。
     # max_queue/force_observer_freq 决定滑动窗口时长：20/100 = 0.2 s。
-    max_queue: 20
+    max_queue: 30
     force_observer_freq: 100.0
     # 窗口内外力估计的平滑正则权重；源码值先保留。
     var_weight: 80.0
