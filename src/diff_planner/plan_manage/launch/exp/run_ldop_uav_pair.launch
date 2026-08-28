@@ -7,6 +7,7 @@
   <arg name="uav1_odom_topic" default="/UAV1/fast_lio/Odom_high_freq"/>
   <arg name="ldop_input_rate" default="5.0"/>
   <arg name="ufomap_resolution" default="0.05"/>
+  <arg name="ufomap_max_range" default="4.0"/>
   <arg name="ufomap_inflate_hits_dist" default="0.10"/>
   <arg name="corridor_min_lateral_span" default="0.15"/>
   <arg name="corridor_min_confirm_hits" default="3"/>
@@ -46,6 +47,7 @@
     <param name="fusion_virtual_imu_topic" value="/UAV0/ldop/fused_dynamic_object_virtual_imu"/>
     <param name="fusion_marker_topic" value="/UAV0/ldop/fused_dynamic_object_markers"/>
     <param name="ufomap_resolution" value="$(arg ufomap_resolution)"/>
+    <param name="ufomap_max_range" value="$(arg ufomap_max_range)"/>
     <param name="ufomap_inflate_hits_dist" value="$(arg ufomap_inflate_hits_dist)"/>
     <param name="corridor_min_lateral_span" value="$(arg corridor_min_lateral_span)"/>
     <param name="corridor_min_confirm_hits" value="$(arg corridor_min_confirm_hits)"/>
@@ -79,6 +81,7 @@
     <param name="fusion_virtual_imu_topic" value="/UAV1/ldop/fused_dynamic_object_virtual_imu"/>
     <param name="fusion_marker_topic" value="/UAV1/ldop/fused_dynamic_object_markers"/>
     <param name="ufomap_resolution" value="$(arg ufomap_resolution)"/>
+    <param name="ufomap_max_range" value="$(arg ufomap_max_range)"/>
     <param name="ufomap_inflate_hits_dist" value="$(arg ufomap_inflate_hits_dist)"/>
     <param name="corridor_min_lateral_span" value="$(arg corridor_min_lateral_span)"/>
     <param name="corridor_min_confirm_hits" value="$(arg corridor_min_confirm_hits)"/>

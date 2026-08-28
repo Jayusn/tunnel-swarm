@@ -21,6 +21,7 @@
     <arg name="ldop_input_rate" default="5.0"/>
     <!-- 与后机 run_swarm.launch 的 LDOP 实飞覆盖值保持一致，并允许从主入口调整。 -->
     <arg name="ufomap_resolution" default="0.05"/>
+    <arg name="ufomap_max_range" default="4.0"/>
     <arg name="ufomap_inflate_hits_dist" default="0.10"/>
     <arg name="corridor_min_lateral_span" default="0.15"/>
     <arg name="corridor_min_confirm_hits" default="3"/>
@@ -829,6 +830,7 @@
         <arg name="uav1_odom_topic" value="$(arg follower_odom_topic)"/>
         <arg name="ldop_input_rate" value="$(arg ldop_input_rate)"/>
         <arg name="ufomap_resolution" value="$(arg ufomap_resolution)"/>
+        <arg name="ufomap_max_range" value="$(arg ufomap_max_range)"/>
         <arg name="ufomap_inflate_hits_dist" value="$(arg ufomap_inflate_hits_dist)"/>
         <arg name="corridor_min_lateral_span" value="$(arg corridor_min_lateral_span)"/>
         <arg name="corridor_min_confirm_hits" value="$(arg corridor_min_confirm_hits)"/>
