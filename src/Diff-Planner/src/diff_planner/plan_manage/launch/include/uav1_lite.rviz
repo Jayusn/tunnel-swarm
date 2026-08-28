@@ -52,6 +52,66 @@ Visualization Manager:
       Use Fixed Frame: true
       Use rainbow: true
       Value: true
+    - Class: rviz/Group
+      Displays:
+        - Alpha: 1
+          Autocompute Intensity Bounds: true
+          Autocompute Value Bounds:
+            Max Value: 10
+            Min Value: -10
+            Value: true
+          Axis: Z
+          Channel Name: intensity
+          Class: rviz/PointCloud2
+          Color: 255; 70; 70
+          Color Transformer: FlatColor
+          Decay Time: 0
+          Enabled: true
+          Invert Rainbow: false
+          Max Color: 255; 255; 255
+          Min Color: 0; 0; 0
+          Name: DynamicCloud
+          Position Transformer: XYZ
+          Queue Size: 10
+          Selectable: true
+          Size (Pixels): 4
+          Size (m): 0.07999999821186066
+          Style: Flat Squares
+          Topic: /UAV1/ldop/dynamic_cloud
+          Unreliable: false
+          Use Fixed Frame: true
+          Use rainbow: false
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /UAV1/ldop/dynamic_object_markers
+          Name: DynamicObjectMarkers
+          Namespaces:
+            dynamic_object_bbox: true
+          Queue Size: 100
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /UAV1/ldop/dynamic_track_markers
+          Name: DynamicTrackMarkers
+          Namespaces:
+            dynamic_track_bbox: true
+            dynamic_track_coast_bbox: true
+            dynamic_track_head: true
+            dynamic_track_history: true
+            dynamic_track_label: true
+          Queue Size: 100
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /UAV1/ldop/dynamic_prediction_markers
+          Name: DynamicPredictionMarkers
+          Namespaces:
+            dynamic_prediction_line: true
+          Queue Size: 100
+          Value: true
+      Enabled: true
+      Name: LDOP Dynamic Obstacles
     - Angle Tolerance: 0.01
       Class: rviz/Odometry
       Covariance:
