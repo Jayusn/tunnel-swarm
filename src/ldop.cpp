@@ -11,6 +11,9 @@ namespace ldopcore {
 
 namespace {
 
+constexpr std::uint32_t kCloudSubscriberQueueSize = 2U;
+constexpr std::size_t kMaxPendingCloudFrames = 1U;
+
 Eigen::Vector3d fromUfoPoint(const ufo::Point& point) {
   return Eigen::Vector3d(point.x, point.y, point.z);
 }
@@ -181,7 +184,8 @@ void Ldop::loadParameters() {
 
 void Ldop::setupRosInterfaces() {
   // 订阅输入，并提前创建 LDOP 自己负责的输出通道。
-  cloud_sub_ = nh_.subscribe(input_cloud_topic_, 50, &Ldop::pointCloudCallback, this);
+  cloud_sub_ = nh_.subscribe(input_cloud_topic_, kCloudSubscriberQueueSize,
+                             &Ldop::pointCloudCallback, this);
   odom_sub_ = nh_.subscribe(odom_topic_, 200, &Ldop::odomCallback, this);
   mocap_pose_subs_.clear();
   const std::vector<std::string>& mocap_topics = dynamic_object_pose_fusion_->mocapTopics();
@@ -257,8 +261,8 @@ void Ldop::pointCloudCallback(const sensor_msgs::PointCloud2ConstPtr& cloud_msg)
 
   {
     std::lock_guard<std::mutex> input_lock(input_mutex_);
-    // 只有输入队列触顶时才丢掉最旧点云，其余情况由处理线程按先进先出顺序消费。
-    while (static_cast<int>(input_queue_.size()) >= 10) {
+    // 检测只关心最新观测；处理落后时丢弃旧帧，避免摆球位置和方向证据滞后。
+    while (input_queue_.size() >= kMaxPendingCloudFrames) {
       input_queue_.pop_front();
       dropped_cloud_count_.fetch_add(1U);
     }
