@@ -70,8 +70,8 @@
     <arg name="map_size_x" default="20.0"/>
     <arg name="map_size_y" default="20"/>
     <arg name="map_size_z" default="3.0"/>
-    <arg name="box_min_x" default="-10.0"/>
-    <arg name="box_min_y" default="-10"/>
+    <arg name="box_min_x" default="-1.0"/>
+    <arg name="box_min_y" default="-3.0"/>
     <arg name="box_min_z" default="0.05"/>
     <arg name="box_max_x" default="10"/>
     <arg name="box_max_y" default="10"/>
@@ -275,7 +275,8 @@
     <rosparam param="/exploration_node/astar/max_search_height">1.90</rosparam>
     <!-- 水平恢复全部失败后才启用上下绕行；下绕固定XY/Yaw降到0.20m，确认前方0.20m后立即推进。 -->
     <rosparam param="/exploration_node/mission/vertical_detour/enabled">true</rosparam>
-    <rosparam param="/exploration_node/mission/vertical_detour/low_height">0.20</rosparam>
+    <!-- 下穿悬挂障碍时再降低 5cm，避免只擦着球底通过；仍高于 virtual_ground=0.10m。 -->
+    <rosparam param="/exploration_node/mission/vertical_detour/low_height">0.15</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/forward_check_distance">0.20</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/upper_step">0.20</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/upper_max_rise">0.60</rosparam>
