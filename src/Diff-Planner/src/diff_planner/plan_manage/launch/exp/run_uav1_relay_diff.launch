@@ -8,6 +8,27 @@
     <arg name="max_vel" default="0.30"/>
     <arg name="max_acc" default="1.00"/>
     <arg name="enable_rviz" default="true"/>
+    <!-- UAV1 LDOP 动态检测只使用独立限频点云，不改变 Diff 原始建图输入。 -->
+    <arg name="enable_ldop" default="true"/>
+    <arg name="ldop_input_rate" default="5.0"/>
+    <!-- 垂地障碍物锁定一侧，避免重规划时在障碍物两侧来回换边。 -->
+    <arg name="enable_vertical_obstacle_side_lock" default="true"/>
+    <arg name="side_lock_corridor_half_width" default="0.75"/>
+    <arg name="side_lock_width_similarity_tolerance" default="0.05"/>
+    <!-- 悬空障碍物有可行下方通道时，允许轨迹降低高度通过。 -->
+    <arg name="enable_suspended_obstacle_underpass" default="true"/>
+    <arg name="underpass_corridor_half_width" default="0.25"/>
+    <arg name="underpass_min_descent" default="0.20"/>
+    <arg name="underpass_min_vertical_gap" default="0.25"/>
+    <arg name="underpass_search_timeout" default="0.15"/>
+    <!-- 周期/普通重规划只有质量不劣于当前轨迹时才允许替换。 -->
+    <arg name="enable_replan_quality_gate" default="true"/>
+    <arg name="replan_max_clearance_drop" default="0.03"/>
+    <arg name="replan_min_clearance_improvement" default="0.05"/>
+    <arg name="replan_max_length_ratio" default="1.05"/>
+    <arg name="replan_max_jerk_ratio" default="1.50"/>
+    <arg name="replan_max_handoff_position_error" default="0.06"/>
+    <arg name="replan_max_handoff_velocity_error" default="0.10"/>
     <!-- 接力入口已用标定参数发布该TF；独立调试时才允许本launch发布零偏移TF。 -->
     <arg name="publish_world_to_follower_tf" default="true"/>
 
@@ -19,6 +40,21 @@
         <arg name="camera_pose_topic" value="no_use_uav1_pose"/>
         <arg name="depth_topic" value="no_use_uav1_depth"/>
         <arg name="cloud_topic" value="$(arg cloud_topic)"/>
+        <arg name="enable_suspended_obstacle_underpass" value="$(arg enable_suspended_obstacle_underpass)"/>
+        <arg name="underpass_corridor_half_width" value="$(arg underpass_corridor_half_width)"/>
+        <arg name="underpass_min_descent" value="$(arg underpass_min_descent)"/>
+        <arg name="underpass_min_vertical_gap" value="$(arg underpass_min_vertical_gap)"/>
+        <arg name="underpass_search_timeout" value="$(arg underpass_search_timeout)"/>
+        <arg name="enable_vertical_obstacle_side_lock" value="$(arg enable_vertical_obstacle_side_lock)"/>
+        <arg name="side_lock_corridor_half_width" value="$(arg side_lock_corridor_half_width)"/>
+        <arg name="side_lock_width_similarity_tolerance" value="$(arg side_lock_width_similarity_tolerance)"/>
+        <arg name="enable_replan_quality_gate" value="$(arg enable_replan_quality_gate)"/>
+        <arg name="replan_max_clearance_drop" value="$(arg replan_max_clearance_drop)"/>
+        <arg name="replan_min_clearance_improvement" value="$(arg replan_min_clearance_improvement)"/>
+        <arg name="replan_max_length_ratio" value="$(arg replan_max_length_ratio)"/>
+        <arg name="replan_max_jerk_ratio" value="$(arg replan_max_jerk_ratio)"/>
+        <arg name="replan_max_handoff_position_error" value="$(arg replan_max_handoff_position_error)"/>
+        <arg name="replan_max_handoff_velocity_error" value="$(arg replan_max_handoff_velocity_error)"/>
         <arg name="cx" value="319.31427001953125"/>
         <arg name="cy" value="239.09725952148438"/>
         <arg name="fx" value="386.2706298828125"/>
@@ -79,6 +115,29 @@
         <arg name="point2_x" value="0.0"/><arg name="point2_y" value="0.0"/><arg name="point2_z" value="0.60"/>
         <arg name="point3_x" value="0.0"/><arg name="point3_y" value="0.0"/><arg name="point3_z" value="0.60"/>
         <arg name="point4_x" value="0.0"/><arg name="point4_y" value="0.0"/><arg name="point4_z" value="0.60"/>
+    </include>
+
+    <!-- LDOP 与 Diff 分开限频：Diff 继续使用原始点云，LDOP 只处理最新的 5 Hz 点云。 -->
+    <node if="$(arg enable_ldop)" pkg="topic_tools" type="throttle" name="uav1_ldop_cloud_throttle"
+          args="messages $(arg cloud_topic) $(arg ldop_input_rate) /UAV1/ldop/cloud_registered_throttled"/>
+
+    <!-- 启动 UAV1 动态检测，所有输出限定在 UAV1/ldop 命名空间。 -->
+    <include if="$(arg enable_ldop)" file="$(find ldop)/launch/run_ldop.launch">
+        <arg name="vehicle_ns" value="UAV1"/>
+        <arg name="rviz" value="false"/>
+        <arg name="input_cloud_topic" value="/UAV1/ldop/cloud_registered_throttled"/>
+        <arg name="ufomap_resolution" value="0.05"/>
+        <arg name="ufomap_inflate_hits_dist" value="0.1"/>
+        <arg name="corridor_min_lateral_span" value="0.15"/>
+        <arg name="corridor_min_confirm_hits" value="3"/>
+        <arg name="corridor_min_cluster_points" value="4"/>
+        <arg name="corridor_max_cluster_extent" value="0.8"/>
+        <arg name="corridor_oversized_split_enabled" value="false"/>
+        <arg name="corridor_split_min_cluster_points" value="3"/>
+        <arg name="corridor_max_candidates" value="3"/>
+        <arg name="corridor_reject_candidate_count" value="5"/>
+        <arg name="corridor_wall_clearance" value="0.10"/>
+        <arg name="dynamic_cluster_detector_min_points" value="4"/>
     </include>
 
     <!-- 2026-07-28: UAV1 traj_server是后机PositionCommand唯一发布者，并负责心跳超时安全锁点。 -->
