@@ -1016,10 +1016,10 @@ bool FastExplorationManager::buildWideSideBypass(
       if (!cameraOccupancyColumn(probe, pos.z()) ||
           cameraWallSupported(probe, travel.head<2>()))
         continue;
-      if (!hasLowVerticalSupport(probe, pos.z())) {
-        suspended_obstacle_seen = true;
-        continue;
-      }
+      // 低位支撑只决定是否可以从障碍下方穿过，不能阻止普通的水平绕障。
+      // 如果下方通道尚未确认安全，先把障碍作为当前高度的竖直障碍，
+      // 交给左右分流；buildMissionForwardFallback() 会在此之前优先尝试已确认的下穿。
+      if (!hasLowVerticalSupport(probe, pos.z())) suspended_obstacle_seen = true;
       obstacle_min_idx = std::min(obstacle_min_idx, side_idx);
       obstacle_max_idx = std::max(obstacle_max_idx, side_idx);
     }
