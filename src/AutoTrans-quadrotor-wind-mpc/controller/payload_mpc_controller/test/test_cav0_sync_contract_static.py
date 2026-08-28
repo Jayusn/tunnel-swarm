@@ -38,6 +38,9 @@ class Cav0SyncContractStaticTest(unittest.TestCase):
         header = (
             PACKAGE / "include/payload_mpc_controller/mpc_fsm.h"
         ).read_text(encoding="utf-8")
+        synchronizer = (
+            PACKAGE / "include/payload_mpc_controller/force_observer_input_synchronizer.h"
+        ).read_text(encoding="utf-8")
 
         self.assertIn("if (!param.force_estimator_param_.force_attitude_from_odom)", node)
         self.assertIn("&PayloadMPC::MPCFSM::imuCallback", node)
@@ -61,6 +64,9 @@ class Cav0SyncContractStaticTest(unittest.TestCase):
         clear = clear.split("void MPCFSM::", 1)[0]
         self.assertIn("force_input_synchronizer_.reset()", clear)
         self.assertIn("last_force_sync_success_time_ = ros::Time(0)", clear)
+
+        self.assertIn("return ForceObserverInputResult::OUT_OF_ORDER", synchronizer)
+        self.assertNotIn("出现小幅时间戳乱序", fsm)
 
     def test_migration_bag_keeps_mavros_comparison_topics(self):
         launch = (PACKAGE / "launch/quad_wind_mpc_controller.launch").read_text(

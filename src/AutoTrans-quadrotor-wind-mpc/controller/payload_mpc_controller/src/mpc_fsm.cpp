@@ -1267,10 +1267,6 @@ namespace PayloadMPC
 		{
 			ROS_WARN_THROTTLE(1.0, "[FORCE_SYNC] 拒绝 %s 的无效值或时间戳。", source);
 		}
-		else if (result == ForceObserverInputResult::OUT_OF_ORDER)
-		{
-			ROS_WARN_THROTTLE(1.0, "[FORCE_SYNC] %s 出现小幅时间戳乱序，已丢弃该样本并保留同步历史。", source);
-		}
 	}
 
 	void MPCFSM::reportForceSync(ForceObserverSyncResult result,
