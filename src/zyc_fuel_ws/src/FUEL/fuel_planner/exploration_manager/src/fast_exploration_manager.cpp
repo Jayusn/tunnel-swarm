@@ -545,6 +545,8 @@ bool FastExplorationManager::buildVerticalDetourFallback(
                            forward.head<2>().normalized().y(), 0.0);
 
   auto startLowProbe = [&]() {
+    // 下穿不要贴着障碍物底边飞：由 launch 提供的 low_height 保持在
+    // 虚拟地面之上，同时给球底和机体足迹留出可观余量。
     const double low_z = vertical_detour_low_height_;
     if (pos.z() <= low_z + vertical_detour_height_tolerance_ ||
         !isKnownSafeVerticalPath(pos, low_z))
