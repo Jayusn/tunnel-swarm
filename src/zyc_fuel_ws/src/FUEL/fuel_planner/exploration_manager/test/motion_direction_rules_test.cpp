@@ -133,6 +133,25 @@ int main() {
   assert(!fast_planner::task_search::stationaryTurnReady(
       std::numeric_limits<double>::quiet_NaN(), 0.12, 0.20, 0.15));
 
+  // 转向后的长距离恢复只能沿新通道前方展开；大偏角仅允许局部横移。
+  const Eigen::Vector3d new_corridor_forward(0.0, 1.0, 0.0);
+  const auto recovery_direction = [](double degrees) {
+    const double radians = degrees * M_PI / 180.0;
+    return Eigen::Vector3d(std::cos(radians), std::sin(radians), 0.0);
+  };
+  assert(std::fabs(fast_planner::task_search::recoveryDirectionMaxDistance(
+                       recovery_direction(90.0), new_corridor_forward, 1.80) -
+                   1.80) < 1e-9);
+  assert(std::fabs(fast_planner::task_search::recoveryDirectionMaxDistance(
+                       recovery_direction(45.0), new_corridor_forward, 1.80) -
+                   1.80) < 1e-9);
+  assert(std::fabs(fast_planner::task_search::recoveryDirectionMaxDistance(
+                       recovery_direction(30.0), new_corridor_forward, 1.80) -
+                   0.40) < 1e-9);
+  assert(std::fabs(fast_planner::task_search::recoveryDirectionMaxDistance(
+                       recovery_direction(15.0), new_corridor_forward, 1.80) -
+                   0.40) < 1e-9);
+
   // 分段建立后，只有机头明显偏离实际通道轴线才校正；该判断不创建新分段。
   assert(fast_planner::task_search::corridorYawCorrectionNeeded(
       Eigen::Vector2d(0.0, 1.0), 60.0 * M_PI / 180.0,

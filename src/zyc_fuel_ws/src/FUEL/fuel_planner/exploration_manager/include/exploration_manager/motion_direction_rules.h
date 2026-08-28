@@ -52,6 +52,20 @@ inline bool stationaryTurnReady(double speed, double max_speed,
          stable_elapsed >= std::max(0.0, required_stable_time);
 }
 
+inline double recoveryDirectionMaxDistance(
+    const Eigen::Vector3d& direction, const Eigen::Vector3d& forward,
+    double full_distance, double lateral_distance = 0.40) {
+  full_distance = std::max(0.0, full_distance);
+  lateral_distance = std::max(0.0, std::min(full_distance, lateral_distance));
+  if (direction.head<2>().norm() < 1e-6 || forward.head<2>().norm() < 1e-6)
+    return lateral_distance;
+  const double alignment = direction.head<2>().normalized().dot(
+      forward.head<2>().normalized());
+  return alignment <= std::cos(M_PI / 3.0) + 1e-9
+             ? lateral_distance
+             : full_distance;
+}
+
 inline bool corridorYawCorrectionNeeded(const Eigen::Vector2d& corridor_direction,
                                         double current_yaw,
                                         double correction_threshold) {

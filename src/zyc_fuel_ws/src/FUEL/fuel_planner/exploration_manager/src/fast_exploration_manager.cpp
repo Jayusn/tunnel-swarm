@@ -1372,8 +1372,12 @@ bool FastExplorationManager::buildMissionForwardFallback(const Vector3d& pos, do
               std::cos(min_change_rad))
         continue;
     }
-    const double direction_max_dist =
-        short_backtrack ? short_backtrack_max_distance_ : max_dist;
+    // 新通道确认后，大偏角方向只能用于局部横移。否则 ±60~90 度候选会沿旧通道
+    // 探测完整 1.8m，在转角外生成看似“旧方向前冲”的恢复目标。
+    const double direction_max_dist = short_backtrack
+        ? short_backtrack_max_distance_
+        : task_search::recoveryDirectionMaxDistance(
+              direction, recovery_forward, max_dist, 0.40);
     const double direction_min_dist =
         short_backtrack ? short_backtrack_min_distance_ : step;
     // 正常恢复也按10cm采样，使0.20/0.30/0.40m微调都能成为候选。
