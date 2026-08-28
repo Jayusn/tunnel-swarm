@@ -536,7 +536,7 @@ bool FastExplorationManager::isLowProbeCorridorSafe(
 
 bool FastExplorationManager::buildVerticalDetourFallback(
     const Vector3d& pos, double cur_yaw, const Vector3d& forward,
-    Vector3d& next_pos, double& next_yaw) {
+    Vector3d& next_pos, double& next_yaw, bool force_descend) {
   if (!vertical_detour_enabled_ || forward.head<2>().norm() < 1e-3 ||
       low_probe_phase_ != vertical_detour::LowProbePhase::IDLE)
     return false;
@@ -545,8 +545,6 @@ bool FastExplorationManager::buildVerticalDetourFallback(
                            forward.head<2>().normalized().y(), 0.0);
 
   auto startLowProbe = [&]() {
-    // 下穿不要贴着障碍物底边飞：由 launch 提供的 low_height 保持在
-    // 虚拟地面之上，同时给球底和机体足迹留出可观余量。
     const double low_z = vertical_detour_low_height_;
     if (pos.z() <= low_z + vertical_detour_height_tolerance_ ||
         !isKnownSafeVerticalPath(pos, low_z))
@@ -574,6 +572,10 @@ bool FastExplorationManager::buildVerticalDetourFallback(
              pos.z(), low_z, pos.x(), pos.y(), cur_yaw * 180.0 / M_PI);
     return true;
   };
+
+  // 已经确认悬挂障碍下方走廊安全时，必须真正进入下降会话；不能再让
+  // 通用的上绕候选抢先返回，否则日志虽显示“优先下穿”却不会下降。
+  if (force_descend) return startLowProbe();
 
   const bool descend_first = vertical_detour::preferDescending(
       pos.z(), vertical_detour_down_first_height_);
@@ -680,10 +682,15 @@ bool FastExplorationManager::handleActiveLowProbe(
       std::fabs(pos.z() - low_probe_return_height_) <=
           vertical_detour_height_tolerance_;
 
-  // 低位实测正前仍不可通行时，立即用这一高度的地图区分“悬空”与“落地竖直”。
-  // 若同一障碍在低位仍有支撑，就退出直线下穿，改走左右更宽的一侧。
-  if (previous_phase == vertical_detour::LowProbePhase::VERIFYING &&
-      !observation.low_corridor_safe) {
+  // 低位停住验证或正在短步前进时，只要当前高度的前方走廊被新静态障碍
+  // 挡住，就直接以实时 xyz 做左右绕障，不先退出球下方或回到巡航高度。
+  const bool low_forward_blocked =
+      (previous_phase == vertical_detour::LowProbePhase::VERIFYING &&
+       !observation.low_corridor_safe) ||
+      (previous_phase == vertical_detour::LowProbePhase::ADVANCING &&
+       !isLowProbeCorridorSafe(pos, low_probe_direction_,
+                               vertical_detour_forward_check_distance_));
+  if (low_forward_blocked) {
     bool split_obstacle_detected = false;
     Vector3d side_target;
     double side_yaw = low_probe_yaw_;
@@ -695,8 +702,8 @@ bool FastExplorationManager::handleActiveLowProbe(
       low_probe_confirmations_ = 0;
       low_probe_release_confirmations_ = 0;
       low_probe_verify_start_ = ros::Time();
-      ROS_WARN("[vertical_detour] obstacle remains vertically occupied at low height; "
-               "cancel centered underpass and switch to wider horizontal lane.");
+      ROS_WARN("[vertical_detour] low-altitude forward path is blocked; keep current z "
+               "and switch directly to the wider horizontal lane.");
       if (use_side_target) {
         next_pos = side_target;
         next_yaw = side_yaw;
@@ -1115,9 +1122,9 @@ bool FastExplorationManager::buildWideSideBypass(
     const double lateral_offset = side_sign * shift;
     for (const double forward_step : forward_steps) {
       Vector3d candidate = pos + forward_step * travel + lateral_offset * lateral;
-      candidate.z() = task_search_manager_
-                          ? task_search_manager_->clampSearchHeight(pos.z())
-                          : pos.z();
+      // 水平脱困必须保持实时高度。尤其在球下方的低位会话中，不能用任务搜索
+      // 最低高度把侧绕目标从当前 z 强行抬回巡航层。
+      candidate.z() = pos.z();
       if (!pointInsideWorkspaceLock(candidate) ||
           !planner_manager_->isPositionSafe(candidate) ||
           sdf_map_->getOccupancy(candidate) == SDFMap::UNKNOWN ||
@@ -1206,7 +1213,8 @@ bool FastExplorationManager::buildMissionForwardFallback(const Vector3d& pos, do
     low_start.z() = vertical_detour_low_height_;
     if (isLowProbeCorridorSafe(low_start, recovery_forward,
                                vertical_detour_forward_check_distance_) &&
-        buildVerticalDetourFallback(pos, cur_yaw, recovery_forward, next_pos, next_yaw)) {
+        buildVerticalDetourFallback(pos, cur_yaw, recovery_forward, next_pos, next_yaw,
+                                    true)) {
       ROS_WARN("[vertical_detour] suspended obstacle with known-low corridor; "
                "prioritize centered underpass before horizontal recovery.");
       return true;
@@ -2187,10 +2195,10 @@ int FastExplorationManager::planExploreMotion(
     return NO_FRONTIER;
   }
   planner_manager_->path_finder_->clearProgressConstraint();
-  // 一旦确认转弯，锁存的最终 yaw 对整个会话拥有独占权。后续即使地图瞬时不再
-  // 返回拐角方向，也只能等待刹停或重试原地转向，不能落回普通 frontier。
-  if (turn_in_place_session_active_) {
-    cancelActiveLowProbe("turn-in-place retry owns planning");
+  // 一旦确认转弯，锁存的最终 yaw 对普通规划拥有独占权；已经启动的低位下穿
+  // 会话优先完成或在球下方切换水平绕障，不能再被原地转向提前取消。
+  if (turn_in_place_session_active_ &&
+      low_probe_phase_ == vertical_detour::LowProbePhase::IDLE) {
     const Vector3d locked_direction(std::cos(turn_in_place_final_yaw_),
                                     std::sin(turn_in_place_final_yaw_), 0.0);
     return buildTurnInPlacePlan(pos, vel, yaw, locked_direction) ? SUCCEED : FAIL;
