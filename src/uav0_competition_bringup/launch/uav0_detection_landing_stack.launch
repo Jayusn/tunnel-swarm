@@ -32,8 +32,10 @@
   <arg name="realsense_enable_depth" default="true" />
   <arg name="realsense_color_width" default="1280" />
   <arg name="realsense_color_height" default="720" />
+  <arg name="realsense_color_fps" default="15" />
   <arg name="realsense_depth_width" default="1280" />
   <arg name="realsense_depth_height" default="720" />
+  <arg name="realsense_depth_fps" default="15" />
   <!-- D435 点云只用于 RViz 可视化，不参与检测或规划决策。 -->
   <arg name="realsense_enable_pointcloud" default="true" />
   <!-- 当前 FAST-LIO 已发布 UAV0/camera_init -> UAV0/body，默认不重复桥接里程计 TF。 -->
@@ -59,8 +61,10 @@
     <arg name="enable_depth" value="$(arg realsense_enable_depth)" />
     <arg name="color_width" value="$(arg realsense_color_width)" />
     <arg name="color_height" value="$(arg realsense_color_height)" />
+    <arg name="color_fps" value="$(arg realsense_color_fps)" />
     <arg name="depth_width" value="$(arg realsense_depth_width)" />
     <arg name="depth_height" value="$(arg realsense_depth_height)" />
+    <arg name="depth_fps" value="$(arg realsense_depth_fps)" />
     <arg name="enable_pointcloud" value="$(arg realsense_enable_pointcloud)" />
   </include>
 
