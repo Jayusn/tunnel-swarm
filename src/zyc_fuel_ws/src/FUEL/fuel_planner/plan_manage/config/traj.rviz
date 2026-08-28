@@ -265,6 +265,14 @@ Visualization Manager:
           Value: true
         - Class: rviz/MarkerArray
           Enabled: true
+          Marker Topic: /UAV0/ldop/dynamic_track_markers
+          Name: dynamic_tracks
+          Namespaces:
+            {}
+          Queue Size: 20
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
           Marker Topic: /UAV0/ldop/dynamic_prediction_markers
           Name: dynamic_predictions
           Namespaces:
