@@ -18,6 +18,7 @@
     <!-- 本机为前机UAV0：默认启动前机LDOP；后机由其自身计算机按需启动。 -->
     <arg name="enable_ldop_detection" default="true"/>
     <arg name="enable_follower_ldop_detection" default="false"/>
+    <arg name="ldop_input_rate" default="5.0"/>
     <!-- LDOP尚未完成实飞验证：默认不启动两机动态检测，规划仲裁器也不消费动态目标。
          后续分别设置对应环境变量为true并重启，才允许恢复。 -->
     <arg name="enable_uav0_dynamic_obstacle_detection"
@@ -807,8 +808,13 @@
     </node>
 
     <include file="$(find diff_planner)/launch/exp/run_ldop_uav_pair.launch">
-        <arg name="enable_uav0" value="$(arg enable_uav0_dynamic_obstacle_detection)"/>
-        <arg name="enable_uav1" value="$(arg enable_uav1_dynamic_obstacle_detection)"/>
+        <arg name="enable_uav0" value="$(arg enable_ldop_detection)"/>
+        <arg name="enable_uav1" value="$(arg enable_follower_ldop_detection)"/>
+        <arg name="uav0_cloud_topic" value="$(arg cloud_topic)"/>
+        <arg name="uav0_odom_topic" value="$(arg odom_topic)"/>
+        <arg name="uav1_cloud_topic" value="/UAV1/fast_lio/cloud_registered"/>
+        <arg name="uav1_odom_topic" value="$(arg follower_odom_topic)"/>
+        <arg name="ldop_input_rate" value="$(arg ldop_input_rate)"/>
     </include>
 
     <!--

@@ -1,13 +1,27 @@
 <launch>
   <arg name="enable_uav0" default="true"/>
   <arg name="enable_uav1" default="false"/>
+  <arg name="uav0_cloud_topic" default="/UAV0/fast_lio/cloud_registered"/>
+  <arg name="uav0_odom_topic" default="/UAV0/fast_lio/Odom_high_freq"/>
+  <arg name="uav1_cloud_topic" default="/UAV1/fast_lio/cloud_registered"/>
+  <arg name="uav1_odom_topic" default="/UAV1/fast_lio/Odom_high_freq"/>
+  <arg name="ldop_input_rate" default="5.0"/>
+
+  <!-- 规划地图继续使用原始点云；LDOP 独立限频，避免检测积压旧帧。 -->
+  <node if="$(arg enable_uav0)" pkg="topic_tools" type="throttle"
+        name="UAV0_ldop_cloud_throttle"
+        args="messages $(arg uav0_cloud_topic) $(arg ldop_input_rate) /UAV0/ldop/cloud_registered_throttled"/>
+
+  <node if="$(arg enable_uav1)" pkg="topic_tools" type="throttle"
+        name="UAV1_ldop_cloud_throttle"
+        args="messages $(arg uav1_cloud_topic) $(arg ldop_input_rate) /UAV1/ldop/cloud_registered_throttled"/>
 
   <!-- 每架机使用独立输入、输出和私有参数，禁止两套LDOP写入同一个全局话题。 -->
   <node if="$(arg enable_uav0)" pkg="ldop" type="ldop_node"
         name="UAV0_ldop_node" output="screen">
     <rosparam command="load" file="$(find ldop)/config/ldop.yaml"/>
-    <param name="input_cloud_topic" value="/UAV0/fast_lio/cloud_registered"/>
-    <param name="odom_topic" value="/UAV0/fast_lio/Odometry"/>
+    <param name="input_cloud_topic" value="/UAV0/ldop/cloud_registered_throttled"/>
+    <param name="odom_topic" value="$(arg uav0_odom_topic)"/>
     <param name="static_cloud_topic" value="/UAV0/ldop/static_cloud"/>
     <param name="dynamic_cloud_topic" value="/UAV0/ldop/dynamic_cloud"/>
     <param name="dynamic_objects_topic" value="/UAV0/ldop/dynamic_objects"/>
@@ -19,6 +33,18 @@
     <param name="fusion_objects_topic" value="/UAV0/ldop/fused_dynamic_objects"/>
     <param name="fusion_virtual_imu_topic" value="/UAV0/ldop/fused_dynamic_object_virtual_imu"/>
     <param name="fusion_marker_topic" value="/UAV0/ldop/fused_dynamic_object_markers"/>
+    <param name="ufomap_resolution" value="0.05"/>
+    <param name="ufomap_inflate_hits_dist" value="0.10"/>
+    <param name="corridor_min_lateral_span" value="0.15"/>
+    <param name="corridor_min_confirm_hits" value="3"/>
+    <param name="corridor_min_cluster_points" value="4"/>
+    <param name="corridor_max_cluster_extent" value="0.8"/>
+    <param name="corridor_oversized_split_enabled" value="false"/>
+    <param name="corridor_split_min_cluster_points" value="3"/>
+    <param name="corridor_max_candidates" value="3"/>
+    <param name="corridor_reject_candidate_count" value="5"/>
+    <param name="corridor_wall_clearance" value="0.10"/>
+    <param name="dynamic_cluster_detector_min_points" value="4"/>
     <!-- LDOP会把空数组恢复为默认动捕话题；给每架机一个独立占位话题，
          防止比赛流程误订阅全局/mocap/target_0/pose。 -->
     <rosparam param="fusion_mocap_topics">[/UAV0/ldop/disabled_mocap]</rosparam>
@@ -27,8 +53,8 @@
   <node if="$(arg enable_uav1)" pkg="ldop" type="ldop_node"
         name="UAV1_ldop_node" output="screen">
     <rosparam command="load" file="$(find ldop)/config/ldop.yaml"/>
-    <param name="input_cloud_topic" value="/UAV1/fast_lio/cloud_registered"/>
-    <param name="odom_topic" value="/UAV1/fast_lio/Odometry"/>
+    <param name="input_cloud_topic" value="/UAV1/ldop/cloud_registered_throttled"/>
+    <param name="odom_topic" value="$(arg uav1_odom_topic)"/>
     <param name="static_cloud_topic" value="/UAV1/ldop/static_cloud"/>
     <param name="dynamic_cloud_topic" value="/UAV1/ldop/dynamic_cloud"/>
     <param name="dynamic_objects_topic" value="/UAV1/ldop/dynamic_objects"/>
@@ -40,6 +66,18 @@
     <param name="fusion_objects_topic" value="/UAV1/ldop/fused_dynamic_objects"/>
     <param name="fusion_virtual_imu_topic" value="/UAV1/ldop/fused_dynamic_object_virtual_imu"/>
     <param name="fusion_marker_topic" value="/UAV1/ldop/fused_dynamic_object_markers"/>
+    <param name="ufomap_resolution" value="0.05"/>
+    <param name="ufomap_inflate_hits_dist" value="0.10"/>
+    <param name="corridor_min_lateral_span" value="0.15"/>
+    <param name="corridor_min_confirm_hits" value="3"/>
+    <param name="corridor_min_cluster_points" value="4"/>
+    <param name="corridor_max_cluster_extent" value="0.8"/>
+    <param name="corridor_oversized_split_enabled" value="false"/>
+    <param name="corridor_split_min_cluster_points" value="3"/>
+    <param name="corridor_max_candidates" value="3"/>
+    <param name="corridor_reject_candidate_count" value="5"/>
+    <param name="corridor_wall_clearance" value="0.10"/>
+    <param name="dynamic_cluster_detector_min_points" value="4"/>
     <rosparam param="fusion_mocap_topics">[/UAV1/ldop/disabled_mocap]</rosparam>
   </node>
 </launch>
