@@ -55,7 +55,8 @@ int main() {
                           release_confirmations);
   assert(phase == LowProbePhase::DESCENDING);
 
-  // 原地到达后进入确认；必须连续三次安全，任意一次失败都会清零。
+  // 原地到达后进入确认；必须连续三次安全，UNKNOWN或占据都会以false输入，
+  // 任意一次都清零且不能授权向前下穿。
   observation.xy_stable = true;
   phase = advanceLowProbe(phase, observation, 3, 2, confirmations,
                           release_confirmations);

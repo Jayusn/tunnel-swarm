@@ -1203,26 +1203,22 @@ bool FastExplorationManager::buildMissionForwardFallback(const Vector3d& pos, do
   // 竖直障碍物把通道切成左右两路时，先直接去占据地图中净宽更大的一侧。
   // 该场景不参与普通frontier总分，也不等待上下绕行接管。
   bool split_obstacle_detected = false;
-  // 先处理“悬空障碍+下方已知短通道”：固定XY下降到0.20m，低位确认通过后再前进。
-  // 这一步必须在水平侧绕之前，避免把本应从下面走的悬空障碍误判成侧绕。
+  // 先处理中心线上的悬空障碍候选：固定XY下降到低位补图，只有低位中心线
+  // 连续确认为FREE后才允许短步前进。UNKNOWN只能触发原地试探，不能授权下穿。
   const bool suspended_forward_obstacle =
       hasSuspendedForwardObstacle(pos, recovery_forward);
   if (suspended_forward_obstacle &&
       pos.z() > vertical_detour_low_height_ + vertical_detour_height_tolerance_) {
-    Vector3d low_start = pos;
-    low_start.z() = vertical_detour_low_height_;
-    if (isLowProbeCorridorSafe(low_start, recovery_forward,
-                               vertical_detour_forward_check_distance_) &&
-        buildVerticalDetourFallback(pos, cur_yaw, recovery_forward, next_pos, next_yaw,
-                                    true)) {
-      ROS_WARN("[vertical_detour] suspended obstacle with known-low corridor; "
-               "prioritize centered underpass before horizontal recovery.");
+    if (buildVerticalDetourFallback(pos, cur_yaw, recovery_forward, next_pos,
+                                    next_yaw, true)) {
+      ROS_WARN("[vertical_detour] suspended-obstacle candidate; descend in place "
+               "to observe the low corridor before any forward release.");
       return true;
     }
     ROS_WARN_THROTTLE(
         0.5,
-        "[vertical_detour] suspended obstacle seen but low corridor is not confirmed; "
-        "keep horizontal/updated-map fallback.");
+        "[vertical_detour] suspended-obstacle candidate cannot start a safe vertical "
+        "probe; keep horizontal/updated-map fallback.");
   }
 
   if (buildWideSideBypass(pos, cur_yaw, recovery_forward, next_pos, next_yaw,
@@ -2199,10 +2195,10 @@ int FastExplorationManager::planExploreMotion(
     return NO_FRONTIER;
   }
   planner_manager_->path_finder_->clearProgressConstraint();
-  // 一旦确认转弯，锁存的最终 yaw 对普通规划拥有独占权；已经启动的低位下穿
-  // 会话优先完成或在球下方切换水平绕障，不能再被原地转向提前取消。
-  if (turn_in_place_session_active_ &&
-      low_probe_phase_ == vertical_detour::LowProbePhase::IDLE) {
+  // 地图确认的转弯拥有最高运动优先级。若此前刚启动低位探测，立即撤销其
+  // 固定XY/高度目标，避免下穿状态阻塞已经确认的新通道转向。
+  if (turn_in_place_session_active_) {
+    cancelActiveLowProbe("confirmed mapped turn has higher motion priority");
     const Vector3d locked_direction(std::cos(turn_in_place_final_yaw_),
                                     std::sin(turn_in_place_final_yaw_), 0.0);
     return buildTurnInPlacePlan(pos, vel, yaw, locked_direction) ? SUCCEED : FAIL;
@@ -2977,6 +2973,8 @@ int FastExplorationManager::planExploreMotion(
     }
     // 新通道首次确认时丢弃刚生成的平移轨迹并先对准机头；普通轴线校正继续平移。
     if (mapped_turn_detected) {
+      // 本轮前半段可能已经生成了下穿目标；转弯确认后该目标不得跨周期保留。
+      cancelActiveLowProbe("new mapped turn has higher motion priority");
       if (buildTurnInPlacePlan(pos, vel, yaw, mapped_direction)) return SUCCEED;
       // 转弯已经锁存但仍在刹停/静止确认时，禁止回落到刚生成的普通平移轨迹。
       return FAIL;
