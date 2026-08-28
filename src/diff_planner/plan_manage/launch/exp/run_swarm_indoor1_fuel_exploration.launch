@@ -29,7 +29,7 @@
     <arg name="corridor_oversized_split_enabled" default="false"/>
     <arg name="corridor_split_min_cluster_points" default="3"/>
     <arg name="corridor_max_candidates" default="3"/>
-    <arg name="corridor_reject_candidate_count" default="5"/>
+    <arg name="corridor_reject_candidate_count" default="10"/>
     <arg name="corridor_wall_clearance" default="0.10"/>
     <arg name="dynamic_cluster_detector_min_points" default="4"/>
     <!-- LDOP尚未完成实飞验证：默认不启动两机动态检测，规划仲裁器也不消费动态目标。
