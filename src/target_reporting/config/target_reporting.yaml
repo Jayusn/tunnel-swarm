@@ -27,6 +27,9 @@ thermal_confirmation_duration_s: 1.0
 thermal_confirmation_max_gap_s: 0.50
 # 非空二维码内容优先作为目标身份；相同内容即使定位漂移超过本距离也不会重复上报。
 dedup_distance_m: 0.30
+# FAST-LIO 短时跳变时，同色标签仍按连续画面中心关联，避免每帧重复上报。
+color_image_dedup_distance_px: 80.0
+color_image_dedup_max_gap_s: 1.0
 # 证据图必须与确认点使用同一检测帧；不再使用前后 0.5 秒的旧图。
 image_match_tolerance_s: 0.03
 # D435 和热成像不是硬件同步曝光，允许选择时间上最近的 D435 标注帧。

@@ -144,6 +144,51 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(confirmed)
         self.assertEqual(3, candidate["hits"])
 
+    def test_color_image_track_prevents_flood_after_world_position_drift(self):
+        tracker = CandidateTracker(
+            distance_m=0.3,
+            color_image_distance_px=80.0,
+            color_image_max_gap_s=1.0,
+            confirm_hits=1,
+        )
+        first, first_confirmed = tracker.update(
+            "color_tag",
+            {"color": "yellow", "center_u": 600, "center_v": 280},
+            {"x": 6.5, "y": -0.4, "z": 0.5},
+            timestamp=10.0,
+        )
+        repeated, repeated_confirmed = tracker.update(
+            "color_tag",
+            {"color": "yellow", "center_u": 603, "center_v": 282},
+            {"x": -755.0, "y": -75.0, "z": -1783.0},
+            timestamp=10.13,
+        )
+        self.assertTrue(first_confirmed)
+        self.assertFalse(repeated_confirmed)
+        self.assertEqual(first["local_number"], repeated["local_number"])
+
+    def test_separate_same_color_image_target_keeps_its_own_identity(self):
+        tracker = CandidateTracker(
+            distance_m=0.3,
+            color_image_distance_px=80.0,
+            color_image_max_gap_s=1.0,
+            confirm_hits=1,
+        )
+        first, _ = tracker.update(
+            "color_tag",
+            {"color": "yellow", "center_u": 200, "center_v": 200},
+            {"x": 1.0, "y": 0.0, "z": 1.0},
+            timestamp=10.0,
+        )
+        second, second_confirmed = tracker.update(
+            "color_tag",
+            {"color": "yellow", "center_u": 500, "center_v": 400},
+            {"x": 5.0, "y": 0.0, "z": 1.0},
+            timestamp=10.1,
+        )
+        self.assertTrue(second_confirmed)
+        self.assertNotEqual(first["local_number"], second["local_number"])
+
     def test_decoded_qr_content_prevents_duplicate_after_position_drift(self):
         tracker = CandidateTracker(distance_m=0.3, confirm_hits=1)
         first, first_confirmed = tracker.update(

@@ -114,6 +114,12 @@ class TargetReporterNode:
                     "~thermal_confirmation_duration_s", 1.0
                 )
             },
+            color_image_distance_px=rospy.get_param(
+                "~color_image_dedup_distance_px", 80.0
+            ),
+            color_image_max_gap_s=rospy.get_param(
+                "~color_image_dedup_max_gap_s", 1.0
+            ),
         )
         self.images = TimestampedImageCache(rospy.get_param("~image_cache_items", 40))
         host = rospy.get_param("~remote_host", "192.168.10.100")

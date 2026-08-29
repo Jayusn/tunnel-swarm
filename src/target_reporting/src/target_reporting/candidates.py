@@ -20,8 +20,12 @@ class CandidateTracker:
         confirm_hits_by_type=None,
         confirmation_max_gap_s_by_type=None,
         confirmation_duration_s_by_type=None,
+        color_image_distance_px=80.0,
+        color_image_max_gap_s=1.0,
     ):
         self.distance_m = float(distance_m)
+        self.color_image_distance_px = max(0.0, float(color_image_distance_px))
+        self.color_image_max_gap_s = max(0.0, float(color_image_max_gap_s))
         self.confirm_hits = max(1, int(confirm_hits))
         self.confirm_hits_by_type = {
             str(key): max(1, int(value))
@@ -37,6 +41,16 @@ class CandidateTracker:
         }
         self._items = []
         self._next = {}
+
+    @staticmethod
+    def _image_center(result):
+        if "center_u" in result and "center_v" in result:
+            return float(result["center_u"]), float(result["center_v"])
+        bbox = result.get("bbox")
+        if isinstance(bbox, (list, tuple)) and len(bbox) == 4:
+            x, y, width, height = (float(value) for value in bbox)
+            return x + width * 0.5, y + height * 0.5
+        return None
 
     @staticmethod
     def _result_key(result):
@@ -57,11 +71,13 @@ class CandidateTracker:
         timestamp=None,
     ):
         key = self._result_key(result)
+        current_stamp = None if timestamp is None else float(timestamp)
+        image_center = self._image_center(result)
         qr_content = ""
         if target_type == "qr_code":
             qr_content = str(result.get("content", "") or "").strip()
         best = None
-        best_distance = None
+        best_match = None
         for item in self._items:
             if item["target_type"] != target_type:
                 continue
@@ -72,12 +88,38 @@ class CandidateTracker:
             if item["result_key"] != key and not same_decoded_qr:
                 continue
             distance = math.sqrt(sum((float(position[a]) - item["position"][a]) ** 2 for a in ("x", "y", "z")))
+            image_distance = None
+            if image_center is not None and item.get("image_center") is not None:
+                image_distance = math.hypot(
+                    image_center[0] - item["image_center"][0],
+                    image_center[1] - item["image_center"][1],
+                )
+            last_seen_stamp = item.get("last_seen_stamp")
+            image_gap = (
+                None
+                if current_stamp is None or last_seen_stamp is None
+                else current_stamp - last_seen_stamp
+            )
+            same_color_image_track = (
+                target_type == "color_tag"
+                and image_distance is not None
+                and image_gap is not None
+                and 0.0 <= image_gap <= self.color_image_max_gap_s
+                and image_distance <= self.color_image_distance_px
+            )
             # A non-empty decoded QR payload is a stronger identity than its
             # drifting world coordinate.  Once registered, the same payload
             # must not be uploaded again after a FAST-LIO/TF position jump.
-            within_identity_gate = same_decoded_qr or distance <= self.distance_m
-            if within_identity_gate and (best_distance is None or distance < best_distance):
-                best, best_distance = item, distance
+            if same_decoded_qr:
+                match = (0, distance)
+            elif distance <= self.distance_m:
+                match = (1, distance)
+            elif same_color_image_track:
+                match = (2, image_distance)
+            else:
+                continue
+            if best_match is None or match < best_match:
+                best, best_match = item, match
         if best is None:
             number = self._next.get(target_type, 0) + 1
             self._next[target_type] = number
@@ -86,6 +128,8 @@ class CandidateTracker:
                 "result_key": key,
                 "qr_content": qr_content,
                 "position": dict(position),
+                "image_center": image_center,
+                "last_seen_stamp": current_stamp,
                 "hits": 0,
                 "last_confirmation_stamp": None,
                 "first_confirmation_stamp": None,
@@ -93,6 +137,9 @@ class CandidateTracker:
                 "local_number": number,
             }
             self._items.append(best)
+        else:
+            best["image_center"] = image_center
+            best["last_seen_stamp"] = current_stamp
         if not allow_confirmation:
             # Keep the candidate position available for RViz, but do not let
             # unvalidated observations accumulate toward a confirmation.
@@ -104,7 +151,6 @@ class CandidateTracker:
                 best["position"][axis] = float(position[axis])
             return best, False
 
-        current_stamp = None if timestamp is None else float(timestamp)
         max_gap = self.confirmation_max_gap_s_by_type.get(target_type)
         last_stamp = best.get("last_confirmation_stamp")
         if (
