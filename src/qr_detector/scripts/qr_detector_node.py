@@ -216,7 +216,7 @@ class QRDetectorNode(object):
         self.depth_min = float(rospy.get_param("~depth_min", 0.15))
         self.depth_max = float(rospy.get_param("~depth_max", 8.0))
         self.preprocess_mode = rospy.get_param("~preprocess_mode", "gray")
-        self.upscale_factor = float(rospy.get_param("~upscale_factor", 1.0))
+        self.upscale_factor = float(rospy.get_param("~upscale_factor", 1.5))
         self.enable_preprocess_fallbacks = bool(
             rospy.get_param("~enable_preprocess_fallbacks", False)
         )
