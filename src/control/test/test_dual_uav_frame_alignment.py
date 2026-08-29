@@ -604,6 +604,23 @@ def test_uav1_detection_stack_uses_isolated_topics_and_disables_front_aruco():
     assert reporter_params["thermal_ground_filter_enabled"] == "true"
     assert reporter_params["thermal_min_height_m"] == "-0.08"
     assert reporter_params["leader_odom_max_age_s"] == "0.50"
+    assert reporter_params["thermal_fused_candidate_topic"] == (
+        "/UAV1/thermal/report_candidate"
+    )
+
+    fusion = by_type["thermal_d435_fusion_node.py"]
+    fusion_params = {
+        item.attrib["name"]: item.attrib["value"] for item in fusion.findall("param")
+    }
+    assert fusion_params["report_candidate_topic"] == (
+        "/UAV1/thermal/report_candidate"
+    )
+
+    thermal = by_type["thermal_ros_node.py"]
+    thermal_params = {
+        item.attrib["name"]: item.attrib["value"] for item in thermal.findall("param")
+    }
+    assert thermal_params["max_candidates"] == "5"
 
 
 def test_uav1_down_camera_waits_for_busy_device_and_retries_without_killing_owner():

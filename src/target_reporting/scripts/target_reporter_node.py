@@ -183,20 +183,37 @@ class TargetReporterNode:
                 String,
                 "/UAV0/vision/qr_debug_image",
             )
-            self._subscribe(
-                "thermal",
-                rospy.get_param(
-                    "~thermal_candidate_point_topic",
-                    "/UAV0/thermal/target_candidate_camera_point",
-                ),
-                PointStamped,
-                rospy.get_param(
-                    "~thermal_candidate_status_topic",
-                    "/UAV0/thermal/target_candidate_status",
-                ),
-                String,
-                "/UAV0/thermal/debug_image",
-            )
+            thermal_fused_topic = str(
+                rospy.get_param("~thermal_fused_candidate_topic", "")
+            ).strip()
+            if thermal_fused_topic:
+                rospy.Subscriber(
+                    thermal_fused_topic,
+                    String,
+                    self._thermal_fused_candidate_cb,
+                    queue_size=10,
+                )
+                rospy.Subscriber(
+                    "/UAV0/thermal/debug_image",
+                    Image,
+                    lambda msg: self._image_cb("thermal", msg),
+                    queue_size=2,
+                )
+            else:
+                self._subscribe(
+                    "thermal",
+                    rospy.get_param(
+                        "~thermal_candidate_point_topic",
+                        "/UAV0/thermal/target_candidate_camera_point",
+                    ),
+                    PointStamped,
+                    rospy.get_param(
+                        "~thermal_candidate_status_topic",
+                        "/UAV0/thermal/target_candidate_status",
+                    ),
+                    String,
+                    "/UAV0/thermal/debug_image",
+                )
         else:
             # Compatibility path for old detector nodes without candidate topics.
             self._subscribe(
@@ -265,6 +282,38 @@ class TargetReporterNode:
             self.latest_status[source] = status
             self.status_version[source] = self.status_version.get(source, 0) + 1
         self._try_process(source)
+
+    def _thermal_fused_candidate_cb(self, msg):
+        try:
+            data = json.loads(msg.data)
+            camera_point = data["camera_point"]
+            frame_id = str(camera_point["frame_id"]).strip()
+            stamp = float(data["stamp"])
+            coordinates = [
+                float(camera_point[axis]) for axis in ("x", "y", "z")
+            ]
+            if not frame_id or not math.isfinite(stamp) or not all(
+                math.isfinite(value) for value in coordinates
+            ):
+                raise ValueError("invalid fused thermal point")
+            status = parse_thermal_status(msg.data)
+            if status is None:
+                return
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            rospy.logwarn_throttle(2.0, "Invalid fused thermal candidate: %s", exc)
+            return
+
+        point = PointStamped()
+        point.header.stamp = rospy.Time.from_sec(stamp)
+        point.header.frame_id = frame_id
+        point.point.x, point.point.y, point.point.z = coordinates
+        with self.lock:
+            self.latest_point["thermal"] = point
+            self.point_history["thermal"].append(point)
+            self.point_version["thermal"] = self.point_version.get("thermal", 0) + 1
+            self.latest_status["thermal"] = status
+            self.status_version["thermal"] = self.status_version.get("thermal", 0) + 1
+        self._try_process("thermal")
 
     def _image_cb(self, source, msg):
         try:

@@ -106,6 +106,7 @@ class RosPackageLayoutTest(unittest.TestCase):
             "stable_max_len: 3",
             "stable_min_hits: 2",
             "stable_max_pixel_jump: 25",
+            "max_candidates: 1",
             "reject_roi_border_touching: false",
         ):
             self.assertIn(expected, config)
@@ -122,6 +123,10 @@ class RosPackageLayoutTest(unittest.TestCase):
         self.assertIn("D435 XYZ=", source)
         self.assertIn(
             "thermal_candidate_status_topic: /UAV0/thermal/target_candidate_status",
+            config,
+        )
+        self.assertIn(
+            'report_candidate_topic: ""',
             config,
         )
         self.assertIn("d435_color_topic: /camera/color/image_raw", config)

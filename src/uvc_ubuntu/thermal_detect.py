@@ -214,6 +214,7 @@ def detect_hotspot(
     k=2.0,
     min_area=20,
     max_area=5000,
+    max_candidates=5,
 ):
     h, w = gray.shape[:2]
     x0 = max(0, min(roi_margin_x, w - 1))
@@ -233,7 +234,7 @@ def detect_hotspot(
 
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    best = None
+    candidates = []
     for cnt in contours:
         area = float(cv2.contourArea(cnt))
         if area < min_area or area > max_area:
@@ -243,23 +244,21 @@ def detect_hotspot(
         cv2.drawContours(cnt_mask, [cnt], -1, 255, -1)
         mean_gray = float(cv2.mean(blur, mask=cnt_mask)[0])
 
-        # Prefer the brightest valid blob; use area as the tie breaker.
-        score = (mean_gray, area)
-        if best is None or score > best["score"]:
-            moments = cv2.moments(cnt)
-            if moments["m00"] == 0:
-                continue
-            cx_roi = int(moments["m10"] / moments["m00"])
-            cy_roi = int(moments["m01"] / moments["m00"])
-            bx, by, bw, bh = cv2.boundingRect(cnt)
-            touches_roi_border = (
-                bx <= 0
-                or by <= 0
-                or bx + bw >= mask.shape[1]
-                or by + bh >= mask.shape[0]
-            )
-            best = {
-                "score": score,
+        moments = cv2.moments(cnt)
+        if moments["m00"] == 0:
+            continue
+        cx_roi = int(moments["m10"] / moments["m00"])
+        cy_roi = int(moments["m01"] / moments["m00"])
+        bx, by, bw, bh = cv2.boundingRect(cnt)
+        touches_roi_border = (
+            bx <= 0
+            or by <= 0
+            or bx + bw >= mask.shape[1]
+            or by + bh >= mask.shape[0]
+        )
+        candidates.append(
+            {
+                "score": (mean_gray, area),
                 "cx": cx_roi + x0,
                 "cy": cy_roi + y0,
                 "bbox": (bx + x0, by + y0, bw, bh),
@@ -267,6 +266,13 @@ def detect_hotspot(
                 "mean_gray": mean_gray,
                 "touches_roi_border": touches_roi_border,
             }
+        )
+
+    # Preserve the historical brightest-first result while exposing the next
+    # valid blobs so downstream spatial filters do not hide a real target.
+    candidates.sort(key=lambda item: item["score"], reverse=True)
+    candidates = candidates[: max(1, int(max_candidates))]
+    best = candidates[0] if candidates else None
 
     result = {
         "detected": best is not None,
@@ -277,6 +283,7 @@ def detect_hotspot(
         "mean_gray": 0.0,
         "threshold": threshold_value,
         "touches_roi_border": False,
+        "candidates": candidates,
         "roi_rect": (x0, y0, x1 - x0, y1 - y0),
         "mask": mask,
     }
@@ -313,6 +320,9 @@ def draw_debug(gray, detection, stable_detected=None, stable_count=None, stable_
     cv2.rectangle(debug, (rx, ry), (rx + rw - 1, ry + rh - 1), (255, 160, 0), 1)
 
     if detection["detected"]:
+        for candidate in detection.get("candidates", [])[1:]:
+            x, y, w, h = candidate["bbox"]
+            cv2.rectangle(debug, (x, y), (x + w, y + h), (255, 255, 0), 1)
         x, y, w, h = detection["bbox"]
         cx, cy = detection["cx"], detection["cy"]
         cv2.rectangle(debug, (x, y), (x + w, y + h), (0, 255, 0), 2)

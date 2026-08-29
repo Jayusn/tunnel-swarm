@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 import importlib.util
 import threading
+from collections import defaultdict, deque
 from pathlib import Path
 
 import rospy
 from geometry_msgs.msg import PointStamped
 from nav_msgs.msg import Odometry
+from std_msgs.msg import String
 
 
 SCRIPT = Path(__file__).parents[1] / "scripts/target_reporter_node.py"
@@ -78,3 +80,31 @@ def test_keeps_ground_candidate_when_filter_is_disabled(monkeypatch):
     assert not reporter._is_ground_thermal_source(
         {"x": 1.0, "y": 2.0, "z": -0.20}
     )
+
+
+def test_fused_thermal_candidate_updates_point_and_status_atomically():
+    reporter = MODULE.TargetReporterNode.__new__(MODULE.TargetReporterNode)
+    reporter.lock = threading.Lock()
+    reporter.latest_point = {}
+    reporter.point_history = defaultdict(lambda: deque(maxlen=30))
+    reporter.point_version = {}
+    reporter.latest_status = {}
+    reporter.status_version = {}
+    processed = []
+    reporter._try_process = processed.append
+
+    reporter._thermal_fused_candidate_cb(
+        String(
+            data=(
+                '{"detected":true,"candidate":true,"stable":true,'
+                '"confirmable":true,"stamp":12.5,"cx":100,"cy":80,'
+                '"bbox":[90,70,20,20],"camera_point":'
+                '{"frame_id":"camera_optical","x":1.0,"y":2.0,"z":3.0}}'
+            )
+        )
+    )
+
+    assert processed == ["thermal"]
+    assert reporter.latest_point["thermal"].header.stamp.to_sec() == 12.5
+    assert reporter.latest_point["thermal"].point.z == 3.0
+    assert reporter.latest_status["thermal"][0]["_detector_confirmable"] is True

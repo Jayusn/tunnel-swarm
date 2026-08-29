@@ -131,6 +131,7 @@
            value="/UAV1/thermal/target_candidate_status" />
     <param name="candidate_pixel_topic"
            value="/UAV1/thermal/target_candidate_pixel" />
+    <param name="max_candidates" value="5" />
     <remap from="/UAV0/thermal/image_raw" to="/UAV1/thermal/image_raw" />
     <remap from="/UAV0/thermal/debug_image" to="/UAV1/thermal/debug_image" />
     <remap from="/UAV0/thermal/target_detected"
@@ -158,6 +159,8 @@
            value="/UAV1/thermal/target_candidate_status" />
     <param name="thermal_candidate_camera_point_topic"
            value="/UAV1/thermal/target_candidate_camera_point" />
+    <param name="report_candidate_topic"
+           value="/UAV1/thermal/report_candidate" />
     <param name="d435_camera_info_topic" value="/UAV1/camera/color/camera_info" />
     <param name="d435_depth_topic"
            value="/UAV1/camera/aux/aligned_depth_to_color/image_raw" />
@@ -193,10 +196,8 @@
            value="/UAV1/vision/qr_candidate_pose_camera" />
     <param name="qr_candidate_status_topic"
            value="/UAV1/vision/qr_candidate_detected" />
-    <param name="thermal_candidate_point_topic"
-           value="/UAV1/thermal/target_candidate_camera_point" />
-    <param name="thermal_candidate_status_topic"
-           value="/UAV1/thermal/target_candidate_status" />
+    <param name="thermal_fused_candidate_topic"
+           value="/UAV1/thermal/report_candidate" />
     <param name="thermal_d435_debug_image_topic"
            value="/UAV1/thermal/d435_debug_image" />
     <!-- 只过滤落在前机机体附近的热源候选；颜色、QR和调试图不受影响。 -->

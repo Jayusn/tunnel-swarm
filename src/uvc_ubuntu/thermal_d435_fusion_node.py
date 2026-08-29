@@ -46,6 +46,10 @@ class ThermalD435FusionNode:
             "thermal_candidate_camera_point_topic",
             "/UAV0/thermal/target_candidate_camera_point",
         )
+        self.report_candidate_topic = self.get_param(
+            "report_candidate_topic",
+            "",
+        )
         self.d435_camera_info_topic = self.get_param(
             "d435_camera_info_topic", "/camera/color/camera_info"
         )
@@ -90,6 +94,9 @@ class ThermalD435FusionNode:
         self.candidate_target_detected = False
         self.candidate_thermal_pixel_msg = None
         self.candidate_thermal_bbox = None
+        self.candidate_status = None
+        self.candidate_status_version = 0
+        self.published_candidate_status_version = 0
         self.camera_info = None
         self.depth_image = None
         self.depth_encoding = None
@@ -113,6 +120,11 @@ class ThermalD435FusionNode:
         self.candidate_camera_point_pub = rospy.Publisher(
             self.thermal_candidate_camera_point_topic, PointStamped, queue_size=1
         )
+        self.report_candidate_pub = None
+        if self.report_candidate_topic:
+            self.report_candidate_pub = rospy.Publisher(
+                self.report_candidate_topic, String, queue_size=5
+            )
         self.channel_position_pub = rospy.Publisher(
             "/UAV0/thermal/target_channel_position", PointStamped, queue_size=1
         )
@@ -192,6 +204,8 @@ class ThermalD435FusionNode:
 
         with self.lock:
             self.candidate_thermal_bbox = bbox
+            self.candidate_status = status
+            self.candidate_status_version += 1
 
     def _pixel_callback(self, msg, candidate):
         msg_type = msg._connection_header.get("type", "")
@@ -356,6 +370,7 @@ class ThermalD435FusionNode:
         candidate_detected,
         candidate_pixel_msg,
         thermal_bbox,
+        thermal_candidates,
         camera_info,
         depth_image,
         depth_encoding,
@@ -364,6 +379,16 @@ class ThermalD435FusionNode:
             return
 
         debug_image = color_image.copy()
+        for candidate in thermal_candidates:
+            mapped_bbox = self.map_thermal_bbox_to_d435(candidate.get("bbox"))
+            if mapped_bbox is not None:
+                cv2.polylines(
+                    debug_image,
+                    [mapped_bbox.reshape((-1, 1, 2))],
+                    True,
+                    (255, 255, 0),
+                    1,
+                )
         source = None
         status = "NO THERMAL TARGET"
         if detected and thermal_pixel_msg is not None and thermal_pixel_msg.point.z > 0.0:
@@ -477,6 +502,78 @@ class ThermalD435FusionNode:
             return None
         return self.pixel_to_camera_point(u_d, v_d, depth, camera_info)
 
+    @staticmethod
+    def status_candidates(status):
+        if not isinstance(status, dict):
+            return []
+        candidates = status.get("candidates")
+        if isinstance(candidates, list):
+            return [item for item in candidates if isinstance(item, dict)]
+        if status.get("detected") and status.get("cx") is not None:
+            return [status]
+        return []
+
+    def publish_report_candidates(
+        self, status, camera_info, depth_image, depth_encoding
+    ):
+        if status is None or camera_info is None or depth_image is None:
+            return False
+        if depth_encoding is None:
+            return False
+        try:
+            base_stamp = float(status.get("stamp"))
+        except (TypeError, ValueError):
+            base_stamp = rospy.Time.now().to_sec()
+
+        for index, candidate in enumerate(self.status_candidates(status)):
+            try:
+                cx = float(candidate["cx"])
+                cy = float(candidate["cy"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            stamp = base_stamp + index * 1.0e-6
+            thermal_point = PointStamped()
+            thermal_point.header.stamp = rospy.Time.from_sec(stamp)
+            thermal_point.header.frame_id = "thermal_camera"
+            thermal_point.point.x = cx
+            thermal_point.point.y = cy
+            thermal_point.point.z = 1.0
+            camera_point = self.build_camera_point(
+                thermal_point, camera_info, depth_image, depth_encoding
+            )
+            if camera_point is None:
+                continue
+            camera_point.header.stamp = thermal_point.header.stamp
+
+            stable = bool(candidate.get("stable", status.get("stable", False)))
+            report_status = {
+                "detected": True,
+                "candidate": True,
+                "stable": stable,
+                "confirmable": bool(candidate.get("confirmable", stable)),
+                "stable_count": int(candidate.get("stable_count", 0)),
+                "stable_window": int(status.get("stable_window", 1)),
+                "stamp": stamp,
+                "rank": int(candidate.get("rank", index + 1)),
+                "cx": int(round(cx)),
+                "cy": int(round(cy)),
+                "bbox": candidate.get("bbox"),
+                "area": float(candidate.get("area", 0.0)),
+                "touches_roi_border": bool(
+                    candidate.get("touches_roi_border", False)
+                ),
+                "camera_point": {
+                    "frame_id": camera_point.header.frame_id,
+                    "x": camera_point.point.x,
+                    "y": camera_point.point.y,
+                    "z": camera_point.point.z,
+                },
+            }
+            self.report_candidate_pub.publish(
+                String(data=json.dumps(report_status, ensure_ascii=False))
+            )
+        return True
+
     def timer_callback(self, _event):
         with self.lock:
             detected = self.target_detected
@@ -484,6 +581,8 @@ class ThermalD435FusionNode:
             candidate_detected = self.candidate_target_detected
             candidate_pixel_msg = self.candidate_thermal_pixel_msg
             candidate_thermal_bbox = self.candidate_thermal_bbox
+            candidate_status = self.candidate_status
+            candidate_status_version = self.candidate_status_version
             camera_info = self.camera_info
             depth_image = None if self.depth_image is None else self.depth_image.copy()
             depth_encoding = self.depth_encoding
@@ -502,10 +601,20 @@ class ThermalD435FusionNode:
                 candidate_detected,
                 candidate_pixel_msg,
                 candidate_thermal_bbox,
+                self.status_candidates(candidate_status),
                 camera_info,
                 depth_image,
                 depth_encoding,
             )
+
+        if (
+            self.report_candidate_pub is not None
+            and candidate_status_version > self.published_candidate_status_version
+        ):
+            if self.publish_report_candidates(
+                candidate_status, camera_info, depth_image, depth_encoding
+            ):
+                self.published_candidate_status_version = candidate_status_version
 
         # Candidate fusion is independent of the package's stable 2/3-frame
         # stream. It only requires a valid raw hotspot pixel and valid depth;

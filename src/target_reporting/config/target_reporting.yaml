@@ -10,6 +10,7 @@ qr_candidate_point_topic: "/UAV0/vision/qr_candidate_pose_camera"
 qr_candidate_status_topic: "/UAV0/vision/qr_candidate_detected"
 thermal_candidate_point_topic: "/UAV0/thermal/target_candidate_camera_point"
 thermal_candidate_status_topic: "/UAV0/thermal/target_candidate_status"
+thermal_fused_candidate_topic: ""
 thermal_d435_debug_image_topic: "/UAV0/thermal/d435_debug_image"
 
 remote_host: "192.168.31.147"

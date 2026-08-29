@@ -74,6 +74,50 @@ class StableTargetFilter:
         return True, cx, cy
 
 
+class MultiTargetFilter:
+    def __init__(self, enabled=True, max_len=3, min_hits=2, max_pixel_jump=25.0):
+        self.enabled = enabled
+        self.max_len = max(1, int(max_len))
+        self.min_hits = max(1, int(min_hits))
+        self.max_pixel_jump = float(max_pixel_jump)
+        self.history = deque(maxlen=self.max_len)
+
+    def update(self, candidates):
+        current = [
+            {
+                "detected": bool(item.get("detected", True)),
+                "cx": float(item["cx"]),
+                "cy": float(item["cy"]),
+            }
+            for item in candidates
+        ]
+        self.history.append(current)
+        results = []
+        for candidate in current:
+            hits = 0
+            if candidate["detected"]:
+                for frame in self.history:
+                    if any(
+                        item["detected"]
+                        and (
+                            (candidate["cx"] - item["cx"]) ** 2
+                            + (candidate["cy"] - item["cy"]) ** 2
+                        )
+                        ** 0.5
+                        <= self.max_pixel_jump
+                        for item in frame
+                    ):
+                        hits += 1
+            results.append(
+                {
+                    "stable": candidate["detected"]
+                    and (not self.enabled or hits >= self.min_hits),
+                    "stable_count": hits,
+                }
+            )
+        return results
+
+
 def numpy_to_image_msg(image, encoding, stamp, frame_id):
     if image is None:
         raise ValueError("image is None")
@@ -110,6 +154,7 @@ class ThermalDetectorNode:
         self.threshold_k = float(rospy.get_param("~threshold_k", 2.0))
         self.min_area = float(rospy.get_param("~min_area", 20))
         self.max_area = float(rospy.get_param("~max_area", 5000))
+        self.max_candidates = max(1, int(rospy.get_param("~max_candidates", 5)))
         self.reject_roi_border_touching = bool(
             rospy.get_param("~reject_roi_border_touching", False)
         )
@@ -127,6 +172,12 @@ class ThermalDetectorNode:
         self.frame_size = self.width * self.height * 2
         self.process = None
         self.stable_filter = StableTargetFilter(
+            enabled=self.stable_filter_enable,
+            max_len=self.stable_max_len,
+            min_hits=self.stable_min_hits,
+            max_pixel_jump=self.stable_max_pixel_jump,
+        )
+        self.multi_stable_filter = MultiTargetFilter(
             enabled=self.stable_filter_enable,
             max_len=self.stable_max_len,
             min_hits=self.stable_min_hits,
@@ -184,6 +235,15 @@ class ThermalDetectorNode:
         stable_detected, stable_cx, stable_cy = self.stable_filter.update(
             confirmation_detection
         )
+        candidate_gates = []
+        for candidate in detection.get("candidates", []):
+            candidate_gate = dict(candidate)
+            candidate_gate["detected"] = not (
+                self.reject_roi_border_touching
+                and candidate.get("touches_roi_border", False)
+            )
+            candidate_gates.append(candidate_gate)
+        candidate_stability = self.multi_stable_filter.update(candidate_gates)
         # Render the same detector-level candidate/stable state that is sent
         # in candidate_status.  The caller's legacy debug argument is kept
         # for API compatibility with older launch wrappers.
@@ -240,6 +300,25 @@ class ThermalDetectorNode:
                 if border_rejected
                 else "raw_candidate"
             ),
+            "candidates": [
+                {
+                    "rank": index + 1,
+                    "cx": int(candidate["cx"]),
+                    "cy": int(candidate["cy"]),
+                    "bbox": list(candidate["bbox"]),
+                    "area": float(candidate["area"]),
+                    "mean_gray": float(candidate["mean_gray"]),
+                    "touches_roi_border": bool(
+                        candidate.get("touches_roi_border", False)
+                    ),
+                    "stable": bool(stability["stable"]),
+                    "confirmable": bool(stability["stable"]),
+                    "stable_count": int(stability["stable_count"]),
+                }
+                for index, (candidate, stability) in enumerate(
+                    zip(detection.get("candidates", []), candidate_stability)
+                )
+            ],
         }
         self.candidate_status_pub.publish(
             String(data=json.dumps(candidate_status, ensure_ascii=False))
@@ -279,6 +358,7 @@ class ThermalDetectorNode:
                 k=self.threshold_k,
                 min_area=self.min_area,
                 max_area=self.max_area,
+                max_candidates=self.max_candidates,
             )
             debug = draw_debug(gray, detection)
             self.publish_detection(gray, debug, detection)
