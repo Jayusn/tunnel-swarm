@@ -1019,6 +1019,10 @@ bool FastExplorationManager::findForwardObstacleTop(
       for (double z = min_z; z <= max_z + 1e-6; z += step) {
         const Vector3d probe = pos + ahead * travel + side * lateral +
                                Vector3d(0.0, 0.0, z - pos.z());
+        // 连续通道墙不应决定“障碍物最高点”；这里只统计局部物体/门框，
+        // 否则墙顶会把上绕高度推到地图上限。
+        if (z >= pos.z() - 0.30 && cameraWallSupported(probe, travel.head<2>()))
+          continue;
         if (sdf_map_->isInMap(probe) &&
             sdf_map_->getOccupancy(probe) == SDFMap::OCCUPIED) {
           obstacle_top = std::max(obstacle_top, z + 0.5 * step);
