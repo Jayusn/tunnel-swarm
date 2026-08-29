@@ -76,7 +76,7 @@ TEST(SuspendedObstacleUnderpass, ChoosesLowHeightInsideSharedGap)
 {
   double target_z = 0.0;
   EXPECT_TRUE(SuspendedObstacleUnderpass::choosePassageHeight(
-      0.55, 0.20, 0.60, 0.60, 0.20, target_z));
+      0.55, 0.20, 0.60, 0.60, 0.20, 0.15, target_z));
   EXPECT_DOUBLE_EQ(target_z, 0.375);
 }
 
@@ -84,7 +84,22 @@ TEST(SuspendedObstacleUnderpass, RejectsGapAboveRequiredDescent)
 {
   double target_z = 0.0;
   EXPECT_FALSE(SuspendedObstacleUnderpass::choosePassageHeight(
-      0.55, 0.45, 0.60, 0.60, 0.20, target_z));
+      0.55, 0.45, 0.60, 0.60, 0.20, 0.15, target_z));
+}
+
+TEST(SuspendedObstacleUnderpass, ClampsPassageHeightToMinimum)
+{
+  double target_z = 0.0;
+  EXPECT_TRUE(SuspendedObstacleUnderpass::choosePassageHeight(
+      0.20, 0.05, 0.60, 0.60, 0.20, 0.15, target_z));
+  EXPECT_DOUBLE_EQ(target_z, 0.15);
+}
+
+TEST(SuspendedObstacleUnderpass, RejectsGapBelowMinimumHeight)
+{
+  double target_z = 0.0;
+  EXPECT_FALSE(SuspendedObstacleUnderpass::choosePassageHeight(
+      0.14, 0.05, 0.60, 0.60, 0.20, 0.15, target_z));
 }
 
 } // namespace

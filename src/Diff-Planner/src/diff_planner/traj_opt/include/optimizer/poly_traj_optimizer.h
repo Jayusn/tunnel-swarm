@@ -70,6 +70,7 @@ namespace diff_planner
     GridMap::Ptr grid_map_;
     AStar::Ptr a_star_;
     SuspendedObstacleUnderpass suspended_underpass_;
+    bool underpass_floor_active_{false};
     VerticalObstacleSideLock vertical_obstacle_side_lock_;
     poly_traj::MinJerkOpt jerkOpt_;
     SwarmTrajData *swarm_trajs_{NULL}; // Can not use shared_ptr and no need to free

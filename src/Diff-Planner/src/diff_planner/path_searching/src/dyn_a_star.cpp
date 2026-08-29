@@ -147,6 +147,8 @@ bool AStar::insideSearchRegion(const Vector3d &point,
         return true;
     if (region->limit_max_z && point.z() > region->max_z + 1.0e-6)
         return false;
+    if (region->limit_min_z && point.z() < region->min_z - 1.0e-6)
+        return false;
 
     if (region->limit_corridor)
     {

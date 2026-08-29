@@ -77,6 +77,7 @@
     <arg name="underpass_corridor_half_width" default="0.12"/>
     <arg name="underpass_min_descent" default="0.10"/>
     <arg name="underpass_min_vertical_gap" default="0.35"/>
+    <arg name="underpass_min_height" default="0.0"/>
     <arg name="underpass_search_timeout" default="0.05"/>
     <arg name="enable_vertical_obstacle_side_lock" default="false"/>
     <arg name="side_lock_corridor_half_width" default="0.75"/>
@@ -312,6 +313,7 @@
         <param name="optimization/underpass_corridor_half_width" value="$(arg underpass_corridor_half_width)" type="double"/>
         <param name="optimization/underpass_min_descent" value="$(arg underpass_min_descent)" type="double"/>
         <param name="optimization/underpass_min_vertical_gap" value="$(arg underpass_min_vertical_gap)" type="double"/>
+        <param name="optimization/underpass_min_height" value="$(arg underpass_min_height)" type="double"/>
         <param name="optimization/underpass_search_timeout" value="$(arg underpass_search_timeout)" type="double"/>
         <param name="optimization/enable_vertical_obstacle_side_lock" value="$(arg enable_vertical_obstacle_side_lock)" type="bool"/>
         <param name="optimization/side_lock_corridor_half_width" value="$(arg side_lock_corridor_half_width)" type="double"/>

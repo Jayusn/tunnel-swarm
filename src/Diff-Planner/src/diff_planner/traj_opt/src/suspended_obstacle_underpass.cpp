@@ -18,6 +18,8 @@ void SuspendedObstacleUnderpass::setConfig(const Config &config)
   if (!std::isfinite(config_.min_vertical_gap) ||
       config_.min_vertical_gap <= 0.0)
     config_.min_vertical_gap = 0.35;
+  if (!std::isfinite(config_.min_height) || config_.min_height < 0.0)
+    config_.min_height = 0.0;
   if (!std::isfinite(config_.search_timeout) || config_.search_timeout <= 0.0)
     config_.search_timeout = 0.05;
 }
@@ -83,15 +85,22 @@ bool SuspendedObstacleUnderpass::hasVerticalGap(
 
 bool SuspendedObstacleUnderpass::choosePassageHeight(
     const double top_z, const double bottom_z, const double start_z,
-    const double end_z, const double min_descent, double &target_z)
+    const double end_z, const double min_descent, const double min_height,
+    double &target_z)
 {
   if (!std::isfinite(top_z) || !std::isfinite(bottom_z) ||
       !std::isfinite(start_z) || !std::isfinite(end_z) ||
-      !std::isfinite(min_descent) || top_z < bottom_z || min_descent <= 0.0)
+      !std::isfinite(min_descent) || !std::isfinite(min_height) ||
+      top_z < bottom_z || min_descent <= 0.0 || min_height < 0.0)
     return false;
-  target_z = std::min(0.5 * (top_z + bottom_z),
-                      std::min(start_z, end_z) - min_descent);
-  return target_z + 1.0e-6 >= bottom_z;
+  const double maximum_descent_height =
+      std::min(start_z, end_z) - min_descent;
+  target_z = std::max(
+      min_height,
+      std::min(0.5 * (top_z + bottom_z), maximum_descent_height));
+  return target_z + 1.0e-6 >= bottom_z &&
+         target_z <= top_z + 1.0e-6 &&
+         target_z <= maximum_descent_height + 1.0e-6;
 }
 
 bool SuspendedObstacleUnderpass::findSuspendedPassage(
@@ -172,7 +181,7 @@ bool SuspendedObstacleUnderpass::findSuspendedPassage(
         std::abs((point - passage.center).dot(passage.axis)));
   return choosePassageHeight(common_top_z, common_bottom_z,
                              start.z(), end.z(), config_.min_descent,
-                             passage.target_z);
+                             config_.min_height, passage.target_z);
 }
 
 SuspendedObstacleUnderpass::SearchResult SuspendedObstacleUnderpass::trySearch(
@@ -192,8 +201,10 @@ SuspendedObstacleUnderpass::SearchResult SuspendedObstacleUnderpass::trySearch(
   AStarSearchRegion region;
   region.enabled = true;
   region.limit_local_max_z = true;
+  region.limit_min_z = config_.min_height > 0.0;
   region.limit_corridor = true;
   region.max_z = passage.target_z;
+  region.min_z = config_.min_height;
   region.corridor_half_width = config_.corridor_half_width;
   region.time_limit = config_.search_timeout;
   region.report_timeout = false;
@@ -212,6 +223,11 @@ SuspendedObstacleUnderpass::SearchResult SuspendedObstacleUnderpass::trySearch(
 
   std::vector<Eigen::Vector3d> candidate = a_star.getPath();
   if (!hasRequiredDescent(candidate, start, end, config_.min_descent))
+    return SearchResult::SEARCH_FAILED;
+  if (config_.min_height > 0.0 &&
+      std::any_of(candidate.begin(), candidate.end(), [this](const auto &point) {
+        return !point.allFinite() || point.z() < config_.min_height - 1.0e-6;
+      }))
     return SearchResult::SEARCH_FAILED;
 
   path = std::move(candidate);

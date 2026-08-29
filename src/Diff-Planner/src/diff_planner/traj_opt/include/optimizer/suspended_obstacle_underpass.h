@@ -27,6 +27,7 @@ public:
     double corridor_half_width{0.12};
     double min_descent{0.10};
     double min_vertical_gap{0.35};
+    double min_height{0.0};
     double search_timeout{0.05};
   };
 
@@ -46,7 +47,8 @@ public:
                              double step_size, double min_vertical_gap);
   static bool choosePassageHeight(double top_z, double bottom_z,
                                   double start_z, double end_z,
-                                  double min_descent, double &target_z);
+                                  double min_descent, double min_height,
+                                  double &target_z);
 
 private:
   struct Passage

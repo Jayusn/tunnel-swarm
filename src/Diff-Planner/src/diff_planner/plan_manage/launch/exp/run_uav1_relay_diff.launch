@@ -20,6 +20,7 @@
     <arg name="underpass_corridor_half_width" default="0.25"/>
     <arg name="underpass_min_descent" default="0.20"/>
     <arg name="underpass_min_vertical_gap" default="0.25"/>
+    <arg name="underpass_min_height" default="0.15"/>
     <arg name="underpass_search_timeout" default="0.15"/>
     <!-- 周期/普通重规划只有质量不劣于当前轨迹时才允许替换。 -->
     <arg name="enable_replan_quality_gate" default="true"/>
@@ -44,6 +45,7 @@
         <arg name="underpass_corridor_half_width" value="$(arg underpass_corridor_half_width)"/>
         <arg name="underpass_min_descent" value="$(arg underpass_min_descent)"/>
         <arg name="underpass_min_vertical_gap" value="$(arg underpass_min_vertical_gap)"/>
+        <arg name="underpass_min_height" value="$(arg underpass_min_height)"/>
         <arg name="underpass_search_timeout" value="$(arg underpass_search_timeout)"/>
         <arg name="enable_vertical_obstacle_side_lock" value="$(arg enable_vertical_obstacle_side_lock)"/>
         <arg name="side_lock_corridor_half_width" value="$(arg side_lock_corridor_half_width)"/>

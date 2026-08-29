@@ -189,6 +189,15 @@ namespace diff_planner
       if (checkPlanningTimeout("dynamic feasibility check")) return false;
       const double t = static_cast<double>(sample) * t_step;
       if (t >= traj_duration) break;
+      if (underpass_floor_active_ &&
+          traj.getPos(t).z() < suspended_underpass_.config().min_height - 1.0e-6)
+      {
+        ROS_WARN_STREAM("Suspended-obstacle underpass rejected: trajectory height "
+                        << traj.getPos(t).z() << "m at t=" << t
+                        << "s is below minimum "
+                        << suspended_underpass_.config().min_height << "m.");
+        return false;
+      }
       // Check the original Diff three-axis resultant velocity constraint.
       Eigen::Vector3d vel = traj.getVel(t);
       const double vel_limit = max_vel_ + vel_tolerance_;
@@ -231,6 +240,16 @@ namespace diff_planner
                       << acc_end.norm() << " > " << max_acc_ + acc_tolerance_
                       << " (max_acc=" << max_acc_
                       << ", tolerance=" << acc_tolerance_ << ")");
+      return false;
+    }
+    if (underpass_floor_active_ &&
+        traj.getPos(traj_duration).z() <
+            suspended_underpass_.config().min_height - 1.0e-6)
+    {
+      ROS_WARN_STREAM("Suspended-obstacle underpass rejected: final trajectory height "
+                      << traj.getPos(traj_duration).z()
+                      << "m is below minimum "
+                      << suspended_underpass_.config().min_height << "m.");
       return false;
     }
 
@@ -782,6 +801,7 @@ namespace diff_planner
                                        start, end, path);
     if (underpass_result == SuspendedObstacleUnderpass::SearchResult::SUCCESS)
     {
+      underpass_floor_active_ = suspended_underpass_.config().min_height > 0.0;
       const auto minimum = std::min_element(
           path.begin(), path.end(),
           [](const Eigen::Vector3d &lhs, const Eigen::Vector3d &rhs) {
@@ -1914,6 +1934,8 @@ namespace diff_planner
              underpass_config.min_descent, 0.10);
     nh.param("optimization/underpass_min_vertical_gap",
              underpass_config.min_vertical_gap, 0.35);
+    nh.param("optimization/underpass_min_height",
+             underpass_config.min_height, 0.0);
     nh.param("optimization/underpass_search_timeout",
              underpass_config.search_timeout, 0.05);
     suspended_underpass_.setConfig(underpass_config);
@@ -1938,6 +1960,7 @@ namespace diff_planner
 
   void PolyTrajOptimizer::beginPlanningCycle()
   {
+    underpass_floor_active_ = false;
     planning_timeout_reported_ = false;
     planning_deadline_active_ = std::isfinite(max_planning_wall_time_) &&
                                 max_planning_wall_time_ > 0.0;
