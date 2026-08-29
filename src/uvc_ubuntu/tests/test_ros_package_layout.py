@@ -2,6 +2,8 @@ import pathlib
 import unittest
 import xml.etree.ElementTree as ET
 
+import yaml
+
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -117,6 +119,7 @@ class RosPackageLayoutTest(unittest.TestCase):
         config = (ROOT / "config" / "thermal_d435_fusion.yaml").read_text(
             encoding="utf-8"
         )
+        config_data = yaml.safe_load(config)
         self.assertIn("d435_debug_image_pub", source)
         self.assertIn("publish_d435_debug_image", source)
         self.assertIn("d435_exposure_ready", source)
@@ -126,10 +129,7 @@ class RosPackageLayoutTest(unittest.TestCase):
             "thermal_candidate_status_topic: /UAV0/thermal/target_candidate_status",
             config,
         )
-        self.assertIn(
-            'report_candidate_topic: ""',
-            config,
-        )
+        self.assertEqual("", config_data["report_candidate_topic"])
         self.assertIn("d435_color_topic: /camera/color/image_raw", config)
         self.assertIn(
             "d435_debug_image_topic: /UAV0/thermal/d435_debug_image",

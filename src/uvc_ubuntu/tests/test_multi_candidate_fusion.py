@@ -27,7 +27,9 @@ class MultiCandidateFusionTests(unittest.TestCase):
         node = ThermalD435FusionNode.__new__(ThermalD435FusionNode)
         node.report_candidate_pub = RecordingPublisher()
 
-        def build_camera_point(thermal_point, _info, _depth, _encoding):
+        def build_camera_point(
+            thermal_point, _info, _depth, _encoding, _thermal_bbox=None
+        ):
             point = PointStamped()
             point.header.frame_id = "camera_optical"
             point.point.x = thermal_point.point.x / 100.0
@@ -77,6 +79,33 @@ class MultiCandidateFusionTests(unittest.TestCase):
         self.assertEqual([1, 2], [item["rank"] for item in decoded])
         self.assertEqual(
             [1.0, 2.2], [item["camera_point"]["x"] for item in decoded]
+        )
+
+    def test_report_candidates_passes_each_bbox_to_depth_fusion(self):
+        node = self.make_node()
+        received_bboxes = []
+        original = node.build_camera_point
+
+        def recording_build_camera_point(
+            thermal_point, info, depth, encoding, thermal_bbox=None
+        ):
+            received_bboxes.append(thermal_bbox)
+            return original(thermal_point, info, depth, encoding, thermal_bbox)
+
+        node.build_camera_point = recording_build_camera_point
+        status = {
+            "stamp": 12.5,
+            "candidates": [
+                {"cx": 100, "cy": 80, "bbox": [90, 70, 20, 20]},
+                {"cx": 220, "cy": 120, "bbox": [210, 110, 20, 20]},
+            ],
+        }
+
+        self.assertTrue(
+            node.publish_report_candidates(status, CameraInfo(), object(), "16UC1")
+        )
+        self.assertEqual(
+            [[90, 70, 20, 20], [210, 110, 20, 20]], received_bboxes
         )
 
     def test_legacy_single_candidate_status_remains_supported(self):

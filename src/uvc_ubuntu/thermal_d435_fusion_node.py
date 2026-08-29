@@ -344,6 +344,67 @@ class ThermalD435FusionNode:
             return None
         return float(np.median(np.array(valid_depths, dtype=np.float32)))
 
+    def lookup_bbox_foreground_depth(self, depth_image, thermal_bbox, encoding=None):
+        mapped_bbox = self.map_thermal_bbox_to_d435(thermal_bbox)
+        if mapped_bbox is None:
+            return None
+
+        image_height, image_width = depth_image.shape[:2]
+        x, y, width, height = cv2.boundingRect(mapped_bbox)
+        x0 = max(0, x)
+        y0 = max(0, y)
+        x1 = min(image_width, x + width)
+        y1 = min(image_height, y + height)
+        if x0 >= x1 or y0 >= y1:
+            return None
+
+        local_bbox = mapped_bbox - np.array([x0, y0], dtype=np.int32)
+        mask = np.zeros((y1 - y0, x1 - x0), dtype=np.uint8)
+        cv2.fillPoly(mask, [local_bbox.reshape((-1, 1, 2))], 1)
+        raw_depths = depth_image[y0:y1, x0:x1][mask != 0].astype(np.float32)
+        if raw_depths.size == 0:
+            return None
+
+        encoding = self.depth_encoding if encoding is None else encoding
+        if encoding in ("16UC1", "mono16"):
+            depths = raw_depths * self.depth_scale
+        elif encoding == "32FC1":
+            depths = raw_depths
+        else:
+            depths = raw_depths * self.depth_scale
+
+        depths = depths[
+            np.isfinite(depths)
+            & (depths >= self.min_valid_depth)
+            & (depths <= self.max_valid_depth)
+        ]
+        if depths.size == 0:
+            return None
+
+        bin_size = 0.2
+        bin_indices = np.floor(
+            (depths - self.min_valid_depth) / bin_size
+        ).astype(np.int32)
+        counts = np.bincount(bin_indices)
+        min_cluster_size = max(5, int(math.ceil(depths.size * 0.05)))
+        foreground_bins = np.flatnonzero(counts >= min_cluster_size)
+        if foreground_bins.size == 0:
+            return None
+
+        foreground_depths = depths[bin_indices == int(foreground_bins[0])]
+        return float(np.median(foreground_depths))
+
+    def lookup_target_depth(
+        self, depth_image, u, v, thermal_bbox=None, encoding=None
+    ):
+        depth = self.lookup_depth(depth_image, u, v, encoding)
+        if depth is not None:
+            return depth, "center"
+        depth = self.lookup_bbox_foreground_depth(
+            depth_image, thermal_bbox, encoding
+        )
+        return depth, "bbox" if depth is not None else None
+
     def pixel_to_camera_point(self, u, v, depth, camera_info):
         fx = float(camera_info.K[0])
         fy = float(camera_info.K[4])
@@ -417,8 +478,15 @@ class ThermalD435FusionNode:
             v_t = float(source.point.y)
             u_d, v_d = self.map_thermal_to_d435(u_t, v_t)
             depth = None
+            depth_source = None
             if depth_image is not None and depth_encoding is not None:
-                depth = self.lookup_depth(depth_image, u_d, v_d, depth_encoding)
+                depth, depth_source = self.lookup_target_depth(
+                    depth_image,
+                    u_d,
+                    v_d,
+                    thermal_bbox,
+                    depth_encoding,
+                )
 
             height, width = debug_image.shape[:2]
             in_image = 0 <= u_d < width and 0 <= v_d < height
@@ -450,6 +518,8 @@ class ThermalD435FusionNode:
                 )
 
             depth_text = "invalid" if depth is None else "%.3f m" % depth
+            if depth_source == "bbox":
+                depth_text += " (bbox)"
             cv2.putText(
                 debug_image,
                 "%s thermal=(%.1f,%.1f) d435=(%d,%d) depth=%s"
@@ -484,7 +554,14 @@ class ThermalD435FusionNode:
             debug_msg.header = color_header
         self.d435_debug_image_pub.publish(debug_msg)
 
-    def build_camera_point(self, thermal_pixel_msg, camera_info, depth_image, depth_encoding):
+    def build_camera_point(
+        self,
+        thermal_pixel_msg,
+        camera_info,
+        depth_image,
+        depth_encoding,
+        thermal_bbox=None,
+    ):
         """Fuse one thermal pixel with the latest D435 depth, without TF."""
         if (
             thermal_pixel_msg is None
@@ -497,7 +574,9 @@ class ThermalD435FusionNode:
         u_d, v_d = self.map_thermal_to_d435(
             thermal_pixel_msg.point.x, thermal_pixel_msg.point.y
         )
-        depth = self.lookup_depth(depth_image, u_d, v_d, depth_encoding)
+        depth, _depth_source = self.lookup_target_depth(
+            depth_image, u_d, v_d, thermal_bbox, depth_encoding
+        )
         if depth is None:
             return None
         return self.pixel_to_camera_point(u_d, v_d, depth, camera_info)
@@ -539,7 +618,11 @@ class ThermalD435FusionNode:
             thermal_point.point.y = cy
             thermal_point.point.z = 1.0
             camera_point = self.build_camera_point(
-                thermal_point, camera_info, depth_image, depth_encoding
+                thermal_point,
+                camera_info,
+                depth_image,
+                depth_encoding,
+                candidate.get("bbox"),
             )
             if camera_point is None:
                 continue
@@ -621,7 +704,11 @@ class ThermalD435FusionNode:
         # target_reporting performs the later world-frame tracking/confirmation.
         if candidate_detected:
             candidate_camera_point = self.build_camera_point(
-                candidate_pixel_msg, camera_info, depth_image, depth_encoding
+                candidate_pixel_msg,
+                camera_info,
+                depth_image,
+                depth_encoding,
+                candidate_thermal_bbox,
             )
             if candidate_camera_point is not None:
                 self.candidate_camera_point_pub.publish(candidate_camera_point)
@@ -644,7 +731,13 @@ class ThermalD435FusionNode:
         v_t = thermal_pixel_msg.point.y
         u_d, v_d = self.map_thermal_to_d435(u_t, v_t)
 
-        depth = self.lookup_depth(depth_image, u_d, v_d, depth_encoding)
+        depth, depth_source = self.lookup_target_depth(
+            depth_image,
+            u_d,
+            v_d,
+            candidate_thermal_bbox,
+            depth_encoding,
+        )
         d435_pixel = PointStamped()
         d435_pixel.header.stamp = rospy.Time.now()
         d435_pixel.header.frame_id = "d435_color_image"
@@ -663,6 +756,15 @@ class ThermalD435FusionNode:
             )
             self.publish_valid(False)
             return
+
+        if depth_source == "bbox":
+            rospy.loginfo_throttle(
+                2.0,
+                "Using thermal bbox foreground depth at D435 pixel (%d, %d): %.3f m",
+                u_d,
+                v_d,
+                depth,
+            )
 
         camera_point = self.pixel_to_camera_point(u_d, v_d, depth, camera_info)
         if camera_point is None:
