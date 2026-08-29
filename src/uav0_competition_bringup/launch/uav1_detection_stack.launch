@@ -131,7 +131,8 @@
            value="/UAV1/thermal/target_candidate_status" />
     <param name="candidate_pixel_topic"
            value="/UAV1/thermal/target_candidate_pixel" />
-    <param name="max_candidates" value="5" />
+    <!-- 同帧保留前机与真实热源两个候选，前机随后按世界坐标过滤。 -->
+    <param name="max_candidates" value="2" />
     <remap from="/UAV0/thermal/image_raw" to="/UAV1/thermal/image_raw" />
     <remap from="/UAV0/thermal/debug_image" to="/UAV1/thermal/debug_image" />
     <remap from="/UAV0/thermal/target_detected"
