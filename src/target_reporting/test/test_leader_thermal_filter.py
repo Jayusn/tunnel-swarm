@@ -32,6 +32,8 @@ def make_reporter(monkeypatch):
     reporter.localization_frame = "world"
     reporter.leader_thermal_filter_enabled = True
     reporter.leader_thermal_exclusion_radius = 0.35
+    reporter.thermal_ground_filter_enabled = True
+    reporter.thermal_min_height = -0.08
     reporter.leader_odom_max_age = 10.0
     reporter.leader_odom_frame = "world"
     reporter.latest_leader_odom_received = rospy.Time.now()
@@ -56,3 +58,23 @@ def test_keeps_candidate_when_leader_odometry_is_unavailable(monkeypatch):
     reporter = make_reporter(monkeypatch)
     reporter.latest_leader_odom = None
     assert not reporter._is_leader_thermal_source({"x": 1.0, "y": 2.0, "z": 0.6})
+
+
+def test_filters_thermal_candidate_below_ground_height(monkeypatch):
+    reporter = make_reporter(monkeypatch)
+    assert reporter._is_ground_thermal_source({"x": 1.0, "y": 2.0, "z": -0.081})
+
+
+def test_keeps_thermal_candidate_at_ground_height_limit(monkeypatch):
+    reporter = make_reporter(monkeypatch)
+    assert not reporter._is_ground_thermal_source(
+        {"x": 1.0, "y": 2.0, "z": -0.08}
+    )
+
+
+def test_keeps_ground_candidate_when_filter_is_disabled(monkeypatch):
+    reporter = make_reporter(monkeypatch)
+    reporter.thermal_ground_filter_enabled = False
+    assert not reporter._is_ground_thermal_source(
+        {"x": 1.0, "y": 2.0, "z": -0.20}
+    )

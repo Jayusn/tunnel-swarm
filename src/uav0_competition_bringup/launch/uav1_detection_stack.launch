@@ -205,6 +205,9 @@
     <param name="leader_odom_frame" value="world" />
     <param name="leader_thermal_exclusion_radius_m" value="0.35" />
     <param name="leader_odom_max_age_s" value="0.50" />
+    <!-- 报告样本中地板误检低于 -0.10m，真实机体热源最低约 -0.066m。 -->
+    <param name="thermal_ground_filter_enabled" value="true" />
+    <param name="thermal_min_height_m" value="-0.08" />
     <remap from="/UAV0/target_reporting/observation"
            to="/UAV1/target_reporting/observation" />
     <remap from="/UAV0/color_tag_detector/debug_image"

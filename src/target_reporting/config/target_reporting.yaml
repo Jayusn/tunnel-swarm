@@ -39,6 +39,9 @@ leader_odom_topic: "/UAV0/fast_lio/Odom_high_freq"
 leader_odom_frame: ""
 leader_thermal_exclusion_radius_m: 0.35
 leader_odom_max_age_s: 0.50
+# UAV0 默认关闭；UAV1 启动入口按自身世界坐标高度过滤地面热源误检。
+thermal_ground_filter_enabled: false
+thermal_min_height_m: -0.08
 # 候选状态 stamp 与 PointStamped 的允许配对误差。
 source_match_tolerance_s: 0.03
 image_wait_timeout_s: 0.50

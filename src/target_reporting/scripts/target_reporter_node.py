@@ -60,6 +60,12 @@ class TargetReporterNode:
         self.leader_thermal_filter_enabled = bool(
             rospy.get_param("~leader_thermal_filter_enabled", False)
         )
+        self.thermal_ground_filter_enabled = bool(
+            rospy.get_param("~thermal_ground_filter_enabled", False)
+        )
+        self.thermal_min_height = float(
+            rospy.get_param("~thermal_min_height_m", -0.08)
+        )
         self.leader_thermal_exclusion_radius = max(
             0.0,
             float(rospy.get_param("~leader_thermal_exclusion_radius_m", 0.35)),
@@ -318,6 +324,19 @@ class TargetReporterNode:
         )
         return True
 
+    def _is_ground_thermal_source(self, position):
+        if not self.thermal_ground_filter_enabled:
+            return False
+        if position["z"] >= self.thermal_min_height:
+            return False
+        rospy.logwarn_throttle(
+            1.0,
+            "Filtered UAV1 ground thermal candidate: z=%.3fm min_height=%.3fm",
+            position["z"],
+            self.thermal_min_height,
+        )
+        return True
+
     def _retry_pending(self, _event):
         for source in ("color", "qr", "thermal"):
             self._try_process(source)
@@ -407,6 +426,8 @@ class TargetReporterNode:
         position = {"x": world.point.x, "y": world.point.y, "z": world.point.z}
         target_type = {"color": "color_tag", "qr": "qr_code", "thermal": "thermal_source"}[source]
         if source == "thermal" and self._is_leader_thermal_source(position):
+            return
+        if source == "thermal" and self._is_ground_thermal_source(position):
             return
         # All three detectors publish raw candidates immediately, but each
         # detector also publishes its own stable/validated gate.  The
