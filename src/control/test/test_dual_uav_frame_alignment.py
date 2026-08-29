@@ -43,7 +43,8 @@ def test_uav1_seven_uses_local_master_and_standalone_diff():
     rviz = RUN_SWARM_RVIZ.read_text(encoding="utf-8")
     rviz_config = yaml.safe_load(rviz)
 
-    assert 'LOCAL_MASTER_IP="${UAV1_SINGLE_ROS_MASTER_IP:-10.54.87.232}"' in script
+    assert 'LOCAL_MASTER_IP="${UAV1_SINGLE_ROS_MASTER_IP:-10.116.50.232}"' in script
+    assert 'LOCAL_ROS_IP="${UAV1_SINGLE_ROS_IP:-10.116.50.232}"' in script
     assert 'export ROS_MASTER_URI="http://${LOCAL_MASTER_IP}:11311"' in script
     assert 'export ROS_IP="${LOCAL_ROS_IP}"' in script
     assert "start_or_reuse_local_master" in script
