@@ -593,6 +593,16 @@ def test_uav1_detection_stack_uses_isolated_topics_and_disables_front_aruco():
         "/UAV1/target_reporting/detected_object_boxes"
     )
 
+    reporter = by_type["target_reporter_node.py"]
+    reporter_params = {
+        item.attrib["name"]: item.attrib["value"] for item in reporter.findall("param")
+    }
+    assert reporter_params["leader_thermal_filter_enabled"] == "true"
+    assert reporter_params["leader_odom_topic"] == "/UAV0/fast_lio/Odom_high_freq"
+    assert reporter_params["leader_odom_frame"] == "world"
+    assert reporter_params["leader_thermal_exclusion_radius_m"] == "0.60"
+    assert reporter_params["leader_odom_max_age_s"] == "0.50"
+
 
 def test_uav1_down_camera_waits_for_busy_device_and_retries_without_killing_owner():
     script = UAV1_SENSOR_STACK.read_text(encoding="utf-8")

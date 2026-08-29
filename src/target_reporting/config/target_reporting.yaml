@@ -33,6 +33,12 @@ d435_image_match_tolerance_s: 0.15
 # 热源必须先匹配到同时间的 D435 映射帧，才开始正式确认和双图上传。
 require_thermal_d435_evidence: true
 thermal_d435_ready_tolerance_s: 0.50
+# UAV0 配置默认关闭；UAV1 启动入口单独开启，按前机实时里程计过滤机载电脑热源。
+leader_thermal_filter_enabled: false
+leader_odom_topic: "/UAV0/fast_lio/Odom_high_freq"
+leader_odom_frame: ""
+leader_thermal_exclusion_radius_m: 0.60
+leader_odom_max_age_s: 0.50
 # 候选状态 stamp 与 PointStamped 的允许配对误差。
 source_match_tolerance_s: 0.03
 image_wait_timeout_s: 0.50

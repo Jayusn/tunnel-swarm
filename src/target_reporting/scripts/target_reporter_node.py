@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import math
 import os
 import threading
 import time
@@ -10,6 +11,7 @@ import tf2_geometry_msgs  # noqa: F401
 import tf2_ros
 from cv_bridge import CvBridge
 from geometry_msgs.msg import PointStamped, PoseStamped
+from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, String
 
@@ -55,6 +57,19 @@ class TargetReporterNode:
         self.require_thermal_d435_evidence = bool(
             rospy.get_param("~require_thermal_d435_evidence", True)
         )
+        self.leader_thermal_filter_enabled = bool(
+            rospy.get_param("~leader_thermal_filter_enabled", False)
+        )
+        self.leader_thermal_exclusion_radius = max(
+            0.0,
+            float(rospy.get_param("~leader_thermal_exclusion_radius_m", 0.60)),
+        )
+        self.leader_odom_max_age = max(
+            0.0, float(rospy.get_param("~leader_odom_max_age_s", 0.50))
+        )
+        self.leader_odom_frame = str(
+            rospy.get_param("~leader_odom_frame", "")
+        ).strip()
         self.thermal_d435_ready_tolerance = max(
             self.d435_image_tolerance,
             float(rospy.get_param("~thermal_d435_ready_tolerance_s", 0.50)),
@@ -122,6 +137,8 @@ class TargetReporterNode:
         self.point_version = {}
         self.status_version = {}
         self.last_processed_pair = {}
+        self.latest_leader_odom = None
+        self.latest_leader_odom_received = rospy.Time(0)
         self.seq = 0
         existing = self.store.all_events()
         if existing:
@@ -197,6 +214,15 @@ class TargetReporterNode:
             lambda msg: self._image_cb("thermal_d435", msg),
             queue_size=2,
         )
+        if self.leader_thermal_filter_enabled:
+            rospy.Subscriber(
+                rospy.get_param(
+                    "~leader_odom_topic", "/UAV0/fast_lio/Odom_high_freq"
+                ),
+                Odometry,
+                self._leader_odom_cb,
+                queue_size=1,
+            )
         # TF 可能在节点启动后的短时间内尚未建立。候选不能因为一次 TF
         # 查询失败就丢失，因此定时重试尚未处理的点/状态配对。
         self.retry_timer = rospy.Timer(rospy.Duration(0.10), self._retry_pending)
@@ -240,6 +266,57 @@ class TargetReporterNode:
             self.images.add(source, msg.header.stamp.to_sec(), image)
         except Exception as exc:
             rospy.logwarn_throttle(2.0, "Cannot cache %s image: %s", source, exc)
+
+    def _leader_odom_cb(self, msg):
+        with self.lock:
+            self.latest_leader_odom = msg
+            self.latest_leader_odom_received = rospy.Time.now()
+
+    def _is_leader_thermal_source(self, position):
+        if not self.leader_thermal_filter_enabled:
+            return False
+        with self.lock:
+            leader_odom = self.latest_leader_odom
+            received = self.latest_leader_odom_received
+        if leader_odom is None or received == rospy.Time(0):
+            return False
+        if (rospy.Time.now() - received).to_sec() > self.leader_odom_max_age:
+            return False
+        leader_frame = self.leader_odom_frame or leader_odom.header.frame_id
+        if not leader_frame:
+            return False
+
+        leader_point = PointStamped()
+        leader_point.header.frame_id = leader_frame
+        leader_point.header.stamp = rospy.Time(0)
+        leader_point.point = leader_odom.pose.pose.position
+        try:
+            leader = self.tf_buffer.transform(
+                leader_point, self.localization_frame, rospy.Duration(0.10)
+            )
+        except Exception as exc:
+            rospy.logwarn_throttle(
+                2.0,
+                "Cannot transform leader odometry %s -> %s for thermal filter: %s",
+                leader_point.header.frame_id,
+                self.localization_frame,
+                exc,
+            )
+            return False
+
+        distance = math.hypot(
+            position["x"] - leader.point.x,
+            position["y"] - leader.point.y,
+        )
+        if distance > self.leader_thermal_exclusion_radius:
+            return False
+        rospy.logwarn_throttle(
+            1.0,
+            "Filtered UAV1 thermal candidate near UAV0: distance=%.3fm radius=%.3fm",
+            distance,
+            self.leader_thermal_exclusion_radius,
+        )
+        return True
 
     def _retry_pending(self, _event):
         for source in ("color", "qr", "thermal"):
@@ -329,6 +406,8 @@ class TargetReporterNode:
             self.last_processed_pair[source] = pair
         position = {"x": world.point.x, "y": world.point.y, "z": world.point.z}
         target_type = {"color": "color_tag", "qr": "qr_code", "thermal": "thermal_source"}[source]
+        if source == "thermal" and self._is_leader_thermal_source(position):
+            return
         # All three detectors publish raw candidates immediately, but each
         # detector also publishes its own stable/validated gate.  The
         # reporting layer must honor that gate uniformly; it must not turn a
