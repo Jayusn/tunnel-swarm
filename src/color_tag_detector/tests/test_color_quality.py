@@ -32,6 +32,25 @@ class ColorQualityTests(unittest.TestCase):
                 covered.update(range(lower, upper + 1))
         self.assertEqual(covered, set(range(180)))
 
+    def test_recorded_pale_blue_tag_passes_color_thresholds(self):
+        config_path = os.path.join(ROOT, "config", "color_thresholds.yaml")
+        with open(config_path, encoding="utf-8") as stream:
+            blue = yaml.safe_load(stream)["colors"]["blue"]
+
+        measured_hsv = (93, 63, 110)
+        self.assertTrue(
+            any(
+                all(lower <= value <= upper for lower, value, upper in zip(
+                    hsv_range["lower"], measured_hsv, hsv_range["upper"]
+                ))
+                for hsv_range in blue["ranges"]
+            )
+        )
+        self.assertGreaterEqual(
+            measured_hsv[1], blue["min_mean_saturation"]
+        )
+        self.assertGreaterEqual(measured_hsv[2], blue["min_mean_value"])
+
     def test_solid_irregular_tag_has_high_color_purity(self):
         mask = np.zeros((100, 100), dtype=np.uint8)
         contour = np.asarray(
