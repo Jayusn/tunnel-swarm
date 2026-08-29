@@ -7,7 +7,7 @@
   <arg name="enable_realsense" default="true" />
   <arg name="enable_color_tag" default="true" />
   <arg name="enable_qr" default="true" />
-  <arg name="enable_front_aruco" default="true" />
+  <arg name="enable_front_aruco" default="false" />
   <arg name="enable_thermal" default="true" />
   <arg name="enable_thermal_d435_fusion" default="true" />
   <arg name="enable_target_reporting" default="true" />

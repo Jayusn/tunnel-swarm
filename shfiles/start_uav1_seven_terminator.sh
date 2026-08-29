@@ -391,7 +391,7 @@ run_detection_pane() {
   local mission_id="uav1_single_$(date +%Y%m%d)"
   pane_init 5 D435与目标检测
   wait_for_topic_message "${ODOM_TOPIC}" || keep_pane_open
-  printf '[启动] UAV1 D435、颜色、二维码、前视ArUco、目标上报和RViz标记\n'
+  printf '[启动] UAV1 D435、颜色、二维码、目标上报和RViz标记\n'
   printf '[参数] thermal=%s, odom=%s, mission_id=%s\n' \
     "${THERMAL}" "${ODOM_TOPIC}" "${mission_id}"
   roslaunch uav0_competition_bringup uav1_detection_stack.launch \

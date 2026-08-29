@@ -65,10 +65,11 @@ def test_uav1_seven_uses_local_master_and_standalone_diff():
         "/UAV1/color_tag_detector/debug_image",
         "/UAV1/vision/qr_debug_image",
         "/UAV1/thermal/debug_image",
-        "/UAV1/landing/front/debug_image",
-        "/UAV1/down_camera/image_raw",
+        "/UAV1/thermal/d435_debug_image",
+        "/UAV1/landing/combined_debug_image",
     ):
         assert topic in rviz
+    assert "/UAV1/landing/front/debug_image" not in rviz
 
     def dictionaries(value):
         if isinstance(value, dict):
@@ -540,10 +541,11 @@ def test_uav1_compatibility_script_opens_seven_panes_with_detection_before_plann
     assert positions == sorted(positions)
 
 
-def test_uav1_detection_stack_uses_isolated_topics_and_only_observes_front_aruco():
+def test_uav1_detection_stack_uses_isolated_topics_and_disables_front_aruco():
     root = ET.parse(UAV1_DETECTION_LAUNCH).getroot()
     args = {item.attrib["name"]: item.attrib["default"] for item in root.findall("arg")}
     assert args["enable_thermal"] == "true"
+    assert args["enable_front_aruco"] == "false"
     assert args["odom_topic"] == "/UAV1/fast_lio/Odom_high_freq"
     assert args["world_frame"] == "UAV1/camera_init"
     assert args["camera_namespace"] == "UAV1/camera"

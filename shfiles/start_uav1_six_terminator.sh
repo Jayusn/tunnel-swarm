@@ -290,11 +290,11 @@ run_detection_pane() {
   local mission_id="uav1_onboard_test_$(date +%Y%m%d)"
   pane_init 5 D435与目标检测
   wait_for_topic_message "${ODOM_TOPIC}" || keep_pane_open
-  printf '[启动] UAV1 D435、颜色、二维码、前视ArUco、目标上报和RViz标记\n'
+  printf '[启动] UAV1 D435、颜色、二维码、目标上报和RViz标记\n'
   printf '[参数] thermal=%s, odom=%s, mission_id=%s\n' \
     "${THERMAL}" "${ODOM_TOPIC}" "${mission_id}"
   printf '[隔离] 全部节点名、图像话题和D435 TF使用UAV1前缀，不覆盖UAV0。\n'
-  printf '[安全] 前视ArUco只发布隔离的检测结果和调试图，不介入UAV1降落控制。\n'
+  printf '[配置] UAV1不启动前视ArUco，前视ArUco仅由UAV0运行。\n'
   roslaunch uav0_competition_bringup uav1_detection_stack.launch \
     enable_thermal:="${THERMAL}" \
     odom_topic:="${ODOM_TOPIC}" \
