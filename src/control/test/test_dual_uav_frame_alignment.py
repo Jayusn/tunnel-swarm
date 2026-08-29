@@ -559,8 +559,8 @@ def test_uav1_detection_stack_uses_isolated_topics_and_disables_front_aruco():
     realsense_args = {
         item.attrib["name"]: item.attrib["value"] for item in realsense.findall("arg")
     }
-    assert realsense_args["color_fps"] == "15"
-    assert realsense_args["depth_fps"] == "15"
+    assert realsense_args["color_fps"] == "30"
+    assert realsense_args["depth_fps"] == "30"
 
     nodes = list(root.iter("node"))
     by_type = {node.attrib["type"]: node for node in nodes}
