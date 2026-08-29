@@ -148,6 +148,10 @@ private:
   double wide_side_bypass_forward_step_{0.20};
   double wide_side_bypass_low_support_height_{0.20};
   int wide_side_bypass_min_vertical_support_layers_{2};
+  // 两侧局部障碍夹出已知自由中门时，优先保持当前高度沿门中心通过。
+  bool center_gate_enabled_{true};
+  double center_gate_min_width_{0.55};
+  double center_gate_pass_margin_{0.20};
   // 可选的一次性短回撤；比赛窄通道默认关闭。
   bool short_backtrack_enabled_{false};
   bool short_backtrack_latched_{false};
@@ -217,6 +221,7 @@ private:
   double vertical_detour_upper_max_rise_{0.60};
   double vertical_detour_upper_forward_max_distance_{0.60};
   double vertical_detour_upper_max_side_angle_deg_{45.0};
+  double vertical_detour_upper_obstacle_clearance_{0.20};
   double vertical_detour_down_first_height_{0.75};
   double vertical_detour_height_tolerance_{0.06};
   double vertical_detour_xy_tolerance_{0.08};
@@ -267,6 +272,11 @@ private:
   bool buildWideSideBypass(const Vector3d& pos, double cur_yaw,
                            const Vector3d& forward, Vector3d& next_pos,
                            double& next_yaw, bool& split_obstacle_detected);
+  bool buildCenterGatePassage(const Vector3d& pos, double cur_yaw,
+                              const Vector3d& forward, Vector3d& next_pos,
+                              double& next_yaw, bool& gate_detected);
+  bool findForwardObstacleTop(const Vector3d& pos, const Vector3d& forward,
+                              double& obstacle_top) const;
   bool occupiedNearHeight(const Vector3d& point, double height) const;
   bool hasCurrentHeightForwardObstacle(const Vector3d& pos,
                                        const Vector3d& forward) const;
@@ -286,7 +296,8 @@ private:
                             const Vector3d& turn_direction);
   bool buildVerticalDetourFallback(const Vector3d& pos, double cur_yaw,
                                    const Vector3d& forward, Vector3d& next_pos,
-                                   double& next_yaw, bool force_descend = false);
+                                   double& next_yaw, bool force_descend = false,
+                                   bool allow_descend = true);
   bool buildStationaryVerticalDetourPlan(const Vector3d& pos,
                                          const Vector3d& yaw);
   bool handleActiveLowProbe(const Vector3d& pos, Vector3d& next_pos, double& next_yaw,
