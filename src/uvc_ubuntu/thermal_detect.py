@@ -215,6 +215,7 @@ def detect_hotspot(
     min_area=20,
     max_area=5000,
     max_candidates=5,
+    min_local_contrast=10.0,
 ):
     h, w = gray.shape[:2]
     x0 = max(0, min(roi_margin_x, w - 1))
@@ -244,6 +245,19 @@ def detect_hotspot(
         cv2.drawContours(cnt_mask, [cnt], -1, 255, -1)
         mean_gray = float(cv2.mean(blur, mask=cnt_mask)[0])
 
+        surrounding_mask = cv2.dilate(
+            cnt_mask, np.ones((21, 21), dtype=np.uint8), iterations=1
+        )
+        surrounding_mask[cnt_mask > 0] = 0
+        if cv2.countNonZero(surrounding_mask) == 0:
+            continue
+        local_background_gray = float(
+            cv2.mean(blur, mask=surrounding_mask)[0]
+        )
+        local_contrast = mean_gray - local_background_gray
+        if local_contrast < min_local_contrast:
+            continue
+
         moments = cv2.moments(cnt)
         if moments["m00"] == 0:
             continue
@@ -264,6 +278,8 @@ def detect_hotspot(
                 "bbox": (bx + x0, by + y0, bw, bh),
                 "area": area,
                 "mean_gray": mean_gray,
+                "local_background_gray": local_background_gray,
+                "local_contrast": local_contrast,
                 "touches_roi_border": touches_roi_border,
             }
         )
@@ -281,6 +297,8 @@ def detect_hotspot(
         "bbox": None,
         "area": 0.0,
         "mean_gray": 0.0,
+        "local_background_gray": 0.0,
+        "local_contrast": 0.0,
         "threshold": threshold_value,
         "touches_roi_border": False,
         "candidates": candidates,
@@ -296,6 +314,8 @@ def detect_hotspot(
                 "bbox": best["bbox"],
                 "area": best["area"],
                 "mean_gray": best["mean_gray"],
+                "local_background_gray": best["local_background_gray"],
+                "local_contrast": best["local_contrast"],
                 "touches_roi_border": best["touches_roi_border"],
             }
         )
@@ -353,8 +373,12 @@ def draw_debug(gray, detection, stable_detected=None, stable_count=None, stable_
         status_lines = ["cand=0 stable=0 hits=0/%d" % int(stable_window)]
 
     status_lines.append(
-        "thr=%.1f area=%.1f"
-        % (detection["threshold"], detection["area"])
+        "thr=%.1f contrast=%.1f area=%.1f"
+        % (
+            detection["threshold"],
+            detection.get("local_contrast", 0.0),
+            detection["area"],
+        )
     )
     for line_index, line in enumerate(status_lines):
         cv2.putText(
@@ -393,6 +417,7 @@ def parse_args():
     parser.add_argument("--k", type=float, default=2.0)
     parser.add_argument("--min-area", type=float, default=20)
     parser.add_argument("--max-area", type=float, default=5000)
+    parser.add_argument("--min-local-contrast", type=float, default=10.0)
     parser.add_argument("--uvc-demo-path", default="./uvc_demo")
     parser.add_argument(
         "--uvc-offset-fix",
@@ -444,6 +469,7 @@ def main():
                 k=args.k,
                 min_area=args.min_area,
                 max_area=args.max_area,
+                min_local_contrast=args.min_local_contrast,
             )
             debug = draw_debug(gray, detection)
 

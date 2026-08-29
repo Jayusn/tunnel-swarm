@@ -155,6 +155,9 @@ class ThermalDetectorNode:
         self.min_area = float(rospy.get_param("~min_area", 20))
         self.max_area = float(rospy.get_param("~max_area", 5000))
         self.max_candidates = max(1, int(rospy.get_param("~max_candidates", 5)))
+        self.min_local_contrast = float(
+            rospy.get_param("~min_local_contrast", 10.0)
+        )
         self.reject_roi_border_touching = bool(
             rospy.get_param("~reject_roi_border_touching", False)
         )
@@ -308,6 +311,7 @@ class ThermalDetectorNode:
                     "bbox": list(candidate["bbox"]),
                     "area": float(candidate["area"]),
                     "mean_gray": float(candidate["mean_gray"]),
+                    "local_contrast": float(candidate["local_contrast"]),
                     "touches_roi_border": bool(
                         candidate.get("touches_roi_border", False)
                     ),
@@ -359,6 +363,7 @@ class ThermalDetectorNode:
                 min_area=self.min_area,
                 max_area=self.max_area,
                 max_candidates=self.max_candidates,
+                min_local_contrast=self.min_local_contrast,
             )
             debug = draw_debug(gray, detection)
             self.publish_detection(gray, debug, detection)

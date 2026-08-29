@@ -8,6 +8,8 @@ threshold_k: 2.0
 min_area: 20
 max_area: 5000
 max_candidates: 1
+# 候选区域相对周围 10 像素背景的最低灰度差，过滤墙面和柜体的弱亮斑。
+min_local_contrast: 10.0
 # 比赛热源可能位于视野边缘；保留 border 状态用于调试，但不禁止确认。
 reject_roi_border_touching: false
 publish_rate: 20

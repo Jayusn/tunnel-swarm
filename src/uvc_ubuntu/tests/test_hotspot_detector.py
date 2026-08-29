@@ -56,6 +56,19 @@ class HotspotDetectorTests(unittest.TestCase):
         result = detect_hotspot(image, max_candidates=2)
         self.assertEqual(2, len(result["candidates"]))
 
+    def test_rejects_low_contrast_bright_patch(self):
+        image = np.full((288, 384), 100, dtype=np.uint8)
+        cv2.rectangle(image, (150, 90), (200, 150), 108, -1)
+        result = detect_hotspot(image, min_local_contrast=10.0)
+        self.assertFalse(result["detected"])
+
+    def test_keeps_high_contrast_hotspot(self):
+        image = np.full((288, 384), 100, dtype=np.uint8)
+        cv2.rectangle(image, (150, 90), (200, 150), 120, -1)
+        result = detect_hotspot(image, min_local_contrast=10.0)
+        self.assertTrue(result["detected"])
+        self.assertGreaterEqual(result["local_contrast"], 10.0)
+
 
 class MultiTargetFilterTests(unittest.TestCase):
     def test_tracks_each_current_hotspot_across_frames(self):
