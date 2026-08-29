@@ -619,11 +619,11 @@ Visualization Manager:
               Value: true
             - Class: rviz/Image
               Enabled: true
-              Image Topic: /UAV1/down_camera/image_raw
+              Image Topic: /UAV1/thermal/d435_debug_image
               Max Value: 1
               Median window: 5
               Min Value: 0
-              Name: UAV1 down camera
+              Name: UAV1 thermal D435 mapping
               Normalize Range: true
               Queue Size: 2
               Transport Hint: raw
@@ -631,11 +631,11 @@ Visualization Manager:
               Value: true
             - Class: rviz/Image
               Enabled: true
-              Image Topic: /UAV1/landing/front/debug_image
+              Image Topic: /UAV1/landing/combined_debug_image
               Max Value: 1
               Median window: 5
               Min Value: 0
-              Name: UAV1 front ArUco
+              Name: UAV1 down camera landing
               Normalize Range: true
               Queue Size: 2
               Transport Hint: raw
