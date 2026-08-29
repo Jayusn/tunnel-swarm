@@ -431,7 +431,6 @@ class ThermalD435FusionNode:
         candidate_detected,
         candidate_pixel_msg,
         thermal_bbox,
-        thermal_candidates,
         camera_info,
         depth_image,
         depth_encoding,
@@ -440,16 +439,6 @@ class ThermalD435FusionNode:
             return
 
         debug_image = color_image.copy()
-        for candidate in thermal_candidates:
-            mapped_bbox = self.map_thermal_bbox_to_d435(candidate.get("bbox"))
-            if mapped_bbox is not None:
-                cv2.polylines(
-                    debug_image,
-                    [mapped_bbox.reshape((-1, 1, 2))],
-                    True,
-                    (255, 255, 0),
-                    1,
-                )
         source = None
         status = "NO THERMAL TARGET"
         if detected and thermal_pixel_msg is not None and thermal_pixel_msg.point.z > 0.0:
@@ -684,7 +673,6 @@ class ThermalD435FusionNode:
                 candidate_detected,
                 candidate_pixel_msg,
                 candidate_thermal_bbox,
-                self.status_candidates(candidate_status),
                 camera_info,
                 depth_image,
                 depth_encoding,
