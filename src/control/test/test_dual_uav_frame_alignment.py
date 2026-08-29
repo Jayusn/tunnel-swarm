@@ -600,7 +600,7 @@ def test_uav1_detection_stack_uses_isolated_topics_and_disables_front_aruco():
     assert reporter_params["leader_thermal_filter_enabled"] == "true"
     assert reporter_params["leader_odom_topic"] == "/UAV0/fast_lio/Odom_high_freq"
     assert reporter_params["leader_odom_frame"] == "world"
-    assert reporter_params["leader_thermal_exclusion_radius_m"] == "0.60"
+    assert reporter_params["leader_thermal_exclusion_radius_m"] == "0.35"
     assert reporter_params["leader_odom_max_age_s"] == "0.50"
 
 

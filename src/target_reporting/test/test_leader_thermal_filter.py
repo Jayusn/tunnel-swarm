@@ -31,7 +31,7 @@ def make_reporter(monkeypatch):
     reporter.tf_buffer = IdentityTfBuffer()
     reporter.localization_frame = "world"
     reporter.leader_thermal_filter_enabled = True
-    reporter.leader_thermal_exclusion_radius = 0.60
+    reporter.leader_thermal_exclusion_radius = 0.35
     reporter.leader_odom_max_age = 10.0
     reporter.leader_odom_frame = "world"
     reporter.latest_leader_odom_received = rospy.Time.now()
@@ -44,12 +44,12 @@ def make_reporter(monkeypatch):
 
 def test_filters_thermal_candidate_inside_leader_radius(monkeypatch):
     reporter = make_reporter(monkeypatch)
-    assert reporter._is_leader_thermal_source({"x": 1.3, "y": 2.4, "z": 0.6})
+    assert reporter._is_leader_thermal_source({"x": 1.2, "y": 2.2, "z": 0.6})
 
 
 def test_keeps_thermal_candidate_outside_leader_radius(monkeypatch):
     reporter = make_reporter(monkeypatch)
-    assert not reporter._is_leader_thermal_source({"x": 1.7, "y": 2.0, "z": 0.6})
+    assert not reporter._is_leader_thermal_source({"x": 1.4, "y": 2.0, "z": 0.6})
 
 
 def test_keeps_candidate_when_leader_odometry_is_unavailable(monkeypatch):

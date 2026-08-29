@@ -62,7 +62,7 @@ class TargetReporterNode:
         )
         self.leader_thermal_exclusion_radius = max(
             0.0,
-            float(rospy.get_param("~leader_thermal_exclusion_radius_m", 0.60)),
+            float(rospy.get_param("~leader_thermal_exclusion_radius_m", 0.35)),
         )
         self.leader_odom_max_age = max(
             0.0, float(rospy.get_param("~leader_odom_max_age_s", 0.50))

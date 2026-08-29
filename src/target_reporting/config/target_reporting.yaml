@@ -37,7 +37,7 @@ thermal_d435_ready_tolerance_s: 0.50
 leader_thermal_filter_enabled: false
 leader_odom_topic: "/UAV0/fast_lio/Odom_high_freq"
 leader_odom_frame: ""
-leader_thermal_exclusion_radius_m: 0.60
+leader_thermal_exclusion_radius_m: 0.35
 leader_odom_max_age_s: 0.50
 # 候选状态 stamp 与 PointStamped 的允许配对误差。
 source_match_tolerance_s: 0.03

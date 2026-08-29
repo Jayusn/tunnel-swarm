@@ -203,7 +203,7 @@
     <param name="leader_thermal_filter_enabled" value="true" />
     <param name="leader_odom_topic" value="/UAV0/fast_lio/Odom_high_freq" />
     <param name="leader_odom_frame" value="world" />
-    <param name="leader_thermal_exclusion_radius_m" value="0.60" />
+    <param name="leader_thermal_exclusion_radius_m" value="0.35" />
     <param name="leader_odom_max_age_s" value="0.50" />
     <remap from="/UAV0/target_reporting/observation"
            to="/UAV1/target_reporting/observation" />
