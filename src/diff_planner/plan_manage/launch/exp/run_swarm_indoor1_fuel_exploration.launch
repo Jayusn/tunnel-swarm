@@ -231,6 +231,10 @@
     <!-- 当前高度与0.20m低位层至少两层同位置占据才算竖直障碍；否则按悬空障碍处理。 -->
     <rosparam param="/exploration_node/mission/wide_side_bypass/low_support_height">0.20</rosparam>
     <rosparam param="/exploration_node/mission/wide_side_bypass/min_vertical_support_layers">2</rosparam>
+    <!-- 两侧局部障碍形成窄门时，当前高度整段足迹已知安全就优先穿门中心。 -->
+    <rosparam param="/exploration_node/mission/center_gate/enabled">true</rosparam>
+    <rosparam param="/exploration_node/mission/center_gate/min_width">0.55</rosparam>
+    <rosparam param="/exploration_node/mission/center_gate/pass_margin">0.20</rosparam>
     <!-- 窄通道优先持续向前规划，默认彻底禁用侧后微调。 -->
     <rosparam param="/exploration_node/mission/short_backtrack_enabled">false</rosparam>
     <rosparam param="/exploration_node/mission/short_backtrack_min_distance">0.10</rosparam>
@@ -281,6 +285,8 @@
     <rosparam param="/exploration_node/mission/vertical_detour/upper_max_rise">0.60</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/upper_forward_max_distance">0.60</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/upper_max_side_angle_deg">45.0</rosparam>
+    <!-- 中门不可通时，上绕高度必须高于前方障碍物最高占据层至少20cm。 -->
+    <rosparam param="/exploration_node/mission/vertical_detour/upper_obstacle_clearance">0.20</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/down_first_height">0.75</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/height_tolerance">0.06</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/xy_tolerance">0.08</rosparam>
