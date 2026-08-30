@@ -82,6 +82,11 @@
            value="/UAV1/vision/qr_candidate_pose_camera" />
     <param name="candidate_detected_topic"
            value="/UAV1/vision/qr_candidate_detected" />
+    <!-- 晃动时优先保持 QR 几何候选：依次尝试多种预处理，仍保留内容解码和深度门。 -->
+    <param name="enable_preprocess_fallbacks" value="true" />
+    <param name="qr_eps_x" value="0.22" />
+    <param name="qr_eps_y" value="0.22" />
+    <param name="confirm_frames" value="3" />
     <remap from="/UAV0/vision/qr_pose_camera"
            to="/UAV1/vision/qr_pose_camera" />
     <remap from="/UAV0/vision/qr_detected"
