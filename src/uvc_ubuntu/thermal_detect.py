@@ -340,9 +340,6 @@ def draw_debug(gray, detection, stable_detected=None, stable_count=None, stable_
     cv2.rectangle(debug, (rx, ry), (rx + rw - 1, ry + rh - 1), (255, 160, 0), 1)
 
     if detection["detected"]:
-        for candidate in detection.get("candidates", [])[1:]:
-            x, y, w, h = candidate["bbox"]
-            cv2.rectangle(debug, (x, y), (x + w, y + h), (255, 255, 0), 1)
         x, y, w, h = detection["bbox"]
         cx, cy = detection["cx"], detection["cy"]
         cv2.rectangle(debug, (x, y), (x + w, y + h), (0, 255, 0), 2)
