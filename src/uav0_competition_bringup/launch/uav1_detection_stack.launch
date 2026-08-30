@@ -87,6 +87,9 @@
     <param name="qr_eps_x" value="0.22" />
     <param name="qr_eps_y" value="0.22" />
     <param name="confirm_frames" value="3" />
+    <param name="enable_local_search" value="true" />
+    <param name="local_search_hold_seconds" value="2.0" />
+    <param name="local_search_margin_ratio" value="2.0" />
     <remap from="/UAV0/vision/qr_pose_camera"
            to="/UAV1/vision/qr_pose_camera" />
     <remap from="/UAV0/vision/qr_detected"

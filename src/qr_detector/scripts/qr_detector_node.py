@@ -242,6 +242,15 @@ class QRDetectorNode(object):
                 )
             ),
         )
+        self.enable_local_search = bool(
+            rospy.get_param("~enable_local_search", False)
+        )
+        self.local_search_hold_seconds = max(
+            0.0, float(rospy.get_param("~local_search_hold_seconds", 2.0))
+        )
+        self.local_search_margin_ratio = max(
+            0.0, float(rospy.get_param("~local_search_margin_ratio", 2.0))
+        )
         # RealSense auto-exposure needs a short period after the first color
         # frame.  Do not let a dark startup frame become a confirmed/uploaded
         # QR target; raw candidates remain available locally during warm-up.
@@ -298,6 +307,8 @@ class QRDetectorNode(object):
         self.last_decode_verification_time = None
         self.last_decode_center = None
         self.last_decoded_data = ""
+        self.last_qr_points = None
+        self.last_qr_track_time = None
         self.last_confirmed_result = None
         self.last_confirmed_time = None
         self.filtered_xyz = None
@@ -476,12 +487,31 @@ class QRDetectorNode(object):
 
     def detect_qr(self, color_bgr):
         gray = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2GRAY)
+        local_image, offset = self.local_search_image(gray)
+        detection = None
+        if local_image is not None:
+            detection = self.detect_qr_in_image(
+                local_image, offset, color_bgr.shape[:2]
+            )
+            if detection is not None:
+                detection["preprocess"] = "local_" + detection["preprocess"]
+        if detection is None:
+            detection = self.detect_qr_in_image(
+                gray, image_shape=color_bgr.shape[:2]
+            )
+        if detection is not None:
+            self.last_qr_points = np.asarray(detection["points"], dtype=np.float32)
+            self.last_qr_track_time = time.monotonic()
+        return detection
+
+    def detect_qr_in_image(self, gray, offset=(0, 0), image_shape=None):
+        """Detect one QR in an image region and return coordinates in the full image."""
 
         # Try the configured preprocessing first, then fall back to a few cheap
         # alternatives. This keeps the OpenCV baseline useful under field light
         # changes without changing the downstream depth/projection pipeline.
         if self.enable_preprocess_fallbacks:
-            modes = [self.preprocess_mode, "gray", "equalize", "adaptive"]
+            modes = [self.preprocess_mode, "gray", "equalize", "sharpen", "adaptive"]
         else:
             modes = [self.preprocess_mode]
         tried_modes = []
@@ -506,12 +536,17 @@ class QRDetectorNode(object):
         if points is None:
             return None
 
+        points = points + np.asarray(offset, dtype=np.float32)
+        if decoded_points is not None:
+            decoded_points = decoded_points + np.asarray(offset, dtype=np.float32)
+
         area = abs(float(cv2.contourArea(points.astype(np.float32))))
         if area < self.min_area:
             return None
 
+        image_h, image_w = image_shape if image_shape is not None else gray.shape[:2]
         ok, side_px = self.is_reasonable_quad(
-            points, image_w=color_bgr.shape[1], image_h=color_bgr.shape[0]
+            points, image_w=image_w, image_h=image_h
         )
         if not ok:
             return None
@@ -523,7 +558,7 @@ class QRDetectorNode(object):
             points = decoded_points
             area = abs(float(cv2.contourArea(points.astype(np.float32))))
             ok, side_px = self.is_reasonable_quad(
-                points, image_w=color_bgr.shape[1], image_h=color_bgr.shape[0]
+                points, image_w=image_w, image_h=image_h
             )
             if not ok:
                 return None
@@ -554,6 +589,39 @@ class QRDetectorNode(object):
             "validated": validated,
             "validation_reason": validation_reason,
         }
+
+    def local_search_image(self, gray):
+        """Return a padded ROI around the recent QR track, or no ROI when stale."""
+        if not getattr(self, "enable_local_search", False):
+            return None, None
+        points = getattr(self, "last_qr_points", None)
+        track_time = getattr(self, "last_qr_track_time", None)
+        if points is None or track_time is None:
+            return None, None
+        if time.monotonic() - float(track_time) > float(
+            getattr(self, "local_search_hold_seconds", 0.0)
+        ):
+            return None, None
+        try:
+            quad = np.asarray(points, dtype=np.float32).reshape(-1, 2)
+        except (TypeError, ValueError):
+            return None, None
+        if quad.shape[0] < 4:
+            return None, None
+        min_x, min_y = np.min(quad, axis=0)
+        max_x, max_y = np.max(quad, axis=0)
+        pad = max(
+            24.0,
+            max(max_x - min_x, max_y - min_y)
+            * float(getattr(self, "local_search_margin_ratio", 0.0)),
+        )
+        x0 = max(0, int(math.floor(min_x - pad)))
+        y0 = max(0, int(math.floor(min_y - pad)))
+        x1 = min(gray.shape[1], int(math.ceil(max_x + pad)))
+        y1 = min(gray.shape[0], int(math.ceil(max_y + pad)))
+        if x1 - x0 < 2 or y1 - y0 < 2:
+            return None, None
+        return gray[y0:y1, x0:x1], (x0, y0)
 
     def apply_decode_verification(
         self, detection, center_u, center_v, now=None
