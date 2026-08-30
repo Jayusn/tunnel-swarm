@@ -1,0 +1,41 @@
+<launch>
+  <!-- Only observe the downward ArUco stream. This launch never publishes flight setpoints. -->
+  <arg name="topic_prefix" default="/UAV1" />
+  <arg name="image_topic" default="$(arg topic_prefix)/down_camera/image_raw" />
+  <arg name="camera_info_topic" default="$(arg topic_prefix)/down_camera/camera_info" />
+  <arg name="odom_topic" default="$(arg topic_prefix)/fast_lio/Odom_high_freq" />
+
+  <node pkg="precision_landing" type="landing_search_node"
+        name="uav1_downward_aruco_observer" output="screen">
+    <rosparam command="load"
+              file="$(find precision_landing)/config/landing_search.yaml" />
+    <rosparam command="load"
+              file="$(find precision_landing)/config/down_camera_extrinsic_uav1.yaml" />
+    <param name="topics/image" value="$(arg image_topic)" />
+    <param name="topics/camera_info" value="$(arg camera_info_topic)" />
+    <param name="topics/odometry" value="$(arg odom_topic)" />
+    <param name="topics/debug_image"
+           value="$(arg topic_prefix)/landing/search/debug_image" />
+    <param name="topics/status" value="$(arg topic_prefix)/landing/search/status" />
+    <param name="topics/candidates"
+           value="$(arg topic_prefix)/landing/search/candidates" />
+    <param name="topics/filtered_target"
+           value="$(arg topic_prefix)/landing/search/target_world" />
+    <param name="topics/locked_id"
+           value="$(arg topic_prefix)/landing/search/locked_id" />
+    <param name="topics/target_id" value="$(arg topic_prefix)/landing/target_id" />
+    <param name="topics/assigned_id"
+           value="$(arg topic_prefix)/landing/assigned_id" />
+    <param name="topics/excluded_id"
+           value="$(arg topic_prefix)/landing/excluded_id" />
+    <param name="topics/marker_world"
+           value="$(arg topic_prefix)/mission/detection/final_aruco" />
+    <param name="topics/mission_status" value="$(arg topic_prefix)/mission/task_status" />
+    <param name="topics/landing_request"
+           value="$(arg topic_prefix)/mission/landing_request" />
+    <param name="topics/landing_trigger" value="$(arg topic_prefix)/need_to_land" />
+    <param name="mission/require_stage_gate" value="false" />
+    <param name="mission/require_platform_assignment" value="false" />
+    <param name="mission/early_handoff_on_assigned_marker" value="false" />
+  </node>
+</launch>

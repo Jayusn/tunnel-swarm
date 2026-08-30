@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Combine four UAV1 detector images into one 2x2 display image."""
+"""Combine five UAV1 detector images into one display image."""
 
 import cv2
 import rospy
@@ -11,12 +11,13 @@ class FourViewNode:
     def __init__(self):
         self.bridge = CvBridge()
         self.lock = __import__("threading").Lock()
-        self.frames = [None, None, None, None]
+        self.frames = [None, None, None, None, None]
         self.output_width = int(rospy.get_param("~output_width", 1280))
         self.output_height = int(rospy.get_param("~output_height", 720))
         topics = [
             "/UAV1/color_tag_detector/debug_image",
             "/UAV1/vision/qr_debug_image",
+            "/UAV1/landing/search/debug_image",
             "/UAV1/thermal/debug_image",
             "/UAV1/thermal/d435_debug_image",
         ]
@@ -56,19 +57,23 @@ class FourViewNode:
     def publish(self, _event):
         with self.lock:
             frames = list(self.frames)
-        tile_width = self.output_width // 2
-        tile_height = self.output_height // 2
+        top_height = self.output_height // 2
+        bottom_height = self.output_height - top_height
         mosaic = __import__("numpy").zeros(
-            (tile_height * 2, tile_width * 2, 3), dtype=__import__("numpy").uint8
+            (self.output_height, self.output_width, 3), dtype=__import__("numpy").uint8
         )
-        for index, frame in enumerate(frames):
-            tile = self.fit_image(frame, tile_width, tile_height)
-            cv2.rectangle(tile, (0, 0), (tile_width - 1, tile_height - 1), (255, 255, 255), 1)
-            row, column = divmod(index, 2)
-            mosaic[
-                row * tile_height : (row + 1) * tile_height,
-                column * tile_width : (column + 1) * tile_width,
-            ] = tile
+        for index, frame in enumerate(frames[:3]):
+            x0 = index * self.output_width // 3
+            x1 = (index + 1) * self.output_width // 3
+            tile = self.fit_image(frame, x1 - x0, top_height)
+            cv2.rectangle(tile, (0, 0), (tile.shape[1] - 1, tile.shape[0] - 1), (255, 255, 255), 1)
+            mosaic[0:top_height, x0:x1] = tile
+        for index, frame in enumerate(frames[3:]):
+            x0 = index * self.output_width // 2
+            x1 = (index + 1) * self.output_width // 2
+            tile = self.fit_image(frame, x1 - x0, bottom_height)
+            cv2.rectangle(tile, (0, 0), (tile.shape[1] - 1, tile.shape[0] - 1), (255, 255, 255), 1)
+            mosaic[top_height:self.output_height, x0:x1] = tile
         message = self.bridge.cv2_to_imgmsg(mosaic, encoding="bgr8")
         message.header.stamp = rospy.Time.now()
         self.publisher.publish(message)

@@ -16,7 +16,7 @@ usage() {
   bash shfiles/start_uav1_four_view.sh
   bash shfiles/start_uav1_four_view.sh stop
 
-打开 Terminator 五分屏：MAVROS、MID360、FAST-LIO、检测/上报、四分屏画面。
+打开 Terminator 五分屏：MAVROS、MID360、FAST-LIO、检测/上报、五画面检测显示。
 检测分屏会自动录制二维码诊断包到 ~/target_reports/uav1/qr_bags/。
 EOF
 }
@@ -52,6 +52,27 @@ if [[ "${1:-}" == "--pane" ]]; then
     echo "[UAV1 four-view] 分屏命令已退出，返回码=${status}。按 Ctrl+D 关闭此分屏。"
     exec "${SHELL:-/bin/bash}" -i
   }
+  run_detection_stack() {
+    local down_camera_pid observer_pid detection_pid
+    sh "${MATCH_WS}/shfiles/run_uav1_sensor_stack.sh" landing &
+    down_camera_pid=$!
+    trap 'kill "${down_camera_pid}" "${observer_pid:-}" "${detection_pid:-}" 2>/dev/null || true' EXIT INT TERM
+    echo '[UAV1 four-view] 等待下视相机话题...'
+    local attempt=0
+    until rostopic info /UAV1/down_camera/image_raw >/dev/null 2>&1; do
+      attempt=$((attempt + 1))
+      if (( attempt >= 30 )); then
+        echo '[UAV1 four-view] 下视相机启动超时' >&2
+        return 1
+      fi
+      sleep 1
+    done
+    roslaunch uav0_competition_bringup uav1_downward_observer.launch &
+    observer_pid=$!
+    roslaunch uav0_competition_bringup uav1_detection_stack.launch enable_realsense:=true enable_color_tag:=true enable_qr:=true enable_front_aruco:=false enable_thermal:=true enable_thermal_d435_fusion:=true enable_target_reporting:=true &
+    detection_pid=$!
+    wait "${detection_pid}"
+  }
   case "${2:-}" in
     mavros)
       if ! rostopic list >/dev/null 2>&1; then
@@ -84,7 +105,7 @@ if [[ "${1:-}" == "--pane" ]]; then
       qr_bag_pid=$!
       printf '%s\n' "${qr_bag_pid}" > "${QR_BAG_PID_FILE}"
       trap 'kill "${qr_bag_pid}" 2>/dev/null || true; rm -f "${QR_BAG_PID_FILE}"' EXIT INT TERM
-      run_and_keep_terminal roslaunch uav0_competition_bringup uav1_detection_stack.launch enable_realsense:=true enable_color_tag:=true enable_qr:=true enable_front_aruco:=false enable_thermal:=true enable_thermal_d435_fusion:=true enable_target_reporting:=true
+      run_and_keep_terminal run_detection_stack
       ;;
     view)
       wait_for_master
