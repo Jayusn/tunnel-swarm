@@ -434,6 +434,7 @@ class ThermalD435FusionNode:
         camera_info,
         depth_image,
         depth_encoding,
+        output_stamp=None,
     ):
         if color_image is None:
             return
@@ -541,6 +542,8 @@ class ThermalD435FusionNode:
         debug_msg = self.bridge.cv2_to_imgmsg(debug_image, encoding="bgr8")
         if color_header is not None:
             debug_msg.header = color_header
+            if output_stamp is not None:
+                debug_msg.header.stamp = output_stamp
         self.d435_debug_image_pub.publish(debug_msg)
 
     def build_camera_point(
@@ -582,7 +585,8 @@ class ThermalD435FusionNode:
         return []
 
     def publish_report_candidates(
-        self, status, camera_info, depth_image, depth_encoding
+        self, status, camera_info, depth_image, depth_encoding,
+        color_image=None, color_header=None
     ):
         if status is None or camera_info is None or depth_image is None:
             return False
@@ -616,6 +620,24 @@ class ThermalD435FusionNode:
             if camera_point is None:
                 continue
             camera_point.header.stamp = thermal_point.header.stamp
+
+            # Give each candidate its own same-frame D435 evidence image so
+            # filtering one candidate cannot leave its box in another one's
+            # locally saved or remotely uploaded image.
+            if color_image is not None:
+                self.publish_d435_debug_image(
+                    color_image,
+                    color_header,
+                    False,
+                    None,
+                    True,
+                    thermal_point,
+                    candidate.get("bbox"),
+                    camera_info,
+                    depth_image,
+                    depth_encoding,
+                    output_stamp=thermal_point.header.stamp,
+                )
 
             stable = bool(candidate.get("stable", status.get("stable", False)))
             report_status = {
@@ -683,7 +705,12 @@ class ThermalD435FusionNode:
             and candidate_status_version > self.published_candidate_status_version
         ):
             if self.publish_report_candidates(
-                candidate_status, camera_info, depth_image, depth_encoding
+                candidate_status,
+                camera_info,
+                depth_image,
+                depth_encoding,
+                color_image,
+                color_header,
             ):
                 self.published_candidate_status_version = candidate_status_version
 
