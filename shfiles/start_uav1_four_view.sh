@@ -8,7 +8,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 MATCH_WS="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 ROS_SETUP="${UAV1_FOUR_VIEW_ROS_SETUP:-/opt/ros/noetic/setup.bash}"
-NETWORK_SETUP="${SCRIPT_DIR}/configure_dual_uav_ros_network.sh"
+LOCAL_MASTER_URI="${UAV1_FOUR_VIEW_MASTER_URI:-http://127.0.0.1:11311}"
+LOCAL_ROS_IP="${UAV1_FOUR_VIEW_ROS_IP:-127.0.0.1}"
+ROSCORE_PID=""
 MAVROS_PID=""
 MID360_PID=""
 FASTLIO_PID=""
@@ -43,7 +45,6 @@ fi
   echo "找不到 ${MATCH_WS}/devel/setup.bash，请先编译工作区。" >&2
   exit 1
 }
-[[ -r "${NETWORK_SETUP}" ]] || { echo "找不到双机网络配置：${NETWORK_SETUP}" >&2; exit 1; }
 [[ -n "${DISPLAY:-}" ]] || {
   echo "DISPLAY 未设置，请在图形桌面终端运行。" >&2
   exit 1
@@ -52,8 +53,9 @@ fi
 set +u
 source "${ROS_SETUP}"
 source "${MATCH_WS}/devel/setup.bash"
-source "${NETWORK_SETUP}"
-configure_dual_uav_ros_network uav1
+export ROS_MASTER_URI="${LOCAL_MASTER_URI}"
+export ROS_IP="${LOCAL_ROS_IP}"
+unset ROS_HOSTNAME
 set -u
 
 cleanup() {
@@ -64,7 +66,7 @@ cleanup() {
   if [[ -n "${STACK_PID}" ]] && kill -0 "${STACK_PID}" 2>/dev/null; then
     kill -INT "${STACK_PID}" 2>/dev/null || true
   fi
-  for pid in "${FASTLIO_PID}" "${MID360_PID}" "${MAVROS_PID}"; do
+  for pid in "${FASTLIO_PID}" "${MID360_PID}" "${MAVROS_PID}" "${ROSCORE_PID}"; do
     if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
       kill -INT "${pid}" 2>/dev/null || true
     fi
@@ -74,6 +76,7 @@ cleanup() {
   wait "${FASTLIO_PID}" 2>/dev/null || true
   wait "${MID360_PID}" 2>/dev/null || true
   wait "${MAVROS_PID}" 2>/dev/null || true
+  wait "${ROSCORE_PID}" 2>/dev/null || true
 }
 trap cleanup INT TERM EXIT
 
@@ -85,6 +88,15 @@ wait_for_topic() {
     "source '${ROS_SETUP}' && source '${MATCH_WS}/devel/setup.bash' && rostopic wait '${topic}'" \
     || { echo "等待话题超时：${topic}" >&2; exit 1; }
 }
+
+if ! rostopic list >/dev/null 2>&1; then
+  echo "[UAV1 four-view] 启动本机 roscore..."
+  roscore >/tmp/uav1_four_view_roscore.log 2>&1 &
+  ROSCORE_PID=$!
+  wait_for_topic /rosout
+else
+  echo "[UAV1 four-view] 使用已有本机 ROS Master：${ROS_MASTER_URI}"
+fi
 
 echo "[UAV1 four-view] 启动 MAVROS..."
 roslaunch cxr_ego_ctrl mavros_uav.launch vehicle_ns:=UAV1 &
