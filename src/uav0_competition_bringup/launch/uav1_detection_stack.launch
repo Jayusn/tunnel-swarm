@@ -172,7 +172,8 @@
     <param name="target_frame" value="$(arg world_frame)" />
     <param name="d435_optical_frame" value="$(arg camera_optical_frame)" />
     <param name="thermal_ground_filter_enabled" value="true" />
-    <param name="thermal_min_height_m" value="-0.08" />
+    <!-- 当前 UAV1/camera_init 下，真实热源约 -0.37m，地面误检约 -0.52m。 -->
+    <param name="thermal_min_height_m" value="-0.45" />
     <remap from="/UAV0/thermal/target_d435_pixel"
            to="/UAV1/thermal/target_d435_pixel" />
     <remap from="/UAV0/thermal/target_camera_point"
@@ -211,9 +212,9 @@
     <param name="leader_odom_frame" value="world" />
     <param name="leader_thermal_exclusion_radius_m" value="0.35" />
     <param name="leader_odom_max_age_s" value="0.50" />
-    <!-- 报告样本中地板误检低于 -0.10m，真实机体热源最低约 -0.066m。 -->
+    <!-- 与融合显示采用同一 UAV1/camera_init 高度阈值，避免上报地面误检。 -->
     <param name="thermal_ground_filter_enabled" value="true" />
-    <param name="thermal_min_height_m" value="-0.08" />
+    <param name="thermal_min_height_m" value="-0.45" />
     <remap from="/UAV0/target_reporting/observation"
            to="/UAV1/target_reporting/observation" />
     <remap from="/UAV0/color_tag_detector/debug_image"
