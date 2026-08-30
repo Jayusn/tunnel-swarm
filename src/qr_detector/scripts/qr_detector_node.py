@@ -706,11 +706,12 @@ class QRDetectorNode(object):
                 ok, candidate_points = self.qr_detector.detect(image)
                 if ok:
                     detected_points = candidate_points
-                    decoded_data, _ = self.qr_detector.decode(
-                        image, candidate_points
-                    )
-                    if decoded_data:
-                        decoded_points = candidate_points
+                    if self.decode_refresh_needed():
+                        decoded_data, _ = self.qr_detector.decode(
+                            image, candidate_points
+                        )
+                        if decoded_data:
+                            decoded_points = candidate_points
             except cv2.error as exc:
                 rospy.logwarn_throttle(
                     1.0, "QRCodeDetector detect/decode failed: %s", exc
@@ -723,6 +724,7 @@ class QRDetectorNode(object):
             if (
                 detected_points is not None
                 and not decoded_data
+                and self.decode_refresh_needed()
                 and zbar_decoder is not None
             ):
                 try:
@@ -751,6 +753,16 @@ class QRDetectorNode(object):
             "decoded_data": decoded_data or "",
             "decoded_valid": bool(decoded_data and decoded_points is not None),
         }
+
+    def decode_refresh_needed(self):
+        """Avoid re-decoding every frame while the same QR is authenticated."""
+        verified_time = getattr(self, "last_decode_verification_time", None)
+        if verified_time is None:
+            return True
+        return (
+            time.monotonic() - float(verified_time)
+            > float(getattr(self, "decode_verification_hold_seconds", 0.0))
+        )
 
     @staticmethod
     def qr_crop(image, points):
