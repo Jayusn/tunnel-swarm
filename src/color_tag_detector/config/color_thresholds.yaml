@@ -82,14 +82,14 @@ colors:
       - lower: [86, 35, 105]
         upper: [127, 255, 255]
     min_mean_hue: 86
-    # 浅蓝标签在阴影/反光下平均 S 会下降；降低颜色门槛，但提高轮廓
-    # 纯度、实体度和矩形度，避免把通道包装上的蓝色印刷区域当成标签。
-    min_mean_saturation: 45
-    min_mean_value: 105
-    min_color_purity: 0.86
-    min_solidity: 0.80
-    min_candidate_rectangularity: 0.88
-    min_confirmation_rectangularity: 0.88
+    # 单机手持测试时标签受距离和角度影响较大，放宽浅蓝色轮廓条件；
+    # 仍保留深度和实体尺寸约束，避免直接放开通道背景。
+    min_mean_saturation: 35
+    min_mean_value: 95
+    min_color_purity: 0.80
+    min_solidity: 0.75
+    min_candidate_rectangularity: 0.84
+    min_confirmation_rectangularity: 0.84
     min_valid_depth_ratio: 0.60
     max_depth_std: 0.12
     area_max_ratio: 0.08
