@@ -1,0 +1,10 @@
+<launch>
+  <arg name="open_rviz" default="true" />
+
+  <node pkg="target_reporting" type="uav1_four_view_node.py"
+        name="uav1_four_view" output="screen" />
+
+  <node if="$(arg open_rviz)" pkg="rviz" type="rviz" name="uav1_four_view_rviz"
+        args="-d $(find target_reporting)/config/uav1_four_view.rviz"
+        output="screen" />
+</launch>

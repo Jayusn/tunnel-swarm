@@ -15,6 +15,7 @@ catkin_install_python(PROGRAMS
   scripts/target_reporter_node.py
   scripts/target_rviz_marker_node.py
   scripts/target_report_server.py
+  scripts/uav1_four_view_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
