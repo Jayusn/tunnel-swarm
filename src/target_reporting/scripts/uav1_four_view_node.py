@@ -12,7 +12,6 @@ class FourViewNode:
         self.bridge = CvBridge()
         self.lock = __import__("threading").Lock()
         self.frames = [None, None, None, None]
-        self.labels = ["COLOR TAG", "QR CODE", "THERMAL", "THERMAL -> D435"]
         self.output_width = int(rospy.get_param("~output_width", 1280))
         self.output_height = int(rospy.get_param("~output_height", 720))
         topics = [
@@ -65,16 +64,6 @@ class FourViewNode:
         for index, frame in enumerate(frames):
             tile = self.fit_image(frame, tile_width, tile_height)
             cv2.rectangle(tile, (0, 0), (tile_width - 1, tile_height - 1), (255, 255, 255), 1)
-            cv2.putText(
-                tile,
-                self.labels[index],
-                (12, 28),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.75,
-                (0, 255, 255),
-                2,
-                cv2.LINE_AA,
-            )
             row, column = divmod(index, 2)
             mosaic[
                 row * tile_height : (row + 1) * tile_height,
