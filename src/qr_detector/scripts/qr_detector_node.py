@@ -655,6 +655,10 @@ class QRDetectorNode(object):
             current_center[1] - float(verified_center[1]),
         )
         if 0.0 <= age <= max_age and center_shift <= shift_limit:
+            # Keep the decoded track reference moving with consecutive
+            # geometrically valid frames. The decode expiry remains fixed, so
+            # a moving QR still has to decode again after the hold period.
+            self.last_decode_center = current_center
             return (
                 True,
                 "recent_decode",

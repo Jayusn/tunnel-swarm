@@ -110,6 +110,27 @@ class QRDetectorValidationTests(unittest.TestCase):
         )
         self.assertFalse(valid)
 
+    def test_recent_decode_tracks_gradual_motion_without_extending_expiry(self):
+        detector = self.make_detector()
+        decoded = {"decoded_valid": True, "decoded_data": "competition-qr"}
+        undecoded = {"decoded_valid": False, "decoded_data": ""}
+
+        valid, _, _ = detector.apply_decode_verification(
+            decoded, 600.0, 300.0, now=100.0
+        )
+        self.assertTrue(valid)
+        for now, center_x in ((100.4, 690.0), (100.8, 780.0), (101.2, 870.0)):
+            valid, reason, _ = detector.apply_decode_verification(
+                undecoded, center_x, 300.0, now=now
+            )
+            self.assertTrue(valid)
+            self.assertEqual("recent_decode", reason)
+
+        valid, _, _ = detector.apply_decode_verification(
+            undecoded, 870.0, 300.0, now=102.1
+        )
+        self.assertFalse(valid)
+
     def test_startup_warmup_blocks_early_confirmation(self):
         detector = self.make_detector()
         detector.first_image_wall_time = 100.0
