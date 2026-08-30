@@ -79,13 +79,13 @@ colors:
   blue:
     draw_bgr: [255, 0, 0]
     ranges:
-      - lower: [86, 35, 105]
+      - lower: [80, 20, 80]
         upper: [127, 255, 255]
-    min_mean_hue: 86
+    min_mean_hue: 80
     # 单机手持测试时标签受距离和角度影响较大，放宽浅蓝色轮廓条件；
     # 仍保留深度和实体尺寸约束，避免直接放开通道背景。
-    min_mean_saturation: 35
-    min_mean_value: 95
+    min_mean_saturation: 25
+    min_mean_value: 80
     min_color_purity: 0.80
     min_solidity: 0.75
     min_candidate_rectangularity: 0.84
@@ -160,7 +160,8 @@ max_real_height: 0.55
 
 score_threshold: 0.72
 switch_score_margin: 0.18
-lost_keep_frames: 8
+# 短暂反光或曝光变化时保留已有检测框，旧帧不会作为新检测上报。
+lost_keep_frames: 18
 
 stable_window: 12
 stable_min_count: 8
