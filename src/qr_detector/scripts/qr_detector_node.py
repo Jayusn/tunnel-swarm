@@ -697,28 +697,39 @@ class QRDetectorNode(object):
         decoded_data = ""
         decoded_points = None
 
-        # Reuse detectAndDecode() corners as the geometric candidate so OpenCV
-        # scans the image only once when decoding is enabled.
+        # Locate corners first. Decoding is substantially more expensive than
+        # localization, so do not decode frames without a QR quadrilateral.
         if self.require_decode_for_confirmation or self.decode_qr_data:
             try:
-                decoded_data, decoded_points, _ = self.qr_detector.detectAndDecode(
-                    image
-                )
-                detected_points = decoded_points
+                ok, candidate_points = self.qr_detector.detect(image)
+                if ok:
+                    detected_points = candidate_points
+                    decoded_data, _ = self.qr_detector.decode(
+                        image, candidate_points
+                    )
+                    if decoded_data:
+                        decoded_points = candidate_points
             except cv2.error as exc:
                 rospy.logwarn_throttle(
-                    1.0, "QRCodeDetector detectAndDecode failed: %s", exc
+                    1.0, "QRCodeDetector detect/decode failed: %s", exc
                 )
 
-            # Ubuntu's OpenCV 4.2 package can be built without QUIRC: it still
-            # detects QR corners, but always returns an empty payload.  Decode
-            # the same image with the already-installed libzbar in that case.
+            # Some OpenCV builds cannot decode QR payloads even when corners
+            # are found. Limit libzbar's fallback to that candidate crop;
+            # scanning a full D435 image again would cause frame drops.
             zbar_decoder = getattr(self, "zbar_decoder", None)
-            if not decoded_data and zbar_decoder is not None:
+            if (
+                detected_points is not None
+                and not decoded_data
+                and zbar_decoder is not None
+            ):
                 try:
-                    decoded_data, zbar_points = zbar_decoder.decode(image)
+                    qr_crop, crop_offset = self.qr_crop(image, detected_points)
+                    decoded_data, zbar_points = zbar_decoder.decode(qr_crop)
                     if decoded_data and zbar_points is not None:
-                        decoded_points = zbar_points
+                        decoded_points = np.asarray(
+                            zbar_points, dtype=np.float32
+                        ) + np.asarray(crop_offset, dtype=np.float32)
                 except (AttributeError, ValueError, ctypes.Error) as exc:
                     rospy.logwarn_throttle(1.0, "libzbar QR decode failed: %s", exc)
         else:
@@ -738,6 +749,19 @@ class QRDetectorNode(object):
             "decoded_data": decoded_data or "",
             "decoded_valid": bool(decoded_data and decoded_points is not None),
         }
+
+    @staticmethod
+    def qr_crop(image, points):
+        """Crop a padded QR region and retain its full-image offset."""
+        quad = np.asarray(points, dtype=np.float32).reshape(-1, 2)
+        min_x, min_y = np.min(quad, axis=0)
+        max_x, max_y = np.max(quad, axis=0)
+        pad = max(12.0, 0.25 * max(max_x - min_x, max_y - min_y))
+        x0 = max(0, int(math.floor(min_x - pad)))
+        y0 = max(0, int(math.floor(min_y - pad)))
+        x1 = min(image.shape[1], int(math.ceil(max_x + pad)))
+        y1 = min(image.shape[0], int(math.ceil(max_y + pad)))
+        return image[y0:y1, x0:x1], (x0, y0)
 
     def normalize_points(self, points, scale=1.0):
         if points is None:

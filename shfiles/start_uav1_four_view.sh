@@ -8,6 +8,7 @@ LAYOUT_CONFIG="${SCRIPT_DIR}/terminator_uav1_four_view.conf"
 RUNTIME_CONFIG="/tmp/uav1_four_view_${UID:-$(id -u)}.conf"
 LOG_FILE="/tmp/uav1_four_view_${UID:-$(id -u)}.log"
 PID_FILE="/tmp/uav1_four_view_${UID:-$(id -u)}.pid"
+QR_BAG_PID_FILE="/tmp/uav1_four_view_qr_bag_${UID:-$(id -u)}.pid"
 
 usage() {
   cat <<'EOF'
@@ -16,12 +17,14 @@ usage() {
   bash shfiles/start_uav1_four_view.sh stop
 
 打开 Terminator 五分屏：MAVROS、MID360、FAST-LIO、检测/上报、四分屏画面。
+检测分屏会自动录制二维码诊断包到 ~/target_reports/uav1/qr_bags/。
 EOF
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then usage; exit 0; fi
 if [[ "${1:-}" == "stop" ]]; then
   if [[ -r "${PID_FILE}" ]]; then kill "$(cat "${PID_FILE}")" 2>/dev/null || true; rm -f "${PID_FILE}"; fi
+  if [[ -r "${QR_BAG_PID_FILE}" ]]; then kill "$(cat "${QR_BAG_PID_FILE}")" 2>/dev/null || true; rm -f "${QR_BAG_PID_FILE}"; fi
   exit 0
 fi
 command -v terminator >/dev/null 2>&1 || { echo '未安装 terminator' >&2; exit 1; }
@@ -68,6 +71,19 @@ if [[ "${1:-}" == "--pane" ]]; then
       ;;
     detection)
       wait_for_master
+      qr_bag_dir="${HOME}/target_reports/uav1/qr_bags/$(date +%Y%m%d_%H%M%S)"
+      mkdir -p "${qr_bag_dir}"
+      echo "[UAV1 four-view] 录制二维码诊断包：${qr_bag_dir}"
+      rosbag record --lz4 --split --size=1024 -O "${qr_bag_dir}/qr_test" \
+        /UAV1/camera/color/image_raw \
+        /UAV1/camera/aligned_depth_to_color/image_raw \
+        /UAV1/camera/color/camera_info \
+        /UAV1/vision/qr_debug_image \
+        /UAV1/vision/qr_candidate_detected \
+        /UAV1/vision/qr_detected &
+      qr_bag_pid=$!
+      printf '%s\n' "${qr_bag_pid}" > "${QR_BAG_PID_FILE}"
+      trap 'kill "${qr_bag_pid}" 2>/dev/null || true; rm -f "${QR_BAG_PID_FILE}"' EXIT INT TERM
       run_and_keep_terminal roslaunch uav0_competition_bringup uav1_detection_stack.launch enable_realsense:=true enable_color_tag:=true enable_qr:=true enable_front_aruco:=false enable_thermal:=true enable_thermal_d435_fusion:=true enable_target_reporting:=true
       ;;
     view)
