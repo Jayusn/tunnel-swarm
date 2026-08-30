@@ -31,12 +31,49 @@ command -v terminator >/dev/null 2>&1 || { echo '未安装 terminator' >&2; exit
 if [[ "${1:-}" == "--pane" ]]; then
   [[ $# -eq 2 ]] || { usage >&2; exit 2; }
   set +u; source "${ROS_SETUP}"; source "${MATCH_WS}/devel/setup.bash"; set -u
+  wait_for_master() {
+    local attempt=0
+    until rostopic list >/dev/null 2>&1; do
+      attempt=$((attempt + 1))
+      if (( attempt >= 60 )); then
+        echo '[UAV1 four-view] 等待本机 ROS Master 超时' >&2
+        exec "${SHELL:-/bin/bash}" -i
+      fi
+      sleep 1
+    done
+  }
+  run_and_keep_terminal() {
+    local status=0
+    "$@" || status=$?
+    echo
+    echo "[UAV1 four-view] 分屏命令已退出，返回码=${status}。按 Ctrl+D 关闭此分屏。"
+    exec "${SHELL:-/bin/bash}" -i
+  }
   case "${2:-}" in
-    mavros) exec roslaunch cxr_ego_ctrl mavros_uav.launch vehicle_ns:=UAV1 ;;
-    mid360) exec roslaunch livox_ros_driver2 msg_MID360.launch vehicle_ns:=UAV1 msg_frame_id:=UAV1/livox_frame publish_freq:=30.0 ;;
-    fastlio) exec roslaunch fast_lio mapping_mid360.launch vehicle_ns:=UAV1 odom_topic:=/UAV1/fast_lio/Odom_high_freq rviz:=false ;;
-    detection) exec roslaunch uav0_competition_bringup uav1_detection_stack.launch enable_realsense:=true enable_color_tag:=true enable_qr:=true enable_front_aruco:=false enable_thermal:=true enable_thermal_d435_fusion:=true enable_target_reporting:=true ;;
-    view) exec roslaunch target_reporting uav1_four_view.launch ;;
+    mavros)
+      if ! rostopic list >/dev/null 2>&1; then
+        echo '[UAV1 four-view] 启动本机 roscore...'
+        roscore &
+        sleep 2
+      fi
+      run_and_keep_terminal roslaunch cxr_ego_ctrl mavros_uav.launch vehicle_ns:=UAV1
+      ;;
+    mid360)
+      wait_for_master
+      run_and_keep_terminal roslaunch livox_ros_driver2 msg_MID360.launch vehicle_ns:=UAV1 msg_frame_id:=UAV1/livox_frame publish_freq:=30.0
+      ;;
+    fastlio)
+      wait_for_master
+      run_and_keep_terminal roslaunch fast_lio mapping_mid360.launch vehicle_ns:=UAV1 odom_topic:=/UAV1/fast_lio/Odom_high_freq rviz:=false
+      ;;
+    detection)
+      wait_for_master
+      run_and_keep_terminal roslaunch uav0_competition_bringup uav1_detection_stack.launch enable_realsense:=true enable_color_tag:=true enable_qr:=true enable_front_aruco:=false enable_thermal:=true enable_thermal_d435_fusion:=true enable_target_reporting:=true
+      ;;
+    view)
+      wait_for_master
+      run_and_keep_terminal roslaunch target_reporting uav1_four_view.launch
+      ;;
     *) usage >&2; exit 2 ;;
   esac
 fi
