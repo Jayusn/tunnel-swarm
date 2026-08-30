@@ -167,8 +167,12 @@
            value="/UAV1/camera/aux/aligned_depth_to_color/image_raw" />
     <param name="d435_color_topic" value="/UAV1/camera/aux/color/image_raw" />
     <param name="d435_debug_image_topic" value="/UAV1/thermal/d435_debug_image" />
+    <param name="d435_evidence_image_topic"
+           value="/UAV1/thermal/d435_evidence_image" />
     <param name="target_frame" value="$(arg world_frame)" />
     <param name="d435_optical_frame" value="$(arg camera_optical_frame)" />
+    <param name="thermal_ground_filter_enabled" value="true" />
+    <param name="thermal_min_height_m" value="-0.08" />
     <remap from="/UAV0/thermal/target_d435_pixel"
            to="/UAV1/thermal/target_d435_pixel" />
     <remap from="/UAV0/thermal/target_camera_point"
@@ -200,7 +204,7 @@
     <param name="thermal_fused_candidate_topic"
            value="/UAV1/thermal/report_candidate" />
     <param name="thermal_d435_debug_image_topic"
-           value="/UAV1/thermal/d435_debug_image" />
+           value="/UAV1/thermal/d435_evidence_image" />
     <!-- 只过滤落在前机机体附近的热源候选；颜色、QR和调试图不受影响。 -->
     <param name="leader_thermal_filter_enabled" value="true" />
     <param name="leader_odom_topic" value="/UAV0/fast_lio/Odom_high_freq" />

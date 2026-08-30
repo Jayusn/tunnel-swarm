@@ -62,6 +62,9 @@ class ThermalD435FusionNode:
         self.d435_debug_image_topic = self.get_param(
             "d435_debug_image_topic", "/UAV0/thermal/d435_debug_image"
         )
+        self.d435_evidence_image_topic = self.get_param(
+            "d435_evidence_image_topic", self.d435_debug_image_topic
+        )
 
         self.homography = np.array(
             self.get_param(
@@ -83,6 +86,12 @@ class ThermalD435FusionNode:
             self.get_param("d435_optical_frame", "camera_color_optical_frame")
         )
         self.use_tf = bool(self.get_param("use_tf", True))
+        self.thermal_ground_filter_enabled = bool(
+            self.get_param("thermal_ground_filter_enabled", False)
+        )
+        self.thermal_min_height = float(
+            self.get_param("thermal_min_height_m", -0.08)
+        )
         self.publish_rate = float(self.get_param("publish_rate", 20))
         self.debug = bool(self.get_param("debug", True))
         self.d435_exposure_warmup_seconds = max(
@@ -131,6 +140,9 @@ class ThermalD435FusionNode:
         self.fusion_valid_pub = rospy.Publisher("/UAV0/thermal/fusion_valid", Bool, queue_size=1)
         self.d435_debug_image_pub = rospy.Publisher(
             self.d435_debug_image_topic, Image, queue_size=1
+        )
+        self.d435_evidence_image_pub = rospy.Publisher(
+            self.d435_evidence_image_topic, Image, queue_size=1
         )
 
         rospy.Subscriber(self.thermal_target_detected_topic, Bool, self.detected_callback)
@@ -435,6 +447,8 @@ class ThermalD435FusionNode:
         depth_image,
         depth_encoding,
         output_stamp=None,
+        publish_realtime=False,
+        publish_evidence=False,
     ):
         if color_image is None:
             return
@@ -544,7 +558,10 @@ class ThermalD435FusionNode:
             debug_msg.header = color_header
             if output_stamp is not None:
                 debug_msg.header.stamp = output_stamp
-        self.d435_debug_image_pub.publish(debug_msg)
+        if publish_realtime:
+            self.d435_debug_image_pub.publish(debug_msg)
+        if publish_evidence:
+            self.d435_evidence_image_pub.publish(debug_msg)
 
     def build_camera_point(
         self,
@@ -637,6 +654,7 @@ class ThermalD435FusionNode:
                     depth_image,
                     depth_encoding,
                     output_stamp=thermal_point.header.stamp,
+                    publish_evidence=True,
                 )
 
             stable = bool(candidate.get("stable", status.get("stable", False)))
@@ -668,6 +686,57 @@ class ThermalD435FusionNode:
             )
         return True
 
+    def is_ground_candidate(self, camera_point):
+        if not self.thermal_ground_filter_enabled or not self.use_tf:
+            return False
+        try:
+            world_point = self.tf_buffer.transform(
+                camera_point, self.target_frame, rospy.Duration(0.05)
+            )
+        except Exception as exc:
+            rospy.logwarn_throttle(
+                2.0,
+                "Cannot transform thermal candidate for ground filter: %s", exc
+            )
+            return False
+        if world_point.point.z >= self.thermal_min_height:
+            return False
+        rospy.logwarn_throttle(
+            1.0,
+            "Skip ground thermal candidate in D435 mapping: z=%.3fm min_height=%.3fm",
+            world_point.point.z,
+            self.thermal_min_height,
+        )
+        return True
+
+    def select_display_candidate(
+        self, status, camera_info, depth_image, depth_encoding
+    ):
+        """Return the highest-ranked non-ground candidate for the mapping view."""
+        for candidate in self.status_candidates(status):
+            try:
+                cx = float(candidate["cx"])
+                cy = float(candidate["cy"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            thermal_point = PointStamped()
+            thermal_point.header.stamp = rospy.Time.now()
+            thermal_point.header.frame_id = "thermal_camera"
+            thermal_point.point.x = cx
+            thermal_point.point.y = cy
+            thermal_point.point.z = 1.0
+            camera_point = self.build_camera_point(
+                thermal_point,
+                camera_info,
+                depth_image,
+                depth_encoding,
+                candidate.get("bbox"),
+            )
+            if camera_point is None or self.is_ground_candidate(camera_point):
+                continue
+            return thermal_point, candidate.get("bbox")
+        return None
+
     def timer_callback(self, _event):
         with self.lock:
             detected = self.target_detected
@@ -683,6 +752,17 @@ class ThermalD435FusionNode:
             color_image = None if self.color_image is None else self.color_image.copy()
             color_header = self.color_header
 
+        display_detected = detected
+        display_thermal_pixel = thermal_pixel_msg
+        display_bbox = candidate_thermal_bbox
+        if self.status_candidates(candidate_status):
+            selected = self.select_display_candidate(
+                candidate_status, camera_info, depth_image, depth_encoding
+            )
+            display_detected = selected is not None
+            display_thermal_pixel = selected[0] if selected is not None else None
+            display_bbox = selected[1] if selected is not None else None
+
         # The RealSense color sensor starts with a few dark auto-exposure
         # frames.  Keep fusion/depth processing active, but do not put those
         # frames into the RViz mapping panel or saved/remote evidence.
@@ -690,14 +770,15 @@ class ThermalD435FusionNode:
             self.publish_d435_debug_image(
                 color_image,
                 color_header,
-                detected,
-                thermal_pixel_msg,
-                candidate_detected,
-                candidate_pixel_msg,
-                candidate_thermal_bbox,
+                display_detected,
+                display_thermal_pixel,
+                False,
+                None,
+                display_bbox,
                 camera_info,
                 depth_image,
                 depth_encoding,
+                publish_realtime=True,
             )
 
         if (
@@ -728,7 +809,11 @@ class ThermalD435FusionNode:
             if candidate_camera_point is not None:
                 self.candidate_camera_point_pub.publish(candidate_camera_point)
 
-        if not detected or thermal_pixel_msg is None or thermal_pixel_msg.point.z <= 0.0:
+        if (
+            not display_detected
+            or display_thermal_pixel is None
+            or display_thermal_pixel.point.z <= 0.0
+        ):
             self.publish_valid(False)
             return
 
@@ -742,15 +827,15 @@ class ThermalD435FusionNode:
             self.publish_valid(False)
             return
 
-        u_t = thermal_pixel_msg.point.x
-        v_t = thermal_pixel_msg.point.y
+        u_t = display_thermal_pixel.point.x
+        v_t = display_thermal_pixel.point.y
         u_d, v_d = self.map_thermal_to_d435(u_t, v_t)
 
         depth, depth_source = self.lookup_target_depth(
             depth_image,
             u_d,
             v_d,
-            candidate_thermal_bbox,
+            display_bbox,
             depth_encoding,
         )
         d435_pixel = PointStamped()
