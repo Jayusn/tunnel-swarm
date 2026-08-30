@@ -24,12 +24,12 @@ if [[ "${1:-}" == "stop" ]]; then
   if [[ -r "${PID_FILE}" ]]; then kill "$(cat "${PID_FILE}")" 2>/dev/null || true; rm -f "${PID_FILE}"; fi
   exit 0
 fi
-[[ $# -eq 0 ]] || { usage >&2; exit 2; }
 command -v terminator >/dev/null 2>&1 || { echo '未安装 terminator' >&2; exit 1; }
 [[ -r "${ROS_SETUP}" && -r "${MATCH_WS}/devel/setup.bash" ]] || { echo 'ROS 或 devel/setup.bash 不存在' >&2; exit 1; }
 [[ -n "${DISPLAY:-}" ]] || { echo 'DISPLAY 未设置，请在图形桌面终端运行' >&2; exit 1; }
 
 if [[ "${1:-}" == "--pane" ]]; then
+  [[ $# -eq 2 ]] || { usage >&2; exit 2; }
   set +u; source "${ROS_SETUP}"; source "${MATCH_WS}/devel/setup.bash"; set -u
   case "${2:-}" in
     mavros) exec roslaunch cxr_ego_ctrl mavros_uav.launch vehicle_ns:=UAV1 ;;
@@ -40,6 +40,7 @@ if [[ "${1:-}" == "--pane" ]]; then
     *) usage >&2; exit 2 ;;
   esac
 fi
+[[ $# -eq 0 ]] || { usage >&2; exit 2; }
 
 sed "s|__UAV1_FOUR_VIEW_SCRIPT__|${SCRIPT_PATH}|g" "${LAYOUT_CONFIG}" > "${RUNTIME_CONFIG}"
 nohup terminator --no-dbus --maximise --config="${RUNTIME_CONFIG}" --layout=uav1_four_view >"${LOG_FILE}" 2>&1 &
