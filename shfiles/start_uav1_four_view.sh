@@ -83,10 +83,15 @@ trap cleanup INT TERM EXIT
 wait_for_topic() {
   local topic="$1"
   local timeout="${UAV1_FOUR_VIEW_WAIT_TIMEOUT:-180}"
+  local deadline=$((SECONDS + timeout))
   echo "[UAV1 four-view] 等待话题 ${topic} ..."
-  timeout "${timeout}" bash -c \
-    "source '${ROS_SETUP}' && source '${MATCH_WS}/devel/setup.bash' && rostopic wait '${topic}'" \
-    || { echo "等待话题超时：${topic}" >&2; exit 1; }
+  while ! rostopic list 2>/dev/null | grep -Fxq "${topic}"; do
+    if (( SECONDS >= deadline )); then
+      echo "等待话题超时：${topic}" >&2
+      exit 1
+    fi
+    sleep 1
+  done
 }
 
 if ! rostopic list >/dev/null 2>&1; then
