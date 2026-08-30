@@ -491,26 +491,28 @@ class QRDetectorNode(object):
         detection = None
         if local_image is not None:
             detection = self.detect_qr_in_image(
-                local_image, offset, color_bgr.shape[:2]
+                local_image, offset, color_bgr.shape[:2], allow_fallbacks=True
             )
             if detection is not None:
                 detection["preprocess"] = "local_" + detection["preprocess"]
         if detection is None:
             detection = self.detect_qr_in_image(
-                gray, image_shape=color_bgr.shape[:2]
+                gray, image_shape=color_bgr.shape[:2], allow_fallbacks=False
             )
         if detection is not None:
             self.last_qr_points = np.asarray(detection["points"], dtype=np.float32)
             self.last_qr_track_time = time.monotonic()
         return detection
 
-    def detect_qr_in_image(self, gray, offset=(0, 0), image_shape=None):
+    def detect_qr_in_image(
+        self, gray, offset=(0, 0), image_shape=None, allow_fallbacks=False
+    ):
         """Detect one QR in an image region and return coordinates in the full image."""
 
         # Try the configured preprocessing first, then fall back to a few cheap
         # alternatives. This keeps the OpenCV baseline useful under field light
         # changes without changing the downstream depth/projection pipeline.
-        if self.enable_preprocess_fallbacks:
+        if self.enable_preprocess_fallbacks and allow_fallbacks:
             modes = [self.preprocess_mode, "gray", "equalize", "sharpen", "adaptive"]
         else:
             modes = [self.preprocess_mode]
