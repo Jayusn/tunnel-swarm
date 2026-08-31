@@ -76,7 +76,7 @@ run_rh_ldop() {
     fail "ROS 未解析到 rh_ws 的 LDOP"
 
   rosparam load "${RH_LDOP_CONFIG}" "${private_ns}"
-  rosparam set "${private_ns}/input_cloud_topic" /UAV1/fast_lio/cloud_registered
+  rosparam set "${private_ns}/input_cloud_topic" /UAV1/ldop/cloud_registered_5hz
   rosparam set "${private_ns}/odom_topic" /UAV1/fast_lio/Odom_high_freq
   rosparam set "${private_ns}/static_cloud_topic" /UAV1/ldop/static_cloud
   rosparam set "${private_ns}/dynamic_cloud_topic" /UAV1/ldop/dynamic_cloud
@@ -136,6 +136,11 @@ start_component FAST-LIO "${RUN_DIR}/fast_lio.log" \
   roslaunch fast_lio mapping_mid360.launch vehicle_ns:=UAV1 rviz:=false
 wait_for_topic /UAV1/fast_lio/cloud_registered 120
 wait_for_topic /UAV1/fast_lio/Odom_high_freq 120
+
+start_component "LDOP 输入限频 (5 Hz)" "${RUN_DIR}/ldop_rate_limit.log" \
+  rosrun topic_tools drop \
+  /UAV1/fast_lio/cloud_registered 1 2 /UAV1/ldop/cloud_registered_5hz
+wait_for_topic /UAV1/ldop/cloud_registered_5hz 30
 
 start_component D435 "${RUN_DIR}/d435.log" \
   roslaunch realsense2_camera rs_camera.launch \
