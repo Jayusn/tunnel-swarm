@@ -124,6 +124,8 @@
 	<arg name="init_y"/>
 	<arg name="init_z"/>
     <arg name="cloud_use_init_offset" default="true"/>
+    <!-- 地图和规划可视化使用的坐标系；普通Diff实例保持world。 -->
+    <arg name="planning_frame" default="world"/>
     <!-- 2026-07-07: 暴露 stuck detect 开关，便于针对 indoor1 这类窄通道实验关闭误触发的卡死判定。 -->
     <arg name="enable_stuck_detect" default="true"/>
     <!-- 2026-07-07: 暴露 stuck detect 豁免时长，便于按场景调整首段轨迹和重启后的稳定窗口。 -->
@@ -273,7 +275,8 @@
         <param name="grid_map/visualization_truncate_height" value="1.9"/>
         <param name="grid_map/show_occ_time" value="false"/>
         <param name="grid_map/pose_type" value="2"/>
-        <param name="grid_map/frame_id" value="world"/>
+        <param name="grid_map/frame_id" value="$(arg planning_frame)"/>
+        <param name="visualization/frame_id" value="$(arg planning_frame)"/>
 
         <param name="grid_map/init_x" value="$(arg init_x)" />
         <param name="grid_map/init_y" value="$(arg init_y)" />

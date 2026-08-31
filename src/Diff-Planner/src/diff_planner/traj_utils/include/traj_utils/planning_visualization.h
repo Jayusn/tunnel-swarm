@@ -17,6 +17,7 @@ namespace diff_planner
   {
   private:
     ros::NodeHandle node;
+    std::string frame_id_;
 
     ros::Publisher goal_point_pub;
     ros::Publisher global_list_pub;

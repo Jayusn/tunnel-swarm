@@ -90,6 +90,7 @@
         <arg name="init_y" value="0.0"/>
         <arg name="init_z" value="0.0"/>
         <arg name="cloud_use_init_offset" value="false"/>
+        <arg name="planning_frame" value="UAV1/camera_init"/>
         <arg name="enable_stuck_detect" value="true"/>
         <arg name="stuck_detect_grace_time" value="8.0"/>
         <!-- 2026-07-28: 不锁死全局窗口，允许雷达射线清除摆球移动后的旧占据；静态墙体仍会持续观测。 -->
