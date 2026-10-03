@@ -814,10 +814,14 @@ namespace diff_planner
     if (underpass_result ==
         SuspendedObstacleUnderpass::SearchResult::SEARCH_FAILED)
     {
-      ROS_WARN_THROTTLE(
-          1.0,
-          "[悬空障碍下穿] 下方通道已经确认，本轮禁止回退到普通上绕路径。");
-      return ASTAR_RET::POLICY_ERR;
+      if (!underpass_failure_fallback_)
+      {
+        ROS_WARN_THROTTLE(
+            1.0,
+            "[悬空障碍下穿] 下方通道已经确认，本轮禁止回退到普通上绕路径。");
+        return ASTAR_RET::POLICY_ERR;
+      }
+      ROS_WARN_THROTTLE(1.0, "[underpass_fallback] underpass search/validation failed; try ordinary A*.");
     }
 
     const ASTAR_RET result = a_star_->AstarSearch(resolution, start, end);
@@ -1926,6 +1930,7 @@ namespace diff_planner
     nh.param("optimization/obstacle_clearance", obs_clearance_, -1.0);
     nh.param("optimization/obstacle_clearance_soft", obs_clearance_soft_, -1.0);
     SuspendedObstacleUnderpass::Config underpass_config;
+    nh.param("optimization/underpass_failure_fallback", underpass_failure_fallback_, false);
     nh.param("optimization/enable_suspended_obstacle_underpass",
              underpass_config.enabled, false);
     nh.param("optimization/underpass_corridor_half_width",
@@ -1940,6 +1945,7 @@ namespace diff_planner
              underpass_config.search_timeout, 0.05);
     suspended_underpass_.setConfig(underpass_config);
     VerticalObstacleSideLock::Config side_lock_config;
+    nh.param("optimization/side_lock_failure_fallback", side_lock_config.failure_fallback, false);
     nh.param("optimization/enable_vertical_obstacle_side_lock",
              side_lock_config.enabled, false);
     nh.param("optimization/side_lock_corridor_half_width",

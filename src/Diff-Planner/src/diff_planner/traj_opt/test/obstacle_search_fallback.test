@@ -1,0 +1,4 @@
+<launch>
+  <test test-name="obstacle_search_fallback" pkg="traj_opt"
+        type="test_obstacle_search_fallback" time-limit="60"/>
+</launch>

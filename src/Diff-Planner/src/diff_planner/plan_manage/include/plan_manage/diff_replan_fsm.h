@@ -133,6 +133,10 @@ namespace diff_planner
     // AutoTrans 恢复成功后置位；在基于最新里程计发布新轨迹前禁止继续使用旧局部轨迹。
     bool controller_restart_pending_;
     bool leader_odom_paused_;
+    ros::WallTime last_fsm_callback_start_, last_recovery_diag_time_, recovery_wait_start_;
+    ros::WallTime last_odom_receive_time_;
+    ros::Time last_odom_source_stamp_;
+    const char *last_recovery_search_failure_{nullptr};
     bool swing_wait_active_;
     double swing_clear_since_;
     uint32_t swing_wait_obstacle_id_;
@@ -181,6 +185,8 @@ namespace diff_planner
 
     /* state machine functions */
     void execFSMCallback(const ros::TimerEvent &e);
+    void logRecoveryDiagnostic(const char *reason, bool force = false);
+    void logFSMCallbackDuration(const ros::WallTime &start);
     void changeFSMExecState(FSM_EXEC_STATE new_state, string pos_call);
     void printFSMExecState();
     std::pair<int, DiffReplanFSM::FSM_EXEC_STATE> timesOfConsecutiveStateCalls();

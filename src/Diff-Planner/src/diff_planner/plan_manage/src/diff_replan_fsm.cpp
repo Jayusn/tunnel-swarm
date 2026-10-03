@@ -247,12 +247,21 @@ namespace diff_planner
 
   void DiffReplanFSM::execFSMCallback(const ros::TimerEvent &e)
   {
+    const ros::WallTime callback_start = ros::WallTime::now();
+    if (!last_fsm_callback_start_.isZero() &&
+        (callback_start - last_fsm_callback_start_).toSec() > 0.2)
+      ROS_WARN("[recovery_diag] callback_gap=%.3f state=%d goal_stamp_ns=%llu",
+               (callback_start - last_fsm_callback_start_).toSec(), int(exec_state_),
+               static_cast<unsigned long long>(active_external_goal_stamp_ns_));
+    last_fsm_callback_start_ = callback_start;
     exec_timer_.stop(); // To avoid blockage
     std_msgs::Empty heartbeat_msg;
     heartbeat_pub_.publish(heartbeat_msg);
 
     if (leader_odom_paused_)
     {
+      logRecoveryDiagnostic("upper_pause");
+      logFSMCallbackDuration(callback_start);
       exec_timer_.start();
       return;
     }
@@ -550,6 +559,20 @@ namespace diff_planner
 
     case EMERGENCY_STOP:
     {
+      const char *wait_reason = mandatory_stop_ ? "mandatory_stop"
+          : flag_escape_emergency_ ? "initial_stop"
+          : !(enable_fail_safe_ || depth_timeout_emergency_) ? "fail_safe_disabled"
+          : odom_vel_.norm() >= escape_stop_speed_ ? "speed_not_stopped"
+          : depth_timeout_emergency_ ? "depth_recovery"
+          : swing_wait_active_ ? "swing_clearance"
+          : !have_target_ ? "no_target"
+          : !have_trigger_ ? "no_trigger"
+          : occupied_recovery_attempt_count_ >= escape_max_attempts_ ? "retry_round_wait"
+          : now_sec - last_escape_target_search_time_ < 0.20
+              ? (last_recovery_search_failure_ ? last_recovery_search_failure_ : "search_interval_wait")
+          : "recovery_check";
+      if (std::string(wait_reason) != "recovery_check")
+        logRecoveryDiagnostic(wait_reason);
       if (flag_escape_emergency_) // Avoiding repeated calls
       {
         occupied_recovery_active_ = false;
@@ -623,7 +646,10 @@ namespace diff_planner
         {
           ++occupied_recovery_free_count_;
           if (occupied_recovery_free_count_ < escape_free_cycles_)
+          {
+            logRecoveryDiagnostic("confirm_free_cycles");
             break;
+          }
 
           ROS_INFO("[局部脱障] 急停位置已连续 %d 次确认自由，允许恢复正常规划。",
                    occupied_recovery_free_count_);
@@ -727,6 +753,9 @@ namespace diff_planner
                                         ? std::hypot(odom_vel_.x(), odom_vel_.y())
                                         : odom_vel_.norm();
       const bool reached = recovery_position_error <= escape_reach_tolerance_;
+      logRecoveryDiagnostic(!reached ? "recovery_not_at_target"
+          : recovery_speed >= escape_stop_speed_ ? "recovery_speed_not_stopped"
+          : "recovery_confirm_cycles");
       // A history target is a pose the vehicle already reached with real odometry.
       // Do not let the same inflated-map false positive that triggered recovery
       // veto that trusted retreat or prevent it from completing.
@@ -773,7 +802,46 @@ namespace diff_planner
     data_disp_pub_.publish(data_disp_);
 
   force_return:;
+    logFSMCallbackDuration(callback_start);
     exec_timer_.start();
+  }
+
+  void DiffReplanFSM::logFSMCallbackDuration(const ros::WallTime &start)
+  {
+    const double duration = (ros::WallTime::now() - start).toSec();
+    if (duration > 0.2)
+      ROS_WARN("[recovery_diag] callback_duration=%.3f state=%d goal_stamp_ns=%llu",
+               duration, int(exec_state_),
+               static_cast<unsigned long long>(active_external_goal_stamp_ns_));
+  }
+
+  void DiffReplanFSM::logRecoveryDiagnostic(const char *reason, bool force)
+  {
+    const ros::WallTime now = ros::WallTime::now();
+    if (!force && !last_recovery_diag_time_.isZero() &&
+        (now - last_recovery_diag_time_).toSec() < 0.5)
+      return;
+    last_recovery_diag_time_ = now;
+    const double source_age = last_odom_source_stamp_.isZero() ? -1.0
+        : (ros::Time::now() - last_odom_source_stamp_).toSec();
+    const double receive_age = last_odom_receive_time_.isZero() ? -1.0
+        : (now - last_odom_receive_time_).toSec();
+    const int occupancy = have_odom_
+        ? planner_manager_->grid_map_->getInflateOccupancy(odom_pos_) : -1;
+    static const char *states[] = {"INIT", "WAIT_TARGET", "GEN_NEW_TRAJ", "REPLAN_TRAJ",
+                                  "EXEC_TRAJ", "EMERGENCY_STOP", "SEQUENTIAL_START", "OCCUPIED_RECOVERY"};
+    ROS_WARN("[recovery_diag] state=%s reason=%s goal_stamp_ns=%llu speed=%.3f stop_speed=%.3f "
+             "occ=%d odom_source_age=%.3f odom_receive_age=%.3f wait_elapsed=%.3f "
+             "target=%d trigger=%d attempts=%d/%d free_cycles=%d/%d completion_speed=%.3f",
+             states[int(exec_state_)], reason,
+             static_cast<unsigned long long>(active_external_goal_stamp_ns_),
+             have_odom_ ? odom_vel_.norm() : -1.0, escape_stop_speed_, occupancy,
+             source_age, receive_age,
+             recovery_wait_start_.isZero() ? 0.0 : (now - recovery_wait_start_).toSec(),
+             have_target_, have_trigger_, occupied_recovery_attempt_count_, escape_max_attempts_,
+             occupied_recovery_free_count_, escape_free_cycles_,
+             !have_odom_ ? -1.0 : occupied_recovery_from_history_
+                 ? std::hypot(odom_vel_.x(), odom_vel_.y()) : odom_vel_.norm());
   }
   void DiffReplanFSM::finishProcess()
   {
@@ -798,6 +866,18 @@ namespace diff_planner
     static string state_str[8] = {"INIT", "WAIT_TARGET", "GEN_NEW_TRAJ", "REPLAN_TRAJ", "EXEC_TRAJ", "EMERGENCY_STOP", "SEQUENTIAL_START", "OCCUPIED_RECOVERY"};
     int pre_s = int(exec_state_);
     exec_state_ = new_state;
+    if (pre_s != int(new_state))
+      last_recovery_search_failure_ = nullptr;
+    if (pre_s != int(new_state) &&
+        (pre_s == EMERGENCY_STOP || pre_s == OCCUPIED_RECOVERY ||
+         new_state == EMERGENCY_STOP || new_state == OCCUPIED_RECOVERY))
+    {
+      if (new_state == EMERGENCY_STOP && pre_s != OCCUPIED_RECOVERY)
+        recovery_wait_start_ = ros::WallTime::now();
+      logRecoveryDiagnostic(pos_call.c_str(), true);
+      if (new_state != EMERGENCY_STOP && new_state != OCCUPIED_RECOVERY)
+        recovery_wait_start_ = ros::WallTime();
+    }
     cout << "[" + pos_call + "]"
          << "Drone:" << planner_manager_->pp_.drone_id << ", from " + state_str[pre_s] + " to " + state_str[int(new_state)] << endl;
   }
@@ -1444,11 +1524,20 @@ namespace diff_planner
     double clearance = 0.0;
     bool from_history = false;
     if (!selectOccupiedRecoveryTarget(target, from_history, clearance))
+    {
+      last_recovery_search_failure_ = "no_recovery_candidate";
+      logRecoveryDiagnostic("no_recovery_candidate");
       return false;
+    }
     if (!callOccupiedRecovery(target))
+    {
+      last_recovery_search_failure_ = "recovery_trajectory_failed";
+      logRecoveryDiagnostic("recovery_trajectory_failed");
       return false;
+    }
 
     occupied_recovery_target_ = target;
+    last_recovery_search_failure_ = nullptr;
     occupied_recovery_from_history_ = from_history;
     occupied_recovery_active_ = true;
     occupied_recovery_episode_ = true;
@@ -1744,7 +1833,8 @@ namespace diff_planner
       return;
     }
     ROS_INFO("Received goal: %f, %f, %f", end_wp(0), end_wp(1), end_wp(2));
-    const bool restart_from_odometry = leader_odom_paused_ || occupied_recovery_active_;
+    const bool was_leader_paused = leader_odom_paused_;
+    const bool restart_from_odometry = was_leader_paused || occupied_recovery_active_;
     if (planNextWaypoint(end_wp, true))
     {
       last_target_change_time_ = ros::Time::now().toSec();
@@ -1758,6 +1848,8 @@ namespace diff_planner
         occupied_recovery_failure_reported_ = false;
         last_escape_target_search_time_ = 0.0;
         replan_fail_count_ = 0;
+        if (was_leader_paused)
+          logRecoveryDiagnostic("upper_pause_resumed", true);
         if (!mandatory_stop_)
         {
           if (occupied_recovery_episode_)
@@ -1783,6 +1875,8 @@ namespace diff_planner
       return;
     leader_odom_paused_ = true;
     occupied_recovery_active_ = false;
+    recovery_wait_start_ = ros::WallTime::now();
+    logRecoveryDiagnostic("upper_pause", true);
     ROS_WARN("Leader odometry stale; pause Diff until a new external goal arrives.");
   }
 
@@ -1883,6 +1977,8 @@ namespace diff_planner
 
   void DiffReplanFSM::odometryCallback(const nav_msgs::OdometryConstPtr &msg)
   {
+    last_odom_source_stamp_ = msg->header.stamp;
+    last_odom_receive_time_ = ros::WallTime::now();
     odom_pos_(0) = msg->pose.pose.position.x;
     odom_pos_(1) = msg->pose.pose.position.y;
     odom_pos_(2) = msg->pose.pose.position.z;

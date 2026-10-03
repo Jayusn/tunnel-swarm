@@ -15,6 +15,8 @@
     <arg name="ldop_input_rate" default="5.0"/>
     <!-- 垂地障碍物锁定一侧，避免重规划时在障碍物两侧来回换边。 -->
     <arg name="enable_vertical_obstacle_side_lock" default="true"/>
+    <arg name="side_lock_failure_fallback" default="true"/>
+    <arg name="underpass_failure_fallback" default="true"/>
     <arg name="side_lock_corridor_half_width" default="0.75"/>
     <arg name="side_lock_width_similarity_tolerance" default="0.05"/>
     <!-- 悬空障碍物有可行下方通道时，允许轨迹降低高度通过。 -->
@@ -44,6 +46,8 @@
         <arg name="depth_topic" value="no_use_uav1_depth"/>
         <arg name="cloud_topic" value="$(arg cloud_topic)"/>
         <arg name="enable_suspended_obstacle_underpass" value="$(arg enable_suspended_obstacle_underpass)"/>
+        <arg name="underpass_failure_fallback" value="$(arg underpass_failure_fallback)"/>
+        <arg name="side_lock_failure_fallback" value="$(arg side_lock_failure_fallback)"/>
         <arg name="underpass_corridor_half_width" value="$(arg underpass_corridor_half_width)"/>
         <arg name="underpass_min_descent" value="$(arg underpass_min_descent)"/>
         <arg name="underpass_min_vertical_gap" value="$(arg underpass_min_vertical_gap)"/>
