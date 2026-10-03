@@ -258,7 +258,7 @@
     <rosparam param="/exploration_node/mission/inflation_history_escape/history_max_size">200</rosparam>
     <!-- 远frontier只决定探索方向，实际每段最多执行1.2m并用新地图重新规划。 -->
     <rosparam param="/exploration_node/mission/max_route_segment_length">1.20</rosparam>
-    <rosparam param="/exploration_node/mission/straight_run_extension/enabled">true</rosparam>
+    <rosparam param="/exploration_node/mission/straight_run_extension/enabled">false</rosparam>
     <rosparam param="/exploration_node/mission/straight_run_extension/distance">0.20</rosparam>
     <rosparam param="/exploration_node/mission/straight_run_extension/min_turn_deg">45.0</rosparam>
     <!-- 2026-07-22: 规划失败后2Hz重试，禁止100Hz重复同一fallback并刷满RViz。 -->
@@ -282,10 +282,10 @@
     <rosparam param="/exploration_node/mission/vertical_detour/low_height">0.20</rosparam>
     <!-- 雷达是机体最高点；UAV0 FAST-LIO 外参中雷达高于里程计原点约4.4cm。 -->
     <rosparam param="/exploration_node/mission/vertical_detour/underpass/lidar_above_odom">0.044</rosparam>
-    <!-- 狭窄通道按球底到雷达至少0.10m净空下穿，另留0.06m高度跟踪余量。 -->
+    <!-- 狭窄通道按悬挂障碍底部到雷达至少0.10m净空下穿，另留0.06m高度跟踪余量。 -->
     <rosparam param="/exploration_node/mission/vertical_detour/underpass/clearance">0.10</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/underpass/height_tracking_margin">0.06</rosparam>
-    <rosparam param="/exploration_node/mission/vertical_detour/underpass/lookahead">1.40</rosparam>
+    <rosparam param="/exploration_node/mission/vertical_detour/underpass/lookahead">2.00</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/forward_check_distance">0.20</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/upper_step">0.20</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/upper_max_rise">0.60</rosparam>
