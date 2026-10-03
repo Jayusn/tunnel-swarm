@@ -238,7 +238,7 @@ def test_occupied_recovery_budget_starts_another_automatic_round():
         "case OCCUPIED_RECOVERY:", 1
     )[0]
     exhausted = emergency.split(
-        "if (occupied_recovery_attempt_count_ >= escape_max_attempts_)", 1
+        "occupied_recovery_attempt_count_ >= escape_max_attempts_", 1
     )[1].split("else if", 1)[0]
     assert "occupied_recovery_attempt_count_ = 0;" in exhausted
     assert "publishPlanningStatus(\"OCCUPIED_RECOVERY_FAILED\")" not in exhausted

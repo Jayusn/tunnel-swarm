@@ -27,7 +27,6 @@
 #include <std_msgs/Bool.h>
 #include <std_msgs/Empty.h>
 #include <std_msgs/String.h>
-#include <std_msgs/UInt64.h>
 #include <visualization_msgs/Marker.h>
 
 namespace {
@@ -285,7 +284,6 @@ class LeaderSafePathFollower {
     pnh_.param("cruise_speed", cruise_speed_, 0.35);
     pnh_.param("max_vertical_speed", max_vertical_speed_, 0.20);
     pnh_.param("odom_timeout", odom_timeout_, 0.50);
-    pnh_.param("leader_odom_timeout", leader_odom_timeout_, 0.50);
     // 跨机高频里程计发生网络积压时禁止用历史位置释放后机。
     pnh_.param("leader_odom_max_transport_age",
                leader_odom_max_transport_age_, 0.50);
@@ -308,6 +306,15 @@ class LeaderSafePathFollower {
                enable_dynamic_obstacle_detection_, false);
     // 2026-07-28: 比赛动态物只在通道中部往复；墙边框不进入跨帧保留，预测越出中心安全带也不参与阻挡。
     pnh_.param("dynamic_retention_route_half_width", dynamic_retention_route_half_width_, 0.70);
+    // 2026-07-28: 0.5m/s指令下FAST-LIO若出现数m/s跳变，立即请求控制器用MAVROS坐标锁点，禁止错误目标继续外推。
+    pnh_.param("follower_odom_jump_speed", follower_odom_jump_speed_, 2.0);
+    pnh_.param("follower_odom_jump_vertical_speed", follower_odom_jump_vertical_speed_, 1.2);
+    pnh_.param("follower_odom_jump_confirm_samples",
+                follower_odom_jump_confirm_samples_, 3);
+    if (follower_odom_jump_confirm_samples_ < 1) {
+      throw std::runtime_error(
+          "leader_safe_path_follower: follower_odom_jump_confirm_samples must be >= 1");
+    }
     // 2026-07-27: 持续有运动指令但机体1.5s内位移不足6cm时进入点云选向脱困，防止贴墙后永久推杆。
     pnh_.param("stuck_detection_timeout", stuck_detection_timeout_, 1.50);
     pnh_.param("stuck_min_progress", stuck_min_progress_, 0.06);
@@ -431,7 +438,6 @@ class LeaderSafePathFollower {
         nh_.advertise<std_msgs::Bool>(follower_detection_enable_topic_, 2, true);
     follower_safety_hold_pub_ =
         nh_.advertise<std_msgs::Bool>("/UAV1/planning/safety_hold", 1, true);
-    diff_pause_pub_ = nh_.advertise<std_msgs::UInt64>(diff_status_topic_ + "/pause", 1);
     route_pub_ = pnh_.advertise<nav_msgs::Path>("leader_safe_route", 1, true);
     relay_path_pub_ = nh_.advertise<nav_msgs::Path>(relay_path_topic_, 1, true);
     target_pub_ = pnh_.advertise<visualization_msgs::Marker>("target_marker", 1);
@@ -544,7 +550,7 @@ class LeaderSafePathFollower {
 
   bool leaderOdomFresh(const ros::Time& now) const {
     return have_leader_odom_ && !leader_odom_stamp_.isZero() &&
-           (now - leader_odom_stamp_).toSec() <= leader_odom_timeout_;
+           (now - leader_odom_stamp_).toSec() <= odom_timeout_;
   }
 
   void doorPoseCallback(const geometry_msgs::PoseStamped::ConstPtr& msg) {
@@ -1353,7 +1359,7 @@ class LeaderSafePathFollower {
     // 2026-07-22: 用实际里程计位移估计到达速度，不能用规划指令速度代替真实制动状态。
     const ros::Time now = ros::Time::now();
     // 高频里程计会经网络成批到达。速度差分必须使用传感器时间戳，不能使用回调接收时间；
-    // 否则毫米级点云校正除以亚毫秒级回调间隔会放大差分速度。
+    // 否则毫米级点云校正除以亚毫秒级回调间隔会被放大成数m/s并误触发安全锁点。
     const ros::Time sample_stamp = msg->header.stamp;
     if (sample_stamp.isZero()) {
       ROS_WARN_THROTTLE(1.0,
@@ -1382,11 +1388,66 @@ class LeaderSafePathFollower {
                        msg->pose.pose.position.y - follower_odom_.pose.pose.position.y) / dt;
         const double raw_vertical_speed =
             std::fabs(msg->pose.pose.position.z - follower_odom_.pose.pose.position.z) / dt;
+        // 2026-07-28: 7月27日末次实验在111s后FAST-LIO连续发散到数百米；首次不可能速度即锁存故障并丢弃坏里程计。
+        // 2026-07-28: 接管前允许FAST-LIO完成初始对齐；只有后机控制已交接后才把不可能速度判为飞行故障。
+        if (follower_started_ &&
+            (raw_horizontal_speed > follower_odom_jump_speed_ ||
+             raw_vertical_speed > follower_odom_jump_vertical_speed_)) {
+          ++follower_odom_jump_consecutive_samples_;
+          ROS_WARN_THROTTLE(
+              0.5,
+              "[safe_follower] suspicious ODOM sample %d/%d: horizontal=%.2fm/s "
+              "vertical=%.2fm/s dt=%.4fs; discard pending confirmation.",
+              follower_odom_jump_consecutive_samples_,
+              follower_odom_jump_confirm_samples_, raw_horizontal_speed,
+              raw_vertical_speed, dt);
+          if (!follower_odom_fault_latched_ &&
+              follower_odom_jump_consecutive_samples_ >=
+                  follower_odom_jump_confirm_samples_) {
+            follower_odom_fault_latched_ = true;
+            follower_odom_recovery_good_samples_ = 0;
+            std_msgs::Bool hold_msg;
+            hold_msg.data = true;
+            follower_safety_hold_pub_.publish(hold_msg);
+            ROS_ERROR("[safe_follower] ODOM FAULT latched after %d consecutive samples: "
+                      "horizontal=%.2fm/s vertical=%.2fm/s; reject bad FAST-LIO sample "
+                      "and request MAVROS-frame safety hold.",
+                      follower_odom_jump_consecutive_samples_, raw_horizontal_speed,
+                      raw_vertical_speed);
+          }
+          return;
+        }
+        follower_odom_jump_consecutive_samples_ = 0;
+        if (follower_odom_fault_latched_) {
+          ++follower_odom_recovery_good_samples_;
+          if (follower_odom_recovery_good_samples_ >= 10) {
+            follower_odom_fault_latched_ = false;
+            follower_odom_recovery_good_samples_ = 0;
+            if (use_diff_planner_) {
+              // 故障期间可能积累了旧规划；恢复后继续保持锁点，直到新目标确实生成新轨迹。
+              setDiffWaitPositionHold(true,
+                                      "odometry recovered; wait fresh Diff trajectory");
+            } else if (!diff_dynamic_hold_active_ &&
+                       !diff_separation_hold_active_) {
+              std_msgs::Bool hold_msg;
+              hold_msg.data = false;
+              follower_safety_hold_pub_.publish(hold_msg);
+            }
+            diff_goal_published_ = false;
+            diff_plan_response_received_ = false;
+            ROS_WARN("[safe_follower] follower odometry recovered after 10 trusted samples; "
+                     "release fault hold and request a fresh Diff trajectory.");
+          }
+        }
         const double alpha = 0.35;
         follower_horizontal_speed_ =
             alpha * raw_horizontal_speed + (1.0 - alpha) * follower_horizontal_speed_;
         follower_vertical_speed_ =
             alpha * raw_vertical_speed + (1.0 - alpha) * follower_vertical_speed_;
+      } else {
+        // 长时间通信间断后的首帧不参与速度差分，也不能继承此前的疑似计数。
+        follower_odom_jump_consecutive_samples_ = 0;
+        follower_odom_recovery_good_samples_ = 0;
       }
     }
     follower_odom_ = *msg;
@@ -1402,7 +1463,7 @@ class LeaderSafePathFollower {
         traj_started_sent_ = true;
       }
     }
-    if (follower_started_ &&
+    if (follower_started_ && !follower_odom_fault_latched_ &&
         !diff_recovery_retreat_requested_ && !diff_recovery_goal_is_retreat_) {
       appendFollowerExecutedPoint(*msg);
     }
@@ -1499,12 +1560,6 @@ class LeaderSafePathFollower {
     follower_safety_hold_pub_.publish(hold_msg);
     ROS_ERROR("[safe_follower] UAV1 Diff wait-position HOLD %s reason=%s.",
               active ? "ACTIVE" : "RELEASED", reason.c_str());
-  }
-
-  void pauseDiffForLeaderOdom() {
-    std_msgs::UInt64 pause;
-    pause.data = diff_active_goal_stamp_ns_;
-    if (pause.data != 0ULL) diff_pause_pub_.publish(pause);
   }
 
   void stampDiffGoalId(geometry_msgs::PoseStamped* goal) {
@@ -1847,7 +1902,6 @@ class LeaderSafePathFollower {
     if (!terminal_relay && !waypoint_arrival && !waypoint_passed &&
         enable_diff_separation_safety_) {
       if (!leaderOdomFresh(now)) {
-        pauseDiffForLeaderOdom();
         simple_waypoint_clearance_hold_active_ = true;
         setDiffWaitPositionHold(true, "waiting for fresh UAV0 odometry before FIFO release");
         diff_goal_published_ = false;
@@ -2955,7 +3009,6 @@ class LeaderSafePathFollower {
     const bool leader_fresh = leaderOdomFresh(now);
     if (!enable_diff_separation_safety_ || terminal_relay_active || !leader_fresh) {
       if (diff_separation_hold_active_) {
-        if (!leader_fresh) pauseDiffForLeaderOdom();
         setDiffWaitPositionHold(
             true, leader_fresh ? "leave separation safety for terminal relay"
                                : "leader odometry stale; continue cached history only");
@@ -3646,6 +3699,11 @@ class LeaderSafePathFollower {
       return;
     }
     if (!follower_started_) return;
+    // FAST-LIO异常期间不生成目标；连续可信样本恢复后回调会自动解除并请求新轨迹。
+    if (follower_odom_fault_latched_) {
+      publishState("ODOM_FAULT_WAIT_AUTOMATIC_RECOVERY", 1.0, 0.0, 0.0);
+      return;
+    }
     if (!have_follower_odom_) {
       hold("waiting for follower odometry");
       return;
@@ -3939,7 +3997,6 @@ class LeaderSafePathFollower {
   ros::Publisher follower_landing_target_pub_, follower_landing_request_pub_;
   ros::Publisher follower_detection_enable_pub_;  // UAV1独立LDOP阶段状态。
   ros::Publisher follower_safety_hold_pub_;  // 2026-07-28: LIO跳变时请求控制器按MAVROS坐标锁点。
-  ros::Publisher diff_pause_pub_;
   ros::Timer timer_;
   nav_msgs::Odometry leader_odom_, follower_odom_;
   geometry_msgs::PoseStamped leader_landing_target_;
@@ -3995,6 +4052,7 @@ class LeaderSafePathFollower {
   bool diff_recovery_requested_{false}, diff_recovery_goal_valid_{false}; // 已验证路线短子目标恢复。
   bool diff_recovery_retreat_requested_{false}, diff_recovery_goal_is_retreat_{false};
   bool diff_command_seen_for_goal_{false};  // 2026-07-28: 当前Diff目标是否真正产生过PositionCommand。
+  bool follower_odom_fault_latched_{false};  // 异常期间锁点，连续可信样本恢复后自动解除。
   bool have_confirmed_door_{false}, door_waypoint_released_{false};
   bool have_final_exit_{false}, exit_waypoint_released_{false};  // 2026-07-28: 最终出口接收/排队锁存。
   bool have_front_scan_anchor_{false};
@@ -4047,7 +4105,6 @@ class LeaderSafePathFollower {
   double max_target_step_{0.55}, route_tracking_lookahead_{0.30};
   double cruise_speed_{0.35}, max_vertical_speed_{0.20};
   double odom_timeout_{0.50}, leader_odom_max_transport_age_{0.50};
-  double leader_odom_timeout_{0.50};
   double cloud_timeout_{0.60}, min_record_height_{0.30};
   double obstacle_radius_{0.28}, obstacle_z_margin_{0.20}, obstacle_ignore_near_{0.18};
   double dynamic_obstacle_retention_{0.80}, dynamic_obstacle_safety_radius_{0.35};
@@ -4071,6 +4128,10 @@ class LeaderSafePathFollower {
   double diff_endpoint_capture_radius_{0.15}, diff_endpoint_capture_dwell_{0.45};
   double diff_accepted_goal_tolerance_{0.20};
   double diff_command_stale_timeout_{0.80};  // 2026-07-28: 与控制器0.60s轨迹超时错开0.20s。
+  double follower_odom_jump_speed_{2.0}, follower_odom_jump_vertical_speed_{1.2};
+  int follower_odom_jump_confirm_samples_{3};
+  int follower_odom_jump_consecutive_samples_{0};
+  int follower_odom_recovery_good_samples_{0};
   double stuck_detection_timeout_{1.50}, stuck_min_progress_{0.06};
   double recovery_step_{0.35}, recovery_speed_{0.20}, recovery_attempt_timeout_{1.50};
   double recovery_success_distance_{0.12}, recovery_near_ignore_{0.06};

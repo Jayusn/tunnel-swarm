@@ -12,7 +12,7 @@ LAUNCH = (ROOT / "launch" / "leader_safe_path_follower.launch").read_text(
 )
 
 
-def test_velocity_uses_message_stamp():
+def test_velocity_uses_message_stamp_and_requires_confirmation():
     callback = SOURCE.split("void followerOdomCallback", maxsplit=1)[1].split(
         "void cloudCallback", maxsplit=1
     )[0]
@@ -20,6 +20,8 @@ def test_velocity_uses_message_stamp():
     assert "sample_stamp - follower_odom_sample_stamp_" in callback
     assert "now - follower_odom_stamp_" not in callback
     assert "reject non-monotonic follower odometry stamp" in callback
+    assert "follower_odom_jump_consecutive_samples_" in callback
+    assert "follower_odom_jump_confirm_samples_" in callback
 
 
 def test_flight_sample_is_not_a_jump_when_sensor_time_is_used():
@@ -35,8 +37,8 @@ def test_flight_sample_is_not_a_jump_when_sensor_time_is_used():
     assert vertical_delta / callback_dt > 1.2
 
 
-def test_launch_has_no_follower_jump_detection_parameters():
-    assert "follower_odom_jump_" not in LAUNCH
+def test_launch_requires_three_consecutive_jump_samples():
+    assert 'name="follower_odom_jump_confirm_samples" value="3"' in LAUNCH
 
 
 def test_dual_uav_accepts_relay_trajectory_after_both_reach_030m():
@@ -289,13 +291,10 @@ def test_planner_no_response_has_total_timeout_and_switches_candidate():
     assert "if (starts_new_response_window) diff_goal_first_publish_stamp_ = now;" in execution
 
 
-def test_follower_position_jump_does_not_discard_sample_or_latch_hold():
+def test_follower_odom_fault_recovers_without_restart():
     callback = SOURCE.split("void followerOdomCallback", maxsplit=1)[1].split(
         "void cloudCallback", maxsplit=1
     )[0]
-    speed_update = callback.split("if (dt < 0.25)", maxsplit=1)[1]
-    assert "return;" not in speed_update
-    assert "follower_odom_ = *msg;" in speed_update
-    assert "follower_safety_hold_pub_" not in callback
-    assert "follower_odom_fault_latched_" not in SOURCE
-    assert "ODOM_FAULT_WAIT_AUTOMATIC_RECOVERY" not in SOURCE
+    assert "follower_odom_recovery_good_samples_ >= 10" in callback
+    assert "follower_odom_fault_latched_ = false;" in callback
+    assert "request a fresh Diff trajectory" in callback

@@ -9,16 +9,11 @@
     <!-- 六分屏入口默认同时打开 UAV1 Diff-Planner 的 RViz；可通过 launch 参数关闭。 -->
     <arg name="enable_diff_rviz" default="true"/>
     <arg name="detector_backend" default="legacy"/>
-    <!-- six 第6屏独立录制检测复盘数据，不使用 AutoTrans 录包。 -->
-    <arg name="record_dynamic_debug" default="true"/>
-    <arg name="dynamic_bag_prefix" default="/home/oem/bags/corridor_debug"/>
     <!-- 2026-07-28: 终端6同时启动UAV1独立Diff；接力管理器只发目标，traj_server唯一输出后机PositionCommand。 -->
     <include file="$(find diff_planner)/launch/exp/run_uav1_relay_diff.launch">
         <!-- 坐标对齐和后机本地可视化都由本入口各启动一份。 -->
         <arg name="publish_world_to_follower_tf" value="false"/>
         <arg name="detector_backend" value="$(arg detector_backend)"/>
-        <arg name="record_dynamic_debug" value="$(arg record_dynamic_debug)"/>
-        <arg name="dynamic_bag_prefix" value="$(arg dynamic_bag_prefix)"/>
         <arg name="enable_rviz" value="false"/>
     </include>
     <!-- 可视化无需消费 200 Hz 里程计；单独限频，控制器和规划器仍直接使用原高频话题。 -->
@@ -200,9 +195,8 @@
         <param name="max_target_step" value="0.55"/>
         <!-- 2026-07-15: 每次只沿前机历史折线前视0.30m，避免在U形/直角通道直接连远端滞后点切墙。 -->
         <param name="route_tracking_lookahead" value="0.30"/>
-        <!-- 前机里程计传输年龄和接收超时均允许1秒。 -->
-        <param name="leader_odom_max_transport_age" value="1.0"/>
-        <param name="leader_odom_timeout" value="1.0"/>
+        <!-- 跨机高频里程计积压时保持UAV1等待，禁止用超过0.5s的历史位置做放行判断。 -->
+        <param name="leader_odom_max_transport_age" value="0.50"/>
         <!-- 2026-07-21: 用最近0.45m实飞路线切线判定前进，不使用当前不随转弯更新的雷达yaw；
              投影<-0.20且累计倒退0.60m才暂停，正常直角/U形转弯可连续生成接力点。 -->
         <param name="forward_projection_ratio" value="-0.20"/>
@@ -260,6 +254,10 @@
         <param name="dynamic_obstacle_z_margin" value="0.18"/>
         <!-- 2026-07-28: 赛题摆球不会触墙；仅保留距前机已验证通道中心路线0.70m内的框，墙边/穿墙预测直接丢弃。 -->
         <param name="dynamic_retention_route_half_width" value="0.70"/>
+        <!-- 2026-07-28: 识别7月27日实验中的FAST-LIO发散，并切换控制器MAVROS锁点保护。 -->
+        <param name="follower_odom_jump_speed" value="2.0"/>
+        <param name="follower_odom_jump_vertical_speed" value="1.2"/>
+        <param name="follower_odom_jump_confirm_samples" value="3"/>
         <!-- 2026-07-27: 后机持续有速度指令但1.5s内位移不足6cm时，按自身点云选择侧向/退向短目标脱困。 -->
         <param name="stuck_detection_timeout" value="1.50"/>
         <param name="stuck_min_progress" value="0.06"/>
