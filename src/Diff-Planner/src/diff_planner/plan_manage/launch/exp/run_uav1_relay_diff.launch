@@ -8,6 +8,8 @@
     <arg name="max_vel" default="0.30"/>
     <arg name="max_acc" default="1.00"/>
     <arg name="enable_rviz" default="true"/>
+    <arg name="record_dynamic_debug" default="false"/>
+    <arg name="dynamic_bag_prefix" default="/home/oem/bags/corridor_debug"/>
     <!-- UAV1 LDOP 动态检测只使用独立限频点云，不改变 Diff 原始建图输入。 -->
     <arg name="enable_ldop" default="true"/>
     <arg name="detector_backend" default="legacy"/>
@@ -207,4 +209,40 @@
         <remap from="/diff_planner_node/a_star_list"
                to="/drone_1_diff_planner_node/a_star_list"/>
     </node>
+    <!--
+      只录动态障碍诊断所需话题，-o 会自动追加时间戳，避免覆盖旧包。
+      roslaunch 退出时向该进程发送 SIGINT，保证生成完整 .bag 而非 .bag.active。
+    -->
+    <node if="$(arg record_dynamic_debug)" pkg="rosbag" type="record"
+          name="corridor_dynamic_debug_bag" output="log"
+          args="record -o $(arg dynamic_bag_prefix) --buffsize=1024
+                $(arg cloud_topic)
+                $(arg odom_topic)
+                /UAV1/fapp/cloud_registered_throttled
+                /UAV1/fapp/dynamic_cloud
+                /UAV1/fapp/map_cloud
+                /UAV1/fapp/dynamic_object_markers
+                /UAV1/fapp/dynamic_track_markers
+                /UAV1/fapp/states
+                /UAV1/ldop/cloud_registered_throttled
+                /UAV1/ldop/static_cloud
+                /UAV1/ldop/dynamic_cloud
+                /UAV1/ldop/dynamic_objects
+                /UAV1/ldop/dynamic_object_predictions
+                /UAV1/ldop/dynamic_object_markers
+                /UAV1/ldop/dynamic_track_markers
+                /UAV1/ldop/dynamic_prediction_markers
+                /UAV1/down_camera/image_raw
+                /UAV1/down_camera/camera_info
+                /UAV1/camera/aux/color/image_raw
+                /UAV1/camera/aux/aligned_depth_to_color/image_raw
+                /UAV1/camera/color/camera_info
+                /UAV1/thermal/image_raw
+                /UAV1/corridor_dynamic_objects
+                /UAV1/corridor_dynamic_markers
+                /mavros/local_position/odom
+                /tf
+                /tf_static
+                /rosout"/>
+
 </launch>

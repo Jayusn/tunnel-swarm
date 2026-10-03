@@ -9,11 +9,16 @@
     <!-- 六分屏入口默认同时打开 UAV1 Diff-Planner 的 RViz；可通过 launch 参数关闭。 -->
     <arg name="enable_diff_rviz" default="true"/>
     <arg name="detector_backend" default="legacy"/>
+    <!-- six 第6屏独立录制检测复盘数据，不使用 AutoTrans 录包。 -->
+    <arg name="record_dynamic_debug" default="true"/>
+    <arg name="dynamic_bag_prefix" default="/home/oem/bags/corridor_debug"/>
     <!-- 2026-07-28: 终端6同时启动UAV1独立Diff；接力管理器只发目标，traj_server唯一输出后机PositionCommand。 -->
     <include file="$(find diff_planner)/launch/exp/run_uav1_relay_diff.launch">
         <!-- 坐标对齐和后机本地可视化都由本入口各启动一份。 -->
         <arg name="publish_world_to_follower_tf" value="false"/>
         <arg name="detector_backend" value="$(arg detector_backend)"/>
+        <arg name="record_dynamic_debug" value="$(arg record_dynamic_debug)"/>
+        <arg name="dynamic_bag_prefix" value="$(arg dynamic_bag_prefix)"/>
         <arg name="enable_rviz" value="false"/>
     </include>
     <!-- 可视化无需消费 200 Hz 里程计；单独限频，控制器和规划器仍直接使用原高频话题。 -->
