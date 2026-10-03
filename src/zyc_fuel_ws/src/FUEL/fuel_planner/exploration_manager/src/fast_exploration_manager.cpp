@@ -1175,6 +1175,7 @@ bool FastExplorationManager::buildWideSideBypass(
        ahead += sample_step) {
     int obstacle_min_idx = side_samples + 1;
     int obstacle_max_idx = -side_samples - 1;
+    bool blocks_forward_footprint = false;
     for (int side_idx = -side_samples; side_idx <= side_samples; ++side_idx) {
       const double offset = side_idx * sample_step;
       Vector3d probe = pos + ahead * travel + offset * lateral;
@@ -1187,8 +1188,13 @@ bool FastExplorationManager::buildWideSideBypass(
       if (!hasLowVerticalSupport(probe, pos.z())) suspended_obstacle_seen = true;
       obstacle_min_idx = std::min(obstacle_min_idx, side_idx);
       obstacle_max_idx = std::max(obstacle_max_idx, side_idx);
+      // 横截面两侧的占据不是前方挡路证据；至少一个实际占据栅格必须
+      // 与前进机体包络相交，不能把两侧占据的外接区间当作中心障碍。
+      if (std::fabs(offset) <= vertical_detour_footprint_radius_ +
+                                  0.5 * sample_step)
+        blocks_forward_footprint = true;
     }
-    if (obstacle_max_idx < obstacle_min_idx) continue;
+    if (obstacle_max_idx < obstacle_min_idx || !blocks_forward_footprint) continue;
 
     split.valid = true;
     split.forward_distance = ahead;
@@ -1356,30 +1362,6 @@ bool FastExplorationManager::buildMissionForwardFallback(const Vector3d& pos, do
   const Vector3d recovery_forward = task_search_manager_
                                         ? task_search_manager_->recoveryForwardDirection(cur_yaw)
                                         : Vector3d(std::cos(cur_yaw), std::sin(cur_yaw), 0.0);
-  // 竖直障碍物把通道切成左右两路时，先直接去占据地图中净宽更大的一侧。
-  // 该场景不参与普通frontier总分，也不等待上下绕行接管。
-  bool split_obstacle_detected = false;
-  // 先处理中心线上的悬空障碍候选：固定XY下降到低位补图，只有低位中心线
-  // 连续确认为FREE后才允许短步前进。UNKNOWN只能触发原地试探，不能授权下穿。
-  const bool suspended_forward_obstacle =
-      hasSuspendedForwardObstacle(pos, recovery_forward);
-  if (suspended_forward_obstacle &&
-      pos.z() > vertical_detour_low_height_ + vertical_detour_height_tolerance_) {
-    if (buildVerticalDetourFallback(pos, cur_yaw, recovery_forward, next_pos,
-                                    next_yaw, true)) {
-      ROS_WARN("[vertical_detour] suspended-obstacle candidate; descend in place "
-               "to observe the low corridor before any forward release.");
-      return true;
-    }
-    ROS_WARN_THROTTLE(
-        0.5,
-        "[vertical_detour] suspended-obstacle candidate cannot start a safe vertical "
-        "probe; keep horizontal/updated-map fallback.");
-  }
-
-  if (buildWideSideBypass(pos, cur_yaw, recovery_forward, next_pos, next_yaw,
-                          split_obstacle_detected))
-    return true;
   if (recovery_side_latched_ &&
       (pos - recovery_side_origin_).head<2>().norm() >= recovery_side_release_distance_) {
     recovery_side_latched_ = false;
@@ -1510,7 +1492,45 @@ bool FastExplorationManager::buildMissionForwardFallback(const Vector3d& pos, do
     return true;
   };
 
+  bool split_obstacle_detected = false;
+  bool obstacle_recovery_checked = false;
+  auto tryObstacleRecovery = [&]() {
+    // 竖直障碍物把通道切成左右两路时，先直接去占据地图中净宽更大的一侧。
+    // 该场景不参与普通frontier总分，也不等待上下绕行接管。
+    // 先处理中心线上的悬空障碍候选：固定XY下降到低位补图，只有低位中心线
+    // 连续确认为FREE后才允许短步前进。UNKNOWN只能触发原地试探，不能授权下穿。
+    const bool suspended_forward_obstacle =
+        hasSuspendedForwardObstacle(pos, recovery_forward);
+    if (suspended_forward_obstacle &&
+        pos.z() > vertical_detour_low_height_ + vertical_detour_height_tolerance_) {
+      if (buildVerticalDetourFallback(pos, cur_yaw, recovery_forward, next_pos,
+                                      next_yaw, true)) {
+        ROS_WARN("[vertical_detour] suspended-obstacle candidate; descend in place "
+                 "to observe the low corridor before any forward release.");
+        return true;
+      }
+      ROS_WARN_THROTTLE(
+          0.5,
+          "[vertical_detour] suspended-obstacle candidate cannot start a safe vertical "
+          "probe; keep horizontal/updated-map fallback.");
+    }
+
+    if (buildWideSideBypass(pos, cur_yaw, recovery_forward, next_pos, next_yaw,
+                            split_obstacle_detected))
+      return true;
+    return false;
+  };
+
   for (const auto& direction : directions) {
+    // 远前沿不连通不代表近处前方受阻。先穷尽已知自由的直行段，
+    // 再进入原有的专用绕障和侧向/回撤恢复顺序。
+    const bool direction_is_straight =
+        direction.normalized().dot(recovery_forward.normalized()) >=
+        std::cos(10.0 * M_PI / 180.0);
+    if (!direction_is_straight && !obstacle_recovery_checked) {
+      obstacle_recovery_checked = true;
+      if (tryObstacleRecovery()) return true;
+    }
     const bool short_backtrack = task_search_manager_ &&
         task_search_manager_->isRecoveryDirectionBackward(direction, cur_yaw);
     if (short_backtrack && !short_backtrack_enabled_) continue;
@@ -1638,6 +1658,7 @@ bool FastExplorationManager::buildMissionForwardFallback(const Vector3d& pos, do
     }
   }
 
+  if (!obstacle_recovery_checked && tryObstacleRecovery()) return true;
   // 专用分流检查已经确认左右均无安全落点时，通用微调不能再用一个局部净空
   // 更高的小步冒充完整侧绕；此时应交给后面的上下绕行。
   if (vertical_detour::acceptGenericHorizontalFallback(
