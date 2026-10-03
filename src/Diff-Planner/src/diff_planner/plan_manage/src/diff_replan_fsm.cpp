@@ -15,6 +15,7 @@ namespace diff_planner
     flag_escape_emergency_ = true;
     mandatory_stop_ = false;
     controller_restart_pending_ = false;
+    leader_odom_paused_ = false;
     swing_wait_active_ = false;
     swing_clear_since_ = 0.0;
     swing_wait_obstacle_id_ = 0;
@@ -207,6 +208,8 @@ namespace diff_planner
     heartbeat_pub_ = nh.advertise<std_msgs::Empty>("planning/heartbeat", 10);
     // 2026-07-28: 后机接力不能仅凭目标已发布判断Diff正在执行，增加锁存状态反馈。
     planning_status_pub_ = nh.advertise<std_msgs::String>("planning/status", 10, true);
+    leader_odom_pause_sub_ = nh.subscribe(planning_status_pub_.getTopic() + "/pause", 1,
+                                        &DiffReplanFSM::leaderOdomPauseCallback, this);
     ground_height_pub_ = nh.advertise<std_msgs::Float64>("/ground_height_measurement", 10);
 
     if (target_type_ == TARGET_TYPE::MANUAL_TARGET)
@@ -247,6 +250,12 @@ namespace diff_planner
     exec_timer_.stop(); // To avoid blockage
     std_msgs::Empty heartbeat_msg;
     heartbeat_pub_.publish(heartbeat_msg);
+
+    if (leader_odom_paused_)
+    {
+      exec_timer_.start();
+      return;
+    }
 
     const double now_sec = ros::Time::now().toSec();
     if (have_odom_)
@@ -834,6 +843,8 @@ namespace diff_planner
 
   void DiffReplanFSM::checkCollisionCallback(const ros::TimerEvent &e)
   {
+    if (leader_odom_paused_)
+      return;
     // check ground height by the way
     if (enable_ground_height_measurement_)
     {
@@ -1733,11 +1744,46 @@ namespace diff_planner
       return;
     }
     ROS_INFO("Received goal: %f, %f, %f", end_wp(0), end_wp(1), end_wp(2));
+    const bool restart_from_odometry = leader_odom_paused_ || occupied_recovery_active_;
     if (planNextWaypoint(end_wp, true))
     {
       last_target_change_time_ = ros::Time::now().toSec();
       have_trigger_ = true;
+      if (restart_from_odometry)
+      {
+        leader_odom_paused_ = false;
+        occupied_recovery_active_ = false;
+        occupied_recovery_attempt_count_ = 0;
+        occupied_recovery_free_count_ = 0;
+        occupied_recovery_failure_reported_ = false;
+        last_escape_target_search_time_ = 0.0;
+        replan_fail_count_ = 0;
+        if (!mandatory_stop_)
+        {
+          if (occupied_recovery_episode_)
+          {
+            flag_escape_emergency_ = true;
+            changeFSMExecState(EMERGENCY_STOP, "NEW_GOAL_RECOVERY");
+          }
+          else
+          {
+            need_hover_stop_ = false;
+            controller_restart_pending_ = true;
+            changeFSMExecState(GEN_NEW_TRAJ, "LEADER_ODOM_RESUME");
+          }
+        }
+      }
     }
+  }
+
+  void DiffReplanFSM::leaderOdomPauseCallback(const std_msgs::UInt64::ConstPtr &msg)
+  {
+    // A pause delayed beyond the replacement goal must not stop that new goal.
+    if (msg->data != active_external_goal_stamp_ns_ || leader_odom_paused_)
+      return;
+    leader_odom_paused_ = true;
+    occupied_recovery_active_ = false;
+    ROS_WARN("Leader odometry stale; pause Diff until a new external goal arrives.");
   }
 
   void DiffReplanFSM::publishPlanningStatus(const std::string &status)

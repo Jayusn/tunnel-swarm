@@ -13,6 +13,7 @@
 #include <std_msgs/Empty.h>
 #include <std_msgs/Float64.h>
 #include <std_msgs/String.h>
+#include <std_msgs/UInt64.h>
 #include <vector>
 #include <visualization_msgs/Marker.h>
 #include <ldop/DynamicObjectArray.h>
@@ -131,6 +132,7 @@ namespace diff_planner
     bool have_trigger_, have_target_, have_odom_, have_new_target_, have_recv_pre_agent_, touch_goal_, mandatory_stop_;
     // AutoTrans 恢复成功后置位；在基于最新里程计发布新轨迹前禁止继续使用旧局部轨迹。
     bool controller_restart_pending_;
+    bool leader_odom_paused_;
     bool swing_wait_active_;
     double swing_clear_since_;
     uint32_t swing_wait_obstacle_id_;
@@ -172,6 +174,7 @@ namespace diff_planner
     ros::NodeHandle node_;
     ros::Timer exec_timer_, safety_timer_;
     ros::Subscriber waypoint_sub_, odom_sub_, trigger_sub_, subgoal_sub_, broadcast_ploytraj_sub_, mandatory_stop_sub_, planning_restart_sub_, swing_obstacle_sub_;
+    ros::Subscriber leader_odom_pause_sub_;
     ros::Publisher poly_traj_pub_, data_disp_pub_, broadcast_ploytraj_pub_, heartbeat_pub_, ground_height_pub_;
     ros::Publisher planning_status_pub_;  // 2026-07-28: 向接力管理器反馈Diff规划成功/连续失败。
     SwingObstacleGuard swing_obstacle_guard_;
@@ -211,6 +214,7 @@ namespace diff_planner
     double estimateInflatedClearance(const Eigen::Vector3d &pos);
     void abortOccupiedRecovery(const char *reason);
     void planningRestartCallback(const std_msgs::Empty &msg);
+    void leaderOdomPauseCallback(const std_msgs::UInt64::ConstPtr &msg);
 
     /* local planning */
     bool callReboundReplan(bool flag_use_poly_init, bool flag_randomPolyTraj,

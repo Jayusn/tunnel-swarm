@@ -27,6 +27,7 @@
 #include <std_msgs/Bool.h>
 #include <std_msgs/Empty.h>
 #include <std_msgs/String.h>
+#include <std_msgs/UInt64.h>
 #include <visualization_msgs/Marker.h>
 
 namespace {
@@ -284,6 +285,7 @@ class LeaderSafePathFollower {
     pnh_.param("cruise_speed", cruise_speed_, 0.35);
     pnh_.param("max_vertical_speed", max_vertical_speed_, 0.20);
     pnh_.param("odom_timeout", odom_timeout_, 0.50);
+    pnh_.param("leader_odom_timeout", leader_odom_timeout_, 0.50);
     // 跨机高频里程计发生网络积压时禁止用历史位置释放后机。
     pnh_.param("leader_odom_max_transport_age",
                leader_odom_max_transport_age_, 0.50);
@@ -438,6 +440,7 @@ class LeaderSafePathFollower {
         nh_.advertise<std_msgs::Bool>(follower_detection_enable_topic_, 2, true);
     follower_safety_hold_pub_ =
         nh_.advertise<std_msgs::Bool>("/UAV1/planning/safety_hold", 1, true);
+    diff_pause_pub_ = nh_.advertise<std_msgs::UInt64>(diff_status_topic_ + "/pause", 1);
     route_pub_ = pnh_.advertise<nav_msgs::Path>("leader_safe_route", 1, true);
     relay_path_pub_ = nh_.advertise<nav_msgs::Path>(relay_path_topic_, 1, true);
     target_pub_ = pnh_.advertise<visualization_msgs::Marker>("target_marker", 1);
@@ -550,7 +553,7 @@ class LeaderSafePathFollower {
 
   bool leaderOdomFresh(const ros::Time& now) const {
     return have_leader_odom_ && !leader_odom_stamp_.isZero() &&
-           (now - leader_odom_stamp_).toSec() <= odom_timeout_;
+           (now - leader_odom_stamp_).toSec() <= leader_odom_timeout_;
   }
 
   void doorPoseCallback(const geometry_msgs::PoseStamped::ConstPtr& msg) {
@@ -1562,6 +1565,12 @@ class LeaderSafePathFollower {
               active ? "ACTIVE" : "RELEASED", reason.c_str());
   }
 
+  void pauseDiffForLeaderOdom() {
+    std_msgs::UInt64 pause;
+    pause.data = diff_active_goal_stamp_ns_;
+    if (pause.data != 0ULL) diff_pause_pub_.publish(pause);
+  }
+
   void stampDiffGoalId(geometry_msgs::PoseStamped* goal) {
     // roscpp 会在发布时重写 Header.seq，不能用它关联规划回执。时间戳由消息
     // 原样传到规划器，同时纳秒值足以过滤锁存状态和上一进程的延迟回执。
@@ -1902,6 +1911,7 @@ class LeaderSafePathFollower {
     if (!terminal_relay && !waypoint_arrival && !waypoint_passed &&
         enable_diff_separation_safety_) {
       if (!leaderOdomFresh(now)) {
+        pauseDiffForLeaderOdom();
         simple_waypoint_clearance_hold_active_ = true;
         setDiffWaitPositionHold(true, "waiting for fresh UAV0 odometry before FIFO release");
         diff_goal_published_ = false;
@@ -3009,6 +3019,7 @@ class LeaderSafePathFollower {
     const bool leader_fresh = leaderOdomFresh(now);
     if (!enable_diff_separation_safety_ || terminal_relay_active || !leader_fresh) {
       if (diff_separation_hold_active_) {
+        if (!leader_fresh) pauseDiffForLeaderOdom();
         setDiffWaitPositionHold(
             true, leader_fresh ? "leave separation safety for terminal relay"
                                : "leader odometry stale; continue cached history only");
@@ -3997,6 +4008,7 @@ class LeaderSafePathFollower {
   ros::Publisher follower_landing_target_pub_, follower_landing_request_pub_;
   ros::Publisher follower_detection_enable_pub_;  // UAV1独立LDOP阶段状态。
   ros::Publisher follower_safety_hold_pub_;  // 2026-07-28: LIO跳变时请求控制器按MAVROS坐标锁点。
+  ros::Publisher diff_pause_pub_;
   ros::Timer timer_;
   nav_msgs::Odometry leader_odom_, follower_odom_;
   geometry_msgs::PoseStamped leader_landing_target_;
@@ -4105,6 +4117,7 @@ class LeaderSafePathFollower {
   double max_target_step_{0.55}, route_tracking_lookahead_{0.30};
   double cruise_speed_{0.35}, max_vertical_speed_{0.20};
   double odom_timeout_{0.50}, leader_odom_max_transport_age_{0.50};
+  double leader_odom_timeout_{0.50};
   double cloud_timeout_{0.60}, min_record_height_{0.30};
   double obstacle_radius_{0.28}, obstacle_z_margin_{0.20}, obstacle_ignore_near_{0.18};
   double dynamic_obstacle_retention_{0.80}, dynamic_obstacle_safety_radius_{0.35};
