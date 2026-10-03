@@ -91,15 +91,18 @@ int main() {
   assert(!fast_planner::task_search::passesLatestTurnNoReturn(
       Eigen::Vector2d(2.55, 0.53), Eigen::Vector2d(5.44, -0.43),
       Eigen::Vector2d(1.0, 0.0), Eigen::Vector2d(0.0, 1.0), 0.20));
-  // 实飞：90度转弯前的航向略偏 -2.5 度，向新通道前进 2.75m
-  // 不应累积成旧航向的「回头」位移而被误杀。
+  // 实飞的前进目标只因旧航向投影 -0.23m 被 0.20m 门槛拒绝；
+  // 放宽到 0.50m 后通过，但数米旧通道回退仍被挡住。
   const Eigen::Vector2d incoming_near_right_angle(
       std::cos(-2.5 * M_PI / 180.0), std::sin(-2.5 * M_PI / 180.0));
   const Eigen::Vector2d outgoing_near_right_angle(
       std::cos(87.5 * M_PI / 180.0), std::sin(87.5 * M_PI / 180.0));
   assert(fast_planner::task_search::passesLatestTurnNoReturn(
       Eigen::Vector2d(4.74, 2.63), Eigen::Vector2d(4.85, -0.12),
-      incoming_near_right_angle, outgoing_near_right_angle, 0.20));
+      incoming_near_right_angle, outgoing_near_right_angle, 0.50));
+  assert(!fast_planner::task_search::passesLatestTurnNoReturn(
+      Eigen::Vector2d(2.55, 0.53), Eigen::Vector2d(5.44, -0.43),
+      Eigen::Vector2d(1.0, 0.0), Eigen::Vector2d(0.0, 1.0), 0.50));
   // 105度真实弯道沿新轴线前进时允许自然落到旧方向锚点之后。
   const Eigen::Vector2d obtuse_outgoing(
       std::cos(105.0 * M_PI / 180.0), std::sin(105.0 * M_PI / 180.0));

@@ -154,11 +154,12 @@ inline bool passesLatestTurnNoReturn(const Eigen::Vector2d& candidate,
   if (relative.dot(incoming_direction.normalized()) + 1e-6 >=
       -std::max(0.0, backward_margin))
     return true;
-  // 转弯后沿新通道前进时，旧方向的微小倾斜不应把远处的前进目标判成回头。
-  // 位移必须主要沿新通道方向，不能放行数米长的旧通道回退目标。
+  // 只有大于90度的真实弯道才允许自然落到旧方向锚点之后，而且位移必须主要沿
+  // 新通道方向。仅仅在新方向上有少量投影，不能放行数米长的旧通道回退目标。
   if (outgoing_direction.norm() < 1e-6) return false;
+  const Eigen::Vector2d incoming = incoming_direction.normalized();
   const Eigen::Vector2d outgoing = outgoing_direction.normalized();
-  if (relative.norm() < 1e-6) return false;
+  if (incoming.dot(outgoing) >= -1e-3 || relative.norm() < 1e-6) return false;
   return relative.normalized().dot(outgoing) >= 0.70 &&
          relative.dot(outgoing) > std::max(0.0, backward_margin);
 }
