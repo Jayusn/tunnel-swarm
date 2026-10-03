@@ -371,8 +371,8 @@
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_still_confirm_time">0.15</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_min_duration">1.0</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_max_duration">4.0</rosparam>
-    <!-- 确认转弯后允许拐点附近20cm数值余量，但禁止沿刚完成的旧通道退回。 -->
-    <rosparam param="/exploration_node/mission/task_search/recovery/turn_no_return_margin">0.20</rosparam>
+    <!-- 确认转弯后允许拐点附近50cm数值余量，但禁止沿刚完成的旧通道退回。 -->
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_no_return_margin">0.50</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_yaw_release_angle_deg">15.0</rosparam>
     <!-- 2026-07-16: 当前没有摄像头，颜色、普通二维码、温度识别只预留PoseStamped接口，不作为任务完成门槛；
          后续三类识别接入并验证后改为true，无需修改规划代码。 -->
