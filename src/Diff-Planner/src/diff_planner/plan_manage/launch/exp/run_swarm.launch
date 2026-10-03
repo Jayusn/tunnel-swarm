@@ -7,8 +7,6 @@
     <arg name="drone_id" default="1"/>
     <arg name="enable_rviz" default="true"/>
     <arg name="enable_ldop" default="false"/>
-    <arg name="detector_backend" default="legacy"/>
-    <arg name="start_ldop" default="$(eval arg('detector_backend') == 'ldop' or (arg('detector_backend') == 'legacy' and arg('enable_ldop')))"/>
     <arg name="ldop_input_rate" default="5.0"/>
     <arg name="flight_type" default="2"/>
     <arg name="point_num" default="4"/>
@@ -169,11 +167,11 @@
     </include>
 
     <!-- Diff 保持原始点云频率，LDOP 单独限频，避免动态检测积压旧帧。 -->
-    <node if="$(arg start_ldop)" pkg="topic_tools" type="throttle" name="ldop_cloud_throttle"
+    <node if="$(arg enable_ldop)" pkg="topic_tools" type="throttle" name="ldop_cloud_throttle"
           args="messages $(arg cloud_topic) $(arg ldop_input_rate) /UAV1/ldop/cloud_registered_throttled"/>
 
     <!-- LDOP 使用限频后的 UAV1 FAST-LIO 点云；这里只启动检测节点，不启动 LDOP 自带 RViz。 -->
-    <include if="$(arg start_ldop)" file="$(find ldop)/launch/run_ldop.launch">
+    <include if="$(arg enable_ldop)" file="$(find ldop)/launch/run_ldop.launch">
         <arg name="vehicle_ns" value="UAV1"/>
         <arg name="rviz" value="false"/>
         <arg name="input_cloud_topic" value="/UAV1/ldop/cloud_registered_throttled"/>
@@ -224,12 +222,6 @@
         <param name="tf45" value="false"/>
         <param name="drone_id" value="1"/>
     </node>
-
-    <include if="$(eval arg('detector_backend') == 'fapp')" file="$(find mot_mapping)/launch/uav1_detection.launch">
-        <arg name="cloud_topic" value="$(arg cloud_topic)"/>
-        <arg name="odom_topic" value="$(arg odom_topic)"/>
-        <arg name="input_rate" value="$(arg ldop_input_rate)"/>
-    </include>
 
     <!-- 默认打开 Diff-Planner 自带 RViz，并修正配置中 drone_1 的旧话题。 -->
     <node if="$(arg enable_rviz)" name="rviz" pkg="rviz" type="rviz"

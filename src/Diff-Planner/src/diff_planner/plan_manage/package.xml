@@ -80,7 +80,6 @@
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>ldop</exec_depend>
-  <exec_depend>mot_mapping</exec_depend>
   <exec_depend>message_runtime</exec_depend>
   <exec_depend>traj_utils</exec_depend>
   <exec_depend>traj_opt</exec_depend>

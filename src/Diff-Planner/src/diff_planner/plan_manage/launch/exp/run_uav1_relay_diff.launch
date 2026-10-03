@@ -10,8 +10,6 @@
     <arg name="enable_rviz" default="true"/>
     <!-- UAV1 LDOP 动态检测只使用独立限频点云，不改变 Diff 原始建图输入。 -->
     <arg name="enable_ldop" default="true"/>
-    <arg name="detector_backend" default="legacy"/>
-    <arg name="start_ldop" default="$(eval arg('detector_backend') == 'ldop' or (arg('detector_backend') == 'legacy' and arg('enable_ldop')))"/>
     <arg name="ldop_input_rate" default="5.0"/>
     <!-- 垂地障碍物锁定一侧，避免重规划时在障碍物两侧来回换边。 -->
     <arg name="enable_vertical_obstacle_side_lock" default="true"/>
@@ -123,11 +121,11 @@
     </include>
 
     <!-- LDOP 与 Diff 分开限频：Diff 继续使用原始点云，LDOP 只处理最新的 5 Hz 点云。 -->
-    <node if="$(arg start_ldop)" pkg="topic_tools" type="throttle" name="uav1_ldop_cloud_throttle"
+    <node if="$(arg enable_ldop)" pkg="topic_tools" type="throttle" name="uav1_ldop_cloud_throttle"
           args="messages $(arg cloud_topic) $(arg ldop_input_rate) /UAV1/ldop/cloud_registered_throttled"/>
 
     <!-- 启动 UAV1 动态检测，所有输出限定在 UAV1/ldop 命名空间。 -->
-    <include if="$(arg start_ldop)" file="$(find ldop)/launch/run_ldop.launch">
+    <include if="$(arg enable_ldop)" file="$(find ldop)/launch/run_ldop.launch">
         <arg name="vehicle_ns" value="UAV1"/>
         <arg name="rviz" value="false"/>
         <arg name="input_cloud_topic" value="/UAV1/ldop/cloud_registered_throttled"/>
@@ -143,12 +141,6 @@
         <arg name="corridor_reject_candidate_count" value="5"/>
         <arg name="corridor_wall_clearance" value="0.10"/>
         <arg name="dynamic_cluster_detector_min_points" value="4"/>
-    </include>
-
-    <include if="$(eval arg('detector_backend') == 'fapp')" file="$(find mot_mapping)/launch/uav1_detection.launch">
-        <arg name="cloud_topic" value="$(arg cloud_topic)"/>
-        <arg name="odom_topic" value="$(arg odom_topic)"/>
-        <arg name="input_rate" value="$(arg ldop_input_rate)"/>
     </include>
 
     <!-- 2026-07-28: UAV1 traj_server是后机PositionCommand唯一发布者，并负责心跳超时安全锁点。 -->
