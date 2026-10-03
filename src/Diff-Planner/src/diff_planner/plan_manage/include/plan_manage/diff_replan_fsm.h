@@ -145,6 +145,8 @@ namespace diff_planner
     Eigen::Vector3d final_goal_;                             // goal state
     Eigen::Vector3d local_target_pt_, local_target_vel_; // local target state
     Eigen::Vector3d odom_pos_, odom_vel_, odom_acc_;     // odometry state
+    ros::Time odom_receive_time_, odom_sample_time_;
+    double odom_freshness_timeout_{0.25};
     std::vector<Eigen::Vector3d> wps_;
 
     struct FreeOdomSample
@@ -216,6 +218,7 @@ namespace diff_planner
     bool callReboundReplan(bool flag_use_poly_init, bool flag_randomPolyTraj,
                            bool require_improvement = false);
     bool planFromGlobalTraj(const int trial_times = 1);
+    bool odomFreshForPlanning() const;
     bool planFromLocalTraj(const int trial_times = 1,
                            bool require_improvement = false);
 
