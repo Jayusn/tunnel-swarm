@@ -291,7 +291,8 @@ private:
   bool hasCurrentHeightForwardObstacle(const Vector3d& pos,
                                        const Vector3d& forward) const;
   bool detectSuspendedObstacle(const Vector3d& pos, const Vector3d& forward,
-                               double& bottom_z, double& exit_progress) const;
+                               double& bottom_z, double& exit_progress,
+                               double& first_hit_distance) const;
   bool hasSuspendedForwardObstacle(const Vector3d& pos,
                                    const Vector3d& forward) const;
   bool hasLowVerticalSupport(const Vector3d& point,

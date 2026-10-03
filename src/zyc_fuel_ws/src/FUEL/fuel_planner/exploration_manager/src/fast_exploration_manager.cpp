@@ -31,6 +31,10 @@
 using namespace Eigen;
 
 namespace fast_planner {
+namespace {
+// 远处悬挂物只用于预见；进入半米接近段后才刹停并开始固定 XY 下穿。
+constexpr double kUnderpassStartDistance = 0.50;
+}
 // SECTION interfaces for setup and query
 
 FastExplorationManager::FastExplorationManager() {
@@ -710,18 +714,15 @@ bool FastExplorationManager::handleActiveLowProbe(
       (previous_phase == vertical_detour::LowProbePhase::ADVANCING &&
        !isLowProbeCorridorSafe(pos, low_probe_direction_,
                                vertical_detour_forward_check_distance_));
-  if (low_forward_blocked && !suspended_underpass_active_) {
+  if (low_forward_blocked) {
     bool split_obstacle_detected = false;
     Vector3d side_target;
     double side_yaw = low_probe_yaw_;
     const bool use_side_target = buildWideSideBypass(
         pos, low_probe_yaw_, low_probe_direction_, side_target, side_yaw,
         split_obstacle_detected);
-    if (split_obstacle_detected) {
-      low_probe_phase_ = vertical_detour::LowProbePhase::IDLE;
-      low_probe_confirmations_ = 0;
-      low_probe_release_confirmations_ = 0;
-      low_probe_verify_start_ = ros::Time();
+    if (split_obstacle_detected && (use_side_target || !suspended_underpass_active_)) {
+      cancelActiveLowProbe("low corridor blocked; use horizontal lane");
       ROS_WARN("[vertical_detour] low-altitude forward path is blocked; keep current z "
                "and switch directly to the wider horizontal lane.");
       if (use_side_target) {
@@ -957,7 +958,7 @@ bool FastExplorationManager::hasCurrentHeightForwardObstacle(
 
 bool FastExplorationManager::detectSuspendedObstacle(
     const Vector3d& pos, const Vector3d& forward, double& bottom_z,
-    double& exit_progress) const {
+    double& exit_progress, double& first_hit_distance) const {
   if (!sdf_map_ || forward.head<2>().norm() < 1e-3) return false;
   const Vector3d travel(forward.head<2>().normalized().x(),
                         forward.head<2>().normalized().y(), 0.0);
@@ -967,6 +968,7 @@ bool FastExplorationManager::detectSuspendedObstacle(
   double last_hit = 0.0;
   int occupied_columns = 0;
   bottom_z = std::numeric_limits<double>::infinity();
+  first_hit_distance = std::numeric_limits<double>::infinity();
   for (double ahead = step; ahead <= underpass_lookahead_ + 1e-6; ahead += step) {
     bool column_hit = false;
     for (double side = -vertical_detour_footprint_radius_;
@@ -985,6 +987,7 @@ bool FastExplorationManager::detectSuspendedObstacle(
       }
     }
     if (column_hit) {
+      if (!found) first_hit_distance = ahead;
       found = true;
       last_hit = ahead;
       ++occupied_columns;
@@ -1014,10 +1017,33 @@ bool FastExplorationManager::beginSuspendedUnderpass(const Vector3d& pos,
     return false;
   if (suspended_underpass_active_) return false;
   const Vector3d direction = task_search_manager_->recoveryForwardDirection(yaw);
-  double bottom_z, exit_progress;
-  if (!detectSuspendedObstacle(pos, direction, bottom_z, exit_progress)) {
+  double bottom_z, exit_progress, first_hit_distance;
+  if (!detectSuspendedObstacle(pos, direction, bottom_z, exit_progress,
+                               first_hit_distance)) {
     suspended_underpass_blocked_ = false;
     return false;
+  }
+  if (first_hit_distance > kUnderpassStartDistance) {
+    suspended_underpass_blocked_ = false;
+    ROS_INFO_THROTTLE(2.0, "[suspended_underpass] obstacle %.2fm ahead; "
+                      "continue horizontal route until %.2fm.",
+                      first_hit_distance, kUnderpassStartDistance);
+    return false;
+  }
+  // 仅排除悬挂物前方已确认的墙/低位支撑；低位 UNKNOWN 留给下降后的短步探测。
+  const Vector3d travel(direction.head<2>().normalized().x(),
+                        direction.head<2>().normalized().y(), 0.0);
+  const Vector3d lateral(-travel.y(), travel.x(), 0.0);
+  const double step = std::max(0.05, sdf_map_->getResolution());
+  for (double ahead = step; ahead < first_hit_distance - step; ahead += step) {
+    for (double side : {-vertical_detour_footprint_radius_, 0.0,
+                        vertical_detour_footprint_radius_}) {
+      const Vector3d probe = pos + ahead * travel + side * lateral;
+      if (cameraOccupancyColumn(probe, pos.z()) &&
+          (cameraWallSupported(probe, travel.head<2>()) ||
+           hasLowVerticalSupport(probe, pos.z())))
+        return false;
+    }
   }
   // 狭窄通道按雷达到悬挂障碍底部0.10m净空下穿，并额外留出高度跟踪余量。
   const double target_z = vertical_detour::underpassTargetHeight(
@@ -1063,8 +1089,10 @@ bool FastExplorationManager::hasSuspendedForwardObstacle(
   const Vector3d travel(forward.head<2>().normalized().x(),
                         forward.head<2>().normalized().y(), 0.0);
   const double step = std::max(0.05, sdf_map_->getResolution());
-  const double max_distance = std::max(vertical_detour_forward_check_distance_,
-                                       wide_side_bypass_max_lookahead_);
+  const double max_distance = std::min(
+      kUnderpassStartDistance,
+      std::max(vertical_detour_forward_check_distance_,
+               wide_side_bypass_max_lookahead_));
   for (double ahead = std::max(step, wide_side_bypass_min_lookahead_);
        ahead <= max_distance + 1e-6; ahead += step) {
     // 只有悬空障碍真正压在当前通道中心线，才抢先下穿；偏在左右的悬空体
