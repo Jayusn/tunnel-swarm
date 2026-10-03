@@ -531,6 +531,11 @@ bool FastExplorationManager::isLowProbeCorridorSafe(
       return false;
     path.push_back(point);
   }
+  const Vector3d endpoint = start + distance * unit;
+  if (!sdf_map_->isInMap(endpoint) ||
+      sdf_map_->getOccupancy(endpoint) != SDFMap::FREE)
+    return false;
+  if ((path.back() - endpoint).norm() > 1e-3) path.push_back(endpoint);
   return planner_manager_->isPathSafe(path);
 }
 
@@ -999,8 +1004,10 @@ bool FastExplorationManager::detectSuspendedObstacle(
 
 bool FastExplorationManager::beginSuspendedUnderpass(const Vector3d& pos,
                                                       double yaw) {
-  if (!vertical_detour_enabled_ || !mission_entered_search_region_ ||
-      !task_search_manager_ || !task_search_manager_->enabled() ||
+  if (!vertical_detour_enabled_ || !task_search_manager_ ||
+      !task_search_manager_->enabled() ||
+      (!mission_entered_search_region_ &&
+       !task_search_manager_->hasConfirmedCorridorTurn()) ||
       task_search_manager_->stage3Active() ||
       low_probe_phase_ != vertical_detour::LowProbePhase::IDLE ||
       turn_in_place_session_active_)
@@ -1012,7 +1019,7 @@ bool FastExplorationManager::beginSuspendedUnderpass(const Vector3d& pos,
     suspended_underpass_blocked_ = false;
     return false;
   }
-  // 狭窄通道按雷达到球底0.10m净空下穿，并额外留出高度跟踪余量。
+  // 狭窄通道按雷达到悬挂障碍底部0.10m净空下穿，并额外留出高度跟踪余量。
   const double target_z = vertical_detour::underpassTargetHeight(
       bottom_z, underpass_lidar_above_odom_, underpass_clearance_,
       underpass_height_tracking_margin_,
@@ -2272,7 +2279,7 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
   nh.param("mission/vertical_detour/underpass/height_tracking_margin",
            underpass_height_tracking_margin_, 0.06);
   nh.param("mission/vertical_detour/underpass/lookahead",
-           underpass_lookahead_, 1.40);
+           underpass_lookahead_, 2.00);
   vertical_detour_low_height_ = std::max(0.10, vertical_detour_low_height_);
   vertical_detour_forward_check_distance_ =
       std::max(0.20, vertical_detour_forward_check_distance_);
@@ -2496,6 +2503,7 @@ int FastExplorationManager::planExploreMotion(
   bool use_vertical_detour_target = false;
   bool use_mission_forward_fallback = false;
   bool use_center_gate_target = false;
+  bool use_entry_forward_target = false;
   if (task_search_manager_ && task_search_manager_->landingRequested()) {
     // 2026-07-13: AUTO.LAND 已由控制器接管后，探索器不再发布新的平移轨迹。
     ROS_WARN_THROTTLE(1.0, "[exit_mission] landing is active; exploration planning stopped.");
@@ -2538,6 +2546,34 @@ int FastExplorationManager::planExploreMotion(
       vertical_detour::inflationEscapeAllowed(low_probe_phase_) &&
       planInflationHistoryEscape(pos, vel, acc, yaw))
     return SUCCEED;
+  // 刚穿入口时按门法向累计至少 1.05m 的前进位移；已知自由段可分多次
+  // 发布，但不能把 A* 弯折弧长或优化器的往返路程当成向前推进距离。
+  if (!use_vertical_detour_target && !low_probe_was_active &&
+      mission_workspace_lock_received_ && !mission_entered_search_region_ &&
+      task_search_manager_ && task_search_manager_->enabled() &&
+      !task_search_manager_->hasConfirmedCorridorTurn() &&
+      mission_workspace_dir_.head<2>().norm() > 1e-3) {
+    const Vector3d forward = mission_workspace_dir_.normalized();
+    const double entry_progress = (pos - mission_workspace_origin_).dot(forward);
+    if (entry_progress >= -0.15 && entry_progress < 1.05) {
+      const double remaining = 1.05 - entry_progress;
+      const double shortest_step = std::min(0.20, remaining);
+      for (double candidate = remaining; candidate >= shortest_step - 1e-6;
+           candidate -= 0.20) {
+        if (!isLowProbeCorridorSafe(pos, forward, candidate)) continue;
+        next_pos = pos + candidate * forward;
+        next_yaw = std::atan2(forward.y(), forward.x());
+        use_mission_forward_fallback = true;
+        use_center_gate_target = true;
+        use_entry_forward_target = true;
+        ed_->global_tour_ = {pos, next_pos};
+        ROS_WARN("[entry_forward] known-free straight %.2fm, total forward=%.2fm "
+                 "target=(%.2f,%.2f,%.2f).", candidate,
+                 entry_progress + candidate, next_pos.x(), next_pos.y(), next_pos.z());
+        break;
+      }
+    }
+  }
   // 除专用膨胀层逃逸外，普通搜索把禁回头直接放进A*展开。这样A*会寻找横移/斜前
   // 绕障路线，不会先返回一条略向后的宽路、再被任务层整条丢弃。
   Eigen::Vector3d astar_progress_direction;
@@ -2545,7 +2581,8 @@ int FastExplorationManager::planExploreMotion(
       task_search_manager_->astarNoReturnDirection(astar_progress_direction)) {
     planner_manager_->path_finder_->setProgressConstraint(astar_progress_direction, 0.0);
   }
-  if (!use_vertical_detour_target && shouldUseMissionEntryTransit(pos)) {
+  if (!use_vertical_detour_target && !use_entry_forward_target &&
+      shouldUseMissionEntryTransit(pos)) {
     // 2026-07-08 19:26: 在真正进入搜索区前，先强制把无人机送到门口/作业区入口，不再允许 frontier 收益把它绑在起飞区。
     use_forced_entry_target = true;
     next_pos = ep_->mission_entry_goal_;
@@ -3210,7 +3247,10 @@ int FastExplorationManager::planExploreMotion(
   const double radius_far = 5.0;
   const double radius_close = 1.5;
   const double len = Astar::pathLength(ed_->path_next_goal_);
-  if (len < radius_close) {
+  if (use_entry_forward_target) {
+    if (!planner_manager_->planStraightTraj(pos, next_pos)) return FAIL;
+    ed_->next_goal_ = next_pos;
+  } else if (len < radius_close) {
     // Next viewpoint is very close, no need to search kinodynamic path, just use waypoints-based
     // optimization
     if (!planner_manager_->planExploreTraj(ed_->path_next_goal_, vel, acc, time_lb)) {
@@ -3289,6 +3329,26 @@ int FastExplorationManager::planExploreMotion(
     ed_->next_goal_ = safe_prefix.back();
     ROS_WARN("[stuck_recovery] full trajectory unsafe; publish %.2fm A* safe prefix to (%.2f %.2f %.2f).",
              prefix_length, ed_->next_goal_.x(), ed_->next_goal_.y(), ed_->next_goal_.z());
+  }
+
+  // 入口后第一米按实际轨迹终点的门法向位移累计，不能用弧长或侧向绕圈凑数。
+  if (!use_entry_forward_target && mission_workspace_lock_received_ &&
+      !mission_entered_search_region_ && task_search_manager_ &&
+      !task_search_manager_->hasConfirmedCorridorTurn() &&
+      mission_workspace_dir_.head<2>().norm() > 1e-3) {
+    const Vector3d forward = mission_workspace_dir_.normalized();
+    const double entry_progress = (pos - mission_workspace_origin_).dot(forward);
+    if (entry_progress >= -0.15 && entry_progress < 1.05) {
+      const Vector3d actual_end = planner_manager_->local_data_.position_traj_.evaluateDeBoorT(
+          planner_manager_->local_data_.position_traj_.getTimeSum());
+      const double advance = (actual_end - pos).dot(forward);
+      if (advance + 1e-3 < std::min(0.15, 1.05 - entry_progress)) {
+        ROS_WARN("[entry_forward] reject side-only trajectory: actual advance %.2fm, "
+                 "accumulated %.2fm.", advance, entry_progress);
+        task_search_manager_->reportGoalFailure(next_pos);
+        return FAIL;
+      }
+    }
   }
 
   // 2026-07-24: 扫描段关闭“整段始终看前方”的约束；全向模式在位置轨迹全程插入单方向

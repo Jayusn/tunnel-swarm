@@ -48,6 +48,7 @@ public:
   bool corridorMotionDirectionMatches(const Eigen::Vector2d& motion,
                                       Eigen::Vector3d& corridor_direction) const;
   bool turnYawAlignmentPending() const { return turn_yaw_follow_latch_.active(); }
+  bool hasConfirmedCorridorTurn() const { return latest_turn_anchor_valid_; }
   void completeTurnYawAlignment() { turn_yaw_follow_latch_.clear(); }
   bool isRecoveryDirectionBackward(const Eigen::Vector3d& direction,
                                    double cur_yaw);

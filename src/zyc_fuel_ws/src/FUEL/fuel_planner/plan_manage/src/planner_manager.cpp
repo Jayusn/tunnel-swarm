@@ -712,6 +712,44 @@ bool FastPlannerManager::planExploreTraj(const vector<Eigen::Vector3d>& tour,
         boundary_ctrl_pts, pp_.bspline_degree_, duration / double(seg_num));
   }
 
+  // 路线截断距离不能被样条在小范围内反复绕行凑出：检查实际曲线的
+  // 弧长、反向位移和终点，优化结果不合格时回到原始样条再验一次。
+  auto trajectoryShapeAllowed = [&]() {
+    auto& trajectory = local_data_.position_traj_;
+    const double flight_time = trajectory.getTimeSum();
+    const Eigen::Vector3d displacement = tour.back() - tour.front();
+    const double chord = displacement.norm();
+    if (!std::isfinite(flight_time) || flight_time <= 0.0 || chord < 0.02)
+      return false;
+    const Eigen::Vector3d forward = displacement / chord;
+    const int samples = std::max(20, static_cast<int>(std::ceil(flight_time / 0.05)));
+    Eigen::Vector3d previous = trajectory.evaluateDeBoorT(0.0);
+    double arc = 0.0;
+    double reverse = 0.0;
+    for (int sample = 1; sample <= samples; ++sample) {
+      const Eigen::Vector3d point = trajectory.evaluateDeBoorT(
+          flight_time * static_cast<double>(sample) / samples);
+      if (!point.allFinite()) return false;
+      const Eigen::Vector3d step = point - previous;
+      arc += step.norm();
+      reverse += std::max(0.0, -step.dot(forward));
+      previous = point;
+    }
+    const double endpoint_error = (previous - tour.back()).norm();
+    if (arc > std::max(1.50 * chord, chord + 0.30) ||
+        reverse > 0.10 || endpoint_error > 0.08) {
+      ROS_WARN("[trajectory_shape] reject arc=%.2f chord=%.2f reverse=%.2f "
+               "endpoint_error=%.2f.", arc, chord, reverse, endpoint_error);
+      return false;
+    }
+    return true;
+  };
+  if (!trajectoryShapeAllowed()) {
+    local_data_.position_traj_.setUniformBspline(
+        boundary_ctrl_pts, pp_.bspline_degree_, duration / double(seg_num));
+    if (!trajectoryShapeAllowed()) return false;
+  }
+
   // 优化器中的 FEASI 是软代价，不能保证发布轨迹满足物理约束。发布前对最终样条执行
   // 控制点导数硬检查；通过拉长内部 knot 降低速度和加速度，同时保留起终端边界状态。
   // 若当前边界状态已经略高于配置上限，则只把该不可瞬时改变的边界值作为本次上限，
@@ -774,11 +812,18 @@ bool FastPlannerManager::planStationaryTraj(
 
 bool FastPlannerManager::planVerticalTraj(
     const Eigen::Vector3d& start, const Eigen::Vector3d& target) {
+  if ((target - start).head<2>().norm() > 1e-6 ||
+      !planStraightTraj(start, target)) return false;
+  ROS_ERROR("[ground_ascent] fixed-xy vertical spline z=%.2f -> %.2f over %.2fs.",
+            start.z(), target.z(), local_data_.duration_);
+  return true;
+}
+
+bool FastPlannerManager::planStraightTraj(
+    const Eigen::Vector3d& start, const Eigen::Vector3d& target) {
   if (!start.allFinite() || !target.allFinite() ||
-      (target - start).norm() < 0.02 ||
-      (target - start).head<2>().norm() > 1e-6)
-    return false;
-  const double distance = std::fabs(target.z() - start.z());
+      (target - start).norm() < 0.02) return false;
+  const double distance = (target - start).norm();
   if (!(pp_.max_vel_ > 0.0) || !(pp_.max_acc_ > 0.0)) return false;
 
   // 五次 smoothstep 的峰值速度和峰值加速度分别约为 1.875*d/T、
@@ -786,8 +831,9 @@ bool FastPlannerManager::planVerticalTraj(
   const double velocity_duration = 1.875 * distance / pp_.max_vel_;
   const double acceleration_duration =
       std::sqrt(5.774 * distance / pp_.max_acc_);
+  // 样条控制点导数界比 smoothstep 峰值更保守，留出插值余量。
   const double duration =
-      std::max(1.0, std::max(velocity_duration, acceleration_duration));
+      std::max(1.0, 1.25 * std::max(velocity_duration, acceleration_duration));
   constexpr int kSegments = 24;
   const double dt = duration / static_cast<double>(kSegments);
   vector<Eigen::Vector3d> samples;
@@ -804,13 +850,18 @@ bool FastPlannerManager::planVerticalTraj(
   if (control_points.rows() < 4 || !control_points.allFinite()) return false;
   local_data_.position_traj_.setUniformBspline(control_points, 3, dt);
   local_data_.position_traj_.setPhysicalLimits(pp_.max_vel_, pp_.max_acc_);
-  if (!local_data_.position_traj_.checkFeasibility(false)) return false;
+  if (!local_data_.position_traj_.checkFeasibility(false)) {
+    ROS_ERROR("[straight_trajectory] spline exceeds velocity/acceleration limit for %.2fm.",
+              distance);
+    return false;
+  }
   updateTrajInfo();
   const Eigen::Vector3d actual_end =
       local_data_.position_traj_.evaluateDeBoorT(local_data_.duration_);
-  if ((actual_end - target).norm() > 1e-6) return false;
-  ROS_ERROR("[ground_ascent] fixed-xy vertical spline z=%.2f -> %.2f over %.2fs.",
-            start.z(), target.z(), local_data_.duration_);
+  if ((actual_end - target).norm() > 1e-4) {
+    ROS_ERROR("[straight_trajectory] endpoint error %.6fm.", (actual_end - target).norm());
+    return false;
+  }
   return true;
 }
 

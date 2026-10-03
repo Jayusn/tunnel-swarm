@@ -39,6 +39,9 @@ public:
   // 地面/下方障碍恢复专用：保持 XY 不变，以零端点速度直升。
   bool planVerticalTraj(const Eigen::Vector3d& start,
                         const Eigen::Vector3d& target);
+  // 已确认直线走廊使用零端点速度的直线段，避免多航点优化产生局部折返。
+  bool planStraightTraj(const Eigen::Vector3d& start,
+                        const Eigen::Vector3d& target);
   bool planGlobalTraj(const Eigen::Vector3d& start_pos);
   bool topoReplan(bool collide);
 
