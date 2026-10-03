@@ -13,7 +13,7 @@
       <param name="dbscan/tolerance" value="0.02"/>
       <param name="dbscan/min_cluster" value="20"/>
       <param name="dbscan/max_cluster" value="800"/>
-      <param name="detection/thresh_dist" value="0.04"/>
+      <param name="detection/thresh_dist" value="0.08"/>
       <param name="detection/thresh_var" value="0.28"/>
     </node>
   </group>
