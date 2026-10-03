@@ -74,8 +74,6 @@
     <arg name="obstacle_clearance" default="0.2"/>
     <!-- 悬空障碍下穿默认关闭，由需要该行为的实飞 launch 单独开启。 -->
     <arg name="enable_suspended_obstacle_underpass" default="false"/>
-    <arg name="underpass_failure_fallback" default="false"/>
-    <arg name="side_lock_failure_fallback" default="false"/>
     <arg name="underpass_corridor_half_width" default="0.12"/>
     <arg name="underpass_min_descent" default="0.10"/>
     <arg name="underpass_min_vertical_gap" default="0.35"/>
@@ -315,8 +313,6 @@
         <!-- 2026-07-07: 允许实验 launch 覆盖优化器的障碍硬约束间隙，避免窄通道里按过小安全距离贴墙飞。 -->
         <param name="optimization/obstacle_clearance" value="$(arg obstacle_clearance)" type="double"/>
         <param name="optimization/enable_suspended_obstacle_underpass" value="$(arg enable_suspended_obstacle_underpass)" type="bool"/>
-        <param name="optimization/underpass_failure_fallback" value="$(arg underpass_failure_fallback)" type="bool"/>
-        <param name="optimization/side_lock_failure_fallback" value="$(arg side_lock_failure_fallback)" type="bool"/>
         <param name="optimization/underpass_corridor_half_width" value="$(arg underpass_corridor_half_width)" type="double"/>
         <param name="optimization/underpass_min_descent" value="$(arg underpass_min_descent)" type="double"/>
         <param name="optimization/underpass_min_vertical_gap" value="$(arg underpass_min_vertical_gap)" type="double"/>

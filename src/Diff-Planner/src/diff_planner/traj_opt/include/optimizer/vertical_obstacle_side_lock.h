@@ -17,7 +17,6 @@ public:
   struct Config
   {
     bool enabled{false};
-    bool failure_fallback{false};
     double corridor_half_width{0.75};
     double width_similarity_tolerance{0.15};
     double min_side_width{0.20};
@@ -75,18 +74,12 @@ private:
     Eigen::Vector3d normal{Eigen::Vector3d::Zero()};
     double half_length{0.0};
     double passage_center_offset{0.0};
-    int failed_rounds{0};
-    bool fallback_side{false};
   };
 
   bool detectCandidate(const GridMap::Ptr &grid_map, double step_size,
                        const Eigen::Vector3d &start,
                        const Eigen::Vector3d &end,
                        Candidate &candidate) const;
-  bool searchLockedRegion(AStar &a_star, const GridMap::Ptr &grid_map,
-                          double step_size, const Eigen::Vector3d &start,
-                          const Eigen::Vector3d &end, AStarSearchRegion region,
-                          std::vector<Eigen::Vector3d> &path);
   bool isGroundConnected(const GridMap::Ptr &grid_map, double step_size,
                          const Eigen::Vector3d &point) const;
   double measureSideWidth(const GridMap::Ptr &grid_map, double step_size,

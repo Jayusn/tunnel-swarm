@@ -266,10 +266,16 @@ bool VerticalObstacleSideLock::trySearch(
     locked_region.side_axis = lock_.axis;
     locked_region.side_center_offset = lock_.passage_center_offset;
 
-    const bool handled = searchLockedRegion(a_star, grid_map, step_size,
-                                             start, end, locked_region, path);
-    if (!handled || path.empty())
-      return handled;
+    path.clear();
+    if (a_star.AstarSearch(step_size, start, end, &locked_region) !=
+        ASTAR_RET::SUCCESS)
+    {
+      locked_region.prefer_side_center = false;
+      if (a_star.AstarSearch(step_size, start, end, &locked_region) !=
+          ASTAR_RET::SUCCESS)
+        return true;
+    }
+    path = a_star.getPath();
     ROS_INFO_THROTTLE(1.0,
                       "[接地障碍侧锁] 当前帧候选不完整，继续保持上次选定侧。");
     return true;
@@ -293,8 +299,6 @@ bool VerticalObstacleSideLock::trySearch(
     lock_.axis = candidate.axis;
     lock_.normal = preferred_normal;
     lock_.half_length = candidate.half_length;
-    lock_.failed_rounds = 0;
-    lock_.fallback_side = false;
     ROS_INFO("[接地障碍侧锁] 左右净宽 %.2fm / %.2fm，锁定%s侧，通过中心偏移 %.2fm。",
              candidate.left_width, candidate.right_width,
              lock_.normal.dot(candidate.lateral) >= 0.0 ? "左" : "右",
@@ -305,12 +309,8 @@ bool VerticalObstacleSideLock::trySearch(
   {
     lock_.center = candidate.center;
     lock_.half_length = std::max(lock_.half_length, candidate.half_length);
-    if (widths_clearly_different && !lock_.fallback_side)
-    {
-      if (lock_.normal.dot(preferred_normal) < 0.0)
-        lock_.failed_rounds = 0;
+    if (widths_clearly_different)
       lock_.normal = preferred_normal;
-    }
   }
   const bool selected_left = lock_.normal.dot(candidate.lateral) >= 0.0;
   lock_.passage_center_offset = selected_left
@@ -332,63 +332,17 @@ bool VerticalObstacleSideLock::trySearch(
   region.side_axis = lock_.axis;
   region.side_center_offset = lock_.passage_center_offset;
 
-  return searchLockedRegion(a_star, grid_map, step_size, start, end, region, path);
-}
-
-bool VerticalObstacleSideLock::searchLockedRegion(
-    AStar &a_star, const GridMap::Ptr &grid_map, const double step_size,
-    const Eigen::Vector3d &start, const Eigen::Vector3d &end,
-    AStarSearchRegion region, std::vector<Eigen::Vector3d> &path)
-{
   path.clear();
-  auto search_side = [&]() {
-    region.prefer_side_center = true;
-    if (a_star.AstarSearch(step_size, start, end, &region) == ASTAR_RET::SUCCESS)
-      return true;
+  if (a_star.AstarSearch(step_size, start, end, &region) != ASTAR_RET::SUCCESS)
+  {
     region.prefer_side_center = false;
-    return a_star.AstarSearch(step_size, start, end, &region) == ASTAR_RET::SUCCESS;
-  };
-  if (search_side())
-  {
-    lock_.failed_rounds = 0;
-    path = a_star.getPath();
-    return true;
-  }
-  if (!config_.failure_fallback || ++lock_.failed_rounds < 2)
-    return true;
-
-  Candidate candidate;
-  if (detectCandidate(grid_map, step_size, start, end, candidate))
-  {
-    const Eigen::Vector3d opposite = -lock_.normal;
-    const bool opposite_left = opposite.dot(candidate.lateral) >= 0.0;
-    region.side_origin = candidate.center;
-    region.side_normal = opposite;
-    region.side_axis = candidate.axis;
-    region.side_half_length = candidate.half_length + config_.longitudinal_margin;
-    region.side_center_offset = opposite_left ? candidate.left_center_offset
-                                              : candidate.right_center_offset;
-    ROS_WARN("[side_lock_fallback] failed_rounds=%d left_width=%.3f right_width=%.3f; try opposite side.",
-             lock_.failed_rounds, candidate.left_width, candidate.right_width);
-    if (search_side())
-    {
-      lock_.center = candidate.center;
-      lock_.axis = candidate.axis;
-      lock_.normal = opposite;
-      lock_.half_length = candidate.half_length;
-      lock_.passage_center_offset = region.side_center_offset;
-      lock_.failed_rounds = 0;
-      lock_.fallback_side = true;
-      path = a_star.getPath();
-      ROS_WARN("[side_lock_fallback] opposite side succeeded; update side lock.");
+    ROS_WARN_THROTTLE(1.0,
+                      "[接地障碍侧锁] 中心参考搜索失败，保持选定侧重试。");
+    if (a_star.AstarSearch(step_size, start, end, &region) != ASTAR_RET::SUCCESS)
       return true;
-    }
   }
-  ROS_WARN("[side_lock_fallback] opposite side unavailable; use validated ordinary A* path.");
-  lock_.active = false;
-  lock_.failed_rounds = 0;
-  lock_.fallback_side = false;
-  return false;
+  path = a_star.getPath();
+  return true;
 }
 
 } // namespace diff_planner

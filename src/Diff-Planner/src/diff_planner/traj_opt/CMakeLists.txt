@@ -45,12 +45,6 @@ target_link_libraries( traj_opt
     )  
 
 if(CATKIN_ENABLE_TESTING)
-  find_package(rostest REQUIRED)
-  add_rostest_gtest(test_obstacle_search_fallback test/obstacle_search_fallback.test
-    test/test_obstacle_search_fallback.cpp)
-  if(TARGET test_obstacle_search_fallback)
-    target_link_libraries(test_obstacle_search_fallback traj_opt ${catkin_LIBRARIES})
-  endif()
   catkin_add_gtest(test_suspended_obstacle_underpass
     test/test_suspended_obstacle_underpass.cpp
     src/suspended_obstacle_underpass.cpp
