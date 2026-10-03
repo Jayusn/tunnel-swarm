@@ -1,4 +1,5 @@
 #include <cassert>
+#include <cmath>
 
 #include "exploration_manager/vertical_detour_policy.h"
 
@@ -13,6 +14,15 @@ int main() {
   using fast_planner::vertical_detour::groundAscentRecoveryNeeded;
   using fast_planner::vertical_detour::preferPathByMinimumClearance;
   using fast_planner::vertical_detour::preferDescending;
+
+  // 回放中球底约0.575m；雷达比里程计原点高0.044m，保留0.10m净空与0.06m误差。
+  const double replay_target = fast_planner::vertical_detour::underpassTargetHeight(
+      0.575, 0.044, 0.10, 0.06, 0.60);
+  assert(std::fabs(replay_target - 0.371) < 1e-9);
+  assert(fast_planner::vertical_detour::underpassTargetHeight(
+             1.20, 0.044, 0.10, 0.06, 0.60) == 0.60);
+  assert(fast_planner::vertical_detour::underpassTargetHeight(
+             0.30, 0.044, 0.10, 0.06, 0.60) < 0.10);
 
   assert(!preferDescending(0.74, 0.75));
   assert(!preferDescending(0.75, 0.75));

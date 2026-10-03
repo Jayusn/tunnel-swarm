@@ -547,6 +547,7 @@ bool FastExplorationManager::buildVerticalDetourFallback(
 
   auto startLowProbe = [&]() {
     const double low_z = vertical_detour_low_height_;
+    low_probe_height_ = low_z;
     if (pos.z() <= low_z + vertical_detour_height_tolerance_ ||
         !isKnownSafeVerticalPath(pos, low_z))
       return false;
@@ -673,7 +674,7 @@ bool FastExplorationManager::handleActiveLowProbe(
   }
   vertical_detour::LowProbeObservation observation;
   observation.at_probe_height =
-      std::fabs(pos.z() - vertical_detour_low_height_) <=
+      std::fabs(pos.z() - low_probe_height_) <=
       vertical_detour_height_tolerance_;
   observation.xy_stable =
       (pos - low_probe_origin_).head<2>().norm() <= vertical_detour_xy_tolerance_;
@@ -704,7 +705,7 @@ bool FastExplorationManager::handleActiveLowProbe(
       (previous_phase == vertical_detour::LowProbePhase::ADVANCING &&
        !isLowProbeCorridorSafe(pos, low_probe_direction_,
                                vertical_detour_forward_check_distance_));
-  if (low_forward_blocked) {
+  if (low_forward_blocked && !suspended_underpass_active_) {
     bool split_obstacle_detected = false;
     Vector3d side_target;
     double side_yaw = low_probe_yaw_;
@@ -734,7 +735,9 @@ bool FastExplorationManager::handleActiveLowProbe(
       previous_phase == vertical_detour::LowProbePhase::EXIT_VERIFYING ||
       observation.verification_timed_out;
   if (check_ascent) {
-    observation.ascent_path_safe =
+    const bool past_obstacle = !suspended_underpass_active_ ||
+        pos.head<2>().dot(low_probe_direction_.head<2>()) >= low_probe_exit_progress_;
+    observation.ascent_path_safe = past_obstacle &&
         isKnownSafeVerticalPath(pos, low_probe_return_height_, false);
     Vector3d return_level_start = pos;
     return_level_start.z() = low_probe_return_height_;
@@ -761,7 +764,7 @@ bool FastExplorationManager::handleActiveLowProbe(
     low_probe_origin_ = pos;
     low_probe_target_ = pos + vertical_detour_forward_check_distance_ *
                                   low_probe_direction_;
-    low_probe_target_.z() = vertical_detour_low_height_;
+    low_probe_target_.z() = low_probe_height_;
     ROS_WARN("[vertical_detour] low corridor confirmed %d/%d; release next %.2fm "
              "centered forward target.",
              low_probe_confirmations_, vertical_detour_required_confirmations_,
@@ -779,7 +782,7 @@ bool FastExplorationManager::handleActiveLowProbe(
         (low_probe_target_ - low_probe_origin_).head<2>().norm();
     low_probe_origin_ = pos;
     low_probe_target_ = pos;
-    low_probe_target_.z() = vertical_detour_low_height_;
+    low_probe_target_.z() = low_probe_height_;
     if (low_probe_phase_ == vertical_detour::LowProbePhase::EXIT_VERIFYING) {
       ROS_WARN("[vertical_detour] advanced %.2fm below obstacle; ascent column and "
                "return-level corridor safe %d/%d, hold low altitude for release check.",
@@ -794,7 +797,7 @@ bool FastExplorationManager::handleActiveLowProbe(
       low_probe_verify_start_ = ros::Time::now();
       ROS_WARN("[vertical_detour] obstacle still overhead after %.2fm; keep z=%.2fm and "
                "verify the next %.2fm forward segment.",
-               low_probe_advanced_distance_, vertical_detour_low_height_,
+               low_probe_advanced_distance_, low_probe_height_,
                vertical_detour_forward_check_distance_);
     }
   } else if (previous_phase == vertical_detour::LowProbePhase::EXIT_VERIFYING &&
@@ -809,7 +812,7 @@ bool FastExplorationManager::handleActiveLowProbe(
              low_probe_phase_ == vertical_detour::LowProbePhase::VERIFYING) {
     low_probe_origin_ = pos;
     low_probe_target_ = pos;
-    low_probe_target_.z() = vertical_detour_low_height_;
+    low_probe_target_.z() = low_probe_height_;
     low_probe_verify_start_ = ros::Time::now();
     ROS_WARN("[vertical_detour] underpass exit clearance changed; remain low and verify "
              "the next forward segment instead of climbing.");
@@ -822,6 +825,7 @@ bool FastExplorationManager::handleActiveLowProbe(
   }
 
   if (low_probe_phase_ == vertical_detour::LowProbePhase::IDLE) {
+    suspended_underpass_active_ = false;
     ROS_WARN("[vertical_detour] staged low detour finished after %.2fm; resume normal planning.",
              low_probe_advanced_distance_);
     return false;
@@ -903,6 +907,8 @@ void FastExplorationManager::cancelActiveLowProbe(const char* reason) {
   low_probe_confirmations_ = 0;
   low_probe_release_confirmations_ = 0;
   low_probe_advanced_distance_ = 0.0;
+  suspended_underpass_active_ = false;
+  suspended_underpass_blocked_ = false;
   low_probe_verify_start_ = ros::Time();
   low_probe_ascent_start_ = ros::Time();
   ROS_WARN("[vertical_detour] active low-probe target cancelled: %s.", reason);
@@ -942,6 +948,106 @@ bool FastExplorationManager::hasCurrentHeightForwardObstacle(
     }
   }
   return false;
+}
+
+bool FastExplorationManager::detectSuspendedObstacle(
+    const Vector3d& pos, const Vector3d& forward, double& bottom_z,
+    double& exit_progress) const {
+  if (!sdf_map_ || forward.head<2>().norm() < 1e-3) return false;
+  const Vector3d travel(forward.head<2>().normalized().x(),
+                        forward.head<2>().normalized().y(), 0.0);
+  const Vector3d lateral(-travel.y(), travel.x(), 0.0);
+  const double step = std::max(0.05, sdf_map_->getResolution());
+  bool found = false;
+  double last_hit = 0.0;
+  int occupied_columns = 0;
+  bottom_z = std::numeric_limits<double>::infinity();
+  for (double ahead = step; ahead <= underpass_lookahead_ + 1e-6; ahead += step) {
+    bool column_hit = false;
+    for (double side = -vertical_detour_footprint_radius_;
+         side <= vertical_detour_footprint_radius_ + 1e-6; side += step) {
+      const Vector3d xy = pos + ahead * travel + side * lateral;
+      for (double z = vertical_detour_low_height_ + 0.25;
+           z <= pos.z() + underpass_clearance_ + 0.15 + 1e-6; z += step) {
+        Vector3d probe(xy.x(), xy.y(), z);
+        if (!sdf_map_->isInMap(probe) ||
+            sdf_map_->getOccupancy(probe) != SDFMap::OCCUPIED ||
+            cameraWallSupported(probe, travel.head<2>()) ||
+            hasLowVerticalSupport(probe, pos.z()))
+          continue;
+        column_hit = true;
+        bottom_z = std::min(bottom_z, z - 0.5 * step);
+      }
+    }
+    if (column_hit) {
+      found = true;
+      last_hit = ahead;
+      ++occupied_columns;
+    } else if (found && ahead - last_hit > 0.15) {
+      break;
+    }
+  }
+  if (occupied_columns < 2 ||
+      bottom_z < vertical_detour_low_height_ + 0.25 ||
+      bottom_z > pos.z() + underpass_lidar_above_odom_ +
+                     underpass_clearance_ + underpass_height_tracking_margin_)
+    return false;
+  exit_progress = (pos + last_hit * travel).head<2>().dot(travel.head<2>()) +
+                  vertical_detour_footprint_radius_ + step;
+  return true;
+}
+
+bool FastExplorationManager::beginSuspendedUnderpass(const Vector3d& pos,
+                                                      double yaw) {
+  if (!vertical_detour_enabled_ || !mission_entered_search_region_ ||
+      !task_search_manager_ || !task_search_manager_->enabled() ||
+      task_search_manager_->stage3Active() ||
+      low_probe_phase_ != vertical_detour::LowProbePhase::IDLE ||
+      turn_in_place_session_active_)
+    return false;
+  if (suspended_underpass_active_) return false;
+  const Vector3d direction = task_search_manager_->recoveryForwardDirection(yaw);
+  double bottom_z, exit_progress;
+  if (!detectSuspendedObstacle(pos, direction, bottom_z, exit_progress)) {
+    suspended_underpass_blocked_ = false;
+    return false;
+  }
+  // 狭窄通道按雷达到球底0.10m净空下穿，并额外留出高度跟踪余量。
+  const double target_z = vertical_detour::underpassTargetHeight(
+      bottom_z, underpass_lidar_above_odom_, underpass_clearance_,
+      underpass_height_tracking_margin_,
+      task_search_manager_->preferredSearchHeight());
+  if (target_z < task_search_manager_->clampSearchHeight(-1e3) ||
+      (pos.z() > target_z + vertical_detour_height_tolerance_ &&
+       !isKnownSafeVerticalPath(pos, target_z))) {
+    suspended_underpass_blocked_ = true;
+    ROS_ERROR_THROTTLE(1.0, "[suspended_underpass] confirmed obstacle bottom=%.2f "
+                       "but fixed-XY descent z=%.2f is unavailable; hold before obstacle.",
+                       bottom_z, target_z);
+    return true;
+  }
+  suspended_underpass_blocked_ = false;
+  suspended_underpass_active_ = true;
+  low_probe_exit_progress_ = exit_progress;
+  low_probe_height_ = std::min(target_z, pos.z());
+  low_probe_direction_ = direction;
+  const bool already_low = pos.z() <= target_z + vertical_detour_height_tolerance_;
+  low_probe_phase_ = already_low ? vertical_detour::LowProbePhase::VERIFYING
+                                 : vertical_detour::LowProbePhase::DESCENDING;
+  low_probe_confirmations_ = 0;
+  low_probe_release_confirmations_ = 0;
+  low_probe_advanced_distance_ = 0.0;
+  low_probe_origin_ = pos;
+  low_probe_target_ = pos;
+  low_probe_target_.z() = low_probe_height_;
+  low_probe_return_height_ = task_search_manager_->preferredSearchHeight();
+  low_probe_yaw_ = yaw;
+  low_probe_verify_start_ = already_low ? ros::Time::now() : ros::Time();
+  ROS_WARN("[suspended_underpass] ACTIVE bottom=%.2f target_z=%.2f exit_progress=%.2f "
+           "lidar_clearance=%.2f; %s before ordinary frontier planning.",
+           bottom_z, low_probe_height_, exit_progress, underpass_clearance_,
+           already_low ? "verify low corridor" : "descend");
+  return true;
 }
 
 bool FastExplorationManager::hasSuspendedForwardObstacle(
@@ -2159,6 +2265,14 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
            vertical_detour_release_confirmations_, 2);
   nh.param("mission/vertical_detour/footprint_radius",
            vertical_detour_footprint_radius_, 0.17);
+  nh.param("mission/vertical_detour/underpass/lidar_above_odom",
+           underpass_lidar_above_odom_, 0.044);
+  nh.param("mission/vertical_detour/underpass/clearance",
+           underpass_clearance_, 0.10);
+  nh.param("mission/vertical_detour/underpass/height_tracking_margin",
+           underpass_height_tracking_margin_, 0.06);
+  nh.param("mission/vertical_detour/underpass/lookahead",
+           underpass_lookahead_, 1.40);
   vertical_detour_low_height_ = std::max(0.10, vertical_detour_low_height_);
   vertical_detour_forward_check_distance_ =
       std::max(0.20, vertical_detour_forward_check_distance_);
@@ -2172,6 +2286,10 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
       std::max(0.20, vertical_detour_upper_obstacle_clearance_);
   vertical_detour_footprint_radius_ =
       std::max(0.05, vertical_detour_footprint_radius_);
+  underpass_lidar_above_odom_ = std::max(0.0, underpass_lidar_above_odom_);
+  underpass_clearance_ = std::max(0.10, underpass_clearance_);
+  underpass_height_tracking_margin_ = std::max(0.0, underpass_height_tracking_margin_);
+  underpass_lookahead_ = std::max(0.80, underpass_lookahead_);
   vertical_detour_ascent_timeout_ =
       std::max(1.0, vertical_detour_ascent_timeout_);
   vertical_detour_required_confirmations_ =
@@ -2384,9 +2502,13 @@ int FastExplorationManager::planExploreMotion(
     return NO_FRONTIER;
   }
   planner_manager_->path_finder_->clearProgressConstraint();
+  // 已确认的悬挂障碍优先于普通前沿选点、地面恢复和远目标 A*。
+  if (low_probe_phase_ == vertical_detour::LowProbePhase::IDLE &&
+      beginSuspendedUnderpass(pos, yaw[0]) && suspended_underpass_blocked_)
+    return FAIL;
   // 地图确认的转弯拥有最高运动优先级。若此前刚启动低位探测，立即撤销其
   // 固定XY/高度目标，避免下穿状态阻塞已经确认的新通道转向。
-  if (turn_in_place_session_active_) {
+  if (turn_in_place_session_active_ && !suspended_underpass_active_) {
     cancelActiveLowProbe("confirmed mapped turn has higher motion priority");
     const Vector3d locked_direction(std::cos(turn_in_place_final_yaw_),
                                     std::sin(turn_in_place_final_yaw_), 0.0);
@@ -2402,6 +2524,9 @@ int FastExplorationManager::planExploreMotion(
   use_vertical_detour_target = handleActiveLowProbe(
       pos, next_pos, next_yaw, wait_for_low_confirmation);
   if (wait_for_low_confirmation) return FAIL;
+  if (suspended_underpass_active_ && use_vertical_detour_target &&
+      low_probe_phase_ == vertical_detour::LowProbePhase::ADVANCING)
+    use_center_gate_target = true;
   // 低位下方足迹已有受支撑障碍时，先完成固定 XY/yaw 的巡航高度恢复。
   // 该会话拥有位置目标，优先级高于任何历史切线/水平膨胀层逃逸。
   if (!use_vertical_detour_target && !low_probe_was_active &&
@@ -3311,8 +3436,8 @@ bool FastExplorationManager::consumeRcSearchLandingStartRequest() {
 
 bool FastExplorationManager::detectMappedTurnDuringExecution(
     double yaw, Vector3d& direction) {
-  if (!turn_in_place_enabled_ || !mission_entered_search_region_ ||
-      !task_search_manager_ ||
+  if (suspended_underpass_active_ || !turn_in_place_enabled_ ||
+      !mission_entered_search_region_ || !task_search_manager_ ||
       !task_search_manager_->enabled() || task_search_manager_->stage3Active())
     return false;
   if (!task_search_manager_->mappedCorridorDirection(yaw, direction))

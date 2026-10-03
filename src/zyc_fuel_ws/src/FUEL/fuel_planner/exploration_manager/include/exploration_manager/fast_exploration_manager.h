@@ -50,6 +50,7 @@ public:
   bool consumeRcSearchLandingStartRequest();
   bool shouldStartInflationHistoryEscape(const Vector3d& odom_pos) const;
   bool detectMappedTurnDuringExecution(double yaw, Vector3d& direction);
+  bool beginSuspendedUnderpass(const Vector3d& pos, double yaw);
   bool currentPlanIsTurnInPlace() const { return turn_in_place_plan_; }
   bool currentPlanIsGroundAscent() const { return ground_ascent_plan_; }
   bool currentPlanIsVerticalDetour() const { return vertical_detour_plan_; }
@@ -239,6 +240,15 @@ private:
   Vector3d low_probe_direction_{1.0, 0.0, 0.0};
   Vector3d low_probe_target_{0.0, 0.0, 0.0};
   double low_probe_return_height_{0.60};
+  double low_probe_height_{0.20};
+  double low_probe_exit_progress_{0.0};
+  bool suspended_underpass_active_{false};
+  bool suspended_underpass_blocked_{false};
+  double underpass_lidar_above_odom_{0.044};
+  double underpass_clearance_{0.10};
+  double underpass_height_tracking_margin_{0.06};
+  double underpass_lookahead_{1.40};
+
   double low_probe_yaw_{0.0};
   ros::Time low_probe_verify_start_;
   ros::Time low_probe_ascent_start_;
@@ -280,6 +290,8 @@ private:
   bool occupiedNearHeight(const Vector3d& point, double height) const;
   bool hasCurrentHeightForwardObstacle(const Vector3d& pos,
                                        const Vector3d& forward) const;
+  bool detectSuspendedObstacle(const Vector3d& pos, const Vector3d& forward,
+                               double& bottom_z, double& exit_progress) const;
   bool hasSuspendedForwardObstacle(const Vector3d& pos,
                                    const Vector3d& forward) const;
   bool hasLowVerticalSupport(const Vector3d& point,

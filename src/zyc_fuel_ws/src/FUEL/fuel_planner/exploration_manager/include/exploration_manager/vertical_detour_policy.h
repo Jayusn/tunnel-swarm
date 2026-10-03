@@ -25,6 +25,15 @@ struct LowProbeObservation {
   bool release_corridor_safe{false};
 };
 
+inline double underpassTargetHeight(double obstacle_bottom, double lidar_above_odom,
+                                    double lidar_clearance, double tracking_margin,
+                                    double cruise_height) {
+  return std::min(cruise_height,
+                  obstacle_bottom - std::max(0.0, lidar_above_odom) -
+                      std::max(0.0, lidar_clearance) -
+                      std::max(0.0, tracking_margin));
+}
+
 inline bool preferDescending(double current_height, double split_height) {
   return current_height > split_height;
 }

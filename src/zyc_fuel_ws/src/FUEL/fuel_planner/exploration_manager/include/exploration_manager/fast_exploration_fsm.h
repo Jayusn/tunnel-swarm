@@ -58,6 +58,7 @@ private:
   /* ROS utils */
   ros::NodeHandle node_;
   ros::Timer exec_timer_, safety_timer_, vis_timer_;
+  ros::Time last_suspended_underpass_check_;
   ros::Subscriber trigger_sub_, odom_sub_, mission_status_sub_;
   ros::Subscriber external_status_sub_;
   ros::Publisher replan_pub_, new_pub_, bspline_pub_, emergency_brake_pub_, safety_hold_pub_,

@@ -938,6 +938,20 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
                               active_traj_braked_))
     return;
 
+  // 行进中提前确认悬挂障碍；已有轨迹先短制动，再由 PLAN_TRAJ 发布固定 XY 下降段。
+  if (state_ == EXPL_STATE::EXEC_TRAJ && !active_turn_in_place_ &&
+      !inflation_escape_active_ &&
+      (last_suspended_underpass_check_.isZero() ||
+       (ros::Time::now() - last_suspended_underpass_check_).toSec() >= 0.20)) {
+    last_suspended_underpass_check_ = ros::Time::now();
+    if (expl_manager_->beginSuspendedUnderpass(fd_->odom_pos_, fd_->odom_yaw_)) {
+      requestActiveTrajectoryBrake("suspended obstacle confirmed before underpass");
+      fd_->static_state_ = true;
+      transitState(PLAN_TRAJ, "safetyCallback-suspended-underpass");
+      return;
+    }
+  }
+
   // 正常平移执行期间同步累计地图转弯证据。配置的确认次数满足后立刻短制动并切换到
   // 原地yaw轨迹，不再等当前平移轨迹接近终点才发现拐角。
   if (state_ == EXPL_STATE::EXEC_TRAJ && !active_turn_in_place_ &&
