@@ -112,6 +112,36 @@ Visualization Manager:
           Value: true
       Enabled: true
       Name: LDOP Dynamic Obstacles
+    - Class: rviz/Group
+      Enabled: true
+      Name: FAPP Dynamic Obstacles
+      Displays:
+        - Class: rviz/PointCloud2
+          Enabled: true
+          Name: FAPP Dynamic Cloud
+          Topic: /UAV1/fapp/dynamic_cloud
+          Queue Size: 10
+          Alpha: 1
+          Color Transformer: FlatColor
+          Color: 255; 120; 20
+          Position Transformer: XYZ
+          Style: Flat Squares
+          Size (Pixels): 4
+          Size (m): 0.08
+          Decay Time: 0
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Name: FAPP Detection Boxes
+          Marker Topic: /UAV1/fapp/dynamic_object_markers
+          Queue Size: 10
+          Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Name: FAPP Tracking Direction
+          Marker Topic: /UAV1/fapp/dynamic_track_markers
+          Queue Size: 10
+          Value: true
     - Angle Tolerance: 0.01
       Class: rviz/Odometry
       Covariance:
