@@ -252,9 +252,26 @@
           args="record -o $(arg dynamic_bag_prefix) --buffsize=1024
                 $(arg cloud_topic)
                 $(arg odom_topic)
+                /UAV1/fapp/cloud_registered_throttled
+                /UAV1/fapp/dynamic_cloud
+                /UAV1/fapp/map_cloud
+                /UAV1/fapp/dynamic_object_markers
+                /UAV1/fapp/dynamic_track_markers
+                /UAV1/fapp/states
+                /UAV1/ldop/cloud_registered_throttled
+                /UAV1/ldop/static_cloud
                 /UAV1/ldop/dynamic_cloud
                 /UAV1/ldop/dynamic_objects
                 /UAV1/ldop/dynamic_object_predictions
+                /UAV1/ldop/dynamic_object_markers
+                /UAV1/ldop/dynamic_track_markers
+                /UAV1/ldop/dynamic_prediction_markers
+                /UAV1/down_camera/image_raw
+                /UAV1/down_camera/camera_info
+                /UAV1/camera/aux/color/image_raw
+                /UAV1/camera/aux/aligned_depth_to_color/image_raw
+                /UAV1/camera/color/camera_info
+                /UAV1/thermal/image_raw
                 /UAV1/corridor_dynamic_objects
                 /UAV1/corridor_dynamic_markers
                 /mavros/local_position/odom

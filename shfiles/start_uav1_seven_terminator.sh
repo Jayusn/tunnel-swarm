@@ -61,7 +61,7 @@ usage() {
 说明：
   - ROS master 固定使用 UAV1 本机 10.116.50.232:11311。
   - 第 6 屏执行 run_swarm.launch 中当前配置的单机预设航点。
-  - 第 6 屏只启动下视相机和单机 Diff/RViz。
+  - 第 6 屏启动下视相机、单机 Diff/RViz 和动态检测复盘录包。
   - AutoTrans 直接向 /UAV1/mavros/setpoint_raw/attitude 发布控制量。
   - 不自动解锁、不切换 OFFBOARD、不额外发送目标点。
 
@@ -428,7 +428,8 @@ run_planner_pane() {
   trap stop_owned_down_camera EXIT INT TERM
   printf '[说明] 下视相机为可选显示，不作为 Diff 启动条件\n'
   printf '[启动] diff_planner run_swarm.launch 及其原生 RViz 检测布局\n'
-  roslaunch diff_planner run_swarm.launch detector_backend:="${DETECTOR}"
+  roslaunch diff_planner run_swarm.launch detector_backend:="${DETECTOR}" \
+    record_dynamic_debug:=true
   launch_status=$?
   stop_owned_down_camera
   trap - EXIT INT TERM
