@@ -27,9 +27,6 @@ namespace diff_planner
     last_periodic_replan_attempt_time_ = 0.0;
     nh.param("fsm/planning_horizon", planning_horizen_, -1.0);
     nh.param("fsm/max_tracking_error", max_tracking_error_, 0.30);
-    nh.param("fsm/odom_freshness_timeout", odom_freshness_timeout_, 0.25);
-    if (!std::isfinite(odom_freshness_timeout_) || odom_freshness_timeout_ <= 0.0)
-      odom_freshness_timeout_ = 0.25;
     if (!std::isfinite(max_tracking_error_) || max_tracking_error_ <= 0.0)
     {
       ROS_WARN("fsm/max_tracking_error must be a positive finite value; using 0.30 m.");
@@ -250,16 +247,6 @@ namespace diff_planner
     exec_timer_.stop(); // To avoid blockage
     std_msgs::Empty heartbeat_msg;
     heartbeat_pub_.publish(heartbeat_msg);
-
-    // 过期里程计只等待新回调，不计为规划失败，也不改变当前轨迹或锁点状态。
-    const bool needs_current_odometry =
-        exec_state_ == GEN_NEW_TRAJ || exec_state_ == SEQUENTIAL_START ||
-        exec_state_ == REPLAN_TRAJ || exec_state_ == EXEC_TRAJ;
-    if (needs_current_odometry && !odomFreshForPlanning())
-    {
-      exec_timer_.start();
-      return;
-    }
 
     const double now_sec = ros::Time::now().toSec();
     if (have_odom_)
@@ -959,13 +946,6 @@ namespace diff_planner
         if (dangerous)
         {
           /* Handle the collided case immediately */
-          if (!odomFreshForPlanning())
-          {
-            // 保留原有临近碰撞急停；非紧急重规划等待最新里程计。
-            changeFSMExecState(t - t_cur < emergency_time_ ? EMERGENCY_STOP : REPLAN_TRAJ,
-                               "SAFETY");
-            return;
-          }
           if (planFromLocalTraj()) // Make a chance
           {
             ROS_INFO("Plan success when detect collision. %f", t / info->duration);
@@ -1541,7 +1521,6 @@ namespace diff_planner
   bool DiffReplanFSM::planFromGlobalTraj(const int trial_times /*=1*/) //zx-todo
   {
 
-    if (!odomFreshForPlanning()) return false;
     start_pt_ = odom_pos_;
     start_vel_ = odom_vel_;
     start_acc_.setZero();
@@ -1600,9 +1579,6 @@ namespace diff_planner
     const bool replan_from_odom = !trajectory_time_valid || !prediction_finite ||
                                   !std::isfinite(tracking_error) ||
                                   tracking_error > max_tracking_error_;
-
-    if (replan_from_odom && !odomFreshForPlanning())
-      return false;
 
     if (replan_from_odom)
     {
@@ -1859,26 +1835,8 @@ namespace diff_planner
     ROS_WARN("[控制器恢复] 保留当前目标和航点，从最新里程计位置、速度强制生成新轨迹。");
   }
 
-  bool DiffReplanFSM::odomFreshForPlanning() const
-  {
-    const ros::Time now = ros::Time::now();
-    const double receive_age = (now - odom_receive_time_).toSec();
-    const double sample_age = (now - odom_sample_time_).toSec();
-    const bool fresh = have_odom_ && !odom_receive_time_.isZero() &&
-                       !odom_sample_time_.isZero() && receive_age >= 0.0 &&
-                       sample_age >= 0.0 && receive_age <= odom_freshness_timeout_ &&
-                       sample_age <= odom_freshness_timeout_;
-    if (!fresh)
-      ROS_WARN_THROTTLE(1.0,
-                        "[ODOM_WAIT] 暂缓规划：里程计接收年龄=%.3fs，样本年龄=%.3fs，门槛=%.3fs。",
-                        receive_age, sample_age, odom_freshness_timeout_);
-    return fresh;
-  }
-
   void DiffReplanFSM::odometryCallback(const nav_msgs::OdometryConstPtr &msg)
   {
-    odom_receive_time_ = ros::Time::now();
-    odom_sample_time_ = msg->header.stamp;
     odom_pos_(0) = msg->pose.pose.position.x;
     odom_pos_(1) = msg->pose.pose.position.y;
     odom_pos_(2) = msg->pose.pose.position.z;

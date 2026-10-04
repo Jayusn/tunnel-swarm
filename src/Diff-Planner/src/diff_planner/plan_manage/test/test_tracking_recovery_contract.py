@@ -242,28 +242,3 @@ def test_occupied_recovery_budget_starts_another_automatic_round():
     )[1].split("else if", 1)[0]
     assert "occupied_recovery_attempt_count_ = 0;" in exhausted
     assert "publishPlanningStatus(\"OCCUPIED_RECOVERY_FAILED\")" not in exhausted
-
-
-def test_stale_odometry_waits_before_planning_and_failure_counting():
-    source = FSM_SOURCE.read_text(encoding="utf-8")
-    callback = source.split("void DiffReplanFSM::execFSMCallback", 1)[1].split(
-        "void DiffReplanFSM::checkCollisionCallback", 1
-    )[0]
-    wait = callback.split("if (needs_current_odometry && !odomFreshForPlanning())", 1)[1]
-    wait = wait.split("const double now_sec", 1)[0]
-    assert "exec_timer_.start();" in wait
-    assert "return;" in wait
-    assert "replan_fail_count_" not in wait
-    assert callback.index("!odomFreshForPlanning()") < callback.index("planFromLocalTraj")
-
-
-def test_planning_freshness_checks_sensor_and_receive_times():
-    source = FSM_SOURCE.read_text(encoding="utf-8")
-    freshness = source.split("bool DiffReplanFSM::odomFreshForPlanning", 1)[1].split(
-        "void DiffReplanFSM::odometryCallback", 1
-    )[0]
-    assert "receive_age <= odom_freshness_timeout_" in freshness
-    assert "sample_age <= odom_freshness_timeout_" in freshness
-    assert "!odom_sample_time_.isZero()" in freshness
-    assert "odom_sample_time_ = msg->header.stamp;" in source
-    assert "ROS_WARN_THROTTLE(1.0" in freshness
