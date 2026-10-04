@@ -24,6 +24,7 @@ RUNTIME_CONFIG="${UAV1_SINGLE_RUNTIME_CONFIG:-/tmp/uav1_seven_terminator_${RUN_I
 ROSCORE_LOG="${UAV1_SINGLE_ROSCORE_LOG:-/tmp/uav1_single_roscore_${RUN_ID}.log}"
 WAIT_TIMEOUT="${UAV1_SINGLE_WAIT_TIMEOUT:-180}"
 THERMAL="${UAV1_SINGLE_THERMAL:-true}"
+DETECTOR="${UAV1_SINGLE_DETECTOR:-fapp}"
 
 MAVROS_STATE_TOPIC="/UAV1/mavros/state"
 LIDAR_TOPIC="/UAV1/livox/lidar"
@@ -65,6 +66,7 @@ usage() {
   - 不自动解锁、不切换 OFFBOARD、不额外发送目标点。
 
 选项：
+  --detector fapp|ldop       动态障碍检测算法，默认 fapp
   --thermal                 第 5 屏同时启动热成像检测和 D435 融合
   --no-thermal              关闭热成像
 EOF
@@ -426,7 +428,7 @@ run_planner_pane() {
   trap stop_owned_down_camera EXIT INT TERM
   printf '[说明] 下视相机为可选显示，不作为 Diff 启动条件\n'
   printf '[启动] diff_planner run_swarm.launch 及其原生 RViz 检测布局\n'
-  roslaunch diff_planner run_swarm.launch
+  roslaunch diff_planner run_swarm.launch detector_backend:="${DETECTOR}"
   launch_status=$?
   stop_owned_down_camera
   trap - EXIT INT TERM
@@ -476,6 +478,9 @@ while (($# > 0)); do
       PANE="$2"
       shift 2
       ;;
+    --detector)
+      [[ $# -ge 2 ]] || { log '--detector 需要 fapp 或 ldop'; exit 2; }
+      DETECTOR="$2"; shift 2 ;;
     --thermal) THERMAL=true; shift ;;
     --no-thermal) THERMAL=false; shift ;;
     --thermal=*) THERMAL="${1#*=}"; shift ;;
@@ -489,6 +494,10 @@ if [[ "${SHOW_HELP}" == true ]]; then
   usage
   exit 0
 fi
+case "${DETECTOR}" in
+  fapp|ldop) ;;
+  *) log '--detector 只能是 fapp 或 ldop'; exit 2 ;;
+esac
 case "${THERMAL,,}" in
   true|false) THERMAL="${THERMAL,,}" ;;
   *) log "--thermal 只能是 true 或 false，当前值：${THERMAL}"; exit 2 ;;
@@ -535,6 +544,7 @@ if terminator_window_running; then
 fi
 
 export UAV1_SINGLE_THERMAL="${THERMAL}"
+export UAV1_SINGLE_DETECTOR="${DETECTOR}"
 
 if ! write_runtime_config; then
   exit 1
@@ -545,6 +555,7 @@ log '上排：1 本机Master/MAVROS | 2 MID360 | 3 FAST-LIO'
 log '下排：4 视觉位姿 | 5 检测/上报 | 6 run_swarm Diff/RViz | 7 AutoTrans'
 log "本机 ROS master：http://${LOCAL_MASTER_IP}:11311，ROS_IP=${LOCAL_ROS_IP}"
 log "检测参数：thermal=${THERMAL}, odom=${ODOM_TOPIC}"
+log "动态障碍检测：${DETECTOR}"
 log "前级等待超时：${WAIT_TIMEOUT}s"
 log "Terminator 启动日志：${TERMINATOR_LOG}"
 

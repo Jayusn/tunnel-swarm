@@ -1,0 +1,20 @@
+<launch>
+  <arg name="cloud_topic" default="/UAV1/fast_lio/cloud_registered"/>
+  <arg name="odom_topic" default="/UAV1/fast_lio/Odom_high_freq"/>
+  <arg name="input_rate" default="5.0"/>
+  <node pkg="topic_tools" type="throttle" name="uav1_fapp_cloud_throttle"
+        args="messages $(arg cloud_topic) $(arg input_rate) /UAV1/fapp/cloud_registered_throttled"/>
+  <group ns="UAV1/fapp">
+    <node pkg="mot_mapping" type="mapping_node" name="mapping_node" output="screen">
+      <param name="ros/lidar_topic" value="/UAV1/fapp/cloud_registered_throttled"/>
+      <param name="ros/odom_topic" value="$(arg odom_topic)"/>
+      <param name="ros/frame_id" value="UAV1/camera_init"/>
+      <param name="dbscan/core_pts" value="3"/>
+      <param name="dbscan/tolerance" value="0.02"/>
+      <param name="dbscan/min_cluster" value="20"/>
+      <param name="dbscan/max_cluster" value="800"/>
+      <param name="detection/thresh_dist" value="0.04"/>
+      <param name="detection/thresh_var" value="0.28"/>
+    </node>
+  </group>
+</launch>
