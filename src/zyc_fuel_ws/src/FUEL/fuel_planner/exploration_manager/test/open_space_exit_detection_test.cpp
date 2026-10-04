@@ -320,28 +320,38 @@ int main(int argc, char** argv) {
   Scene asymmetric{{{-3,0.5,-0.55},{-3,0.5,0.95},{0.5,6,-2.80},{0.5,6,2.80}}};
   check(detect(asymmetric,result) && std::fabs(result.lateral-0.20) < 0.06,
         "asymmetric passage produced wrong center");
-  // 门外足够宽，但门口偏在房间一侧；不能把通道中心当成房间中心。
+  // 左右净空可以不对称，不需要把探测点平移到房间中心。
   Scene offset_room{{{-3,0.5,-0.65},{-3,0.5,0.65},{0.5,6,-3.0},{0.5,6,1.80}}};
   check(detect(offset_room,result) && std::fabs(result.lateral) < 0.06 &&
-        result.outside_lateral < -0.25,
+        result.open_width > 2.0,
         "offset room was rejected or room center moved the exit portal");
   Scene mirrored_room{{{-3,0.5,-0.65},{-3,0.5,0.65},{0.5,6,-1.80},{0.5,6,3.0}}};
   check(detect(mirrored_room,result) && std::fabs(result.lateral) < 0.06 &&
-        result.outside_lateral > 0.25,
+        result.open_width > 2.0,
         "mirrored offset room was rejected or moved the exit portal");
   Scene shifted_one_side{{{-3,0.5,-0.65},{-3,6,0.65},{0.5,6,-4.0}}};
   check(!detect(shifted_one_side,result),
         "moving the room center turned a one-sided opening into an exit");
   Scene shifted_unknown = offset_room; shifted_unknown.unknown_outside = true;
-  check(!detect(shifted_unknown,result), "room center search accepted unknown space");
+  check(!detect(shifted_unknown,result), "width sum accepted unknown space");
   Scene continuing{{{-3,6,-0.65},{-3,6,0.65}}};
   check(!detect(continuing,result), "continuing passage became exit");
   Scene one_side{{{-3,0.5,-0.65},{-3,6,0.65}}};
   check(!detect(one_side,result), "one-sided opening became exit");
   Scene wider{{{-3,0.5,-0.65},{-3,0.5,0.65},{0.5,6,-1.80},{0.5,6,1.80}}};
-  check(!detect(wider,result), "width below 2.1m per side became exit");
-  Scene threshold{{{-3,0.5,-0.65},{-3,0.5,0.65},{0.5,6,-2.10},{0.5,6,2.10}}};
-  check(!detect(threshold,result), "exactly 2.1m passed strict greater-than threshold");
+  check(detect(wider,result), "total width above 2m still required 2.1m per side");
+  // 墙厚为0.08m，外墙内表面间距恰好2m时不能通过。
+  Scene threshold{{{-3,0.5,-0.65},{-3,0.5,0.65},{0.5,6,-1.04},{0.5,6,1.04}}};
+  check(!detect(threshold,result), "exactly 2m passed strict greater-than threshold");
+  Scene below{{{-3,0.5,-0.65},{-3,0.5,0.65},{0.5,6,-1.03},{0.5,6,1.03}}};
+  check(!detect(below,result), "total width below 2m became exit");
+  Scene above{{{-3,0.5,-0.65},{-3,0.5,0.65},{0.5,6,-1.045},{0.5,6,1.045}}};
+  check(detect(above,result), "total width of 2.01m was rejected");
+  // 来路宽0.72m，前方左0.6m加右1.5m；当前位置仍在窄道内就应识别。
+  Scene ahead{{{-3,1.2,-0.40},{-3,1.2,0.40},{1.2,6,-0.64},{1.2,6,1.54}}};
+  check(detect(ahead,result) && result.forward > 1.0 && result.forward < 1.5 &&
+        result.open_width > 2.0 && ahead.occupied(0,0.4),
+        "asymmetric forward exit required current-position widening or 1m per side");
   Scene gap{{{-3,0.5,-0.65},{-3,0.5,0.65},{0.9,6,-0.65},{0.9,6,0.65}}};
   check(!detect(gap,result), "short bilateral gap became exit");
   Scene unseen = limitless; unseen.unknown_outside = true;
@@ -363,15 +373,15 @@ int main(int argc, char** argv) {
   auto eight_observed = [](double x,double y) {
     return std::atan2(x,std::fabs(y))*180/M_PI > -12;
   };
-  check(fast_planner::open_space_exit::countOpenRays(config,0,0,1,none,eight_observed)==8,
-        "unknown rays were dropped from the 80 percent denominator");
+  check(fast_planner::open_space_exit::countOpenWidthRays(config,0,0,none,eight_observed)==8,
+        "unknown ray pairs were dropped from the 80 percent denominator");
   auto two_observed = [](double x,double y) {
     return std::atan2(x,std::fabs(y))*180/M_PI > 12;
   };
-  check(fast_planner::open_space_exit::countOpenRays(config,0,0,1,none,two_observed)==2,
-        "two observed rays became a fully open sector");
-  check(fast_planner::open_space_exit::countOpenRays(config,0,0,1,none,
-      [](double,double y) { return std::fabs(y) < 2.0; })==0,
+  check(fast_planner::open_space_exit::countOpenWidthRays(config,0,0,none,two_observed)==2,
+        "two observed ray pairs became a fully open sector");
+  check(fast_planner::open_space_exit::countOpenWidthRays(config,0,0,none,
+      [](double,double y) { return std::fabs(y) < 1.0; })==0,
       "diagonal range was used instead of transverse clearance");
   fast_planner::TaskSearchManagerTest::run();
   std::cout << "open-space geometry and mission policy checks passed" << std::endl;

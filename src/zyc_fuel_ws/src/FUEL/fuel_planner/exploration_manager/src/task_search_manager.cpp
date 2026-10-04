@@ -136,7 +136,7 @@ void TaskSearchManager::initialize(ros::NodeHandle& nh) {
   nh.param("mission/task_search/exit/confirmation_angle_deg",
            exit_candidate_angle_tolerance_deg_, 15.0);
   nh.param("mission/task_search/exit/search_max_forward", exit_search_max_forward_, 2.0);
-  nh.param("mission/task_search/exit/side_clearance", exit_side_clearance_, 2.10);
+  nh.param("mission/task_search/exit/min_open_width", exit_min_open_width_, 2.0);
   nh.param("mission/task_search/exit/min_open_ratio", exit_min_open_ratio_, 0.80);
   nh.param("mission/task_search/exit/sector_ray_count", exit_sector_ray_count_, 11);
   nh.param("mission/task_search/exit/sector_half_angle_deg", exit_sector_half_angle_deg_, 20.0);
@@ -238,9 +238,9 @@ void TaskSearchManager::initialize(ros::NodeHandle& nh) {
            static_cast<int>(enabled_), static_cast<int>(require_stage2_detections_),
            min_search_height_, max_search_height_, revisit_radius_,
            hybrid_constraints_enabled_ ? "FUEL_DIFF" : "NATIVE_FUEL");
-  ROS_WARN("[exit_mission] open-space detector enabled=%d side>%.2fm ratio>=%.2f "
+  ROS_WARN("[exit_mission] open-space detector enabled=%d ahead_width>%.2fm ratio>=%.2f "
            "confirm=%d period=%.2fs near=%.2fm; fresh map only, turn exclusion enabled.",
-           static_cast<int>(exit_detection_enabled_), exit_side_clearance_, exit_min_open_ratio_,
+           static_cast<int>(exit_detection_enabled_), exit_min_open_width_, exit_min_open_ratio_,
            exit_confirmation_count_, exit_inference_period_, exit_confirmation_max_distance_);
   ROS_WARN("[exit_mission] RC search-landing trigger enabled=%d topic=%s CH%d "
            "low<=%d high>=%d hold=%.2fs; startup requires LOW before HIGH.",
@@ -1802,7 +1802,7 @@ bool TaskSearchManager::detectLocalMapExit(const Eigen::Vector3d& cur_pos,
   if (!sdf_map_ || forward_hint.norm() < 1e-3) return false;
   open_space_exit::Config config;
   config.search_max = exit_search_max_forward_;
-  config.side_clearance = exit_side_clearance_;
+  config.min_open_width = exit_min_open_width_;
   config.min_open_ratio = exit_min_open_ratio_;
   config.sector_ray_count = exit_sector_ray_count_;
   config.sector_half_angle_deg = exit_sector_half_angle_deg_;
@@ -1850,11 +1850,10 @@ bool TaskSearchManager::detectLocalMapExit(const Eigen::Vector3d& cur_pos,
     result.right_open_ratio = detection.right_open_ratio;
     result.confidence = detection.confidence;
     ROS_INFO_THROTTLE(1.0, "[exit_local_map] open transition=(%.2f,%.2f) "
-                      "yaw=%.1fdeg room_center_offset=%.2fm left=%.2f right=%.2f.",
+                      "yaw=%.1fdeg ahead_width=%.3fm width_ratio=%.2f.",
                       result.portal_center.x(), result.portal_center.y(),
                       std::atan2(forward.y(), forward.x()) * 180.0 / M_PI,
-                      detection.outside_lateral - detection.lateral,
-                      result.left_open_ratio, result.right_open_ratio);
+                      detection.open_width, result.left_open_ratio);
     return true;
   }
   const char* reason = total.supported_sections == 0 ? "inside_walls_missing" :

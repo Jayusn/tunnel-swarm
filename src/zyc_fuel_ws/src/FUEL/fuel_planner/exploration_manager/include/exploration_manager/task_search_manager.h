@@ -365,7 +365,7 @@ private:
   double exit_candidate_angle_tolerance_deg_{15.0};
   double exit_confirmation_max_distance_{1.00};
   double exit_search_max_forward_{2.0};
-  double exit_side_clearance_{2.10};
+  double exit_min_open_width_{2.0};
   double exit_min_open_ratio_{0.80};
   int exit_sector_ray_count_{11};
   double exit_sector_half_angle_deg_{20.0};

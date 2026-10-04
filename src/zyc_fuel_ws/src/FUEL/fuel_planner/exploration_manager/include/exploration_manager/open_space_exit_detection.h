@@ -13,7 +13,7 @@ struct Config {
   double search_min = -0.15;
   double search_max = 2.0;
   double search_step = 0.10;
-  double side_clearance = 2.10;
+  double min_open_width = 2.0;
   double min_open_ratio = 0.80;
   int sector_ray_count = 11;
   double sector_half_angle_deg = 20.0;
@@ -30,6 +30,7 @@ struct Result {
   double left_open_ratio = 0.0;
   double right_open_ratio = 0.0;
   double outside_lateral = 0.0;
+  double open_width = 0.0;
   double confidence = 0.0;
 };
 
@@ -40,33 +41,58 @@ struct Diagnostics {
   int clear_sections = 0;
 };
 
-// 每侧所有预设射线均进入分母。占据、未知、地图外都不能证明横向净空超过阈值。
+// 连续已观测净空的保守下界；遇到占据或未知立即停止，距离使用横向投影。
 template <typename OccupiedQuery, typename FreeQuery>
-int countOpenRays(const Config& config, double forward, double lateral, int side,
-                  OccupiedQuery occupied, FreeQuery known_free) {
+double observedClearance(const Config& config, double forward, double lateral,
+                         double angle, int side, OccupiedQuery occupied, FreeQuery known_free) {
+  const double step = std::min(0.05, std::max(0.01, config.sample_step));
+  const double end = std::max(0.0, config.min_open_width) + 1e-3;
+  const int samples = std::max(1, static_cast<int>(std::ceil(end / step)));
+  auto clear = [&](double across) {
+    const double x = forward + across * std::tan(angle);
+    const double y = lateral + side * across;
+    return !occupied(x, y) && known_free(x, y);
+  };
+  double observed = 0.0;
+  for (int sample = 1; sample <= samples; ++sample) {
+    double across = std::min(sample * step, end);
+    if (clear(across)) {
+      observed = across;
+      continue;
+    }
+    // 细化第一个非FREE边界，避免采样取整把略大于2m的净宽判成恰好2m。
+    while (across - observed > 1e-3) {
+      const double middle = 0.5 * (observed + across);
+      if (clear(middle)) observed = middle;
+      else across = middle;
+    }
+    break;
+  }
+  return observed;
+}
+
+// 同一前方探测点的左右净空相加；所有预设射线对均进入分母，未知不能算开阔。
+template <typename OccupiedQuery, typename FreeQuery>
+int countOpenWidthRays(const Config& config, double forward, double lateral,
+                       OccupiedQuery occupied, FreeQuery known_free, double* min_width = nullptr) {
   const int ray_count = std::max(1, config.sector_ray_count);
   const double half_angle = std::max(0.0, std::min(45.0, config.sector_half_angle_deg)) *
                             std::acos(-1.0) / 180.0;
-  const double step = std::min(0.05, std::max(0.01, config.sample_step));
-  // 检查到阈值之外，严格区分 >2.1m 和恰好2.1m；距离使用横向投影，不用斜距。
-  const double end = std::max(0.0, config.side_clearance) + 1e-3;
   int passing = 0;
+  double narrowest = std::numeric_limits<double>::infinity();
   for (int ray = 0; ray < ray_count; ++ray) {
     const double angle = ray_count == 1 ? 0.0 :
         -half_angle + 2.0 * half_angle * ray / (ray_count - 1);
-    bool clear = true;
-    const int samples = std::max(1, static_cast<int>(std::ceil(end / step)));
-    for (int sample = 1; sample <= samples; ++sample) {
-      const double across = std::min(sample * step, end);
-      const double x = forward + across * std::tan(angle);
-      const double y = lateral + side * across;
-      if (occupied(x, y) || !known_free(x, y)) {
-        clear = false;
-        break;
-      }
+    const double width = observedClearance(config, forward, lateral, angle, -1,
+                                          occupied, known_free) +
+                         observedClearance(config, forward, lateral, angle, 1,
+                                          occupied, known_free);
+    if (width > config.min_open_width + 1e-9) {
+      ++passing;
+      narrowest = std::min(narrowest, width);
     }
-    if (clear) ++passing;
   }
+  if (min_width) *min_width = passing > 0 ? narrowest : 0.0;
   return passing;
 }
 
@@ -95,7 +121,7 @@ bool detect(const Config& config, OccupiedQuery occupied, FreeQuery known_free,
     for (int bin = 1; bin <= inside_count; ++bin) {
       const double x = section - bin * inside_step;
       for (int side : {-1, 1}) {
-        for (double across = 0.25; across <= config.side_clearance + 1e-6;
+        for (double across = 0.25; across <= 2.10 + 1e-6;
              across += std::min(0.05, step)) {
           if (!occupied(x, side * across)) continue;
           (side < 0 ? left : right).push_back(across);
@@ -149,27 +175,35 @@ bool detect(const Config& config, OccupiedQuery occupied, FreeQuery known_free,
     if (!path_clear) continue;
 
     if (diagnostics) ++diagnostics->clear_sections;
-    // 门内中心用于出口位置和通过空间；门外净空中心允许横向平移。
-    // 优先原中心，再向两侧寻找最近的完整开阔区域，不降低净空阈值。
+    // 在无人机前方的出口外侧连续探测，不要求当前位置已离开窄通道。
+    // 保留偏心出口的探测点搜索，左右净空直接相加，允许不对称。
     std::vector<double> outside_centers{center};
-    for (double shift = step; shift <= config.side_clearance + 1e-6; shift += step) {
+    for (double shift = step; shift <= 2.10 + 1e-6; shift += step) {
       outside_centers.push_back(center - shift);
       outside_centers.push_back(center + shift);
     }
     for (double outside_center : outside_centers) {
-      int min_left = rays, min_right = rays;
+      int min_passing = rays;
+      double min_width = std::numeric_limits<double>::infinity();
       bool open = true;
       for (int probe = 1; probe <= outside_count; ++probe) {
         const double x = section + std::min(probe * step, config.outside_length);
-        if (occupied(x, outside_center) || !known_free(x, outside_center)) {
-          open = false;
-          break;
+        // 偏移点与通道中心必须处于同一段已观测净空，不能隔墙拼接宽度。
+        const int lateral_samples = std::max(1, static_cast<int>(std::ceil(
+            std::fabs(outside_center - center) / std::min(0.05, step))));
+        for (int sample = 0; sample <= lateral_samples; ++sample) {
+          const double y = center + (outside_center - center) * sample / lateral_samples;
+          if (occupied(x, y) || !known_free(x, y)) {
+            open = false;
+            break;
+          }
         }
-        min_left = std::min(min_left,
-            countOpenRays(config, x, outside_center, -1, occupied, known_free));
-        min_right = std::min(min_right,
-            countOpenRays(config, x, outside_center, 1, occupied, known_free));
-        if (min_left < required || min_right < required) {
+        if (!open) break;
+        double width = 0.0;
+        min_passing = std::min(min_passing,
+            countOpenWidthRays(config, x, outside_center, occupied, known_free, &width));
+        min_width = std::min(min_width, width);
+        if (min_passing < required) {
           open = false;
           break;
         }
@@ -179,10 +213,10 @@ bool detect(const Config& config, OccupiedQuery occupied, FreeQuery known_free,
       result.forward = section;
       result.lateral = center;
       result.outside_lateral = outside_center;
-      result.left_open_ratio = static_cast<double>(min_left) / rays;
-      result.right_open_ratio = static_cast<double>(min_right) / rays;
-      result.confidence = std::min(0.98,
-          0.55 + 0.40 * std::min(result.left_open_ratio, result.right_open_ratio));
+      // 保留任务层的双侧证据字段，两侧现在共同使用净宽射线对的通过率。
+      result.left_open_ratio = result.right_open_ratio = static_cast<double>(min_passing) / rays;
+      result.open_width = min_width;
+      result.confidence = std::min(0.98, 0.55 + 0.40 * result.left_open_ratio);
       return true;  // 保留最早满足条件的过渡，不把出口拖到开阔区域深处。
     }
   }
