@@ -49,10 +49,13 @@ rostopic echo /exit_detection_test/confirmed
 
 **另开终端录包（可选，开始走之前启动）**
 
+录包保存在 `~/match_ws/bags/exit_detection/`，文件名带日期和时间。
+
 ```bash
 source /opt/ros/noetic/setup.bash
 source ~/match_ws/devel/setup.bash
-rosbag record -O ~/exit_detection_walk_$(date +%Y%m%d_%H%M%S).bag \
+mkdir -p ~/match_ws/bags/exit_detection
+rosbag record -O ~/match_ws/bags/exit_detection/exit_detection_walk_$(date +%Y%m%d_%H%M%S).bag \
   /UAV0/fast_lio/Odom_high_freq /UAV0/fast_lio/cloud_registered \
   /exit_detection_test/status /exit_detection_test/confirmed \
   /exit_detection_test/detected_exit /exit_detection_test/markers /rosout
@@ -136,7 +139,8 @@ rostopic echo /exit_detection_test/detected_exit
 完整走通道时建议在另一终端录下输入和检测结果，便于回看误检位置：
 
 ```bash
-rosbag record -O ~/exit_detection_walk.bag \
+mkdir -p ~/match_ws/bags/exit_detection
+rosbag record -O ~/match_ws/bags/exit_detection/exit_detection_walk_$(date +%Y%m%d_%H%M%S).bag \
   /UAV0/fast_lio/Odom_high_freq /UAV0/fast_lio/cloud_registered \
   /exit_detection_test/status /exit_detection_test/confirmed \
   /exit_detection_test/detected_exit /exit_detection_test/markers /rosout
@@ -188,10 +192,10 @@ roslaunch exploration_manager exit_detection_test.launch rviz:=false
 roslaunch exploration_manager exit_detection_test.launch use_sim_time:=true
 ```
 
-另一个终端：
+另一个终端（下面使用已移入文件夹的原录包，回放新录包时替换文件名）：
 
 ```bash
-rosbag play --clock your_recording.bag --topics \
+rosbag play --clock ~/match_ws/bags/exit_detection/exit_detection_walk.bag --topics \
   /UAV0/fast_lio/Odom_high_freq /UAV0/fast_lio/cloud_registered
 ```
 
