@@ -11,10 +11,15 @@
       <param name="ros/frame_id" value="UAV1/camera_init"/>
       <param name="dbscan/core_pts" value="3"/>
       <param name="dbscan/tolerance" value="0.02"/>
-      <param name="dbscan/min_cluster" value="20"/>
+      <param name="dbscan/min_cluster" value="6"/>
       <param name="dbscan/max_cluster" value="800"/>
-      <param name="detection/thresh_dist" value="0.04"/>
+      <param name="detection/thresh_dist" value="0.06"/>
       <param name="detection/thresh_var" value="0.28"/>
+      <param name="detection/motion_displacement" value="0.08"/>
+      <param name="background_plane/enabled" value="true"/>
+      <param name="background_plane/distance" value="0.03"/>
+      <param name="background_plane/min_points" value="100"/>
+      <param name="background_plane/max_planes" value="6"/>
     </node>
   </group>
 </launch>

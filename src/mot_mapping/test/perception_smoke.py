@@ -51,20 +51,48 @@ def main():
             time.sleep(5)
             assert all(process.poll() is None for process in rviz_processes), 'RViz exited'
 
-        def publish(center):
+        def sparse_points(center, y=0):
+            return [(center + x, y + dy, 1 + z) for x, dy, z in
+                    [(.07, 0, 0), (-.07, 0, 0), (0, .07, 0),
+                     (0, -.07, 0), (0, 0, .07), (0, 0, -.07)]]
+
+        def publish(center, points=None, odom_x=0):
             stamp = rospy.Time.now()
             header = Header(stamp=stamp, frame_id='UAV1/camera_init')
             odom = Odometry(header=header)
             odom.pose.pose.orientation.w = 1
-            points = [] if center is None else [
-                (center + x * .055, y * .055, 1 + z * .055)
-                for x in range(4) for y in range(4) for z in range(4)]
+            odom.pose.pose.position.x = odom_x
+            if points is None:
+                points = [] if center is None else [
+                    (center + x * .055, y * .055, 1 + z * .055)
+                    for x in range(4) for y in range(4) for z in range(4)]
             odom_pub.publish(odom)
             cloud_pub.publish(point_cloud2.create_cloud_xyz32(header, points))
             time.sleep(.25)
             return stamp
 
-        for center in [2, 2, 2, 2.3, 2.45, 2.6, 2.75]:
+        def count(stamp):
+            states = next(msg for msg in reversed(received['states'])
+                          if msg.header.stamp == stamp)
+            boxes = next(msg for msg in reversed(received['boxes'])
+                         if msg.markers[0].header.stamp == stamp)
+            tracks = next(msg for msg in reversed(received['tracks'])
+                          if msg.markers[0].header.stamp == stamp)
+            cloud = next(msg for msg in reversed(received['cloud'])
+                         if msg.header.stamp == stamp)
+            number = len(states.states)
+            assert number == sum(m.action == m.ADD for m in boxes.markers)
+            assert number == sum(m.action == m.ADD for m in tracks.markers)
+            assert bool(number) == bool(cloud.width), 'Output sets disagree'
+            assert all(math.isfinite(v) for marker in tracks.markers
+                       for point in marker.points for v in (point.x, point.y, point.z)), \
+                'Non-finite direction at a stop / turn'
+            return number
+
+        for center in [2, 2, 2, 2]:
+            static_stamp = publish(center)
+        assert count(static_stamp) == 0, 'Stationary object classified as moving'
+        for center in [2.3, 2.45, 2.6, 2.75]:
             publish(center)
         assert launch.poll() is None, 'FAPP node exited'
         print('Received:', {key: len(value) for key, value in received.items()})
@@ -85,6 +113,63 @@ def main():
         assert received['boxes'][-1].markers[0].action == 3, 'Missing DELETEALL'
         assert len(received['boxes'][-1].markers) == 1, 'Old detection box remains'
         assert received['cloud'][-1].header.stamp == last_stamp, 'Cloud timestamp lost'
+        assert count(last_stamp) == 0, 'Occluded object emitted prediction'
+
+        sparse_counts = []
+        for center in [2.0, 2.12, 2.24, 2.36, 2.48]:
+            stamp = publish(None, points=sparse_points(center))
+            sparse_counts.append(count(stamp))
+        assert any(sparse_counts[2:]), 'Six-point moving object lost'
+        # A turn still has a current observation; disappearing never emits boxes.
+        turn_stamp = publish(None, points=sparse_points(2.48))
+        assert count(turn_stamp) == 1, 'Swing turn dropped immediately'
+        for _ in range(10):
+            stopped_stamp = publish(None, points=sparse_points(2.48))
+            count(stopped_stamp)
+        assert count(stopped_stamp) == 0, 'Stopped object remained dynamic'
+
+        for shift in range(10):
+            plane = [(1.5 + (x + shift) * .055, -.8 + y * .055, .5)
+                     for x in range(24) for y in range(12)]
+            stamp = publish(None, points=plane + sparse_points(2.48), odom_x=shift * .1)
+            assert count(stamp) == 0, 'Thin static plane / moving UAV produced false boxes'
+
+        for _ in range(3):
+            publish(None)
+        for step in range(7):
+            points = sparse_points(1 + step * .15, .6) + sparse_points(1.4 + step * .15, .6)
+            stamp = publish(None, points=points)
+        assert count(stamp) == 2, 'Two detections updated a single track'
+
+        # The ceiling and moving return are within the actual DBSCAN radius.
+        # Together they exceed max_cluster=800; background removal must split
+        # them before clustering without deleting the six object points.
+        for _ in range(3):
+            publish(None)
+        ceiling = [(1 + x * .05, -.6 + y * .05, 1.16)
+                   for x in range(42) for y in range(24)]
+        mixed_counts = []
+        for step in range(8):
+            stamp = publish(None, points=ceiling + sparse_points(1.6 + step * .12))
+            mixed_counts.append(count(stamp))
+        assert all(n == 1 for n in mixed_counts[3:]), \
+            'Moving six-point object connected to a large ceiling was lost'
+        for _ in range(10):
+            stamp = publish(None, points=ceiling + sparse_points(2.44))
+        assert count(stamp) == 0, 'Object stopped beside a ceiling remained dynamic'
+
+        for _ in range(3):
+            publish(None)
+        for step in range(8):
+            center = 1.2 + step * .12
+            rope = [(center, 0, 1.15 + n * .08) for n in range(12)]
+            stamp = publish(None, points=sparse_points(center) + rope)
+        assert count(stamp) == 1, 'Sparse attached rope made a moving object look planar'
+        for step in range(12):
+            # Vary the rope sampling while the body stays in the same position.
+            rope = [(center, 0, 1.15 + n * .08) for n in range(4 + step % 8)]
+            stamp = publish(None, points=sparse_points(center) + rope)
+        assert count(stamp) == 0, 'Changing rope sampling made a stopped object move'
         if rviz_processes:
             _, _, graph = rospy.get_master().getSystemState()
             subscribers_by_topic = dict(graph[1])
@@ -93,7 +178,8 @@ def main():
                 assert all('/fapp_smoke_rviz_' + profile in nodes
                            for profile in ['uav1_lite', 'exp']), 'RViz display not subscribed: ' + topic
             print('PASS: both RViz profiles subscribe to FAPP clouds and markers')
-        print('PASS: dynamic clouds, boxes, tracking, frame/timestamps and box clearing')
+        print('PASS: static, six-point motion, turn, stop, occlusion, thin planes, '
+              'moving UAV, one-to-one tracks, ceiling-connected motion, attached rope and consistent stamped outputs')
     finally:
         for process in rviz_processes + [launch, master]:
             if process is not None:

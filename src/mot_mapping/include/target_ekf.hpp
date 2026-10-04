@@ -15,6 +15,9 @@ struct Ekf {
   Eigen::VectorXd x;
 
   std::deque<Eigen::MatrixXd> InnoCov_list;
+  std::deque<std::pair<ros::Time, Eigen::Vector3d>> observations;
+  ros::Time last_change_stamp, last_motion_stamp, last_dynamic_stamp;
+  int last_seen_frame = 0;
 
   Ekf(double _dt) : dt(_dt) {
     A.setIdentity(6, 6);
@@ -70,6 +73,10 @@ struct Ekf {
     age = 1;
     update_num = 0;
     id = id_;
+    observations.clear();
+    last_change_stamp = ros::Time();
+    last_motion_stamp = ros::Time();
+    last_dynamic_stamp = ros::Time();
   }
   inline bool checkValid(const Eigen::Vector3d& z1, const Eigen::Vector3d& z2) {
     Eigen::VectorXd z(6);

@@ -23,6 +23,11 @@ void MappingRos::init() {
   nh.param("dbscan/max_cluster", mp_->max_cluster, 800);
   nh.param("detection/thresh_dist", mp_->thresh_dist, 0.08);
   nh.param("detection/thresh_var", mp_->thresh_var, 0.28);
+  nh.param("detection/motion_displacement", mp_->motion_displacement, 0.06);
+  nh.param("background_plane/enabled", mp_->background_plane_enabled, true);
+  nh.param("background_plane/distance", mp_->background_plane_distance, 0.03);
+  nh.param("background_plane/min_points", mp_->background_plane_min_points, 100);
+  nh.param("background_plane/max_planes", mp_->background_plane_max_planes, 6);
   nh.param("lidar/range_x", mp_->Range[0], 15.0);
   nh.param("lidar/range_y", mp_->Range[1], 15.0);
   nh.param("lidar/range_z", mp_->Range[2], 1.0);
@@ -107,12 +112,65 @@ void MappingRos::pointsWorldToBody(const PointsPtr p_w, PointsPtr p_b, Eigen::Ve
 }
 
 
+void MappingRos::removeStaticPlanes(PointsPtr& points, const PointsPtr& history) {
+  if (!mp_->background_plane_enabled || history->empty()) return;
+  pcl::search::KdTree<PointType> history_tree;
+  history_tree.setInputCloud(history);
+  PointsPtr remaining(new Points(*points));
+  PointsPtr foreground(new Points);
+  pcl::SACSegmentation<PointType> segmentation;
+  segmentation.setOptimizeCoefficients(true);
+  segmentation.setModelType(pcl::SACMODEL_PLANE);
+  segmentation.setMethodType(pcl::SAC_RANSAC);
+  segmentation.setMaxIterations(100);
+  segmentation.setDistanceThreshold(mp_->background_plane_distance);
+  for (int plane = 0; plane < mp_->background_plane_max_planes &&
+       remaining->size() >= static_cast<size_t>(mp_->background_plane_min_points); ++plane) {
+    pcl::PointIndices::Ptr inliers(new pcl::PointIndices);
+    pcl::ModelCoefficients coefficients;
+    segmentation.setInputCloud(remaining);
+    segmentation.segment(*inliers, coefficients);
+    if (inliers->indices.size() < static_cast<size_t>(mp_->background_plane_min_points)) break;
+    PointsPtr surface(new Points);
+    pcl::ExtractIndices<PointType> extract;
+    extract.setInputCloud(remaining);
+    extract.setIndices(inliers);
+    extract.filter(*surface);
+    Eigen::Vector4f centroid;
+    Eigen::Matrix3f covariance;
+    pcl::compute3DCentroid(*surface, centroid);
+    pcl::computeCovarianceMatrixNormalized(*surface, centroid, covariance);
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3f> solver(covariance);
+    int supported = 0;
+    std::vector<int> nearest(1);
+    std::vector<float> squared_distance(1);
+    for (const auto& point : *surface) {
+      if (history_tree.nearestKSearch(point, 1, nearest, squared_distance) > 0 &&
+          squared_distance[0] <= 0.12 * 0.12) ++supported;
+    }
+    // Require a broad surface in two directions and support in the previous
+    // registered cloud. A small curved return is not a background plane.
+    bool background = solver.eigenvalues()[1] >= 0.5 * 0.5 / 12.0 &&
+                      supported >= 0.8 * surface->size();
+    if (!background) *foreground += *surface;
+    ROS_DEBUG_STREAM("FAPP_PLANE " << cloud_stamp_.toNSec() << " "
+        << surface->size() << " " << background << " " << coefficients);
+    PointsPtr next(new Points);
+    extract.setNegative(true);
+    extract.filter(*next);
+    remaining = next;
+  }
+  *foreground += *remaining;
+  points = foreground;
+}
+
 void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
                                    const nav_msgs::OdometryConstPtr& odom) {
   cloud_stamp_ = msg->header.stamp;
   const double frame_dt = previous_cloud_stamp_.isZero() ? 0.0 :
       (cloud_stamp_ - previous_cloud_stamp_).toSec();
   previous_cloud_stamp_ = cloud_stamp_;
+  ++frame_num;
   if (frame_dt > 0.0) {
     for (auto& tracker : trackers) {
       tracker->predict(frame_dt);
@@ -180,6 +238,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
   mapPub.publish(map_ros);
 
   // DBSCAN Cluster
+  if (!previous_points.empty()) removeStaticPlanes(ClusterPoints, previous_points.back());
   std::vector<pcl::PointIndices> cluster_indices;
   dbscan.setCorePointMinPts(mp_->core_pts);
   dbscan.setClusterTolerance(mp_->tolerance);
@@ -195,9 +254,8 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
   std::cout << "Cluster Time Cost (ms)： " << compTime <<std::endl;
   tic = std::chrono::high_resolution_clock::now();
 
-  if (frame_num < 2){
+  if (frame_num == 2){
     previous_points.push_back(cloud_world);
-    frame_num++;
     return;
   }
 
@@ -264,82 +322,194 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
 
   PointsPtr dynamic_points(new Points);
 
-  int k = 0;
+  struct Candidate {
+    ObjectState state;
+    pcl::PointIndices indices;
+    bool changed;
+  };
+  std::vector<Candidate> candidates;
   detections.clear();
   deleted_indices.clear();
-  for (auto& getIndices: cluster_indices) {
-    PointsPtr cluster(new Points);
-    PointVector PointDelete;
-    double avg_dist = 0;
-    Eigen::Vector3d cluster_center;
-    cluster_center.setZero();
-    std::vector<double> avg_buffer;
-    for (auto& index : getIndices.indices) {
-      cluster->points.push_back(ClusterPoints->points[index]);
-      PointVector points_near;
-      vector<float> pointSearchSqDis(5);
-      ikdtree_ptr->Nearest_Search(ClusterPoints->points[index], 3, points_near, pointSearchSqDis);
-      if (points_near.empty()) continue;
-      avg_dist += sqrt(pointSearchSqDis[0]);
-      avg_buffer.push_back(sqrt(pointSearchSqDis[0]));
-      cluster_center += Eigen::Vector3d(ClusterPoints->points[index].x, ClusterPoints->points[index].y, ClusterPoints->points[index].z);
+  for (const auto& indices : cluster_indices) {
+    Points cluster;
+    Eigen::Vector3d center = Eigen::Vector3d::Zero();
+    std::vector<double> distances;
+    for (int index : indices.indices) {
+      const auto& point = ClusterPoints->points[index];
+      cluster.push_back(point);
+      center += Eigen::Vector3d(point.x, point.y, point.z);
+      PointVector nearest;
+      std::vector<float> squared_distances(3);
+      ikdtree_ptr->Nearest_Search(point, 3, nearest, squared_distances);
+      if (!nearest.empty())
+        distances.push_back(std::sqrt(squared_distances[0]));
     }
+    center /= cluster.size();
+    pcl::PointXYZ min_pt, max_pt;
+    pcl::getMinMax3D(cluster, min_pt, max_pt);
+    Eigen::Vector3d size(max_pt.x - min_pt.x, max_pt.y - min_pt.y, max_pt.z - min_pt.z);
 
-    avg_dist = avg_dist/getIndices.indices.size();
-    cluster_center = cluster_center/getIndices.indices.size();
-    double var_dist = 0;
-    for (auto& dist : avg_buffer) {
-      if (avg_dist > 0.0)
-        var_dist += (dist - avg_dist) * (dist - avg_dist) / (avg_dist * avg_dist);
-    }
-    var_dist = var_dist/getIndices.indices.size();
-
-    bool on_track = false;
-    for (int i = 0; i < trackers.size(); ++i) {
-      Eigen::Vector3d tracker_center = trackers[i]->pos();
-      double dist = sqrt((cluster_center(0) - tracker_center(0)) * (cluster_center(0) - tracker_center(0)) +
-                         (cluster_center(1) - tracker_center(1)) * (cluster_center(1) - tracker_center(1)) +
-                         (cluster_center(2) - tracker_center(2)) * (cluster_center(2) - tracker_center(2)));
-      if (dist < 0.5 && trackers[i]->age > 3 && trackers[i]->vel().norm() > 0.2) {
-        on_track = true;
-        break;
+    // Use the densest existing DBSCAN neighborhood for the measured center.
+    // Sparse attached rope/edge points still contribute to the output cloud
+    // and box, but cannot pull the motion measurement away from its dense part.
+    size_t dense_index = 0, dense_count = 0;
+    for (size_t a = 0; a < cluster.size(); ++a) {
+      size_t count = 0;
+      for (const auto& point : cluster) {
+        if ((point.getVector3fMap() - cluster[a].getVector3fMap()).squaredNorm() <=
+            mp_->tolerance) ++count;
+      }
+      if (count > dense_count) {
+        dense_count = count;
+        dense_index = a;
       }
     }
-
-    cluster->width = cluster->points.size();
-    cluster->height = 1;
-    cluster->is_dense = true;
-    pcl::PointXYZ minPt, maxPt;
-	  pcl::getMinMax3D(*cluster, minPt, maxPt);
-
-    PointType center_pt;
-    center_pt.x = (maxPt.x + minPt.x)/2;
-    center_pt.y = (maxPt.y + minPt.y)/2;
-    center_pt.z = (maxPt.z + minPt.z)/2;
-
-    double radius_xy = (center_pt.x - md_->T[0]) * (center_pt.x - md_->T[0]) +
-                       (center_pt.y - md_->T[1]) * (center_pt.y - md_->T[1]);
-    double radius_z = (center_pt.z - md_->T[2]) * (center_pt.z - md_->T[2]);
-
-
-    if (avg_dist > mp_->thresh_dist && avg_dist < 5.0 && var_dist < mp_->thresh_var || on_track) {
-      // std::cout << "on_track: " << on_track << std::endl;
-      // std::cout << "var_dist: " << var_dist << std::endl;
-      // std::cout << "avg_dist: " << avg_dist << std::endl;
-      ObjectState state;
-      state.id = k;
-      state.position = cluster_center;
-      state.size << maxPt.x - minPt.x, maxPt.y - minPt.y, maxPt.z - minPt.z;
-      detections.push_back(state);
-      deleted_indices.push_back(getIndices);
-      for (auto& index : getIndices.indices) {
-        dynamic_points->points.push_back(ClusterPoints->points[index]);
+    for (int axis = 0; axis < 3; ++axis) {
+      std::vector<float> coordinates;
+      coordinates.reserve(dense_count);
+      for (const auto& point : cluster) {
+        if ((point.getVector3fMap() - cluster[dense_index].getVector3fMap()).squaredNorm() <=
+            mp_->tolerance) coordinates.push_back(point.data[axis]);
       }
-      // BoxPointType box;
-      // box.vertex_min[0] = minPt.x-0.2; box.vertex_min[1] = minPt.y-0.2; box.vertex_min[2] = minPt.z-0.2;
-      // box.vertex_max[0] = maxPt.x+0.2; box.vertex_max[1] = maxPt.y+0.2; box.vertex_max[2] = maxPt.z+0.2;
-      // delete_boxes.push_back(box);
+      std::sort(coordinates.begin(), coordinates.end());
+      size_t middle = coordinates.size() / 2;
+      center[axis] = coordinates.size() % 2 ? coordinates[middle] :
+          0.5 * (coordinates[middle - 1] + coordinates[middle]);
     }
+
+    // Judge the same dense surface used for motion. An attached sparse rope
+    // must not make a curved moving return look like a long planar patch.
+    Eigen::Matrix3d covariance = Eigen::Matrix3d::Zero();
+    for (const auto& point : cluster) {
+      if ((point.getVector3fMap() - cluster[dense_index].getVector3fMap()).squaredNorm() >
+          mp_->tolerance) continue;
+      Eigen::Vector3d delta = Eigen::Vector3d(point.x, point.y, point.z) - center;
+      covariance += delta * delta.transpose();
+    }
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(covariance);
+    const auto& eigenvalues = solver.eigenvalues();
+    if (size.maxCoeff() >= 0.5 && eigenvalues[0] < 0.01 * eigenvalues[2])
+      continue;
+
+    double avg_dist = 0.0, var_dist = 0.0;
+    for (double distance : distances) avg_dist += distance;
+    if (!distances.empty()) avg_dist /= distances.size();
+    if (avg_dist > 0.0) {
+      for (double distance : distances)
+        var_dist += (distance - avg_dist) * (distance - avg_dist) / (avg_dist * avg_dist);
+      var_dist /= distances.size();
+    }
+    Candidate candidate;
+    candidate.state.position = center;
+    candidate.state.size = size;
+    candidate.indices = indices;
+    candidate.changed = avg_dist > mp_->thresh_dist && avg_dist < 5.0 &&
+                        var_dist < mp_->thresh_var;
+    ROS_DEBUG_STREAM("FAPP_CANDIDATE " << cloud_stamp_.toNSec() << " "
+        << center.x() << " " << center.y() << " " << center.z() << " "
+        << size.x() << " " << size.y() << " " << size.z() << " "
+        << cluster.size() << " " << avg_dist << " " << var_dist);
+    candidates.push_back(candidate);
+  }
+
+  // Match closest pairs once each; multiple detections must not update one track.
+  struct Match {
+    bool stale;
+    double distance;
+    int candidate, tracker;
+  };
+  std::vector<Match> possible_pairs;
+  for (int i = 0; i < candidates.size(); ++i) {
+    for (int j = 0; j < trackers.size(); ++j) {
+      double distance = (candidates[i].state.position -
+                         trackers[j]->observations.back().second).norm();
+      if (distance < 0.82)
+        possible_pairs.push_back({trackers[j]->last_seen_frame != frame_num - 1,
+                                  distance, i, j});
+    }
+  }
+  // An old position from a swing must not steal a currently observed track.
+  std::sort(possible_pairs.begin(), possible_pairs.end(),
+      [](const Match& a, const Match& b) {
+        if (a.stale != b.stale) return a.stale < b.stale;
+        if (a.distance != b.distance) return a.distance < b.distance;
+        if (a.candidate != b.candidate) return a.candidate < b.candidate;
+        return a.tracker < b.tracker;
+      });
+  std::vector<int> matched(candidates.size(), -1);
+  std::vector<bool> used(trackers.size(), false);
+  for (const auto& pair : possible_pairs) {
+    int i = pair.candidate, j = pair.tracker;
+    if (matched[i] < 0 && !used[j]) {
+      matched[i] = j;
+      used[j] = true;
+    }
+  }
+
+  obj_state_msgs::ObjectsStates states;
+  states.header.stamp = cloud_stamp_;
+  states.header.frame_id = frame_id_;
+  std::vector<std::pair<int, int>> published_pairs;
+  for (int i = 0; i < candidates.size(); ++i) {
+    int j = matched[i];
+    const auto& candidate = candidates[i];
+    if (j < 0) {
+      auto tracker = std::make_shared<Ekf>(0.02);
+      tracker->reset(candidate.state.position, id++);
+      trackers.push_back(tracker);
+      j = trackers.size() - 1;
+    } else {
+      auto& tracker = trackers[j];
+      const auto& previous = tracker->observations.back();
+      double dt = (cloud_stamp_ - previous.first).toSec();
+      if (dt > 0.0) {
+        Eigen::Vector3d velocity = (candidate.state.position - previous.second) / dt;
+        tracker->update(candidate.state.position, 0.5 * velocity + 0.5 * tracker->vel());
+      }
+      if (tracker->last_seen_frame != frame_num - 1)
+        tracker->observations.clear();
+    }
+    auto& tracker = trackers[j];
+    tracker->last_seen_frame = frame_num;
+    tracker->observations.push_back({cloud_stamp_, candidate.state.position});
+    if (tracker->observations.size() > 3) tracker->observations.pop_front();
+
+    double displacement = 0.0;
+    for (const auto& first : tracker->observations)
+      for (const auto& second : tracker->observations)
+        displacement = std::max(displacement, (first.second - second.second).norm());
+    bool has_motion = tracker->observations.size() == 3 &&
+                      displacement >= mp_->motion_displacement;
+    if (candidate.changed) tracker->last_change_stamp = cloud_stamp_;
+    bool recently_changed = tracker->last_change_stamp >= tracker->observations.front().first;
+    // A tracked object must still have measured motion, not just EKF velocity.
+    // Novelty may occur in the first observation, before three-frame confirmation.
+    if (has_motion && (recently_changed || !tracker->last_dynamic_stamp.isZero()))
+      tracker->last_motion_stamp = cloud_stamp_;
+    bool confirmed = !tracker->last_motion_stamp.isZero() &&
+                     (cloud_stamp_ - tracker->last_motion_stamp).toSec() <= 0.6;
+    if (!confirmed) continue;
+    tracker->last_dynamic_stamp = cloud_stamp_;
+
+    int detection_index = detections.size();
+    detections.push_back(candidate.state);
+    published_pairs.push_back({detection_index, j});
+    deleted_indices.push_back(candidate.indices);
+    for (int index : candidate.indices.indices)
+      dynamic_points->points.push_back(ClusterPoints->points[index]);
+
+    obj_state_msgs::State state;
+    state.header = states.header;
+    state.position.x = tracker->pos().x();
+    state.position.y = tracker->pos().y();
+    state.position.z = tracker->pos().z();
+    state.velocity.x = tracker->vel().x();
+    state.velocity.y = tracker->vel().y();
+    state.velocity.z = tracker->vel().z();
+    state.size.x = candidate.state.size.x();
+    state.size.y = candidate.state.size.y();
+    state.size.z = candidate.state.size.z();
+    states.states.push_back(state);
   }
 
   sensor_msgs::PointCloud2 dynamic_pts;
@@ -347,93 +517,13 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
   dynamic_pts.header.frame_id = frame_id_;
   dynamic_pts.header.stamp = cloud_stamp_;
   cloudPub.publish(dynamic_pts);
-
-  // Tracking & EKF
-  if(trackers.size() == 0) {
-    for(int i = 0; i < detections.size(); ++i) {
-      std::shared_ptr<Ekf> ekfPtr = std::make_shared<Ekf>(0.02);
-      ekfPtr->reset(detections[i].position, id);
-      id++;
-      trackers.push_back(ekfPtr);
-      previous_p.push_back(detections[i].position);
-      Eigen::Vector3d v0(0,0,0);
-      previous_v.push_back(v0);
-    }
-    visualizeFunction({});
-    obj_state_msgs::ObjectsStates states;
-    states.header.stamp = cloud_stamp_;
-    states.header.frame_id = frame_id_;
-    statesPub.publish(states);
-    return;
-  }
-
-
-  obj_state_msgs::ObjectsStates states;
-  states.header.stamp = cloud_stamp_;
-  states.header.frame_id = frame_id_;
-  std::vector<std::pair<int, int>> matchedPairs;
-
-  for (int i = 0; i < detections.size(); ++i) {
-    double min_dist = 1000000;
-    int min_index = -1;
-    Eigen::Vector3d det_pos = detections[i].position;
-    for (int j = 0; j < trackers.size(); ++j) {
-      Eigen::Vector3d track_pos = trackers[j]->pos();
-      double dist = (det_pos - track_pos).norm();
-      if (dist < min_dist) {
-        min_dist = dist;
-        min_index = j;
-      }
-    }
-
-    if (min_dist < 0.8) {
-      // std::cout << "id:" << trackers[min_index]->id << std::endl;
-      Eigen::Vector3d vel_detect = trackers[min_index]->vel();
-      if (frame_dt > 0.0)
-        vel_detect = (detections[i].position - previous_p[min_index]) / frame_dt;
-      trackers[min_index]->update(detections[i].position, 0.5*vel_detect + 0.5*previous_v[min_index] );
-
-      matchedPairs.push_back(std::make_pair(i, min_index));
-
-      ObjectState state;
-      state.position = trackers[min_index]->pos();
-      state.velocity = trackers[min_index]->vel();
-      obj_state_msgs::State statemsg;
-      statemsg.header = states.header;
-      statemsg.position.x = state.position[0]; statemsg.position.y = state.position[1]; statemsg.position.z = state.position[2];
-      statemsg.velocity.x = state.velocity[0]; statemsg.velocity.y = state.velocity[1]; statemsg.velocity.z = state.velocity[2];
-      statemsg.size.x = detections[i].size.x();
-      statemsg.size.y = detections[i].size.y();
-      statemsg.size.z = detections[i].size.z();
-      states.states.push_back(statemsg);
-
-    } else {
-      std::shared_ptr<Ekf> ekfPtr = std::make_shared<Ekf>(0.02);
-      ekfPtr->reset(detections[i].position, id);
-      id++;
-      trackers.push_back(ekfPtr);
-      previous_p.push_back(detections[i].position);
-      previous_v.push_back(Eigen::Vector3d::Zero());
-    }
-  }
   statesPub.publish(states);
+  visualizeFunction(published_pairs);
 
-  visualizeFunction(matchedPairs);
-
-  for (auto it = trackers.begin(); it != trackers.end();) {
-      // std::cout << "dt:" << (*it)->age - (*it)->update_num << std::endl;
-      if ((*it)->age - (*it)->update_num > 20)
-        it = trackers.erase(it);
-      else
-        it++;
-  }
-
-  previous_p.clear();
-  previous_v.clear();
-  for (int i = 0; i < trackers.size(); ++i ) {
-    previous_p.push_back(trackers[i]->pos());
-    previous_v.push_back(trackers[i]->vel());
-  }
+  trackers.erase(std::remove_if(trackers.begin(), trackers.end(),
+      [this](const std::shared_ptr<Ekf>& tracker) {
+        return frame_num - tracker->last_seen_frame > 20;
+      }), trackers.end());
   compTime = std::chrono::duration_cast<std::chrono::microseconds>
                     (std::chrono::high_resolution_clock::now() - tic).count() * 1.0e-3;
   std::cout << "Tracking Time Cost (ms)： " << compTime <<std::endl;
@@ -554,7 +644,6 @@ void MappingRos::visualizeFunction(const std::vector<std::pair<int, int>> pairs)
     ObjectState state;
     state.position = trackers[trackerIndex]->pos();
     state.velocity = trackers[trackerIndex]->vel();
-    if (state.velocity.norm() <= 0.01) continue;
     poseMarker.id = trackerIndex+100;
     poseMarker.header.stamp = cloud_stamp_;
     poseMarker.header.frame_id = frame_id_;
@@ -571,17 +660,18 @@ void MappingRos::visualizeFunction(const std::vector<std::pair<int, int>> pairs)
     poseMarker.scale.z = 0.30;
     poseMarker.pose.orientation.w = 1.0;
     geometry_msgs::Point arrow[2];
+    Eigen::Vector3d direction = Eigen::Vector3d::Zero();
+    if (state.velocity.norm() > 0.01) direction = state.velocity.normalized();
     arrow[0].x = state.position[0]; arrow[0].y = state.position[1]; arrow[0].z = state.position[2];
-    arrow[1].x = state.position[0] + 1.0*state.velocity[0]/state.velocity.norm();
-    arrow[1].y = state.position[1] + 1.0*state.velocity[1]/state.velocity.norm();
-    arrow[1].z = state.position[2] + 1.0*state.velocity[2]/state.velocity.norm();
+    arrow[1].x = state.position[0] + direction[0];
+    arrow[1].y = state.position[1] + direction[1];
+    arrow[1].z = state.position[2] + direction[2];
     // std::cout << "vx:" << state.velocity[0] << std::endl;
     // std::cout << "vy:" << state.velocity[1] << std::endl;
     // std::cout << "vz:" << state.velocity[2] << std::endl;
     poseMarker.points.push_back(arrow[0]);
     poseMarker.points.push_back(arrow[1]);
-    if (state.velocity.norm() > 0.01)
-      poses.markers.push_back(poseMarker);
+    poses.markers.push_back(poseMarker);
   }
   objectPosePub.publish(poses);
   edgePub.publish(boxes);

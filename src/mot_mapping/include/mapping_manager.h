@@ -59,6 +59,11 @@ struct MapParam {
   // Dynamic Detection Params
   double thresh_dist;
   double thresh_var;
+  double motion_displacement;
+  bool background_plane_enabled;
+  double background_plane_distance;
+  int background_plane_min_points;
+  int background_plane_max_planes;
   // Lidar Params
   Eigen::Vector3d Range;
   // ROS Params
@@ -93,8 +98,6 @@ private:
   std::deque<PointsPtr> previous_points;
   std::deque<PointsPtr> buffer;
   std::deque<PointsPtr> input_point;
-  std::vector<Eigen::Vector3d> previous_p;
-  std::vector<Eigen::Vector3d> previous_v;
   std::vector<pcl::PointIndices> deleted_indices;
   std::vector<BoxPointType> delete_boxes;
 
@@ -127,6 +130,7 @@ private:
   void generate_box(BoxPointType &boxpoint, const PointType &center_pt, vector<float> box_lengths);
   void pointsBodyToWorld(const PointsPtr p_b, PointsPtr p_w);
   void pointsWorldToBody(const PointsPtr p_w, PointsPtr p_b, Eigen::Vector3d T);
+  void removeStaticPlanes(PointsPtr& points, const PointsPtr& history);
 
   void cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg, const nav_msgs::OdometryConstPtr& odom);
   void ekfPredictCallback(const ros::TimerEvent& e);
