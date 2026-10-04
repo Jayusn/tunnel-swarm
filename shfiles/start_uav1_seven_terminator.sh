@@ -14,8 +14,8 @@ SCRIPT_PATH="${SCRIPT_DIR}/$(basename -- "${BASH_SOURCE[0]}")"
 MATCH_WS="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 ROS_SETUP="${UAV1_SINGLE_ROS_SETUP:-/opt/ros/noetic/setup.bash}"
 LAYOUT_CONFIG="${UAV1_SINGLE_LAYOUT_CONFIG:-}"
-LOCAL_MASTER_IP="${UAV1_SINGLE_ROS_MASTER_IP:-10.116.50.232}"
-LOCAL_ROS_IP="${UAV1_SINGLE_ROS_IP:-10.116.50.232}"
+LOCAL_MASTER_IP="${UAV1_SINGLE_ROS_MASTER_IP:-10.106.223.232}"
+LOCAL_ROS_IP="${UAV1_SINGLE_ROS_IP:-10.106.223.232}"
 RUN_ID="${UID:-$(id -u)}"
 TERMINATOR_LOG="${UAV1_SINGLE_TERMINATOR_LOG:-/tmp/uav1_seven_terminator_${RUN_ID}.log}"
 TERMINATOR_PID_FILE="${UAV1_SINGLE_TERMINATOR_PID_FILE:-/tmp/uav1_seven_terminator_${RUN_ID}.pid}"
@@ -59,7 +59,7 @@ usage() {
   7 AutoTrans 控制器/桥接/日志/自动 rosbag。
 
 说明：
-  - ROS master 固定使用 UAV1 本机 10.116.50.232:11311。
+  - ROS master 默认使用 UAV1 本机 10.106.223.232:11311。
   - 第 6 屏执行 run_swarm.launch 中当前配置的单机预设航点。
   - 第 6 屏启动下视相机、单机 Diff/RViz 和动态检测复盘录包。
   - AutoTrans 直接向 /UAV1/mavros/setpoint_raw/attitude 发布控制量。
