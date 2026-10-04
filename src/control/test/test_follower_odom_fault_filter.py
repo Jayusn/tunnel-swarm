@@ -223,9 +223,11 @@ def test_simple_mode_skips_occupied_endpoint_and_waits_for_leader_to_clear_next(
     assert "simple_occupied_recovery_active_" in status_callback
     assert "leader_to_waypoint" in execution
     assert "leader_world.x - desired_world.position.x" in execution
-    assert "leader_to_waypoint + 1.0e-6 < waypoint_release_min_separation_" in execution
+    assert "leader_to_waypoint + 1.0e-6 < release_distance" in execution
+    assert "desired_world.is_door" in execution
+    assert "door_release_inside_distance_ : waypoint_release_min_separation_" in execution
     assert "DIFF_FIFO_WAIT_LEADER_CLEAR_NEXT_POINT" in execution
-    assert 'name="waypoint_release_min_separation" value="0.70"' in LAUNCH
+    assert 'name="waypoint_release_min_separation" value="1.00"' in LAUNCH
 
 
 def test_simple_mode_retries_fifo_endpoint_after_occupied_recovery_abort():

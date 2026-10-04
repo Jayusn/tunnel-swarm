@@ -36,6 +36,7 @@ struct RoutePoint {
   double yaw{0.0};
   // 2026-07-15: 记录前机从起飞后的累计路程，用于“离开候选点1m后再释放”的离散接力逻辑。
   double progress{0.0};
+  bool is_door{false};
 };
 
 struct DynamicObstacleSample {
@@ -98,7 +99,7 @@ class LeaderSafePathFollower {
     // 2026-07-28: 新模式只向UAV1独立Diff发布离散目标；旧PositionCommand直控保留为可回退开关。
     pnh_.param("use_diff_planner", use_diff_planner_, true);
     // 简化接力模式把前机每段实际停稳终点作为FIFO目标直接交给Diff。跟随器不再
-    // 生成短子目标、拉黑候选或退让坐标，规划失败时只重试当前队首。
+    // 生成短子目标或拉黑候选，规划失败时只重试当前队首；间距小于0.60m时允许退让。
     pnh_.param("simple_segment_endpoint_following",
                simple_segment_endpoint_following_, false);
     pnh_.param("simple_diff_retry_delay", simple_diff_retry_delay_, 0.20);
@@ -577,7 +578,8 @@ class LeaderSafePathFollower {
         std::sin(confirmed_door_.yaw) *
             (leader_world.y - confirmed_door_.position.y);
     if (inside_progress < door_release_inside_distance_) return false;
-    if (!relayWaypointSeparationReady("DOOR")) return false;
+    if (!simple_segment_endpoint_following_ &&
+        !relayWaypointSeparationReady("DOOR")) return false;
 
     // 门的放行只依赖前机真实越过门心；历史路线的反向/断点保护仍只约束普通接力点。
     confirmed_door_.progress = nearestRouteProgress(confirmed_door_.position);
@@ -714,6 +716,7 @@ class LeaderSafePathFollower {
 
   void appendRelayWaypoint(const RoutePoint& point, const char* label) {
     RoutePoint follower_point = point;
+    follower_point.is_door = std::string(label) == "DOOR";
     // 2026-07-24: 对外Path中的普通门点/接力点也明确写成后机0.65m高度，
     // 不再把前机可能退化的z伪装成需要后机执行的三维坐标。
     if (std::string(label) != "TERMINAL")
@@ -1867,6 +1870,9 @@ class LeaderSafePathFollower {
       return true;
     }
 
+    // 入口及入口等待只在0.60m内退让；普通点继续保持1m间距。
+    if (handleDiffSeparationSafety(now)) return true;
+
     if (active_relay_index_ >= relay_waypoints_.size()) {
       setDiffWaitPositionHold(true, "waiting for next FIFO segment endpoint");
       publishState(have_confirmed_door_ ? "DIFF_WAIT_NEXT_SEGMENT_ENDPOINT"
@@ -1876,6 +1882,8 @@ class LeaderSafePathFollower {
     }
 
     const RoutePoint desired_world = relay_waypoints_[active_relay_index_];
+    const double release_distance = desired_world.is_door
+        ? door_release_inside_distance_ : waypoint_release_min_separation_;
     const bool terminal_relay = terminal_mode_active_ &&
         active_relay_index_ == terminal_waypoint_index_;
     const bool outside_wait_relay = outside_wait_waypoint_released_ &&
@@ -1913,7 +1921,7 @@ class LeaderSafePathFollower {
       const double leader_to_waypoint =
           std::hypot(leader_world.x - desired_world.position.x,
                      leader_world.y - desired_world.position.y);
-      if (leader_to_waypoint + 1.0e-6 < waypoint_release_min_separation_) {
+      if (leader_to_waypoint + 1.0e-6 < release_distance) {
         if (!simple_waypoint_clearance_hold_active_) {
           simple_waypoint_clearance_hold_active_ = true;
           setDiffWaitPositionHold(true, "UAV0 has not cleared next FIFO endpoint");
@@ -1922,7 +1930,7 @@ class LeaderSafePathFollower {
           diff_command_seen_for_goal_ = false;
           ROS_WARN("[safe_follower] FIFO endpoint HOLD: UAV0 is only %.2fm beyond/from "
                    "the cached point, require %.2fm before UAV1 plans to it.",
-                   leader_to_waypoint, waypoint_release_min_separation_);
+                   leader_to_waypoint, release_distance);
         }
         publishState("DIFF_FIFO_WAIT_LEADER_CLEAR_NEXT_POINT", 1.0, 0.3, 0.0);
         return true;
@@ -1933,31 +1941,16 @@ class LeaderSafePathFollower {
         simple_diff_retry_not_before_ = now;
         ROS_WARN("[safe_follower] UAV0 is %.2fm from the cached FIFO point; release UAV1 "
                  "planning after %.2fm clearance.",
-                 leader_to_waypoint, waypoint_release_min_separation_);
+                 leader_to_waypoint, release_distance);
       }
-
-      // 同时保留两机实时XY间距保护。
-      const double separation = std::hypot(leader_world.x - current_world.x,
-                                           leader_world.y - current_world.y);
-      if (separation + 1.0e-6 < min_separation_) {
-        if (!simple_separation_hold_active_) {
-          simple_separation_hold_active_ = true;
-          setDiffWaitPositionHold(true, "FIFO spacing hold");
-          diff_goal_published_ = false;
-          diff_accepted_goal_valid_ = false;
-          diff_command_seen_for_goal_ = false;
-          ROS_WARN("[safe_follower] FIFO spacing HOLD %.2fm < %.2fm; keep the same endpoint.",
-                   separation, min_separation_);
-        }
+      // 入口悬停可以小于1m，但放行后续点前仍必须恢复普通跟随间距。
+      if (!desired_world.is_door &&
+          std::hypot(leader_world.x - current_world.x,
+                     leader_world.y - current_world.y) < min_separation_) {
+        setDiffWaitPositionHold(true, "waiting at door for normal FIFO spacing");
+        diff_goal_published_ = false;
         publishState("DIFF_FIFO_SPACING_HOLD", 1.0, 0.3, 0.0);
         return true;
-      }
-      if (simple_separation_hold_active_) {
-        simple_separation_hold_active_ = false;
-        diff_goal_published_ = false;
-        simple_diff_retry_not_before_ = now;
-        ROS_WARN("[safe_follower] FIFO spacing restored to %.2fm; retry same endpoint.",
-                 separation);
       }
     }
 
@@ -1994,6 +1987,7 @@ class LeaderSafePathFollower {
         tryQueueFollowerTerminalTarget();
       }
       setDiffWaitPositionHold(true, "FIFO endpoint arrived");
+      simple_door_hover_active_ = desired_world.is_door;
       consumeSimpleRelayFront();
       relay_arrival_stamp_ = ros::Time(0);
       diff_goal_published_ = false;
@@ -2046,6 +2040,7 @@ class LeaderSafePathFollower {
       goal.pose.orientation.z = std::sin(local_yaw * 0.5);
       stampDiffGoalId(&goal);
       diff_goal_pub_.publish(goal);
+      if (!desired_world.is_door) simple_door_hover_active_ = false;
       diff_goal_index_ = active_relay_index_;
       diff_goal_published_ = true;
       diff_plan_response_received_ = false;
@@ -3001,9 +2996,17 @@ class LeaderSafePathFollower {
     return true;
   }
 
-  // Diff按离散目标独立飞行时也必须持续看两机实时XY。0.70m内先丢弃旧轨迹锁点；
-  // 若前机继续后退压到0.50m内，则沿前机已飞路线（无候选时沿几何反方向）逐步退让。
+  // 普通点按min_separation锁点；简化模式的入口/入口悬停不受该门槛影响。
+  // 间距小于0.60m时复用已飞路线（无候选时沿几何反方向）逐步退让。
   bool handleDiffSeparationSafety(const ros::Time& now) {
+    const bool simple_door_stage = simple_segment_endpoint_following_ &&
+        (simple_door_hover_active_ ||
+         (active_relay_index_ < relay_waypoints_.size() &&
+          relay_waypoints_[active_relay_index_].is_door));
+    const double hold_distance = simple_door_stage
+        ? separation_recovery_distance_ : min_separation_;
+    const double release_distance = simple_door_stage
+        ? door_release_inside_distance_ : separation_release_distance_;
     const bool terminal_relay_active = terminal_mode_active_ &&
         active_relay_index_ == terminal_waypoint_index_;
     const bool leader_fresh = leaderOdomFresh(now);
@@ -3030,11 +3033,15 @@ class LeaderSafePathFollower {
     const double separation = std::hypot(leader_world.x - follower_world.x,
                                          leader_world.y - follower_world.y);
 
-    if (!diff_separation_hold_active_ && separation >= min_separation_) return false;
+    if (!diff_separation_hold_active_ && separation >= hold_distance) return false;
+
+    const bool retreat_allowed = simple_segment_endpoint_following_
+        ? separation < separation_recovery_distance_
+        : separation <= separation_recovery_distance_ && relay_route_paused_;
 
     if (!diff_separation_hold_active_) {
       diff_separation_hold_active_ = true;
-      separation_recovery_active_ = separation <= separation_recovery_distance_ && relay_route_paused_;
+      separation_recovery_active_ = retreat_allowed;
       separation_recovery_goal_valid_ = false;
       setDiffWaitPositionHold(true, "UAV0-UAV1 separation safety");
       // safety_hold在控制器侧立即丢弃旧轨迹；后续必须等新退让/原航点轨迹确认后才能解锁。
@@ -3043,11 +3050,11 @@ class LeaderSafePathFollower {
       diff_accepted_goal_valid_ = false;
       diff_command_seen_for_goal_ = false;
       ROS_ERROR("[safe_follower] DIFF SEPARATION HOLD active: XY=%.2fm <= %.2fm; "
-                "retreat trigger=%.2fm release=%.2fm.", separation, min_separation_,
-                separation_recovery_distance_, separation_release_distance_);
+                "retreat trigger=%.2fm release=%.2fm.", separation, hold_distance,
+                separation_recovery_distance_, release_distance);
     }
 
-    if (separation >= separation_release_distance_) {
+    if (separation >= release_distance) {
       const bool retreated = separation_recovery_active_;
       diff_separation_hold_active_ = false;
       separation_recovery_active_ = false;
@@ -3060,12 +3067,11 @@ class LeaderSafePathFollower {
       setDiffWaitPositionHold(true, "separation restored; wait fresh Diff trajectory");
       ROS_WARN("[safe_follower] DIFF SEPARATION %s complete: XY=%.2fm >= %.2fm; "
                "replan active relay.", retreated ? "RETREAT" : "HOLD", separation,
-               separation_release_distance_);
+               release_distance);
       return false;
     }
 
-    if (!separation_recovery_active_ && relay_route_paused_ &&
-        separation <= separation_recovery_distance_) {
+    if (!separation_recovery_active_ && retreat_allowed) {
       separation_recovery_active_ = true;
       separation_recovery_goal_valid_ = false;
       diff_goal_published_ = false;
@@ -3082,7 +3088,7 @@ class LeaderSafePathFollower {
       publishState("DIFF_SEPARATION_HOLD_0P7M", 1.0, 0.35, 0.0);
       ROS_WARN_THROTTLE(0.5,
                         "[safe_follower] DIFF SEPARATION HOLD XY=%.2fm; wait %.2fm.",
-                        separation, separation_release_distance_);
+                        separation, release_distance);
       return true;
     }
 
@@ -3109,7 +3115,7 @@ class LeaderSafePathFollower {
         diff_command_seen_for_goal_ = false;
         ROS_WARN("[safe_follower] DIFF SEPARATION RETREAT step reached; XY=%.2fm, "
                  "select next step toward %.2fm.", separation,
-                 separation_release_distance_);
+                 release_distance);
       } else if (retry_due || command_stale) {
         setDiffWaitPositionHold(true, retry_due ? "separation retreat planning timeout"
                                                 : "separation retreat command stale");
@@ -3183,7 +3189,7 @@ class LeaderSafePathFollower {
     ROS_ERROR("[safe_follower] SEND UAV1 DIFF SEPARATION RETREAT local=(%.2f,%.2f,%.2f) "
               "XY=%.2fm target_release=%.2fm.", separation_recovery_goal_local_.x,
               separation_recovery_goal_local_.y, separation_recovery_goal_local_.z,
-              separation, separation_release_distance_);
+              separation, release_distance);
     return true;
   }
 
@@ -4036,6 +4042,7 @@ class LeaderSafePathFollower {
   bool simple_segment_endpoint_following_{false};
   bool simple_occupied_recovery_active_{false};
   bool simple_waypoint_clearance_hold_active_{false};
+  bool simple_door_hover_active_{false};
   bool leader_started_{false}, follower_started_{false}, traj_started_sent_{false};
   bool have_leader_landing_target_{false}, terminal_mode_active_{false};
   bool release_uav1_{false};
@@ -4068,7 +4075,6 @@ class LeaderSafePathFollower {
   bool obstacle_check_enabled_{true}, require_fresh_cloud_{true};
   bool diff_separation_hold_active_{false}, separation_recovery_active_{false};
   bool separation_recovery_goal_valid_{false};
-  bool simple_separation_hold_active_{false};
   // 2026-07-27: 后机物理卡死监测与点云选向脱困状态，独立于两机间距恢复逻辑。
   bool motion_monitor_active_{false}, last_command_moving_{false}, recovery_active_{false};
   // 2026-07-22: HOLD目标只在进入等待/故障的首周期锁存，避免随后位置漂移不断改写恢复目标。

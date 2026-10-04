@@ -149,7 +149,7 @@ def test_relay_waypoints_release_after_xy_clearance():
     }
     assert params["follow_distance"] == "1.50"
     assert params["release_path_length"] == "0.70"
-    assert params["waypoint_release_min_separation"] == "0.70"
+    assert params["waypoint_release_min_separation"] == "1.00"
     assert params["door_release_inside_distance"] == "0.70"
     assert params["relay_release_distance"] == "0.70"
 
@@ -180,9 +180,9 @@ def test_diff_execution_continuously_holds_and_retreats_for_uav_spacing():
         for item in follower.findall("param")
     }
     assert params["enable_diff_separation_safety"] == "true"
-    assert params["min_separation"] == "0.70"
+    assert params["min_separation"] == "1.00"
     assert params["separation_recovery_distance"] == "0.60"
-    assert params["separation_release_distance"] == "0.80"
+    assert params["separation_release_distance"] == "1.00"
 
     source = FOLLOWER.read_text(encoding="utf-8")
     fifo_spacing = source.split(
@@ -198,9 +198,9 @@ def test_diff_execution_continuously_holds_and_retreats_for_uav_spacing():
         "bool handleDiffPlannerExecution", 1
     )[0]
     assert "std::hypot(leader_world.x - follower_world.x" in safety
-    assert "separation >= min_separation_" in safety
+    assert "separation >= hold_distance" in safety
     assert "separation <= separation_recovery_distance_" in safety
-    assert "separation >= separation_release_distance_" in safety
+    assert "separation >= release_distance" in safety
     assert "setDiffWaitPositionHold(true" in safety
     assert "getSeparationRecoveryTarget" in safety
     assert "diff_goal_pub_.publish(goal)" in safety

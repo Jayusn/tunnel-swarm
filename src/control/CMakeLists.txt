@@ -73,6 +73,13 @@ install(DIRECTORY config/
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/config)
 
 if(CATKIN_ENABLE_TESTING)
+  find_package(rostest REQUIRED)
+  add_rostest_gtest(test_fifo_entry_spacing test/fifo_entry_spacing.test
+                   test/test_fifo_entry_spacing.cpp)
+  if(TARGET test_fifo_entry_spacing)
+    add_dependencies(test_fifo_entry_spacing ${catkin_EXPORTED_TARGETS} ${ldop_EXPORTED_TARGETS})
+    target_link_libraries(test_fifo_entry_spacing ${catkin_LIBRARIES})
+  endif()
   catkin_add_nosetests(test/test_dual_uav_frame_alignment.py)
   catkin_add_nosetests(test/test_follower_odom_fault_filter.py)
 endif()

@@ -1,0 +1,15 @@
+<launch>
+  <!-- rostest默认启动独立master，测试中不启动规划器、控制器或飞控。 -->
+  <rosparam ns="/dual_uav_frame_alignment">
+    mission_frame: test_world
+    follower: {x: 0.0, y: 0.0, z: 0.0, yaw_rad: 0.0}
+  </rosparam>
+  <test test-name="fifo_entry_spacing" pkg="exploration_control"
+        type="test_fifo_entry_spacing" time-limit="30.0">
+    <param name="min_separation" value="1.00"/>
+    <param name="waypoint_release_min_separation" value="1.00"/>
+    <param name="separation_recovery_distance" value="0.60"/>
+    <param name="separation_release_distance" value="1.00"/>
+    <param name="door_release_inside_distance" value="0.70"/>
+  </test>
+</launch>
