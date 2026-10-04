@@ -403,7 +403,7 @@ bool TaskSearchManager::updateExitDetectionOnly(
   updateRobotPose(pos, yaw);
   // 手持全程测试由真实地图更新通道轴线；无需执行入口阶段或原地转向轨迹。
   Eigen::Vector3d mapped_direction;
-  mappedCorridorDirection(yaw, mapped_direction, false);
+  mappedCorridorDirection(yaw, mapped_direction, false, true);
   if (turnYawAlignmentPending() &&
       !corridorYawCorrectionDirection(yaw, mapped_direction))
     completeTurnYawAlignment();
@@ -1275,7 +1275,8 @@ void TaskSearchManager::commitCorridorTurn(
 }
 
 bool TaskSearchManager::mappedCorridorDirection(
-    double cur_yaw, Eigen::Vector3d& direction, bool check_entry_forward_phase) {
+    double cur_yaw, Eigen::Vector3d& direction, bool check_entry_forward_phase,
+    bool require_observed_yaw) {
   // 入口后的第一段直线尚未走完时，门外开放区和门框遮挡不是拐弯。
   if (check_entry_forward_phase && entryForwardPhaseActive()) {
     clearPendingTurnEvidence();
@@ -1309,6 +1310,20 @@ bool TaskSearchManager::mappedCorridorDirection(
   if (!inferOccupancyTurnDirection(
           travel, direction, forward_free_length, turn_free_length))
     return false;
+  // 手持模式没有控制器去执行地图建议的转向。实际朝向尚未与该分支一致时，
+  // 保留旧段，避免提前锁定一条未走入的支路后永远等待对准。
+  // 正式飞行调用默认不启用此项，仍先确认地图转弯再由FSM执行转向。
+  if (require_observed_yaw && task_search::corridorYawCorrectionNeeded(
+          direction.head<2>(), cur_yaw,
+          recovery_turn_yaw_release_angle_deg_ * M_PI / 180.0)) {
+    clearPendingTurnEvidence();
+    ROS_INFO_THROTTLE(1.0,
+                     "[exit_detection_test] mapped branch awaits observed yaw: "
+                     "branch=%.1fdeg body=%.1fdeg.",
+                     std::atan2(direction.y(), direction.x()) * 180.0 / M_PI,
+                     cur_yaw * 180.0 / M_PI);
+    return false;
+  }
   if (!confirmCorridorTurnEvidence(direction)) return false;
   commitCorridorTurn(direction);
   // 新确认的这一周期立即生效。锁存方向只能由实际yaw连续达标后的FSM显式释放，
@@ -1785,8 +1800,6 @@ bool TaskSearchManager::detectLocalMapExit(const Eigen::Vector3d& cur_pos,
                                            const Eigen::Vector2d& forward_hint,
                                            OpenExitResult& result) const {
   if (!sdf_map_ || forward_hint.norm() < 1e-3) return false;
-  const Eigen::Vector2d forward = forward_hint.normalized();
-  const Eigen::Vector2d lateral(-forward.y(), forward.x());
   open_space_exit::Config config;
   config.search_max = exit_search_max_forward_;
   config.side_clearance = exit_side_clearance_;
@@ -1795,38 +1808,62 @@ bool TaskSearchManager::detectLocalMapExit(const Eigen::Vector3d& cur_pos,
   config.sector_half_angle_deg = exit_sector_half_angle_deg_;
   config.inside_length = exit_inside_length_;
   config.outside_length = exit_outside_length_;
-  auto pointAt = [&](double along, double across) {
-    Eigen::Vector3d point = cur_pos;
-    point.head<2>() += along * forward + across * lateral;
-    return point;
-  };
-  auto occupied = [&](double along, double across) {
-    return mapRelativeColumnOccupied(pointAt(along, across), cur_pos.z());
-  };
-  auto known_free = [&](double along, double across) {
-    Eigen::Vector3d point = pointAt(along, across);
-    for (double offset : {-0.10, 0.0, 0.10}) {
-      point.z() = cur_pos.z() + offset;
-      if (sdf_map_->isInMap(point) && sdf_map_->getOccupancy(point) == SDFMap::FREE)
-        return true;
+  const Eigen::Vector2d incoming = forward_hint.normalized();
+  const double correction = std::min(15.0, std::max(0.0,
+      exit_candidate_angle_tolerance_deg_)) * M_PI / 180.0;
+  open_space_exit::Diagnostics total;
+  for (double angle : {0.0, correction, -correction}) {
+    const Eigen::Vector2d forward(
+        std::cos(angle) * incoming.x() - std::sin(angle) * incoming.y(),
+        std::sin(angle) * incoming.x() + std::cos(angle) * incoming.y());
+    const Eigen::Vector2d lateral(-forward.y(), forward.x());
+    auto pointAt = [&](double along, double across) {
+      Eigen::Vector3d point = cur_pos;
+      point.head<2>() += along * forward + across * lateral;
+      return point;
+    };
+    auto occupied = [&](double along, double across) {
+      return mapRelativeColumnOccupied(pointAt(along, across), cur_pos.z());
+    };
+    auto known_free = [&](double along, double across) {
+      Eigen::Vector3d point = pointAt(along, across);
+      for (double offset : {-0.10, 0.0, 0.10}) {
+        point.z() = cur_pos.z() + offset;
+        if (sdf_map_->isInMap(point) && sdf_map_->getOccupancy(point) == SDFMap::FREE)
+          return true;
+      }
+      return false;
+    };
+    open_space_exit::Result detection;
+    open_space_exit::Diagnostics diagnostics;
+    if (!open_space_exit::detect(config, occupied, known_free,
+        [&](double along, double across) { return mapExitFootprintFree(pointAt(along, across)); },
+        detection, &diagnostics)) {
+      total.supported_sections += diagnostics.supported_sections;
+      total.widened_sections += diagnostics.widened_sections;
+      total.clear_sections += diagnostics.clear_sections;
+      continue;
     }
-    return false;
-  };
-  open_space_exit::Result detection;
-  if (!open_space_exit::detect(config, occupied, known_free,
-      [&](double along, double across) { return mapExitFootprintFree(pointAt(along, across)); },
-      detection)) return false;
-  result.portal_center = pointAt(detection.forward, detection.lateral);
-  result.outward_direction = forward;
-  result.left_open_ratio = detection.left_open_ratio;
-  result.right_open_ratio = detection.right_open_ratio;
-  result.confidence = detection.confidence;
-  ROS_INFO_THROTTLE(1.0, "[exit_local_map] open transition=(%.2f,%.2f) "
-                    "left=%.2f right=%.2f threshold=%.2fm/%.2f.",
-                    result.portal_center.x(), result.portal_center.y(),
-                    result.left_open_ratio, result.right_open_ratio,
-                    exit_side_clearance_, exit_min_open_ratio_);
-  return true;
+    result.portal_center = pointAt(detection.forward, detection.lateral);
+    result.outward_direction = forward;
+    result.left_open_ratio = detection.left_open_ratio;
+    result.right_open_ratio = detection.right_open_ratio;
+    result.confidence = detection.confidence;
+    ROS_INFO_THROTTLE(1.0, "[exit_local_map] open transition=(%.2f,%.2f) "
+                      "yaw=%.1fdeg room_center_offset=%.2fm left=%.2f right=%.2f.",
+                      result.portal_center.x(), result.portal_center.y(),
+                      std::atan2(forward.y(), forward.x()) * 180.0 / M_PI,
+                      detection.outside_lateral - detection.lateral,
+                      result.left_open_ratio, result.right_open_ratio);
+    return true;
+  }
+  const char* reason = total.supported_sections == 0 ? "inside_walls_missing" :
+      total.widened_sections == 0 ? "bilateral_widening_unobserved_or_blocked" :
+      total.clear_sections == 0 ? "body_path_unobserved_or_blocked" :
+      "outside_clearance_unobserved_or_blocked";
+  ROS_INFO_THROTTLE(1.0, "[exit_local_map] no exit: reason=%s inside=%d widened=%d body_clear=%d.",
+                    reason, total.supported_sections, total.widened_sections, total.clear_sections);
+  return false;
 }
 
 bool TaskSearchManager::mapExitFootprintFree(const Eigen::Vector3d& center) const {
@@ -1997,11 +2034,15 @@ bool TaskSearchManager::recordExitEvidence(const OpenExitResult& detection,
   const bool same_candidate = exit_candidate_hits_ > 0 &&
       (detection.portal_center.head<2>() - pending_exit_portal_center_.head<2>()).norm() <=
           exit_candidate_stability_radius_ &&
-      direction.dot(pending_exit_outward_direction_) >=
+      direction.dot(pending_exit_outward_direction_) + 1e-9 >=
           std::cos(exit_candidate_angle_tolerance_deg_ * M_PI / 180.0);
   if (same_candidate) {
     ++exit_candidate_hits_;
     pending_exit_candidate_ = 0.65 * pending_exit_candidate_ + 0.35 * inside;
+    // 两个有效观察点之间的平均点可能落入墙尾或未知体素，不能因此丢掉有效票。
+    // inside 已由本次调用方完成机体范围检查，平均点不安全时使用该实测有效点。
+    if (sdf_map_ && !mapExitFootprintFree(pending_exit_candidate_))
+      pending_exit_candidate_ = inside;
     pending_exit_portal_center_ =
         0.65 * pending_exit_portal_center_ + 0.35 * detection.portal_center;
     pending_exit_outward_direction_ =
@@ -2056,6 +2097,10 @@ void TaskSearchManager::updateExitCandidate(const Eigen::Vector3d& cur_pos) {
       mission_stage_ != SEARCH_CORRIDOR || exit_portal_locked_) return;
   // 复用现有转弯流程，过弯期间不能锁定出口。
   if (transition_active_ || pending_turn_confirmations_ > 0 || turn_yaw_follow_latch_.active()) {
+    ROS_INFO_THROTTLE(1.0,
+                     "[exit_local_map] no exit: turn_transition=%d yaw_alignment=%d pending_turn=%d.",
+                     static_cast<int>(transition_active_),
+                     static_cast<int>(turn_yaw_follow_latch_.active()), pending_turn_confirmations_);
     clearExitEvidence();
     publishSearchState();
     return;

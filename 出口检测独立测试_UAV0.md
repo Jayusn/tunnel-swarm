@@ -46,6 +46,8 @@ roslaunch exploration_manager exit_detection_test.launch
 
 第一帧里程计的 yaw 定义初始通道前向；单纯转动机头不会重定义通道方向。
 独立入口复用正式流程的地图转弯判定，地图确认转弯后切换到新通道方向。
+手持模式会等实测机头朝向与地图分支一致后再采纳转弯，避免提前锁住一条未走入的支路。
+正式飞行模式仍由地图先确认转弯，再由控制器完成转向；这个手持处理只用于独立入口。
 本入口从通道内直接开始，不等待正式入口流程的前 2 m 直行阶段。
 转弯过程中手持设备跟着新通道转向，机头对准新方向后解除转向等待；沿新方向走出
 既有约 0.6 m 过渡区后恢复出口检测。没有地图转弯证据时，不会只因机头旋转而更新方向。
@@ -77,7 +79,7 @@ rostopic echo /exit_detection_test/detected_exit
 rosbag record -O ~/exit_detection_walk.bag \
   /UAV0/fast_lio/Odom_high_freq /UAV0/fast_lio/cloud_registered \
   /exit_detection_test/status /exit_detection_test/confirmed \
-  /exit_detection_test/detected_exit /exit_detection_test/markers
+  /exit_detection_test/detected_exit /exit_detection_test/markers /rosout
 ```
 
 若已经绕过拐角，但日志没有 `confirmed LEFT/RIGHT turn` 且出口检测迟迟无结果，
@@ -163,9 +165,25 @@ roslaunch exploration_manager exit_detection_test.launch \
 `retain_global_static_cloud` 与正式入口同义，默认关闭；若正式测试开启，也在这里设为 `true`。
 检测高度取实时里程计 Z，可按正式测试高度约 0.6 m 手持观察。
 
-检测要求来路有连续双侧墙体，出口外左右净空各超过 2.1 m，扇区通过率至少 80%，
-完整机体范围已观测为空闲，并在 3 次新地图证据中稳定，证据间隔至少 0.5 s。
+检测要求来路有连续双侧墙体，门外两侧相对旧墙位置都有已观测的扩展空间。
+出口位置仍由门内通道中心确定；门外开阔区中心可以横向偏移，适配出口偏在房间一侧的情况。
+从门外开阔区中心检查左右净空各超过 2.1 m，扇区通过率至少 80%；
+当前位置到出口及门外通过段的完整机体范围仍须已观测为空闲。
+出口方向允许在已确认通道方向附近校正最多 15°，不会只按实时机头方向重定义出口。
+确认仍须 3 次新地图证据稳定，证据间隔至少 0.5 s；边界上的 15°方向校正不会丢弃已有效的证据。
 未知区域不算空闲，因此只看到前方一条空线、单侧开口或未扫到门外时不会确认。
+
+检测终端会打印未通过的具体阶段：
+
+| 日志内容 | 含义 |
+| --- | --- |
+| `inside_walls_missing` | 当前检测截面的来路缺少足够双侧墙体证据；走到出口外较远后也会出现 |
+| `bilateral_widening_unobserved_or_blocked` | 门外两侧还没有证明相对来路墙体都向外扩展 |
+| `body_path_unobserved_or_blocked` | 当前位置至出口及门外段的机体通过空间有占据或未知 |
+| `outside_clearance_unobserved_or_blocked` | 门外开阔区的净空范围有占据或未知，扇区未通过 |
+| `turn_transition` / `yaw_alignment` | 还在过弯或等待朝向对准，暂不累积出口证据 |
+
+录包加上 `/rosout` 可保留这些原因；最终是否确认仍看 `confirmed` 和出口矩形。
 
 没有输出时先检查输入频率：
 

@@ -97,6 +97,23 @@ public:
     for (int n=0;n<4;++n) map->inputPointCloud(cloud,1,Eigen::Vector3d(-1,0.1,1));
     check(!manager.mapExitFootprintFree(Eigen::Vector3d(0.4,0,1)),
           "an occupied body voxel bypassed clearance check");
+    TaskSearchManager blending;
+    blending.initialize(nh);
+    blending.setMap(map);
+    const Eigen::Vector3d first_inside(0.1,0,1), next_inside(0.7,0,1);
+    check(blending.mapExitFootprintFree(first_inside) &&
+          blending.mapExitFootprintFree(next_inside), "inside test anchors are not free");
+    check(!blending.mapExitFootprintFree(0.65*first_inside + 0.35*next_inside),
+          "inside test anchor blend missed its obstacle");
+    TaskSearchManager::OpenExitResult blend_exit;
+    blend_exit.portal_center = Eigen::Vector3d(0.8,0,1);
+    blend_exit.outward_direction = Eigen::Vector2d::UnitX();
+    blending.recordExitEvidence(blend_exit, first_inside, first_inside, ros::Time(20));
+    blending.recordExitEvidence(blend_exit, next_inside, first_inside, ros::Time(21));
+    check(blending.exit_candidate_hits_ == 2 &&
+          blending.mapExitFootprintFree(blending.pending_exit_candidate_) &&
+          (blending.pending_exit_candidate_ - next_inside).norm() < 1e-6,
+          "occupied blend replaced a validated inside observation point");
     manager.corridor_frame_received_=true;
     manager.corridor_entry_crossed_=true;
     manager.transition_active_=true;
@@ -151,6 +168,63 @@ public:
           "observation did not retain new corridor direction after walking through turn");
     check(!observation.stage3Active() && !observation.landingRequested(),
           "walking through turn started flight task");
+    // 用真实射线融合的L形地图复现：地图支路朝向尚未与手持设备一致，不能先锁住。
+    auto corner_map = std::make_shared<SDFMap>();
+    corner_map->initMap(nh);
+    const std::vector<std::pair<Eigen::Vector2d, Eigen::Vector2d>> walls = {
+        {{-3,-0.65},{1,-0.65}}, {{1,-0.65},{1,3}},
+        {{1,3},{0.4,3}}, {{0.4,3},{0.4,0.65}},
+        {{0.4,0.65},{-3,0.65}}, {{-3,0.65},{-3,-0.65}}};
+    for (int repeat = 0; repeat < 4; ++repeat) {
+      for (double camera_x : {-0.6, 0.0, 0.6}) {
+        cloud.clear();
+        const Eigen::Vector2d eye(camera_x, 0.0);
+        for (int ray = 0; ray < 720; ++ray) {
+          const double angle = ray * M_PI / 360;
+          const Eigen::Vector2d direction(std::cos(angle), std::sin(angle));
+          double nearest = 10.0;
+          for (const auto& wall : walls) {
+            const Eigen::Vector2d edge = wall.second - wall.first;
+            const Eigen::Vector2d delta = wall.first - eye;
+            const double denominator = direction.x()*edge.y() - direction.y()*edge.x();
+            if (std::fabs(denominator) < 1e-9) continue;
+            const double distance = (delta.x()*edge.y() - delta.y()*edge.x()) / denominator;
+            const double fraction = (delta.x()*direction.y() - delta.y()*direction.x()) / denominator;
+            if (distance > 0 && fraction >= 0 && fraction <= 1)
+              nearest = std::min(nearest, distance);
+          }
+          const Eigen::Vector2d hit = eye + nearest * direction;
+          for (int layer = -3; layer <= 3; ++layer)
+            cloud.push_back(pcl::PointXYZ(hit.x(), hit.y(), 1.0 + layer*0.10));
+        }
+        corner_map->inputPointCloud(cloud, cloud.size(), Eigen::Vector3d(camera_x,0,1));
+      }
+    }
+    TaskSearchManager handheld;
+    handheld.initialize(nh);
+    handheld.setMap(corner_map);
+    handheld.setCorridorFrame(Eigen::Vector3d(0,0,1), Eigen::Vector3d::UnitX());
+    handheld.corridor_entry_crossed_ = true;
+    handheld.visited_positions_.push_back(Eigen::Vector3d(0,0,1));
+    double old_free, branch_free;
+    check(handheld.inferOccupancyTurnDirection(Eigen::Vector3d::UnitX(),
+          mapped_direction, old_free, branch_free), "L-shaped map did not expose a turn");
+    const double branch_yaw = std::atan2(mapped_direction.y(), mapped_direction.x());
+    check(!handheld.mappedCorridorDirection(0.0, mapped_direction, false, true) &&
+          !handheld.turnYawAlignmentPending() &&
+          handheld.stableProgressDirection().dot(Eigen::Vector2d::UnitX()) > 0.99,
+          "handheld committed a branch before actual yaw agreed");
+    check(handheld.mappedCorridorDirection(branch_yaw, mapped_direction, false, true),
+          "handheld rejected the mapped branch after actual yaw aligned");
+    TaskSearchManager flight;
+    flight.initialize(nh);
+    flight.setMap(corner_map);
+    flight.setCorridorFrame(Eigen::Vector3d(0,0,1), Eigen::Vector3d::UnitX());
+    flight.corridor_entry_crossed_ = true;
+    flight.visited_positions_.push_back(Eigen::Vector3d(0,0,1));
+    check(flight.mappedCorridorDirection(0.0, mapped_direction, false) &&
+          flight.turnYawAlignmentPending(),
+          "formal flight lost map-first turn confirmation");
     std::cout << "real map freshness, observed volume, obstacle and turn checks passed" << std::endl;
   }
   static void run() {
@@ -175,6 +249,23 @@ public:
     detection.outward_direction = Eigen::Vector2d(std::cos(M_PI/4), std::sin(M_PI/4));
     manager.recordExitEvidence(detection, inside, pos, ros::Time(15));
     check(manager.exit_candidate_hits_ == 1, "direction jump retained old confirmation votes");
+    // 15度是允许的方向校正边界，浮点点积不能把第三票重新计为第一票。
+    for (double initial_deg : {0.0, 30.0, 75.0394105, 90.0}) {
+      TaskSearchManager boundary;
+      detection.portal_center = Eigen::Vector3d(1.0, 0.0, 0.60);
+      const double angle = initial_deg * M_PI / 180.0;
+      detection.outward_direction = Eigen::Vector2d(std::cos(angle), std::sin(angle));
+      boundary.recordExitEvidence(detection, inside, pos, ros::Time(40));
+      boundary.recordExitEvidence(detection, inside, pos, ros::Time(41));
+      const Eigen::Vector2d old = detection.outward_direction;
+      const double correction = 15.0 * M_PI / 180.0;
+      detection.outward_direction = Eigen::Vector2d(
+          std::cos(correction)*old.x() - std::sin(correction)*old.y(),
+          std::sin(correction)*old.x() + std::cos(correction)*old.y());
+      check(boundary.recordExitEvidence(detection, inside, pos, ros::Time(42)) &&
+            boundary.exit_candidate_hits_ == 3,
+            "allowed 15-degree correction discarded the third exit vote");
+    }
     detection.outward_direction = Eigen::Vector2d(1.0, 0.0);
     detection.portal_center.x() = 1.0;
     manager.clearExitEvidence();
@@ -229,6 +320,20 @@ int main(int argc, char** argv) {
   Scene asymmetric{{{-3,0.5,-0.55},{-3,0.5,0.95},{0.5,6,-2.80},{0.5,6,2.80}}};
   check(detect(asymmetric,result) && std::fabs(result.lateral-0.20) < 0.06,
         "asymmetric passage produced wrong center");
+  // 门外足够宽，但门口偏在房间一侧；不能把通道中心当成房间中心。
+  Scene offset_room{{{-3,0.5,-0.65},{-3,0.5,0.65},{0.5,6,-3.0},{0.5,6,1.80}}};
+  check(detect(offset_room,result) && std::fabs(result.lateral) < 0.06 &&
+        result.outside_lateral < -0.25,
+        "offset room was rejected or room center moved the exit portal");
+  Scene mirrored_room{{{-3,0.5,-0.65},{-3,0.5,0.65},{0.5,6,-1.80},{0.5,6,3.0}}};
+  check(detect(mirrored_room,result) && std::fabs(result.lateral) < 0.06 &&
+        result.outside_lateral > 0.25,
+        "mirrored offset room was rejected or moved the exit portal");
+  Scene shifted_one_side{{{-3,0.5,-0.65},{-3,6,0.65},{0.5,6,-4.0}}};
+  check(!detect(shifted_one_side,result),
+        "moving the room center turned a one-sided opening into an exit");
+  Scene shifted_unknown = offset_room; shifted_unknown.unknown_outside = true;
+  check(!detect(shifted_unknown,result), "room center search accepted unknown space");
   Scene continuing{{{-3,6,-0.65},{-3,6,0.65}}};
   check(!detect(continuing,result), "continuing passage became exit");
   Scene one_side{{{-3,0.5,-0.65},{-3,6,0.65}}};
