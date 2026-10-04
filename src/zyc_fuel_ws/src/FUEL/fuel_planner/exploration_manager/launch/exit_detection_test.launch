@@ -1,0 +1,81 @@
+<launch>
+  <!-- 输入必须是同一世界坐标系的注册点云与里程计。 -->
+  <arg name="odom_topic" default="/UAV0/fast_lio/Odom_high_freq"/>
+  <arg name="cloud_topic" default="/UAV0/fast_lio/cloud_registered"/>
+  <arg name="world_frame" default="UAV0/camera_init"/>
+  <arg name="use_sim_time" default="false"/>
+  <arg name="map_size_x" default="20.0"/>
+  <arg name="map_size_y" default="20.0"/>
+  <arg name="map_size_z" default="3.0"/>
+  <param name="use_sim_time" value="$(arg use_sim_time)"/>
+
+  <!-- 只有累计地图与检测器，不包含探索、轨迹服务器、控制器或MAVROS。 -->
+  <node pkg="exploration_manager" type="exit_detection_node"
+        name="exit_detection_test" output="screen">
+    <remap from="~odom" to="$(arg odom_topic)"/>
+    <remap from="/map_ros/pose" to="$(arg odom_topic)"/>
+    <remap from="/map_ros/cloud" to="$(arg cloud_topic)"/>
+    <remap from="/map_ros/depth" to="/exit_detection_test/unused_depth"/>
+    <remap from="/sdf_map/occupancy_all" to="/exit_detection_test/map/occupancy_all"/>
+    <remap from="/sdf_map/occupancy_local" to="/exit_detection_test/map/occupancy_local"/>
+    <remap from="/sdf_map/occupancy_local_inflate" to="/exit_detection_test/map/occupancy_local_inflate"/>
+    <remap from="/sdf_map/unknown" to="/exit_detection_test/map/unknown"/>
+    <remap from="/sdf_map/esdf" to="/exit_detection_test/map/esdf"/>
+    <remap from="/sdf_map/update_range" to="/exit_detection_test/map/update_range"/>
+    <remap from="/sdf_map/depth_cloud" to="/exit_detection_test/map/depth_cloud"/>
+    <!-- 将任务管理器的接口全部隔离到测试命名空间。 -->
+    <remap from="/mission/search_markers" to="/exit_detection_test/markers"/>
+    <remap from="/mission/task_status" to="/exit_detection_test/status"/>
+    <remap from="/mission/exit_candidate" to="/exit_detection_test/exit_candidate"/>
+    <remap from="/mission/final_exit" to="/exit_detection_test/final_exit"/>
+    <remap from="/mission/landing_target" to="/exit_detection_test/landing_target"/>
+    <remap from="/mission/landing_request" to="/exit_detection_test/landing_request"/>
+    <remap from="/mission/detection/color" to="/exit_detection_test/unused_color"/>
+    <remap from="/mission/detection/qrcode" to="/exit_detection_test/unused_qrcode"/>
+    <remap from="/mission/detection/thermal" to="/exit_detection_test/unused_thermal"/>
+    <remap from="/mission/detection/final_aruco" to="/exit_detection_test/unused_aruco"/>
+
+    <!-- 与正式FUEL雷达地图使用相同分辨率和融合参数。 -->
+    <param name="sdf_map/resolution" value="0.05"/>
+    <param name="sdf_map/map_size_x" value="$(arg map_size_x)"/>
+    <param name="sdf_map/map_size_y" value="$(arg map_size_y)"/>
+    <param name="sdf_map/map_size_z" value="$(arg map_size_z)"/>
+    <param name="sdf_map/ground_height" value="-1.0"/>
+    <param name="sdf_map/obstacles_inflation" value="0.099"/>
+    <param name="sdf_map/local_bound_inflate" value="0.5"/>
+    <param name="sdf_map/local_map_margin" value="100"/>
+    <param name="sdf_map/default_dist" value="0.0"/>
+    <param name="sdf_map/p_hit" value="0.65"/>
+    <param name="sdf_map/p_miss" value="0.35"/>
+    <param name="sdf_map/p_min" value="0.12"/>
+    <param name="sdf_map/p_max" value="0.90"/>
+    <param name="sdf_map/p_occ" value="0.80"/>
+    <param name="sdf_map/max_ray_length" value="8.0"/>
+    <param name="sdf_map/virtual_ceil_height" value="-10.0"/>
+    <param name="sdf_map/optimistic" value="false"/>
+    <param name="sdf_map/signed_dist" value="false"/>
+    <param name="sdf_map/inflation_noise_filter_enabled" value="true"/>
+    <param name="sdf_map/inflation_min_hit_evidence" value="2"/>
+    <param name="sdf_map/inflation_min_neighbors" value="2"/>
+    <param name="sdf_map/inflation_neighbor_radius" value="0.10"/>
+    <param name="sdf_map/inflation_vertical_radius" value="4"/>
+    <!-- MapROS初始化仍需深度投影步长；本入口不接深度图。 -->
+    <param name="map_ros/skip_pixel" value="2"/>
+    <param name="map_ros/visualization_truncate_height" value="10.09"/>
+    <param name="map_ros/visualization_truncate_low" value="-2.0"/>
+    <param name="map_ros/show_all_map" value="true"/>
+    <param name="map_ros/frame_id" value="$(arg world_frame)"/>
+
+    <param name="mission/task_search/enabled" value="true"/>
+    <param name="mission/task_search/world_frame" value="$(arg world_frame)"/>
+    <param name="mission/task_search/exit/enabled" value="true"/>
+    <param name="mission/task_search/exit/rc_trigger/enabled" value="false"/>
+    <param name="mission/task_search/exit/side_clearance" value="2.10"/>
+    <param name="mission/task_search/exit/min_open_ratio" value="0.80"/>
+    <param name="mission/task_search/exit/confirmation_count" value="3"/>
+    <param name="mission/task_search/exit/inference_period" value="0.50"/>
+    <param name="mission/task_search/exit/confirmation_max_distance" value="1.0"/>
+    <param name="mission/task_search/exit/footprint_extra_radius" value="0.20"/>
+    <param name="mission/task_search/exit/footprint_samples" value="12"/>
+  </node>
+</launch>

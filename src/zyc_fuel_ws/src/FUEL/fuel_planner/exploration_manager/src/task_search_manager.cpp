@@ -391,6 +391,29 @@ void TaskSearchManager::setCorridorFrame(const Eigen::Vector3d& origin,
            std::atan2(corridor_dir_.y(), corridor_dir_.x()) * 180.0 / M_PI);
 }
 
+bool TaskSearchManager::updateExitDetectionOnly(
+    const Eigen::Vector3d& pos, double yaw,
+    geometry_msgs::PoseStamped& detected_exit) {
+  if (!corridor_frame_received_) {
+    setCorridorFrame(pos, Eigen::Vector3d(std::cos(yaw), std::sin(yaw), 0.0));
+    corridor_entry_crossed_ = true;
+    ROS_INFO("[exit_detection_test] start INSIDE_CORRIDOR at first odometry; "
+             "forward yaw=%.1fdeg, detection only.", yaw * 180.0 / M_PI);
+  }
+  updateRobotPose(pos, yaw);
+  if (!exit_candidate_confirmed_) return false;
+  const double exit_yaw = std::atan2(exit_outward_direction_.y(), exit_outward_direction_.x());
+  detected_exit.header.stamp = ros::Time::now();
+  detected_exit.header.frame_id = world_frame_;
+  detected_exit.pose.position.x = exit_portal_center_.x();
+  detected_exit.pose.position.y = exit_portal_center_.y();
+  detected_exit.pose.position.z = exit_portal_center_.z();
+  detected_exit.pose.orientation.x = detected_exit.pose.orientation.y = 0.0;
+  detected_exit.pose.orientation.z = std::sin(0.5 * exit_yaw);
+  detected_exit.pose.orientation.w = std::cos(0.5 * exit_yaw);
+  return true;
+}
+
 void TaskSearchManager::updateRobotPose(const Eigen::Vector3d& pos, double yaw) {
   if (!enabled_) return;
   {

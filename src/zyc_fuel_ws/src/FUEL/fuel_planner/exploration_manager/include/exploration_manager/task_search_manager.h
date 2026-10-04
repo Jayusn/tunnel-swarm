@@ -28,6 +28,9 @@ public:
   void setMap(const std::shared_ptr<SDFMap>& map);
   void setCorridorFrame(const Eigen::Vector3d& origin, const Eigen::Vector3d& inside_dir);
   void updateRobotPose(const Eigen::Vector3d& pos, double yaw);
+  // 独立观察入口：首帧假定已在通道内，只更新检测，不生成接近、穿越或降落目标。
+  bool updateExitDetectionOnly(const Eigen::Vector3d& pos, double yaw,
+                               geometry_msgs::PoseStamped& detected_exit);
   int selectSearchCandidate(const std::vector<Eigen::Vector3d>& points,
                             const std::vector<double>& yaws,
                             const std::vector<std::vector<Eigen::Vector3d>>& frontiers,

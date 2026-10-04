@@ -13,6 +13,7 @@ find_package(catkin REQUIRED COMPONENTS
   roscpp
   std_msgs
   geometry_msgs
+  nav_msgs
   # 地图与规划节点使用PointCloud2传感数据。
   sensor_msgs
   mavros_msgs
@@ -35,7 +36,7 @@ find_package(catkin REQUIRED COMPONENTS
 catkin_package(
  INCLUDE_DIRS include
  LIBRARIES exploration_manager
- CATKIN_DEPENDS roscpp std_msgs geometry_msgs sensor_msgs mavros_msgs visualization_msgs fuel_plan_env fuel_path_searching bspline bspline_opt active_perception fuel_traj_utils lkh_tsp_solver plan_manage
+ CATKIN_DEPENDS roscpp std_msgs geometry_msgs nav_msgs sensor_msgs mavros_msgs visualization_msgs fuel_plan_env fuel_path_searching bspline bspline_opt active_perception fuel_traj_utils lkh_tsp_solver plan_manage
 #  DEPENDS system_lib
 )
 
@@ -66,6 +67,10 @@ target_link_libraries(exploration_node
 # target_link_libraries(exploration_manager
 #   ${catkin_LIBRARIES}
 # )
+
+add_executable(exit_detection_node src/exit_detection_node.cpp src/task_search_manager.cpp)
+target_link_libraries(exit_detection_node ${catkin_LIBRARIES})
+add_dependencies(exit_detection_node ${catkin_EXPORTED_TARGETS})
 
 add_executable(write_tsp test/write_tsp.cpp)
 target_link_libraries(write_tsp

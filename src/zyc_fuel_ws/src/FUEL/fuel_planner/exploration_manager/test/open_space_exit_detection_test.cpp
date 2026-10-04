@@ -103,6 +103,34 @@ public:
     manager.exit_candidate_hits_=2;
     manager.updateExitCandidate(Eigen::Vector3d(0,0,1));
     check(manager.exit_candidate_hits_==0, "active turn retained exit votes on real map");
+    TaskSearchManager observation;
+    observation.initialize(nh);
+    TaskSearchManager::OpenExitResult detection;
+    geometry_msgs::PoseStamped observed_exit;
+    const Eigen::Vector3d start(2.0, 3.0, 0.6);
+    check(!observation.updateExitDetectionOnly(start, M_PI / 2, observed_exit),
+          "observation confirmed without map evidence");
+    check(observation.corridor_entry_crossed_ &&
+          observation.stableProgressDirection().dot(Eigen::Vector2d::UnitY()) > 0.99,
+          "observation did not start inside with first odometry heading");
+    observation.updateExitDetectionOnly(start, 0.0, observed_exit);
+    check(observation.stableProgressDirection().dot(Eigen::Vector2d::UnitY()) > 0.99,
+          "later heading replaced observation forward axis");
+    detection.portal_center = Eigen::Vector3d(2.0, 3.5, 0.6);
+    detection.outward_direction = Eigen::Vector2d::UnitY();
+    for (int n = 0; n < 3; ++n)
+      observation.recordExitEvidence(detection, start, start, ros::Time(30 + n));
+    check(observation.updateExitDetectionOnly(start, 0.0, observed_exit),
+          "observation did not expose confirmed exit");
+    check(std::fabs(observed_exit.pose.position.y - 3.5) < 1e-6 &&
+          std::fabs(observed_exit.pose.orientation.z - std::sin(M_PI / 4)) < 1e-6,
+          "observation exposed wrong exit position or direction");
+    check(!observation.stage3Active() && !observation.exit_portal_locked_ &&
+          !observation.landingRequested(),
+          "observation started crossing or landing after confirmation");
+    observation.clearExitEvidence();
+    check(!observation.updateExitDetectionOnly(start, 0.0, observed_exit),
+          "observation retained revoked detection");
     std::cout << "real map freshness, observed volume, obstacle and turn checks passed" << std::endl;
   }
   static void run() {
