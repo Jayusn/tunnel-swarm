@@ -2,6 +2,7 @@
 #include <exploration_manager/task_search_manager.h>
 #include <exploration_manager/motion_direction_rules.h>
 #include <exploration_manager/frontier_clearance_policy.h>
+#include <exploration_manager/wall_end_detection.h>
 
 #include <std_msgs/String.h>
 #include <std_msgs/Bool.h>
@@ -352,26 +353,12 @@ void TaskSearchManager::initialize(ros::NodeHandle& nh) {
            static_cast<int>(enabled_), static_cast<int>(require_stage2_detections_),
            min_search_height_, max_search_height_, revisit_radius_,
            hybrid_constraints_enabled_ ? "FUEL_DIFF" : "NATIVE_FUEL");
-  // 2026-07-22: 启动日志明确输出“终点预测不等于目标”和门后FREE分支门槛，便于现场核对参数生效。
-  ROS_WARN("[exit_mission] endpoint-hint-only + corridor-wall-end validation enabled, grid=%.2f "
-           "min_path=%.2f outside_route=%.2f confirm=%d landing_marker_required=%d "
-           "portal_half_width=[%.2f,%.2f] wall_end=%d/%d max_behind=%.2f.",
-           exit_grid_resolution_, exit_min_geodesic_distance_,
-           exit_endpoint_outside_route_min_length_, exit_confirmation_count_,
-           static_cast<int>(require_final_landing_marker_),
-           exit_portal_min_half_width_, exit_portal_max_half_width_,
-           exit_wall_end_min_changed_count_, exit_wall_end_probe_count_,
-           exit_candidate_max_behind_distance_);
-  // 2026-07-23: 启动时明确打印局部雷达出口检测数据源和硬门槛，便于从日志判断是否真正接到点云。
-  ROS_WARN("[exit_mission] body-radar wall-end detector enabled=%d topic=%s window=%.2fs "
-           "elevation=+/-%.1fdeg inside_bins>=%d changed>=%d clear_frames>=%d.",
-           static_cast<int>(radar_exit_detection_enabled_),
-           radar_exit_body_cloud_topic_.c_str(), radar_exit_accumulation_time_,
-           radar_exit_max_elevation_deg_, radar_exit_min_inside_bins_,
-           radar_exit_min_changed_probes_, radar_exit_min_clear_ray_frames_);
-  // 2026-07-23: 明确启动后的证据优先级，防止误以为body雷达仍可否决RViz累计地图里的清晰双墙断面。
-  ROS_WARN("[exit_mission] evidence priority=LOCAL_OCCUPANCY_XY_THEN_BODY_RADAR; "
-           "local map uses current_z+/-0.40m and requires bilateral wall end + >=60%% known FREE.");
+  ROS_WARN("[exit_mission] local bilateral-wall-disappearance detector enabled=%d "
+           "confirm=%d near_distance=%.2fm absent=%d/%d outside_free>=%.2f; "
+           "no frame-shape, entry-path-distance or frontier-exhaustion requirement.",
+           static_cast<int>(exit_detection_enabled_), exit_confirmation_count_,
+           exit_confirmation_max_distance_, exit_wall_end_min_changed_count_,
+           exit_wall_end_probe_count_, exit_outside_min_free_ratio_);
   ROS_WARN("[exit_mission] RC search-landing trigger enabled=%d topic=%s CH%d "
            "low<=%d high>=%d hold=%.2fs; startup requires LOW before HIGH.",
            static_cast<int>(rc_search_landing_enabled_),
@@ -2154,181 +2141,60 @@ bool TaskSearchManager::detectLocalMapExit(const Eigen::Vector3d& cur_pos,
                                            const Eigen::Vector2d& forward_hint,
                                            RadarExitResult& result) const {
   if (!sdf_map_ || forward_hint.norm() < 1e-3) return false;
-
-  auto median = [](std::vector<double> values) {
-    if (values.empty()) return std::numeric_limits<double>::infinity();
-    const size_t middle = values.size() / 2;
-    std::nth_element(values.begin(), values.begin() + middle, values.end());
-    return values[middle];
+  const Eigen::Vector2d forward = forward_hint.normalized();
+  const Eigen::Vector2d lateral(-forward.y(), forward.x());
+  wall_end::Config config;
+  config.search_min = radar_exit_search_min_forward_;
+  config.search_max = std::max(radar_exit_search_max_forward_,
+                               exit_confirmation_max_distance_);
+  config.search_step = radar_exit_search_step_;
+  config.side_min = std::max(0.22, 0.65 * exit_portal_min_half_width_);
+  config.side_max = std::max(config.side_min + 0.35, exit_portal_max_half_width_ + 0.65);
+  config.inside_length = exit_wall_support_length_;
+  config.inside_step = radar_exit_wall_bin_step_;
+  config.min_inside_support = radar_exit_min_inside_bins_;
+  config.wall_tolerance = exit_wall_track_width_tolerance_;
+  config.outside_step = exit_wall_end_probe_step_;
+  config.outside_count = exit_wall_end_probe_count_;
+  config.min_absent_count = exit_wall_end_min_changed_count_;
+  config.min_free_ratio = exit_outside_min_free_ratio_;
+  auto pointAt = [&](double along, double across) {
+    Eigen::Vector3d point = cur_pos;
+    point.head<2>() += along * forward + across * lateral;
+    return point;
   };
-  auto rotate = [](const Eigen::Vector2d& vector, double angle) {
-    const double cosine = std::cos(angle);
-    const double sine = std::sin(angle);
-    return Eigen::Vector2d(cosine * vector.x() - sine * vector.y(),
-                           sine * vector.x() + cosine * vector.y());
+  auto occupied = [&](double along, double across) {
+    return mapRelativeColumnOccupied(pointAt(along, across), cur_pos.z());
   };
-
-  bool found = false;
-  double best_score = -std::numeric_limits<double>::infinity();
-  int rejected_inside = 0;
-  int rejected_not_ended = 0;
-  int rejected_outside_not_free = 0;
-  const double bin_step = std::max(0.10, radar_exit_wall_bin_step_);
-  const double min_side = std::max(0.22, 0.65 * exit_portal_min_half_width_);
-  const double max_side = std::max(min_side + 0.35, exit_portal_max_half_width_ + 0.65);
-  const int inside_bins = std::max(
-      radar_exit_min_inside_bins_,
-      static_cast<int>(std::floor(radar_exit_inside_length_ / bin_step)));
-
-  // 最近航迹经过弯角时切向可能偏斜，围绕它做小角度搜索；不允许90度旋转去把普通拐弯解释成出口。
-  for (double angle_deg : {-25.0, -12.5, 0.0, 12.5, 25.0}) {
-    const Eigen::Vector2d forward =
-        rotate(forward_hint.normalized(), angle_deg * M_PI / 180.0).normalized();
-    const Eigen::Vector2d lateral(-forward.y(), forward.x());
-    auto nearestSides = [&](const Eigen::Vector2d& center, double& left, double& right) {
-      left = std::numeric_limits<double>::infinity();
-      right = std::numeric_limits<double>::infinity();
-      for (double side_distance = min_side;
-           side_distance <= max_side + 1e-6; side_distance += 0.05) {
-        Eigen::Vector3d left_probe = cur_pos;
-        left_probe.head<2>() = center - side_distance * lateral;
-        if (!std::isfinite(left) &&
-            mapRelativeColumnOccupied(left_probe, cur_pos.z()))
-          left = side_distance;
-        Eigen::Vector3d right_probe = cur_pos;
-        right_probe.head<2>() = center + side_distance * lateral;
-        if (!std::isfinite(right) &&
-            mapRelativeColumnOccupied(right_probe, cur_pos.z()))
-          right = side_distance;
-        if (std::isfinite(left) && std::isfinite(right)) break;
-      }
-    };
-    auto knownFree = [&](const Eigen::Vector2d& xy) {
-      // 相邻三个相对高度层任一为FREE即可证明射线已经实际清过，UNKNOWN不冒充开放区。
-      for (double z_offset : {-0.10, 0.0, 0.10}) {
-        Eigen::Vector3d probe(xy.x(), xy.y(), cur_pos.z() + z_offset);
-        if (sdf_map_->isInMap(probe) &&
-            sdf_map_->getOccupancy(probe) == SDFMap::FREE)
-          return true;
-      }
-      return false;
-    };
-
-    for (double section = radar_exit_search_min_forward_ - 0.10;
-         section <= radar_exit_search_max_forward_ + 1e-6;
-         section += std::max(0.08, radar_exit_search_step_)) {
-      std::vector<double> inside_left;
-      std::vector<double> inside_right;
-      for (int bin = 1; bin <= inside_bins; ++bin) {
-        const Eigen::Vector2d center =
-            cur_pos.head<2>() + (section - bin * bin_step) * forward;
-        double left, right;
-        nearestSides(center, left, right);
-        if (std::isfinite(left)) inside_left.push_back(left);
-        if (std::isfinite(right)) inside_right.push_back(right);
-      }
-      if (static_cast<int>(inside_left.size()) < radar_exit_min_inside_bins_ ||
-          static_cast<int>(inside_right.size()) < radar_exit_min_inside_bins_) {
-        ++rejected_inside;
-        continue;
-      }
-      const double wall_left = median(inside_left);
-      const double wall_right = median(inside_right);
-      int left_support = 0;
-      int right_support = 0;
-      for (double value : inside_left)
-        if (std::fabs(value - wall_left) <= radar_exit_wall_track_tolerance_)
-          ++left_support;
-      for (double value : inside_right)
-        if (std::fabs(value - wall_right) <= radar_exit_wall_track_tolerance_)
-          ++right_support;
-      if (left_support < radar_exit_min_inside_bins_ ||
-          right_support < radar_exit_min_inside_bins_) {
-        ++rejected_inside;
-        continue;
-      }
-
-      const double center_offset = 0.5 * (wall_right - wall_left);
-      int bilateral_changed = 0;
-      const int outside_probes = std::max(1, radar_exit_outside_probe_count_);
-      for (int probe_index = 1; probe_index <= outside_probes; ++probe_index) {
-        const double depth = 1.5 * bin_step * probe_index;
-        const Eigen::Vector2d center =
-            cur_pos.head<2>() + (section + depth) * forward +
-            center_offset * lateral;
-        double left, right;
-        nearestSides(center, left, right);
-        const bool left_changed =
-            !std::isfinite(left) || left >= wall_left + radar_exit_min_wall_shift_;
-        const bool right_changed =
-            !std::isfinite(right) || right >= wall_right + radar_exit_min_wall_shift_;
-        if (left_changed && right_changed) ++bilateral_changed;
-      }
-      if (bilateral_changed < radar_exit_min_changed_probes_) {
-        ++rejected_not_ended;
-        continue;
-      }
-
-      // 门外不要求命中远墙，只要求中心走廊确实被累计射线清成FREE；普通转弯外侧墙和死胡同会降低该比例。
-      int known_free = 0;
-      int free_samples = 0;
-      for (double depth = 0.12; depth <= radar_exit_clear_depth_ + 1e-6;
-           depth += 0.12) {
-        for (double lateral_offset : {-0.18, 0.0, 0.18}) {
-          const Eigen::Vector2d probe =
-              cur_pos.head<2>() + (section + depth) * forward +
-              (center_offset + lateral_offset) * lateral;
-          ++free_samples;
-          if (knownFree(probe)) ++known_free;
-        }
-      }
-      const double free_ratio = free_samples > 0
-          ? static_cast<double>(known_free) / free_samples : 0.0;
-      if (free_ratio < 0.60) {
-        ++rejected_outside_not_free;
-        continue;
-      }
-
-      const double score = 0.50 * std::min(left_support, right_support) +
-                           1.20 * bilateral_changed + 2.0 * free_ratio -
-                           0.02 * std::fabs(angle_deg) -
-                           0.10 * std::max(0.0, section);
-      if (!found || score > best_score) {
-        found = true;
-        best_score = score;
-        result.portal_center = cur_pos;
-        result.portal_center.head<2>() +=
-            section * forward + center_offset * lateral;
-        result.outward_direction = forward;
-        result.inside_left_support = left_support;
-        result.inside_right_support = right_support;
-        result.bilateral_changed = bilateral_changed;
-        result.clear_ray_frames = known_free;
-        result.confidence = std::min(
-            0.98, 0.48 + 0.04 * std::min(left_support, right_support) +
-                      0.06 * bilateral_changed + 0.20 * free_ratio);
-      }
+  auto knownFree = [&](double along, double across) {
+    Eigen::Vector3d point = pointAt(along, across);
+    for (double offset : {-0.10, 0.0, 0.10}) {
+      point.z() = cur_pos.z() + offset;
+      if (sdf_map_->isInMap(point) && sdf_map_->getOccupancy(point) == SDFMap::FREE)
+        return true;
     }
-  }
-
-  if (!found) {
-    ROS_WARN_THROTTLE(
-        2.0,
-        "[exit_local_map] no local XY wall-end: reject_inside=%d "
-        "wall_not_ended=%d outside_not_free=%d.",
-        rejected_inside, rejected_not_ended, rejected_outside_not_free);
+    return false;
+  };
+  wall_end::Result detection;
+  if (!wall_end::detect(config, occupied, knownFree, detection)) {
+    ROS_WARN_THROTTLE(2.0,
+                      "[exit_local_map] no observed bilateral wall disappearance.");
     return false;
   }
-  ROS_INFO_THROTTLE(
-      1.0,
-      "[exit_local_map] portal center=(%.2f,%.2f) direction=%.1fdeg "
-      "wall_support=L%d/R%d changed=%d/%d known_free_samples=%d confidence=%.2f.",
-      result.portal_center.x(), result.portal_center.y(),
-      std::atan2(result.outward_direction.y(), result.outward_direction.x()) *
-          180.0 / M_PI,
-      result.inside_left_support, result.inside_right_support,
-      result.bilateral_changed, radar_exit_outside_probe_count_,
-      result.clear_ray_frames, result.confidence);
+  result.portal_center = pointAt(detection.forward, detection.lateral);
+  result.outward_direction = forward;
+  result.inside_left_support = detection.left_support;
+  result.inside_right_support = detection.right_support;
+  result.bilateral_changed = detection.absent_count;
+  result.clear_ray_frames = detection.free_samples;
+  result.confidence = detection.confidence;
+  ROS_INFO_THROTTLE(1.0,
+                    "[exit_local_map] walls disappear at (%.2f,%.2f): "
+                    "inside=L%d/R%d absent=%d/%d known_free=%d/%d.",
+                    result.portal_center.x(), result.portal_center.y(),
+                    detection.left_support, detection.right_support,
+                    detection.absent_count, config.outside_count,
+                    detection.free_samples, 3 * config.outside_count);
   return true;
 }
 
@@ -3126,8 +2992,6 @@ bool TaskSearchManager::buildPendingExitObservationGoal(
   if (exit_candidate_confirmed_ ||
       exit_candidate_hits_ < std::max(1, exit_pending_observation_min_hits_) ||
       !pending_exit_portal_outside_verified_ ||
-      // 2026-07-28: 拓扑端点仍在门内时不为疑似弧墙生成观察目标，避免主动靠近错误截面。
-      !pending_exit_endpoint_outside_verified_ ||
       pending_exit_outward_direction_.norm() < 1e-3)
     return false;
 
@@ -3183,428 +3047,106 @@ bool TaskSearchManager::buildPendingExitObservationGoal(
 }
 
 void TaskSearchManager::updateExitCandidate(const Eigen::Vector3d& cur_pos) {
-  if (!exit_detection_enabled_) return;
-  if (!sdf_map_ || !corridor_frame_received_) return;
-  // 2026-07-23: 尚未明确穿过入口时禁止运行出口检测；任务顺序固定为先入通道、后找最终出口。
-  if (!corridor_entry_crossed_) return;
-  // 2026-07-21: 进入门内接近/穿越后锁定已验证门平面；门外地图扩张产生的新最远点不能拖动穿门法向。
-  if (mission_stage_ != SEARCH_CORRIDOR) return;
-  // 2026-07-23: 最终出口满足稳定度和累计里程后采用入口同样的一次锁存语义；
-  // 后续点云只更新占据地图，不再旋转、平移或撤销已锁定门框。
-  if (exit_portal_locked_) return;
-  // 2026-07-22: 搜索通道期间持续用累计地图复核；更远外部分支只更新预测点，不能拖动门框。
+  if (!enabled_ || !exit_detection_enabled_ || !sdf_map_ ||
+      !corridor_frame_received_ || !corridor_entry_crossed_ ||
+      mission_stage_ != SEARCH_CORRIDOR || exit_portal_locked_)
+    return;
   const ros::Time now = ros::Time::now();
   if (!last_exit_inference_.isZero() &&
       (now - last_exit_inference_).toSec() < exit_inference_period_)
     return;
   last_exit_inference_ = now;
 
-  // 2026-07-22: SEARCH_CORRIDOR阶段若飞机已经越过候选门平面，说明它仍在同一通道继续推进；
-  // 该截面立即永久失效。不能保留4/5历史票数，更不能等frontier耗尽后命令返回门内点。
-  if (exit_candidate_hits_ > 0 && pending_exit_outward_direction_.norm() > 1e-3) {
-    const double pending_passed =
-        (cur_pos.head<2>() - pending_exit_portal_center_.head<2>())
-            .dot(pending_exit_outward_direction_.normalized());
-    if (pending_passed > exit_candidate_max_behind_distance_) {
-      ROS_ERROR("[exit_mission] discard passed portal candidate center=(%.2f, %.2f): "
-                "leader is %.2fm beyond it while still SEARCH_CORRIDOR.",
-                pending_exit_portal_center_.x(), pending_exit_portal_center_.y(),
-                pending_passed);
-      exit_candidate_hits_ = 0;
-      pending_exit_endpoint_outside_verified_ = false;
-      pending_exit_portal_outside_verified_ = false;
-    }
-  }
-  if (exit_candidate_confirmed_ && exit_outward_direction_.norm() > 1e-3) {
-    const double confirmed_passed =
-        (cur_pos.head<2>() - exit_portal_center_.head<2>())
-            .dot(exit_outward_direction_.normalized());
-    if (confirmed_passed > exit_candidate_max_behind_distance_) {
-      ROS_ERROR("[exit_mission] revoke passed EXIT PORTAL center=(%.2f, %.2f): leader "
-                "continued %.2fm through the same corridor; never command a return.",
-                exit_portal_center_.x(), exit_portal_center_.y(), confirmed_passed);
-      exit_candidate_confirmed_ = false;
-      exit_endpoint_outside_verified_ = false;
-      exit_portal_outside_verified_ = false;
-      exit_candidate_hits_ = 0;
-      active_goal_valid_ = false;
-    }
+  if (exit_candidate_hits_ > 0 && pending_exit_outward_direction_.norm() > 1e-3 &&
+      (cur_pos.head<2>() - pending_exit_portal_center_.head<2>())
+          .dot(pending_exit_outward_direction_) > exit_candidate_max_behind_distance_) {
+    exit_candidate_hits_ = 0;
+    pending_exit_portal_outside_verified_ = false;
   }
 
-  Eigen::Vector3d inferred, inferred_portal, inferred_endpoint;
-  Eigen::Vector2d inferred_direction;
-  bool inferred_endpoint_outside = false;
-  // 2026-07-23: 门外FREE空间和拓扑预测点所属侧必须分别记录，不能因雷达确认开口
-  // 就无条件把任意紫色endpoint_hint写成outside。
-  bool inferred_portal_outside = false;
-  double geodesic = 0.0;
-  double confidence = 0.0;
-  bool local_terminal_fallback = false;
-  RadarExitResult fallback_radar_result;
-  if (!inferExitFromMap(cur_pos, inferred, inferred_portal, inferred_direction,
-                        inferred_endpoint, inferred_endpoint_outside,
-                        geodesic, confidence)) {
-    // 2026-07-28: U形通道末端可能因旧FREE被占据层覆盖而从入口拓扑根断开；此时不能把4m
-    // 门槛盲目降低到入口附近，而是仅允许“累计实飞足够深+最近直线+1m内双墙共同终止”接管。
-    double travelled = 0.0;
-    for (size_t i = 1; i < visited_positions_.size(); ++i)
-      travelled += (visited_positions_[i].head<2>() -
-                    visited_positions_[i - 1].head<2>()).norm();
-
-    Eigen::Vector2d recent_direction = corridor_dir_.head<2>();
-    Eigen::Vector2d previous_direction = recent_direction;
-    bool have_recent = false;
-    bool have_previous = false;
-    Eigen::Vector2d recent_anchor = cur_pos.head<2>();
-    for (auto it = visited_positions_.rbegin(); it != visited_positions_.rend(); ++it) {
-      const double arc = (recent_anchor - it->head<2>()).norm();
-      if (!have_recent && arc >= 0.45) {
-        recent_direction = (recent_anchor - it->head<2>()).normalized();
-        have_recent = true;
-      }
-      if (arc >= 1.15) {
-        Eigen::Vector2d middle = recent_anchor - 0.55 * recent_direction;
-        Eigen::Vector2d older_segment = middle - it->head<2>();
-        if (older_segment.norm() > 0.20) {
-          previous_direction = older_segment.normalized();
-          have_previous = true;
-        }
-        break;
-      }
-    }
-    const double max_turn_rad = std::max(0.0, exit_near_fallback_max_turn_deg_) * M_PI / 180.0;
-    const bool recent_straight = have_recent && have_previous &&
-        recent_direction.dot(previous_direction) >= std::cos(max_turn_rad);
-    const bool local_structure = travelled >= exit_near_fallback_min_travel_ &&
-        recent_straight && detectLocalMapExit(cur_pos, recent_direction, fallback_radar_result);
-    const double local_portal_distance = local_structure
-        ? (cur_pos.head<2>() - fallback_radar_result.portal_center.head<2>()).norm()
-        : std::numeric_limits<double>::infinity();
-    if (!local_structure || local_portal_distance > exit_near_fallback_max_distance_) {
-      ROS_WARN_THROTTLE(2.0,
-                        "[exit_mission] no topology hint and near fallback rejected: "
-                        "travel=%.2f/%.2fm straight=%d portal_distance=%.2f/%.2fm.",
-                        travelled, exit_near_fallback_min_travel_,
-                        static_cast<int>(recent_straight), local_portal_distance,
-                        exit_near_fallback_max_distance_);
-      return;
-    }
-    local_terminal_fallback = true;
-    inferred_portal = fallback_radar_result.portal_center;
-    inferred_direction = fallback_radar_result.outward_direction.normalized();
-    inferred = inferred_portal;
-    inferred_endpoint = inferred_portal;
-    inferred_endpoint.head<2>() += exit_outside_probe_distance_ * inferred_direction;
-    inferred_endpoint_outside = true;
-    inferred_portal_outside = true;
-    geodesic = travelled;
-    confidence = fallback_radar_result.confidence;
-    ROS_ERROR("[exit_mission] NEAR_TERMINAL_FALLBACK accepted: travel=%.2fm "
-              "portal=(%.2f,%.2f) distance=%.2fm; still requires close multi-frame confirmation.",
-              travelled, inferred_portal.x(), inferred_portal.y(), local_portal_distance);
-  }
-  if (radar_exit_detection_enabled_) {
-    // 2026-07-23: 局部门法向优先使用最近实际航迹切向，而不是朝向远端预测点的直线；
-    // U形通道中后者会穿墙，机头yaw又可能因观测任务转动，二者都不能代表通道推进方向。
-    // 使用独立维护的推进方向，而不是最近0.45m位移；短回撤不能再把门的内外方向翻转。
-    // 正常90度/U形转弯会由连续航迹段逐步更新该方向。
-    Eigen::Vector2d forward_hint = stableProgressDirection();
-    RadarExitResult radar_result;
-    // 2026-07-23: RViz累计地图已形成清晰XY双墙断面时由局部地图主判；
-    // body点云只在局部地图尚未成形时补充，不能再以坐标拼接误差否决明显出口。
-    const bool local_map_confirmed = local_terminal_fallback
-        ? (radar_result = fallback_radar_result, true)
-        : detectLocalMapExit(cur_pos, forward_hint, radar_result);
-    const bool body_radar_confirmed =
-        local_map_confirmed ? false
-                            : detectRadarExit(cur_pos, forward_hint, radar_result);
-    if (!local_map_confirmed && !body_radar_confirmed) {
-      const int previous_hits = exit_candidate_hits_;
-      exit_candidate_hits_ = std::max(
-          0, exit_candidate_hits_ - std::max(1, exit_candidate_reject_decay_));
-      ROS_WARN_THROTTLE(
-          2.0,
-          "[exit_mission] topology endpoint exists but neither local occupancy XY "
-          "wall-end nor body-radar confirmed the portal; hits decay %d->%d.",
-          previous_hits, exit_candidate_hits_);
-      return;
-    }
-    const Eigen::Vector2d detected_direction =
-        radar_result.outward_direction.normalized();
-    const double progress_dot = std::max(
-        -1.0, std::min(1.0, detected_direction.dot(forward_hint)));
-    const double progress_jump_deg = std::acos(progress_dot) * 180.0 / M_PI;
-    const double portal_forward =
-        (radar_result.portal_center.head<2>() - cur_pos.head<2>()).dot(forward_hint);
-    if (progress_jump_deg > exit_max_direction_jump_deg_ ||
-        portal_forward < -exit_candidate_max_behind_distance_) {
-      const int previous_hits = exit_candidate_hits_;
-      exit_candidate_hits_ = std::max(
-          0, exit_candidate_hits_ - std::max(1, exit_candidate_reject_decay_));
-      ROS_ERROR_THROTTLE(
-          1.0,
-          "[exit_mission] reject backward/abrupt portal center=(%.2f,%.2f): "
-          "direction_jump=%.1f/%.1fdeg portal_forward=%.2f/%.2fm hits %d->%d.",
-          radar_result.portal_center.x(), radar_result.portal_center.y(),
-          progress_jump_deg, exit_max_direction_jump_deg_, portal_forward,
-          -exit_candidate_max_behind_distance_, previous_hits, exit_candidate_hits_);
-      return;
-    }
-    if (exit_candidate_hits_ > 0 && pending_exit_outward_direction_.norm() > 1e-3) {
-      const double pending_dot = std::max(
-          -1.0, std::min(1.0, detected_direction.dot(
-              pending_exit_outward_direction_.normalized())));
-      const double pending_jump_deg = std::acos(pending_dot) * 180.0 / M_PI;
-      if (pending_jump_deg > exit_max_direction_jump_deg_) {
-        const int previous_hits = exit_candidate_hits_;
-        exit_candidate_hits_ = std::max(
-            0, exit_candidate_hits_ - std::max(1, exit_candidate_reject_decay_));
-        ROS_ERROR_THROTTLE(
-            1.0,
-            "[exit_mission] reject portal direction discontinuity %.1f/%.1fdeg; "
-            "keep previous candidate, hits %d->%d.",
-            pending_jump_deg, exit_max_direction_jump_deg_, previous_hits,
-            exit_candidate_hits_);
-        return;
-      }
-    }
-    // 2026-07-23: 最新视频中第一个弯角已被拓扑报告normal_turn=1/2，但BODY_RADAR仍在
-    // (4.31,0.09)累计到5/5。局部门框若落在同一弯角邻域，直接衰减并撤销该候选。
-    double nearest_turn_distance = std::numeric_limits<double>::infinity();
-    for (const auto& turn_center : last_topology_turn_centers_) {
-      nearest_turn_distance = std::min(
-          nearest_turn_distance,
-          (radar_result.portal_center.head<2>() - turn_center.head<2>()).norm());
-    }
-    if (nearest_turn_distance <= exit_normal_turn_reject_radius_) {
-      const int previous_hits = exit_candidate_hits_;
-      exit_candidate_hits_ = std::max(
-          0, exit_candidate_hits_ - std::max(1, exit_candidate_reject_decay_));
-      if (exit_candidate_confirmed_ &&
-          (exit_portal_center_.head<2>() -
-           radar_result.portal_center.head<2>()).norm() <=
-              exit_candidate_stability_radius_) {
-        exit_candidate_confirmed_ = false;
-        exit_endpoint_outside_verified_ = false;
-        exit_portal_outside_verified_ = false;
-        active_goal_valid_ = false;
-      }
-      ROS_ERROR_THROTTLE(
-          1.0,
-          "[exit_mission] reject local portal (%.2f, %.2f): topology marks the "
-          "same cross-section as a normal turn (distance=%.2fm); hits %d->%d.",
-          radar_result.portal_center.x(), radar_result.portal_center.y(),
-          nearest_turn_distance, previous_hits, exit_candidate_hits_);
-      return;
-    }
-    ROS_INFO_THROTTLE(1.0, "[exit_mission] portal evidence source=%s.",
-                      local_map_confirmed ? "LOCAL_OCCUPANCY_XY" : "BODY_RADAR");
-    inferred_portal = radar_result.portal_center;
-    inferred_direction = radar_result.outward_direction.normalized();
-    inferred = inferred_portal;
-    bool safe_inside_found = false;
-    for (double standoff = exit_standoff_; standoff >= 0.15; standoff -= 0.10) {
-      Eigen::Vector3d inside = inferred_portal;
-      inside.head<2>() -= standoff * inferred_direction;
-      if (mapPointSafe(inside)) {
-        inferred = inside;
-        safe_inside_found = true;
-        break;
-      }
-    }
-    if (!safe_inside_found) {
-      ROS_WARN_THROTTLE(2.0,
-                        "[exit_mission] radar portal found but no safe inside standoff point.");
-      return;
-    }
-    // 2026-07-23: 局部穿门射线只证明门法向前方存在开放空间；紫色拓扑预测点必须
-    // 真实投影到门外侧才显示outside，不能继续无条件置true。
-    inferred_portal_outside = true;
-    const double endpoint_signed_side =
-        (inferred_endpoint.head<2>() - inferred_portal.head<2>())
-            .dot(inferred_direction);
-    inferred_endpoint_outside = endpoint_signed_side >= 0.20;
-    if (!inferred_endpoint_outside) {
-      ROS_WARN_THROTTLE(
-          1.0,
-          "[exit_mission] portal outside space verified, but endpoint hint stays "
-          "INSIDE signed_side=%.2fm; endpoint is visualization only.",
-          endpoint_signed_side);
-    }
-    confidence = radar_result.confidence;
-  } else if (!validateExitPortal(inferred, inferred_portal, inferred_direction)) {
-    // 2026-07-22: 一帧地面/稀疏点抖动不能抹掉此前4/5的门框证据；连续失败仍会逐步降到0。
-    const int previous_hits = exit_candidate_hits_;
-    exit_candidate_hits_ = std::max(0, exit_candidate_hits_ -
-                                           std::max(1, exit_candidate_reject_decay_));
-    ROS_WARN_THROTTLE(2.0,
-                      "[exit_mission] topology hint (%.2f, %.2f) rejected: no verified "
-                      "two-sided portal/free opening/outside extension yet; hits decay %d->%d.",
-                      inferred_portal.x(), inferred_portal.y(), previous_hits,
-                      exit_candidate_hits_);
+  RadarExitResult detection;
+  if (!detectLocalMapExit(cur_pos, stableProgressDirection(), detection)) {
+    exit_candidate_hits_ = std::max(
+        0, exit_candidate_hits_ - std::max(1, exit_candidate_reject_decay_));
+    publishSearchState();
     return;
-  } else {
-    // 2026-07-23: 非雷达分支的旧验证器同时验证门后延伸，故沿用其外部分支结论。
-    inferred_portal_outside = inferred_endpoint_outside;
   }
-  const Eigen::Vector2d normalized_direction = inferred_direction.normalized();
-  const bool direction_stable = exit_candidate_hits_ > 0 &&
-      normalized_direction.dot(pending_exit_outward_direction_) >= std::cos(20.0 * M_PI / 180.0);
-  if (exit_candidate_hits_ > 0 &&
-      (inferred.head<2>() - pending_exit_candidate_.head<2>()).norm() <=
-          exit_candidate_stability_radius_ && direction_stable) {
+  const Eigen::Vector2d direction = detection.outward_direction.normalized();
+  if ((detection.portal_center.head<2>() - cur_pos.head<2>()).dot(direction) <
+      -exit_candidate_max_behind_distance_)
+    return;
+
+  // 沿用已有门内接近点净空检查，墙端检测不替代飞行路径检查。
+  Eigen::Vector3d inside = detection.portal_center;
+  bool safe_inside_found = false;
+  for (double standoff = exit_standoff_; standoff >= 0.15; standoff -= 0.10) {
+    inside = detection.portal_center;
+    inside.head<2>() -= standoff * direction;
+    if (mapPointSafe(inside)) {
+      safe_inside_found = true;
+      break;
+    }
+  }
+  if (!safe_inside_found) {
+    ROS_WARN_THROTTLE(2.0, "[exit_mission] wall end found but inside approach is blocked.");
+    return;
+  }
+
+  const bool same_candidate = exit_candidate_hits_ > 0 &&
+      (detection.portal_center.head<2>() - pending_exit_portal_center_.head<2>()).norm() <=
+          exit_candidate_stability_radius_ &&
+      direction.dot(pending_exit_outward_direction_) >= std::cos(20.0 * M_PI / 180.0);
+  if (same_candidate) {
     ++exit_candidate_hits_;
-    pending_exit_candidate_ = 0.65 * pending_exit_candidate_ + 0.35 * inferred;
+    pending_exit_candidate_ = 0.65 * pending_exit_candidate_ + 0.35 * inside;
     pending_exit_portal_center_ =
-        0.65 * pending_exit_portal_center_ + 0.35 * inferred_portal;
+        0.65 * pending_exit_portal_center_ + 0.35 * detection.portal_center;
     pending_exit_outward_direction_ =
-        (0.65 * pending_exit_outward_direction_ + 0.35 * normalized_direction).normalized();
-    pending_exit_endpoint_prediction_ = inferred_endpoint;
-    pending_exit_endpoint_outside_verified_ =
-        pending_exit_endpoint_outside_verified_ && inferred_endpoint_outside;
-    pending_exit_portal_outside_verified_ =
-        pending_exit_portal_outside_verified_ && inferred_portal_outside;
+        (0.65 * pending_exit_outward_direction_ + 0.35 * direction).normalized();
   } else {
-    pending_exit_candidate_ = inferred;
-    pending_exit_portal_center_ = inferred_portal;
-    pending_exit_outward_direction_ = normalized_direction;
-    pending_exit_endpoint_prediction_ = inferred_endpoint;
-    pending_exit_endpoint_outside_verified_ = inferred_endpoint_outside;
-    pending_exit_portal_outside_verified_ = inferred_portal_outside;
     exit_candidate_hits_ = 1;
+    pending_exit_candidate_ = inside;
+    pending_exit_portal_center_ = detection.portal_center;
+    pending_exit_outward_direction_ = direction;
   }
-  // 2026-07-24: 每次有效门结构证据都延长前视窗口；即便下一帧票数衰减，
-  // 相机环扫也不会立即重启并反过来破坏后续出口切面。
+  pending_exit_portal_outside_verified_ = true;
   exit_verification_hold_until_ =
       now + ros::Duration(std::max(0.0, exit_verification_yaw_hold_time_));
 
-  // 2026-07-22: 只有更靠拓扑远端、并完整通过双墙终止和门后FREE复核的截面才能修正出口；
-  // 入口侧旧截面永不覆盖任务推进方向上的新证据。
-  const double pending_shift_from_confirmed =
-      (pending_exit_candidate_.head<2>() - exit_candidate_.head<2>()).norm();
-  const bool stable_more_endpoint_side_candidate =
-      exit_candidate_confirmed_ &&
-      exit_candidate_hits_ >= exit_supersede_confirmation_count_ &&
-      geodesic > exit_geodesic_distance_ + exit_supersede_min_path_increase_ &&
-      pending_shift_from_confirmed > exit_candidate_stability_radius_;
-  if (stable_more_endpoint_side_candidate) {
-    ROS_ERROR("[exit_mission] correct confirmed exit (%.2f, %.2f), path=%.2fm: "
-              "more-endpoint-side wall termination is stable %d/%d at (%.2f, %.2f), path=%.2fm.",
-              exit_candidate_.x(), exit_candidate_.y(), exit_geodesic_distance_,
-              exit_candidate_hits_, exit_confirmation_count_,
-              pending_exit_candidate_.x(), pending_exit_candidate_.y(), geodesic);
-    exit_candidate_confirmed_ = false;
-    active_goal_valid_ = false;
+  const double distance =
+      (cur_pos.head<2>() - pending_exit_portal_center_.head<2>()).norm();
+  if (exit_candidate_hits_ < std::max(1, exit_confirmation_count_) ||
+      distance > exit_confirmation_max_distance_) {
+    ROS_INFO("[exit_mission] bilateral wall end pending %d/%d distance=%.2f/%.2fm.",
+             exit_candidate_hits_, exit_confirmation_count_, distance,
+             exit_confirmation_max_distance_);
+    publishSearchState();
+    return;
   }
 
-  const double pending_portal_distance =
-      (cur_pos.head<2>() - pending_exit_portal_center_.head<2>()).norm();
-  // 2026-07-28: 远距离只保留候选票，不发布确认门；近场仍持续建图并会在阈值内立即复核。
-  if (exit_candidate_hits_ >= exit_confirmation_count_ &&
-      pending_portal_distance > exit_confirmation_max_distance_) {
-    ROS_WARN_THROTTLE(
-        1.0,
-        "[exit_mission] portal evidence %d/%d held as candidate: distance=%.2fm > "
-        "confirmation_max_distance=%.2fm; keep mapping until close verification.",
-        exit_candidate_hits_, exit_confirmation_count_, pending_portal_distance,
-        exit_confirmation_max_distance_);
-  } else if (exit_candidate_hits_ >= exit_confirmation_count_) {
-    const bool first_confirmation = !exit_candidate_confirmed_;
-    const bool more_endpoint_side_branch = exit_candidate_confirmed_ &&
-        geodesic > exit_geodesic_distance_ + exit_supersede_min_path_increase_;
-    const bool same_branch = exit_candidate_confirmed_ &&
-        (pending_exit_candidate_.head<2>() - exit_candidate_.head<2>()).norm() <= 1.0;
-    // 2026-07-28: 真门以近场双侧墙端+门外FREE射线为硬证据；拓扑endpoint只是
-    // 远端搜索提示，U形通道内它可能因拐弯投影落在门内，不得否决已经5/5的真实门框。
-    // 防误检仍由拐弯邻域排除、近距离确认和最小航程锁定三层条件负责。
-    if ((first_confirmation || more_endpoint_side_branch || same_branch) &&
-        pending_exit_portal_outside_verified_) {
-      const double candidate_shift =
-          (pending_exit_candidate_.head<2>() - exit_candidate_.head<2>()).norm();
-      exit_candidate_ = pending_exit_candidate_;
-      exit_portal_center_ = pending_exit_portal_center_;
-      exit_outward_direction_ = pending_exit_outward_direction_;
-      exit_endpoint_prediction_ = pending_exit_endpoint_prediction_;
-      exit_endpoint_outside_verified_ = pending_exit_endpoint_outside_verified_;
-      exit_portal_outside_verified_ = pending_exit_portal_outside_verified_;
-      exit_geodesic_distance_ = geodesic;
-      exit_confidence_ = confidence;
-      exit_candidate_confirmed_ = true;
-      // 2026-07-23: 最新视频第一弯的稳定墙端约5.06m，只保留为可撤销候选；
-      // 末端真门约11.13m达到锁门里程后冻结中心/法向，并清除仍想跨门的普通活动目标。
-      if (!exit_portal_locked_ &&
-          exit_geodesic_distance_ + 1e-6 >= exit_lock_min_geodesic_distance_) {
-        exit_portal_locked_ = true;
-        active_goal_valid_ = false;
-        search_exhausted_since_ = ros::Time(0);
-        const double locked_yaw =
-            std::atan2(exit_outward_direction_.y(), exit_outward_direction_.x());
-        ROS_ERROR("[exit_mission] FINAL EXIT PORTAL LOCKED center=(%.2f, %.2f), "
-                  "outward_yaw=%.1fdeg path=%.2fm >= %.2fm; stop exit detection "
-                  "and ordinary cross-door frontiers.",
-                  exit_portal_center_.x(), exit_portal_center_.y(),
-                  locked_yaw * 180.0 / M_PI, exit_geodesic_distance_,
-                  exit_lock_min_geodesic_distance_);
-        // 2026-07-28: 最终出口门心/外向法向只在永久锁门瞬间发布一次；锁存话题保证后机晚启动也能收到。
-        geometry_msgs::PoseStamped final_exit_pose;
-        final_exit_pose.header.stamp = now;
-        final_exit_pose.header.frame_id = world_frame_;
-        final_exit_pose.pose.position.x = exit_portal_center_.x();
-        final_exit_pose.pose.position.y = exit_portal_center_.y();
-        final_exit_pose.pose.position.z = exit_portal_center_.z();
-        final_exit_pose.pose.orientation.w = std::cos(0.5 * locked_yaw);
-        final_exit_pose.pose.orientation.z = std::sin(0.5 * locked_yaw);
-        final_exit_pose_pub_.publish(final_exit_pose);
-        ROS_ERROR("[exit_mission] PUBLISH FINAL EXIT relay pose center=(%.2f, %.2f, %.2f) "
-                  "outward_yaw=%.1fdeg.",
-                  exit_portal_center_.x(), exit_portal_center_.y(),
-                  exit_portal_center_.z(), locked_yaw * 180.0 / M_PI);
-      }
-      geometry_msgs::PoseStamped exit_pose;
-      exit_pose.header.stamp = now;
-      exit_pose.header.frame_id = world_frame_;
-      exit_pose.pose.position.x = exit_portal_center_.x();
-      exit_pose.pose.position.y = exit_portal_center_.y();
-      exit_pose.pose.position.z = exit_portal_center_.z();
-      const double exit_yaw = std::atan2(exit_outward_direction_.y(), exit_outward_direction_.x());
-      exit_pose.pose.orientation.w = std::cos(0.5 * exit_yaw);
-      exit_pose.pose.orientation.z = std::sin(0.5 * exit_yaw);
-      exit_pose_pub_.publish(exit_pose);
-      // 2026-07-14: 稳定地图每次推理都会再次确认同一出口，这不是错误；首次确认、
-      // 更远分支或位置明显变化才输出 INFO，其余重复确认仅保留 DEBUG。
-      if (first_confirmation || more_endpoint_side_branch || candidate_shift > 0.25) {
-        // 2026-07-23: SEARCH_CORRIDOR中的稳定结构仍只是通道内墙端证据；只有
-        // buildStage3Goal在任务完成/稳定耗尽后才把它升级为最终出口。
-        ROS_INFO("[exit_mission] WALL-END STRUCTURE stable while INSIDE center=(%.2f, %.2f, %.2f), "
-                 "inside=(%.2f, %.2f), endpoint_hint=(%.2f, %.2f) endpoint_side=%s, "
-                 "outside_space=%d, "
-                 "outward_yaw=%.1fdeg path=%.2fm confidence=%.2f.",
-                 exit_portal_center_.x(), exit_portal_center_.y(), exit_portal_center_.z(),
-                 exit_candidate_.x(), exit_candidate_.y(), exit_endpoint_prediction_.x(),
-                 exit_endpoint_prediction_.y(),
-                 exit_endpoint_outside_verified_ ? "OUT" : "IN",
-                 static_cast<int>(exit_portal_outside_verified_),
-                 exit_yaw * 180.0 / M_PI,
-                 exit_geodesic_distance_, exit_confidence_);
-      } else {
-        ROS_DEBUG_THROTTLE(2.0,
-                           "[exit_mission] stable EXIT candidate (%.2f, %.2f), confidence=%.2f.",
-                           exit_candidate_.x(), exit_candidate_.y(), exit_confidence_);
-      }
-    } else if (exit_candidate_hits_ >= exit_confirmation_count_ &&
-               !pending_exit_portal_outside_verified_) {
-      // 2026-07-28: 只在真正缺少门外FREE证据时拒绝；endpoint内外不再参与门框确认。
-      ROS_ERROR_THROTTLE(1.0,
-                         "[exit_mission] EXIT_REJECT no verified free space beyond portal; "
-                         "keep mapping before confirmation.");
-    }
-  } else {
-    ROS_WARN("[exit_mission] wall-end portal waiting confirmation %d/%d center=(%.2f, %.2f), "
-             "endpoint_hint=(%.2f, %.2f) outside=%d path=%.2fm confidence=%.2f.",
-             exit_candidate_hits_, exit_confirmation_count_, inferred_portal.x(),
-             inferred_portal.y(), inferred_endpoint.x(), inferred_endpoint.y(),
-             static_cast<int>(inferred_endpoint_outside), geodesic, confidence);
-  }
+  exit_candidate_ = pending_exit_candidate_;
+  exit_portal_center_ = pending_exit_portal_center_;
+  exit_outward_direction_ = pending_exit_outward_direction_;
+  exit_portal_outside_verified_ = true;
+  exit_confidence_ = detection.confidence;
+  exit_candidate_confirmed_ = true;
+  exit_portal_locked_ = true;
+  active_goal_valid_ = false;
+  const double exit_yaw = std::atan2(exit_outward_direction_.y(), exit_outward_direction_.x());
+  geometry_msgs::PoseStamped exit_pose;
+  exit_pose.header.stamp = now;
+  exit_pose.header.frame_id = world_frame_;
+  exit_pose.pose.position.x = exit_portal_center_.x();
+  exit_pose.pose.position.y = exit_portal_center_.y();
+  exit_pose.pose.position.z = exit_portal_center_.z();
+  exit_pose.pose.orientation.w = std::cos(0.5 * exit_yaw);
+  exit_pose.pose.orientation.z = std::sin(0.5 * exit_yaw);
+  final_exit_pose_pub_.publish(exit_pose);
+  exit_pose_pub_.publish(exit_pose);
+  ROS_ERROR("[exit_mission] FINAL EXIT LOCKED by bilateral wall disappearance "
+            "center=(%.2f,%.2f,%.2f), yaw=%.1fdeg, confirmations=%d.",
+            exit_portal_center_.x(), exit_portal_center_.y(), exit_portal_center_.z(),
+            exit_yaw * 180.0 / M_PI, exit_candidate_hits_);
   publishSearchState();
 }
 
@@ -3616,68 +3158,17 @@ bool TaskSearchManager::buildStage3Goal(const Eigen::Vector3d& cur_pos, double c
   updateExitCandidate(cur_pos);
 
   if (mission_stage_ == SEARCH_CORRIDOR) {
-    // 2026-07-16: 无摄像头时三类接口不阻塞任务，但也不能把“关闭识别”冒充目标全部找到，
-    // 否则会在第一个中途出口候选处过早切换；当前直降模式由最终出口距离和到达条件独立触发。
-    const bool targets_complete = require_stage2_detections_ && allStage2TargetsFound();
-    if (!targets_complete) {
-      if (!search_exhausted) {
-        // 2026-07-16: false调用也用于正常搜索期刷新出口推测，不能在这里清零耗尽计时；
-        // 只有reportSearchCoverageAvailable确认本轮确有frontier/viewpoint时才取消计时。
-        return false;
-      }
-      if (search_exhausted_since_.isZero()) {
-        search_exhausted_since_ = ros::Time::now();
-        ROS_WARN("[exit_mission] no coverable frontier observed; start %.1fs exhaustion confirmation.",
-                 search_exhausted_confirm_time_);
-        return false;
-      }
-      const double exhausted_duration =
-          (ros::Time::now() - search_exhausted_since_).toSec();
-      if (exhausted_duration < search_exhausted_confirm_time_) {
-        ROS_WARN_THROTTLE(1.0,
-                          "[exit_mission] search exhaustion pending %.1f/%.1fs; keep searching.",
-                          exhausted_duration, search_exhausted_confirm_time_);
-        return false;
-      }
-    }
+    // 出口由局部双侧墙消失确认，不再等待frontier耗尽或入口累计里程。
+    if (require_stage2_detections_ && !allStage2TargetsFound()) return false;
     if (!exit_candidate_confirmed_ || !exit_portal_locked_) {
-      // 2026-07-22: frontier稳定耗尽且门框已有较高累计证据时，去门内安全观察位补扫，
-      // 不再因为一次复核抖动清零后在出口原地safety_hold。
-      if (!exit_candidate_confirmed_ &&
-          buildPendingExitObservationGoal(cur_pos, goal, goal_yaw)) {
-        ROS_WARN_THROTTLE(1.0,
-                          "[exit_mission] pending portal %d/%d: use inside observation "
-                          "goal (%.2f, %.2f, %.2f), yaw=%.1fdeg.",
-                          exit_candidate_hits_, exit_confirmation_count_, goal.x(), goal.y(),
-                          goal.z(), goal_yaw * 180.0 / M_PI);
-        return true;
-      }
-      // 2026-07-23: 中途5/5墙端尚未达到最终锁门里程时不能因一次frontier耗尽抢占任务；
-      // 保持可撤销，继续沿通道推进寻找真正末端。
-      if (exit_candidate_confirmed_ && !exit_portal_locked_) {
-        ROS_WARN_THROTTLE(
-            1.0,
-            "[exit_mission] stable wall-end path %.2fm is below final lock %.2fm; "
-            "keep corridor search and allow it to be passed/revoked.",
-            exit_geodesic_distance_, exit_lock_min_geodesic_distance_);
-      }
-      return false;
+      return search_exhausted && buildPendingExitObservationGoal(cur_pos, goal, goal_yaw);
     }
-    // 2026-07-22: 不使用固定9m里程猜最终出口；必须由累计地图证明预测点位于门框之后的外部FREE分支。
-    if (!exit_portal_outside_verified_) {
-      ROS_WARN_THROTTLE(1.0,
-                        "[exit_mission] portal exists but door-outward FREE space is not verified; "
-                        "keep corridor search.");
-      return false;
-    }
-
-    // 2026-07-21: 删除“旧出口则在当前位置直降”的旁路；确认对象是门框，只能先去门内观察点。
+    if (!exit_portal_outside_verified_) return false;
     mission_stage_ = EXIT_APPROACH_INSIDE;
     mission_stage_start_ = ros::Time::now();
     active_goal_valid_ = false;
-    ROS_ERROR("[exit_mission] stage SEARCH_CORRIDOR -> EXIT_APPROACH_INSIDE, reason=%s.",
-              targets_complete ? "all required stage-2 targets found"
-                               : "search coverage exhausted");
+    ROS_ERROR("[exit_mission] SEARCH_CORRIDOR -> EXIT_APPROACH_INSIDE: "
+              "bilateral walls disappeared and exit is confirmed.");
   }
 
   if (mission_stage_ == EXIT_APPROACH_INSIDE) {
@@ -3896,14 +3387,10 @@ void TaskSearchManager::publishSearchState() {
       const int stage_index = std::max(
           0, std::min(static_cast<int>(mission_stage_),
                       static_cast<int>(sizeof(stage_names) / sizeof(stage_names[0])) - 1));
-      exit_stream << "EXIT DOOR CONFIRMED / " << stage_names[stage_index]
-                  << " path=" << std::fixed << std::setprecision(1)
-                  << exit_geodesic_distance_ << "m";
+      exit_stream << "WALL-END EXIT / " << stage_names[stage_index];
     } else if (confirmed && exit_portal_locked_) {
       // 2026-07-23: 明确区分可撤销墙端与已冻结最终门，方便RViz确认检测已经停止。
-      exit_stream << "EXIT DOOR LOCKED / WAIT STAGE path="
-                  << std::fixed << std::setprecision(1)
-                  << exit_geodesic_distance_ << "m";
+      exit_stream << "WALL-END EXIT LOCKED";
     } else if (confirmed) {
       exit_stream << "WALL-END READY / STILL INSIDE";
     } else {
@@ -4045,8 +3532,7 @@ void TaskSearchManager::publishSearchState() {
   stream << stage_names[static_cast<int>(mission_stage_)]
          << " color=" << targets_[0].found << " qrcode=" << targets_[1].found
          << " thermal=" << targets_[2].found << " exit=" << exit_candidate_confirmed_
-         << " endpoint_hint=" << (exit_candidate_hits_ > 0)
-         << " endpoint_outside=" << exit_endpoint_outside_verified_
+         << " wall_end_hits=" << exit_candidate_hits_
          << " landing_aruco=" << final_landing_marker_.found
          << " landing=" << landing_requested_
          << " visited=" << visited_positions_.size();

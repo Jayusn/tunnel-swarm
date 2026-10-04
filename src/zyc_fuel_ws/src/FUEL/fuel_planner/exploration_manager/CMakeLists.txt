@@ -83,6 +83,10 @@ target_link_libraries(load_obj
 )
 
 if(CATKIN_ENABLE_TESTING)
+  add_executable(wall_end_detection_test
+    test/wall_end_detection_test.cpp src/task_search_manager.cpp)
+  target_link_libraries(wall_end_detection_test ${catkin_LIBRARIES})
+  add_test(NAME wall_end_detection_test COMMAND wall_end_detection_test)
   add_executable(entry_forward_policy_test test/entry_forward_policy_test.cpp)
   add_test(NAME entry_forward_policy_test COMMAND entry_forward_policy_test)
   add_executable(odometry_review_test test/odometry_review_test.cpp)

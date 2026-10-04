@@ -70,7 +70,7 @@ public:
   void recordSelectedGoal(const Eigen::Vector3d& goal);
   void reportGoalFailure(const Eigen::Vector3d& goal);
   void clearActiveGoal() { active_goal_valid_ = false; }
-  // 2026-07-13: search_exhausted 只负责允许切换阶段，出口位置始终由地图拓扑决定。
+  // 双侧墙消失确认后直接切入穿越；search_exhausted仅用于未确认候选的原有补扫。
   bool buildStage3Goal(const Eigen::Vector3d& cur_pos, double cur_yaw, bool search_exhausted,
                        Eigen::Vector3d& goal, double& goal_yaw);
   // 2026-07-16: 仍有frontier/viewpoint时明确撤销“搜索耗尽”计时，失败冷却不能被误当成终点条件。
@@ -88,8 +88,7 @@ public:
     return mission_stage_ == EXIT_APPROACH_INSIDE || mission_stage_ == CROSS_EXIT;
   }
   bool enabled() const { return enabled_; }
-  // 2026-07-23: 稳定且里程足够远的最终门锁存后先冻结普通frontier，等待耗尽确认切入
-  // 出口状态；中途短里程墙端仍允许被越过/撤销，不能抢占普通通道搜索。
+  // 双侧墙消失稳定确认后冻结普通frontier，由出口穿越目标接管。
   bool finalExitFrontierGuardActive() const {
     return exit_portal_locked_ ||
            mission_stage_ == EXIT_APPROACH_INSIDE || mission_stage_ == CROSS_EXIT;
@@ -104,6 +103,8 @@ public:
   }
 
 private:
+  friend class TaskSearchManagerTest;
+
   struct TargetRecord {
     bool found{false};
     geometry_msgs::PoseStamped pose;
@@ -207,7 +208,7 @@ private:
   ros::Publisher marker_pub_;
   ros::Publisher status_pub_;
   ros::Publisher exit_pose_pub_;
-  ros::Publisher final_exit_pose_pub_;  // 2026-07-28: 只发布达到锁门里程的最终出口，供后机接力。
+  ros::Publisher final_exit_pose_pub_;  // 稳定确认双侧墙消失时发布锁存出口，供后机接力。
   ros::Publisher landing_target_pub_;
   ros::Publisher landing_request_pub_;
 
