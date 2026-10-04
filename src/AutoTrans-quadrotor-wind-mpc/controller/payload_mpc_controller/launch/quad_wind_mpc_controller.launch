@@ -3,6 +3,9 @@
   <arg name="odom_topic" default="/Odometry"/>
   <!-- 通用入口默认共用里程计；实机入口可将该参数覆盖为 MAVROS 融合里程计。 -->
   <arg name="force_attitude_odom_topic" default="$(arg odom_topic)"/>
+  <!-- PX4 原生位置环的反馈与恢复锁点必须共用 PX4 local 坐标系。 -->
+  <arg name="local_pose_topic" default="/mavros/local_position/pose"/>
+  <arg name="position_setpoint_topic" default="/mavros/setpoint_raw/local"/>
   <arg name="imu_topic" default="/mavros/imu/data"/>
   <!-- MAVROS topics and services are supplied by the vehicle integration launch. -->
   <arg name="state_topic" default="/mavros/state"/>
@@ -56,6 +59,8 @@
     <remap from="~odom" to="$(arg odom_topic)"/>
     <!-- Only the force estimator consumes this attitude source. -->
     <remap from="~force_attitude_odom" to="$(arg force_attitude_odom_topic)"/>
+    <remap from="~mavros_local_pose" to="$(arg local_pose_topic)"/>
+    <remap from="~recovery_position_setpoint" to="$(arg position_setpoint_topic)"/>
     <!-- Body-frame acceleration and angular velocity from MAVROS IMU. -->
     <remap from="~drone_imu/data" to="$(arg imu_topic)"/>
 

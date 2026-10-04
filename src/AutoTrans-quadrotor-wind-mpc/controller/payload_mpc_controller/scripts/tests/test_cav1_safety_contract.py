@@ -108,6 +108,48 @@ def test_nmpc_recovery_latches_hover_and_gates_trajectories():
     assert "planning_restart_pub_.publish(restart_msg);" in fsm
 
 
+def test_nmpc_recovery_hands_output_to_px4_position_loop():
+    fsm_h = (INCLUDE / "mpc_fsm.h").read_text(encoding="utf-8")
+    fsm = (SRC / "mpc_fsm.cpp").read_text(encoding="utf-8")
+    node = (SRC / "mpc_controller_node.cpp").read_text(encoding="utf-8")
+
+    assert "mavros_msgs/PositionTarget.h" in fsm_h
+    assert "mavrosLocalPoseCallback" in fsm_h
+    assert 'nh.subscribe<geometry_msgs::PoseStamped>("mavros_local_pose"' in node
+    assert 'advertise<mavros_msgs::PositionTarget>("recovery_position_setpoint"' in node
+    assert "recovery_local_position_ = latest_mavros_local_position_;" in fsm
+    assert "recovery_local_yaw_ = latest_mavros_local_yaw_;" in fsm
+    assert "if (!mavros_local_pose_valid_)" in fsm
+    assert 'enter_odom_failsafe("NMPC 求解失败且从未收到有效 MAVROS 本地位姿")' in fsm
+
+    pose_callback = fsm.split("void MPCFSM::mavrosLocalPoseCallback", 1)[1]
+    pose_callback = pose_callback.split("void MPCFSM::safetyHoldCallback", 1)[0]
+    assert "position.allFinite()" in pose_callback
+    assert "attitude.coeffs().allFinite()" in pose_callback
+    assert "mavros_local_pose_valid_ =" in pose_callback
+    assert "rcv_stamp" not in pose_callback
+
+    recovery_entry = fsm.split("void MPCFSM::beginMpcRecovery", 1)[1]
+    recovery_entry = recovery_entry.split("void MPCFSM::processMpcRecovery", 1)[0]
+    assert "recovery_local_position_ = latest_mavros_local_position_;" in recovery_entry
+    assert "recovery_local_target_valid_ = true;" in recovery_entry
+
+    output = fsm.split("if (fsm_state == AUTO_HOVER || fsm_state == CMD_CTRL", 1)[1]
+    output = output.split("else if (fsm_state == MANUAL_CTRL)", 1)[0]
+    assert "if (mpc_recovery_active_)" in output
+    assert "publish_recovery_position_ctrl(now_time);" in output
+    assert "canReuseLastValidMpc" not in output
+    assert "publish_recovery_attitude_ctrl" not in output
+
+    position_output = fsm.split("void MPCFSM::publish_recovery_position_ctrl", 1)[1]
+    position_output = position_output.split("void MPCFSM::publish_recovery_attitude_ctrl", 1)[0]
+    assert "FRAME_LOCAL_NED" in position_output
+    assert "IGNORE_VX" in position_output
+    assert "IGNORE_AFX" in position_output
+    assert "IGNORE_YAW_RATE" in position_output
+    assert "recovery_position_pub_.publish(msg);" in position_output
+
+
 def test_trajectory_order_uses_stamp_and_id_is_diagnostic_only():
     input_cpp = (SRC / "mpc_input.cpp").read_text(encoding="utf-8")
     assert "pMsg->header.stamp <= last_trajectory_stamp" in input_cpp

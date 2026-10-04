@@ -17,6 +17,7 @@
 #include <mavros_msgs/SetMode.h>
 #include <mavros_msgs/CommandLong.h>
 #include <mavros_msgs/AttitudeTarget.h>
+#include <mavros_msgs/PositionTarget.h>
 #include <mavros_msgs/ESCStatus.h>
 #include "multi_optimization_based_force_estimator.hpp"
 
@@ -45,6 +46,7 @@ namespace PayloadMPC
 
 		ros::Publisher traj_start_trigger_pub;
 		ros::Publisher ctrl_FCU_pub;
+		ros::Publisher recovery_position_pub_;
 		ros::Publisher pub_force_marker_, pub_force_, pub_force_applied_;
 
 		ros::Publisher debug_pub; // debug
@@ -89,6 +91,7 @@ namespace PayloadMPC
 		bool recv_new_odom();
 		void addNewForceObseverState();
 		void odomCallback(const nav_msgs::Odometry::ConstPtr &msg);
+		void mavrosLocalPoseCallback(const geometry_msgs::PoseStamped::ConstPtr &msg);
 		void safetyHoldCallback(const std_msgs::Bool::ConstPtr &msg);
 
 	private:
@@ -134,6 +137,12 @@ namespace PayloadMPC
 		ros::Time mpc_recovery_start_time_{0};
 		ros::Time last_mpc_recovery_reset_time_{0};
 		int mpc_recovery_success_count_{0};
+		Eigen::Vector3d latest_mavros_local_position_{Eigen::Vector3d::Zero()};
+		double latest_mavros_local_yaw_{0.0};
+		bool mavros_local_pose_valid_{false};
+		Eigen::Vector3d recovery_local_position_{Eigen::Vector3d::Zero()};
+		double recovery_local_yaw_{0.0};
+		bool recovery_local_target_valid_{false};
 
 		long int rmse_cnt_ = 0;
 		double rmse_sum_ = 0;
@@ -203,6 +212,7 @@ namespace PayloadMPC
 
 		void publish_bodyrate_ctrl(const Eigen::Ref<const Eigen::Matrix<real_t, kInputSize, 1>> predicted_input,
 									   const ros::Time &stamp);
+		void publish_recovery_position_ctrl(const ros::Time &stamp);
 		void publish_recovery_attitude_ctrl(const ros::Time &stamp);
 		bool canReuseLastValidMpc(const ros::Time &now) const;
 		void publish_manual_ctrl(const ros::Time &stamp);

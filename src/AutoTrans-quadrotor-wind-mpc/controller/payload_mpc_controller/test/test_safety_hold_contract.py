@@ -45,3 +45,12 @@ def test_cmd_control_never_executes_trajectory_while_hold_is_active():
     assert "controller_.setHoverReference" in hold_guard
     assert "exec_traj_state_ = HOVER;" in hold_guard
     assert "return;" in hold_guard
+
+
+def test_recovery_position_topics_are_remappable_for_uav1():
+    assert '<arg name="local_pose_topic" default="/mavros/local_position/pose"/>' in CONTROLLER_LAUNCH
+    assert '<arg name="position_setpoint_topic" default="/mavros/setpoint_raw/local"/>' in CONTROLLER_LAUNCH
+    assert '<remap from="~mavros_local_pose" to="$(arg local_pose_topic)"/>' in CONTROLLER_LAUNCH
+    assert '<remap from="~recovery_position_setpoint" to="$(arg position_setpoint_topic)"/>' in CONTROLLER_LAUNCH
+    assert '<arg name="local_pose_topic" default="/UAV1/mavros/local_position/pose"/>' in BRIDGE_LAUNCH
+    assert '<arg name="position_setpoint_topic" default="/UAV1/mavros/setpoint_raw/local"/>' in BRIDGE_LAUNCH

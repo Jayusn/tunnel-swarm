@@ -12,6 +12,8 @@
   <arg name="imu_topic" default="/UAV1/livox/imu_mps2"/>
   <!-- NMPC、推力模型与外力估计统一使用 FAST-LIO 高频姿态，与位置、速度和轨迹保持同一世界系。 -->
   <arg name="force_attitude_odom_topic" default="$(arg odom_topic)"/>
+  <arg name="local_pose_topic" default="/UAV1/mavros/local_position/pose"/>
+  <arg name="position_setpoint_topic" default="/UAV1/mavros/setpoint_raw/local"/>
   <arg name="state_topic" default="/UAV1/mavros/state"/>
   <arg name="extended_state_topic" default="/UAV1/mavros/extended_state"/>
   <arg name="rc_topic" default="/UAV1/mavros/rc/in"/>
@@ -63,6 +65,8 @@
     <arg name="safety_hold_topic" value="$(arg safety_hold_topic)"/>
     <arg name="imu_topic" value="$(arg imu_topic)"/>
     <arg name="force_attitude_odom_topic" value="$(arg force_attitude_odom_topic)"/>
+    <arg name="local_pose_topic" value="$(arg local_pose_topic)"/>
+    <arg name="position_setpoint_topic" value="$(arg position_setpoint_topic)"/>
     <arg name="state_topic" value="$(arg state_topic)"/>
     <arg name="extended_state_topic" value="$(arg extended_state_topic)"/>
     <arg name="rc_topic" value="$(arg rc_topic)"/>
