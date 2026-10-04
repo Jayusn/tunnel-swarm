@@ -12,6 +12,8 @@
   <arg name="rc_topic" default="/UAV0/mavros/rc/in"/>
   <arg name="esc_status_topic" default="/UAV0/mavros/esc_status"/>
   <arg name="setpoint_topic" default="/UAV0/mavros/setpoint_raw/attitude"/>
+  <arg name="mavros_local_pose_topic" default="/UAV0/mavros/local_position/pose"/>
+  <arg name="recovery_position_setpoint_topic" default="/UAV0/mavros/setpoint_raw/local"/>
   <arg name="reboot_service" default="/UAV0/mavros/cmd/command"/>
   <arg name="set_mode_service" default="/UAV0/mavros/set_mode"/>
   <arg name="cmd_trigger_topic" default="/UAV0/hummingbird/goal"/>
@@ -69,6 +71,8 @@
     <remap from="/mavros/battery" to="$(arg battery_topic)"/>
     <remap from="/mavros/esc_status" to="$(arg esc_status_topic)"/>
     <remap from="/mavros/setpoint_raw/attitude" to="$(arg setpoint_topic)"/>
+    <remap from="~mavros_local_pose" to="$(arg mavros_local_pose_topic)"/>
+    <remap from="~recovery_position_setpoint" to="$(arg recovery_position_setpoint_topic)"/>
     <remap from="/mavros/cmd/command" to="$(arg reboot_service)"/>
     <remap from="/mavros/set_mode" to="$(arg set_mode_service)"/>
 

@@ -44,6 +44,11 @@ int main(int argc, char **argv)
                                          ros::TransportHints().tcpNoDelay());
 
     ros::Subscriber force_attitude_odom_sub;
+    ros::Subscriber mavros_local_pose_sub =
+        nh.subscribe<geometry_msgs::PoseStamped>("mavros_local_pose", 20,
+                                                &PayloadMPC::MPCFSM::mavrosLocalPoseCallback,
+                                                &fsm,
+                                                ros::TransportHints().tcpNoDelay());
     if (!param.force_estimator_param_.force_attitude_from_odom)
     {
         force_attitude_odom_sub =
@@ -117,6 +122,8 @@ int main(int argc, char **argv)
     fsm.planning_stop_pub_ = nh.advertise<std_msgs::Empty>("/planning_stop_trigger", 10);
     fsm.planning_restart_pub_ = nh.advertise<std_msgs::Empty>("/planning_restart_trigger", 10);
     fsm.ctrl_FCU_pub = nh.advertise<mavros_msgs::AttitudeTarget>("/mavros/setpoint_raw/attitude", 10);
+    fsm.recovery_position_pub_ =
+        nh.advertise<mavros_msgs::PositionTarget>("recovery_position_setpoint", 10);
     fsm.traj_start_trigger_pub = nh.advertise<geometry_msgs::PoseStamped>("/traj_start_trigger", 10);
     fsm.des_yaw_pub = nh.advertise<nav_msgs::Odometry>("/des_yaw_pub", 10);
 

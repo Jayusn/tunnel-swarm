@@ -101,6 +101,23 @@ namespace
 
 namespace PayloadMPC
 {
+	void MPCFSM::mavrosLocalPoseCallback(const geometry_msgs::PoseStamped::ConstPtr &msg)
+	{
+		const Eigen::Vector3d position(
+			msg->pose.position.x, msg->pose.position.y, msg->pose.position.z);
+		const Eigen::Quaterniond attitude(
+			msg->pose.orientation.w, msg->pose.orientation.x,
+			msg->pose.orientation.y, msg->pose.orientation.z);
+		if (!position.allFinite() || !attitude.coeffs().allFinite() ||
+			attitude.norm() <= 1.0e-6)
+		{
+			ROS_WARN_THROTTLE(1.0, "[NMPC恢复] 忽略无效的 MAVROS 本地位姿。");
+			return;
+		}
+		latest_mavros_local_position_ = position;
+		latest_mavros_local_yaw_ = get_yaw_from_quaternion(attitude.normalized());
+		mavros_local_pose_valid_ = std::isfinite(latest_mavros_local_yaw_);
+	}
 
 	MPCFSM::MPCFSM(const ros::NodeHandle &nh, MpcParams &params, MpcController &controller) : nh_(nh),
 																  params_(params),
@@ -390,8 +407,6 @@ namespace PayloadMPC
 		{
 			beginMpcRecovery(now_time, "FAST-LIO 里程计连续尖峰");
 		}
-		else if (!direct_auto_land_active_ && automatic_state && !odomControlStateValid(now_time))
-			startOdomFailsafe(now_time);
 		else if (!direct_auto_land_active_ && automatic_state && state_fresh &&
 			state_data.current_state.mode != "OFFBOARD")
 		{
@@ -710,14 +725,12 @@ namespace PayloadMPC
 		{
 			if (!mpc_recovery_active_ && !controller_.lastMpcSolveSuccessful())
 				beginMpcRecovery(now_time);
-			const bool use_last_valid_mpc =
-				!controller_.lastMpcSolveSuccessful() && canReuseLastValidMpc(now_time);
-			if (use_last_valid_mpc)
-				publish_bodyrate_ctrl(controller_.lastValidControlInput(), now_time);
-			else if (mpc_recovery_active_ && !controller_.lastMpcSolveSuccessful())
-				publish_recovery_attitude_ctrl(now_time);
-			else
+			if (mpc_recovery_active_)
+				publish_recovery_position_ctrl(now_time);
+			else if (fsm_state != MANUAL_CTRL)
 				publish_bodyrate_ctrl(mpc_predicted_inputs_.col(0), now_time);
+			else if (odom_failsafe_active_)
+				publishFailsafeHold(now_time);
 			publishPrediction(controller_.reference_states_, mpc_predicted_states_, now_time, controller_.getTimeStep());
 		}
 			else if (fsm_state == MANUAL_CTRL)
@@ -1610,6 +1623,7 @@ namespace PayloadMPC
 		clearAppliedDisturbance();
 		mpc_recovery_active_ = false;
 		direct_auto_land_active_ = false;
+		recovery_local_target_valid_ = false;
 		planning_stop_sent_ = false;
 		mpc_recovery_success_count_ = 0;
 		last_mpc_recovery_reset_time_ = ros::Time(0);
@@ -1639,14 +1653,18 @@ namespace PayloadMPC
 	{
 		if (mpc_recovery_active_)
 			return;
-		if (!mpcControlStateValid(now) || !est_state_.allFinite())
+		if (!mavros_local_pose_valid_)
 		{
+			ROS_ERROR("[NMPC恢复] 从未收到有效 MAVROS 本地位姿，无法锁存 PX4 位置目标。");
 			startOdomFailsafe(now);
 			return;
 		}
 
 		hover_pose_ = odom_data.p;
 		hover_yaw_ = get_yaw_from_quaternion(force_attitude_odom_data.q);
+		recovery_local_position_ = latest_mavros_local_position_;
+		recovery_local_yaw_ = latest_mavros_local_yaw_;
+		recovery_local_target_valid_ = true;
 		last_set_hover_pose_time = now;
 		trajectory_data.blockTrajectoryAcceptance();
 		cmd_data.rcv_stamp = ros::Time(0);
@@ -1666,9 +1684,10 @@ namespace PayloadMPC
 				"[安全] NMPC 求解器重置未完成，继续锁存悬停位置并等待下次恢复重试。");
 			return;
 		}
-		ROS_ERROR("[安全] %s：锁存悬停点 (%.3f, %.3f, %.3f)，进入 MPC_RECOVERY_HOVER；不自动降落。",
+		ROS_ERROR("[安全] %s：锁存 FAST-LIO 恢复点 (%.3f, %.3f, %.3f) 和 PX4 本地锁点 (%.3f, %.3f, %.3f)，故障期间由 PX4 位置环悬停。",
 			reason == nullptr ? "NMPC 求解失败" : reason,
-			hover_pose_.x(), hover_pose_.y(), hover_pose_.z());
+			hover_pose_.x(), hover_pose_.y(), hover_pose_.z(),
+			recovery_local_position_.x(), recovery_local_position_.y(), recovery_local_position_.z());
 	}
 
 	void MPCFSM::processMpcRecovery(const ros::Time &now)
@@ -1709,6 +1728,7 @@ namespace PayloadMPC
 		{
 			mpc_recovery_active_ = false;
 			exec_traj_state_ = HOVER;
+			recovery_local_target_valid_ = false;
 			cmd_data.rcv_stamp = ros::Time(0);
 			last_entry_command_stamp_ = ros::Time(0);
 			trajectory_data.allowTrajectoryAcceptanceAfter(now);
@@ -1734,7 +1754,7 @@ namespace PayloadMPC
 			last_mpc_recovery_reset_time_ = now;
 			if (!controller_.resetForHover(est_state_, hover_pose_, hover_yaw_))
 				ROS_ERROR_THROTTLE(5.0,
-					"[NMPC恢复] 周期性完整重置失败，继续发布拉平姿态并重试。");
+					"[NMPC恢复] 周期性完整重置失败，继续发布 PX4 位置锁点并重试。");
 		}
 	}
 
@@ -1784,7 +1804,7 @@ namespace PayloadMPC
 		odom_failsafe_active_ = true;
 		odom_failsafe_start_ = now;
 		fsm_state = MANUAL_CTRL;
-		ROS_ERROR("[安全] FAST-LIO 里程计超时或状态无效：停止 NMPC，最多保持最后安全输出 %.1f s，随后停止 setpoint，等待 PX4 OFFBOARD 失联保护进入 Land。",
+		ROS_ERROR("[安全] 未收到有效 MAVROS 本地位姿，无法执行位置接管：停止 NMPC，最多保持最后安全输出 %.1f s，随后停止 setpoint，等待 PX4 OFFBOARD 失联保护。",
 			safe_output_hold_time);
 	}
 
@@ -2289,6 +2309,29 @@ namespace PayloadMPC
 			params_.safety_.mpc_recovery_exit_tilt_deg * kDegToRad,
 			params_.safety_.mpc_recovery_last_valid_max_bodyrate,
 			params_.min_thrust_, params_.max_thrust_);
+	}
+
+	void MPCFSM::publish_recovery_position_ctrl(const ros::Time &stamp)
+	{
+		if (!recovery_local_target_valid_)
+			return;
+		mavros_msgs::PositionTarget msg;
+		msg.header.stamp = stamp;
+		msg.header.frame_id = "FCU";
+		msg.coordinate_frame = mavros_msgs::PositionTarget::FRAME_LOCAL_NED;
+		// MAVROS 将 ROS ENU 位置和偏航转换为 PX4 NED，不在此处重复转换。
+		msg.type_mask = mavros_msgs::PositionTarget::IGNORE_VX |
+			mavros_msgs::PositionTarget::IGNORE_VY |
+			mavros_msgs::PositionTarget::IGNORE_VZ |
+			mavros_msgs::PositionTarget::IGNORE_AFX |
+			mavros_msgs::PositionTarget::IGNORE_AFY |
+			mavros_msgs::PositionTarget::IGNORE_AFZ |
+			mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
+		msg.position.x = recovery_local_position_.x();
+		msg.position.y = recovery_local_position_.y();
+		msg.position.z = recovery_local_position_.z();
+		msg.yaw = recovery_local_yaw_;
+		recovery_position_pub_.publish(msg);
 	}
 
 	void MPCFSM::publish_recovery_attitude_ctrl(const ros::Time &stamp)
