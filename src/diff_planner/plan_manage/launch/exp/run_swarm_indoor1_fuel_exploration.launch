@@ -390,103 +390,33 @@
     <rosparam param="/exploration_node/mission/task_search/exit/rc_trigger/low_pwm">1300</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/rc_trigger/high_pwm">1800</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/rc_trigger/hold_sec">0.5</rosparam>
-    <!-- 2026-07-13: 第三阶段从累计 SDFMap 计算入口到可达自由区的拓扑最远端，稳定确认后去出口扫描终点二维码。 -->
-    <rosparam param="/exploration_node/mission/task_search/exit/grid_resolution">0.20</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/inference_period">1.0</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/min_geodesic_distance">4.0</rosparam>
-    <!-- 2026-07-23: 5/5局部墙端只算候选；累计里程>=8m才永久锁门并停止继续检测。
-         当前第一弯约5.06m不会锁，末端真出口约11.13m会锁。 -->
-    <rosparam param="/exploration_node/mission/task_search/exit/lock_min_geodesic_distance">8.0</rosparam>
-    <!-- 2026-07-20: 保留原地图拓扑终点算法，仅收紧连续稳定门槛，降低偶发局部最远点被三帧锁存的概率。 -->
-    <rosparam param="/exploration_node/mission/task_search/exit/stability_radius">0.60</rosparam>
-    <!-- 2026-07-28: 出口门候选恢复为连续确认5次，降低通道弧形墙和零散缺口被提前确认为出口的风险。 -->
-    <rosparam param="/exploration_node/mission/task_search/exit/confirmation_count">5</rosparam>
-    <!-- 2026-07-28: 最终门允许在门平面2m内完成5次确认，提前锁定出口并给出门/降落流程留足时间。 -->
-    <rosparam param="/exploration_node/mission/task_search/exit/confirmation_max_distance">2.0</rosparam>
-    <!-- 2026-07-28: 末段入口拓扑断链时，仅在累计路程>10m、最近航迹近似直线且门面1m内启用局部双墙终止降级。 -->
-    <rosparam param="/exploration_node/mission/task_search/exit/near_fallback_min_travel">10.0</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/near_fallback_max_distance">1.0</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/near_fallback_max_turn_deg">25.0</rosparam>
+    <!-- 局部受限通道向双侧开阔区域过渡；未知采样计入分母，确认仅累计新地图。 -->
+    <rosparam param="/exploration_node/mission/task_search/exit/search_max_forward">2.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/side_clearance">2.10</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/min_open_ratio">0.80</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/sector_ray_count">11</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/sector_half_angle_deg">20.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/inside_length">0.90</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/outside_length">1.20</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/confirmation_angle_deg">15.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/footprint_half_height">0.15</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/inference_period">0.50</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/stability_radius">0.30</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/confirmation_count">3</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/confirmation_max_distance">1.0</rosparam>
     <!-- 2026-07-24: 任一出口候选出现后至少2.5秒保持沿路径前视，禁止快速摆头破坏连续雷达门切面。 -->
     <rosparam param="/exploration_node/mission/task_search/exit/verification_yaw_hold_time">2.5</rosparam>
-    <!-- 2026-07-22: 出口与入口相反，只允许更靠拓扑远端且通过双墙终止复核的截面修正出口。 -->
-    <rosparam param="/exploration_node/mission/task_search/exit/supersede_confirmation_count">2</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/supersede_min_path_increase">0.60</rosparam>
-    <!-- 2026-07-20: 无可覆盖frontier持续5秒才允许推断搜索结束，短时过滤抖动不会抢占正常探索。 -->
-    <rosparam param="/exploration_node/mission/task_search/exit/search_exhausted_confirm_time">5.0</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/standoff">0.45</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/arrive_distance">0.50</rosparam>
-    <!-- 2026-07-21: 拓扑远端仅为提示；左右0.42~1.10m内须找到门框边界，门外无近墙后才确认出口。 -->
-    <rosparam param="/exploration_node/mission/task_search/exit/portal_min_half_width">0.42</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/portal_max_half_width">1.10</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/portal_side_sample_step">0.10</rosparam>
-    <!-- 2026-07-22: 门洞核心只检查到门框内侧0.10m，避免0.06m XY采样邻域同时碰到真实门柱。 -->
-    <rosparam param="/exploration_node/mission/task_search/exit/portal_core_margin">0.10</rosparam>
     <!-- 2026-08-08: 正常转弯由连续航迹逐步更新推进方向；单段接近反向视为短回撤，禁止翻转门内外语义。 -->
     <rosparam param="/exploration_node/mission/task_search/exit/progress_reverse_reject_deg">120.0</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/max_direction_jump_deg">100.0</rosparam>
     <!-- 穿门后前1.5m允许A*横向绕开门柱/杆件，仍保留占据和机体碰撞检查。 -->
     <rosparam param="/exploration_node/mission/task_search/entry_path_direction_grace_distance">1.50</rosparam>
-    <!-- 2026-07-22: z退化时只认0.18~1.55m工作带内跨至少0.18m的多层占据，地板/孤立点不再冒充门柱。 -->
-    <rosparam param="/exploration_node/mission/task_search/exit/column_lower_margin">0.15</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/column_upper_margin">0.15</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/column_sample_step">0.10</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/column_min_z">0.18</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/column_max_z">1.55</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/column_min_occupied_layers">2</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/column_min_vertical_span">0.18</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/transition_inside_probe">0.45</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/transition_outside_probe">0.65</rosparam>
-    <!-- 2026-07-22: 出口不要求门外是无限开放区；先排除普通拐弯，再验证门内左右连续墙，
-         以及门外多个已观测FREE截面上旧双墙同步终止。横向框只作辅助，不让障碍物单独定义门。 -->
-    <rosparam param="/exploration_node/mission/task_search/exit/max_centerline_turn_deg">35.0</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/turn_window_distance">0.60</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/wall_support_length">0.90</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/wall_support_min_ratio">0.55</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/frame_outward_support_length">0.30</rosparam>
-    <!-- 2026-07-22: 连续四个门外截面至少三个双侧墙终止/外移且75%采样为已知FREE；
-         门内墙距需在0.25m内稳定，排除柱子、箱体和单帧点云空洞。 -->
-    <rosparam param="/exploration_node/mission/task_search/exit/min_bilateral_wall_shift">0.18</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/wall_track_width_tolerance">0.25</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/wall_end_probe_step">0.25</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/wall_end_probe_count">4</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/wall_end_min_changed_count">3</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/outside_min_free_ratio">0.75</rosparam>
     <!-- 2026-07-22: 候选门平面落后当前机超过0.35m立即淘汰，单通道绝不返回历史截面找出口。 -->
     <rosparam param="/exploration_node/mission/task_search/exit/candidate_max_behind_distance">0.35</rosparam>
-    <!-- 2026-07-23: 拓扑中心线已判为正常拐弯的0.90m邻域禁止局部雷达再次确认成出口。 -->
-    <rosparam param="/exploration_node/mission/task_search/exit/normal_turn_reject_radius">0.90</rosparam>
-    <!-- 2026-07-23: 出口优先使用当前机附近累计占据地图的相对高度XY切面判断双墙共同终止；
-         body雷达作为地图未成形时的补充，不能否决RViz中已清晰成形的双墙断面。 -->
-    <rosparam param="/exploration_node/mission/task_search/exit/radar/enabled">false</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/radar/body_cloud_topic">/UAV0/fast_lio/cloud_registered_body</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/radar/accumulation_time">1.50</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/radar/max_elevation_deg">12.0</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/radar/min_range">0.25</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/radar/max_range">12.0</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/radar/max_points_per_frame">1800</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/radar/search_min_forward">-0.15</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/radar/search_max_forward">1.25</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/radar/search_step">0.10</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/radar/wall_bin_step">0.12</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/radar/inside_length">0.90</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/radar/min_inside_bins">5</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/radar/wall_track_tolerance">0.22</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/radar/min_wall_shift">0.18</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/radar/outside_probe_count">4</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/radar/min_changed_probes">3</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/radar/clear_half_width">0.28</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/radar/clear_depth">0.80</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/radar/min_clear_ray_frames">2</rosparam>
-    <!-- 2026-07-22: 终点预测点只作拓扑锚点；门后累计FREE路径至少1m才证明其位于通道外。 -->
-    <rosparam param="/exploration_node/mission/task_search/exit/endpoint_outside_route_min_length">1.00</rosparam>
-    <!-- 2026-07-22: 单次门洞复核失败只衰减一次；3/5以上候选在frontier耗尽时允许门内0.25m局部补扫。 -->
-    <rosparam param="/exploration_node/mission/task_search/exit/candidate_reject_decay">1</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/pending_observation_min_hits">3</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/pending_observation_lateral_offset">0.25</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/pending_observation_min_move">0.22</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/outside_probe_distance">0.90</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/outside_min_nonoccupied_samples">3</rosparam>
     <!-- 穿门按0.35m滚动，只飞累计地图已标FREE的点；里程计原点越过门平面0.60m后才允许切换到Diff搜索。 -->
     <rosparam param="/exploration_node/mission/task_search/exit/cross_step">0.35</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/cross_target_distance">0.90</rosparam>
