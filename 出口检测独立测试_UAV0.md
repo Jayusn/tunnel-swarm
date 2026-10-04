@@ -1,5 +1,65 @@
 # UAV0 出口检测独立测试
 
+## 快速启动：手持设备
+
+按顺序打开终端，每个代码块直接复制到对应终端。雷达或 FAST-LIO 已运行时，跳过对应步骤。
+
+**终端 1：雷达**
+
+```bash
+source /opt/ros/noetic/setup.bash
+source ~/match_ws/devel/setup.bash
+roslaunch livox_ros_driver2 msg_MID360.launch vehicle_ns:=UAV0 msg_frame_id:=UAV0/livox_frame publish_freq:=30.0
+```
+
+**终端 2：FAST-LIO**
+
+```bash
+source /opt/ros/noetic/setup.bash
+source ~/match_ws/devel/setup.bash
+roslaunch fast_lio mapping_mid360.launch vehicle_ns:=UAV0 rviz:=false
+```
+
+将设备放在**入口内侧，机头朝第一段通道方向**，等定位稳定后再启动终端 3。
+
+**终端 3：出口检测＋RViz**
+
+```bash
+source /opt/ros/noetic/setup.bash
+source ~/match_ws/devel/setup.bash
+roslaunch exploration_manager exit_detection_test.launch
+```
+
+**终端 4：确认结果（可选）**
+
+```bash
+source /opt/ros/noetic/setup.bash
+source ~/match_ws/devel/setup.bash
+rostopic echo /exit_detection_test/confirmed
+```
+
+手持测试只需这样走：
+
+1. 保持设备约 **0.6 m 高**，慢慢走通道；转弯时机头跟随通道方向。
+2. 看 RViz：**橙色矩形＝候选；绿色出口矩形＋`data: true`＝已确认**。小绿色轨迹点不是出口。
+3. 到出口内侧约 **1 m 内停几秒**，扫门外左右；检查的是前方出口外侧**左右净空之和＞2 m**，无需先走出通道。
+4. 拐角出现绿色出口矩形时记录为疑似误检。再测一遍时，终端 3 按 `Ctrl+C` 后重新启动。
+
+本流程只检测，不起飞、不输出飞行指令。结束时各终端按 `Ctrl+C`。
+
+**另开终端录包（可选，开始走之前启动）**
+
+```bash
+source /opt/ros/noetic/setup.bash
+source ~/match_ws/devel/setup.bash
+rosbag record -O ~/exit_detection_walk_$(date +%Y%m%d_%H%M%S).bag \
+  /UAV0/fast_lio/Odom_high_freq /UAV0/fast_lio/cloud_registered \
+  /exit_detection_test/status /exit_detection_test/confirmed \
+  /exit_detection_test/detected_exit /exit_detection_test/markers /rosout
+```
+
+## 详细说明
+
 只测试“通道向双侧开阔区域过渡”的识别，不需要起飞、入口识别、完整探索或飞控。
 建图直接使用正式 FUEL 的 `SDFMap/MapROS` 实现，并与正式 `algorithm.xml` 共用
 `exploration_manager/config/fuel_map.yaml`，不再维护另一套测试建图参数。
