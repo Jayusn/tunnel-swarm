@@ -68,68 +68,24 @@
     <remap from="/planning_vis/yaw" to="$(arg topic_prefix)/planning_vis/yaw"/>
     <remap from="/planning_vis/viewpoints" to="$(arg topic_prefix)/planning_vis/viewpoints"/>
 
-    <!-- 改 -->
-    <param name="sdf_map/resolution"      value="0.05" />
-
-    <param name="sdf_map/map_size_x"   value="$(arg map_size_x_)" /> 
-    <param name="sdf_map/map_size_y"   value="$(arg map_size_y_)" /> 
-    <param name="sdf_map/map_size_z"   value="$(arg map_size_z_)" /> 
-    <!-- 2026-07-08: 针对 indoor1/管道环境里 frontier 被过度吞掉的问题，将障碍物膨胀从 0.4 下调到 0.15，先单独验证是否恢复对空白区的探索意愿。 -->
-    <!-- 2026-08-13: A*占据膨胀设为0.099m；最终路径/轨迹另按0.18m机体圆盘执行硬复核。 -->
-    <param name="sdf_map/obstacles_inflation"     value="0.099" />
-
-    <param name="sdf_map/local_bound_inflate"    value="0.5"/>
-    <!-- 0.05m体素下保留5m的ESDF发布边距。 -->
-    <param name="sdf_map/local_map_margin" value="100"/>
-    <param name="sdf_map/ground_height"        value="-1.0"/>
-    <param name="sdf_map/default_dist"        value="0.0"/>
-    
-    <param name="sdf_map/p_hit"  value="0.65"/>
-    <param name="sdf_map/p_miss" value="0.35"/>
-    <param name="sdf_map/p_min"  value="0.12"/>
-    <param name="sdf_map/p_max"  value="0.90"/>
-    <param name="sdf_map/p_occ"  value="0.80"/>
-
-    <!-- 仅阻止孤立单帧点进入规划膨胀层；原始概率地图仍保留，墙面/竖直细柱凭空间支撑立即生效。 -->
-    <param name="sdf_map/inflation_noise_filter_enabled" value="true" type="bool"/>
-    <param name="sdf_map/inflation_min_hit_evidence" value="2" type="int"/>
-    <param name="sdf_map/inflation_min_neighbors" value="2" type="int"/>
-    <param name="sdf_map/inflation_neighbor_radius" value="0.10" type="double"/>
-    <param name="sdf_map/inflation_vertical_radius" value="4" type="int"/>
-
-    <!-- 2026-07-08: 为了让无人机能在大房间里看见通道另一侧的未知区，恢复到更接近 FUEL 原始探索距离的雷达建图射线长度。 -->
-    <param name="sdf_map/min_ray_length" value="0.5"/>
+    <!-- 正式规划和出口独立测试加载同一份 FUEL 建图配置。 -->
+    <rosparam command="load" file="$(find exploration_manager)/config/fuel_map.yaml"/>
+    <param name="sdf_map/map_size_x" value="$(arg map_size_x_)"/>
+    <param name="sdf_map/map_size_y" value="$(arg map_size_y_)"/>
+    <param name="sdf_map/map_size_z" value="$(arg map_size_z_)"/>
     <param name="sdf_map/max_ray_length" value="$(arg raycast_max_dist)"/>
-
-    <param name="sdf_map/virtual_ceil_height"   value="-10"/>
-    <param name="sdf_map/optimistic" value="false" type="bool"/>
-    <param name="sdf_map/signed_dist" value="false" type="bool"/>
     <param name="sdf_map/box_min_x" value="$(arg box_min_x)" type="double"/>
     <param name="sdf_map/box_min_y" value="$(arg box_min_y)" type="double"/>
     <param name="sdf_map/box_min_z" value="$(arg box_min_z)" type="double"/>
     <param name="sdf_map/box_max_x" value="$(arg box_max_x)" type="double"/>
     <param name="sdf_map/box_max_y" value="$(arg box_max_y)" type="double"/>
     <param name="sdf_map/box_max_z" value="$(arg box_max_z)" type="double"/>
-
     <param name="map_ros/cx" value="$(arg cx)"/>
     <param name="map_ros/cy" value="$(arg cy)"/>
     <param name="map_ros/fx" value="$(arg fx)"/>
     <param name="map_ros/fy" value="$(arg fy)"/>
-
-    <!-- 2026-07-08: 同步放大点云/深度最大有效距离，避免远处通道口长期保持未知，探索器误以为上方区域不可进入。 -->
-    <param name="map_ros/depth_filter_maxdist"   value="$(arg raycast_max_dist)"/>
-
-    <param name="map_ros/depth_filter_mindist"   value="0.2"/>
-    <param name="map_ros/depth_filter_margin"    value="2"/>
-    <param name="map_ros/k_depth_scaling_factor" value="1000.0"/>
-    <param name="map_ros/skip_pixel" value="2"/>
-    <param name="map_ros/esdf_slice_height" value="0.3"/>
-    <param name="map_ros/visualization_truncate_height"   value="10.09"/>
-    <param name="map_ros/visualization_truncate_low"   value="-2.0"/>
-    <param name="map_ros/show_occ_time"  value="false"/>
-    <param name="map_ros/show_esdf_time" value="false"/>
-    <param name="map_ros/show_all_map" value="true"/>
-    <param name="map_ros/frame_id"      value="world"/>
+    <param name="map_ros/depth_filter_maxdist" value="$(arg raycast_max_dist)"/>
+    <param name="map_ros/frame_id" value="world"/>
 
     <!-- Fsm -->
     <param name="fsm/thresh_replan1" value="1.0" type="double"/>

@@ -1,9 +1,17 @@
 # UAV0 出口检测独立测试
 
 只测试“通道向双侧开阔区域过渡”的识别，不需要起飞、入口识别、完整探索或飞控。
-复用正式 FUEL 的累计 SDFMap、出口几何判定和连续地图确认逻辑。
+建图直接使用正式 FUEL 的 `SDFMap/MapROS` 实现，并与正式 `algorithm.xml` 共用
+`exploration_manager/config/fuel_map.yaml`，不再维护另一套测试建图参数。
+地图尺寸、搜索边界、射线距离和静态占据开关的默认值与
+`run_swarm_indoor1_fuel_exploration.launch` 一致；出口几何判定和连续地图确认也复用正式逻辑。
 测试入口启动 `exit_detection_node` 和 RViz，不会生成探索航点、穿越轨迹或降落请求。
 所有检测与任务接口放在 `/exit_detection_test` 下；正式比赛 launch 的出口开关保持原设置。
+
+数据链路为：FAST-LIO 注册点云与里程计 → 正式 FUEL 建图实现 → 出口检测。
+测试进程里的建图与检测共用同一个 `SDFMap` 对象；正式流程内部也已采用该接法。
+独立测试不会连接另一个正在运行的探索进程中的地图，因此累计地图从本次测试启动开始建立。
+无需额外启动完整探索 launch。以后调整共同建图参数，修改上述 YAML 即同时影响两种入口。
 
 ## 手持设备测试
 
@@ -27,7 +35,9 @@ roslaunch livox_ros_driver2 msg_MID360.launch vehicle_ns:=UAV0 \
 roslaunch fast_lio mapping_mid360.launch vehicle_ns:=UAV0 rviz:=false
 ```
 
-全程检查误检时，将设备放在通道入口内侧、机头朝向第一段通道，再在终端 3 启动检测。
+全程检查误检时，将设备放在通道入口内侧（已经经过入口）、机头朝向第一段通道，
+等待 FAST-LIO 定位稳定，再在终端 3 启动检测。当前入口不会判断“从门外进入门内”，
+不要在入口外启动检测后才进入；若已经这样启动，进入第一段通道后重启检测 launch。
 只检查出口时，也可以从出口前的最后一段通道内开始：
 
 ```bash
@@ -44,7 +54,8 @@ roslaunch exploration_manager exit_detection_test.launch
 在每个拐角、单侧开口和障碍旁稍作停留，扫描周围后继续前进；关注真实出口之前
 是否出现 `exit=1` 或 `confirmed.data=true`，出现即记录为疑似误检。
 `open_space_hits>0` 只表示候选证据，不等于已经确认出口；同样可以记录用于排查。
-到达真实出口时扫描门外左右区域，确认距离候选出口不超过 1 m。无需穿出出口。
+到达真实出口内侧时保持设备高度、停留几秒，扫描门外左右区域，确认距离候选出口不超过 1 m。
+先观察候选与确认结果，再按需走到出口外侧；无需穿出出口。
 再次完整走一遍或改换起始方向时，重启检测 launch 清空地图与检测状态。
 
 终端 4 查看状态：
@@ -138,6 +149,18 @@ roslaunch exploration_manager exit_detection_test.launch \
 
 `world_frame` 必须与输入注册点云的世界坐标系一致。本入口不转换机体系点云。
 地图默认世界 XY 范围为 ±10 m，Z 为 [-1, 2) m；可通过 `map_size_x/y/z` 放大范围。
+正式搜索边界也已对齐：X 为 [-1, 10] m，Y 为 [-3, 10] m，Z 为 [0.05, 2] m。
+这组边界使用 FAST-LIO 世界坐标；若正式流程使用了其他覆盖值，测试时也传入相同值：
+
+```bash
+roslaunch exploration_manager exit_detection_test.launch \
+  map_size_x:=20.0 map_size_y:=20.0 map_size_z:=3.0 \
+  box_min_x:=-1.0 box_min_y:=-3.0 box_min_z:=0.05 \
+  box_max_x:=10.0 box_max_y:=10.0 box_max_z:=2.0 \
+  raycast_max_dist:=8.0 retain_global_static_cloud:=false
+```
+
+`retain_global_static_cloud` 与正式入口同义，默认关闭；若正式测试开启，也在这里设为 `true`。
 检测高度取实时里程计 Z，可按正式测试高度约 0.6 m 手持观察。
 
 检测要求来路有连续双侧墙体，出口外左右净空各超过 2.1 m，扇区通过率至少 80%，
