@@ -392,7 +392,7 @@
     <rosparam param="/exploration_node/mission/task_search/exit/rc_trigger/hold_sec">0.5</rosparam>
     <!-- 局部受限通道向双侧开阔区域过渡；未知采样计入分母，确认仅累计新地图。 -->
     <rosparam param="/exploration_node/mission/task_search/exit/search_max_forward">2.0</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/side_clearance">2.10</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/min_open_width">2.0</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/min_open_ratio">0.80</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/sector_ray_count">11</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/sector_half_angle_deg">20.0</rosparam>
