@@ -13,7 +13,7 @@ find_package(catkin REQUIRED COMPONENTS
   roscpp
   std_msgs
   geometry_msgs
-  # 2026-07-23: 任务出口检测直接读取FAST-LIO机体系PointCloud2水平射线。
+  # 地图与规划节点使用PointCloud2传感数据。
   sensor_msgs
   mavros_msgs
   # 2026-07-13: 第二阶段任务搜索发布覆盖和三类作业目标的 RViz 标记。
@@ -83,10 +83,10 @@ target_link_libraries(load_obj
 )
 
 if(CATKIN_ENABLE_TESTING)
-  add_executable(wall_end_detection_test
-    test/wall_end_detection_test.cpp src/task_search_manager.cpp)
-  target_link_libraries(wall_end_detection_test ${catkin_LIBRARIES})
-  add_test(NAME wall_end_detection_test COMMAND wall_end_detection_test)
+  add_executable(open_space_exit_detection_test
+    test/open_space_exit_detection_test.cpp src/task_search_manager.cpp)
+  target_link_libraries(open_space_exit_detection_test ${catkin_LIBRARIES})
+  add_test(NAME open_space_exit_detection_test COMMAND open_space_exit_detection_test)
   add_executable(entry_forward_policy_test test/entry_forward_policy_test.cpp)
   add_test(NAME entry_forward_policy_test COMMAND entry_forward_policy_test)
   add_executable(odometry_review_test test/odometry_review_test.cpp)

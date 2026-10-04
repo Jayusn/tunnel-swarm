@@ -2631,7 +2631,7 @@ int FastExplorationManager::planExploreMotion(
   if (!use_vertical_detour_target && !use_forced_entry_target && task_search_manager_ &&
       (task_search_manager_->stage3Active() ||
        task_search_manager_->finalExitFrontierGuardActive())) {
-    // 双侧墙消失已确认时，出口目标优先于普通frontier和通道中门目标。
+    // 双侧开阔出口允许接管时，出口目标优先于普通frontier和通道中门目标。
     use_stage3_target =
         task_search_manager_->buildStage3Goal(pos, yaw[0], false, next_pos, next_yaw);
   }
@@ -2691,7 +2691,7 @@ int FastExplorationManager::planExploreMotion(
       !use_mission_forward_fallback &&
       task_search_manager_ &&
       task_search_manager_->buildStage3Goal(pos, yaw[0], false, next_pos, next_yaw)) {
-    // 本轮地图确认双侧墙消失后即可切入穿越，无需等待frontier耗尽。
+    // 本轮地图确认双侧开阔且任务允许接管时切入穿越，无需等待frontier耗尽。
     use_stage3_target = true;
   }
   const bool use_mission_filtered_direct_view =

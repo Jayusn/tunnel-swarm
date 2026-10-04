@@ -1,0 +1,226 @@
+#include <cmath>
+#include <cstdlib>
+#include <iostream>
+#include <vector>
+
+#include <plan_env/sdf_map.h>
+#include <exploration_manager/task_search_manager.h>
+#include <exploration_manager/open_space_exit_detection.h>
+
+namespace {
+void check(bool condition, const char* message) {
+  if (condition) return;
+  std::cerr << message << std::endl;
+  std::exit(1);
+}
+struct Boundary { double begin, end, lateral; };
+struct Scene {
+  std::vector<Boundary> boundaries;
+  bool unknown_outside = false;
+  bool only_center_observed = false;
+  bool front_blocked = false;
+  bool footprint_blocked = false;
+  bool occupied(double forward, double lateral) const {
+    if (front_blocked && forward >= 0.80 && forward <= 0.95) return true;
+    for (const auto& boundary : boundaries)
+      if (forward >= boundary.begin && forward < boundary.end &&
+          std::fabs(lateral - boundary.lateral) <= 0.04) return true;
+    return false;
+  }
+  bool free(double forward, double lateral) const {
+    if (occupied(forward, lateral)) return false;
+    if (forward >= 0.50 && unknown_outside) return false;
+    if (forward >= 0.50 && only_center_observed && std::fabs(lateral) > 0.30)
+      return false;
+    return true;
+  }
+  bool footprint(double forward, double lateral) const {
+    if (footprint_blocked && forward >= 0.75 && forward <= 0.95) return false;
+    for (double dx : {-0.20, 0.0, 0.20})
+      for (double dy : {-0.20, 0.0, 0.20})
+        if (!free(forward + dx, lateral + dy)) return false;
+    return true;
+  }
+};
+bool detect(const Scene& scene, fast_planner::open_space_exit::Result& result) {
+  return fast_planner::open_space_exit::detect(
+      fast_planner::open_space_exit::Config{},
+      [&](double x, double y) { return scene.occupied(x, y); },
+      [&](double x, double y) { return scene.free(x, y); },
+      [&](double x, double y) { return scene.footprint(x, y); }, result);
+}
+}  // namespace
+
+namespace fast_planner {
+class TaskSearchManagerTest {
+public:
+  static void runMapIntegration() {
+    ros::NodeHandle nh("~");
+    nh.setParam("sdf_map/resolution", 0.10);
+    nh.setParam("sdf_map/map_size_x", 8.0);
+    nh.setParam("sdf_map/map_size_y", 8.0);
+    nh.setParam("sdf_map/map_size_z", 3.0);
+    nh.setParam("sdf_map/ground_height", 0.0);
+    nh.setParam("sdf_map/obstacles_inflation", 0.15);
+    nh.setParam("sdf_map/max_ray_length", 6.0);
+    auto map = std::make_shared<SDFMap>();
+    map->initMap(nh);
+    TaskSearchManager manager;
+    manager.initialize(nh);
+    manager.setMap(map);
+    pcl::PointCloud<pcl::PointXYZ> cloud;
+    const Eigen::Vector3d camera(-1,0,1);
+    map->inputPointCloud(cloud,0,camera);
+    check(map->getUpdateSequence()==0, "empty cloud advanced map evidence");
+    cloud.push_back(pcl::PointXYZ(1,0,1));
+    map->inputPointCloud(cloud,1,camera);
+    check(map->getUpdateSequence()==1, "real cloud did not advance map evidence");
+    check(manager.consumeExitMapUpdate(map->getUpdateSequence(),ros::Time(10)),
+          "real map revision was not consumed");
+    check(!manager.consumeExitMapUpdate(map->getUpdateSequence(),ros::Time(11)),
+          "same real map gained another vote");
+    check(map->getOccupancy(Eigen::Vector3d(0.4,0,1))==SDFMap::FREE,
+          "ray fusion did not establish observed center clearance");
+    check(!manager.mapExitFootprintFree(Eigen::Vector3d(0.4,0,1)),
+          "a single free center ray hid unknown body volume");
+    // 覆盖多个高度和横向体素，证明完整机体范围的FREE与仅中心线FREE不同。
+    for (int y=-6;y<=6;++y) {
+      for (int z=-4;z<=4;++z) {
+        const double row=0.05*y, height=1.0+0.05*z;
+        cloud.clear(); cloud.push_back(pcl::PointXYZ(1,row,height));
+        map->inputPointCloud(cloud,1,Eigen::Vector3d(-1,row,height));
+      }
+    }
+    check(manager.mapExitFootprintFree(Eigen::Vector3d(0.4,0,1)),
+          "fully observed free body volume was rejected");
+    cloud.clear(); cloud.push_back(pcl::PointXYZ(0.4,0.1,1));
+    for (int n=0;n<4;++n) map->inputPointCloud(cloud,1,Eigen::Vector3d(-1,0.1,1));
+    check(!manager.mapExitFootprintFree(Eigen::Vector3d(0.4,0,1)),
+          "an occupied body voxel bypassed clearance check");
+    manager.corridor_frame_received_=true;
+    manager.corridor_entry_crossed_=true;
+    manager.transition_active_=true;
+    manager.exit_candidate_hits_=2;
+    manager.updateExitCandidate(Eigen::Vector3d(0,0,1));
+    check(manager.exit_candidate_hits_==0, "active turn retained exit votes on real map");
+    std::cout << "real map freshness, observed volume, obstacle and turn checks passed" << std::endl;
+  }
+  static void run() {
+    ros::Time::init();
+    TaskSearchManager manager;
+    check(!manager.consumeExitMapUpdate(0, ros::Time(10)), "unobserved map counted as fresh");
+    check(manager.consumeExitMapUpdate(1, ros::Time(10)), "first map update rejected");
+    check(!manager.consumeExitMapUpdate(1, ros::Time(20)), "unchanged map gained another vote");
+    check(!manager.consumeExitMapUpdate(2, ros::Time(10, 100000000)), "confirmation period ignored");
+    check(manager.consumeExitMapUpdate(2, ros::Time(10, 500000000)), "new map did not pass period gate");
+    TaskSearchManager::OpenExitResult detection;
+    detection.portal_center = Eigen::Vector3d(1.0, 0.0, 0.60);
+    detection.outward_direction = Eigen::Vector2d(1.0, 0.0);
+    const Eigen::Vector3d inside(0.55, 0.0, 0.60), pos(0.1, 0.0, 0.60);
+    check(!manager.recordExitEvidence(detection, inside, pos, ros::Time(11)), "first vote confirmed exit");
+    check(!manager.recordExitEvidence(detection, inside, pos, ros::Time(12)), "second vote confirmed exit");
+    check(manager.recordExitEvidence(detection, inside, pos, ros::Time(13)), "third stable vote did not confirm");
+    check(!manager.finalExitFrontierGuardActive(), "detection froze frontier before takeover");
+    detection.portal_center.x() = 1.5;
+    check(!manager.recordExitEvidence(detection, inside, pos, ros::Time(14)) &&
+          manager.exit_candidate_hits_ == 1, "position jump did not restart confirmation");
+    detection.outward_direction = Eigen::Vector2d(std::cos(M_PI/4), std::sin(M_PI/4));
+    manager.recordExitEvidence(detection, inside, pos, ros::Time(15));
+    check(manager.exit_candidate_hits_ == 1, "direction jump retained old confirmation votes");
+    detection.outward_direction = Eigen::Vector2d(1.0, 0.0);
+    detection.portal_center.x() = 1.0;
+    manager.clearExitEvidence();
+    for (int n = 0; n < 3; ++n)
+      manager.recordExitEvidence(detection, inside, Eigen::Vector3d(-1,0,0.6), ros::Time(16+n));
+    check(!manager.exit_candidate_confirmed_, "far candidate locked outside one metre");
+    manager.recordExitEvidence(detection, inside, pos, ros::Time(20));
+    check(manager.exit_candidate_confirmed_, "near candidate did not confirm");
+    manager.commitCorridorTurn(Eigen::Vector3d(0,1,0));
+    check(!manager.exit_candidate_confirmed_ && manager.exit_candidate_hits_ == 0,
+          "confirmed turn retained old exit evidence");
+
+    TaskSearchManager mission;
+    mission.exit_candidate_confirmed_ = true;
+    mission.exit_portal_outside_verified_ = true;
+    mission.exit_portal_center_ = detection.portal_center;
+    mission.exit_candidate_ = inside;
+    mission.exit_outward_direction_ = detection.outward_direction;
+    Eigen::Vector3d goal;
+    double yaw = 0;
+    check(!mission.buildStage3Goal(inside, 0, false, goal, yaw), "unfinished targets allowed takeover");
+    check(!mission.finalExitFrontierGuardActive(), "unfinished targets froze frontier");
+    mission.require_stage2_detections_ = false;
+    mission.exit_detection_enabled_ = false;
+    mission.buildStage3Goal(inside, 0, false, goal, yaw);
+    check(!mission.stage3Active() && !mission.exit_portal_locked_, "disabled exit detection changed stage");
+    mission.exit_detection_enabled_ = true;
+    mission.buildStage3Goal(inside, 0, false, goal, yaw);
+    check(mission.mission_stage_ == TaskSearchManager::CROSS_EXIT && mission.exit_portal_locked_,
+          "confirmed open exit waited for frontier exhaustion or entry mileage");
+    TaskSearchManager pending;
+    pending.require_stage2_detections_ = false;
+    pending.buildStage3Goal(Eigen::Vector3d::Zero(), 0, true, goal, yaw);
+    check(!pending.stage3Active(), "frontier exhaustion alone triggered exit");
+  }
+};
+}  // namespace fast_planner
+
+int main(int argc, char** argv) {
+  if (argc > 1 && std::string(argv[1]) == "--map-integration") {
+    ros::init(argc, argv, "open_space_exit_map_test", ros::init_options::AnonymousName);
+    fast_planner::TaskSearchManagerTest::runMapIntegration();
+    return 0;
+  }
+  fast_planner::open_space_exit::Result result;
+  Scene exit{{{-3,0.5,-0.65},{-3,0.5,0.65},{0.5,6,-2.60},{0.5,6,2.60}}};
+  check(detect(exit,result), "bilateral open space with visible boundaries was not detected");
+  check(std::fabs(result.forward-0.5) <= 0.3, "exit plane drifted into the open region");
+  check(result.left_open_ratio >= 0.80 && result.right_open_ratio >= 0.80, "side ratios below threshold");
+  Scene limitless{{{-3,0.5,-0.65},{-3,0.5,0.65}}};
+  check(detect(limitless,result), "observed open space required a far wall return");
+  Scene asymmetric{{{-3,0.5,-0.55},{-3,0.5,0.95},{0.5,6,-2.80},{0.5,6,2.80}}};
+  check(detect(asymmetric,result) && std::fabs(result.lateral-0.20) < 0.06,
+        "asymmetric passage produced wrong center");
+  Scene continuing{{{-3,6,-0.65},{-3,6,0.65}}};
+  check(!detect(continuing,result), "continuing passage became exit");
+  Scene one_side{{{-3,0.5,-0.65},{-3,6,0.65}}};
+  check(!detect(one_side,result), "one-sided opening became exit");
+  Scene wider{{{-3,0.5,-0.65},{-3,0.5,0.65},{0.5,6,-1.80},{0.5,6,1.80}}};
+  check(!detect(wider,result), "width below 2.1m per side became exit");
+  Scene threshold{{{-3,0.5,-0.65},{-3,0.5,0.65},{0.5,6,-2.10},{0.5,6,2.10}}};
+  check(!detect(threshold,result), "exactly 2.1m passed strict greater-than threshold");
+  Scene gap{{{-3,0.5,-0.65},{-3,0.5,0.65},{0.9,6,-0.65},{0.9,6,0.65}}};
+  check(!detect(gap,result), "short bilateral gap became exit");
+  Scene unseen = limitless; unseen.unknown_outside = true;
+  check(!detect(unseen,result), "unobserved outside space became exit");
+  unseen = limitless; unseen.only_center_observed = true;
+  check(!detect(unseen,result), "observed center hid unknown sides");
+  Scene corner = limitless; corner.front_blocked = true;
+  check(!detect(corner,result), "blocked forward turn became exit");
+  Scene blocked = limitless; blocked.footprint_blocked = true;
+  check(!detect(blocked,result), "side openness bypassed body clearance");
+  Scene posts{{{0,0.1,-0.65},{0,0.1,0.65}}};
+  check(!detect(posts,result), "isolated posts supplied passage history");
+  Scene already_open{{{-3,6,-3},{-3,6,3}}};
+  check(!detect(already_open,result), "already open room supplied passage-to-open transition");
+  // 扇区比例直接测试：未知也占分母，斜距不能冒充横向距离。
+  fast_planner::open_space_exit::Config config;
+  config.sector_ray_count = 10;
+  auto none = [](double,double) { return false; };
+  auto eight_observed = [](double x,double y) {
+    return std::atan2(x,std::fabs(y))*180/M_PI > -12;
+  };
+  check(fast_planner::open_space_exit::countOpenRays(config,0,0,1,none,eight_observed)==8,
+        "unknown rays were dropped from the 80 percent denominator");
+  auto two_observed = [](double x,double y) {
+    return std::atan2(x,std::fabs(y))*180/M_PI > 12;
+  };
+  check(fast_planner::open_space_exit::countOpenRays(config,0,0,1,none,two_observed)==2,
+        "two observed rays became a fully open sector");
+  check(fast_planner::open_space_exit::countOpenRays(config,0,0,1,none,
+      [](double,double y) { return std::fabs(y) < 2.0; })==0,
+      "diagonal range was used instead of transverse clearance");
+  fast_planner::TaskSearchManagerTest::run();
+  std::cout << "open-space geometry and mission policy checks passed" << std::endl;
+  return 0;
+}

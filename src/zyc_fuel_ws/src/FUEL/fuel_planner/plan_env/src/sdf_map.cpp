@@ -350,6 +350,7 @@ void SDFMap::inputPointCloud(
     md_->update_max_[k] = max(update_max[k], md_->update_max_[k]);
   }
 
+  const bool observed = !md_->cache_voxel_.empty();
   while (!md_->cache_voxel_.empty()) {
     int adr = md_->cache_voxel_.front();
     md_->cache_voxel_.pop();
@@ -377,6 +378,7 @@ void SDFMap::inputPointCloud(
         std::max(md_->occupancy_buffer_[adr] + log_odds_update, mp_->clamp_min_log_),
         mp_->clamp_max_log_);
   }
+  if (observed) ++update_sequence_;
 }
 
 Eigen::Vector3d

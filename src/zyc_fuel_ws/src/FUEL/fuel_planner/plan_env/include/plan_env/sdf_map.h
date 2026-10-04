@@ -4,6 +4,7 @@
 #include <Eigen/Eigen>
 #include <Eigen/StdVector>
 
+#include <cstdint>
 #include <queue>
 #include <ros/ros.h>
 #include <tuple>
@@ -62,8 +63,10 @@ public:
   void getUpdatedBox(Eigen::Vector3d& bmin, Eigen::Vector3d& bmax, bool reset = false);
   double getResolution();
   int getVoxelNum();
+  std::uint64_t getUpdateSequence() const { return update_sequence_; }
 
 private:
+  std::uint64_t update_sequence_{0};
   void clearAndInflateLocalMap();
   void inflatePoint(const Eigen::Vector3i& pt, int step, vector<Eigen::Vector3i>& pts);
   void setCacheOccupancy(const int& adr, const int& occ);

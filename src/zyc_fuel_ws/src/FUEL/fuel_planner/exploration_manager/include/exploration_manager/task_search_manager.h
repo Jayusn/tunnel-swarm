@@ -6,7 +6,6 @@
 #include <geometry_msgs/PoseStamped.h>
 #include <mavros_msgs/RCIn.h>
 #include <ros/ros.h>
-#include <sensor_msgs/PointCloud2.h>
 #include <exploration_manager/motion_direction_rules.h>
 #include <quadrotor_msgs/ExplorationGoal.h>
 
@@ -70,7 +69,7 @@ public:
   void recordSelectedGoal(const Eigen::Vector3d& goal);
   void reportGoalFailure(const Eigen::Vector3d& goal);
   void clearActiveGoal() { active_goal_valid_ = false; }
-  // 双侧墙消失确认后直接切入穿越；search_exhausted仅用于未确认候选的原有补扫。
+  // 双侧开阔确认且任务允许接管后切入穿越；耗尽只用于候选补扫。
   bool buildStage3Goal(const Eigen::Vector3d& cur_pos, double cur_yaw, bool search_exhausted,
                        Eigen::Vector3d& goal, double& goal_yaw);
   // 2026-07-16: 仍有frontier/viewpoint时明确撤销“搜索耗尽”计时，失败冷却不能被误当成终点条件。
@@ -88,7 +87,7 @@ public:
     return mission_stage_ == EXIT_APPROACH_INSIDE || mission_stage_ == CROSS_EXIT;
   }
   bool enabled() const { return enabled_; }
-  // 双侧墙消失稳定确认后冻结普通frontier，由出口穿越目标接管。
+  // 出口正式接管后冻结普通frontier；仅检测确认不会冻结剩余任务搜索。
   bool finalExitFrontierGuardActive() const {
     return exit_portal_locked_ ||
            mission_stage_ == EXIT_APPROACH_INSIDE || mission_stage_ == CROSS_EXIT;
@@ -126,41 +125,26 @@ private:
   void finalLandingMarkerCallback(const geometry_msgs::PoseStampedConstPtr& msg);
   void rcSearchLandingCallback(const mavros_msgs::RCInConstPtr& msg);
   void activateRcSearchLanding(const ros::Time& stamp);
-  // 2026-07-23: 用短时机体系 Mid360 点云检测通道双墙共同终止，出口判断不再依赖会随 z 漂移失真的绝对高度切片。
-  void bodyCloudCallback(const sensor_msgs::PointCloud2ConstPtr& msg);
   void registerDetection(int type, const geometry_msgs::PoseStamped& msg);
   void updateExitCandidate(const Eigen::Vector3d& cur_pos);
-  struct RadarExitResult {
+  void clearExitEvidence();
+  bool consumeExitMapUpdate(std::uint64_t sequence, const ros::Time& now);
+  struct OpenExitResult {
     Eigen::Vector3d portal_center{0.0, 0.0, 0.0};
     Eigen::Vector2d outward_direction{1.0, 0.0};
     double confidence{0.0};
-    int inside_left_support{0};
-    int inside_right_support{0};
-    int bilateral_changed{0};
-    int clear_ray_frames{0};
+    double left_open_ratio{0.0};
+    double right_open_ratio{0.0};
   };
-  // 2026-07-23: 独立局部雷达确认器只使用短时水平射线、XY航迹切向和墙体连续性；
-  // 长期占据地图给出的远端只作任务拓扑候选，不能单独确认出口。
-  bool detectRadarExit(const Eigen::Vector3d& cur_pos,
-                       const Eigen::Vector2d& forward_hint,
-                       RadarExitResult& result);
-  // 2026-07-23: 单通道出口主判据改为当前机附近累计占据地图的XY双墙终止；
-  // 使用相对当前里程计高度带，避免绝对z退化，也避免body点云拼接方向误差否决清晰断面。
   bool detectLocalMapExit(const Eigen::Vector3d& cur_pos,
                           const Eigen::Vector2d& forward_hint,
-                          RadarExitResult& result) const;
-  bool mapRelativeColumnOccupied(const Eigen::Vector3d& point,
-                                 double reference_z) const;
-  // 2026-07-22: 拓扑远端只输出预测锚点；沿路径另找最靠远端的“连续双墙共同终止”出口截面。
-  bool inferExitFromMap(const Eigen::Vector3d& cur_pos, Eigen::Vector3d& candidate,
-                        Eigen::Vector3d& portal_center, Eigen::Vector2d& outward_direction,
-                        Eigen::Vector3d& endpoint_prediction,
-                        bool& endpoint_outside_verified,
-                        double& geodesic_distance, double& confidence);
-  // 2026-07-21: 用累计占据地图验证左右边界、中间净空和门外非占据延伸，排除普通拐角/死胡同。
-  bool validateExitPortal(const Eigen::Vector3d& inside_hint,
-                          const Eigen::Vector3d& portal_center,
-                          const Eigen::Vector2d& outward_direction) const;
+                          OpenExitResult& result) const;
+  bool recordExitEvidence(const OpenExitResult& detection,
+                          const Eigen::Vector3d& inside,
+                          const Eigen::Vector3d& cur_pos, const ros::Time& now);
+  void lockExitPortal(const ros::Time& now);
+  bool mapExitFootprintFree(const Eigen::Vector3d& point) const;
+  bool mapRelativeColumnOccupied(const Eigen::Vector3d& point, double reference_z) const;
   // 2026-07-21: 穿门只发布已成为FREE的短滚动目标，UNKNOWN只用于证明开口延伸，不能直接飞入。
   bool buildSafeExitCrossingGoal(const Eigen::Vector3d& cur_pos, Eigen::Vector3d& goal) const;
   // 2026-07-22: 出口候选接近确认且普通frontier耗尽时，发布门内局部补扫点，避免停在门口无法补齐地图证据。
@@ -169,11 +153,6 @@ private:
   bool mapPointSafe(const Eigen::Vector3d& point) const;
   bool landingColumnSafe(const Eigen::Vector3d& marker,
                          const Eigen::Vector3d& approach) const;
-  bool mapColumnOccupied(const Eigen::Vector3d& point) const;
-  // 2026-07-22: 用累计占据柱沿指定方向的连续支撑判断墙面，避免把孤立箱体/柱子当作通道墙或门框。
-  bool mapWallRaySupported(const Eigen::Vector3d& start,
-                           const Eigen::Vector2d& direction,
-                           double length, double min_ratio) const;
   // 2026-07-28: 从累计占据地图的前墙和至少一侧连续墙轮廓推断正常拐弯轴线，
   // 供恢复器在90度弯道替换已经失效的历史直行切线。
   bool inferOccupancyTurnDirection(const Eigen::Vector3d& travel_direction,
@@ -203,12 +182,11 @@ private:
   ros::Subscriber qrcode_detection_sub_;
   ros::Subscriber thermal_detection_sub_;
   ros::Subscriber final_landing_marker_sub_;
-  ros::Subscriber body_cloud_sub_;
   ros::Subscriber rc_search_landing_sub_;
   ros::Publisher marker_pub_;
   ros::Publisher status_pub_;
   ros::Publisher exit_pose_pub_;
-  ros::Publisher final_exit_pose_pub_;  // 稳定确认双侧墙消失时发布锁存出口，供后机接力。
+  ros::Publisher final_exit_pose_pub_;  // 出口接管时发布锁存出口，供后机接力。
   ros::Publisher landing_target_pub_;
   ros::Publisher landing_request_pub_;
 
@@ -258,13 +236,6 @@ private:
   double transition_old_high_water_{0.0};
   std::deque<Eigen::Vector3d> visited_positions_;
   std::deque<Eigen::Vector3d> selected_goals_;
-  // 2026-07-23: 每帧保留雷达原点和近水平回波的世界XY；不保存/比较世界z，从源头隔离高度退化。
-  struct BodyCloudFrame {
-    ros::Time stamp;
-    Eigen::Vector2d sensor_xy{0.0, 0.0};
-    std::vector<Eigen::Vector2d> endpoints_xy;
-  };
-  std::deque<BodyCloudFrame> body_cloud_frames_;
   mutable std::mutex body_cloud_mutex_;
   Eigen::Vector3d latest_robot_pos_{0.0, 0.0, 0.0};
   double latest_robot_yaw_{0.0};
@@ -291,7 +262,7 @@ private:
 
   // 2026-07-13: 出口候选需要跨多次地图更新稳定，不能由单帧噪声直接触发第三阶段。
   bool exit_candidate_confirmed_{false};
-  // 2026-07-23: 与短时5/5结构确认分离；累计通道里程足够远后才永久冻结最终门中心和法向。
+  // 与检测确认分离；任务允许穿越时才永久锁定出口中心和方向。
   bool exit_portal_locked_{false};
   Eigen::Vector3d exit_candidate_{0.0, 0.0, 0.75};
   Eigen::Vector3d pending_exit_candidate_{0.0, 0.0, 0.75};
@@ -300,18 +271,9 @@ private:
   Eigen::Vector3d pending_exit_portal_center_{0.0, 0.0, 0.75};
   Eigen::Vector2d exit_outward_direction_{1.0, 0.0};
   Eigen::Vector2d pending_exit_outward_direction_{1.0, 0.0};
-  // 2026-07-22: 终点预测点只用于给出口检测提供拓扑路径，不发布为飞行/降落目标。
-  Eigen::Vector3d exit_endpoint_prediction_{0.0, 0.0, 0.75};
-  Eigen::Vector3d pending_exit_endpoint_prediction_{0.0, 0.0, 0.75};
-  bool exit_endpoint_outside_verified_{false};
-  bool pending_exit_endpoint_outside_verified_{false};
-  // 2026-07-23: 区分“门外开放空间已验证”和“紫色拓扑预测点位于门外”；
-  // 前者控制穿门，后者只解释预测点，避免把门内预测点硬标成outside。
   bool exit_portal_outside_verified_{false};
   bool pending_exit_portal_outside_verified_{false};
   Eigen::Vector3d outside_search_anchor_{0.0, 0.0, 0.75};
-  double exit_geodesic_distance_{0.0};
-  double exit_confidence_{0.0};
   int exit_candidate_hits_{0};
   // 2026-07-24: 单帧门证据短暂丢失后仍保持前视一小段时间，避免立刻重启环扫形成1->0循环。
   ros::Time exit_verification_hold_until_;
@@ -319,6 +281,7 @@ private:
   int final_landing_marker_hits_{0};
   bool landing_requested_{false};
   ros::Time last_exit_inference_;
+  std::uint64_t last_exit_map_sequence_{0};
   ros::Time mission_stage_start_;
   ros::Time search_exhausted_since_;
   ros::Time active_goal_stamp_;
@@ -389,97 +352,28 @@ private:
   double recovery_turn_yaw_release_angle_deg_{15.0};
 
 
-  // 2026-07-13: 第三阶段地图拓扑、出口确认、平台扫描和降落触发参数。
-  // 关闭后不运行地图/雷达出口检测，也不进入出口穿越和降落状态机。
+  // 局部双侧开阔出口检测；总开关同时控制出口任务阶段切换。
   bool exit_detection_enabled_{true};
-  double exit_grid_resolution_{0.20};
-  double exit_inference_period_{1.0};
-  double exit_min_geodesic_distance_{4.0};
-  double exit_lock_min_geodesic_distance_{8.0};
-  double exit_candidate_stability_radius_{0.80};
+  double exit_inference_period_{0.50};
+  double exit_candidate_stability_radius_{0.30};
   int exit_confirmation_count_{3};
-  // 2026-07-22: 出口按任务推进方向只允许被更靠拓扑远端的稳定双墙终止截面修正。
-  int exit_supersede_confirmation_count_{2};
-  double exit_supersede_min_path_increase_{0.60};
-  // 2026-07-16: 无可覆盖frontier必须持续稳定一段时间，避免一次瞬时过滤为空就锁死错误出口。
-  double search_exhausted_confirm_time_{3.0};
+  double exit_candidate_angle_tolerance_deg_{15.0};
+  double exit_confirmation_max_distance_{1.00};
+  double exit_search_max_forward_{2.0};
+  double exit_side_clearance_{2.10};
+  double exit_min_open_ratio_{0.80};
+  int exit_sector_ray_count_{11};
+  double exit_sector_half_angle_deg_{20.0};
+  double exit_inside_length_{0.90};
+  double exit_outside_length_{1.20};
+  double exit_footprint_half_height_{0.15};
   double exit_standoff_{0.45};
   double exit_arrive_distance_{0.50};
-  // 2026-07-21: 门框验证和短步穿越阈值，均基于累计占据地图而非原始单帧点云。
-  double exit_portal_min_half_width_{0.42};
-  double exit_portal_max_half_width_{1.10};
-  double exit_portal_side_sample_step_{0.10};
-  // 2026-07-22: 门洞净空与门框搜索保留独立边界，避免采样邻域在0.42m处互相重叠。
-  double exit_portal_core_margin_{0.10};
-  // 2026-07-22: 出口门框只接受工作高度带内具有多层连续支撑的柱状占据；地板和单个漂移点不能充当门柱。
-  double exit_column_lower_margin_{0.15};
-  double exit_column_upper_margin_{0.15};
-  double exit_column_sample_step_{0.10};
-  double exit_column_min_z_{0.18};
-  double exit_column_max_z_{1.55};
-  int exit_column_min_occupied_layers_{2};
-  double exit_column_min_vertical_span_{0.18};
-  double exit_transition_inside_probe_{0.45};
-  double exit_transition_outside_probe_{0.65};
-  // 2026-07-22: 出口结构先排除中心线正常转弯，再要求左右连续通道墙在相近截面同步终止；
-  // 横向门框只作加分证据，不能让通道内的柱子/箱体单独触发出口。
-  double exit_max_centerline_turn_deg_{35.0};
-  double exit_turn_window_distance_{0.60};
-  double exit_wall_support_length_{0.90};
-  double exit_wall_support_min_ratio_{0.55};
-  double exit_frame_outward_support_length_{0.30};
-  double exit_min_bilateral_wall_shift_{0.18};
-  // 2026-07-22: 用多个门内/门外截面验证墙轨迹生命周期，区分连续墙、局部障碍物和点云空洞。
-  double exit_wall_track_width_tolerance_{0.25};
-  double exit_wall_end_probe_step_{0.25};
-  int exit_wall_end_probe_count_{4};
-  int exit_wall_end_min_changed_count_{3};
-  double exit_outside_min_free_ratio_{0.75};
-  // 2026-07-22: 单通道任务中，已经被前机越过的历史截面永久失效，禁止锁门后再要求回头。
   double exit_candidate_max_behind_distance_{0.35};
-  // 单段接近反向的运动视为短回撤，不更新任务推进方向；门候选也不得相对稳定方向突变。
   double exit_progress_reverse_reject_deg_{120.0};
-  double exit_max_direction_jump_deg_{100.0};
-  // 2026-07-28: 出口只能在飞机接近门平面后确认，避免远距离稀疏点云提前锁门。
-  double exit_confirmation_max_distance_{1.00};
-  // 2026-07-28: 深入通道后全局FREE拓扑断链时，允许近场直线双墙终止结构降级接管。
-  double exit_near_fallback_min_travel_{10.0};
-  double exit_near_fallback_max_distance_{1.0};
-  double exit_near_fallback_max_turn_deg_{25.0};
-  // 2026-07-23: 保存拓扑父链判定出的正常拐弯截面，禁止局部雷达把同一弯角重新包装成出口。
-  double exit_normal_turn_reject_radius_{0.90};
-  std::vector<Eigen::Vector3d> last_topology_turn_centers_;
-  // 2026-07-23: 短时机体系出口检测参数；水平仰角过滤地面/顶棚，双墙终止和穿门自由射线共同确认。
-  bool radar_exit_detection_enabled_{true};
-  // 2026-07-27: 出口雷达复核默认话题前缀统一为 UAV0。
-  std::string radar_exit_body_cloud_topic_{"/UAV0/fast_lio/cloud_registered_body"};
-  double radar_exit_accumulation_time_{1.50};
-  double radar_exit_max_elevation_deg_{12.0};
-  double radar_exit_min_range_{0.25};
-  double radar_exit_max_range_{12.0};
-  int radar_exit_max_points_per_frame_{1800};
-  double radar_exit_search_min_forward_{-0.15};
-  double radar_exit_search_max_forward_{1.25};
-  double radar_exit_search_step_{0.10};
-  double radar_exit_wall_bin_step_{0.12};
-  double radar_exit_inside_length_{0.90};
-  int radar_exit_min_inside_bins_{5};
-  double radar_exit_wall_track_tolerance_{0.22};
-  double radar_exit_min_wall_shift_{0.18};
-  int radar_exit_outside_probe_count_{4};
-  int radar_exit_min_changed_probes_{3};
-  double radar_exit_clear_half_width_{0.28};
-  double radar_exit_clear_depth_{0.80};
-  int radar_exit_min_clear_ray_frames_{2};
-  // 2026-07-22: 预测点必须在门框之后保有足够长的已知FREE拓扑分支，才判为位于通道外。
-  double exit_endpoint_outside_route_min_length_{1.00};
-  // 2026-07-22: 单次门洞复核失败只衰减稳定计数；高稳定候选可触发门内补扫，不再瞬时归零后原地卡死。
-  int exit_candidate_reject_decay_{1};
   int exit_pending_observation_min_hits_{3};
   double exit_pending_observation_lateral_offset_{0.25};
   double exit_pending_observation_min_move_{0.22};
-  double exit_outside_probe_distance_{0.90};
-  int exit_outside_min_nonoccupied_samples_{3};
   double exit_cross_step_{0.35};
   double exit_cross_target_distance_{0.90};
   double exit_cross_confirm_distance_{0.45};
