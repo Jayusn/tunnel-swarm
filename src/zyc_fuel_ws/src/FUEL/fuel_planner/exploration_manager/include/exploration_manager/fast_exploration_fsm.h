@@ -4,6 +4,8 @@
 #include <Eigen/Eigen>
 
 #include <ros/ros.h>
+#include <ros/callback_queue.h>
+#include <exploration_manager/odometry_review.h>
 #include <nav_msgs/Path.h>
 #include <std_msgs/Empty.h>
 #include <std_msgs/Int32.h>
@@ -59,6 +61,7 @@ private:
   ros::NodeHandle node_;
   ros::Timer exec_timer_, safety_timer_, vis_timer_;
   ros::Time last_suspended_underpass_check_;
+  ros::CallbackQueue odom_callback_queue_;
   ros::Subscriber trigger_sub_, odom_sub_, mission_status_sub_;
   ros::Subscriber external_status_sub_;
   ros::Publisher replan_pub_, new_pub_, bspline_pub_, emergency_brake_pub_, safety_hold_pub_,
@@ -91,11 +94,9 @@ private:
   // 2026-07-28: 发布前在多次地图刷新间连续复核，阻断“发布即解锁、20ms后自判碰撞”的振荡。
   ros::Time pending_traj_safe_since_;
   ros::Time next_pending_traj_check_;
-  struct OdomReviewSample {
-    std::array<double, 3> position;
-    std::array<double, 3> velocity;
-  };
   std::deque<OdomReviewSample> odom_review_window_;
+  ros::Time last_odom_stamp_;
+  ros::Time odom_review_after_;
   // 入口交接后丢弃门外旧样本，首轮规划只使用交接后连续到达的五帧里程计。
   bool initial_plan_waiting_for_fresh_odom_{false};
   bool inflation_escape_active_{false};

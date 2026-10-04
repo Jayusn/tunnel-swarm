@@ -83,6 +83,11 @@ target_link_libraries(load_obj
 )
 
 if(CATKIN_ENABLE_TESTING)
+  add_executable(entry_forward_policy_test test/entry_forward_policy_test.cpp)
+  add_test(NAME entry_forward_policy_test COMMAND entry_forward_policy_test)
+  add_executable(odometry_review_test test/odometry_review_test.cpp)
+  target_link_libraries(odometry_review_test ${catkin_LIBRARIES})
+  add_test(NAME odometry_review_test COMMAND odometry_review_test)
   add_executable(motion_direction_rules_test test/motion_direction_rules_test.cpp)
   add_test(NAME motion_direction_rules_test COMMAND motion_direction_rules_test)
   add_executable(vertical_detour_policy_test test/vertical_detour_policy_test.cpp)

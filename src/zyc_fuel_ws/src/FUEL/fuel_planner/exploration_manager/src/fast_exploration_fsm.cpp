@@ -79,7 +79,12 @@ void FastExplorationFSM::init(ros::NodeHandle& nh) {
 
   trigger_sub_ =
       nh.subscribe("/waypoint_generator/waypoints", 1, &FastExplorationFSM::triggerCallback, this);
-  odom_sub_ = nh.subscribe("/odom_world", 1, &FastExplorationFSM::odometryCallback, this);
+  // 独立队列保留最近十帧，主线程在规划/安全检查前优先取齐五帧。
+  // 地图回调期间消息仍入队，避免队列长度1把五帧审核拖成五次慢回调周期。
+  ros::NodeHandle odom_nh(nh);
+  odom_nh.setCallbackQueue(&odom_callback_queue_);
+  odom_sub_ = odom_nh.subscribe("/odom_world", 10,
+                               &FastExplorationFSM::odometryCallback, this);
   // 任务状态决定门内/门外，并对外发布统一的动态检测阶段状态。
   std::string mission_status_topic;
   std::string dynamic_detection_enable_topic;
@@ -304,6 +309,7 @@ void FastExplorationFSM::externalStatusCallback(
 }
 
 void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
+  odom_callback_queue_.callAvailable(ros::WallDuration(0.0));
   ROS_INFO_STREAM_THROTTLE(1.0, "[FSM]: state: " << fd_->state_str_[int(state_)]);
 
   // 已开始准备下一条轨迹但旧轨迹先到终点时，明确结束旧轨迹并让控制器锁住实时XY。
@@ -369,7 +375,8 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
       // 入口触发可能与耗时的frontier回调相邻执行。禁止首轮规划继续使用触发前的
       // 门外里程计；等待五帧新状态后，下面现有的中值审核逻辑会直接采用它们。
       if (initial_plan_waiting_for_fresh_odom_) {
-        if (odom_review_window_.size() < 5) {
+        Vector3d reviewed_position, reviewed_velocity;
+        if (!getReviewedOdometry(reviewed_position, reviewed_velocity)) {
           ROS_WARN_THROTTLE(
               0.5, "[initial_plan] waiting for five post-trigger odometry frames (%zu/5).",
               odom_review_window_.size());
@@ -456,6 +463,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
         pending_initial_traj_reanchored_ = false;
         // 丢弃规划前的旧窗口，发布审核只采用规划完成后到达的最新五帧里程计。
         odom_review_window_.clear();
+        odom_review_after_ = ros::Time::now();
         transitState(PUB_TRAJ, "FSM");
       } else if (res == NO_FRONTIER) {
         transitState(FINISH, "FSM");
@@ -923,13 +931,16 @@ void FastExplorationFSM::triggerCallback(const nav_msgs::PathConstPtr& msg) {
   }
   // corridor_search_manager发布的触发点已经位于入口内侧。清空门外历史样本并让
   // PLAN_TRAJ等待触发后的五帧高频里程计，避免旧起点使门内A*路径看起来回穿入口。
+  odom_callback_queue_.callAvailable(ros::WallDuration(0.0));
   odom_review_window_.clear();
+  odom_review_after_ = ros::Time::now();
   initial_plan_waiting_for_fresh_odom_ = true;
   fd_->static_state_ = true;
   transitState(PLAN_TRAJ, "triggerCallback");
 }
 
 void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
+  odom_callback_queue_.callAvailable(ros::WallDuration(0.0));
   const bool replacement_pending =
       state_ == EXPL_STATE::PLAN_TRAJ || state_ == EXPL_STATE::PUB_TRAJ;
   const bool execution_stage = replacement_pending || state_ == EXPL_STATE::EXEC_TRAJ;
@@ -1043,6 +1054,8 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
 }
 
 void FastExplorationFSM::odometryCallback(const nav_msgs::OdometryConstPtr& msg) {
+  if (msg->header.stamp <= last_odom_stamp_) return;
+  last_odom_stamp_ = msg->header.stamp;
   fd_->odom_pos_(0) = msg->pose.pose.position.x;
   fd_->odom_pos_(1) = msg->pose.pose.position.y;
   fd_->odom_pos_(2) = msg->pose.pose.position.z;
@@ -1052,12 +1065,15 @@ void FastExplorationFSM::odometryCallback(const nav_msgs::OdometryConstPtr& msg)
   fd_->odom_vel_(2) = msg->twist.twist.linear.z;
 
   OdomReviewSample sample;
+  sample.stamp = msg->header.stamp.toSec();
   for (int axis = 0; axis < 3; ++axis) {
     sample.position[axis] = fd_->odom_pos_(axis);
     sample.velocity[axis] = fd_->odom_vel_(axis);
   }
-  odom_review_window_.push_back(sample);
-  while (odom_review_window_.size() > 5) odom_review_window_.pop_front();
+  if (msg->header.stamp > odom_review_after_) {
+    odom_review_window_.push_back(sample);
+    while (odom_review_window_.size() > 5) odom_review_window_.pop_front();
+  }
 
   fd_->odom_orient_.w() = msg->pose.pose.orientation.w;
   fd_->odom_orient_.x() = msg->pose.pose.orientation.x;
@@ -1075,19 +1091,12 @@ void FastExplorationFSM::odometryCallback(const nav_msgs::OdometryConstPtr& msg)
 
 bool FastExplorationFSM::getReviewedOdometry(
     Vector3d& position, Vector3d& velocity) const {
-  if (odom_review_window_.size() < 5) return false;
-
+  std::array<double, 3> positions, velocities;
+  if (!reviewOdometry(odom_review_window_, positions, velocities))
+    return false;
   for (int axis = 0; axis < 3; ++axis) {
-    std::array<double, 5> positions;
-    std::array<double, 5> velocities;
-    for (size_t i = 0; i < 5; ++i) {
-      positions[i] = odom_review_window_[i].position[axis];
-      velocities[i] = odom_review_window_[i].velocity[axis];
-    }
-    std::sort(positions.begin(), positions.end());
-    std::sort(velocities.begin(), velocities.end());
-    position(axis) = positions[2];
-    velocity(axis) = velocities[2];
+    position(axis) = positions[axis];
+    velocity(axis) = velocities[axis];
   }
   return position.allFinite() && velocity.allFinite();
 }

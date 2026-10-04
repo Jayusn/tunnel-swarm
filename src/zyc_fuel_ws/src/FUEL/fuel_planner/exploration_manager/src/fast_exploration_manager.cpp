@@ -1,6 +1,7 @@
 // #include <fstream>
 #include <exploration_manager/fast_exploration_manager.h>
 #include <exploration_manager/inflation_history_escape_policy.h>
+#include <exploration_manager/entry_forward_policy.h>
 #include <thread>
 #include <iostream>
 #include <fstream>
@@ -2556,31 +2557,56 @@ int FastExplorationManager::planExploreMotion(
       vertical_detour::inflationEscapeAllowed(low_probe_phase_) &&
       planInflationHistoryEscape(pos, vel, acc, yaw))
     return SUCCEED;
-  // 刚穿入口时按门法向累计至少 1.05m 的前进位移；已知自由段可分多次
+  // 刚穿入口时按门法向累计至少 1m 的前进位移；1.05m仅是选点余量，已知自由段可分多次
   // 发布，但不能把 A* 弯折弧长或优化器的往返路程当成向前推进距离。
   if (!use_vertical_detour_target && !low_probe_was_active &&
-      mission_workspace_lock_received_ && !mission_entered_search_region_ &&
+      mission_workspace_lock_received_ && !entry_forward_complete_ &&
+      !mission_entered_search_region_ &&
       task_search_manager_ && task_search_manager_->enabled() &&
       !task_search_manager_->hasConfirmedCorridorTurn() &&
       mission_workspace_dir_.head<2>().norm() > 1e-3) {
     const Vector3d forward = mission_workspace_dir_.normalized();
     const double entry_progress = (pos - mission_workspace_origin_).dot(forward);
-    if (entry_progress >= -0.15 && entry_progress < 1.05) {
+    if (entry_forward::needsAdvance(entry_progress)) {
       const double remaining = 1.05 - entry_progress;
-      const double shortest_step = std::min(0.20, remaining);
-      for (double candidate = remaining; candidate >= shortest_step - 1e-6;
-           candidate -= 0.20) {
-        if (!isLowProbeCorridorSafe(pos, forward, candidate)) continue;
-        next_pos = pos + candidate * forward;
+      entry_forward::Goal selected;
+      const auto evaluate = [&](const Vector3d& candidate, double& clearance,
+                                double& continuation) {
+        const Vector3d delta = candidate - pos;
+        if (!pointInsideWorkspaceLock(candidate) ||
+            !isLowProbeCorridorSafe(pos, delta, delta.head<2>().norm()) ||
+            !task_search_manager_->isTaskMotionAllowed(candidate))
+          return false;
+        clearance = std::max(0.0, sdf_map_->getDistance(candidate));
+        continuation = 0.0;
+        for (double angle : {0.0, -M_PI / 6.0, M_PI / 6.0, -M_PI_4, M_PI_4}) {
+          const Vector3d direction(
+              forward.x() * std::cos(angle) - forward.y() * std::sin(angle),
+              forward.x() * std::sin(angle) + forward.y() * std::cos(angle), 0.0);
+          for (double distance : {0.40, 0.20}) {
+            if (distance <= continuation + 1e-6) continue;
+            const Vector3d next = candidate + distance * direction;
+            if (pointInsideWorkspaceLock(next) &&
+                task_search_manager_->isTaskMotionAllowed(next) &&
+                isLowProbeCorridorSafe(candidate, direction, distance))
+              continuation = distance;
+          }
+          if (continuation >= 0.40) break;
+        }
+        return true;
+      };
+      if (entry_forward::selectGoal(pos, forward, remaining, evaluate, selected)) {
+        next_pos = selected.position;
         next_yaw = std::atan2(forward.y(), forward.x());
         use_mission_forward_fallback = true;
         use_center_gate_target = true;
         use_entry_forward_target = true;
         ed_->global_tour_ = {pos, next_pos};
-        ROS_WARN("[entry_forward] known-free straight %.2fm, total forward=%.2fm "
-                 "target=(%.2f,%.2f,%.2f).", candidate,
-                 entry_progress + candidate, next_pos.x(), next_pos.y(), next_pos.z());
-        break;
+        ROS_WARN("[entry_forward] known-free advance %.2fm side=%.2fm, total forward=%.2fm "
+                 "clearance=%.2fm continuation=%.2fm target=(%.2f,%.2f,%.2f).",
+                 selected.advance, selected.side, entry_progress + selected.advance,
+                 selected.clearance, selected.continuation,
+                 next_pos.x(), next_pos.y(), next_pos.z());
       }
     }
   }
@@ -3343,16 +3369,17 @@ int FastExplorationManager::planExploreMotion(
 
   // 入口后第一米按实际轨迹终点的门法向位移累计，不能用弧长或侧向绕圈凑数。
   if (!use_entry_forward_target && mission_workspace_lock_received_ &&
+      !entry_forward_complete_ &&
       !mission_entered_search_region_ && task_search_manager_ &&
       !task_search_manager_->hasConfirmedCorridorTurn() &&
       mission_workspace_dir_.head<2>().norm() > 1e-3) {
     const Vector3d forward = mission_workspace_dir_.normalized();
     const double entry_progress = (pos - mission_workspace_origin_).dot(forward);
-    if (entry_progress >= -0.15 && entry_progress < 1.05) {
+    if (entry_forward::needsAdvance(entry_progress)) {
       const Vector3d actual_end = planner_manager_->local_data_.position_traj_.evaluateDeBoorT(
           planner_manager_->local_data_.position_traj_.getTimeSum());
       const double advance = (actual_end - pos).dot(forward);
-      if (advance + 1e-3 < std::min(0.15, 1.05 - entry_progress)) {
+      if (advance + 1e-3 < std::min(0.15, 1.0 - entry_progress)) {
         ROS_WARN("[entry_forward] reject side-only trajectory: actual advance %.2fm, "
                  "accumulated %.2fm.", advance, entry_progress);
         task_search_manager_->reportGoalFailure(next_pos);
@@ -3489,6 +3516,11 @@ void FastExplorationManager::reportTrajectoryCollision() {
 }
 
 void FastExplorationManager::updateMissionOdometry(const Vector3d& pos, double yaw) {
+  if (!entry_forward_complete_ && mission_workspace_lock_received_ &&
+      (pos - mission_workspace_origin_).dot(mission_workspace_dir_) >= 1.0 - 1e-6) {
+    entry_forward_complete_ = true;
+    ROS_WARN("[entry_forward] actual net advance reached 1m; release entry target ownership.");
+  }
   // 2026-07-22: 连续里程计航迹是任务完成路段的唯一依据；规划器预测起点不再污染真实历史。
   if (recovery_odom_history_.empty() ||
       (pos - recovery_odom_history_.back()).norm() >= recovery_history_spacing_) {

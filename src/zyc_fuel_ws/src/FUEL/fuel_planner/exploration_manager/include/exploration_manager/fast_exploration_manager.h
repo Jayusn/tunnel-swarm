@@ -92,6 +92,7 @@ private:
   shared_ptr<TaskSearchManager> task_search_manager_;
   bool mission_entered_search_region_{false};
   bool mission_workspace_lock_received_{false};
+  bool entry_forward_complete_{false};
   bool external_selection_only_{false};
   Vector3d external_selected_viewpoint_{0.0, 0.0, 0.0};
   double external_selected_yaw_{0.0};
