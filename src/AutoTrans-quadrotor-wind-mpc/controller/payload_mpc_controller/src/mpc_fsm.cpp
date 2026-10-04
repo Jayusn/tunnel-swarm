@@ -198,13 +198,6 @@ namespace PayloadMPC
 			return;
 		}
 
-		if (auto_state && (!odom_is_received(now_time) || !odom_state_valid()))
-		{
-			enter_odom_failsafe("FAST-LIO 平移状态或 MAVROS 姿态未接收/无效");
-			publish_failsafe_hold(now_time);
-			return;
-		}
-
 		if (fsm_state == AUTO_LAND && state_fresh && state_data.current_state.mode == "AUTO.LAND")
 		{
 			clear_autonomous_inputs();
@@ -410,14 +403,7 @@ namespace PayloadMPC
 
 		case AUTO_HOVER:
 		{
-			if (!odom_is_received(now_time) || !odom_state_valid())
-			{
-				clearAppliedDisturbance();
-				fsm_state = MANUAL_CTRL;
-
-				ROS_WARN("[安全] AUTO_HOVER 因里程计失效退出自动控制。");
-			}
-			else if (rc_data.enter_land_mode)
+			if (rc_data.enter_land_mode)
 			{
 				// AUTO_LAND 禁止使用风力补偿；先清零 OnlineData，再计算首个降落控制量。
 				clearAppliedDisturbance();
@@ -470,15 +456,7 @@ namespace PayloadMPC
 
 		case CMD_CTRL:
 		{
-			if (!odom_is_received(now_time) || !odom_state_valid())
-			{
-				clearAppliedDisturbance();
-				fsm_state = MANUAL_CTRL;
-				exec_traj_state_ = HOVER;
-
-				ROS_WARN("[安全] CMD_CTRL 因里程计失效退出自动控制。");
-			}
-			else if (rc_data.enter_land_mode)
+			if (rc_data.enter_land_mode)
 			{
 				// AUTO_LAND 禁止使用风力补偿；先清零 OnlineData，再计算首个降落控制量。
 				clearAppliedDisturbance();
@@ -567,15 +545,6 @@ namespace PayloadMPC
 		}
 		case AUTO_LAND:
 		{
-			if (!odom_is_received(now_time) || !odom_state_valid())
-			{
-				clearAppliedDisturbance();
-				fsm_state = MANUAL_CTRL;
-				exec_traj_state_ = HOVER;
-				ROS_WARN("[安全] AUTO_LAND 因里程计失效停止 NMPC，等待 PX4 OFFBOARD 失联保护。");
-				break;
-			}
-
 			const double delta_t = std::max((now_time - last_set_hover_pose_time).toSec(), 0.0);
 			last_set_hover_pose_time = now_time;
 			// AUTO_LAND 内部仍由 NMPC 控制，每周期降低世界系 z 方向悬停目标，单位 m。
@@ -1094,11 +1063,6 @@ namespace PayloadMPC
 		if (mpc_recovery_active_ || direct_auto_land_active_)
 			return;
 
-		if (!odom_state_valid() || !est_state_.allFinite())
-		{
-			enter_odom_failsafe("NMPC 求解失败且无法锁存有效里程计位置");
-			return;
-		}
 		if (!mavros_local_pose_valid_)
 		{
 			enter_odom_failsafe("NMPC 求解失败且从未收到有效 MAVROS 本地位姿");

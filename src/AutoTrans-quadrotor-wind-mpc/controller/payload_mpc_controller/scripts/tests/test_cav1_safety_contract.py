@@ -73,6 +73,18 @@ def test_controller_has_safe_output_and_solver_failure_path():
     assert "last_mpc_solve_success_" in controller
 
 
+def test_invalid_control_state_does_not_trigger_offboard_loss_exit():
+    fsm = (SRC / "mpc_fsm.cpp").read_text(encoding="utf-8")
+    process = fsm.split("void MPCFSM::process()", 1)[1].split("void MPCFSM::CMD_CTRL_process", 1)[0]
+    auto_modes = process.split("case AUTO_HOVER:", 1)[1]
+    assert "!odom_is_received(now_time)" not in auto_modes
+    assert "!odom_state_valid()" not in auto_modes
+    assert 'enter_odom_failsafe("FAST-LIO 平移状态或 MAVROS 姿态未接收/无效")' not in process
+    recovery = fsm.split("void MPCFSM::beginMpcRecovery", 1)[1].split("void MPCFSM::processMpcRecovery", 1)[0]
+    assert 'enter_odom_failsafe("NMPC 求解失败且无法锁存有效里程计位置")' not in recovery
+    assert 'enter_odom_failsafe("NMPC 求解失败且从未收到有效 MAVROS 本地位姿")' in recovery
+
+
 def test_nmpc_recovery_message_is_edge_triggered():
     header = (INCLUDE / "mpc_controller.h").read_text(encoding="utf-8")
     controller = (SRC / "mpc_controller.cpp").read_text(encoding="utf-8")
