@@ -25,7 +25,7 @@ usage()
   sh shfiles/run_uav1_sensor_stack.sh landing
 
 说明：
-  mavros  启动 /UAV1/mavros，并设置 IMU、姿态、里程计和 ESC 频率。
+  mavros  启动 /UAV1/mavros，并设置 ESC 状态频率为 200 Hz。
   mid360  启动 /UAV1/livox/lidar 和 /UAV1/livox/imu。
   fastlio 启动 /UAV1/fast_lio 下的 FAST-LIO 话题。
   landing 只启动 /UAV1/down_camera；搜索和精降节点由
@@ -103,9 +103,6 @@ run_mavros()
     wait_for_mavros
 
     # MAV_CMD_SET_MESSAGE_INTERVAL(511) 的间隔单位为微秒。
-    set_interval 105 5000 "HIGHRES_IMU 目标 200 Hz"
-    set_interval 31 5000 "ATTITUDE_QUATERNION 目标 200 Hz"
-    set_interval 32 10000 "LOCAL_POSITION_NED 目标 100 Hz"
     set_interval 291 5000 "ESC_STATUS 目标 200 Hz"
 
     echo "[UAV1 MAVROS] 频率请求已发送，保持当前终端显示 MAVROS 日志。"

@@ -250,7 +250,7 @@ pane_init() {
 run_mavros_pane() {
   pane_init 1 MAVROS
   wait_for_ros_master || keep_pane_open
-  printf '[启动] UAV1 MAVROS，并设置 IMU/姿态/里程计/ESC 频率\n'
+  printf '[启动] UAV1 MAVROS，并设置 ESC 状态频率为 200 Hz\n'
   sh "${MATCH_WS}/shfiles/run_uav1_sensor_stack.sh" mavros
   printf '[退出] MAVROS 分屏，返回码=%s\n' "$?"
   keep_pane_open
