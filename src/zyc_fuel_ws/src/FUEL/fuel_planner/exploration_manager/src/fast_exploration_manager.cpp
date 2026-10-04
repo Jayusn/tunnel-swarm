@@ -2107,27 +2107,9 @@ double FastExplorationManager::turnInPlaceCompletionTolerance() const {
   return turn_in_place_completion_tolerance_deg_ * M_PI / 180.0;
 }
 
-void FastExplorationManager::completeTurnInPlace(const Vector3d& pos) {
+void FastExplorationManager::completeTurnInPlace(const Vector3d&) {
   if (task_search_manager_) task_search_manager_->completeTurnYawAlignment();
-  const double cruise_height = task_search_manager_
-                                   ? std::max(ground_ascent_cruise_height_,
-                                              task_search_manager_->preferredSearchHeight())
-                                   : ground_ascent_cruise_height_;
-  if (pos.z() < cruise_height - ground_ascent_height_tolerance_) {
-    // 转弯结束后不允许把避障造成的实时低高度继续当成新通道的目标高度。
-    // 复用已有固定 XY/yaw 垂直恢复，只增加这一处明确触发，不建立新状态机。
-    ground_ascent_active_ = true;
-    ground_ascent_optional_ = true;
-    ground_ascent_anchor_valid_ = false;
-    ground_ascent_still_since_ = ros::Time(0);
-    ground_ascent_target_ = pos;
-    ground_ascent_target_.z() = cruise_height;
-    ground_ascent_yaw_ = turn_in_place_final_yaw_;
-    cancelActiveLowProbe("post-turn cruise-height recovery owns xy/yaw");
-    ROS_ERROR("[ground_ascent] turn completed at z=%.2f; try fixed-XY recovery "
-              "to default %.2fm before translation; failure will resume normal planning.",
-              pos.z(), cruise_height);
-  }
+  // 转向完成后直接恢复平移规划；爬升和上绕由正常避障选路决定。
   turn_in_place_session_active_ = false;
   turn_in_place_still_since_ = ros::Time(0);
 }
