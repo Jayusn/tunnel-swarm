@@ -151,7 +151,17 @@ rosbag record -O ~/match_ws/bags/exit_detection/exit_detection_walk_$(date +%Y%m
 
 ## RViz
 
-检测 launch 默认自动打开专用 RViz，已经配置累计占据地图和出口标记，无需手动添加显示项。
+检测 launch 默认自动打开专用 RViz，地图显示与总流程第 6 屏的 FUEL RViz 一致，无需手动改颜色：
+
+- 同样的白色背景、网格和 `LocalMap` 显示组。
+- `occupied_all` 使用 Z 高度彩虹色、0.2 m 方块，颜色范围固定为 [-2, 1.25] m。
+- `occupied_local_inflate` 同样默认开启，透明度和颜色沿用正式配置。
+- 局部占据、未知区域、ESDF、地图更新范围和深度点云的显示参数及开关也沿用正式配置。
+
+地图话题适配到 `/exit_detection_test/map/`，固定坐标系跟随输入点云，默认 `UAV0/camera_init`。
+正式入口通过单位变换将它接到 `world`，两者坐标数值一致。
+建图仍共用正式 `fuel_map.yaml`；显示方块大小不会改变 0.05 m 的建图分辨率。
+
 出口位置用矩形、中心圆盘、方向箭头和文字一起显示：
 
 | RViz 显示 | 含义 |
@@ -174,7 +184,7 @@ rosrun rviz rviz \
 ```
 
 如果使用其他输入世界坐标系，最后的 `-f` 参数改为检测 launch 的 `world_frame`。
-自动打开时会跟随 launch 的 `world_frame` 设置。若看不到数据，检查左侧两个显示项
+自动打开时会跟随 launch 的 `world_frame` 设置。若看不到数据，检查左侧 `LocalMap` 组及出口标记
 是否启用、是否有坐标系错误，以及 FAST-LIO 里程计和点云是否正常更新。
 
 无图形界面或只录包时可关闭 RViz：
