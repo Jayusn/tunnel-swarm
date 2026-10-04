@@ -170,6 +170,34 @@ def main():
             rope = [(center, 0, 1.15 + n * .08) for n in range(4 + step % 8)]
             stamp = publish(None, points=sparse_points(center) + rope)
         assert count(stamp) == 0, 'Changing rope sampling made a stopped object move'
+
+        # A compact static surface remains visible while its sampled dense
+        # patch shifts. Center movement alone must not sustain a dynamic box.
+        for _ in range(3):
+            publish(None)
+        for center in [2.7, 2.55, 2.4, 2.25]:
+            stamp = publish(None, points=sparse_points(center))
+        assert count(stamp) == 1, 'Moving object was not confirmed before stopping'
+        anchors = [(2 + x * .1, y * .1, 1 + .08 * math.sin(x))
+                   for x in range(4) for y in [-1, 0, 1]]
+        for step in range(16):
+            anchor = anchors[(step % 4) * 3 + 1]
+            patch = [(anchor[0] + x, anchor[1] + y, anchor[2] + z)
+                     for x in [-.03, 0, .03] for y in [-.03, 0, .03]
+                     for z in [-.03, 0, .03]]
+            stamp = publish(None, points=anchors + patch)
+            if step >= 4:
+                assert count(stamp) == 0, 'Static sampling changes sustained motion'
+
+        # Repeat a swing through positions already seen by the background map.
+        for offsets in [[0, .15, .30, .15], [0, .30]]:
+            for _ in range(3):
+                publish(None)
+            for step in range(20):
+                center = 2 + offsets[step % len(offsets)]
+                stamp = publish(None, points=sparse_points(center))
+                if step >= 4:
+                    assert count(stamp) == 1, 'Repeated obvious swing lost after map update'
         if rviz_processes:
             _, _, graph = rospy.get_master().getSystemState()
             subscribers_by_topic = dict(graph[1])
@@ -179,7 +207,8 @@ def main():
                            for profile in ['uav1_lite', 'exp']), 'RViz display not subscribed: ' + topic
             print('PASS: both RViz profiles subscribe to FAPP clouds and markers')
         print('PASS: static, six-point motion, turn, stop, occlusion, thin planes, '
-              'moving UAV, one-to-one tracks, ceiling-connected motion, attached rope and consistent stamped outputs')
+              'moving UAV, one-to-one tracks, ceiling-connected motion, attached rope, '
+              'static sampling changes, repeated swing and consistent stamped outputs')
     finally:
         for process in rviz_processes + [launch, master]:
             if process is not None:

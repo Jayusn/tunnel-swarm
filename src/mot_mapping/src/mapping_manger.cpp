@@ -24,6 +24,7 @@ void MappingRos::init() {
   nh.param("detection/thresh_dist", mp_->thresh_dist, 0.08);
   nh.param("detection/thresh_var", mp_->thresh_var, 0.28);
   nh.param("detection/motion_displacement", mp_->motion_displacement, 0.06);
+  nh.param("detection/min_motion_novel_fraction", mp_->min_motion_novel_fraction, 0.3);
   nh.param("background_plane/enabled", mp_->background_plane_enabled, true);
   nh.param("background_plane/distance", mp_->background_plane_distance, 0.03);
   nh.param("background_plane/min_points", mp_->background_plane_min_points, 100);
@@ -204,13 +205,15 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
   pointsBodyToWorld(cloud_filtered, cloud_world);
   pointsBodyToWorld(latest_cloud, nonfilter_pts);
 
+  // Compare the same three-observation span used by the motion measurement.
+  PointsPtr observed_history[2];
+  if (!buffer.empty()) observed_history[0] = buffer.front();
+  if (buffer.size() > 1) observed_history[1] = buffer.back();
   buffer.push_back(nonfilter_pts);
-  if (buffer.size() > 1) {
+  if (buffer.size() > 2) {
     buffer.pop_front();
   }
-  for (int i = 0; i < buffer.size(); ++i) {
-    *ClusterPoints += *buffer[i];
-  }
+  *ClusterPoints += *nonfilter_pts;
   vox.setInputCloud(ClusterPoints);
   vox.setLeafSize(0.05, 0.05, 0.05);
   vox.filter(*ClusterPoints);
@@ -326,7 +329,16 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     ObjectState state;
     pcl::PointIndices indices;
     bool changed;
+    double novel_fraction;
   };
+  pcl::search::KdTree<PointType> observation_trees[2];
+  bool has_observed_history[2];
+  for (int history = 0; history < 2; ++history) {
+    has_observed_history[history] = observed_history[history] &&
+                                   !observed_history[history]->empty();
+    if (has_observed_history[history])
+      observation_trees[history].setInputCloud(observed_history[history]);
+  }
   std::vector<Candidate> candidates;
   detections.clear();
   deleted_indices.clear();
@@ -380,11 +392,21 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     // Judge the same dense surface used for motion. An attached sparse rope
     // must not make a curved moving return look like a long planar patch.
     Eigen::Matrix3d covariance = Eigen::Matrix3d::Zero();
+    size_t novel_points[2] = {0, 0};
+    std::vector<int> observed_nearest(1);
+    std::vector<float> observed_squared_distance(1);
     for (const auto& point : cluster) {
       if ((point.getVector3fMap() - cluster[dense_index].getVector3fMap()).squaredNorm() >
           mp_->tolerance) continue;
       Eigen::Vector3d delta = Eigen::Vector3d(point.x, point.y, point.z) - center;
       covariance += delta * delta.transpose();
+      for (int history = 0; history < 2; ++history) {
+        if (has_observed_history[history] &&
+            (observation_trees[history].nearestKSearch(point, 1, observed_nearest,
+                                                     observed_squared_distance) == 0 ||
+             observed_squared_distance[0] > mp_->thresh_dist * mp_->thresh_dist))
+          ++novel_points[history];
+      }
     }
     Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(covariance);
     const auto& eigenvalues = solver.eigenvalues();
@@ -403,6 +425,8 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     candidate.state.position = center;
     candidate.state.size = size;
     candidate.indices = indices;
+    candidate.novel_fraction = static_cast<double>(std::max(novel_points[0],
+                                                          novel_points[1])) / dense_count;
     candidate.changed = avg_dist > mp_->thresh_dist && avg_dist < 5.0 &&
                         var_dist < mp_->thresh_var;
     ROS_DEBUG_STREAM("FAPP_CANDIDATE " << cloud_stamp_.toNSec() << " "
@@ -484,7 +508,11 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     bool recently_changed = tracker->last_change_stamp >= tracker->observations.front().first;
     // A tracked object must still have measured motion, not just EKF velocity.
     // Novelty may occur in the first observation, before three-frame confirmation.
-    if (has_motion && (recently_changed || !tracker->last_dynamic_stamp.isZero()))
+    // Sampling can move a cluster center along an unchanged surface. Refresh
+    // motion only when its dense return also changes across the raw observed
+    // clouds; keep the existing brief support through swing turns.
+    if (has_motion && (recently_changed || !tracker->last_dynamic_stamp.isZero()) &&
+        candidate.novel_fraction >= mp_->min_motion_novel_fraction)
       tracker->last_motion_stamp = cloud_stamp_;
     bool confirmed = !tracker->last_motion_stamp.isZero() &&
                      (cloud_stamp_ - tracker->last_motion_stamp).toSec() <= 0.6;
