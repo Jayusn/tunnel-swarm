@@ -36,7 +36,6 @@ CLOUD_TOPIC="/UAV1/fast_lio/cloud_registered"
 DOWN_CAMERA_TOPIC="/UAV1/down_camera/image_raw"
 PLANNER_HEARTBEAT_TOPIC="/drone_1_planning/heartbeat"
 VISION_POSE_TOPIC="/UAV1/mavros/vision_pose/pose"
-VISION_STABILIZE_SECONDS="${UAV1_SIX_VISION_STABILIZE_SECONDS:-4}"
 
 PANE=""
 SHOW_HELP=false
@@ -65,7 +64,6 @@ usage() {
     因此不会与第 6 屏重复启动 Diff-Planner。
   - 第 5 屏默认启动热成像检测和 D435 融合；未接设备时可加 --no-thermal。
   - 可用环境变量 UAV1_SIX_WAIT_TIMEOUT 修改前级等待超时，默认 180 秒。
-  - 可用 UAV1_SIX_VISION_STABILIZE_SECONDS 修改视觉融合等待，默认 4 秒。
 
 选项：
   --thermal                 第 5 屏同时启动热成像检测和 D435 融合
@@ -350,11 +348,6 @@ run_controller_pane() {
   wait_for_topic_message "${PLANNER_HEARTBEAT_TOPIC}" || keep_pane_open
   wait_for_topic_message "${VISION_POSE_TOPIC}" || keep_pane_open
   wait_for_topic_message /UAV1/landing/control_owner || keep_pane_open
-  printf '[等待] 已收到外部视觉位姿，等待 PX4 EKF 稳定融合 %ss\n' \
-    "${VISION_STABILIZE_SECONDS}"
-  sleep "${VISION_STABILIZE_SECONDS}"
-  # 等待结束后再收一帧，避免视觉桥接仅短暂出现后已经退出。
-  wait_for_topic_message "${VISION_POSE_TOPIC}" || keep_pane_open
   printf '[启动] UAV1 轨迹桥接、AutoTrans、日志和自动 rosbag\n'
   printf '[说明] uav1_diff_autotrans.launch 默认不重复启动 Diff-Planner\n'
   roslaunch autotrans_reference_bridge uav1_diff_autotrans.launch \
@@ -478,7 +471,6 @@ log '上排：1 MAVROS | 2 MID360 | 3 FAST-LIO'
 log '下排：4 视觉位姿 | 5 检测/上报 | 6 Diff/RViz | 7 AutoTrans/日志/rosbag'
 log "检测参数：thermal=${THERMAL}, odom=${ODOM_TOPIC}"
 log "前级等待超时：${WAIT_TIMEOUT}s"
-log "PX4 外部视觉稳定等待：${VISION_STABILIZE_SECONDS}s"
 log "Terminator 启动日志：${TERMINATOR_LOG}"
 
 nohup terminator --no-dbus --maximise \
