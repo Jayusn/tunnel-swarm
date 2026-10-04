@@ -20,9 +20,7 @@ RUNTIME_CONFIG="${UAV0_SIX_RUNTIME_CONFIG:-/tmp/uav0_six_terminator_${RUN_ID}.co
 TERMINATOR_LOG="${UAV0_SIX_TERMINATOR_LOG:-/tmp/uav0_six_terminator_${RUN_ID}.log}"
 PID_FILE="${UAV0_SIX_PID_FILE:-/tmp/uav0_six_terminator_${RUN_ID}.pid}"
 WAIT_TIMEOUT="${UAV0_SIX_WAIT_TIMEOUT:-180}"
-VISION_STABILIZE_SECONDS="${UAV0_SIX_VISION_STABILIZE_SECONDS:-4}"
 ODOM_TOPIC="/UAV0/fast_lio/Odom_high_freq"
-FUEL_TRAJ_SERVER_NODE="/fuel_traj_server"
 PANE=""
 
 log() { printf '[uav0_six] %s\n' "$*"; }
@@ -73,24 +71,6 @@ wait_for_topic() {
   return 1
 }
 
-wait_for_node() {
-  local node="$1" elapsed=0
-  while (( elapsed < WAIT_TIMEOUT )); do
-    if timeout 2 rosnode ping -c 1 "${node}" >/dev/null 2>&1; then
-      printf '[就绪] ROS 节点已启动：%s\n' "${node}"
-      return 0
-    fi
-    if (( elapsed == 0 || elapsed % 10 == 0 )); then
-      printf '[等待] ROS 节点尚未启动：%s（%ss/%ss）\n' \
-        "${node}" "${elapsed}" "${WAIT_TIMEOUT}"
-    fi
-    sleep 1
-    elapsed=$((elapsed + 1))
-  done
-  printf '[错误] 等待 ROS 节点超时：%s\n' "${node}"
-  return 1
-}
-
 wait_for_mavros() {
   local elapsed=0
   while (( elapsed < WAIT_TIMEOUT )); do
@@ -122,10 +102,6 @@ run_controller_pane() {
   wait_for_topic "${ODOM_TOPIC}" || keep_open
   wait_for_topic /UAV0/livox/imu_mps2 || keep_open
   wait_for_topic /UAV0/mavros/local_position/odom || keep_open
-  wait_for_node "${FUEL_TRAJ_SERVER_NODE}" || keep_open
-  wait_for_topic /UAV0/mavros/vision_pose/pose || keep_open
-  printf '[等待] PX4 外部视觉稳定融合 %ss\n' "${VISION_STABILIZE_SECONDS}"
-  sleep "${VISION_STABILIZE_SECONDS}"
   wait_for_topic /UAV0/mavros/vision_pose/pose || keep_open
 
   printf '[启动] UAV0 FUEL bridge、AutoTrans NMPC、logger 与同目录 rosbag\n'
