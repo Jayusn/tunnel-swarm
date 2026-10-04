@@ -34,7 +34,6 @@ HIGH_FREQ_ODOM_TOPIC="/UAV1/fast_lio/Odom_high_freq"
 ODOM_TOPIC="${HIGH_FREQ_ODOM_TOPIC}"
 CLOUD_TOPIC="/UAV1/fast_lio/cloud_registered"
 DOWN_CAMERA_TOPIC="/UAV1/down_camera/image_raw"
-PLANNER_HEARTBEAT_TOPIC="/drone_1_planning/heartbeat"
 VISION_POSE_TOPIC="/UAV1/mavros/vision_pose/pose"
 
 PANE=""
@@ -344,8 +343,6 @@ run_controller_pane() {
   pane_init 7 AutoTrans控制器
   wait_for_mavros_connected || keep_pane_open
   wait_for_topic_message "${HIGH_FREQ_ODOM_TOPIC}" || keep_pane_open
-  # 等周期心跳而不是 planning/status；后者要等目标触发并成功出轨迹才会发布。
-  wait_for_topic_message "${PLANNER_HEARTBEAT_TOPIC}" || keep_pane_open
   wait_for_topic_message "${VISION_POSE_TOPIC}" || keep_pane_open
   wait_for_topic_message /UAV1/landing/control_owner || keep_pane_open
   printf '[启动] UAV1 轨迹桥接、AutoTrans、日志和自动 rosbag\n'
