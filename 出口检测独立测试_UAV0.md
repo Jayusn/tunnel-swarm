@@ -2,7 +2,7 @@
 
 只测试“通道向双侧开阔区域过渡”的识别，不需要起飞、入口识别、完整探索或飞控。
 复用正式 FUEL 的累计 SDFMap、出口几何判定和连续地图确认逻辑。
-测试入口只有 `exit_detection_node`，不会生成探索航点、穿越轨迹或降落请求。
+测试入口启动 `exit_detection_node` 和 RViz，不会生成探索航点、穿越轨迹或降落请求。
 所有检测与任务接口放在 `/exit_detection_test` 下；正式比赛 launch 的出口开关保持原设置。
 
 ## 手持设备测试
@@ -74,14 +74,37 @@ rosbag record -O ~/exit_detection_walk.bag \
 
 ## RViz
 
+检测 launch 默认自动打开专用 RViz，已经配置累计占据地图和出口标记，无需手动添加显示项。
+出口位置用矩形、中心圆盘、方向箭头和文字一起显示：
+
+| RViz 显示 | 含义 |
+| --- | --- |
+| 橙色矩形、中心圆盘，文字 `OPEN-SPACE CANDIDATE / INSIDE N/3` | 出口候选，显示证据次数，尚未确认出口 |
+| 绿色矩形、中心圆盘，文字 `OPEN-SPACE READY / STILL INSIDE` | 已确认出口；对应状态 `exit=1`、`confirmed.data=true` |
+| 箭头 | 推断的出通道方向 |
+
+`STILL INSIDE` 表示独立模式只检测、不执行穿越，不表示出口未确认。
+小绿色点是手持设备经过的位置，不能当作出口；确认应看绿色矩形及上方文字。
+矩形标记表示开阔区域过渡截面，不代表识别到了实体门框。
+候选或确认失效时标记会删除。通道拐角出现绿色出口矩形，就记录为疑似误检。
+
+已在运行检测但没有 RViz 时，可以另开终端加载同一份显示配置：
+
 ```bash
-rviz -f UAV0/camera_init
+rosrun rviz rviz \
+  -d $(rospack find exploration_manager)/config/exit_detection_test.rviz \
+  -f UAV0/camera_init
 ```
 
-添加 `PointCloud2`：`/exit_detection_test/map/occupancy_all`。
-添加 `Marker`：`/exit_detection_test/markers`。
-橙色表示候选，绿色及 `OPEN-SPACE READY / STILL INSIDE` 表示稳定确认；箭头朝出口外。
-矩形标记表示开阔区域过渡截面，不代表识别到了实体门框。
+如果使用其他输入世界坐标系，最后的 `-f` 参数改为检测 launch 的 `world_frame`。
+自动打开时会跟随 launch 的 `world_frame` 设置。若看不到数据，检查左侧两个显示项
+是否启用、是否有坐标系错误，以及 FAST-LIO 里程计和点云是否正常更新。
+
+无图形界面或只录包时可关闭 RViz：
+
+```bash
+roslaunch exploration_manager exit_detection_test.launch rviz:=false
+```
 
 ## 回放已注册点云与里程计
 

@@ -4,6 +4,7 @@
   <arg name="cloud_topic" default="/UAV0/fast_lio/cloud_registered"/>
   <arg name="world_frame" default="UAV0/camera_init"/>
   <arg name="use_sim_time" default="false"/>
+  <arg name="rviz" default="true"/>
   <arg name="map_size_x" default="20.0"/>
   <arg name="map_size_y" default="20.0"/>
   <arg name="map_size_z" default="3.0"/>
@@ -80,4 +81,7 @@
     <param name="mission/task_search/exit/footprint_extra_radius" value="0.20"/>
     <param name="mission/task_search/exit/footprint_samples" value="12"/>
   </node>
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="exit_detection_rviz"
+        args="-d $(find exploration_manager)/config/exit_detection_test.rviz -f $(arg world_frame)"
+        output="screen"/>
 </launch>

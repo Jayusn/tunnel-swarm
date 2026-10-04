@@ -1,0 +1,66 @@
+Panels:
+  - Class: rviz/Displays
+    Name: Displays
+  - Class: rviz/Views
+    Name: Views
+Preferences:
+  PromptSaveOnExit: false
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz/Grid
+      Name: Grid
+      Enabled: true
+      Cell Size: 1
+      Plane Cell Count: 20
+      Color: 100; 100; 100
+      Alpha: 0.4
+      Reference Frame: <Fixed Frame>
+      Value: true
+    - Class: rviz/PointCloud2
+      Name: 累计占据地图
+      Enabled: true
+      Topic: /exit_detection_test/map/occupancy_all
+      Queue Size: 2
+      Style: Flat Squares
+      Size (m): 0.05
+      Size (Pixels): 3
+      Alpha: 0.7
+      Position Transformer: XYZ
+      Color Transformer: FlatColor
+      Color: 180; 180; 180
+      Decay Time: 0
+      Value: true
+    - Class: rviz/Marker
+      Name: 出口候选与确认
+      Enabled: true
+      Marker Topic: /exit_detection_test/markers
+      Queue Size: 100
+      Namespaces: {}
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 30; 30; 30
+    Fixed Frame: UAV0/camera_init
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz/Interact
+    - Class: rviz/MoveCamera
+    - Class: rviz/Select
+  Views:
+    Current:
+      Class: rviz/Orbit
+      Name: Current View
+      Distance: 10
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0.6
+      Pitch: 0.8
+      Yaw: 0.8
+      Target Frame: <Fixed Frame>
+    Saved: ~
+Window Geometry:
+  Width: 1200
+  Height: 800

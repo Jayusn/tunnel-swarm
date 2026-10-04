@@ -79,6 +79,7 @@
   <!-- 2026-07-13: 第二阶段任务搜索运行时消息依赖。 -->
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>rviz</exec_depend>
   <!-- 2026-07-23: 运行时订阅FAST-LIO机体系点云。 -->
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>mavros_msgs</exec_depend>
