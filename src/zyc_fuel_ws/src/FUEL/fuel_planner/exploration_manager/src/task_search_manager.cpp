@@ -401,6 +401,14 @@ bool TaskSearchManager::updateExitDetectionOnly(
              "forward yaw=%.1fdeg, detection only.", yaw * 180.0 / M_PI);
   }
   updateRobotPose(pos, yaw);
+  // 手持全程测试由真实地图更新通道轴线；无需执行入口阶段或原地转向轨迹。
+  Eigen::Vector3d mapped_direction;
+  mappedCorridorDirection(yaw, mapped_direction, false);
+  if (turnYawAlignmentPending() &&
+      !corridorYawCorrectionDirection(yaw, mapped_direction))
+    completeTurnYawAlignment();
+  // 新转弯会撤销旧出口证据；待机头对准且走出既有过渡区后恢复出口检测。
+  updateExitCandidate(pos);
   if (!exit_candidate_confirmed_) return false;
   const double exit_yaw = std::atan2(exit_outward_direction_.y(), exit_outward_direction_.x());
   detected_exit.header.stamp = ros::Time::now();
@@ -1267,9 +1275,9 @@ void TaskSearchManager::commitCorridorTurn(
 }
 
 bool TaskSearchManager::mappedCorridorDirection(
-    double cur_yaw, Eigen::Vector3d& direction) {
+    double cur_yaw, Eigen::Vector3d& direction, bool check_entry_forward_phase) {
   // 入口后的第一段直线尚未走完时，门外开放区和门框遮挡不是拐弯。
-  if (entryForwardPhaseActive()) {
+  if (check_entry_forward_phase && entryForwardPhaseActive()) {
     clearPendingTurnEvidence();
     return false;
   }

@@ -27,15 +27,25 @@ roslaunch livox_ros_driver2 msg_MID360.launch vehicle_ns:=UAV0 \
 roslaunch fast_lio mapping_mid360.launch vehicle_ns:=UAV0 rviz:=false
 ```
 
-将设备放在出口内侧，机头朝向出通道方向，再在终端 3 启动检测：
+全程检查误检时，将设备放在通道入口内侧、机头朝向第一段通道，再在终端 3 启动检测。
+只检查出口时，也可以从出口前的最后一段通道内开始：
 
 ```bash
 roslaunch exploration_manager exit_detection_test.launch
 ```
 
-第一帧里程计的 yaw 固定为本轮检测的通道前向；转动机头不会重新定义该方向。
-慢慢手持走近出口，保留门内双侧墙体并扫描门外左右区域。确认时设备距离候选出口
-不超过 1 m。无需走完整条通道，也无需穿出出口。重测另一个方向时重启检测 launch。
+第一帧里程计的 yaw 定义初始通道前向；单纯转动机头不会重定义通道方向。
+独立入口复用正式流程的地图转弯判定，地图确认转弯后切换到新通道方向。
+本入口从通道内直接开始，不等待正式入口流程的前 2 m 直行阶段。
+转弯过程中手持设备跟着新通道转向，机头对准新方向后解除转向等待；沿新方向走出
+既有约 0.6 m 过渡区后恢复出口检测。没有地图转弯证据时，不会只因机头旋转而更新方向。
+
+可以从入口内侧慢慢走完整条通道，保持设备约 0.6 m 高，机头跟随当前通道方向。
+在每个拐角、单侧开口和障碍旁稍作停留，扫描周围后继续前进；关注真实出口之前
+是否出现 `exit=1` 或 `confirmed.data=true`，出现即记录为疑似误检。
+`open_space_hits>0` 只表示候选证据，不等于已经确认出口；同样可以记录用于排查。
+到达真实出口时扫描门外左右区域，确认距离候选出口不超过 1 m。无需穿出出口。
+再次完整走一遍或改换起始方向时，重启检测 launch 清空地图与检测状态。
 
 终端 4 查看状态：
 
@@ -49,6 +59,18 @@ rostopic echo /exit_detection_test/detected_exit
 `detected_exit` 在当前确认有效时发布出口中心和朝外方向，不永久锁存。
 状态阶段始终为 `SEARCH_CORRIDOR`，`landing=0`；它不会执行接近、穿越或降落。
 候选失效时 `confirmed` 回到 false，旧 `detected_exit` 消息不能代表当前仍已确认。
+
+完整走通道时建议在另一终端录下输入和检测结果，便于回看误检位置：
+
+```bash
+rosbag record -O ~/exit_detection_walk.bag \
+  /UAV0/fast_lio/Odom_high_freq /UAV0/fast_lio/cloud_registered \
+  /exit_detection_test/status /exit_detection_test/confirmed \
+  /exit_detection_test/detected_exit /exit_detection_test/markers
+```
+
+若已经绕过拐角，但日志没有 `confirmed LEFT/RIGHT turn` 且出口检测迟迟无结果，
+先检查地图是否充分观察到了前墙和新通道；这属于转弯未确认，不能视为出口检测已通过。
 
 ## RViz
 
@@ -64,7 +86,7 @@ rviz -f UAV0/camera_init
 ## 回放已注册点云与里程计
 
 录包需包含同一坐标系的 FAST-LIO 注册点云和里程计；无需重新运行 FAST-LIO。
-先启动检测，再播放，确保第一帧机头朝向待测出口：
+先启动检测，再播放，确保第一帧机头朝向录包起点所在的第一段通道：
 
 ```bash
 roslaunch exploration_manager exit_detection_test.launch use_sim_time:=true

@@ -131,6 +131,26 @@ public:
     observation.clearExitEvidence();
     check(!observation.updateExitDetectionOnly(start, 0.0, observed_exit),
           "observation retained revoked detection");
+    observation.commitCorridorTurn(-Eigen::Vector3d::UnitX());
+    Eigen::Vector3d mapped_direction;
+    check(!observation.mappedCorridorDirection(0.0, mapped_direction),
+          "normal mission unexpectedly bypassed entry forward phase");
+    check(observation.mappedCorridorDirection(0.0, mapped_direction, false),
+          "inside-corridor observation did not expose the confirmed turn");
+    check(!observation.updateExitDetectionOnly(start, 0.0, observed_exit) &&
+          observation.turnYawAlignmentPending(),
+          "observation completed turn before handheld yaw aligned");
+    observation.updateExitDetectionOnly(start + Eigen::Vector3d(-0.3, 0, 0),
+                                         M_PI, observed_exit);
+    check(!observation.turnYawAlignmentPending() && observation.transition_active_,
+          "aligned handheld yaw did not release latch or ended transition too soon");
+    observation.updateExitDetectionOnly(start + Eigen::Vector3d(-0.7, 0, 0),
+                                         M_PI, observed_exit);
+    check(!observation.transition_active_ &&
+          observation.stableProgressDirection().dot(-Eigen::Vector2d::UnitX()) > 0.99,
+          "observation did not retain new corridor direction after walking through turn");
+    check(!observation.stage3Active() && !observation.landingRequested(),
+          "walking through turn started flight task");
     std::cout << "real map freshness, observed volume, obstacle and turn checks passed" << std::endl;
   }
   static void run() {

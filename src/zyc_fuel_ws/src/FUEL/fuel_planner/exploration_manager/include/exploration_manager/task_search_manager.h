@@ -41,7 +41,8 @@ public:
   // 向A*提供当前通道的单调前进轴；地图确认转弯后自动切换到新通道方向。
   bool astarNoReturnDirection(Eigen::Vector3d& direction) const;
   // 查询并锁存累计占据地图确认的真实转弯，直到机头对准新通道，防止位置恢复先消费结果。
-  bool mappedCorridorDirection(double cur_yaw, Eigen::Vector3d& direction);
+  bool mappedCorridorDirection(double cur_yaw, Eigen::Vector3d& direction,
+                               bool check_entry_forward_phase = true);
   // 已建立分段后，机头偏离实际通道轴线时只校正yaw，不重复建立分段或禁回门。
   bool corridorYawCorrectionDirection(double cur_yaw,
                                       Eigen::Vector3d& direction) const;

@@ -30,7 +30,7 @@ int main(int argc, char** argv) {
         if (confirmed.data) pose_pub.publish(exit);
       });
   ROS_INFO("[exit_detection_test] waiting for world-frame cloud and odometry; "
-           "face the exit before the first odometry message.");
+           "face forward along the starting corridor; map-confirmed turns update direction.");
   ros::spin();
   return 0;
 }
