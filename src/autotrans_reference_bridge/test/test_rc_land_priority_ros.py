@@ -238,6 +238,60 @@ class RcLandPriorityTest(unittest.TestCase):
             self.assertAlmostEqual(message.pose.position.x, goal.x, places=5)
             self.assertAlmostEqual(message.pose.position.y, goal.y, places=5)
 
+    def run_confirmed_exit_forward(self, signed_side):
+        self.subscribe("subgoal", PoseStamped)
+        self.subscribe("search/state", String)
+        self.subscribe("yaw", PositionCommand)
+        stage = self.publisher("stage", String)
+        odom_pub = self.publisher("odom", Odometry)
+        exit_pub = self.publisher("exit", PoseStamped, latch=True)
+        self.launch("diff_planner", "landing_diff_search_manager", "search",
+                    stage_topic="stage", odom_topic="odom", subgoal_topic="subgoal",
+                    trigger_topic="trigger", yaw_topic="yaw", rc_land_active_topic="rc_land",
+                    exit_portal_topic="exit")
+        self.wait(lambda: stage.get_num_connections() == 1 and
+                  odom_pub.get_num_connections() == 1 and exit_pub.get_num_connections() == 1,
+                  "confirmed exit manager did not connect")
+        yaw = 0.4
+        portal = PoseStamped()
+        portal.header.frame_id = "world"
+        portal.header.stamp = rospy.Time.now()
+        portal.pose.position = Point(2.0, -1.0, 1.0)
+        portal.pose.orientation.w = math.cos(yaw / 2)
+        portal.pose.orientation.z = math.sin(yaw / 2)
+        exit_pub.publish(portal)
+        time.sleep(0.15)
+        odom = Odometry()
+        odom.pose.pose.position = Point(2.0 + signed_side * math.cos(yaw),
+                                        -1.0 + signed_side * math.sin(yaw), 1.0)
+        odom.pose.pose.orientation = portal.pose.orientation
+        odom_pub.publish(odom)
+        stage.publish(String("SEARCH_OUTSIDE_LANDING"))
+        self.wait(lambda: self.last("subgoal") is not None, "confirmed exit forward goal missing")
+        goal = self.last("subgoal").pose.position
+        distance_outside = 1.0 + max(0.0, signed_side)
+        self.assertAlmostEqual(goal.x, 2.0 + distance_outside * math.cos(yaw), places=5)
+        self.assertAlmostEqual(goal.y, -1.0 + distance_outside * math.sin(yaw), places=5)
+        self.assertAlmostEqual(goal.z, 1.0, places=5)
+        self.assertAlmostEqual(self.last("yaw").yaw, yaw, places=5)
+        self.assertEqual(self.last("search/state").data, "FRONT_ARUCO_FORWARD_APPROACH")
+        # 后续出口消息和重复阶段通知不能延长或替换本次前飞目标。
+        portal.pose.position.x += 10
+        exit_pub.publish(portal)
+        stage.publish(String("SEARCH_OUTSIDE_LANDING"))
+        time.sleep(0.3)
+        self.assertEqual(self.last("subgoal").pose.position, goal)
+        odom.pose.pose.position = goal
+        odom_pub.publish(odom)
+        self.wait(lambda: self.last("search/state").data == "FRONT_ARUCO_INITIAL_WAIT",
+                  "front scan did not wait until reaching the outward goal")
+
+    def test_diff_forward_is_one_meter_beyond_exit_despite_early_arrival_tolerance(self):
+        self.run_confirmed_exit_forward(-0.08)
+
+    def test_diff_confirmed_exit_already_outside_moves_another_meter(self):
+        self.run_confirmed_exit_forward(0.6)
+
     def test_controller_ch10_locks_xy_yaw_and_descends(self):
         package = "payload_mpc_controller"
         package_path = Path(rospkg.RosPack().get_path(package))

@@ -383,6 +383,7 @@ private:
   double exit_footprint_half_height_{0.15};
   double exit_standoff_{0.45};
   double exit_arrive_distance_{0.50};
+  double exit_portal_arrive_distance_{0.10};
   double exit_candidate_max_behind_distance_{0.35};
   double exit_progress_reverse_reject_deg_{120.0};
   int exit_pending_observation_min_hits_{3};

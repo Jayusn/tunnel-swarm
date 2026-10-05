@@ -148,6 +148,7 @@ void TaskSearchManager::initialize(ros::NodeHandle& nh) {
            exit_verification_yaw_hold_time_, 2.5);
   nh.param("mission/task_search/exit/standoff", exit_standoff_, 0.45);
   nh.param("mission/task_search/exit/arrive_distance", exit_arrive_distance_, 0.50);
+  nh.param("mission/task_search/exit/portal_arrive_distance", exit_portal_arrive_distance_, 0.10);
   nh.param("mission/task_search/exit/candidate_max_behind_distance",
            exit_candidate_max_behind_distance_, 0.35);
   // 推进方向与转弯共用，短回撤不能改变出口的内外方向。
@@ -2207,10 +2208,14 @@ bool TaskSearchManager::buildStage3Goal(const Eigen::Vector3d& cur_pos, double c
   if (mission_stage_ == EXIT_APPROACH_INSIDE) {
     const double signed_side =
         (cur_pos.head<2>() - exit_portal_center_.head<2>()).dot(exit_outward_direction_);
-    // Diff 自带前飞段；接近完成即交接，不再叠加 FUEL 的穿门距离。
+    // 外部Diff必须到出口截面附近才接管，不能在门内候选接近点提前前飞。
     // 人工已飞到出口外再拨CH9时，不返回门内接近点。
+    const Eigen::Vector3d& approach =
+        external_landing_planner_ ? exit_portal_center_ : exit_candidate_;
+    const double arrive_distance =
+        external_landing_planner_ ? exit_portal_arrive_distance_ : exit_arrive_distance_;
     const double handoff_side = external_landing_planner_ ? 0.0 : exit_cross_confirm_distance_;
-    if ((cur_pos.head<2>() - exit_candidate_.head<2>()).norm() <= exit_arrive_distance_ ||
+    if ((cur_pos.head<2>() - approach.head<2>()).norm() <= arrive_distance ||
         signed_side >= handoff_side) {
       if (external_landing_planner_) {
         mission_stage_ = SEARCH_OUTSIDE_LANDING;
@@ -2221,7 +2226,7 @@ bool TaskSearchManager::buildStage3Goal(const Eigen::Vector3d& cur_pos, double c
         search_exhausted_since_ = ros::Time(0);
         publishSearchState();
         ROS_ERROR("[exit_mission] EXIT_APPROACH_INSIDE -> SEARCH_OUTSIDE_LANDING: "
-                  "Diff owns the forward crossing; skip extra FUEL CROSS_EXIT.");
+                  "exit plane reached; Diff owns the 1m outward crossing.");
         return false;
       }
       mission_stage_ = CROSS_EXIT;
@@ -2230,9 +2235,9 @@ bool TaskSearchManager::buildStage3Goal(const Eigen::Vector3d& cur_pos, double c
       ROS_ERROR("[exit_mission] stage EXIT_APPROACH_INSIDE -> CROSS_EXIT, portal=(%.2f, %.2f).",
                 exit_portal_center_.x(), exit_portal_center_.y());
     } else {
-      goal = exit_candidate_;
+      goal = approach;
       if (!mapPointSafe(goal) || goalTemporarilyBlocked(goal)) {
-        ROS_WARN_THROTTLE(1.0, "[exit_mission] verified portal inside approach temporarily blocked.");
+        ROS_WARN_THROTTLE(1.0, "[exit_mission] verified exit approach temporarily blocked.");
         return false;
       }
       goal_yaw = std::atan2(exit_outward_direction_.y(), exit_outward_direction_.x());

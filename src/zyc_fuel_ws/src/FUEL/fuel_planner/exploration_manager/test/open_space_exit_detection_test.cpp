@@ -252,7 +252,7 @@ public:
           manual_crossing.mission_stage_ == TaskSearchManager::SEARCH_OUTSIDE_LANDING &&
           !manual_crossing.landingRequested(),
           "RC crossing did not hand off outside search to the external planner");
-    // 正式 Diff 流程只有后续前飞段；CH9 到达门内接近点即交接。
+    // CH9不能在门内接近点交接，必须继续到锁存出口截面。
     TaskSearchManager manual_diff;
     manual_diff.initialize(nh);
     manual_diff.external_landing_planner_ = true;
@@ -265,10 +265,15 @@ public:
     manual_diff.activateRcSearchLanding(ros::Time(114));
     manual_goal = Eigen::Vector3d(7,8,9);
     check(!manual_diff.buildStage3Goal(start, 0, false, manual_goal, manual_yaw) &&
-          manual_diff.mission_stage_ == TaskSearchManager::SEARCH_OUTSIDE_LANDING &&
-          (manual_goal - Eigen::Vector3d(7,8,9)).norm() == 0 &&
+          manual_diff.mission_stage_ == TaskSearchManager::EXIT_APPROACH_INSIDE &&
+          (manual_goal - manual_portal).norm() == 0 &&
           !manual_diff.landingRequested(),
-          "CH9 generated an extra FUEL crossing before Diff forward approach");
+          "CH9 handed off before reaching the locked exit plane");
+    manual_goal = Eigen::Vector3d(7,8,9);
+    check(!manual_diff.buildStage3Goal(manual_portal, 0, false, manual_goal, manual_yaw) &&
+          manual_diff.mission_stage_ == TaskSearchManager::SEARCH_OUTSIDE_LANDING &&
+          (manual_goal - Eigen::Vector3d(7,8,9)).norm() == 0,
+          "CH9 did not hand off at the exit plane");
     TaskSearchManager already_outside;
     already_outside.initialize(nh);
     const Eigen::Vector3d outside_pose = manual_portal + Eigen::Vector3d(0.1,0,0);
@@ -408,10 +413,18 @@ public:
     check(automatic.buildStage3Goal(locked_portal - Eigen::Vector3d(1.1,0,0),
                                    0, false, crossing_goal, crossing_yaw) &&
           automatic.mission_stage_ == TaskSearchManager::EXIT_APPROACH_INSIDE &&
-          (crossing_goal - automatic.exit_candidate_).norm() < 1e-6,
-          "Diff handoff skipped the retained FUEL inside approach");
+          (crossing_goal - locked_portal).norm() < 1e-6,
+          "FUEL approach did not target the locked exit plane");
+    for (double remaining : {0.45, 0.11}) {
+      check(automatic.buildStage3Goal(locked_portal - Eigen::Vector3d(remaining,0,0),
+                                     0, false, crossing_goal, crossing_yaw) &&
+            automatic.mission_stage_ == TaskSearchManager::EXIT_APPROACH_INSIDE &&
+            (crossing_goal - locked_portal).norm() < 1e-6,
+            "automatic exit handed off while still short of the exit plane");
+    }
     crossing_goal = Eigen::Vector3d(7,8,9);
-    check(!automatic.buildStage3Goal(exit_eye, 0, false, crossing_goal, crossing_yaw) &&
+    check(!automatic.buildStage3Goal(locked_portal - Eigen::Vector3d(0.08,0,0),
+                                    0, false, crossing_goal, crossing_yaw) &&
           automatic.mission_stage_ == TaskSearchManager::SEARCH_OUTSIDE_LANDING &&
           (crossing_goal - Eigen::Vector3d(7,8,9)).norm() == 0 &&
           !automatic.landingRequested(),
