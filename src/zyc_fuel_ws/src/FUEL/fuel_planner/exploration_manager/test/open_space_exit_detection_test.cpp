@@ -191,6 +191,63 @@ public:
           manual_mission.consumeRcSearchLandingStartRequest() &&
           !manual_mission.consumeRcSearchLandingStartRequest(),
           "observation mode blocked or repeated the existing RC handoff");
+    // 有确认出口时，CH9先穿越，即使自动接管关闭、阶段二目标尚未完成。
+    TaskSearchManager manual_crossing;
+    manual_crossing.initialize(nh);
+    manual_crossing.updateRobotPose(start, 0.0);
+    manual_crossing.exit_candidate_confirmed_ = true;
+    manual_crossing.exit_portal_outside_verified_ = true;
+    manual_crossing.exit_candidate_ = start;
+    manual_crossing.exit_portal_center_ = start + Eigen::Vector3d(0.5, 0, 0);
+    manual_crossing.exit_outward_direction_ = Eigen::Vector2d::UnitX();
+    rc->channels[8] = 1000;
+    rc->header.stamp = ros::Time(110);
+    manual_crossing.rcSearchLandingCallback(rc);
+    rc->channels[8] = 1900;
+    rc->header.stamp = ros::Time(111);
+    manual_crossing.rcSearchLandingCallback(rc);
+    check(!manual_crossing.stage3Active(), "RC crossing bypassed hold period");
+    rc->header.stamp = ros::Time(112);
+    manual_crossing.rcSearchLandingCallback(rc);
+    const Eigen::Vector3d manual_portal = manual_crossing.exit_portal_center_;
+    check(manual_crossing.mission_stage_ == TaskSearchManager::EXIT_APPROACH_INSIDE &&
+          manual_crossing.exit_portal_locked_ &&
+          manual_crossing.consumeRcSearchLandingStartRequest() &&
+          !manual_crossing.consumeRcSearchLandingStartRequest(),
+          "RC did not start crossing independently of the automatic switch");
+    Eigen::Vector3d manual_goal;
+    double manual_yaw = 0;
+    manual_crossing.buildStage3Goal(start, 0, false, manual_goal, manual_yaw);
+    check(manual_crossing.mission_stage_ == TaskSearchManager::CROSS_EXIT &&
+          !manual_crossing.landingRequested(), "RC skipped crossing before landing search");
+    rc->header.stamp = ros::Time(113);
+    manual_crossing.rcSearchLandingCallback(rc);
+    check(manual_crossing.mission_stage_ == TaskSearchManager::CROSS_EXIT &&
+          (manual_crossing.exit_portal_center_ - manual_portal).norm() < 1e-6,
+          "repeated RC trigger restarted or replaced the locked exit");
+    manual_crossing.external_landing_planner_ = true;
+    check(!manual_crossing.buildStage3Goal(manual_portal + Eigen::Vector3d(0.65, 0, 0),
+                                         0, false, manual_goal, manual_yaw) &&
+          manual_crossing.mission_stage_ == TaskSearchManager::SEARCH_OUTSIDE_LANDING &&
+          !manual_crossing.landingRequested(),
+          "RC crossing did not hand off outside search to the external planner");
+    TaskSearchManager already_outside;
+    already_outside.initialize(nh);
+    const Eigen::Vector3d outside_pose = manual_portal + Eigen::Vector3d(0.8,0,0);
+    already_outside.updateRobotPose(outside_pose, 0.0);
+    already_outside.exit_candidate_confirmed_ = true;
+    already_outside.exit_portal_outside_verified_ = true;
+    already_outside.exit_candidate_ = start;
+    already_outside.exit_portal_center_ = manual_portal;
+    already_outside.exit_outward_direction_ = Eigen::Vector2d::UnitX();
+    already_outside.external_landing_planner_ = true;
+    already_outside.activateRcSearchLanding(ros::Time(114));
+    manual_goal = Eigen::Vector3d(7,8,9);
+    check(!already_outside.buildStage3Goal(outside_pose, 0, false, manual_goal, manual_yaw) &&
+          already_outside.mission_stage_ == TaskSearchManager::SEARCH_OUTSIDE_LANDING &&
+          (manual_goal - Eigen::Vector3d(7,8,9)).norm() == 0 &&
+          (already_outside.exit_portal_center_ - manual_portal).norm() < 1e-6,
+          "RC at an already-crossed confirmed exit commanded a return inside");
     // 用真实射线融合的L形地图复现：地图支路朝向尚未与手持设备一致，不能先锁住。
     auto corner_map = std::make_shared<SDFMap>();
     corner_map->initMap(nh);
@@ -248,6 +305,89 @@ public:
     check(flight.mappedCorridorDirection(0.0, mapped_direction, false) &&
           flight.turnYawAlignmentPending(),
           "formal flight lost map-first turn confirmation");
+    // 真实FUEL射线建图：第三次稳定观察即锁存；后续地图不能替换出口。
+    auto exit_map = std::make_shared<SDFMap>();
+    exit_map->initMap(nh);
+    nh.setParam("mission/task_search/exit/auto_crossing_enabled", true);
+    nh.setParam("mission/task_search/require_stage2_detections", false);
+    nh.setParam("mission/task_search/exit/external_landing_planner", true);
+    nh.setParam("mission/task_search/exit/cross_confirm_distance", 0.60);
+    nh.setParam("mission/task_search/cruise_height", 1.0);
+    TaskSearchManager automatic;
+    automatic.initialize(nh);
+    automatic.setMap(exit_map);
+    automatic.setCorridorFrame(Eigen::Vector3d(-1,0,1), Eigen::Vector3d::UnitX());
+    automatic.corridor_entry_crossed_ = true;
+    const std::vector<std::pair<Eigen::Vector2d, Eigen::Vector2d>> exit_walls = {
+        {{-3,-0.65},{0.5,-0.65}}, {{0.5,-0.65},{0.5,-2.6}},
+        {{0.5,-2.6},{3,-2.6}}, {{3,-2.6},{3,2.6}},
+        {{3,2.6},{0.5,2.6}}, {{0.5,2.6},{0.5,0.65}},
+        {{0.5,0.65},{-3,0.65}}, {{-3,0.65},{-3,-0.65}}};
+    const Eigen::Vector3d exit_eye(0.1,0,1);
+    for (double camera_x : {-0.4, 0.1, 0.3}) {
+      cloud.clear();
+      const Eigen::Vector3d scan_eye(camera_x,0,1);
+      for (int ray = 0; ray < 720; ++ray) {
+        const double angle = ray * M_PI / 360;
+        const Eigen::Vector2d direction(std::cos(angle), std::sin(angle));
+        double nearest = 6.0;
+        for (const auto& wall : exit_walls) {
+          const Eigen::Vector2d edge = wall.second - wall.first;
+          const Eigen::Vector2d delta = wall.first - scan_eye.head<2>();
+          const double denominator = direction.x()*edge.y() - direction.y()*edge.x();
+          if (std::fabs(denominator) < 1e-9) continue;
+          const double distance = (delta.x()*edge.y() - delta.y()*edge.x()) / denominator;
+          const double fraction = (delta.x()*direction.y() - delta.y()*direction.x()) / denominator;
+          if (distance > 0 && fraction >= 0 && fraction <= 1)
+            nearest = std::min(nearest, distance);
+        }
+        const Eigen::Vector2d hit = scan_eye.head<2>() + nearest * direction;
+        for (int layer = -3; layer <= 3; ++layer)
+          cloud.push_back(pcl::PointXYZ(hit.x(), hit.y(), 1.0 + layer*0.10));
+      }
+      for (int repeat = 0; repeat < 4; ++repeat) {
+        for (int layer = -3; layer <= 3; ++layer)
+          exit_map->inputPointCloud(cloud, cloud.size(),
+                                   scan_eye + Eigen::Vector3d(0,0,layer*0.10));
+      }
+    }
+    check(automatic.mapExitFootprintFree(exit_eye),
+          "synthetic exit scan did not observe the current body volume");
+    for (int vote = 0; vote < 3; ++vote) {
+      ros::Time::setNow(ros::Time(200 + vote));
+      exit_map->inputPointCloud(cloud, cloud.size(), exit_eye);
+      automatic.updateRobotPose(exit_eye, 0.0);
+      if (vote < 2)
+        check(!automatic.exit_portal_locked_ && !automatic.stage3Active(),
+              "automatic crossing started before three valid map observations");
+    }
+    check(automatic.exit_portal_locked_ && automatic.exit_candidate_confirmed_ &&
+          automatic.mission_stage_ == TaskSearchManager::EXIT_APPROACH_INSIDE,
+          "third real-map confirmation did not immediately latch and start exit approach");
+    const Eigen::Vector3d locked_portal = automatic.exit_portal_center_;
+    Eigen::Vector3d crossing_goal;
+    double crossing_yaw = 0;
+    check(automatic.buildStage3Goal(exit_eye, 0, false, crossing_goal, crossing_yaw) &&
+          automatic.mission_stage_ == TaskSearchManager::CROSS_EXIT &&
+          crossing_goal.x() > locked_portal.x() && !automatic.landingRequested(),
+          "confirmed exit did not produce a crossing goal before landing search");
+    cloud.clear();
+    cloud.push_back(pcl::PointXYZ(0.3,0,1));
+    exit_map->inputPointCloud(cloud, cloud.size(), exit_eye);
+    ros::Time::setNow(ros::Time(204));
+    automatic.updateRobotPose(exit_eye, 0.0);
+    check(automatic.exit_candidate_confirmed_ && automatic.exit_portal_locked_ &&
+          (automatic.exit_portal_center_ - locked_portal).norm() < 1e-6,
+          "later map changed the latched exit");
+    automatic.buildStage3Goal(locked_portal + Eigen::Vector3d(0.59,0,0),
+                              0, false, crossing_goal, crossing_yaw);
+    check(automatic.mission_stage_ == TaskSearchManager::CROSS_EXIT,
+          "outside search began before crossing completed");
+    check(!automatic.buildStage3Goal(locked_portal + Eigen::Vector3d(0.65,0,0),
+                                    0, false, crossing_goal, crossing_yaw) &&
+          automatic.mission_stage_ == TaskSearchManager::SEARCH_OUTSIDE_LANDING &&
+          !automatic.landingRequested() && automatic.exit_portal_locked_,
+          "automatic crossing did not hand off outside search to the external planner");
     std::cout << "real map freshness, observed volume, obstacle and turn checks passed" << std::endl;
   }
   static void run() {

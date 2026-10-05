@@ -151,6 +151,7 @@ private:
                           const Eigen::Vector3d& inside,
                           const Eigen::Vector3d& cur_pos, const ros::Time& now);
   void lockExitPortal(const ros::Time& now);
+  void beginExitCrossing(const ros::Time& now);
   bool mapExitFootprintFree(const Eigen::Vector3d& point) const;
   bool mapRelativeColumnOccupied(const Eigen::Vector3d& point, double reference_z) const;
   // 2026-07-21: 穿门只发布已成为FREE的短滚动目标，UNKNOWN只用于证明开口延伸，不能直接飞入。

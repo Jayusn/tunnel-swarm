@@ -318,6 +318,19 @@ void TaskSearchManager::activateRcSearchLanding(const ros::Time& stamp) {
   }
 
   const ros::Time now = stamp.isZero() ? ros::Time::now() : stamp;
+  if (exit_candidate_confirmed_ && exit_portal_outside_verified_) {
+    // 已有确认出口时，CH9复用自动穿越；自动开关关闭也允许人工启动。
+    beginExitCrossing(now);
+    rc_search_landing_triggered_ = true;
+    rc_search_landing_start_requested_ = true;
+    rc_search_landing_armed_ = false;
+    rc_search_landing_high_since_ = ros::Time(0);
+    publishSearchState();
+    ROS_ERROR("[exit_mission] RC CH%d TRIGGERED crossing through the confirmed exit; "
+              "landing search starts only after crossing completes.",
+              rc_search_landing_channel_ + 1);
+    return;
+  }
   const Eigen::Vector2d outward(std::cos(latest_robot_yaw_),
                                std::sin(latest_robot_yaw_));
   mission_stage_ = SEARCH_OUTSIDE_LANDING;
@@ -2092,6 +2105,15 @@ void TaskSearchManager::lockExitPortal(const ros::Time& now) {
             exit_portal_center_.x(), exit_portal_center_.y(), yaw * 180.0 / M_PI);
 }
 
+void TaskSearchManager::beginExitCrossing(const ros::Time& now) {
+  if (!exit_portal_locked_) lockExitPortal(now);
+  mission_stage_ = EXIT_APPROACH_INSIDE;
+  mission_stage_start_ = now;
+  active_goal_valid_ = false;
+  ROS_ERROR("[exit_mission] SEARCH_CORRIDOR -> EXIT_APPROACH_INSIDE: "
+            "confirmed exit latched; approach and cross before landing search.");
+}
+
 void TaskSearchManager::updateExitCandidate(const Eigen::Vector3d& cur_pos) {
   if (!enabled_ || !exit_detection_enabled_ || !sdf_map_ ||
       !corridor_frame_received_ || !corridor_entry_crossed_ ||
@@ -2142,6 +2164,11 @@ void TaskSearchManager::updateExitCandidate(const Eigen::Vector3d& cur_pos) {
   }
   recordExitEvidence(detection, inside, cur_pos, now);
   if (!mapExitFootprintFree(pending_exit_candidate_)) clearExitEvidence();
+  // 本次地图确认有效后立即锁存，下一轮规划前的地图更新不能撤销或替换出口。
+  if (exit_auto_crossing_enabled_ && exit_candidate_confirmed_ &&
+      (!require_stage2_detections_ || allStage2TargetsFound())) {
+    beginExitCrossing(now);
+  }
   publishSearchState();
 }
 
@@ -2154,7 +2181,7 @@ bool TaskSearchManager::buildStage3Goal(const Eigen::Vector3d& cur_pos, double c
 
   if (mission_stage_ == SEARCH_CORRIDOR) {
     // 完整飞行观察时继续更新出口证据和显示，但不生成接近/穿越/补扫目标。
-    // CH9人工入口独立进入门外搜索，不受此自动接管开关影响。
+    // CH9人工入口不受此自动接管开关影响。
     if (!exit_auto_crossing_enabled_) return false;
     // 任务允许接管时才锁定出口和冻结frontier，确认本身不阻止剩余目标搜索。
     if (require_stage2_detections_ && !allStage2TargetsFound()) return false;
@@ -2162,16 +2189,15 @@ bool TaskSearchManager::buildStage3Goal(const Eigen::Vector3d& cur_pos, double c
       return search_exhausted && buildPendingExitObservationGoal(cur_pos, goal, goal_yaw);
     }
     if (!exit_portal_outside_verified_) return false;
-    if (!exit_portal_locked_) lockExitPortal(ros::Time::now());
-    mission_stage_ = EXIT_APPROACH_INSIDE;
-    mission_stage_start_ = ros::Time::now();
-    active_goal_valid_ = false;
-    ROS_ERROR("[exit_mission] SEARCH_CORRIDOR -> EXIT_APPROACH_INSIDE: "
-              "bilateral open space confirmed and mission allows crossing.");
+    beginExitCrossing(ros::Time::now());
   }
 
   if (mission_stage_ == EXIT_APPROACH_INSIDE) {
-    if ((cur_pos.head<2>() - exit_candidate_.head<2>()).norm() <= exit_arrive_distance_) {
+    const double signed_side =
+        (cur_pos.head<2>() - exit_portal_center_.head<2>()).dot(exit_outward_direction_);
+    // 人工已飞到出口外再拨CH9时，直接完成穿越交接，不返回门内接近点。
+    if ((cur_pos.head<2>() - exit_candidate_.head<2>()).norm() <= exit_arrive_distance_ ||
+        signed_side >= exit_cross_confirm_distance_) {
       mission_stage_ = CROSS_EXIT;
       mission_stage_start_ = ros::Time::now();
       active_goal_valid_ = false;

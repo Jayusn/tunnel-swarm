@@ -71,7 +71,7 @@ rosbag record -O ~/match_ws/bags/exit_detection/exit_detection_walk_$(date +%Y%m
 `run_swarm_indoor1_fuel_exploration.launch` 一致；出口几何判定和连续地图确认也复用正式逻辑。
 测试入口启动 `exit_detection_node` 和 RViz，不会生成探索航点、穿越轨迹或降落请求。
 所有独立测试接口放在 `/exit_detection_test` 下。
-正式六分屏入口现已启用出口检测、默认关闭自动穿越，见下方“接入正式总流程”；本独立入口仍只检测。
+正式六分屏入口现已默认启用确认出口后自动锁存、穿越和搜索降落，见下方“接入正式总流程”；本独立入口仍只检测。
 
 数据链路为：FAST-LIO 注册点云与里程计 → 正式 FUEL 建图实现 → 出口检测。
 测试进程里的建图与检测共用同一个 `SDFMap` 对象；正式流程内部也已采用该接法。
@@ -87,29 +87,35 @@ cd ~/match_ws
 bash shfiles/start_uav0_dual_network_six_terminator.sh
 ```
 
-第6屏使用的 `run_swarm_indoor1_fuel_exploration.launch` 默认启用出口检测、关闭自动接管。
+第6屏使用的 `run_swarm_indoor1_fuel_exploration.launch` 默认启用出口检测和自动穿越。
 检测直接读取正式探索进程的同一个FUEL地图。
 前方出口外侧左右净空合计严格大于2 m、连续3次新地图证据稳定且距出口不超过1 m，
-并满足原有机体通行检查后，只更新检测结果和RViz显示。
-即使确认有效，也不会自动锁定出口、生成接近/穿越/补扫目标，或进入搜索降落。
-出口观察也不触发原有相机偏航验证接管，普通探索按原流程运行。
-先完整飞一次检查真实出口、拐角和单侧开口是否误检；穿越按当前人工流程控制，
-CH9沿用现有逻辑：人工确认已到出口外后，低到高保持0.5 s，启动搜索降落。
-本次未增加“门内拨CH9自动穿越”的动作。
+并满足原有机体通行检查后，立即锁存出口位置和朝向，停止更新/替换出口，开始门内接近和穿越。
+越过锁存出口截面0.60 m后，进入 `SEARCH_OUTSIDE_LANDING`，由Diff执行原有搜索降落。
+穿越完成前仍由FUEL负责规划，不提前启动门外搜索。
+
+CH9人工入口继续保留：先低位（<=1300），再高位（>=1800）保持0.5 s。
+
+- 有有效确认出口：锁存该出口，执行同一套“门内接近→穿越→门外搜索降落”，即使自动开关关闭也可触发。若已越过出口截面0.60 m，直接进入门外搜索，不返回门内。
+- 无有效确认出口：沿用原人工门外入口；应先人工飞到出口外，再拨CH9，以当前位置为锚点直接搜索降落。
+- 已进入接近、穿越或门外搜索后再次拨CH9，不重启任务，不替换锁存出口。
 
 正式RViz的 `active_perception → task_search` 显示 `/UAV0/mission/search_markers`，
-可观察橙色候选和绿色确认框。主要观察：
+可观察橙色候选和绿色确认标记；锁存后绿色标记继续显示同一个出口。检查：
 
 ```bash
 rostopic echo /UAV0/mission/task_status
 rostopic echo /autotrans_trajectory_arbiter/owner
+rostopic echo /UAV0/mission/final_exit
 ```
 
-CH9触发前应保持 `SEARCH_CORRIDOR`、`auto_crossing=0`、`landing=0`，
-即使 `exit=1` 也不切换任务；AutoTrans所有者仍为FUEL。CH9后才切换为DIFF。
-`/UAV0/mission/final_exit` 沿用CH9接管时发布当前位置锚点的行为，检测确认本身不发布最终锁定出口。
-独立测试的“5次后保存蓝色历史标记”仍仅属于独立入口；正式RViz当前显示可撤销的实时检测框。
-同包重新建图检测的候选跳变问题尚未修复，当前接入不改变该算法行为。
+默认状态应显示 `auto_crossing=1`。自动/CH9穿越的阶段顺序为：
+`SEARCH_CORRIDOR → EXIT_APPROACH_INSIDE → CROSS_EXIT → SEARCH_OUTSIDE_LANDING`。
+门内接近和穿越时AutoTrans所有者仍为FUEL；穿越完成进入门外搜索后锁存切换为DIFF。
+`/UAV0/mission/final_exit` 在出口锁存时发布真实出口位置和朝向，并保留给迟加入订阅者。
+无确认出口的原CH9门外入口仍发布当前位置锚点。
+独立测试的“5次后保存蓝色历史标记”仍仅属于独立入口；正式任务锁存使用原有3次确认条件。
+同包重新建图检测的候选跳变问题尚未修复，本次不改变几何判定和投票算法。
 
 完整飞行时另开终端录包（话题使用正式命名空间）：
 
@@ -124,10 +130,16 @@ rosbag record -O ~/match_ws/bags/exit_detection/exit_detection_flight_$(date +%Y
   /autotrans_trajectory_arbiter/owner /rosout
 ```
 
-自动开关为 `enable_auto_exit` / `UAV0_ENABLE_AUTO_EXIT`，当前默认false。
-若终端曾手动设为true，启动前 `unset UAV0_ENABLE_AUTO_EXIT` 或设为false。
-待检测稳定并明确决定启用后，再改为true并重启：
-确认出口 → 锁定 → 门内接近 → 穿越 → 越过截面0.60 m → Diff搜索降落。
+自动开关为 `enable_auto_exit` / `UAV0_ENABLE_AUTO_EXIT`，当前默认true。
+如果此前按观察流程设置过false，启动前显式设置true（并重新启动总流程）：
+
+```bash
+export UAV0_ENABLE_AUTO_EXIT=true
+bash ~/match_ws/shfiles/start_uav0_dual_network_six_terminator.sh
+```
+
+如需恢复只检测，将环境变量设为false后重新启动；CH9人工入口仍保留。
+独立手持入口始终显式关闭自动接管及CH9，不受上述环境变量影响。
 
 ## 手持设备测试
 
