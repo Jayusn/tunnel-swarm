@@ -53,6 +53,7 @@
     <remap from="/sdf_map/update_range" to="$(arg topic_prefix)/sdf_map/update_range"/>
     <remap from="/sdf_map/depth_cloud" to="$(arg topic_prefix)/sdf_map/depth_cloud"/>
     <remap from="/mission/search_markers" to="$(arg topic_prefix)/mission/search_markers"/>
+    <remap from="/mission/rc_land_active" to="$(arg topic_prefix)/mission/rc_land_active"/>
     <remap from="/mission/task_status" to="$(arg topic_prefix)/mission/task_status"/>
     <remap from="/mission/exit_candidate" to="$(arg topic_prefix)/mission/exit_candidate"/>
     <!-- 2026-07-28: 最终锁存出口独立提供给后机，不能复用会包含中途墙端的exit_candidate。 -->

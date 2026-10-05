@@ -175,7 +175,16 @@ void FastExplorationFSM::setDynamicDetectionEnable(bool active, const string& re
 
 // 2026-07-27: 通道内、出口门内接近及穿门阶段保持检测；确认门外搜索后立即关闭。
 void FastExplorationFSM::missionStatusCallback(const std_msgs::StringConstPtr &msg) {
+  if (rc_land_active_) return;
   const std::string &state = msg->data;
+  if (state.find("RC_LAND") == 0) {
+    rc_land_active_ = true;
+    active_traj_valid_ = false;
+    fd_->trigger_ = false;
+    transitState(FINISH, "CH10 original-position landing");
+    setDynamicDetectionEnable(false, "CH10 landing");
+    return;
+  }
   narrow_corridor_stage_ =
       state.find("SEARCH_CORRIDOR") == 0 ||
       state.find("EXIT_APPROACH_INSIDE") == 0 ||
@@ -309,6 +318,7 @@ void FastExplorationFSM::externalStatusCallback(
 }
 
 void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
+  if (rc_land_active_) return;
   odom_callback_queue_.callAvailable(ros::WallDuration(0.0));
   ROS_INFO_STREAM_THROTTLE(1.0, "[FSM]: state: " << fd_->state_str_[int(state_)]);
 
@@ -914,6 +924,7 @@ void FastExplorationFSM::clearVisMarker() {
 }
 
 void FastExplorationFSM::triggerCallback(const nav_msgs::PathConstPtr& msg) {
+  if (rc_land_active_) return;
   if (msg->poses.empty()) {
     ROS_ERROR("[fuel_diff] ignore empty entry trigger path.");
     return;
@@ -940,6 +951,7 @@ void FastExplorationFSM::triggerCallback(const nav_msgs::PathConstPtr& msg) {
 }
 
 void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
+  if (rc_land_active_) return;
   odom_callback_queue_.callAvailable(ros::WallDuration(0.0));
   const bool replacement_pending =
       state_ == EXPL_STATE::PLAN_TRAJ || state_ == EXPL_STATE::PUB_TRAJ;

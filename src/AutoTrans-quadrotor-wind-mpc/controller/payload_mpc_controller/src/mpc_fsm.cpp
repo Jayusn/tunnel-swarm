@@ -291,6 +291,7 @@ namespace PayloadMPC
 
 	void MPCFSM::landingSearchStateCallback(const std_msgs::String::ConstPtr &msg)
 	{
+		if (rc_land_active_) return;
 		const std::string state = firstToken(msg->data);
 		const bool active = isLandingSearchYawState(state);
 		// 只允许搜索降落状态启用局部 yaw 覆盖。WAIT_EXIT_SWITCH、LANDING_HANDOFF
@@ -316,6 +317,7 @@ namespace PayloadMPC
 	void MPCFSM::landingSearchYawCallback(
 		const quadrotor_msgs::PositionCommand::ConstPtr &msg)
 	{
+		if (rc_land_active_) return;
 		if (!std::isfinite(msg->yaw))
 		{
 			ROS_WARN_THROTTLE(1.0, "[landing_search_yaw] reject non-finite yaw command.");
@@ -393,6 +395,9 @@ namespace PayloadMPC
 		const bool rc_mode_available = rc_is_received(now_time) && rc_data.mode_input_valid;
 		const bool automatic_state = fsm_state == AUTO_HOVER || fsm_state == CMD_CTRL ||
 			fsm_state == AUTO_TAKEOFF || fsm_state == AUTO_LAND;
+		// 已在故障降落中也要锁存 CH10，撤销上层任务和精降输出所有权。
+		if (automatic_state && rc_mode_available && rc_data.enter_land_mode)
+			latchRcLand();
 		if (direct_auto_land_active_ && state_fresh &&
 			state_data.current_state.mode == "AUTO.LAND")
 		{
@@ -1606,6 +1611,23 @@ namespace PayloadMPC
 		controller_.execMPC(est_state_, mpc_predicted_states_, mpc_predicted_inputs_);
 	}
 
+	void MPCFSM::latchRcLand()
+	{
+		if (rc_land_active_) return;
+		rc_land_active_ = true;
+		landing_search_yaw_active_ = false;
+		landing_search_yaw_override_active_ = false;
+		landing_search_hold_latched_ = false;
+		have_landing_search_yaw_ = false;
+		trajectory_data.blockTrajectoryAcceptance();
+		cmd_data.rcv_stamp = ros::Time(0);
+		entry_command_active_ = false;
+		std_msgs::Bool active;
+		active.data = true;
+		rc_land_active_pub_.publish(active);
+		ROS_ERROR("[RC_LAND] CH10 原地降落锁存，停止穿越、搜索和精降接管。");
+	}
+
 	void MPCFSM::clearAutonomousState()
 	{
 		controller_.waitForPreparation();
@@ -1630,7 +1652,8 @@ namespace PayloadMPC
 		controller_.clearLastValidControl();
 		// 所有 ACADO 在线数据清理完成后再恢复正常约束并启动下一轮准备线程。
 		controller_.restoreNominalVelocityLimits();
-		trajectory_data.allowTrajectoryAcceptanceAfter(ros::Time::now());
+		if (!rc_land_active_)
+			trajectory_data.allowTrajectoryAcceptanceAfter(ros::Time::now());
 	}
 
 	bool MPCFSM::odomControlStateValid(const ros::Time &now) const
@@ -1694,6 +1717,7 @@ namespace PayloadMPC
 	{
 		if (rc_data.enter_land_mode)
 		{
+			latchRcLand();
 			beginDirectAutoLand(now, "NMPC 恢复期间收到 CH10 人工降落请求");
 			return;
 		}
@@ -1731,7 +1755,8 @@ namespace PayloadMPC
 			recovery_local_target_valid_ = false;
 			cmd_data.rcv_stamp = ros::Time(0);
 			last_entry_command_stamp_ = ros::Time(0);
-			trajectory_data.allowTrajectoryAcceptanceAfter(now);
+			if (!rc_land_active_)
+				trajectory_data.allowTrajectoryAcceptanceAfter(now);
 			std_msgs::Empty restart_msg;
 			planning_restart_pub_.publish(restart_msg);
 			ROS_INFO("[安全] NMPC 已连续成功恢复 %d 次；保持悬停并请求 FUEL 从最新高频里程计重新规划。",

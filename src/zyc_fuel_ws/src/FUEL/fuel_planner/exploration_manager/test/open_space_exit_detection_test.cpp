@@ -220,6 +220,27 @@ public:
     manual_crossing.buildStage3Goal(start, 0, false, manual_goal, manual_yaw);
     check(manual_crossing.mission_stage_ == TaskSearchManager::CROSS_EXIT &&
           !manual_crossing.landingRequested(), "RC skipped crossing before landing search");
+    auto rc_land = boost::make_shared<std_msgs::Bool>();
+    rc_land->data = true;
+    manager.rcLandActiveCallback(rc_land);
+    check(manager.rc_land_active_ && !manager.consumeRcSearchLandingStartRequest(),
+          "CH10 did not latch or clear pending CH9 request");
+    manager.mission_stage_ = TaskSearchManager::CROSS_EXIT;
+    Eigen::Vector3d cancelled_goal(7, 8, 9);
+    double cancelled_yaw = 0;
+    check(!manager.buildStage3Goal(start, 0, false, cancelled_goal, cancelled_yaw) &&
+          (cancelled_goal - Eigen::Vector3d(7, 8, 9)).norm() == 0,
+          "CH10 did not cancel crossing goal output");
+    manager.rc_search_landing_triggered_ = false;
+    rc->header.stamp = ros::Time(120);
+    manager.rcSearchLandingCallback(rc);
+    check(!manager.rc_search_landing_triggered_, "CH9 restarted a CH10-cancelled mission");
+    rc_land->data = false;
+    manager.rcLandActiveCallback(rc_land);
+    check(manager.rc_land_active_, "false message cleared CH10 landing latch");
+    manager.mission_stage_ = TaskSearchManager::SEARCH_OUTSIDE_LANDING;
+    check(!manager.buildStage3Goal(start, 0, false, cancelled_goal, cancelled_yaw),
+          "CH10 did not cancel landing search goal output");
     rc->header.stamp = ros::Time(113);
     manual_crossing.rcSearchLandingCallback(rc);
     check(manual_crossing.mission_stage_ == TaskSearchManager::CROSS_EXIT &&

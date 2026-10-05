@@ -127,7 +127,8 @@ rosbag record -O ~/match_ws/bags/exit_detection/exit_detection_flight_$(date +%Y
   /UAV0/fast_lio/Odom_high_freq /UAV0/fast_lio/cloud_registered \
   /UAV0/mission/task_status /UAV0/mission/search_markers /UAV0/mission/final_exit \
   /UAV0/sdf_map/occupancy_all /UAV0/sdf_map/occupancy_local_inflate \
-  /autotrans_trajectory_arbiter/owner /rosout
+  /UAV0/mission/rc_land_active /landing_diff_search_manager/state \
+  /UAV0/landing/control_owner /autotrans_trajectory_arbiter/owner /rosout
 ```
 
 自动开关为 `enable_auto_exit` / `UAV0_ENABLE_AUTO_EXIT`，launch默认true。
@@ -141,6 +142,23 @@ bash ~/match_ws/shfiles/start_uav0_dual_network_six_terminator.sh
 如需让该脚本恢复只检测，将脚本中的 `export UAV0_ENABLE_AUTO_EXIT=true` 改为false后重新启动；CH9人工入口仍保留。
 单独运行正式launch时仍可用 `enable_auto_exit:=false` 关闭自动接管。
 独立手持入口始终显式关闭自动接管及CH9，不受上述环境变量影响。
+
+### CH10 优先原地降落
+
+正式流程中，CH10 优先于 CH9 和出口自动触发。先让 CH10 处于低位（<1300），
+需要打断时拨到高位（>1800），无需保持 0.5 s。
+AutoTrans 接受该请求后，取消当前接近出口、穿越、搜索目标与摆头指令，
+以触发时的当前位置锁住 XY 和航向，沿用原有 0.20 m/s 下降和末端 PX4 AUTO.LAND 流程。
+如果平台精降已接管，输出仲裁也会优先切回 AutoTrans 原地降落。
+
+降落请求会锁存至节点重启，CH10 拨回低位、重复拨 CH9 或再次确认出口都不会恢复原任务。
+下一次飞行前重启完整流程。正常飞行仍需满足原有 OFFBOARD、遥控器和状态数据有效条件。
+可用下面的命令检查锁存状态；触发后显示 `data: True`，
+任务状态为 `RC_LAND`，Diff 搜索状态为 `RC_LAND_ABORTED`：
+
+```bash
+rostopic echo /UAV0/mission/rc_land_active
+```
 
 ## 手持设备测试
 

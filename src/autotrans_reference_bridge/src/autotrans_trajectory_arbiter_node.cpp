@@ -1,5 +1,6 @@
 #include <ros/ros.h>
 #include <std_msgs/String.h>
+#include <std_msgs/Bool.h>
 
 #include <quadrotor_msgs/PolynomialTraj.h>
 
@@ -25,10 +26,12 @@ class AutoTransTrajectoryArbiter {
     std::string diff_topic("/UAV0/diff/autotrans_trajectory");
     std::string output_topic("/UAV0/planning/autotrans_trajectory");
     std::string stage_topic("/UAV0/mission/task_status");
+    std::string rc_land_topic("/UAV0/mission/rc_land_active");
     private_nh_.param("fuel_topic", fuel_topic, fuel_topic);
     private_nh_.param("diff_topic", diff_topic, diff_topic);
     private_nh_.param("output_topic", output_topic, output_topic);
     private_nh_.param("stage_topic", stage_topic, stage_topic);
+    private_nh_.param("rc_land_active_topic", rc_land_topic, rc_land_topic);
 
     output_pub_ =
         nh_.advertise<quadrotor_msgs::PolynomialTraj>(output_topic, 2, false);
@@ -39,12 +42,27 @@ class AutoTransTrajectoryArbiter {
                               &AutoTransTrajectoryArbiter::diffCallback, this);
     stage_sub_ = nh_.subscribe(stage_topic, 4,
                                &AutoTransTrajectoryArbiter::stageCallback, this);
+    rc_land_sub_ = nh_.subscribe(rc_land_topic, 1,
+                                &AutoTransTrajectoryArbiter::rcLandCallback, this);
     publishOwner();
     ROS_WARN("autotrans_trajectory_arbiter: FUEL owns AutoTrans trajectory input");
   }
 
  private:
+  void rcLandCallback(const std_msgs::BoolConstPtr& message) {
+    if (!message->data || rc_land_active_) return;
+    rc_land_active_ = true;
+    quadrotor_msgs::PolynomialTraj abort;
+    abort.header.stamp = ros::Time::now();
+    abort.trajectory_id = last_forwarded_trajectory_id_;
+    abort.action = quadrotor_msgs::PolynomialTraj::ACTION_ABORT;
+    output_pub_.publish(abort);
+    publishOwner();
+    ROS_ERROR("CH10 landing latched: FUEL and Diff trajectory forwarding stopped");
+  }
+
   void stageCallback(const std_msgs::StringConstPtr& message) {
+    if (rc_land_active_) return;
     const std::string stage = firstToken(message->data);
     if (diff_owned_ || !isDiffSearchStage(stage)) return;
 
@@ -62,11 +80,13 @@ class AutoTransTrajectoryArbiter {
   }
 
   void fuelCallback(const quadrotor_msgs::PolynomialTrajConstPtr& message) {
+    if (rc_land_active_) return;
     if (diff_owned_) return;
     forward(*message);
   }
 
   void diffCallback(const quadrotor_msgs::PolynomialTrajConstPtr& message) {
+    if (rc_land_active_) return;
     if (!diff_owned_) return;
     forward(*message);
   }
@@ -78,7 +98,7 @@ class AutoTransTrajectoryArbiter {
 
   void publishOwner() {
     std_msgs::String owner;
-    owner.data = diff_owned_ ? "DIFF" : "FUEL";
+    owner.data = rc_land_active_ ? "RC_LAND" : (diff_owned_ ? "DIFF" : "FUEL");
     owner_pub_.publish(owner);
   }
 
@@ -87,6 +107,8 @@ class AutoTransTrajectoryArbiter {
   ros::Subscriber fuel_sub_;
   ros::Subscriber diff_sub_;
   ros::Subscriber stage_sub_;
+  ros::Subscriber rc_land_sub_;
+  bool rc_land_active_{false};
   ros::Publisher output_pub_;
   ros::Publisher owner_pub_;
   bool diff_owned_{false};

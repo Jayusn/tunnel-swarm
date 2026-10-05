@@ -6,6 +6,7 @@
 #include <geometry_msgs/PoseStamped.h>
 #include <mavros_msgs/RCIn.h>
 #include <ros/ros.h>
+#include <std_msgs/Bool.h>
 #include <exploration_manager/motion_direction_rules.h>
 #include <quadrotor_msgs/ExplorationGoal.h>
 
@@ -192,6 +193,9 @@ private:
   ros::Subscriber thermal_detection_sub_;
   ros::Subscriber final_landing_marker_sub_;
   ros::Subscriber rc_search_landing_sub_;
+  ros::Subscriber rc_land_active_sub_;
+  bool rc_land_active_{false};
+  void rcLandActiveCallback(const std_msgs::BoolConstPtr& msg);
   ros::Publisher marker_pub_;
   ros::Publisher status_pub_;
   ros::Publisher exit_pose_pub_;

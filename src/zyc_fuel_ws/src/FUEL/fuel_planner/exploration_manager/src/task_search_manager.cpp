@@ -223,6 +223,8 @@ void TaskSearchManager::initialize(ros::NodeHandle& nh) {
         rc_search_landing_topic_, 10,
         &TaskSearchManager::rcSearchLandingCallback, this);
   }
+  rc_land_active_sub_ = nh.subscribe("/mission/rc_land_active", 1,
+      &TaskSearchManager::rcLandActiveCallback, this);
   marker_pub_ = nh.advertise<visualization_msgs::Marker>("/mission/search_markers", 10, true);
   status_pub_ = nh.advertise<std_msgs::String>("/mission/task_status", 2, true);
   exit_pose_pub_ = nh.advertise<geometry_msgs::PoseStamped>("/mission/exit_candidate", 2, true);
@@ -252,9 +254,19 @@ void TaskSearchManager::initialize(ros::NodeHandle& nh) {
            rc_search_landing_hold_sec_);
 }
 
+void TaskSearchManager::rcLandActiveCallback(const std_msgs::BoolConstPtr& msg) {
+  if (!msg->data || rc_land_active_) return;
+  rc_land_active_ = true;
+  rc_search_landing_start_requested_ = false;
+  rc_search_landing_armed_ = false;
+  active_goal_valid_ = false;
+  publishSearchState();
+  ROS_ERROR("[RC_LAND] CH10 cancelled exit approach/crossing and landing search.");
+}
+
 void TaskSearchManager::rcSearchLandingCallback(
     const mavros_msgs::RCInConstPtr& msg) {
-  if (!enabled_ || !rc_search_landing_enabled_ ||
+  if (rc_land_active_ || !enabled_ || !rc_search_landing_enabled_ ||
       rc_search_landing_triggered_) {
     return;
   }
@@ -438,7 +450,7 @@ bool TaskSearchManager::updateExitDetectionOnly(
 }
 
 void TaskSearchManager::updateRobotPose(const Eigen::Vector3d& pos, double yaw) {
-  if (!enabled_) return;
+  if (rc_land_active_ || !enabled_) return;
   {
     // 2026-07-23: 点云回调只借用连续里程计的XY和yaw落入短时局部平面；世界z有意不参与。
     std::lock_guard<std::mutex> lock(body_cloud_mutex_);
@@ -2115,7 +2127,7 @@ void TaskSearchManager::beginExitCrossing(const ros::Time& now) {
 }
 
 void TaskSearchManager::updateExitCandidate(const Eigen::Vector3d& cur_pos) {
-  if (!enabled_ || !exit_detection_enabled_ || !sdf_map_ ||
+  if (rc_land_active_ || !enabled_ || !exit_detection_enabled_ || !sdf_map_ ||
       !corridor_frame_received_ || !corridor_entry_crossed_ ||
       mission_stage_ != SEARCH_CORRIDOR || exit_portal_locked_) return;
   // 复用现有转弯流程，过弯期间不能锁定出口。
@@ -2176,7 +2188,7 @@ bool TaskSearchManager::buildStage3Goal(const Eigen::Vector3d& cur_pos, double c
                                         bool search_exhausted, Eigen::Vector3d& goal,
                                         double& goal_yaw) {
   // 出口总开关关闭时，保持普通通道探索，不推断出口、不切换出口任务阶段。
-  if (!enabled_ || !exit_detection_enabled_ || landing_requested_) return false;
+  if (rc_land_active_ || !enabled_ || !exit_detection_enabled_ || landing_requested_) return false;
   updateExitCandidate(cur_pos);
 
   if (mission_stage_ == SEARCH_CORRIDOR) {
@@ -2553,7 +2565,7 @@ void TaskSearchManager::publishSearchState() {
   // 状态话题明确区分门内接近、穿门和门外降落平台搜索。
   const char* stage_names[] = {"SEARCH_CORRIDOR", "EXIT_APPROACH_INSIDE", "CROSS_EXIT",
                                "SEARCH_OUTSIDE_LANDING", "APPROACH_LANDING", "LANDING"};
-  stream << stage_names[static_cast<int>(mission_stage_)]
+  stream << (rc_land_active_ ? "RC_LAND" : stage_names[static_cast<int>(mission_stage_)])
          << " color=" << targets_[0].found << " qrcode=" << targets_[1].found
          << " thermal=" << targets_[2].found << " exit=" << exit_candidate_confirmed_
          << " open_space_hits=" << exit_candidate_hits_

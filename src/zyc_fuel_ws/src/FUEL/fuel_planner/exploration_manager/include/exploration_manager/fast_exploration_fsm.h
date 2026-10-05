@@ -56,6 +56,7 @@ private:
   EXPL_STATE state_;
 
   bool classic_;
+  bool rc_land_active_{false};
 
   /* ROS utils */
   ros::NodeHandle node_;

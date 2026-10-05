@@ -12,6 +12,7 @@ class LandingSetpointArbiter {
  public:
   LandingSetpointArbiter() : nh_(), pnh_("~") {
     std::string trigger_topic;
+    std::string rc_land_topic;
     std::string controller_position_input;
     std::string controller_attitude_input;
     std::string landing_position_input;
@@ -21,6 +22,8 @@ class LandingSetpointArbiter {
     std::string owner_topic;
 
     pnh_.param<std::string>("trigger_topic", trigger_topic, "/need_to_land");
+    pnh_.param<std::string>("rc_land_active_topic", rc_land_topic,
+                            "/mission/rc_land_active");
     pnh_.param<std::string>("controller_position_input",
                             controller_position_input,
                             "/control/position_setpoint");
@@ -60,12 +63,24 @@ class LandingSetpointArbiter {
         landing_position_input, 10,
         &LandingSetpointArbiter::landingPositionCallback, this);
 
+    rc_land_sub_ = nh_.subscribe(rc_land_topic, 1,
+                                &LandingSetpointArbiter::rcLandCallback, this);
     publishOwner("CONTROLLER");
     ROS_WARN("Landing setpoint arbiter ready: controller owns MAVROS output");
   }
 
  private:
+  void rcLandCallback(const std_msgs::BoolConstPtr& message) {
+    if (!message->data || rc_land_active_) return;
+    rc_land_active_ = true;
+    landing_owned_ = false;
+    trigger_pending_ = false;
+    publishOwner("RC_LAND");
+    ROS_ERROR("CH10 landing latched: AutoTrans owns output, precision landing stopped");
+  }
+
   void triggerCallback(const std_msgs::BoolConstPtr& message) {
+    if (rc_land_active_) return;
     if (landing_owned_) {
       if (!message->data) {
         ROS_WARN_THROTTLE(
@@ -94,6 +109,7 @@ class LandingSetpointArbiter {
 
   void landingPositionCallback(
       const mavros_msgs::PositionTargetConstPtr& message) {
+    if (rc_land_active_) return;
     if (!trigger_pending_ && !landing_owned_) {
       ROS_ERROR_THROTTLE(
           2.0, "Rejected landing setpoint before need_to_land trigger");
@@ -120,6 +136,8 @@ class LandingSetpointArbiter {
   ros::NodeHandle nh_;
   ros::NodeHandle pnh_;
   ros::Subscriber trigger_sub_;
+  ros::Subscriber rc_land_sub_;
+  bool rc_land_active_{false};
   ros::Subscriber controller_position_sub_;
   ros::Subscriber controller_attitude_sub_;
   ros::Subscriber landing_position_sub_;

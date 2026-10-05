@@ -102,6 +102,13 @@ target_link_libraries(mpc_controller_node
 )
 
 if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(test_rc_land_trigger test/test_rc_land_trigger.cpp src/mpc_input.cpp)
+  if(TARGET test_rc_land_trigger)
+    add_dependencies(test_rc_land_trigger ${catkin_EXPORTED_TARGETS})
+    target_include_directories(test_rc_land_trigger PRIVATE
+      include/payload_mpc_controller ${EIGEN3_INCLUDE_DIR} ${catkin_INCLUDE_DIRS})
+    target_link_libraries(test_rc_land_trigger ${catkin_LIBRARIES})
+  endif()
   catkin_add_gtest(test_vertical_disturbance_low_pass
     test/test_vertical_disturbance_low_pass.cpp
   )

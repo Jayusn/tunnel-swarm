@@ -120,6 +120,7 @@ int main(int argc, char **argv)
     fsm.rpm_data.set_filter_params(param.filter_param_.sample_freq_rpm, param.filter_param_.cutoff_freq_rpm);
 
     fsm.planning_stop_pub_ = nh.advertise<std_msgs::Empty>("/planning_stop_trigger", 10);
+    fsm.rc_land_active_pub_ = nh.advertise<std_msgs::Bool>("rc_land_active", 1, true);
     fsm.planning_restart_pub_ = nh.advertise<std_msgs::Empty>("/planning_restart_trigger", 10);
     fsm.ctrl_FCU_pub = nh.advertise<mavros_msgs::AttitudeTarget>("/mavros/setpoint_raw/attitude", 10);
     fsm.recovery_position_pub_ =

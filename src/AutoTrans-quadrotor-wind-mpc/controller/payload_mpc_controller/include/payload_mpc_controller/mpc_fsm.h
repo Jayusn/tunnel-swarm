@@ -66,6 +66,7 @@ namespace PayloadMPC
 		ros::Publisher des_yaw_pub;
 		ros::Publisher planning_stop_pub_;
 		ros::Publisher planning_restart_pub_;
+		ros::Publisher rc_land_active_pub_;
 
 		Eigen::Vector3d hover_pose_;
 		double hover_yaw_;
@@ -128,6 +129,8 @@ namespace PayloadMPC
 		OdomSpikeGuard odom_spike_guard_;
 		ros::Time land_start_time_;
 		bool auto_land_lockout_{false};
+		bool rc_land_active_{false};
+		void latchRcLand();
 		bool auto_land_request_sent_{false};
 		ros::Time last_auto_land_request_time_{0};
 		bool takeoff_requested_{false};

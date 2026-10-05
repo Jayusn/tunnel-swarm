@@ -134,6 +134,7 @@
     <param name="landing_position_input" value="$(arg landing_setpoint_input)"/>
     <param name="mavros_position_output" value="$(arg setpoint_topic)"/>
     <param name="mavros_attitude_output" value="$(arg attitude_setpoint_topic)"/>
+    <param name="rc_land_active_topic" value="$(arg topic_prefix)/mission/rc_land_active"/>
     <param name="active_topic" value="$(arg topic_prefix)/landing/control_active"/>
     <param name="owner_topic" value="$(arg topic_prefix)/landing/control_owner"/>
   </node>

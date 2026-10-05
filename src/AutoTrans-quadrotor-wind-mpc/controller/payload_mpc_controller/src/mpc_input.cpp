@@ -60,7 +60,7 @@ void RC_Data_t::feed(mavros_msgs::RCInConstPtr pMsg)
     rcv_stamp = ros::Time::now();
     enter_command_mode = false;
     enter_hover_mode = false;
-    enter_land_mode = false;
+    // CH10 事件由控制周期消费，连续 RC 消息不能清掉尚未处理的上升沿。
     toggle_reboot = false;
 
     if (msg.channels.size() < 4)
@@ -142,8 +142,9 @@ void RC_Data_t::feed(mavros_msgs::RCInConstPtr pMsg)
             have_init_last_land = true;
             last_land = land;
         }
-        enter_land_mode = last_land < low_threshold && land > high_threshold;
-        if (enter_land_mode)
+        const bool land_rising_edge = last_land < low_threshold && land > high_threshold;
+        enter_land_mode = enter_land_mode || land_rising_edge;
+        if (land_rising_edge)
         {
             ROS_WARN("[RC] CH10 触发降落请求。");
         }
