@@ -267,7 +267,9 @@ class LandingDiffSearchManager {
     active_ = true;
     switch_pending_ = false;
     anchor_z_ = front_approach_height_;
-    const double yaw = yawFromQuaternion(odom_.pose.pose.orientation);
+    // 复用锁存出口朝向；无出口时CH9沿人工摆正的机头方向启动。
+    const double yaw = yawFromQuaternion(have_exit_portal_
+        ? exit_portal_.pose.orientation : odom_.pose.pose.orientation);
     locked_yaw_ = yaw;
     forward_x_ = std::cos(yaw);
     forward_y_ = std::sin(yaw);
