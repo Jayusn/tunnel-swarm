@@ -387,6 +387,29 @@ class RcLandPriorityTest(unittest.TestCase):
         odom_pub.publish(odom)
         self.wait(lambda: self.goal_is(0.4, -1.5), "forward obstruction did not shorten depth and reverse")
 
+    def test_down_sweep_height_drift_and_wall_oscillation_do_not_reset_stall(self):
+        odom_pub, odom = self.start_down_sweep()
+        odom.pose.pose.position.z = 2.0
+        odom_pub.publish(odom)
+        self.wait(lambda: self.goal_is(0, -1.5), "first lateral sweep goal missing")
+        # 已完成升高后，模拟高度偏离以及墙边超过10cm的往复晃动。
+        # 晃动只在停点与远离目标的一侧之间，不能算成持续前进。
+        deadline = time.monotonic() + 1.5
+        step = 0
+        while not self.goal_is(0, 1.5) and time.monotonic() < deadline:
+            odom.pose.pose.position.y = -0.7 if step % 2 == 0 else -0.55
+            odom.pose.pose.position.z = 1.65 if step % 2 == 0 else 2.25
+            odom_pub.publish(odom)
+            step += 1
+            time.sleep(0.06)
+        self.assertTrue(self.goal_is(0, 1.5), "height drift or wall oscillation reset stall timer")
+        self.assertEqual(self.last("subgoal").pose.position.z, 2.0)
+        # 到达另一侧XY后，即使高度仍有偏差，也应沿边前进下一行。
+        odom.pose.pose.position.y = 1.5
+        odom.pose.pose.position.z = 1.7
+        odom_pub.publish(odom)
+        self.wait(lambda: self.goal_is(1, 1.5), "height drift blocked horizontal waypoint arrival")
+
     def test_confirmed_platform_is_not_skipped_when_stationary(self):
         odom_pub, odom = self.start_down_sweep()
         marker_pub = self.publisher("marker", PoseStamped)
