@@ -207,6 +207,37 @@ class RcLandPriorityTest(unittest.TestCase):
     def test_cancel_diff_search(self):
         self.run_scenario(True)
 
+    def test_diff_keeps_one_meter_forward_before_scan(self):
+        self.subscribe("subgoal", PoseStamped)
+        self.subscribe("search/state", String)
+        stage = self.publisher("stage", String)
+        odom_pub = self.publisher("odom", Odometry)
+        self.launch("diff_planner", "landing_diff_search_manager", "search",
+                    stage_topic="stage", odom_topic="odom", subgoal_topic="subgoal",
+                    trigger_topic="trigger", yaw_topic="yaw", rc_land_active_topic="rc_land")
+        self.wait(lambda: stage.get_num_connections() == 1 and
+                  odom_pub.get_num_connections() == 1, "Diff manager did not connect")
+        odom = Odometry()
+        odom.pose.pose.position = Point(1.2, -0.7, 1.0)
+        odom.pose.pose.orientation.w = math.cos(0.2)
+        odom.pose.pose.orientation.z = math.sin(0.2)
+        odom_pub.publish(odom)
+        stage.publish(String("SEARCH_OUTSIDE_LANDING"))
+        self.wait(lambda: self.last("subgoal") is not None, "Diff forward goal missing")
+        goal = self.last("subgoal").pose.position
+        self.assertAlmostEqual(goal.x, 1.2 + math.cos(0.4), places=5)
+        self.assertAlmostEqual(goal.y, -0.7 + math.sin(0.4), places=5)
+        self.assertAlmostEqual(goal.z, 1.0, places=5)
+        odom.pose.pose.position = goal
+        odom_pub.publish(odom)
+        self.wait(lambda: self.last("search/state").data == "FRONT_ARUCO_INITIAL_WAIT",
+                  "Diff did not start front scan after one-meter advance")
+        stage.publish(String("SEARCH_OUTSIDE_LANDING"))
+        time.sleep(0.3)
+        for message in self.messages["subgoal"]:
+            self.assertAlmostEqual(message.pose.position.x, goal.x, places=5)
+            self.assertAlmostEqual(message.pose.position.y, goal.y, places=5)
+
     def test_controller_ch10_locks_xy_yaw_and_descends(self):
         package = "payload_mpc_controller"
         package_path = Path(rospkg.RosPack().get_path(package))

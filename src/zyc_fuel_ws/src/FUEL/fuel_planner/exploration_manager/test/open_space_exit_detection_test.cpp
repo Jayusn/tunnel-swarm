@@ -252,9 +252,26 @@ public:
           manual_crossing.mission_stage_ == TaskSearchManager::SEARCH_OUTSIDE_LANDING &&
           !manual_crossing.landingRequested(),
           "RC crossing did not hand off outside search to the external planner");
+    // 正式 Diff 流程只有后续前飞段；CH9 到达门内接近点即交接。
+    TaskSearchManager manual_diff;
+    manual_diff.initialize(nh);
+    manual_diff.external_landing_planner_ = true;
+    manual_diff.updateRobotPose(start, 0.0);
+    manual_diff.exit_candidate_confirmed_ = true;
+    manual_diff.exit_portal_outside_verified_ = true;
+    manual_diff.exit_candidate_ = start;
+    manual_diff.exit_portal_center_ = manual_portal;
+    manual_diff.exit_outward_direction_ = Eigen::Vector2d::UnitX();
+    manual_diff.activateRcSearchLanding(ros::Time(114));
+    manual_goal = Eigen::Vector3d(7,8,9);
+    check(!manual_diff.buildStage3Goal(start, 0, false, manual_goal, manual_yaw) &&
+          manual_diff.mission_stage_ == TaskSearchManager::SEARCH_OUTSIDE_LANDING &&
+          (manual_goal - Eigen::Vector3d(7,8,9)).norm() == 0 &&
+          !manual_diff.landingRequested(),
+          "CH9 generated an extra FUEL crossing before Diff forward approach");
     TaskSearchManager already_outside;
     already_outside.initialize(nh);
-    const Eigen::Vector3d outside_pose = manual_portal + Eigen::Vector3d(0.8,0,0);
+    const Eigen::Vector3d outside_pose = manual_portal + Eigen::Vector3d(0.1,0,0);
     already_outside.updateRobotPose(outside_pose, 0.0);
     already_outside.exit_candidate_confirmed_ = true;
     already_outside.exit_portal_outside_verified_ = true;
@@ -388,10 +405,17 @@ public:
     const Eigen::Vector3d locked_portal = automatic.exit_portal_center_;
     Eigen::Vector3d crossing_goal;
     double crossing_yaw = 0;
-    check(automatic.buildStage3Goal(exit_eye, 0, false, crossing_goal, crossing_yaw) &&
-          automatic.mission_stage_ == TaskSearchManager::CROSS_EXIT &&
-          crossing_goal.x() > locked_portal.x() && !automatic.landingRequested(),
-          "confirmed exit did not produce a crossing goal before landing search");
+    check(automatic.buildStage3Goal(locked_portal - Eigen::Vector3d(1.1,0,0),
+                                   0, false, crossing_goal, crossing_yaw) &&
+          automatic.mission_stage_ == TaskSearchManager::EXIT_APPROACH_INSIDE &&
+          (crossing_goal - automatic.exit_candidate_).norm() < 1e-6,
+          "Diff handoff skipped the retained FUEL inside approach");
+    crossing_goal = Eigen::Vector3d(7,8,9);
+    check(!automatic.buildStage3Goal(exit_eye, 0, false, crossing_goal, crossing_yaw) &&
+          automatic.mission_stage_ == TaskSearchManager::SEARCH_OUTSIDE_LANDING &&
+          (crossing_goal - Eigen::Vector3d(7,8,9)).norm() == 0 &&
+          !automatic.landingRequested(),
+          "automatic exit generated an extra FUEL crossing before Diff forward approach");
     cloud.clear();
     cloud.push_back(pcl::PointXYZ(0.3,0,1));
     exit_map->inputPointCloud(cloud, cloud.size(), exit_eye);
@@ -400,15 +424,11 @@ public:
     check(automatic.exit_candidate_confirmed_ && automatic.exit_portal_locked_ &&
           (automatic.exit_portal_center_ - locked_portal).norm() < 1e-6,
           "later map changed the latched exit");
-    automatic.buildStage3Goal(locked_portal + Eigen::Vector3d(0.59,0,0),
-                              0, false, crossing_goal, crossing_yaw);
-    check(automatic.mission_stage_ == TaskSearchManager::CROSS_EXIT,
-          "outside search began before crossing completed");
-    check(!automatic.buildStage3Goal(locked_portal + Eigen::Vector3d(0.65,0,0),
+    check(!automatic.buildStage3Goal(locked_portal + Eigen::Vector3d(0.10,0,0),
                                     0, false, crossing_goal, crossing_yaw) &&
           automatic.mission_stage_ == TaskSearchManager::SEARCH_OUTSIDE_LANDING &&
           !automatic.landingRequested() && automatic.exit_portal_locked_,
-          "automatic crossing did not hand off outside search to the external planner");
+          "FUEL resumed crossing after the Diff handoff");
     std::cout << "real map freshness, observed volume, obstacle and turn checks passed" << std::endl;
   }
   static void run() {

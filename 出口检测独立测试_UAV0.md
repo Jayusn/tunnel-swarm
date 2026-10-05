@@ -90,13 +90,16 @@ bash shfiles/start_uav0_dual_network_six_terminator.sh
 第6屏使用的 `run_swarm_indoor1_fuel_exploration.launch` 默认启用出口检测和自动穿越。
 检测直接读取正式探索进程的同一个FUEL地图。
 前方出口外侧左右净空合计严格大于2 m、连续3次新地图证据稳定且距出口不超过1 m，
-并满足原有机体通行检查后，立即锁存出口位置和朝向，停止更新/替换出口，开始门内接近和穿越。
-越过锁存出口截面0.60 m后，进入 `SEARCH_OUTSIDE_LANDING`，由Diff执行原有搜索降落。
-穿越完成前仍由FUEL负责规划，不提前启动门外搜索。
+并满足原有机体通行检查后，立即锁存出口位置和朝向，停止更新/替换出口，开始门内接近。
+达到原有门内接近条件后，进入 `SEARCH_OUTSIDE_LANDING`，直接交给Diff。
+只保留Diff原有的前飞1 m，到达后再摆头、搜索平台和精降；不再叠加FUEL的出口外0.60 m穿越段。
+这1 m以Diff接管时的当前位置和航向计算，门内接近距离仍单独保留。
+接近点通常在出口前0.45 m，到达判定仍为距接近点不超过0.50 m，因此交接时可能尚未跨过出口截面。
+这里的 `SEARCH_OUTSIDE_LANDING` 表示Diff已接管，不能再用它判断已越过出口0.60 m。
 
 CH9人工入口继续保留：先低位（<=1300），再高位（>=1800）保持0.5 s。
 
-- 有有效确认出口：锁存该出口，执行同一套“门内接近→穿越→门外搜索降落”，即使自动开关关闭也可触发。若已越过出口截面0.60 m，直接进入门外搜索，不返回门内。
+- 有有效确认出口：锁存该出口，执行同一套“门内接近→Diff前飞1 m→搜索降落”，即使自动开关关闭也可触发。若已越过出口截面，直接交给Diff，不返回门内。
 - 无有效确认出口：沿用原人工门外入口；应先人工飞到出口外，再拨CH9，以当前位置为锚点直接搜索降落。
 - 已进入接近、穿越或门外搜索后再次拨CH9，不重启任务，不替换锁存出口。
 
@@ -110,8 +113,8 @@ rostopic echo /UAV0/mission/final_exit
 ```
 
 默认状态应显示 `auto_crossing=1`。自动/CH9穿越的阶段顺序为：
-`SEARCH_CORRIDOR → EXIT_APPROACH_INSIDE → CROSS_EXIT → SEARCH_OUTSIDE_LANDING`。
-门内接近和穿越时AutoTrans所有者仍为FUEL；穿越完成进入门外搜索后锁存切换为DIFF。
+`SEARCH_CORRIDOR → EXIT_APPROACH_INSIDE → SEARCH_OUTSIDE_LANDING`。
+门内接近时AutoTrans所有者仍为FUEL；接近完成后锁存切换为DIFF，执行唯一的前飞1 m段。
 `/UAV0/mission/final_exit` 在出口锁存时发布真实出口位置和朝向，并保留给迟加入订阅者。
 无确认出口的原CH9门外入口仍发布当前位置锚点。
 独立测试的“5次后保存蓝色历史标记”仍仅属于独立入口；正式任务锁存使用原有3次确认条件。

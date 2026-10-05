@@ -2207,9 +2207,23 @@ bool TaskSearchManager::buildStage3Goal(const Eigen::Vector3d& cur_pos, double c
   if (mission_stage_ == EXIT_APPROACH_INSIDE) {
     const double signed_side =
         (cur_pos.head<2>() - exit_portal_center_.head<2>()).dot(exit_outward_direction_);
-    // 人工已飞到出口外再拨CH9时，直接完成穿越交接，不返回门内接近点。
+    // Diff 自带前飞段；接近完成即交接，不再叠加 FUEL 的穿门距离。
+    // 人工已飞到出口外再拨CH9时，不返回门内接近点。
+    const double handoff_side = external_landing_planner_ ? 0.0 : exit_cross_confirm_distance_;
     if ((cur_pos.head<2>() - exit_candidate_.head<2>()).norm() <= exit_arrive_distance_ ||
-        signed_side >= exit_cross_confirm_distance_) {
+        signed_side >= handoff_side) {
+      if (external_landing_planner_) {
+        mission_stage_ = SEARCH_OUTSIDE_LANDING;
+        mission_stage_start_ = ros::Time::now();
+        active_goal_valid_ = false;
+        outside_search_anchor_ = cur_pos;
+        outside_search_anchor_.z() = cruise_height_;
+        search_exhausted_since_ = ros::Time(0);
+        publishSearchState();
+        ROS_ERROR("[exit_mission] EXIT_APPROACH_INSIDE -> SEARCH_OUTSIDE_LANDING: "
+                  "Diff owns the forward crossing; skip extra FUEL CROSS_EXIT.");
+        return false;
+      }
       mission_stage_ = CROSS_EXIT;
       mission_stage_start_ = ros::Time::now();
       active_goal_valid_ = false;
