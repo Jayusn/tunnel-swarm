@@ -316,6 +316,94 @@ class RcLandPriorityTest(unittest.TestCase):
         actual_yaw = 2 * math.atan2(reference.orientation.z, reference.orientation.w)
         self.assertAlmostEqual(actual_yaw, 0.4, places=4)
 
+    def start_down_sweep(self):
+        self.subscribe("subgoal", PoseStamped)
+        self.subscribe("yaw", PositionCommand)
+        stage = self.publisher("stage", String)
+        odom_pub = self.publisher("odom", Odometry)
+        for name, value in {"front_approach_distance": 0.0,
+                            "front_hint_initial_wait_sec": 0.0,
+                            "front_yaw_scan_half_angle_rad": 0.0,
+                            "sweep_stall_timeout_sec": 0.45}.items():
+            rospy.set_param(self.prefix + "/search/" + name, value)
+        self.launch("diff_planner", "landing_diff_search_manager", "search",
+                    stage_topic="stage", odom_topic="odom", subgoal_topic="subgoal",
+                    trigger_topic="trigger", yaw_topic="yaw", marker_topic="marker",
+                    rc_land_active_topic="rc_land")
+        self.wait(lambda: stage.get_num_connections() == 1 and
+                  odom_pub.get_num_connections() == 1, "Diff manager did not connect")
+        odom = Odometry()
+        odom.pose.pose.position.z = 1.0
+        odom.pose.pose.orientation.w = 1.0
+        odom_pub.publish(odom)
+        stage.publish(String("SEARCH_OUTSIDE_LANDING"))
+        self.wait(lambda: self.last("subgoal") is not None, "climb goal missing")
+        return odom_pub, odom
+
+    def goal_is(self, x, y, z=2.0):
+        message = self.last("subgoal")
+        if message is None:
+            return False
+        point = message.pose.position
+        return max(abs(point.x - x), abs(point.y - y), abs(point.z - z)) < 1e-5
+
+    def test_down_sweep_clips_side_walls_and_reverses_rows(self):
+        odom_pub, odom = self.start_down_sweep()
+        # 上升期间静止不能被误认为侧墙尽头。
+        time.sleep(0.7)
+        self.assertTrue(self.goal_is(0, 0))
+        odom.pose.pose.position.z = 2.0
+        odom_pub.publish(odom)
+        self.wait(lambda: self.goal_is(0, -1.5), "first lateral sweep goal missing")
+        odom.pose.pose.position.y = -0.7
+        odom_pub.publish(odom)
+        self.wait(lambda: self.goal_is(0, 1.5), "left wall did not cause reverse sweep")
+        odom.pose.pose.position.y = 0.8
+        odom_pub.publish(odom)
+        self.wait(lambda: self.goal_is(1.0, 0.8), "right wall did not cause forward row change")
+        odom.pose.pose.position.x = 1.0
+        odom_pub.publish(odom)
+        self.wait(lambda: self.goal_is(1.0, -0.7), "next row did not retain learned left boundary")
+        # 连续实际移动时，即使尚未到达原端点，也不能跳过正在执行的横扫。
+        for y in (0.65, 0.50, 0.35, 0.20):
+            odom.pose.pose.position.y = y
+            odom_pub.publish(odom)
+            time.sleep(0.25)
+            self.assertTrue(self.goal_is(1.0, -0.7))
+        self.assertAlmostEqual(self.last("yaw").yaw, 0.0, places=5)
+
+    def test_down_sweep_stopped_forward_leg_reverses_at_reachable_depth(self):
+        odom_pub, odom = self.start_down_sweep()
+        odom.pose.pose.position.z = 2.0
+        odom_pub.publish(odom)
+        self.wait(lambda: self.goal_is(0, -1.5), "first lateral sweep goal missing")
+        odom.pose.pose.position.y = -1.5
+        odom_pub.publish(odom)
+        self.wait(lambda: self.goal_is(0, 1.5), "opposite sweep goal missing")
+        odom.pose.pose.position.y = 1.5
+        odom_pub.publish(odom)
+        self.wait(lambda: self.goal_is(1.0, 1.5), "forward row transition missing")
+        odom.pose.pose.position.x = 0.4
+        odom_pub.publish(odom)
+        self.wait(lambda: self.goal_is(0.4, -1.5), "forward obstruction did not shorten depth and reverse")
+
+    def test_confirmed_platform_is_not_skipped_when_stationary(self):
+        odom_pub, odom = self.start_down_sweep()
+        marker_pub = self.publisher("marker", PoseStamped)
+        # 当前位姿在搜索高度，已确认平台优先于蛇形边界切换。
+        odom.pose.pose.position.z = 2.0
+        odom_pub.publish(odom)
+        self.wait(lambda: marker_pub.get_num_connections() == 1, "platform subscriber missing")
+        marker = PoseStamped()
+        marker.header.frame_id = "world"
+        marker.pose.position.x = 2.0
+        marker.pose.orientation.w = 1.0
+        for _ in range(12):
+            marker.header.stamp = rospy.Time.now()
+            marker_pub.publish(marker)
+            time.sleep(0.1)
+        self.assertTrue(self.goal_is(2.0, 0.0), "stationary confirmed-platform approach was skipped")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
