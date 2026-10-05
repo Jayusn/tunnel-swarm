@@ -320,6 +320,7 @@ class LandingDiffSearchManager {
       }
     }
     sweep_index_ = 0;
+    sweep_climb_complete_ = false;
   }
 
   void timerCallback(const ros::TimerEvent&) {
@@ -568,22 +569,28 @@ class LandingDiffSearchManager {
 
   bool selectSweepGoal(geometry_msgs::Point& goal) {
     if (sweep_goals_.empty()) return false;
-    for (std::size_t skipped = 0; arrived(sweep_goals_[sweep_index_]); ++skipped) {
+    const geometry_msgs::Point& current = odom_.pose.pose.position;
+    for (std::size_t skipped = 0;
+         (sweep_index_ == 0 && !sweep_climb_complete_)
+             ? arrived(sweep_goals_[sweep_index_])
+             : std::hypot(sweep_goals_[sweep_index_].x - current.x,
+                          sweep_goals_[sweep_index_].y - current.y) <= arrive_xy_;
+         ++skipped) {
       if (skipped >= sweep_goals_.size()) return false;
       advanceSweepGoal();
     }
     goal = sweep_goals_[sweep_index_];
-    const geometry_msgs::Point& current = odom_.pose.pose.position;
-    // 只处理下视水平扫描；上升途中及已锁定平台的接近不能按横向尽头跳点。
-    if (sweep_index_ == 0 || std::fabs(current.z - search_height_) > arrive_z_) {
+    // 首次上升仍须达到搜索高度；进入水平搜索后高度波动不能清零受阻计时。
+    if (sweep_index_ == 0 && !sweep_climb_complete_) {
       sweep_tracking_ = false;
       return true;
     }
     const ros::Time now = ros::Time::now();
+    const double distance = std::hypot(goal.x - current.x, goal.y - current.y);
     if (!sweep_tracking_ ||
-        std::hypot(current.x - sweep_motion_checkpoint_.x,
-                   current.y - sweep_motion_checkpoint_.y) >= sweep_motion_reset_distance_) {
-      sweep_motion_checkpoint_ = current;
+        sweep_progress_distance_ - distance >= sweep_motion_reset_distance_) {
+      // 只有比先前记录更靠近航点才重置；墙边往复晃动不能反复延长等待。
+      sweep_progress_distance_ = distance;
       sweep_last_motion_time_ = now;
       sweep_tracking_ = true;
     } else if ((now - sweep_last_motion_time_).toSec() >= sweep_stall_timeout_sec_) {
@@ -606,7 +613,7 @@ class LandingDiffSearchManager {
           candidate.y -= beyond * axis_y;
         }
       }
-      ROS_WARN("[DOWN_SWEEP_BOUNDARY] goal=%zu no horizontal motion for %.1fs; "
+      ROS_WARN("[DOWN_SWEEP_BOUNDARY] goal=%zu no horizontal goal progress for %.1fs; "
                "clip %s boundary at (%.2f, %.2f), advance serpentine search",
                sweep_index_, sweep_stall_timeout_sec_, lateral_edge ? "side" : "forward",
                current.x, current.y);
@@ -617,6 +624,7 @@ class LandingDiffSearchManager {
   }
 
   void advanceSweepGoal() {
+    if (sweep_index_ == 0) sweep_climb_complete_ = true;
     sweep_index_ = (sweep_index_ + 1) % sweep_goals_.size();
     sweep_tracking_ = false;
     last_goal_time_ = ros::Time(0);
@@ -755,8 +763,9 @@ class LandingDiffSearchManager {
   geometry_msgs::Point front_approach_goal_;
   std::vector<geometry_msgs::Point> sweep_goals_;
   std::size_t sweep_index_{0};
+  bool sweep_climb_complete_{false};
   bool sweep_tracking_{false};
-  geometry_msgs::Point sweep_motion_checkpoint_;
+  double sweep_progress_distance_{0.0};
   ros::Time sweep_last_motion_time_;
   double sweep_stall_timeout_sec_{4.0}, sweep_motion_reset_distance_{0.10};
   bool have_odom_{false}, switch_pending_{false}, switched_{false}, active_{false};
