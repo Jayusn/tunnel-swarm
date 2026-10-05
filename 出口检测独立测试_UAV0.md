@@ -42,7 +42,7 @@ rostopic echo /exit_detection_test/confirmed
 
 1. 保持设备约 **0.6 m 高**，慢慢走通道；转弯时机头跟随通道方向。
 2. 看 RViz：**橙色矩形＝候选；绿色出口矩形＋`data: true`＝已确认**。小绿色轨迹点不是出口。
-3. 到出口内侧约 **1 m 内停几秒**，扫门外左右；检查的是前方出口外侧**左右净空之和＞2 m**，无需先走出通道。
+3. 到出口内侧约 **1 m 内停几秒**，扫门外左右；检查的是前方出口外侧**左右净空之和＞2 m**，无需先走出通道。连续 **5 次新地图证据**稳定且确认有效后，出现**蓝色历史出口矩形**，保留到重启检测。
 4. 拐角出现绿色出口矩形时记录为疑似误检。再测一遍时，终端 3 按 `Ctrl+C` 后重新启动。
 
 本流程只检测，不起飞、不输出飞行指令。结束时各终端按 `Ctrl+C`。
@@ -58,7 +58,8 @@ mkdir -p ~/match_ws/bags/exit_detection
 rosbag record -O ~/match_ws/bags/exit_detection/exit_detection_walk_$(date +%Y%m%d_%H%M%S).bag \
   /UAV0/fast_lio/Odom_high_freq /UAV0/fast_lio/cloud_registered \
   /exit_detection_test/status /exit_detection_test/confirmed \
-  /exit_detection_test/detected_exit /exit_detection_test/markers /rosout
+  /exit_detection_test/detected_exit /exit_detection_test/markers \
+  /exit_detection_test/exit_history_markers /rosout
 ```
 
 ## 详细说明
@@ -135,6 +136,12 @@ rostopic echo /exit_detection_test/detected_exit
 `detected_exit` 在当前确认有效时发布出口中心和朝外方向，不永久锁存。
 状态阶段始终为 `SEARCH_CORRIDOR`，`landing=0`；它不会执行接近、穿越或降落。
 候选失效时 `confirmed` 回到 false，旧 `detected_exit` 消息不能代表当前仍已确认。
+历史保留条件为同一候选连续 5 次有效新地图证据：新证据相对跟踪候选的位置变化不超过 0.3 m、
+方向变化不超过 15°，并满足现有出口确认条件（包括距出口不超过 1 m）。
+证据间隔至少 0.5 s，重复里程计回调不增加次数；候选失效或跳变时重新计数。
+达到条件后，`/exit_detection_test/exit_history_markers` 锁存本次测试第一个满足条件的出口位置。
+之后实时 `confirmed=false` 也保留蓝色历史标记，表示曾满足条件，不表示当前证据仍有效。
+晚打开 RViz 也能收到历史标记；重启检测会清除历史，并重新累积证据。历史标记不触发飞行。
 
 完整走通道时建议在另一终端录下输入和检测结果，便于回看误检位置：
 
@@ -143,7 +150,8 @@ mkdir -p ~/match_ws/bags/exit_detection
 rosbag record -O ~/match_ws/bags/exit_detection/exit_detection_walk_$(date +%Y%m%d_%H%M%S).bag \
   /UAV0/fast_lio/Odom_high_freq /UAV0/fast_lio/cloud_registered \
   /exit_detection_test/status /exit_detection_test/confirmed \
-  /exit_detection_test/detected_exit /exit_detection_test/markers /rosout
+  /exit_detection_test/detected_exit /exit_detection_test/markers \
+  /exit_detection_test/exit_history_markers /rosout
 ```
 
 若已经绕过拐角，但日志没有 `confirmed LEFT/RIGHT turn` 且出口检测迟迟无结果，
@@ -168,12 +176,14 @@ rosbag record -O ~/match_ws/bags/exit_detection/exit_detection_walk_$(date +%Y%m
 | --- | --- |
 | 橙色矩形、中心圆盘，文字 `OPEN-SPACE CANDIDATE / INSIDE N/3` | 出口候选，显示证据次数，尚未确认出口 |
 | 绿色矩形、中心圆盘，文字 `OPEN-SPACE READY / STILL INSIDE` | 已确认出口；对应状态 `exit=1`、`confirmed.data=true` |
+| 蓝色矩形，文字 `CONFIRMED EXIT HISTORY / 5 MAP OBSERVATIONS` | 连续 5 次新地图证据稳定后保存的出口；保留至重启检测 |
 | 箭头 | 推断的出通道方向 |
 
 `STILL INSIDE` 表示独立模式只检测、不执行穿越，不表示出口未确认。
 小绿色点是手持设备经过的位置，不能当作出口；确认应看绿色矩形及上方文字。
 矩形标记表示开阔区域过渡截面，不代表识别到了实体门框。
-候选或确认失效时标记会删除。通道拐角出现绿色出口矩形，就记录为疑似误检。
+候选或确认失效时，橙色/绿色实时标记会删除；已满足 5 次条件的蓝色历史标记仍保留。
+通道拐角出现绿色出口矩形，就记录为疑似误检。
 
 已在运行检测但没有 RViz 时，可以另开终端加载同一份显示配置：
 

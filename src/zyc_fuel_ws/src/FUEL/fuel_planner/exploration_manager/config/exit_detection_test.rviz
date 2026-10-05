@@ -212,6 +212,13 @@ Visualization Manager:
       Queue Size: 100
       Namespaces: {}
       Value: true
+    - Class: rviz/MarkerArray
+      Name: 已确认出口历史
+      Enabled: true
+      Marker Topic: /exit_detection_test/exit_history_markers
+      Queue Size: 10
+      Namespaces: {}
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 255; 255; 255

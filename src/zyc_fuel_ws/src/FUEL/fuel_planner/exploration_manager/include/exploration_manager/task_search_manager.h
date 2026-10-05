@@ -31,6 +31,8 @@ public:
   // 独立观察入口：首帧假定已在通道内，只更新检测，不生成接近、穿越或降落目标。
   bool updateExitDetectionOnly(const Eigen::Vector3d& pos, double yaw,
                                geometry_msgs::PoseStamped& detected_exit);
+  // 连续新地图证据次数；独立入口据此保留历史标记，里程计回调不额外计票。
+  int exitEvidenceCount() const { return exit_candidate_hits_; }
   int selectSearchCandidate(const std::vector<Eigen::Vector3d>& points,
                             const std::vector<double>& yaws,
                             const std::vector<std::vector<Eigen::Vector3d>>& frontiers,
