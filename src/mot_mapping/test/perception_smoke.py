@@ -56,19 +56,21 @@ def main():
                     [(.07, 0, 0), (-.07, 0, 0), (0, .07, 0),
                      (0, -.07, 0), (0, 0, .07), (0, 0, -.07)]]
 
-        def publish(center, points=None, odom_x=0):
+        def publish(center, points=None, odom_x=0, odom_z=0, odom_yaw=0, interval=.25):
             stamp = rospy.Time.now()
             header = Header(stamp=stamp, frame_id='UAV1/camera_init')
             odom = Odometry(header=header)
-            odom.pose.pose.orientation.w = 1
+            odom.pose.pose.orientation.w = math.cos(odom_yaw / 2)
+            odom.pose.pose.orientation.z = math.sin(odom_yaw / 2)
             odom.pose.pose.position.x = odom_x
+            odom.pose.pose.position.z = odom_z
             if points is None:
                 points = [] if center is None else [
                     (center + x * .055, y * .055, 1 + z * .055)
                     for x in range(4) for y in range(4) for z in range(4)]
             odom_pub.publish(odom)
             cloud_pub.publish(point_cloud2.create_cloud_xyz32(header, points))
-            time.sleep(.25)
+            time.sleep(interval)
             return stamp
 
         def count(stamp):
@@ -141,6 +143,40 @@ def main():
             stamp = publish(None, points=points)
         assert count(stamp) == 2, 'Two detections updated a single track'
 
+        # Registered static points stay fixed when the UAV translates/rotates.
+        for _ in range(3):
+            publish(None)
+        for step in range(10):
+            stamp = publish(None, points=sparse_points(2), odom_x=step * .1,
+                            odom_yaw=step * .12)
+            assert count(stamp) == 0, 'Ego motion was subtracted from registered points'
+        for step in range(8):
+            stamp = publish(None, points=sparse_points(2 + step * .12),
+                            odom_x=step * .1, odom_yaw=step * .12)
+            if step >= 4:
+                assert count(stamp) == 1, 'Moving target lost during ego motion'
+
+        # Similar three-frame displacement, different actual timestamp speed.
+        for _ in range(3):
+            publish(None)
+        for step in range(8):
+            stamp = publish(None, points=sparse_points(1.2 + step * .12, 1.5), interval=1)
+            assert count(stamp) == 0, 'Motion below 0.15 m/s was confirmed'
+        for _ in range(3):
+            publish(None)
+        for step in range(12):
+            stamp = publish(None, points=sparse_points(2 + .15 * (step % 2), -1.5), interval=.5)
+            if step >= 4:
+                assert count(stamp) == 1, 'Three-frame reversal cancelled measured speed'
+
+        # Uneven input timing must not erase the preceding fast segment.
+        for _ in range(3):
+            publish(None)
+        publish(None, points=sparse_points(3, -2))
+        publish(None, points=sparse_points(3.3, -2), interval=3)
+        stamp = publish(None, points=sparse_points(3.45, -2))
+        assert count(stamp) == 1, 'Input gap diluted an observed fast segment'
+
         # The ceiling and moving return are within the actual DBSCAN radius.
         # Together they exceed max_cluster=800; background removal must split
         # them before clustering without deleting the six object points.
@@ -198,6 +234,54 @@ def main():
                 stamp = publish(None, points=sparse_points(center))
                 if step >= 4:
                     assert count(stamp) == 1, 'Repeated obvious swing lost after map update'
+
+        # Sparse samples of one fixed surface must not inherit a moving track
+        # when its dense patch alternates between different parts of the plane.
+        for _ in range(3):
+            publish(None)
+        for center in [2.05, 2.2, 2.35, 2.5]:
+            stamp = publish(None, points=[(x, y, z - .5)
+                                         for x, y, z in sparse_points(center)])
+        assert count(stamp) == 1, 'Motion setup for sampled surface was not detected'
+        anchors = [(2.5 + x * .15, y * .15, .5)
+                   for x in range(-2, 3) for y in range(-2, 3)]
+        for step in range(16):
+            center = 2.5 + [-.15, 0, .15, 0][step % 4]
+            patch = [(center + x, y, .5)
+                     for x in [-.06, 0, .06] for y in [-.06, 0, .06]]
+            stamp = publish(None, points=anchors + patch)
+            if step >= 3:
+                assert count(stamp) == 0, 'Fixed surface fragments inherited motion'
+
+        # A curved six-point body close to a wall still moves independently.
+        for _ in range(3):
+            publish(None)
+        wall = [(1.1 + x * .1, .12, .65 + z * .1)
+                for x in range(20) for z in range(8)]
+        for step in range(10):
+            stamp = publish(None, points=wall + sparse_points(1.4 + step * .12))
+            if step >= 4:
+                assert count(stamp) == 1, 'Moving body close to wall was rejected'
+
+        def height_points(center, z, y):
+            return [(center + x, y + dy, z + dz) for x, dy, dz in
+                    [(.0625, 0, 0), (-.0625, 0, 0), (0, .0625, 0),
+                     (0, -.0625, 0), (0, 0, .0625), (0, 0, -.0625)]]
+
+        # Binary-exact coordinates make the boundary bottom exactly 1.5 m.
+        for case, (height, odom_z, expected) in enumerate([
+                (1.5625, 0, 1), (1.625, 0, 0), (1.53125, 0, 1),
+                (1.625, .125, 1), (1.5, -.125, 0)]):
+            for _ in range(3):
+                publish(None, odom_z=odom_z)
+            for step in range(8):
+                # Separate locations keep earlier cases out of the static map.
+                stamp = publish(None, points=height_points(2 + step * .125, height,
+                                                         1 + case * .4),
+                                odom_z=odom_z)
+                if step >= 4:
+                    assert count(stamp) == expected, \
+                        'Relative whole-box height limit failed: ' + str((height, odom_z))
         if rviz_processes:
             _, _, graph = rospy.get_master().getSystemState()
             subscribers_by_topic = dict(graph[1])
@@ -208,7 +292,9 @@ def main():
             print('PASS: both RViz profiles subscribe to FAPP clouds and markers')
         print('PASS: static, six-point motion, turn, stop, occlusion, thin planes, '
               'moving UAV, one-to-one tracks, ceiling-connected motion, attached rope, '
-              'static sampling changes, repeated swing and consistent stamped outputs')
+              'static sampling changes, repeated swing, sampled static surfaces, '
+              'wall-adjacent motion, relative height boundary, world-frame speed, '
+              'speed threshold, reversal and consistent stamped outputs')
     finally:
         for process in rviz_processes + [launch, master]:
             if process is not None:

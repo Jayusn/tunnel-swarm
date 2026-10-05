@@ -24,7 +24,10 @@ void MappingRos::init() {
   nh.param("detection/thresh_dist", mp_->thresh_dist, 0.08);
   nh.param("detection/thresh_var", mp_->thresh_var, 0.28);
   nh.param("detection/motion_displacement", mp_->motion_displacement, 0.06);
+  nh.param("detection/min_motion_speed", mp_->min_motion_speed, 0.15);
   nh.param("detection/min_motion_novel_fraction", mp_->min_motion_novel_fraction, 0.3);
+  nh.param("detection/max_above_uav", mp_->max_above_uav, 1.5);
+  nh.param("background_surface/enabled", mp_->background_surface_enabled, true);
   nh.param("background_plane/enabled", mp_->background_plane_enabled, true);
   nh.param("background_plane/distance", mp_->background_plane_distance, 0.03);
   nh.param("background_plane/min_points", mp_->background_plane_min_points, 100);
@@ -389,6 +392,11 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
           0.5 * (coordinates[middle - 1] + coordinates[middle]);
     }
 
+    // Use the same bottom as the published box; keep boxes crossing the limit.
+    if (mp_->max_above_uav >= 0.0 &&
+        center.z() - 0.5 * size.z() > md_->T.z() + mp_->max_above_uav)
+      continue;
+
     // Judge the same dense surface used for motion. An attached sparse rope
     // must not make a curved moving return look like a long planar patch.
     Eigen::Matrix3d covariance = Eigen::Matrix3d::Zero();
@@ -412,6 +420,52 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     const auto& eigenvalues = solver.eigenvalues();
     if (size.maxCoeff() >= 0.5 && eigenvalues[0] < 0.01 * eigenvalues[2])
       continue;
+
+    // Small sampled fragments can move along an unchanged surface. Require
+    // support in both raw observations, and only reject a thin dense return.
+    bool static_surface = mp_->background_surface_enabled &&
+                          eigenvalues[0] < 0.01 * eigenvalues[2];
+    PointType query;
+    query.x = center.x();
+    query.y = center.y();
+    query.z = center.z();
+    for (int history = 0; static_surface && history < 2; ++history) {
+      std::vector<int> local_indices;
+      std::vector<float> local_squared_distances;
+      if (!has_observed_history[history] ||
+          observation_trees[history].radiusSearch(query, 0.35, local_indices,
+                                                  local_squared_distances) < 15) {
+        static_surface = false;
+        break;
+      }
+      Eigen::Vector3d local_center = Eigen::Vector3d::Zero();
+      for (int index : local_indices)
+        local_center += observed_history[history]->points[index].getVector3fMap().cast<double>();
+      local_center /= local_indices.size();
+      Eigen::Matrix3d local_covariance = Eigen::Matrix3d::Zero();
+      for (int index : local_indices) {
+        Eigen::Vector3d delta = observed_history[history]->points[index].getVector3fMap().cast<double>() - local_center;
+        local_covariance += delta * delta.transpose();
+      }
+      local_covariance /= local_indices.size();
+      Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> local_solver(local_covariance);
+      const auto& local_eigenvalues = local_solver.eigenvalues();
+      if (local_eigenvalues[0] >= 0.01 * local_eigenvalues[2] ||
+          local_eigenvalues[1] <= 0.001) {
+        static_surface = false;
+        break;
+      }
+      Eigen::Vector3d normal = local_solver.eigenvectors().col(0);
+      size_t supported = 0;
+      for (const auto& point : cluster) {
+        if ((point.getVector3fMap() - cluster[dense_index].getVector3fMap()).squaredNorm() >
+            mp_->tolerance) continue;
+        Eigen::Vector3d delta = point.getVector3fMap().cast<double>() - local_center;
+        if (std::abs(normal.dot(delta)) <= 0.03) ++supported;
+      }
+      if (supported < 0.8 * dense_count) static_surface = false;
+    }
+    if (static_surface) continue;
 
     double avg_dist = 0.0, var_dist = 0.0;
     for (double distance : distances) avg_dist += distance;
@@ -502,8 +556,24 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     for (const auto& first : tracker->observations)
       for (const auto& second : tracker->observations)
         displacement = std::max(displacement, (first.second - second.second).norm());
+    // Registered centers are already ego-motion compensated. Average the two
+    // measured segment speeds: reversals do not cancel, and an input gap must
+    // not dilute the preceding fast observation into a slow time average.
+    double observed_speed = 0.0;
+    size_t speed_samples = 0;
+    for (size_t observation = 1; observation < tracker->observations.size(); ++observation) {
+      const auto& previous = tracker->observations[observation - 1];
+      const auto& current = tracker->observations[observation];
+      double dt = (current.first - previous.first).toSec();
+      if (dt > 0.0) {
+        observed_speed += (current.second - previous.second).norm() / dt;
+        ++speed_samples;
+      }
+    }
+    if (speed_samples > 0) observed_speed /= speed_samples;
     bool has_motion = tracker->observations.size() == 3 &&
-                      displacement >= mp_->motion_displacement;
+                      displacement >= mp_->motion_displacement &&
+                      observed_speed >= mp_->min_motion_speed;
     if (candidate.changed) tracker->last_change_stamp = cloud_stamp_;
     bool recently_changed = tracker->last_change_stamp >= tracker->observations.front().first;
     // A tracked object must still have measured motion, not just EKF velocity.

@@ -60,7 +60,10 @@ struct MapParam {
   double thresh_dist;
   double thresh_var;
   double motion_displacement;
+  double min_motion_speed;
   double min_motion_novel_fraction;
+  double max_above_uav;
+  bool background_surface_enabled;
   bool background_plane_enabled;
   double background_plane_distance;
   int background_plane_min_points;

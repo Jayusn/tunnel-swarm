@@ -16,6 +16,9 @@
       <param name="detection/thresh_dist" value="0.06"/>
       <param name="detection/thresh_var" value="0.28"/>
       <param name="detection/motion_displacement" value="0.08"/>
+      <param name="detection/min_motion_speed" value="0.15"/>
+      <param name="detection/max_above_uav" value="1.5"/>
+      <param name="background_surface/enabled" value="true"/>
       <param name="background_plane/enabled" value="true"/>
       <param name="background_plane/distance" value="0.03"/>
       <param name="background_plane/min_points" value="100"/>
