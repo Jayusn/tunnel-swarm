@@ -128,6 +128,7 @@ void TaskSearchManager::initialize(ros::NodeHandle& nh) {
 
   // 出口只根据局部受限空间向双侧开阔区域的过渡判定。
   nh.param("mission/task_search/exit/enabled", exit_detection_enabled_, true);
+  nh.param("mission/task_search/exit/auto_crossing_enabled", exit_auto_crossing_enabled_, true);
   nh.param("mission/task_search/exit/inference_period", exit_inference_period_, 0.50);
   nh.param("mission/task_search/exit/stability_radius", exit_candidate_stability_radius_, 0.30);
   nh.param("mission/task_search/exit/confirmation_count", exit_confirmation_count_, 3);
@@ -238,9 +239,10 @@ void TaskSearchManager::initialize(ros::NodeHandle& nh) {
            static_cast<int>(enabled_), static_cast<int>(require_stage2_detections_),
            min_search_height_, max_search_height_, revisit_radius_,
            hybrid_constraints_enabled_ ? "FUEL_DIFF" : "NATIVE_FUEL");
-  ROS_WARN("[exit_mission] open-space detector enabled=%d ahead_width>%.2fm ratio>=%.2f "
+  ROS_WARN("[exit_mission] open-space detector enabled=%d auto_crossing=%d ahead_width>%.2fm ratio>=%.2f "
            "confirm=%d period=%.2fs near=%.2fm; fresh map only, turn exclusion enabled.",
-           static_cast<int>(exit_detection_enabled_), exit_min_open_width_, exit_min_open_ratio_,
+           static_cast<int>(exit_detection_enabled_), static_cast<int>(exit_auto_crossing_enabled_),
+           exit_min_open_width_, exit_min_open_ratio_,
            exit_confirmation_count_, exit_inference_period_, exit_confirmation_max_distance_);
   ROS_WARN("[exit_mission] RC search-landing trigger enabled=%d topic=%s CH%d "
            "low<=%d high>=%d hold=%.2fs; startup requires LOW before HIGH.",
@@ -2151,6 +2153,9 @@ bool TaskSearchManager::buildStage3Goal(const Eigen::Vector3d& cur_pos, double c
   updateExitCandidate(cur_pos);
 
   if (mission_stage_ == SEARCH_CORRIDOR) {
+    // 完整飞行观察时继续更新出口证据和显示，但不生成接近/穿越/补扫目标。
+    // CH9人工入口独立进入门外搜索，不受此自动接管开关影响。
+    if (!exit_auto_crossing_enabled_) return false;
     // 任务允许接管时才锁定出口和冻结frontier，确认本身不阻止剩余目标搜索。
     if (require_stage2_detections_ && !allStage2TargetsFound()) return false;
     if (!exit_candidate_confirmed_) {
@@ -2526,6 +2531,7 @@ void TaskSearchManager::publishSearchState() {
          << " color=" << targets_[0].found << " qrcode=" << targets_[1].found
          << " thermal=" << targets_[2].found << " exit=" << exit_candidate_confirmed_
          << " open_space_hits=" << exit_candidate_hits_
+         << " auto_crossing=" << exit_auto_crossing_enabled_
          << " landing_aruco=" << final_landing_marker_.found
          << " landing=" << landing_requested_
          << " visited=" << visited_positions_.size();

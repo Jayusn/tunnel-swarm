@@ -71,6 +71,7 @@
     <!-- 与正式通道任务一致；手持全程测试也由累计地图确认转弯。 -->
     <param name="mission/task_search/recovery/turn_min_angle_deg" value="45.0"/>
     <param name="mission/task_search/exit/enabled" value="true"/>
+    <param name="mission/task_search/exit/auto_crossing_enabled" value="false"/>
     <param name="mission/task_search/exit/rc_trigger/enabled" value="false"/>
     <param name="mission/task_search/exit/min_open_width" value="2.0"/>
     <param name="mission/task_search/exit/min_open_ratio" value="0.80"/>

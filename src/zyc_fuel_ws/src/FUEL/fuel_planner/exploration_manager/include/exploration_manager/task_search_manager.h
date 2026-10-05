@@ -102,7 +102,7 @@ public:
   // 2026-07-24: 出口候选从第一票开始就属于连续雷达验证窗口；前机相机摆头必须让路，
   // 否则门框会被当作新障碍触发环扫，并把下一帧双墙终止切面打乱。
   bool exitVerificationActive() const {
-    return mission_stage_ == SEARCH_CORRIDOR &&
+    return exit_auto_crossing_enabled_ && mission_stage_ == SEARCH_CORRIDOR &&
            (exit_candidate_hits_ > 0 ||
             (!exit_verification_hold_until_.isZero() &&
              ros::Time::now() < exit_verification_hold_until_));
@@ -359,8 +359,9 @@ private:
   double recovery_turn_yaw_release_angle_deg_{15.0};
 
 
-  // 局部双侧开阔出口检测；总开关同时控制出口任务阶段切换。
+  // 局部双侧开阔出口检测与自动任务接管分开；只检测时保持人工流程。
   bool exit_detection_enabled_{true};
+  bool exit_auto_crossing_enabled_{true};
   double exit_inference_period_{0.50};
   double exit_candidate_stability_radius_{0.30};
   int exit_confirmation_count_{3};

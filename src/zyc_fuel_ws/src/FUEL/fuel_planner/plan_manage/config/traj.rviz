@@ -377,6 +377,7 @@ Visualization Manager:
           Name: task_search
           Namespaces:
             task_search_coverage: true
+            exit_mission: true
           Queue Size: 100
           Value: true
       Enabled: true

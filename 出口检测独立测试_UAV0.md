@@ -70,12 +70,64 @@ rosbag record -O ~/match_ws/bags/exit_detection/exit_detection_walk_$(date +%Y%m
 地图尺寸、搜索边界、射线距离和静态占据开关的默认值与
 `run_swarm_indoor1_fuel_exploration.launch` 一致；出口几何判定和连续地图确认也复用正式逻辑。
 测试入口启动 `exit_detection_node` 和 RViz，不会生成探索航点、穿越轨迹或降落请求。
-所有检测与任务接口放在 `/exit_detection_test` 下；正式比赛 launch 的出口开关保持原设置。
+所有独立测试接口放在 `/exit_detection_test` 下。
+正式六分屏入口现已启用出口检测、默认关闭自动穿越，见下方“接入正式总流程”；本独立入口仍只检测。
 
 数据链路为：FAST-LIO 注册点云与里程计 → 正式 FUEL 建图实现 → 出口检测。
 测试进程里的建图与检测共用同一个 `SDFMap` 对象；正式流程内部也已采用该接法。
 独立测试不会连接另一个正在运行的探索进程中的地图，因此累计地图从本次测试启动开始建立。
 无需额外启动完整探索 launch。以后调整共同建图参数，修改上述 YAML 即同时影响两种入口。
+
+## 接入正式总流程
+
+继续使用原入口，无需额外启动独立检测：
+
+```bash
+cd ~/match_ws
+bash shfiles/start_uav0_dual_network_six_terminator.sh
+```
+
+第6屏使用的 `run_swarm_indoor1_fuel_exploration.launch` 默认启用出口检测、关闭自动接管。
+检测直接读取正式探索进程的同一个FUEL地图。
+前方出口外侧左右净空合计严格大于2 m、连续3次新地图证据稳定且距出口不超过1 m，
+并满足原有机体通行检查后，只更新检测结果和RViz显示。
+即使确认有效，也不会自动锁定出口、生成接近/穿越/补扫目标，或进入搜索降落。
+出口观察也不触发原有相机偏航验证接管，普通探索按原流程运行。
+先完整飞一次检查真实出口、拐角和单侧开口是否误检；穿越按当前人工流程控制，
+CH9沿用现有逻辑：人工确认已到出口外后，低到高保持0.5 s，启动搜索降落。
+本次未增加“门内拨CH9自动穿越”的动作。
+
+正式RViz的 `active_perception → task_search` 显示 `/UAV0/mission/search_markers`，
+可观察橙色候选和绿色确认框。主要观察：
+
+```bash
+rostopic echo /UAV0/mission/task_status
+rostopic echo /autotrans_trajectory_arbiter/owner
+```
+
+CH9触发前应保持 `SEARCH_CORRIDOR`、`auto_crossing=0`、`landing=0`，
+即使 `exit=1` 也不切换任务；AutoTrans所有者仍为FUEL。CH9后才切换为DIFF。
+`/UAV0/mission/final_exit` 沿用CH9接管时发布当前位置锚点的行为，检测确认本身不发布最终锁定出口。
+独立测试的“5次后保存蓝色历史标记”仍仅属于独立入口；正式RViz当前显示可撤销的实时检测框。
+同包重新建图检测的候选跳变问题尚未修复，当前接入不改变该算法行为。
+
+完整飞行时另开终端录包（话题使用正式命名空间）：
+
+```bash
+source /opt/ros/noetic/setup.bash
+source ~/match_ws/devel/setup.bash
+mkdir -p ~/match_ws/bags/exit_detection
+rosbag record -O ~/match_ws/bags/exit_detection/exit_detection_flight_$(date +%Y%m%d_%H%M%S).bag \
+  /UAV0/fast_lio/Odom_high_freq /UAV0/fast_lio/cloud_registered \
+  /UAV0/mission/task_status /UAV0/mission/search_markers /UAV0/mission/final_exit \
+  /UAV0/sdf_map/occupancy_all /UAV0/sdf_map/occupancy_local_inflate \
+  /autotrans_trajectory_arbiter/owner /rosout
+```
+
+自动开关为 `enable_auto_exit` / `UAV0_ENABLE_AUTO_EXIT`，当前默认false。
+若终端曾手动设为true，启动前 `unset UAV0_ENABLE_AUTO_EXIT` 或设为false。
+待检测稳定并明确决定启用后，再改为true并重启：
+确认出口 → 锁定 → 门内接近 → 穿越 → 越过截面0.60 m → Diff搜索降落。
 
 ## 手持设备测试
 

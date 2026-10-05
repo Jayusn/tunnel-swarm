@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <vector>
+#include <boost/make_shared.hpp>
 
 #include <plan_env/sdf_map.h>
 #include <exploration_manager/task_search_manager.h>
@@ -56,6 +57,7 @@ class TaskSearchManagerTest {
 public:
   static void runMapIntegration() {
     ros::NodeHandle nh("~");
+    nh.setParam("mission/task_search/exit/auto_crossing_enabled", false);
     nh.setParam("sdf_map/resolution", 0.10);
     nh.setParam("sdf_map/map_size_x", 8.0);
     nh.setParam("sdf_map/map_size_y", 8.0);
@@ -67,6 +69,7 @@ public:
     map->initMap(nh);
     TaskSearchManager manager;
     manager.initialize(nh);
+    check(!manager.exit_auto_crossing_enabled_, "observation parameter did not disable automatic takeover");
     manager.setMap(map);
     pcl::PointCloud<pcl::PointXYZ> cloud;
     const Eigen::Vector3d camera(-1,0,1);
@@ -168,6 +171,26 @@ public:
           "observation did not retain new corridor direction after walking through turn");
     check(!observation.stage3Active() && !observation.landingRequested(),
           "walking through turn started flight task");
+    // 完整流程观察开关不影响原CH9低->高人工入口；全部在隔离master中验证。
+    nh.setParam("mission/task_search/exit/rc_trigger/enabled", true);
+    TaskSearchManager manual_mission;
+    manual_mission.initialize(nh);
+    manual_mission.updateRobotPose(start, 0.0);
+    auto rc = boost::make_shared<mavros_msgs::RCIn>();
+    rc->channels.resize(9, 1000);
+    rc->header.stamp = ros::Time(100);
+    manual_mission.rcSearchLandingCallback(rc);
+    rc->channels[8] = 1900;
+    rc->header.stamp = ros::Time(101);
+    manual_mission.rcSearchLandingCallback(rc);
+    check(!manual_mission.stage3Active(), "RC high bypassed the existing hold period");
+    rc->header.stamp = ros::Time(102);
+    manual_mission.rcSearchLandingCallback(rc);
+    check(manual_mission.mission_stage_ == TaskSearchManager::SEARCH_OUTSIDE_LANDING &&
+          manual_mission.exit_portal_locked_ &&
+          manual_mission.consumeRcSearchLandingStartRequest() &&
+          !manual_mission.consumeRcSearchLandingStartRequest(),
+          "observation mode blocked or repeated the existing RC handoff");
     // 用真实射线融合的L形地图复现：地图支路朝向尚未与手持设备一致，不能先锁住。
     auto corner_map = std::make_shared<SDFMap>();
     corner_map->initMap(nh);
@@ -293,6 +316,17 @@ public:
     mission.buildStage3Goal(inside, 0, false, goal, yaw);
     check(!mission.stage3Active() && !mission.exit_portal_locked_, "disabled exit detection changed stage");
     mission.exit_detection_enabled_ = true;
+    mission.exit_auto_crossing_enabled_ = false;
+    mission.exit_candidate_hits_ = 5;
+    goal = Eigen::Vector3d(7,8,9);
+    check(!mission.buildStage3Goal(inside, 0, true, goal, yaw) &&
+          !mission.stage3Active() && !mission.exit_portal_locked_ &&
+          mission.exit_candidate_confirmed_ && mission.exit_candidate_hits_ == 5 &&
+          (goal - Eigen::Vector3d(7,8,9)).norm() == 0 &&
+          !mission.finalExitFrontierGuardActive() && !mission.exitVerificationActive() &&
+          !mission.landingRequested(),
+          "detection-only mission lost evidence or changed flight after confirmation");
+    mission.exit_auto_crossing_enabled_ = true;
     mission.buildStage3Goal(inside, 0, false, goal, yaw);
     check(mission.mission_stage_ == TaskSearchManager::CROSS_EXIT && mission.exit_portal_locked_,
           "confirmed open exit waited for frontier exhaustion or entry mileage");
