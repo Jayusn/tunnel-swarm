@@ -2940,7 +2940,10 @@ int FastExplorationManager::planExploreMotion(
 
   // 2026-07-16: 比赛使用360度Mid360时航向直接对准运动方向；相机模式保留原始viewpoint航向接口。
   const Eigen::Vector2d motion_delta = next_pos.head<2>() - pos.head<2>();
-  if (!use_camera_viewpoint_yaw_ && motion_delta.norm() > 0.15)
+  // 已确认出口的接近/穿越保持任务给出的出口朝向，横向修正不能带着机头转。
+  const bool use_locked_exit_yaw = use_stage3_target && task_search_manager_ &&
+      task_search_manager_->exitTransitActive();
+  if (!use_locked_exit_yaw && !use_camera_viewpoint_yaw_ && motion_delta.norm() > 0.15)
     next_yaw = std::atan2(motion_delta.y(), motion_delta.x());
 
   if (external_selection_only_) {
@@ -3406,7 +3409,7 @@ int FastExplorationManager::planExploreMotion(
 
   // 2026-07-24: 扫描段关闭“整段始终看前方”的约束；全向模式在位置轨迹全程插入单方向
   // 连续yaw约束，非扫描阶段完全保留原有沿路径看前方或任务固定朝向的行为。
-  bool look_forward_along_trajectory = !camera_head_sweep_active;
+  bool look_forward_along_trajectory = !camera_head_sweep_active && !use_locked_exit_yaw;
   Eigen::Vector3d mapped_direction;
   const bool mapped_turn_detected =
       mapped_turn_yaw_eligible && task_search_manager_ &&

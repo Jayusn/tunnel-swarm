@@ -264,7 +264,10 @@ class RcLandPriorityTest(unittest.TestCase):
         odom = Odometry()
         odom.pose.pose.position = Point(2.0 + signed_side * math.cos(yaw),
                                         -1.0 + signed_side * math.sin(yaw), 0.12)
-        odom.pose.pose.orientation = portal.pose.orientation
+        # 复现实飞：交接时机头已右偏约37度，不能把偏转后的实际航向锁存为出口朝向。
+        body_yaw = yaw - 0.65
+        odom.pose.pose.orientation.w = math.cos(body_yaw / 2)
+        odom.pose.pose.orientation.z = math.sin(body_yaw / 2)
         odom_pub.publish(odom)
         stage.publish(String("SEARCH_OUTSIDE_LANDING"))
         self.wait(lambda: self.last("subgoal") is not None, "confirmed exit forward goal missing")
@@ -277,14 +280,20 @@ class RcLandPriorityTest(unittest.TestCase):
         self.assertEqual(self.last("search/state").data, "FRONT_ARUCO_FORWARD_APPROACH")
         # 后续出口消息和重复阶段通知不能延长或替换本次前飞目标。
         portal.pose.position.x += 10
+        portal.pose.orientation.w = math.cos(-0.5)
+        portal.pose.orientation.z = math.sin(-0.5)
         exit_pub.publish(portal)
         stage.publish(String("SEARCH_OUTSIDE_LANDING"))
         time.sleep(0.3)
         self.assertEqual(self.last("subgoal").pose.position, goal)
+        self.assertAlmostEqual(self.last("yaw").yaw, yaw, places=5)
         odom.pose.pose.position = goal
         odom_pub.publish(odom)
         self.wait(lambda: self.last("search/state").data == "FRONT_ARUCO_INITIAL_WAIT",
                   "front scan did not wait until reaching the outward goal")
+        self.wait(lambda: self.last("yaw") is not None and
+                  abs(self.last("yaw").yaw - yaw) < 1e-5,
+                  "front scan inherited the right-biased handoff yaw")
 
     def test_diff_forward_is_one_meter_beyond_exit_despite_early_arrival_tolerance(self):
         self.run_confirmed_exit_forward(-0.08)
@@ -295,20 +304,32 @@ class RcLandPriorityTest(unittest.TestCase):
     def test_front_yaw_scan_is_slow_and_does_not_integrate_initial_wait(self):
         self.subscribe("search/state", String)
         self.subscribe("yaw", PositionCommand)
+        self.subscribe("subgoal", PoseStamped)
         stage = self.publisher("stage", String)
         odom_pub = self.publisher("odom", Odometry)
+        exit_pub = self.publisher("exit", PoseStamped, latch=True)
         rospy.set_param(self.prefix + "/search/front_approach_distance", 0.0)
         self.launch("diff_planner", "landing_diff_search_manager", "search",
                     stage_topic="stage", odom_topic="odom", subgoal_topic="subgoal",
-                    trigger_topic="trigger", yaw_topic="yaw", rc_land_active_topic="rc_land")
+                    trigger_topic="trigger", yaw_topic="yaw", rc_land_active_topic="rc_land",
+                    exit_portal_topic="exit")
         self.wait(lambda: stage.get_num_connections() == 1 and
-                  odom_pub.get_num_connections() == 1, "yaw scan manager did not connect")
+                  odom_pub.get_num_connections() == 1 and exit_pub.get_num_connections() == 1,
+                  "yaw scan manager did not connect")
         # 左扫跨越正负pi，验证整个左扫、右扫、回正过程的连续性。
         locked_yaw = 2.9
+        portal = PoseStamped()
+        portal.header.frame_id = "world"
+        portal.header.stamp = rospy.Time.now()
+        portal.pose.orientation.w = math.cos(locked_yaw / 2)
+        portal.pose.orientation.z = math.sin(locked_yaw / 2)
+        exit_pub.publish(portal)
+        time.sleep(0.15)
         odom = Odometry()
         odom.pose.pose.position.z = 0.6
-        odom.pose.pose.orientation.w = math.cos(locked_yaw / 2)
-        odom.pose.pose.orientation.z = math.sin(locked_yaw / 2)
+        body_yaw = locked_yaw - 0.65
+        odom.pose.pose.orientation.w = math.cos(body_yaw / 2)
+        odom.pose.pose.orientation.z = math.sin(body_yaw / 2)
         odom_pub.publish(odom)
         stage.publish(String("SEARCH_OUTSIDE_LANDING"))
         self.wait(lambda: self.last("search/state") is not None and
@@ -347,6 +368,17 @@ class RcLandPriorityTest(unittest.TestCase):
         offsets = [math.remainder(m.yaw - locked_yaw, 2 * math.pi) for m in commands]
         self.assertAlmostEqual(max(offsets), math.pi / 4, places=4)
         self.assertAlmostEqual(min(offsets), -math.pi / 4, places=4)
+        # 下视蛇形搜索也沿同一个出口方向布置横向航点。
+        odom.pose.pose.position.z = 2.0
+        odom_pub.publish(odom)
+        self.wait(lambda: self.last("subgoal") is not None and
+                  math.hypot(self.last("subgoal").pose.position.x,
+                             self.last("subgoal").pose.position.y) > 0.1,
+                  "down sweep did not advance after reaching search height")
+        point = self.last("subgoal").pose.position
+        self.assertAlmostEqual(point.x, 1.5 * math.sin(locked_yaw), places=5)
+        self.assertAlmostEqual(point.y, -1.5 * math.cos(locked_yaw), places=5)
+        self.assertAlmostEqual(self.last("yaw").yaw, locked_yaw, places=5)
 
     def test_controller_ch10_locks_xy_yaw_and_descends(self):
         package = "payload_mpc_controller"
