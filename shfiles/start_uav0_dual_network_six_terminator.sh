@@ -19,6 +19,9 @@ configure_dual_uav_ros_network uav0
 # 精降触发后停止透传姿态指令，只向 PX4 转发精降 PositionTarget。
 export UAV0_AUTOTRANS_SETPOINT_TOPIC="/UAV0/control/attitude_setpoint"
 
+# 正式总流程直接启用确认出口后的锁存、穿越和搜索降落，覆盖旧观察模式环境变量。
+export UAV0_ENABLE_AUTO_EXIT=true
+
 # 第五屏只保留降落板搜索链路：D435 前视粗搜、下视相机搜索/确认和精降。
 # 颜色标签、二维码、热成像及其目标上报均不在双机六分屏任务中启动。
 export UAV0_FIRST_SEVEN_ENABLE_COLOR_TAG=false

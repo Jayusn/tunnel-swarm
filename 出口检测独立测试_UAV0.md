@@ -130,15 +130,16 @@ rosbag record -O ~/match_ws/bags/exit_detection/exit_detection_flight_$(date +%Y
   /autotrans_trajectory_arbiter/owner /rosout
 ```
 
-自动开关为 `enable_auto_exit` / `UAV0_ENABLE_AUTO_EXIT`，当前默认true。
-如果此前按观察流程设置过false，启动前显式设置true（并重新启动总流程）：
+自动开关为 `enable_auto_exit` / `UAV0_ENABLE_AUTO_EXIT`，launch默认true。
+正式双机脚本直接设置 `UAV0_ENABLE_AUTO_EXIT=true`，覆盖此前的false设置，不用手动export。
+直接启动（修改后需重启原流程）：
 
 ```bash
-export UAV0_ENABLE_AUTO_EXIT=true
 bash ~/match_ws/shfiles/start_uav0_dual_network_six_terminator.sh
 ```
 
-如需恢复只检测，将环境变量设为false后重新启动；CH9人工入口仍保留。
+如需让该脚本恢复只检测，将脚本中的 `export UAV0_ENABLE_AUTO_EXIT=true` 改为false后重新启动；CH9人工入口仍保留。
+单独运行正式launch时仍可用 `enable_auto_exit:=false` 关闭自动接管。
 独立手持入口始终显式关闭自动接管及CH9，不受上述环境变量影响。
 
 ## 手持设备测试
