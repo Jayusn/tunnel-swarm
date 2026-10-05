@@ -292,6 +292,62 @@ class RcLandPriorityTest(unittest.TestCase):
     def test_diff_confirmed_exit_already_outside_moves_another_meter(self):
         self.run_confirmed_exit_forward(0.6)
 
+    def test_front_yaw_scan_is_slow_and_does_not_integrate_initial_wait(self):
+        self.subscribe("search/state", String)
+        self.subscribe("yaw", PositionCommand)
+        stage = self.publisher("stage", String)
+        odom_pub = self.publisher("odom", Odometry)
+        rospy.set_param(self.prefix + "/search/front_approach_distance", 0.0)
+        self.launch("diff_planner", "landing_diff_search_manager", "search",
+                    stage_topic="stage", odom_topic="odom", subgoal_topic="subgoal",
+                    trigger_topic="trigger", yaw_topic="yaw", rc_land_active_topic="rc_land")
+        self.wait(lambda: stage.get_num_connections() == 1 and
+                  odom_pub.get_num_connections() == 1, "yaw scan manager did not connect")
+        # 左扫跨越正负pi，验证整个左扫、右扫、回正过程的连续性。
+        locked_yaw = 2.9
+        odom = Odometry()
+        odom.pose.pose.position.z = 0.6
+        odom.pose.pose.orientation.w = math.cos(locked_yaw / 2)
+        odom.pose.pose.orientation.z = math.sin(locked_yaw / 2)
+        odom_pub.publish(odom)
+        stage.publish(String("SEARCH_OUTSIDE_LANDING"))
+        self.wait(lambda: self.last("search/state") is not None and
+                  self.last("search/state").data == "FRONT_ARUCO_INITIAL_WAIT",
+                  "front scan did not enter initial wait")
+        deadline = time.monotonic() + 26
+        completed = "FRONT_ARUCO_YAW_SCAN_COMPLETE_START_DOWN_SWEEP"
+        while time.monotonic() < deadline and self.last("search/state").data != completed:
+            command = self.last("yaw")
+            yaw = locked_yaw if command is None else command.yaw
+            odom.pose.pose.orientation.w = math.cos(yaw / 2)
+            odom.pose.pose.orientation.z = math.sin(yaw / 2)
+            odom_pub.publish(odom)
+            self.assertTrue(all(p.poll() is None for p in self.processes))
+            time.sleep(0.03)
+        self.assertEqual(self.last("search/state").data, completed,
+                         "slow scan did not complete after actual yaw followed each endpoint")
+        commands = self.messages["yaw"]
+        rate = math.radians(15.0)
+        for previous, current in zip(commands, commands[1:]):
+            elapsed = (current.header.stamp - previous.header.stamp).to_sec()
+            delta = abs(math.remainder(current.yaw - previous.yaw, 2 * math.pi))
+            self.assertLessEqual(delta, rate * elapsed + 0.002,
+                                 "yaw command jumped or exceeded 15 degrees per second")
+        changed = next(m for m in commands
+                       if abs(math.remainder(m.yaw - locked_yaw, 2 * math.pi)) > 0.001)
+        self.assertLess(abs(math.remainder(changed.yaw - locked_yaw, 2 * math.pi)),
+                        math.radians(3), "initial wait produced a heading jump")
+        self.assertGreaterEqual((changed.header.stamp - commands[0].header.stamp).to_sec(),
+                                0.9, "front scan skipped the initial stationary wait")
+        states = {m.data for m in self.messages["search/state"]}
+        self.assertTrue({"FRONT_ARUCO_YAW_SCAN_LEFT", "FRONT_ARUCO_YAW_SCAN_RIGHT",
+                         "FRONT_ARUCO_YAW_SCAN_RETURN"}.issubset(states))
+        self.assertAlmostEqual(math.remainder(commands[-1].yaw - locked_yaw, 2 * math.pi),
+                               0.0, places=5)
+        offsets = [math.remainder(m.yaw - locked_yaw, 2 * math.pi) for m in commands]
+        self.assertAlmostEqual(max(offsets), math.pi / 4, places=4)
+        self.assertAlmostEqual(min(offsets), -math.pi / 4, places=4)
+
     def test_controller_ch10_locks_xy_yaw_and_descends(self):
         package = "payload_mpc_controller"
         package_path = Path(rospkg.RosPack().get_path(package))
