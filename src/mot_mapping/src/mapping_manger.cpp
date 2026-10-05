@@ -1,4 +1,87 @@
 #include "mapping_manager.h"
+#include <cmath>
+#include <limits>
+#include <stdexcept>
+#include <unordered_map>
+
+namespace {
+
+// Frame-level ray evidence. Unobserved rays and returns behind an old
+// foreground are unknown, so they retain the original nearest-point test.
+struct DepthView {
+  static constexpr double step = 3.14159265358979323846 / 720.0;
+  static constexpr int columns = 1440, rows = 720;
+  MapData pose;
+  std::unordered_map<int, PointVector> bins;
+
+  static int azimuth(const Eigen::Vector3d& ray) {
+    int bin = std::floor((std::atan2(ray.y(), ray.x()) +
+                         3.14159265358979323846) / step);
+    return (bin + columns) % columns;
+  }
+
+  static int elevation(const Eigen::Vector3d& ray) {
+    return std::max(0, std::min(rows - 1, static_cast<int>(std::floor(
+        (std::atan2(ray.z(), ray.head<2>().norm()) +
+         3.14159265358979323846 / 2) / step))));
+  }
+
+  void build(const Points& points, const MapData& sensor_pose) {
+    pose = sensor_pose;
+    for (const auto& point : points) {
+      Eigen::Vector3d ray = pose.R.transpose() *
+          (point.getVector3fMap().cast<double>() - pose.T);
+      if (!ray.allFinite() || ray.squaredNorm() == 0.0) continue;
+      PointType sample;
+      sample.x = ray.x(); sample.y = ray.y(); sample.z = ray.z();
+      bins[elevation(ray) * columns + azimuth(ray)].push_back(sample);
+    }
+  }
+
+  // -1: unknown, 0: old surface support, 1: foreground occlusion.
+  int classify(const PointType& point) const {
+    Eigen::Vector3d ray = pose.R.transpose() *
+        (point.getVector3fMap().cast<double>() - pose.T);
+    double range = ray.norm();
+    if (!std::isfinite(range) || range == 0.0) return -1;
+    Eigen::Vector3d direction = ray / range;
+    double angle = std::asin(std::min(1.0, 0.03 / range));
+    double latitude = std::atan2(ray.z(), ray.head<2>().norm());
+    int vertical = static_cast<int>(std::ceil(angle / step)) + 1;
+    double minimum_cos = std::cos(std::min(3.14159265358979323846 / 2,
+                                         std::abs(latitude) + angle));
+    int horizontal = minimum_cos < 1e-6 ? columns / 2 :
+        std::min(columns / 2, static_cast<int>(std::ceil(
+            angle / (step * minimum_cos))) + 1);
+    int row = elevation(ray), column = azimuth(ray);
+    double minimum = std::numeric_limits<double>::infinity(), maximum = 0.0;
+    for (int y = std::max(0, row - vertical); y <= std::min(rows - 1, row + vertical); ++y) {
+      int count = std::min(columns, 2 * horizontal + 1);
+      for (int offset = -horizontal; offset < -horizontal + count; ++offset) {
+        auto found = bins.find(y * columns + (column + offset + columns) % columns);
+        if (found == bins.end()) continue;
+        for (const auto& sample : found->second) {
+          Eigen::Vector3d previous = sample.getVector3fMap().cast<double>();
+          double depth = previous.norm();
+          if (direction.dot(previous) <= 0.0 ||
+              range * direction.cross(previous / depth).norm() > 0.03) continue;
+          minimum = std::min(minimum, depth);
+          maximum = std::max(maximum, depth);
+        }
+      }
+    }
+    if (!std::isfinite(minimum)) return -1;
+    if (range < minimum - 0.03) return 1;
+    if (range <= maximum + 0.03) return 0;
+    return -1;
+  }
+};
+
+constexpr double DepthView::step;
+constexpr int DepthView::columns;
+constexpr int DepthView::rows;
+
+}  // namespace
 
 namespace mot_mapping {
 
@@ -27,6 +110,18 @@ void MappingRos::init() {
   nh.param("detection/min_motion_speed", mp_->min_motion_speed, 0.15);
   nh.param("detection/min_motion_novel_fraction", mp_->min_motion_novel_fraction, 0.3);
   nh.param("detection/max_above_uav", mp_->max_above_uav, 1.5);
+  nh.param("association/geometry_enabled", mp_->geometry_association_enabled, false);
+  nh.param("detection/depth_evidence_enabled", mp_->depth_evidence_enabled, false);
+  if (mp_->depth_evidence_enabled) {
+    std::vector<double> offset;
+    // Same MID360 offset as FAST-LIO's mid360.yaml; use its live parameter
+    // when the sensor stack is running. Replay supplies that parameter too.
+    nh.param("/UAV1/mapping/extrinsic_T", offset,
+             std::vector<double>{-0.011, -0.02329, 0.04412});
+    if (offset.size() != 3) throw std::runtime_error("FAST-LIO extrinsic_T requires three values");
+    mp_->lidar_offset = Eigen::Vector3d(offset[0], offset[1], offset[2]);
+    ROS_INFO_STREAM("FAPP depth evidence lidar offset: " << mp_->lidar_offset.transpose());
+  }
   nh.param("background_surface/enabled", mp_->background_surface_enabled, true);
   nh.param("background_plane/enabled", mp_->background_plane_enabled, true);
   nh.param("background_plane/distance", mp_->background_plane_distance, 0.03);
@@ -210,8 +305,18 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
 
   // Compare the same three-observation span used by the motion measurement.
   PointsPtr observed_history[2];
+  MapData sensor_history[2];
   if (!buffer.empty()) observed_history[0] = buffer.front();
   if (buffer.size() > 1) observed_history[1] = buffer.back();
+  if (mp_->depth_evidence_enabled) {
+    if (!observed_sensor_poses.empty()) sensor_history[0] = observed_sensor_poses.front();
+    if (observed_sensor_poses.size() > 1) sensor_history[1] = observed_sensor_poses.back();
+    MapData sensor_pose;
+    sensor_pose.R = md_->R;
+    sensor_pose.T = md_->T + md_->R * mp_->lidar_offset;
+    observed_sensor_poses.push_back(sensor_pose);
+    if (observed_sensor_poses.size() > 2) observed_sensor_poses.pop_front();
+  }
   buffer.push_back(nonfilter_pts);
   if (buffer.size() > 2) {
     buffer.pop_front();
@@ -333,7 +438,9 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     pcl::PointIndices indices;
     bool changed;
     double novel_fraction;
+    Eigen::Vector3d dense_size;
   };
+  DepthView depth_views[2];
   pcl::search::KdTree<PointType> observation_trees[2];
   bool has_observed_history[2];
   for (int history = 0; history < 2; ++history) {
@@ -341,6 +448,8 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
                                    !observed_history[history]->empty();
     if (has_observed_history[history])
       observation_trees[history].setInputCloud(observed_history[history]);
+    if (mp_->depth_evidence_enabled && has_observed_history[history])
+      depth_views[history].build(*observed_history[history], sensor_history[history]);
   }
   std::vector<Candidate> candidates;
   detections.clear();
@@ -379,6 +488,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
         dense_index = a;
       }
     }
+    Eigen::Vector3d dense_size;
     for (int axis = 0; axis < 3; ++axis) {
       std::vector<float> coordinates;
       coordinates.reserve(dense_count);
@@ -387,6 +497,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
             mp_->tolerance) coordinates.push_back(point.data[axis]);
       }
       std::sort(coordinates.begin(), coordinates.end());
+      dense_size[axis] = coordinates.back() - coordinates.front();
       size_t middle = coordinates.size() / 2;
       center[axis] = coordinates.size() % 2 ? coordinates[middle] :
           0.5 * (coordinates[middle - 1] + coordinates[middle]);
@@ -394,13 +505,17 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
 
     // Use the same bottom as the published box; keep boxes crossing the limit.
     if (mp_->max_above_uav >= 0.0 &&
-        center.z() - 0.5 * size.z() > md_->T.z() + mp_->max_above_uav)
+        center.z() - 0.5 * size.z() > md_->T.z() + mp_->max_above_uav) {
+      ROS_DEBUG_STREAM("FAPP_REJECT " << cloud_stamp_.toNSec() << " "
+          << center.transpose() << " height");
       continue;
+    }
 
     // Judge the same dense surface used for motion. An attached sparse rope
     // must not make a curved moving return look like a long planar patch.
     Eigen::Matrix3d covariance = Eigen::Matrix3d::Zero();
     size_t novel_points[2] = {0, 0};
+    size_t ray_supported[2] = {0, 0}, ray_foreground[2] = {0, 0};
     std::vector<int> observed_nearest(1);
     std::vector<float> observed_squared_distance(1);
     for (const auto& point : cluster) {
@@ -409,17 +524,24 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
       Eigen::Vector3d delta = Eigen::Vector3d(point.x, point.y, point.z) - center;
       covariance += delta * delta.transpose();
       for (int history = 0; history < 2; ++history) {
-        if (has_observed_history[history] &&
+        if (!has_observed_history[history]) continue;
+        int evidence = mp_->depth_evidence_enabled ? depth_views[history].classify(point) : -1;
+        if (evidence == 0) ++ray_supported[history];
+        if (evidence == 1) ++ray_foreground[history];
+        bool novel = evidence == 1 || (evidence < 0 &&
             (observation_trees[history].nearestKSearch(point, 1, observed_nearest,
                                                      observed_squared_distance) == 0 ||
-             observed_squared_distance[0] > mp_->thresh_dist * mp_->thresh_dist))
-          ++novel_points[history];
+             observed_squared_distance[0] > mp_->thresh_dist * mp_->thresh_dist));
+        if (novel) ++novel_points[history];
       }
     }
     Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> solver(covariance);
     const auto& eigenvalues = solver.eigenvalues();
-    if (size.maxCoeff() >= 0.5 && eigenvalues[0] < 0.01 * eigenvalues[2])
+    if (size.maxCoeff() >= 0.5 && eigenvalues[0] < 0.01 * eigenvalues[2]) {
+      ROS_DEBUG_STREAM("FAPP_REJECT " << cloud_stamp_.toNSec() << " "
+          << center.transpose() << " large_plane");
       continue;
+    }
 
     // Small sampled fragments can move along an unchanged surface. Require
     // support in both raw observations, and only reject a thin dense return.
@@ -465,7 +587,11 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
       }
       if (supported < 0.8 * dense_count) static_surface = false;
     }
-    if (static_surface) continue;
+    if (static_surface) {
+      ROS_DEBUG_STREAM("FAPP_REJECT " << cloud_stamp_.toNSec() << " "
+          << center.transpose() << " static_surface");
+      continue;
+    }
 
     double avg_dist = 0.0, var_dist = 0.0;
     for (double distance : distances) avg_dist += distance;
@@ -479,6 +605,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     candidate.state.position = center;
     candidate.state.size = size;
     candidate.indices = indices;
+    candidate.dense_size = dense_size;
     candidate.novel_fraction = static_cast<double>(std::max(novel_points[0],
                                                           novel_points[1])) / dense_count;
     candidate.changed = avg_dist > mp_->thresh_dist && avg_dist < 5.0 &&
@@ -487,6 +614,11 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
         << center.x() << " " << center.y() << " " << center.z() << " "
         << size.x() << " " << size.y() << " " << size.z() << " "
         << cluster.size() << " " << avg_dist << " " << var_dist);
+    ROS_DEBUG_STREAM("FAPP_EVIDENCE " << cloud_stamp_.toNSec() << " "
+        << center.transpose() << " " << dense_count << " "
+        << novel_points[0] << " " << novel_points[1] << " "
+        << ray_supported[0] << " " << ray_supported[1] << " "
+        << ray_foreground[0] << " " << ray_foreground[1]);
     candidates.push_back(candidate);
   }
 
@@ -501,9 +633,15 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     for (int j = 0; j < trackers.size(); ++j) {
       double distance = (candidates[i].state.position -
                          trackers[j]->observations.back().second).norm();
-      if (distance < 0.82)
+      if (distance < 0.82) {
+        double cost = distance;
+        if (mp_->geometry_association_enabled)
+          cost = 0.5 * distance +
+                 0.5 * (candidates[i].state.position - trackers[j]->pos()).norm() +
+                 0.25 * (candidates[i].dense_size - trackers[j]->observed_dense_size).norm();
         possible_pairs.push_back({trackers[j]->last_seen_frame != frame_num - 1,
-                                  distance, i, j});
+                                  cost, i, j});
+      }
     }
   }
   // An old position from a swing must not steal a currently observed track.
@@ -548,6 +686,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
         tracker->observations.clear();
     }
     auto& tracker = trackers[j];
+    tracker->observed_dense_size = candidate.dense_size;
     tracker->last_seen_frame = frame_num;
     tracker->observations.push_back({cloud_stamp_, candidate.state.position});
     if (tracker->observations.size() > 3) tracker->observations.pop_front();
@@ -586,6 +725,11 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
       tracker->last_motion_stamp = cloud_stamp_;
     bool confirmed = !tracker->last_motion_stamp.isZero() &&
                      (cloud_stamp_ - tracker->last_motion_stamp).toSec() <= 0.6;
+    ROS_DEBUG_STREAM("FAPP_TRACK " << cloud_stamp_.toNSec() << " "
+        << candidate.state.position.transpose() << " " << tracker->id << " "
+        << matched[i] << " " << tracker->observations.size() << " "
+        << displacement << " " << observed_speed << " " << candidate.changed << " "
+        << candidate.novel_fraction << " " << confirmed);
     if (!confirmed) continue;
     tracker->last_dynamic_stamp = cloud_stamp_;
 

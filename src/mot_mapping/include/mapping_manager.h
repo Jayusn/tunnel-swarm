@@ -63,6 +63,9 @@ struct MapParam {
   double min_motion_speed;
   double min_motion_novel_fraction;
   double max_above_uav;
+  bool geometry_association_enabled;
+  bool depth_evidence_enabled;
+  Eigen::Vector3d lidar_offset;
   bool background_surface_enabled;
   bool background_plane_enabled;
   double background_plane_distance;
@@ -101,6 +104,7 @@ private:
   int frame_num;
   std::deque<PointsPtr> previous_points;
   std::deque<PointsPtr> buffer;
+  std::deque<MapData> observed_sensor_poses;
   std::deque<PointsPtr> input_point;
   std::vector<pcl::PointIndices> deleted_indices;
   std::vector<BoxPointType> delete_boxes;

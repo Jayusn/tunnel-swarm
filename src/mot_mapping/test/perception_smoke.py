@@ -15,17 +15,55 @@ from visualization_msgs.msg import MarkerArray
 from obj_state_msgs.msg import ObjectsStates
 
 
+def exercise_20cm_targets(publish, count):
+    # Physical diameter 20 cm, with only six observed surface points.
+    # Keep the earlier 14 cm six-point cases as a separate regression.
+    def diameter20_points(center, y=0, z=1):
+        # Samples from the visible cap of a sphere of radius 10 cm.
+        # Its observed extent can be smaller than its physical diameter.
+        return [(center + x, y + dy, z + dz) for x, dy, dz in
+                [(.1, 0, 0), (.06, .08, 0), (.06, -.08, 0),
+                 (.06, 0, .08), (.06, 0, -.08),
+                 (0, .0707106781, .0707106781)]]
+
+    backdrop = [(4, y * .1, .4 + z * .1)
+                for y in range(-12, 13) for z in range(15)]
+    for sign in [1, -1]:
+        for _ in range(3):
+            publish(None, points=backdrop)
+        for step in range(10):
+            center = 2 + sign * step * .12
+            stamp = publish(None, points=backdrop + diameter20_points(center, -.6))
+            if step >= 4:
+                assert count(stamp) == 1, '20 cm radial moving target lost: ' + str((sign, step, count(stamp)))
+
+    # Motion parallel to a nearby wall and repeated reversals near background.
+    for _ in range(3):
+        publish(None)
+    nearby_wall = [(1 + x * .1, 2.24, .4 + z * .1)
+                   for x in range(30) for z in range(15)]
+    offsets = [0, .15, .30, .15]
+    for step in range(16):
+        stamp = publish(None, points=nearby_wall + diameter20_points(
+            2 + offsets[step % 4], y=2.1), odom_x=step * .025, odom_yaw=step * .02)
+        if step >= 4:
+            assert count(stamp) == 1, '20 cm wall-adjacent reversal lost: ' + str((step, count(stamp)))
+
+
 def main():
-    master = subprocess.Popen(['roscore', '-p', '11431'], stdout=subprocess.DEVNULL,
+    port = os.environ.get('FAPP_SMOKE_PORT', '11431')
+    master = subprocess.Popen(['roscore', '-p', port], stdout=subprocess.DEVNULL,
                               stderr=subprocess.STDOUT, start_new_session=True)
     launch = None
     rviz_processes = []
     try:
         time.sleep(2)
         rospy.init_node('fapp_smoke', anonymous=True)
-        launch_log = open('/tmp/match_fapp_smoke.log', 'w')
+        launch_log = open('/tmp/match_fapp_smoke_' + port + '.log', 'w')
         launch = subprocess.Popen(['roslaunch', 'mot_mapping', 'uav1_detection.launch',
-                                   'input_rate:=20'], stdout=launch_log,
+                                   'input_rate:=20',
+                                   'geometry_enabled:=' + os.environ.get('FAPP_SMOKE_GEOMETRY', 'false'),
+                                   'depth_evidence_enabled:=' + os.environ.get('FAPP_SMOKE_DEPTH', 'false')], stdout=launch_log,
                                   stderr=subprocess.STDOUT, start_new_session=True)
         received = {'cloud': [], 'boxes': [], 'tracks': [], 'states': []}
         subscribers = [
@@ -262,6 +300,8 @@ def main():
             stamp = publish(None, points=wall + sparse_points(1.4 + step * .12))
             if step >= 4:
                 assert count(stamp) == 1, 'Moving body close to wall was rejected'
+
+        exercise_20cm_targets(publish, count)
 
         def height_points(center, z, y):
             return [(center + x, y + dy, z + dz) for x, dy, dz in

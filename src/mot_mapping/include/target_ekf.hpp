@@ -18,6 +18,7 @@ struct Ekf {
   std::deque<std::pair<ros::Time, Eigen::Vector3d>> observations;
   ros::Time last_change_stamp, last_motion_stamp, last_dynamic_stamp;
   int last_seen_frame = 0;
+  Eigen::Vector3d observed_dense_size = Eigen::Vector3d::Zero();
 
   Ekf(double _dt) : dt(_dt) {
     A.setIdentity(6, 6);

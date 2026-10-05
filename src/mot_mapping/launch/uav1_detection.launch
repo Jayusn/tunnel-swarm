@@ -2,6 +2,8 @@
   <arg name="cloud_topic" default="/UAV1/fast_lio/cloud_registered"/>
   <arg name="odom_topic" default="/UAV1/fast_lio/Odom_high_freq"/>
   <arg name="input_rate" default="5.0"/>
+  <arg name="geometry_enabled" default="false"/>
+  <arg name="depth_evidence_enabled" default="false"/>
   <node pkg="topic_tools" type="throttle" name="uav1_fapp_cloud_throttle"
         args="messages $(arg cloud_topic) $(arg input_rate) /UAV1/fapp/cloud_registered_throttled"/>
   <group ns="UAV1/fapp">
@@ -18,6 +20,8 @@
       <param name="detection/motion_displacement" value="0.08"/>
       <param name="detection/min_motion_speed" value="0.15"/>
       <param name="detection/max_above_uav" value="1.5"/>
+      <param name="association/geometry_enabled" value="$(arg geometry_enabled)"/>
+      <param name="detection/depth_evidence_enabled" value="$(arg depth_evidence_enabled)"/>
       <param name="background_surface/enabled" value="true"/>
       <param name="background_plane/enabled" value="true"/>
       <param name="background_plane/distance" value="0.03"/>
