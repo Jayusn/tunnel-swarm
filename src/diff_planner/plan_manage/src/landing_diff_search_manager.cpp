@@ -33,6 +33,7 @@ class LandingDiffSearchManager {
   LandingDiffSearchManager() : nh_(), private_nh_("~") {
     private_nh_.param("search_height", search_height_, 2.0);
     private_nh_.param("front_approach_distance", front_approach_distance_, 1.0);
+    private_nh_.param("front_approach_height", front_approach_height_, 0.6);
     private_nh_.param("front_approach_arrive_xy", front_approach_arrive_xy_, 0.15);
     private_nh_.param("lane_spacing", lane_spacing_, 1.0);
     private_nh_.param("search_width", search_width_, 3.0);
@@ -265,7 +266,7 @@ class LandingDiffSearchManager {
     switched_ = true;
     active_ = true;
     switch_pending_ = false;
-    anchor_z_ = odom_.pose.pose.position.z;
+    anchor_z_ = front_approach_height_;
     const double yaw = yawFromQuaternion(odom_.pose.pose.orientation);
     locked_yaw_ = yaw;
     forward_x_ = std::cos(yaw);
@@ -301,7 +302,8 @@ class LandingDiffSearchManager {
     ROS_ERROR("landing_diff_search: FUEL -> Diff switch latched at "
               "(%.2f, %.2f, %.2f), keep yaw=%.3f and move %.2fm forward to "
               "front-scan anchor (%.2f, %.2f, %.2f)",
-              odom_.pose.pose.position.x, odom_.pose.pose.position.y, anchor_z_,
+              odom_.pose.pose.position.x, odom_.pose.pose.position.y,
+              odom_.pose.pose.position.z,
               locked_yaw_, front_approach_distance_, anchor_x_, anchor_y_, anchor_z_);
   }
 
@@ -803,6 +805,7 @@ class LandingDiffSearchManager {
   bool enable_single_front_hint_approach_{true};
   double search_height_{2.0}, lane_spacing_{1.0}, search_width_{3.0}, search_depth_{4.0};
   double front_approach_distance_{1.0}, front_approach_arrive_xy_{0.15};
+  double front_approach_height_{0.6};
   double arrive_xy_{0.35}, arrive_z_{0.20}, goal_reissue_sec_{1.0};
   double front_hint_dwell_sec_{2.0}, front_hint_forward_margin_{1.0};
   double front_hint_initial_wait_sec_{1.0};

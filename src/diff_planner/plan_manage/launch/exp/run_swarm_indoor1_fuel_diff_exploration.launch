@@ -515,8 +515,9 @@
         <param name="trigger_topic" value="/UAV0/landing_diff/trigger"/>
         <param name="yaw_topic" value="/UAV0/landing_diff/yaw"/>
         <param name="landing_request_topic" value="/UAV0/mission/landing_request"/>
-        <!-- 有锁存出口时目标为出口外1m，门外人工触发则从当前位置前飞；保持航向与高度，到达容差15cm后开始前视扫描。 -->
+        <!-- 有锁存出口时目标为出口外1m，门外人工触发则从当前位置前飞；保持航向、目标高度0.6m，到达后开始前视扫描。 -->
         <param name="front_approach_distance" value="1.0"/>
+        <param name="front_approach_height" value="0.60"/>
         <param name="front_approach_arrive_xy" value="0.15"/>
         <param name="front_scan_anchor_topic" value="/UAV0/landing/front_scan_anchor"/>
         <param name="exit_portal_topic" value="/UAV0/mission/final_exit"/>
