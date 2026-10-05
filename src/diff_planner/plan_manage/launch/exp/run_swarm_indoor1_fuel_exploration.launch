@@ -545,7 +545,8 @@
         <param name="front_hint_dwell_sec" value="2.0"/>
         <param name="front_hint_initial_wait_sec" value="1.0"/>
         <param name="front_yaw_scan_half_angle_rad" value="0.7854"/>
-        <param name="front_yaw_scan_rate_rad_s" value="0.35"/>
+        <!-- 前视偏航15度/秒，给ArUco稳定确认留出时间。 -->
+        <param name="front_yaw_scan_rate_rad_s" value="0.2617993878"/>
         <param name="front_yaw_arrive_tolerance_rad" value="0.12"/>
         <param name="front_yaw_return_dwell_sec" value="0.50"/>
         <param name="front_hint_forward_margin" value="1.0"/>

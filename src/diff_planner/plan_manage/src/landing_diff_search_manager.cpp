@@ -49,7 +49,7 @@ class LandingDiffSearchManager {
     private_nh_.param("front_yaw_scan_half_angle_rad",
                       front_yaw_scan_half_angle_rad_, 0.78539816339);
     private_nh_.param("front_yaw_scan_rate_rad_s",
-                      front_yaw_scan_rate_rad_s_, 0.35);
+                      front_yaw_scan_rate_rad_s_, 0.2617993878);
     private_nh_.param("front_yaw_arrive_tolerance_rad",
                       front_yaw_arrive_tolerance_rad_, 0.12);
     private_nh_.param("front_yaw_return_dwell_sec",
@@ -434,6 +434,8 @@ class LandingDiffSearchManager {
         return true;
       }
       initial_front_wait_complete_ = true;
+      // 静止等待不计入偏航积分，避免第一条转动指令跳过等待期间的角度。
+      last_front_yaw_scan_update_ = ros::Time::now();
       if (!front_yaw_scan_complete_) {
         publishState("FRONT_ARUCO_YAW_SCAN_LEFT");
       }
@@ -810,7 +812,7 @@ class LandingDiffSearchManager {
   double front_hint_dwell_sec_{2.0}, front_hint_forward_margin_{1.0};
   double front_hint_initial_wait_sec_{1.0};
   double front_yaw_scan_half_angle_rad_{0.78539816339};
-  double front_yaw_scan_rate_rad_s_{0.35};
+  double front_yaw_scan_rate_rad_s_{0.2617993878};
   double front_yaw_arrive_tolerance_rad_{0.12};
   double front_yaw_return_dwell_sec_{0.50};
   double front_hint_lateral_margin_{1.0}, front_hint_min_z_{-0.50};
