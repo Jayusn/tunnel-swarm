@@ -199,6 +199,7 @@ namespace PayloadMPC
 								params_.rc_mode_.mid_high_threshold,
 								params_.rc_mode_.high_threshold);
 		nh_.param("landing_search_yaw_timeout", landing_search_yaw_timeout_, 0.5);
+		nh_.param("landing_search_hold_height", landing_search_hold_height_, 0.6);
 		if (!std::isfinite(landing_search_yaw_timeout_) ||
 			landing_search_yaw_timeout_ <= 0.0)
 		{
@@ -1584,9 +1585,10 @@ namespace PayloadMPC
 	{
 		if (!landing_search_hold_latched_)
 		{
-			// CH9 后禁止旧 FUEL/入口命令在前视扫描期间继续平移。锁存当前实际位置，
+			// CH9 后禁止旧 FUEL/入口命令在前视扫描期间继续平移。锁存当前XY并保持扫描高度，
 			// 清除旧轨迹；扫描结束后新的 Diff 轨迹仍可正常进入。
 			update_hover_pose();
+			hover_pose_.z() = landing_search_hold_height_;
 			trajectory_data.exec_traj = 0;
 			trajectory_data.traj_queue.clear();
 			trajectory_data.total_traj_start_time = ros::Time(0);

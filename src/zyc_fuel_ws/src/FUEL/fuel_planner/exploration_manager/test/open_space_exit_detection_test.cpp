@@ -256,6 +256,7 @@ public:
     TaskSearchManager manual_diff;
     manual_diff.initialize(nh);
     manual_diff.external_landing_planner_ = true;
+    manual_diff.cruise_height_ = start.z();
     manual_diff.updateRobotPose(start, 0.0);
     manual_diff.exit_candidate_confirmed_ = true;
     manual_diff.exit_portal_outside_verified_ = true;
@@ -284,6 +285,7 @@ public:
     already_outside.exit_portal_center_ = manual_portal;
     already_outside.exit_outward_direction_ = Eigen::Vector2d::UnitX();
     already_outside.external_landing_planner_ = true;
+    already_outside.cruise_height_ = outside_pose.z();
     already_outside.activateRcSearchLanding(ros::Time(114));
     manual_goal = Eigen::Vector3d(7,8,9);
     check(!already_outside.buildStage3Goal(outside_pose, 0, false, manual_goal, manual_yaw) &&
@@ -291,6 +293,28 @@ public:
           (manual_goal - Eigen::Vector3d(7,8,9)).norm() == 0 &&
           (already_outside.exit_portal_center_ - manual_portal).norm() < 1e-6,
           "RC at an already-crossed confirmed exit commanded a return inside");
+    // 有确认出口的CH9在低高度时先恢复0.6m；已在门外不能被拉回门口。
+    TaskSearchManager low_outside;
+    low_outside.initialize(nh);
+    low_outside.external_landing_planner_ = true;
+    low_outside.cruise_height_ = 0.6;
+    Eigen::Vector3d low_pose = outside_pose;
+    low_pose.z() = 0.12;
+    low_outside.updateRobotPose(low_pose, 0.0);
+    low_outside.exit_candidate_confirmed_ = true;
+    low_outside.exit_portal_outside_verified_ = true;
+    low_outside.exit_portal_center_ = manual_portal;
+    low_outside.exit_outward_direction_ = Eigen::Vector2d::UnitX();
+    low_outside.activateRcSearchLanding(ros::Time(115));
+    check(!low_outside.buildStage3Goal(low_pose, 0, false, manual_goal, manual_yaw) &&
+          low_outside.mission_stage_ == TaskSearchManager::EXIT_APPROACH_INSIDE &&
+          (manual_goal.head<2>() - low_pose.head<2>()).norm() < 1e-6 &&
+          std::fabs(manual_goal.z() - 0.6) < 1e-6,
+          "low CH9 handoff inherited low height or returned to the exit");
+    low_pose.z() = 0.6;
+    check(!low_outside.buildStage3Goal(low_pose, 0, false, manual_goal, manual_yaw) &&
+          low_outside.mission_stage_ == TaskSearchManager::SEARCH_OUTSIDE_LANDING,
+          "CH9 did not hand off after recovering 0.6m height");
     // 用真实射线融合的L形地图复现：地图支路朝向尚未与手持设备一致，不能先锁住。
     auto corner_map = std::make_shared<SDFMap>();
     corner_map->initMap(nh);
@@ -422,6 +446,12 @@ public:
             (crossing_goal - locked_portal).norm() < 1e-6,
             "automatic exit handed off while still short of the exit plane");
     }
+    Eigen::Vector3d near_exit_low = locked_portal - Eigen::Vector3d(0.08,0,0);
+    near_exit_low.z() = 0.12;
+    check(automatic.buildStage3Goal(near_exit_low, 0, false, crossing_goal, crossing_yaw) &&
+          automatic.mission_stage_ == TaskSearchManager::EXIT_APPROACH_INSIDE &&
+          (crossing_goal - locked_portal).norm() < 1e-6,
+          "automatic handoff did not restore cruise height before Diff activation");
     crossing_goal = Eigen::Vector3d(7,8,9);
     check(!automatic.buildStage3Goal(locked_portal - Eigen::Vector3d(0.08,0,0),
                                     0, false, crossing_goal, crossing_yaw) &&

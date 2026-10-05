@@ -2210,13 +2210,21 @@ bool TaskSearchManager::buildStage3Goal(const Eigen::Vector3d& cur_pos, double c
         (cur_pos.head<2>() - exit_portal_center_.head<2>()).dot(exit_outward_direction_);
     // 外部Diff必须到出口截面附近才接管，不能在门内候选接近点提前前飞。
     // 人工已飞到出口外再拨CH9时，不返回门内接近点。
-    const Eigen::Vector3d& approach =
+    Eigen::Vector3d approach =
         external_landing_planner_ ? exit_portal_center_ : exit_candidate_;
+    if (external_landing_planner_) {
+      approach.z() = cruise_height_;
+      // 已在门外时先在当前位置恢复巡航高度，不返回门口。
+      if (signed_side >= 0.0) approach.head<2>() = cur_pos.head<2>();
+    }
     const double arrive_distance =
         external_landing_planner_ ? exit_portal_arrive_distance_ : exit_arrive_distance_;
     const double handoff_side = external_landing_planner_ ? 0.0 : exit_cross_confirm_distance_;
-    if ((cur_pos.head<2>() - approach.head<2>()).norm() <= arrive_distance ||
-        signed_side >= handoff_side) {
+    const bool height_ready = !external_landing_planner_ ||
+        std::fabs(cur_pos.z() - cruise_height_) <= exit_portal_arrive_distance_;
+    if (height_ready &&
+        ((cur_pos.head<2>() - approach.head<2>()).norm() <= arrive_distance ||
+         signed_side >= handoff_side)) {
       if (external_landing_planner_) {
         mission_stage_ = SEARCH_OUTSIDE_LANDING;
         mission_stage_start_ = ros::Time::now();

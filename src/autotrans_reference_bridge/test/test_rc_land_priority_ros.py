@@ -227,7 +227,7 @@ class RcLandPriorityTest(unittest.TestCase):
         goal = self.last("subgoal").pose.position
         self.assertAlmostEqual(goal.x, 1.2 + math.cos(0.4), places=5)
         self.assertAlmostEqual(goal.y, -0.7 + math.sin(0.4), places=5)
-        self.assertAlmostEqual(goal.z, 1.0, places=5)
+        self.assertAlmostEqual(goal.z, 0.6, places=5)
         odom.pose.pose.position = goal
         odom_pub.publish(odom)
         self.wait(lambda: self.last("search/state").data == "FRONT_ARUCO_INITIAL_WAIT",
@@ -263,7 +263,7 @@ class RcLandPriorityTest(unittest.TestCase):
         time.sleep(0.15)
         odom = Odometry()
         odom.pose.pose.position = Point(2.0 + signed_side * math.cos(yaw),
-                                        -1.0 + signed_side * math.sin(yaw), 1.0)
+                                        -1.0 + signed_side * math.sin(yaw), 0.12)
         odom.pose.pose.orientation = portal.pose.orientation
         odom_pub.publish(odom)
         stage.publish(String("SEARCH_OUTSIDE_LANDING"))
@@ -272,7 +272,7 @@ class RcLandPriorityTest(unittest.TestCase):
         distance_outside = 1.0 + max(0.0, signed_side)
         self.assertAlmostEqual(goal.x, 2.0 + distance_outside * math.cos(yaw), places=5)
         self.assertAlmostEqual(goal.y, -1.0 + distance_outside * math.sin(yaw), places=5)
-        self.assertAlmostEqual(goal.z, 1.0, places=5)
+        self.assertAlmostEqual(goal.z, 0.6, places=5)
         self.assertAlmostEqual(self.last("yaw").yaw, yaw, places=5)
         self.assertEqual(self.last("search/state").data, "FRONT_ARUCO_FORWARD_APPROACH")
         # 后续出口消息和重复阶段通知不能延长或替换本次前飞目标。
@@ -357,6 +357,8 @@ class RcLandPriorityTest(unittest.TestCase):
         yaw_pub.publish(PositionCommand(yaw=0.9))
         drive(0.3)
         self.assertIsNotNone(self.last("controller/mpc/reference_trajectory"))
+        scan_reference = self.last("controller/mpc/reference_trajectory").poses[0].pose
+        self.assertAlmostEqual(scan_reference.position.z, 0.6, places=4)
         rc.channels[9] = 2000
         drive(0.35)
         self.assertTrue(self.last("rc_land").data, "controller did not latch accepted CH10")

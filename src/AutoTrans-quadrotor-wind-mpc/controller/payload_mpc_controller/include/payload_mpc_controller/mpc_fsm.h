@@ -134,7 +134,7 @@ namespace PayloadMPC
 		bool auto_land_request_sent_{false};
 		ros::Time last_auto_land_request_time_{0};
 		bool takeoff_requested_{false};
-		// 前视扫描由搜索管理器给出航向，AutoTrans 锁定进入扫描时的 XYZ，仅执行偏航。
+		// 前视扫描锁定进入时的XY，使用配置高度并执行搜索管理器给出的偏航。
 		bool landing_search_yaw_active_{false};
 		// CH9 搜索任务全程的航向覆盖：前视阶段扫描，下视/接近阶段固定为 CH9 航向。
 		bool landing_search_yaw_override_active_{false};
@@ -142,6 +142,7 @@ namespace PayloadMPC
 		bool have_landing_search_yaw_{false};
 		double landing_search_yaw_{0.0};
 		double landing_search_yaw_timeout_{0.5};
+		double landing_search_hold_height_{0.6};
 		ros::Time last_landing_search_yaw_time_{0};
 		// CH8 低位触发一次起飞；失败后必须离开低位再重新进入，避免循环反复重启。
 		bool takeoff_request_latched_{false};
