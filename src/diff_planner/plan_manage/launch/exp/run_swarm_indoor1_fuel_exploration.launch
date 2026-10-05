@@ -422,7 +422,7 @@
     <rosparam param="/exploration_node/mission/task_search/exit/pending_observation_min_hits">3</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/pending_observation_lateral_offset">0.25</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/pending_observation_min_move">0.22</rosparam>
-    <!-- 穿门按0.35m滚动，只飞累计地图已标FREE的点；里程计原点越过门平面0.60m后才允许切换到Diff搜索。 -->
+    <!-- 下列穿门距离仅用于FUEL自行完成穿越；启用Diff搜索时，门内接近完成即交接，只执行Diff前飞1m。 -->
     <rosparam param="/exploration_node/mission/task_search/exit/cross_step">0.35</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/cross_target_distance">0.90</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/cross_confirm_distance">0.60</rosparam>
