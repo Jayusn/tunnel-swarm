@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>企鹅的骑行日记</title>
+  <title>鹈鹕的骑行日记</title>
   <style>
     * { box-sizing: border-box; }
     body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #e8efea; color: #253f49; font-family: "PingFang SC", "Microsoft YaHei", sans-serif; }
@@ -36,12 +36,12 @@
     <div class="scene">
       <div class="caption">
         <p class="eyebrow">A LITTLE RIDE · A LITTLE JOY</p>
-        <h1>企鹅的骑行日记</h1>
+        <h1>鹈鹕的骑行日记</h1>
         <p class="subtitle">风很轻，今天也慢慢向前。</p>
       </div>
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 680" role="img" aria-labelledby="scene-title scene-description">
-        <title id="scene-title">一只戴头盔、系围巾的企鹅骑着自行车</title>
-        <desc id="scene-description">珊瑚色自行车的车轮持续转动，企鹅交替踩踏，围巾随风摆动，薄荷绿色的山丘和路边植物组成明亮的二维动画场景。</desc>
+        <title id="scene-title">一只戴头盔、系围巾的鹈鹕骑着自行车</title>
+        <desc id="scene-description">白色鹈鹕有长长的金黄色鸟喙和宽大的喉囊，交替踩踏珊瑚色自行车，车轮持续转动，围巾随风摆动，薄荷绿色的山丘和路边植物组成明亮的二维动画场景。</desc>
         <defs>
           <linearGradient id="sky" x2="0" y2="1">
             <stop stop-color="#edf4ed"/><stop offset="1" stop-color="#fff3da"/>
@@ -91,8 +91,8 @@
         </g>
         <ellipse cx="515" cy="599" rx="203" ry="13" fill="#658e7c" opacity=".17"/>
         <g class="rider">
-          <!-- The far leg passes behind the frame and the penguin. -->
-          <path id="far-leg" fill="none" stroke="#233b45" stroke-width="19" stroke-linecap="round" stroke-linejoin="round"/>
+          <!-- The far leg passes behind the frame and the pelican. -->
+          <path id="far-leg" fill="none" stroke="#b88a50" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
           <g id="far-foot"><path d="M-17-5Q-14-13-4-9L20-1Q27 3 23 8H-15Q-23 4-17-5Z" fill="#dc9850"/></g>
           <g transform="translate(360 500)"><use href="#wheel"/></g>
           <g transform="translate(660 500)"><use href="#wheel"/></g>
@@ -109,14 +109,18 @@
           <path d="M360 500L505 480Q529 484 527 501Q526 519 505 520L360 506Z" fill="none" stroke="#39515a" stroke-width="3"/>
           <path id="crank" stroke="#39515a" stroke-width="6" stroke-linecap="round"/>
           <path id="far-pedal" stroke="#29434d" stroke-width="6" stroke-linecap="round"/>
-          <!-- Rounded silhouette, cream face and belly, little helmet. -->
-          <path d="M448 377Q411 353 444 289Q463 265 502 273Q553 279 557 333Q565 379 526 410Q475 430 448 377Z" fill="#29434d"/>
+          <!-- White plumage, a long bill and a broad throat pouch. -->
+          <path d="M448 377Q411 353 444 289Q463 265 502 273Q553 279 557 333Q565 379 526 410Q475 430 448 377Z" fill="url(#belly)" stroke="#c4cebf" stroke-width="3"/>
           <path d="M489 292Q526 291 535 331Q548 374 516 401Q483 418 462 388Q448 362 462 322Q473 300 489 292Z" fill="url(#belly)"/>
-          <path d="M444 361Q416 371 416 349Q419 326 441 316Z" fill="#233b45"/>
-          <ellipse cx="532" cy="249" rx="62" ry="60" fill="#29434d" transform="rotate(-12 532 249)"/>
+          <path d="M444 361Q416 371 416 349Q419 326 441 316Z" fill="#425965"/>
+          <path d="M483 325Q500 287 493 260L535 251Q560 290 542 326L516 343Z" fill="#fffaf0" stroke="#c4cebf" stroke-width="3"/>
+          <ellipse cx="532" cy="249" rx="62" ry="60" fill="#f8f8ed" stroke="#c4cebf" stroke-width="3" transform="rotate(-12 532 249)"/>
           <path d="M527 208Q546 197 560 214Q567 225 579 231Q596 244 582 272Q566 297 539 290Q514 283 513 261Q506 232 527 208Z" fill="#fffaf0"/>
-          <path d="M584 241Q611 244 618 253Q608 265 583 261Z" fill="#efb353"/>
-          <path d="M588 253H608" stroke="#d99540" stroke-width="2" stroke-linecap="round"/>
+          <path d="M582 252L746 254Q720 282 674 297Q622 312 583 278Z" fill="#efc08a" stroke="#dca265" stroke-width="2"/>
+          <path d="M591 263Q632 296 677 283" fill="none" stroke="#f9d8ae" stroke-width="4" stroke-linecap="round"/>
+          <path d="M583 239Q645 230 735 246Q750 248 749 257L582 257Z" fill="#efb353"/>
+          <path d="M589 253H742" stroke="#d99540" stroke-width="2" stroke-linecap="round"/>
+          <path d="M738 252Q752 253 747 267" fill="none" stroke="#d99540" stroke-width="4" stroke-linecap="round"/>
           <ellipse class="blink" cx="560" cy="237" rx="4.5" ry="6" fill="#29434d"/>
           <circle cx="561" cy="235" r="1.2" fill="#fff"/>
           <ellipse cx="568" cy="260" rx="9" ry="5" fill="#eda292" opacity=".65"/>
@@ -127,9 +131,10 @@
           <rect x="521" y="274" width="13" height="8" rx="3" fill="#39515a" transform="rotate(16 527 278)"/>
           <path class="scarf-tail" d="M514 290Q477 283 451 290Q421 298 393 280L400 300 389 310Q425 326 455 308L510 305Z" fill="#df7f69"/>
           <path d="M493 284Q516 298 546 286L550 303Q516 318 489 301Z" fill="#ee9b7f"/>
-          <path d="M531 320Q556 309 572 324L612 339Q632 341 628 351Q625 363 606 359L554 346Q529 347 531 320Z" fill="#29434d"/>
-          <path d="M549 327Q575 338 603 344" fill="none" stroke="#3b5660" stroke-width="3" stroke-linecap="round"/>
-          <path id="near-leg" fill="none" stroke="#29434d" stroke-width="20" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M531 320Q556 309 572 324L612 339Q632 341 628 351Q625 363 606 359L554 346Q529 347 531 320Z" fill="#f8f8ed" stroke="#c4cebf" stroke-width="3"/>
+          <path d="M549 327Q575 338 603 344" fill="none" stroke="#c4cebf" stroke-width="3" stroke-linecap="round"/>
+          <path d="M604 339L622 346 M600 346L619 353" stroke="#425965" stroke-width="5" stroke-linecap="round"/>
+          <path id="near-leg" fill="none" stroke="#d4a365" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
           <g id="near-foot"><path d="M-18-6Q-13-15-3-10L23-1Q30 4 25 9H-17Q-25 4-18-6Z" fill="#efb353"/><path d="M-17 8H24" stroke="#d39342" stroke-width="3" stroke-linecap="round"/></g>
           <path id="near-pedal" stroke="#29434d" stroke-width="6" stroke-linecap="round"/>
           <circle cx="505" cy="500" r="5" fill="#29434d"/>
