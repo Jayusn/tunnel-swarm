@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>企鹅的骑行日记</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #e8efea; color: #253f49; font-family: "PingFang SC", "Microsoft YaHei", sans-serif; }
+    main { width: min(1080px, 100%); padding: 28px; }
+    .scene { position: relative; overflow: hidden; border: 1px solid #fff9; border-radius: 28px; background: #f5f5e9; box-shadow: 0 24px 80px #254c4520; }
+    .caption { position: absolute; z-index: 1; top: 7%; left: 7%; pointer-events: none; }
+    .eyebrow { margin: 0 0 12px; color: #64857e; font-size: 11px; letter-spacing: 4px; }
+    h1 { margin: 0; font-size: clamp(22px, 4vw, 38px); font-weight: 600; letter-spacing: 3px; }
+    .subtitle { margin: 14px 0 0; color: #64857e; font-size: clamp(11px, 1.6vw, 14px); letter-spacing: 2px; }
+    svg { display: block; width: 100%; height: auto; }
+    .cloud { animation: drift 28s linear infinite; }
+    .cloud-slow { animation-duration: 42s; animation-delay: -17s; }
+    .road { animation: road 1.8s linear infinite; }
+    .plants { animation: landscape 9s linear infinite; }
+    .scarf-tail { animation: flutter .65s ease-in-out infinite alternate; transform-origin: 511px 298px; }
+    .rider { animation: bounce .9s ease-in-out infinite; }
+    .blink { animation: blink 4.5s infinite; transform-box: fill-box; transform-origin: center; }
+    @keyframes drift { from { transform: translateX(180px); } to { transform: translateX(-1050px); } }
+    @keyframes road { to { transform: translateX(-160px); } }
+    @keyframes landscape { to { transform: translateX(-1000px); } }
+    @keyframes flutter { from { transform: rotate(-5deg); } to { transform: rotate(8deg); } }
+    @keyframes bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+    @keyframes blink { 0%, 43%, 47%, 100% { transform: scaleY(1); } 45% { transform: scaleY(.1); } }
+    footer { display: flex; justify-content: space-between; padding: 18px 5px 0; color: #718780; font-size: 11px; letter-spacing: 2px; }
+    @media (max-width: 600px) { main { padding: 12px; } .scene { border-radius: 18px; } .eyebrow { font-size: 8px; letter-spacing: 2px; margin-bottom: 8px; } h1 { font-size: clamp(16px, 4vw, 22px); letter-spacing: 1px; } .subtitle { margin-top: 8px; letter-spacing: 1px; } footer { font-size: 9px; letter-spacing: 1px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="scene">
+      <div class="caption">
+        <p class="eyebrow">A LITTLE RIDE · A LITTLE JOY</p>
+        <h1>企鹅的骑行日记</h1>
+        <p class="subtitle">风很轻，今天也慢慢向前。</p>
+      </div>
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 680" role="img" aria-labelledby="scene-title scene-description">
+        <title id="scene-title">一只戴头盔、系围巾的企鹅骑着自行车</title>
+        <desc id="scene-description">珊瑚色自行车的车轮持续转动，企鹅交替踩踏，围巾随风摆动，薄荷绿色的山丘和路边植物组成明亮的二维动画场景。</desc>
+        <defs>
+          <linearGradient id="sky" x2="0" y2="1">
+            <stop stop-color="#edf4ed"/><stop offset="1" stop-color="#fff3da"/>
+          </linearGradient>
+          <linearGradient id="belly" x2="1" y2="1">
+            <stop stop-color="#fffdf3"/><stop offset="1" stop-color="#e9eadd"/>
+          </linearGradient>
+          <g id="cloud" fill="#fffdf6" opacity=".85">
+            <path d="M0 20 Q-5 0 18 0 Q27-30 52-17 Q69-13 68 2 Q94-4 98 20Z"/>
+          </g>
+          <g id="plant" fill="none" stroke="#749f91" stroke-width="4" stroke-linecap="round">
+            <path d="M0 0V-28 M0-8Q-18-10-20-24 M0-15Q17-16 20-31"/>
+          </g>
+          <g id="wheel">
+            <circle r="91" fill="#f6f3e5" stroke="#29434d" stroke-width="12"/>
+            <circle r="81" fill="none" stroke="#b7c6bc" stroke-width="2"/>
+            <g class="spokes" stroke="#a1b5ad" stroke-width="2">
+              <path d="M-80 0H80 M0-80V80 M-57-57L57 57 M-57 57L57-57 M-74-31L74 31 M-31-74L31 74 M-74 31L74-31 M-31 74L31-74"/>
+              <path d="M-61-49A78 78 0 0 1-37-69" fill="none" stroke="#fffdf5" stroke-width="5" stroke-linecap="round"/>
+            </g>
+            <circle r="10" fill="#e3dfc9" stroke="#29434d" stroke-width="4"/>
+          </g>
+        </defs>
+        <path fill="url(#sky)" d="M0 0H1000V680H0Z"/>
+        <circle cx="817" cy="131" r="48" fill="#f4d18b"/>
+        <circle cx="817" cy="131" r="62" fill="none" stroke="#f4d18b" stroke-width="1" opacity=".4"/>
+        <g class="cloud"><use href="#cloud" x="650" y="215"/><use href="#cloud" x="1380" y="170"/></g>
+        <g class="cloud cloud-slow"><use href="#cloud" x="450" y="96"/><use href="#cloud" x="1540" y="133"/></g>
+        <path d="M0 350L134 237 223 309 355 199 529 357 661 240 828 353 946 273 1000 313V540H0Z" fill="#d5e4d7"/>
+        <path d="M289 260L355 199 417 255 374 241 352 254 333 242Z M618 278L661 240 709 272 682 263 662 273 649 259Z" fill="#f9faeb"/>
+        <path d="M0 402Q161 316 338 404T675 397T1000 388V560H0Z" fill="#b5d1bd"/>
+        <path d="M0 466Q218 358 440 453T1000 428V580H0Z" fill="#91bbaa"/>
+        <path d="M0 520Q275 481 519 525T1000 510V680H0Z" fill="#cfdfc2"/>
+        <path d="M0 561Q430 544 1000 561V625Q452 608 0 625Z" fill="#eee5cd"/>
+        <path d="M0 562Q430 545 1000 562" fill="none" stroke="#faf4e2" stroke-width="4"/>
+        <g class="plants">
+          <g id="plants-strip">
+            <use href="#plant" x="104" y="540"/><use href="#plant" x="848" y="532"/>
+            <path d="M230 645l6-14 5 14 M743 657l6-17 5 17" fill="none" stroke="#a9c29c" stroke-width="3" stroke-linecap="round"/>
+            <g fill="#fff7df"><circle cx="108" cy="506" r="5"/><circle cx="108" cy="506" r="2" fill="#eab66a"/><circle cx="850" cy="496" r="5"/><circle cx="850" cy="496" r="2" fill="#eab66a"/></g>
+            <ellipse cx="53" cy="604" rx="11" ry="3" fill="#d5ccb5"/><ellipse cx="913" cy="574" rx="8" ry="2" fill="#d5ccb5"/>
+          </g>
+          <use href="#plants-strip" x="1000"/>
+        </g>
+        <g class="road" stroke="#fffaf0" stroke-width="4" stroke-linecap="round" opacity=".85">
+          <path d="M0 592H52 M160 592H212 M320 592H372 M480 592H532 M640 592H692 M800 592H852 M960 592H1012 M1120 592H1172"/>
+        </g>
+        <ellipse cx="515" cy="599" rx="203" ry="13" fill="#658e7c" opacity=".17"/>
+        <g class="rider">
+          <!-- The far leg passes behind the frame and the penguin. -->
+          <path id="far-leg" fill="none" stroke="#233b45" stroke-width="19" stroke-linecap="round" stroke-linejoin="round"/>
+          <g id="far-foot"><path d="M-17-5Q-14-13-4-9L20-1Q27 3 23 8H-15Q-23 4-17-5Z" fill="#dc9850"/></g>
+          <g transform="translate(360 500)"><use href="#wheel"/></g>
+          <g transform="translate(660 500)"><use href="#wheel"/></g>
+          <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M360 500L458 392 505 500H360 M458 392H611L505 500 M600 355L660 500" stroke="#b15a50" stroke-width="13"/>
+            <path d="M360 497L458 389 505 497H360 M458 389H611L505 497 M600 352L660 497" stroke="#e88470" stroke-width="8"/>
+            <path d="M458 391L449 367 M601 356L593 332 631 322Q648 318 646 333" stroke="#39515a" stroke-width="8"/>
+            <path d="M633 322Q648 318 646 333" stroke="#233b45" stroke-width="11"/>
+            <path d="M617 338Q685 369 655 431" stroke="#597268" stroke-width="2"/>
+          </g>
+          <path d="M422 364Q419 357 430 356H473Q487 356 485 364Q457 376 422 364Z" fill="#29434d"/>
+          <circle cx="505" cy="500" r="22" fill="#e5e4d2" stroke="#39515a" stroke-width="4"/>
+          <circle cx="505" cy="500" r="15" fill="#aec0b2"/>
+          <path d="M360 500L505 480Q529 484 527 501Q526 519 505 520L360 506Z" fill="none" stroke="#39515a" stroke-width="3"/>
+          <path id="crank" stroke="#39515a" stroke-width="6" stroke-linecap="round"/>
+          <path id="far-pedal" stroke="#29434d" stroke-width="6" stroke-linecap="round"/>
+          <!-- Rounded silhouette, cream face and belly, little helmet. -->
+          <path d="M448 377Q411 353 444 289Q463 265 502 273Q553 279 557 333Q565 379 526 410Q475 430 448 377Z" fill="#29434d"/>
+          <path d="M489 292Q526 291 535 331Q548 374 516 401Q483 418 462 388Q448 362 462 322Q473 300 489 292Z" fill="url(#belly)"/>
+          <path d="M444 361Q416 371 416 349Q419 326 441 316Z" fill="#233b45"/>
+          <ellipse cx="532" cy="249" rx="62" ry="60" fill="#29434d" transform="rotate(-12 532 249)"/>
+          <path d="M527 208Q546 197 560 214Q567 225 579 231Q596 244 582 272Q566 297 539 290Q514 283 513 261Q506 232 527 208Z" fill="#fffaf0"/>
+          <path d="M584 241Q611 244 618 253Q608 265 583 261Z" fill="#efb353"/>
+          <path d="M588 253H608" stroke="#d99540" stroke-width="2" stroke-linecap="round"/>
+          <ellipse class="blink" cx="560" cy="237" rx="4.5" ry="6" fill="#29434d"/>
+          <circle cx="561" cy="235" r="1.2" fill="#fff"/>
+          <ellipse cx="568" cy="260" rx="9" ry="5" fill="#eda292" opacity=".65"/>
+          <path d="M474 215Q468 176 511 168Q564 156 585 204Z" fill="#76b9ab"/>
+          <path d="M473 215Q528 195 585 204" fill="none" stroke="#4e8e83" stroke-width="9" stroke-linecap="round"/>
+          <path d="M513 174L511 194 M537 171L541 191 M559 180L566 194" stroke="#d8eee0" stroke-width="6" stroke-linecap="round"/>
+          <path d="M490 214L504 269 526 280 565 286" fill="none" stroke="#77a79a" stroke-width="3"/>
+          <rect x="521" y="274" width="13" height="8" rx="3" fill="#39515a" transform="rotate(16 527 278)"/>
+          <path class="scarf-tail" d="M514 290Q477 283 451 290Q421 298 393 280L400 300 389 310Q425 326 455 308L510 305Z" fill="#df7f69"/>
+          <path d="M493 284Q516 298 546 286L550 303Q516 318 489 301Z" fill="#ee9b7f"/>
+          <path d="M531 320Q556 309 572 324L612 339Q632 341 628 351Q625 363 606 359L554 346Q529 347 531 320Z" fill="#29434d"/>
+          <path d="M549 327Q575 338 603 344" fill="none" stroke="#3b5660" stroke-width="3" stroke-linecap="round"/>
+          <path id="near-leg" fill="none" stroke="#29434d" stroke-width="20" stroke-linecap="round" stroke-linejoin="round"/>
+          <g id="near-foot"><path d="M-18-6Q-13-15-3-10L23-1Q30 4 25 9H-17Q-25 4-18-6Z" fill="#efb353"/><path d="M-17 8H24" stroke="#d39342" stroke-width="3" stroke-linecap="round"/></g>
+          <path id="near-pedal" stroke="#29434d" stroke-width="6" stroke-linecap="round"/>
+          <circle cx="505" cy="500" r="5" fill="#29434d"/>
+        </g>
+        <g fill="none" stroke="#f9f7e9" stroke-width="3" stroke-linecap="round" opacity=".85">
+          <path d="M291 349H323 M275 368H312 M298 386H318"/>
+        </g>
+      </svg>
+    </div>
+    <footer><span>小小车轮，大大世界。</span><span>SVG · 2D ANIMATION</span></footer>
+  </main>
+  <script>
+    const get = id => document.getElementById(id);
+    const wheels = document.querySelectorAll('.spokes');
+    const crank = get('crank');
+    const legs = ['far', 'near'].map(side => ({
+      leg: get(`${side}-leg`), foot: get(`${side}-foot`), pedal: get(`${side}-pedal`)
+    }));
+
+    // Two connected leg segments follow opposite ends of the same crank.
+    function drawLeg(parts, angle) {
+      const hipX = 490, hipY = 389, thigh = 68, shin = 73;
+      const x = 505 + 27 * Math.cos(angle), y = 500 + 27 * Math.sin(angle);
+      const ankleY = y - 11;
+      const dx = x - hipX, dy = ankleY - hipY, distance = Math.hypot(dx, dy);
+      const along = (thigh * thigh - shin * shin + distance * distance) / (2 * distance);
+      const bend = Math.sqrt(Math.max(0, thigh * thigh - along * along));
+      const kneeX = hipX + along * dx / distance + bend * dy / distance;
+      const kneeY = hipY + along * dy / distance - bend * dx / distance;
+      parts.leg.setAttribute('d', `M${hipX} ${hipY}L${kneeX} ${kneeY}L${x} ${ankleY}`);
+      parts.foot.setAttribute('transform', `translate(${x} ${y - 9})`);
+      parts.pedal.setAttribute('d', `M${x - 17} ${y}H${x + 17}`);
+      return { x, y };
+    }
+
+    function animate(time) {
+      const angle = time * Math.PI * 2 / 1800;
+      const far = drawLeg(legs[0], angle + Math.PI);
+      const near = drawLeg(legs[1], angle);
+      crank.setAttribute('d', `M${far.x} ${far.y}L${near.x} ${near.y}`);
+      wheels.forEach(wheel => wheel.setAttribute('transform', `rotate(${time * 360 / 2400 % 360})`));
+      requestAnimationFrame(animate);
+    }
+    requestAnimationFrame(animate);
+  </script>
+</body>
+</html>
