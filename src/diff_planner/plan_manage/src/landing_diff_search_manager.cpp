@@ -67,6 +67,7 @@ class LandingDiffSearchManager {
 
     std::string odom_topic("/UAV0/fast_lio/Odometry");
     std::string stage_topic("/UAV0/mission/task_status");
+    std::string exit_portal_topic("/UAV0/mission/final_exit");
     std::string rc_land_topic("/UAV0/mission/rc_land_active");
     std::string marker_topic("/UAV0/mission/detection/final_aruco");
     std::string front_hint_topic("/UAV0/landing/front_aruco_hint");
@@ -79,6 +80,7 @@ class LandingDiffSearchManager {
     std::string target_frame("world");
     private_nh_.param("odom_topic", odom_topic, odom_topic);
     private_nh_.param("stage_topic", stage_topic, stage_topic);
+    private_nh_.param("exit_portal_topic", exit_portal_topic, exit_portal_topic);
     private_nh_.param("rc_land_active_topic", rc_land_topic, rc_land_topic);
     private_nh_.param("marker_topic", marker_topic, marker_topic);
     private_nh_.param("front_hint_topic", front_hint_topic, front_hint_topic);
@@ -110,6 +112,8 @@ class LandingDiffSearchManager {
 
     odom_sub_ = nh_.subscribe(odom_topic, 20, &LandingDiffSearchManager::odomCallback, this);
     stage_sub_ = nh_.subscribe(stage_topic, 10, &LandingDiffSearchManager::stageCallback, this);
+    exit_portal_sub_ = nh_.subscribe(exit_portal_topic, 1,
+                                    &LandingDiffSearchManager::exitPortalCallback, this);
     rc_land_sub_ = nh_.subscribe(rc_land_topic, 1,
                                  &LandingDiffSearchManager::rcLandCallback, this);
     marker_sub_ = nh_.subscribe(marker_topic, 10, &LandingDiffSearchManager::markerCallback, this);
@@ -135,6 +139,13 @@ class LandingDiffSearchManager {
     odom_ = *msg;
     have_odom_ = true;
     if (switch_pending_ && !active_) activate();
+  }
+
+  void exitPortalCallback(const geometry_msgs::PoseStampedConstPtr& msg) {
+    // 出口已由FUEL确认并锁存，允许使用历史锁存位姿；激活后不重算航点。
+    if (!validTarget(*msg, std::numeric_limits<double>::infinity(), "locked exit")) return;
+    exit_portal_ = *msg;
+    have_exit_portal_ = true;
   }
 
   void rcLandCallback(const std_msgs::BoolConstPtr& msg) {
@@ -263,6 +274,19 @@ class LandingDiffSearchManager {
     lateral_y_ = forward_x_;
     anchor_x_ = odom_.pose.pose.position.x + front_approach_distance_ * forward_x_;
     anchor_y_ = odom_.pose.pose.position.y + front_approach_distance_ * forward_y_;
+    if (have_exit_portal_) {
+      const double exit_yaw = yawFromQuaternion(exit_portal_.pose.orientation);
+      const double outward_x = std::cos(exit_yaw);
+      const double outward_y = std::sin(exit_yaw);
+      const geometry_msgs::Point& portal = exit_portal_.pose.position;
+      const geometry_msgs::Point& current = odom_.pose.pose.position;
+      const double outside = (current.x - portal.x) * outward_x +
+                             (current.y - portal.y) * outward_y;
+      // 门内10cm的到达误差不能缩短门外前飞；已在门外的CH9仍从当前位置前飞。
+      const geometry_msgs::Point& origin = outside > 0.0 ? current : portal;
+      anchor_x_ = origin.x + front_approach_distance_ * outward_x;
+      anchor_y_ = origin.y + front_approach_distance_ * outward_y;
+    }
     front_approach_goal_.x = anchor_x_;
     front_approach_goal_.y = anchor_y_;
     front_approach_goal_.z = anchor_z_;
@@ -752,7 +776,7 @@ class LandingDiffSearchManager {
 
   ros::NodeHandle nh_, private_nh_;
   ros::Subscriber odom_sub_, stage_sub_, marker_sub_, front_hint_sub_,
-      assigned_target_sub_, rc_land_sub_;
+      assigned_target_sub_, rc_land_sub_, exit_portal_sub_;
   ros::Publisher subgoal_pub_, trigger_pub_, yaw_pub_, front_scan_anchor_pub_,
       landing_request_pub_, state_pub_;
   ros::Timer timer_;
@@ -760,6 +784,8 @@ class LandingDiffSearchManager {
   geometry_msgs::PoseStamped marker_;
   geometry_msgs::PoseStamped front_hint_;
   geometry_msgs::PoseStamped assigned_target_;
+  geometry_msgs::PoseStamped exit_portal_;
+  bool have_exit_portal_{false};
   geometry_msgs::Point front_approach_goal_;
   std::vector<geometry_msgs::Point> sweep_goals_;
   std::size_t sweep_index_{0};

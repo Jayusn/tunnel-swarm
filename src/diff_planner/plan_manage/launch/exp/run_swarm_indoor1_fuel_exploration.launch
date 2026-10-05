@@ -413,6 +413,8 @@
     <rosparam param="/exploration_node/mission/task_search/exit/verification_yaw_hold_time">2.5</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/standoff">0.45</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/arrive_distance">0.50</rosparam>
+    <!-- Diff交接必须接近出口中心，不使用门内候选点的50cm到达范围。 -->
+    <rosparam param="/exploration_node/mission/task_search/exit/portal_arrive_distance">0.10</rosparam>
     <!-- 2026-08-08: 正常转弯由连续航迹逐步更新推进方向；单段接近反向视为短回撤，禁止翻转门内外语义。 -->
     <rosparam param="/exploration_node/mission/task_search/exit/progress_reverse_reject_deg">120.0</rosparam>
     <!-- 穿门后前1.5m允许A*横向绕开门柱/杆件，仍保留占据和机体碰撞检查。 -->
@@ -422,7 +424,7 @@
     <rosparam param="/exploration_node/mission/task_search/exit/pending_observation_min_hits">3</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/pending_observation_lateral_offset">0.25</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/pending_observation_min_move">0.22</rosparam>
-    <!-- 下列穿门距离仅用于FUEL自行完成穿越；启用Diff搜索时，门内接近完成即交接，只执行Diff前飞1m。 -->
+    <!-- 下列穿门距离仅用于FUEL自行完成穿越；启用Diff搜索时，到出口中心附近才交接，随后Diff向出口外前飞1m。 -->
     <rosparam param="/exploration_node/mission/task_search/exit/cross_step">0.35</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/cross_target_distance">0.90</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/cross_confirm_distance">0.60</rosparam>
@@ -525,10 +527,11 @@
         <param name="trigger_topic" value="/UAV0/landing_diff/trigger"/>
         <param name="yaw_topic" value="/UAV0/landing_diff/yaw"/>
         <param name="landing_request_topic" value="/UAV0/mission/landing_request"/>
-        <!-- CH9触发后保持锁存航向和当前高度前移1m；到达容差15cm后才允许前视检测和偏航扫描。 -->
+        <!-- 有锁存出口时目标为出口外1m，门外人工触发则从当前位置前飞；保持航向与高度，到达容差15cm后开始前视扫描。 -->
         <param name="front_approach_distance" value="1.0"/>
         <param name="front_approach_arrive_xy" value="0.15"/>
         <param name="front_scan_anchor_topic" value="/UAV0/landing/front_scan_anchor"/>
+        <param name="exit_portal_topic" value="/UAV0/mission/final_exit"/>
         <param name="search_height" value="2.0"/>
         <param name="lane_spacing" value="1.0"/>
         <!-- 下视扫描停滞时以实际停点收缩边界，换行反扫；实际移动10cm即重置计时。 -->
