@@ -65,6 +65,7 @@ class LandingDiffSearchManager {
 
     std::string odom_topic("/UAV0/fast_lio/Odometry");
     std::string stage_topic("/UAV0/mission/task_status");
+    std::string rc_land_topic("/UAV0/mission/rc_land_active");
     std::string marker_topic("/UAV0/mission/detection/final_aruco");
     std::string front_hint_topic("/UAV0/landing/front_aruco_hint");
     std::string assigned_target_topic("/UAV0/landing/assigned_target");
@@ -76,6 +77,7 @@ class LandingDiffSearchManager {
     std::string target_frame("world");
     private_nh_.param("odom_topic", odom_topic, odom_topic);
     private_nh_.param("stage_topic", stage_topic, stage_topic);
+    private_nh_.param("rc_land_active_topic", rc_land_topic, rc_land_topic);
     private_nh_.param("marker_topic", marker_topic, marker_topic);
     private_nh_.param("front_hint_topic", front_hint_topic, front_hint_topic);
     private_nh_.param("assigned_target_topic", assigned_target_topic,
@@ -104,6 +106,8 @@ class LandingDiffSearchManager {
 
     odom_sub_ = nh_.subscribe(odom_topic, 20, &LandingDiffSearchManager::odomCallback, this);
     stage_sub_ = nh_.subscribe(stage_topic, 10, &LandingDiffSearchManager::stageCallback, this);
+    rc_land_sub_ = nh_.subscribe(rc_land_topic, 1,
+                                 &LandingDiffSearchManager::rcLandCallback, this);
     marker_sub_ = nh_.subscribe(marker_topic, 10, &LandingDiffSearchManager::markerCallback, this);
     front_hint_sub_ = nh_.subscribe(front_hint_topic, 10,
                                     &LandingDiffSearchManager::frontHintCallback, this);
@@ -129,7 +133,19 @@ class LandingDiffSearchManager {
     if (switch_pending_ && !active_) activate();
   }
 
+  void rcLandCallback(const std_msgs::BoolConstPtr& msg) {
+    if (!msg->data || rc_land_active_) return;
+    rc_land_active_ = true;
+    active_ = false;
+    switch_pending_ = false;
+    landing_requested_ = false;
+    publishRequest(false);
+    publishState("RC_LAND_ABORTED");
+    ROS_ERROR("CH10 landing latched: stopped Diff landing search goals/yaw/triggers");
+  }
+
   void stageCallback(const std_msgs::StringConstPtr& msg) {
+    if (rc_land_active_) return;
     const std::string stage = firstToken(msg->data);
     if (!switched_ && (stage == "SEARCH_OUTSIDE_LANDING" ||
                        stage == "SEARCH_OUTSIDE_QR")) {
@@ -144,6 +160,7 @@ class LandingDiffSearchManager {
   }
 
   void markerCallback(const geometry_msgs::PoseStampedConstPtr& msg) {
+    if (rc_land_active_) return;
     if (!switched_ || !front_approach_complete_) return;
     if (!validTarget(*msg, marker_timeout_sec_, "final ArUco")) return;
     marker_ = *msg;
@@ -158,6 +175,7 @@ class LandingDiffSearchManager {
   }
 
   void frontHintCallback(const geometry_msgs::PoseStampedConstPtr& msg) {
+    if (rc_land_active_) return;
     if (!enable_single_front_hint_approach_ || !switched_ ||
         !front_approach_complete_ ||
         front_hint_exhausted_ || have_marker_ || have_assigned_target_) return;
@@ -199,6 +217,7 @@ class LandingDiffSearchManager {
   }
 
   void assignedTargetCallback(const geometry_msgs::PoseStampedConstPtr& msg) {
+    if (rc_land_active_) return;
     if (!switched_ || !front_approach_complete_ || landing_requested_) return;
     if (!validTarget(*msg, assigned_target_timeout_sec_,
                      "assigned landing target")) return;
@@ -666,7 +685,7 @@ class LandingDiffSearchManager {
 
   ros::NodeHandle nh_, private_nh_;
   ros::Subscriber odom_sub_, stage_sub_, marker_sub_, front_hint_sub_,
-      assigned_target_sub_;
+      assigned_target_sub_, rc_land_sub_;
   ros::Publisher subgoal_pub_, trigger_pub_, yaw_pub_, front_scan_anchor_pub_,
       landing_request_pub_, state_pub_;
   ros::Timer timer_;
@@ -679,6 +698,7 @@ class LandingDiffSearchManager {
   std::size_t sweep_index_{0};
   bool have_odom_{false}, switch_pending_{false}, switched_{false}, active_{false};
   bool front_approach_complete_{false};
+  bool rc_land_active_{false};
   bool have_marker_{false}, landing_requested_{false};
   bool have_front_hint_{false}, front_hint_exhausted_{false};
   bool have_assigned_target_{false};
