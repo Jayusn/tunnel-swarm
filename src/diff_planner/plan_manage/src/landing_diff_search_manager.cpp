@@ -40,6 +40,8 @@ class LandingDiffSearchManager {
     private_nh_.param("arrive_xy", arrive_xy_, 0.35);
     private_nh_.param("arrive_z", arrive_z_, 0.20);
     private_nh_.param("goal_reissue_sec", goal_reissue_sec_, 1.0);
+    private_nh_.param("sweep_stall_timeout_sec", sweep_stall_timeout_sec_, 4.0);
+    private_nh_.param("sweep_motion_reset_distance", sweep_motion_reset_distance_, 0.10);
     private_nh_.param("front_hint_dwell_sec", front_hint_dwell_sec_, 2.0);
     private_nh_.param("front_hint_initial_wait_sec",
                       front_hint_initial_wait_sec_, 1.0);
@@ -100,6 +102,8 @@ class LandingDiffSearchManager {
         front_yaw_arrive_tolerance_rad_ <= 0.0 ||
         front_yaw_arrive_tolerance_rad_ > M_PI ||
         front_yaw_return_dwell_sec_ < 0.0 ||
+        !std::isfinite(sweep_stall_timeout_sec_) || sweep_stall_timeout_sec_ <= 0.0 ||
+        !std::isfinite(sweep_motion_reset_distance_) || sweep_motion_reset_distance_ <= 0.0 ||
         max_header_future_sec_ < 0.0) {
       throw std::runtime_error("landing_diff_search: invalid target freshness parameters");
     }
@@ -348,6 +352,7 @@ class LandingDiffSearchManager {
     publishTrigger();
     geometry_msgs::Point goal;
     if (have_marker_) {
+      sweep_tracking_ = false;
       goal = marker_.pose.position;
       goal.z += search_height_;
       if (arrived(goal)) {
@@ -358,12 +363,14 @@ class LandingDiffSearchManager {
         return;
       }
     } else if (have_assigned_target_) {
+      sweep_tracking_ = false;
       goal = assigned_target_.pose.position;
       goal.z += search_height_;
       if (arrived(goal)) {
         publishState("ASSIGNED_TARGET_REACHED_WAIT_DOWN_CONFIRMATION");
       }
     } else if (have_front_hint_) {
+      sweep_tracking_ = false;
       goal = front_hint_.pose.position;
       goal.z += search_height_;
       if (arrived(goal)) {
@@ -382,15 +389,10 @@ class LandingDiffSearchManager {
         front_hint_reached_since_ = ros::Time(0);
       }
       if (!have_front_hint_) {
-        if (sweep_goals_.empty()) return;
-        goal = sweep_goals_[sweep_index_];
+        if (!selectSweepGoal(goal)) return;
       }
     } else {
-      if (sweep_goals_.empty()) return;
-      if (arrived(sweep_goals_[sweep_index_])) {
-        sweep_index_ = (sweep_index_ + 1) % sweep_goals_.size();
-      }
-      goal = sweep_goals_[sweep_index_];
+      if (!selectSweepGoal(goal)) return;
     }
     publishGoalIfDue(goal);
   }
@@ -561,6 +563,63 @@ class LandingDiffSearchManager {
       }
     }
     sweep_index_ = best_index;
+    sweep_tracking_ = false;
+  }
+
+  bool selectSweepGoal(geometry_msgs::Point& goal) {
+    if (sweep_goals_.empty()) return false;
+    for (std::size_t skipped = 0; arrived(sweep_goals_[sweep_index_]); ++skipped) {
+      if (skipped >= sweep_goals_.size()) return false;
+      advanceSweepGoal();
+    }
+    goal = sweep_goals_[sweep_index_];
+    const geometry_msgs::Point& current = odom_.pose.pose.position;
+    // 只处理下视水平扫描；上升途中及已锁定平台的接近不能按横向尽头跳点。
+    if (sweep_index_ == 0 || std::fabs(current.z - search_height_) > arrive_z_) {
+      sweep_tracking_ = false;
+      return true;
+    }
+    const ros::Time now = ros::Time::now();
+    if (!sweep_tracking_ ||
+        std::hypot(current.x - sweep_motion_checkpoint_.x,
+                   current.y - sweep_motion_checkpoint_.y) >= sweep_motion_reset_distance_) {
+      sweep_motion_checkpoint_ = current;
+      sweep_last_motion_time_ = now;
+      sweep_tracking_ = true;
+    } else if ((now - sweep_last_motion_time_).toSec() >= sweep_stall_timeout_sec_) {
+      // 固定端点在墙后时，Diff 会停在可达区域。用实际停点缩短这一侧的
+      // 后续航点，保留原蛇形顺序：反扫本行或沿边前进一行后反扫。
+      const double remaining_forward =
+          (goal.x - current.x) * forward_x_ + (goal.y - current.y) * forward_y_;
+      const double remaining_lateral =
+          (goal.x - current.x) * lateral_x_ + (goal.y - current.y) * lateral_y_;
+      const bool lateral_edge = std::fabs(remaining_lateral) >= std::fabs(remaining_forward);
+      const double axis_x = lateral_edge ? lateral_x_ : forward_x_;
+      const double axis_y = lateral_edge ? lateral_y_ : forward_y_;
+      const double remaining = lateral_edge ? remaining_lateral : remaining_forward;
+      for (std::size_t i = 1; i < sweep_goals_.size(); ++i) {
+        geometry_msgs::Point& candidate = sweep_goals_[i];
+        const double beyond = (candidate.x - current.x) * axis_x +
+                              (candidate.y - current.y) * axis_y;
+        if (beyond * remaining > 0.0) {
+          candidate.x -= beyond * axis_x;
+          candidate.y -= beyond * axis_y;
+        }
+      }
+      ROS_WARN("[DOWN_SWEEP_BOUNDARY] goal=%zu no horizontal motion for %.1fs; "
+               "clip %s boundary at (%.2f, %.2f), advance serpentine search",
+               sweep_index_, sweep_stall_timeout_sec_, lateral_edge ? "side" : "forward",
+               current.x, current.y);
+      advanceSweepGoal();
+      return selectSweepGoal(goal);
+    }
+    return true;
+  }
+
+  void advanceSweepGoal() {
+    sweep_index_ = (sweep_index_ + 1) % sweep_goals_.size();
+    sweep_tracking_ = false;
+    last_goal_time_ = ros::Time(0);
   }
 
   bool arrived(const geometry_msgs::Point& goal) const {
@@ -696,6 +755,10 @@ class LandingDiffSearchManager {
   geometry_msgs::Point front_approach_goal_;
   std::vector<geometry_msgs::Point> sweep_goals_;
   std::size_t sweep_index_{0};
+  bool sweep_tracking_{false};
+  geometry_msgs::Point sweep_motion_checkpoint_;
+  ros::Time sweep_last_motion_time_;
+  double sweep_stall_timeout_sec_{4.0}, sweep_motion_reset_distance_{0.10};
   bool have_odom_{false}, switch_pending_{false}, switched_{false}, active_{false};
   bool front_approach_complete_{false};
   bool rc_land_active_{false};
