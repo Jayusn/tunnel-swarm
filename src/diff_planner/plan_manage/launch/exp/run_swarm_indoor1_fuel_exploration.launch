@@ -39,9 +39,9 @@
          default="$(optenv UAV0_ENABLE_DYNAMIC_OBSTACLE_DETECTION false)"/>
     <arg name="enable_uav1_dynamic_obstacle_detection"
          default="$(optenv UAV1_ENABLE_DYNAMIC_OBSTACLE_DETECTION false)"/>
-    <!-- 正式飞行先只检测出口；自动接管默认关闭，穿越/搜索降落沿用人工流程。
-         检测稳定并确认启用后，才设置 UAV0_ENABLE_AUTO_EXIT=true 自动锁定和穿越。 -->
-    <arg name="enable_auto_exit" default="$(optenv UAV0_ENABLE_AUTO_EXIT false)"/>
+    <!-- 出口确认后默认自动锁存、穿越并搜索降落；false可恢复仅检测。
+         CH9仍保留：有确认出口时人工启动穿越，无确认出口时沿用门外搜索入口。 -->
+    <arg name="enable_auto_exit" default="$(optenv UAV0_ENABLE_AUTO_EXIT true)"/>
     <!-- 搜索降落链路默认开启；如需临时关闭可设置 UAV0_ENABLE_SEARCH_LANDING=false。
          UAV0 CH9 低->高持续0.5s仍可人工触发降落搜索模式。 -->
     <arg name="enable_search_landing"

@@ -82,7 +82,7 @@ def test_fuel_declares_external_landing_planner():
     params = {item.attrib.get("name"): item for item in root.findall("param")}
     assert values["/exploration_node/mission/task_search/exit/external_landing_planner"] == "true"
     assert values["/exploration_node/mission/task_search/exit/enabled"] == "true"
-    assert args["enable_auto_exit"] == "$(optenv UAV0_ENABLE_AUTO_EXIT false)"
+    assert args["enable_auto_exit"] == "$(optenv UAV0_ENABLE_AUTO_EXIT true)"
     assert params["/exploration_node/mission/task_search/exit/auto_crossing_enabled"].attrib == {
         "name": "/exploration_node/mission/task_search/exit/auto_crossing_enabled",
         "value": "$(arg enable_auto_exit)",
