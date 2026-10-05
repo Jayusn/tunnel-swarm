@@ -77,10 +77,17 @@ def test_landing_search_switches_from_fuel_to_diff_with_separate_commands():
 
 def test_fuel_declares_external_landing_planner():
     root = ET.parse(LAUNCH).getroot()
+    args = {item.attrib["name"]: item.attrib["default"] for item in root.findall("arg")}
     values = {item.attrib.get("param"): (item.text or "").strip() for item in root.findall("rosparam")}
     params = {item.attrib.get("name"): item for item in root.findall("param")}
     assert values["/exploration_node/mission/task_search/exit/external_landing_planner"] == "true"
-    assert values["/exploration_node/mission/task_search/exit/enabled"] == "false"
+    assert values["/exploration_node/mission/task_search/exit/enabled"] == "true"
+    assert args["enable_auto_exit"] == "$(optenv UAV0_ENABLE_AUTO_EXIT false)"
+    assert params["/exploration_node/mission/task_search/exit/auto_crossing_enabled"].attrib == {
+        "name": "/exploration_node/mission/task_search/exit/auto_crossing_enabled",
+        "value": "$(arg enable_auto_exit)",
+        "type": "bool",
+    }
     assert params["/exploration_node/mission/task_search/exit/rc_trigger/enabled"].attrib == {
         "name": "/exploration_node/mission/task_search/exit/rc_trigger/enabled",
         "value": "$(arg enable_search_landing)",

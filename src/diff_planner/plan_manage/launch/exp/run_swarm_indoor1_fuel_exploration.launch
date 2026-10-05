@@ -39,8 +39,11 @@
          default="$(optenv UAV0_ENABLE_DYNAMIC_OBSTACLE_DETECTION false)"/>
     <arg name="enable_uav1_dynamic_obstacle_detection"
          default="$(optenv UAV1_ENABLE_DYNAMIC_OBSTACLE_DETECTION false)"/>
+    <!-- 正式飞行先只检测出口；自动接管默认关闭，穿越/搜索降落沿用人工流程。
+         检测稳定并确认启用后，才设置 UAV0_ENABLE_AUTO_EXIT=true 自动锁定和穿越。 -->
+    <arg name="enable_auto_exit" default="$(optenv UAV0_ENABLE_AUTO_EXIT false)"/>
     <!-- 搜索降落链路默认开启；如需临时关闭可设置 UAV0_ENABLE_SEARCH_LANDING=false。
-         UAV0 CH9 低->高持续0.5s才会人工触发降落搜索模式。 -->
+         UAV0 CH9 低->高持续0.5s仍可人工触发降落搜索模式。 -->
     <arg name="enable_search_landing"
          default="$(optenv UAV0_ENABLE_SEARCH_LANDING true)"/>
     <!-- 2026-07-08 19:26: FUEL 的真正开始触发改为前置通道管理器内部发布，避免 RViz 一点击就直接让 exploration FSM 起跑。 -->
@@ -380,8 +383,10 @@
     <rosparam param="/exploration_node/mission/task_search/color_topic">/UAV0/mission/detection/color</rosparam>
     <rosparam param="/exploration_node/mission/task_search/qrcode_topic">/UAV0/mission/detection/qrcode</rosparam>
     <rosparam param="/exploration_node/mission/task_search/thermal_topic">/UAV0/mission/detection/thermal</rosparam>
-    <!-- 自动出口识别仍在调试，禁止其切换任务阶段；搜索降落只接受下方 CH9 人工触发。 -->
-    <rosparam param="/exploration_node/mission/task_search/exit/enabled">false</rosparam>
+    <!-- 检测直接读取正式FUEL地图；确认只更新结果和RViz，自动接管另设开关。 -->
+    <rosparam param="/exploration_node/mission/task_search/exit/enabled">true</rosparam>
+    <param name="/exploration_node/mission/task_search/exit/auto_crossing_enabled"
+           value="$(arg enable_auto_exit)" type="bool"/>
     <param name="/exploration_node/mission/task_search/exit/rc_trigger/enabled"
            value="$(arg enable_search_landing)" type="bool"/>
     <rosparam param="/exploration_node/mission/task_search/exit/rc_trigger/topic">/UAV0/mavros/rc/in</rosparam>
