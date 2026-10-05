@@ -276,7 +276,8 @@ private:
   // 2026-07-10: 门内锁约束工具，FUEL 第二阶段不能越过入口半平面回到起飞区。
   void workspaceLockCallback(const geometry_msgs::PoseStampedConstPtr& msg);
   bool pointInsideWorkspaceLock(const Vector3d& pt) const;
-  bool pathInsideWorkspaceLock(const vector<Vector3d>& path) const;
+  bool pathInsideWorkspaceLock(const vector<Vector3d>& path,
+                               bool allow_entry_start = false) const;
   // 2026-07-13: 动态门后阶段改为多方向任务搜索恢复，不再永久沿入口朝向直飞。
   bool buildMissionForwardFallback(const Vector3d& pos, double cur_yaw, Vector3d& next_pos,
                                    double& next_yaw);

@@ -13,6 +13,25 @@ int main() {
   check(needsAdvance(0.99), "不足一米继续推进");
   check(!needsAdvance(1.0) && !needsAdvance(1.0214667), "实际一米后不追补1.05米");
 
+  const auto inward = [&](std::initializer_list<double> progress) {
+    std::vector<Eigen::Vector3d> path;
+    for (double p : progress) path.push_back(start + p * forward);
+    return pathStartsTowardInside(path, start, forward, 0.10);
+  };
+  check(inward({-0.038, -0.02, 0.0, 0.65}), "录包中回摆3.8厘米仍允许向门内起步");
+  check(inward({-0.10, -0.05, 0.65}), "十厘米起点边界允许向内推进");
+  check(!inward({-0.101, 0.65}), "超出起点余量不能豁免入口边界");
+  check(!inward({-0.038, -0.06, 0.65}), "不能从回摆位置继续向门外绕路");
+  check(!inward({-0.038, -0.01}), "终点仍在门外不能发布");
+  check(!inward({-0.038, 0.1, -0.01, 0.65}), "已经进门后不能再出门");
+  check(!inward({0.02, -0.01, 0.65}), "门内起点不能使用余量规划到门外");
+  check(inward({0.02, 0.01, 0.65}), "门内路径沿用原入口边界");
+  const Eigen::Vector3d rotated_origin(3.0, 5.0, 0.5), rotated_forward(0.0, 1.0, 0.0);
+  check(pathStartsTowardInside({Eigen::Vector3d(3.0, 4.962, 0.5),
+                               Eigen::Vector3d(3.2, 5.65, 0.5)},
+                              rotated_origin, rotated_forward, 0.10),
+        "任意入口位置与航向均支持斜向前起步");
+
   const auto open = [](const Eigen::Vector3d&, double& clearance, double& continuation) {
     clearance = 0.6; continuation = 0.4; return true;
   };

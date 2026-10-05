@@ -202,12 +202,26 @@ bool FastExplorationManager::pointInsideWorkspaceLock(const Vector3d& pt) const 
   return progress >= -ep_->mission_door_back_margin_;
 }
 
-bool FastExplorationManager::pathInsideWorkspaceLock(const vector<Vector3d>& path) const {
+bool FastExplorationManager::pathInsideWorkspaceLock(
+    const vector<Vector3d>& path, bool allow_entry_start) const {
   if (!ep_->mission_global_no_return_ || !ep_->mission_use_workspace_lock_ ||
       !mission_workspace_lock_received_)
     return true;
   for (const auto& pt : path) {
-    if (!pointInsideWorkspaceLock(pt)) return false;
+    if (!pointInsideWorkspaceLock(pt)) {
+      if (allow_entry_start && task_search_manager_ &&
+          entry_forward::pathStartsTowardInside(
+              path, mission_workspace_origin_, mission_workspace_dir_,
+              task_search_manager_->entryStartBackMargin())) {
+        ROS_WARN_THROTTLE(
+            1.0, "[entry_forward] allow inward launch from %.3fm outside entrance "
+                 "within %.2fm start margin; goal remains inside.",
+            -(path.front() - mission_workspace_origin_).dot(mission_workspace_dir_),
+            task_search_manager_->entryStartBackMargin());
+        return true;
+      }
+      return false;
+    }
   }
   return true;
 }
@@ -3274,7 +3288,8 @@ int FastExplorationManager::planExploreMotion(
     task_search_manager_->reportGoalFailure(next_pos);
     return FAIL;
   }
-  if (!use_forced_entry_target && !pathInsideWorkspaceLock(ed_->path_next_goal_)) {
+  if (!use_forced_entry_target &&
+      !pathInsideWorkspaceLock(ed_->path_next_goal_, use_entry_forward_target)) {
     // 2026-07-10: 即使 viewpoint 在门内，A* 也可能绕回起飞区；轨迹生成前必须拒绝穿门外路径。
     ROS_ERROR("[workspace_lock] reject path to next viewpoint because it crosses outside the door plane.");
     if (task_search_manager_) task_search_manager_->reportGoalFailure(next_pos);

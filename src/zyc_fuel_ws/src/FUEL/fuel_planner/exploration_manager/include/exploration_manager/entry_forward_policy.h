@@ -4,12 +4,33 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <vector>
 
 namespace fast_planner {
 namespace entry_forward {
 
 inline bool needsAdvance(double progress) {
   return progress >= -0.15 && progress < 1.0 - 1e-6;
+}
+
+// 入口起步允许真实起点略在门外，路径不能比起点更靠外；进门后不能再出门。
+// 目标仍须在门内，起点余量不用于放宽候选点的入口边界。
+inline bool pathStartsTowardInside(const std::vector<Eigen::Vector3d>& path,
+                                  const Eigen::Vector3d& origin,
+                                  const Eigen::Vector3d& forward,
+                                  double start_back_margin) {
+  if (path.empty()) return false;
+  const double start_progress = (path.front() - origin).dot(forward);
+  if (!(start_progress >= -std::max(0.0, start_back_margin)) ||
+      !((path.back() - origin).dot(forward) >= 0.0))
+    return false;
+  bool entered = start_progress >= 0.0;
+  for (const auto& point : path) {
+    const double progress = (point - origin).dot(forward);
+    if (!(progress >= (entered ? 0.0 : start_progress))) return false;
+    if (progress >= 0.0) entered = true;
+  }
+  return true;
 }
 
 struct Goal {

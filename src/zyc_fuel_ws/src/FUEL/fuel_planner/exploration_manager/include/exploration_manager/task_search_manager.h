@@ -61,6 +61,7 @@ public:
   bool isRecoveryCandidateUseful(const Eigen::Vector3d& candidate) const;
   bool isTaskMotionAllowed(const Eigen::Vector3d& candidate) const;
   bool isMissionBoundaryMotionAllowed(const Eigen::Vector3d& candidate) const;
+  double entryStartBackMargin() const { return inside_return_margin_; }
   bool isTaskPathAllowed(const std::vector<Eigen::Vector3d>& path) const;
   // 2026-07-28: 短回撤只豁免路径开头方向，门平面、旧通道和逐点障碍约束仍全部保留。
   bool isRecoveryPathAllowed(const std::vector<Eigen::Vector3d>& path,
