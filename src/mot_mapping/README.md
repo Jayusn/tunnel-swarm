@@ -40,3 +40,38 @@ The test starts and stops its own local ROS master and perception launch.
 `FAPP_SMOKE_PORT` 指定独立 master 端口（同时设置对应 `ROS_MASTER_URI`）。
 深度试验在完整回归的静态采样变化样例中出现误报，作为负向试验结果记录。
 完整录包指标与原因分析保存在本地 `.fapp_ball_debug/association_depth/`。
+
+## 频率、确认帧数与位移对照（2026-10-05）
+
+运动确认帧数现在由启动参数 `detection/motion_confirmation_frames` 控制，
+支持 3、4、5；同步控制连续观测历史的长度及确认所需次数。
+位移仍为窗口内实测中心的最大两两距离，速度仍取实测相邻段速度的均值，
+新点证据仍比较前两帧原始观测；改变确认帧数不会改变新点核验的历史长度。
+默认独立 launch 保持 5 Hz、3 帧、8 cm，两项旧试验开关保持关闭。
+
+复现其他组合（试验用途）：
+
+```bash
+roslaunch mot_mapping uav1_detection.launch input_rate:=10 motion_confirmation_frames:=5 motion_displacement:=0.08
+```
+
+本轮比较 5/10 Hz、3/4/5 帧、6/8/10 cm 的 18 种组合。
+5 Hz 下 4 帧、5 帧减少静止框，但丢失原有快摆命中；3 帧、6 cm
+保留已有命中并增加慢摆检出，却增加静止框。10 Hz 也出现原有命中损失。
+没有组合同时通过冻结命中与静止杂框改善验收，保持默认值。
+
+频率参数是限频设置，不是实际频率保证。原包有采样/录包空缺；
+本轮 10 Hz 输入取真实原始云，并补回原始话题漏录但限频话题保留的真实帧，
+不插值、不重复生成帧。独立矩阵使用冻结输入，实际 launch 的限频效果另测。
+完整逐时刻结果、实际频率、缺输出及原因保存在 `.fapp_ball_debug/motion_sweep/`。
+
+新增确认回归可按组合执行（自建 localhost ROS master，真实 5/10 Hz 发布）：
+
+```bash
+python3 src/mot_mapping/test/motion_confirmation_smoke.py --rate 10 --frames 5 --displacement 0.08 --port 11620
+```
+
+该回归检查首次确认、停止后撤销、20 cm 六点稀疏目标、径向运动、贴墙换向、
+无人机移动和四路输出一致性。默认完整感知回归仍保留。
+这些感知验证不等同于 FAPP 规划/控制避障验证；当前静态地图输出和规划接入
+尚未启用，状态消息的不确定性字段尚未填充。

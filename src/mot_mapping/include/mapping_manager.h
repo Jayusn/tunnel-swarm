@@ -60,6 +60,7 @@ struct MapParam {
   double thresh_dist;
   double thresh_var;
   double motion_displacement;
+  int motion_confirmation_frames;
   double min_motion_speed;
   double min_motion_novel_fraction;
   double max_above_uav;

@@ -2,6 +2,8 @@
   <arg name="cloud_topic" default="/UAV1/fast_lio/cloud_registered"/>
   <arg name="odom_topic" default="/UAV1/fast_lio/Odom_high_freq"/>
   <arg name="input_rate" default="5.0"/>
+  <arg name="motion_confirmation_frames" default="3"/>
+  <arg name="motion_displacement" default="0.08"/>
   <arg name="geometry_enabled" default="false"/>
   <arg name="depth_evidence_enabled" default="false"/>
   <node pkg="topic_tools" type="throttle" name="uav1_fapp_cloud_throttle"
@@ -17,7 +19,8 @@
       <param name="dbscan/max_cluster" value="800"/>
       <param name="detection/thresh_dist" value="0.06"/>
       <param name="detection/thresh_var" value="0.28"/>
-      <param name="detection/motion_displacement" value="0.08"/>
+      <param name="detection/motion_displacement" value="$(arg motion_displacement)"/>
+      <param name="detection/motion_confirmation_frames" value="$(arg motion_confirmation_frames)"/>
       <param name="detection/min_motion_speed" value="0.15"/>
       <param name="detection/max_above_uav" value="1.5"/>
       <param name="association/geometry_enabled" value="$(arg geometry_enabled)"/>

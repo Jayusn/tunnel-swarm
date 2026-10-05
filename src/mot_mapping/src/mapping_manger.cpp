@@ -107,6 +107,9 @@ void MappingRos::init() {
   nh.param("detection/thresh_dist", mp_->thresh_dist, 0.08);
   nh.param("detection/thresh_var", mp_->thresh_var, 0.28);
   nh.param("detection/motion_displacement", mp_->motion_displacement, 0.06);
+  nh.param("detection/motion_confirmation_frames", mp_->motion_confirmation_frames, 3);
+  if (mp_->motion_confirmation_frames < 3 || mp_->motion_confirmation_frames > 5)
+    throw std::runtime_error("motion_confirmation_frames must be 3, 4 or 5");
   nh.param("detection/min_motion_speed", mp_->min_motion_speed, 0.15);
   nh.param("detection/min_motion_novel_fraction", mp_->min_motion_novel_fraction, 0.3);
   nh.param("detection/max_above_uav", mp_->max_above_uav, 1.5);
@@ -303,7 +306,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
   pointsBodyToWorld(cloud_filtered, cloud_world);
   pointsBodyToWorld(latest_cloud, nonfilter_pts);
 
-  // Compare the same three-observation span used by the motion measurement.
+  // Compare novelty against the two preceding raw observations.
   PointsPtr observed_history[2];
   MapData sensor_history[2];
   if (!buffer.empty()) observed_history[0] = buffer.front();
@@ -689,13 +692,14 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     tracker->observed_dense_size = candidate.dense_size;
     tracker->last_seen_frame = frame_num;
     tracker->observations.push_back({cloud_stamp_, candidate.state.position});
-    if (tracker->observations.size() > 3) tracker->observations.pop_front();
+    if (tracker->observations.size() > mp_->motion_confirmation_frames)
+      tracker->observations.pop_front();
 
     double displacement = 0.0;
     for (const auto& first : tracker->observations)
       for (const auto& second : tracker->observations)
         displacement = std::max(displacement, (first.second - second.second).norm());
-    // Registered centers are already ego-motion compensated. Average the two
+    // Registered centers are already ego-motion compensated. Average the
     // measured segment speeds: reversals do not cancel, and an input gap must
     // not dilute the preceding fast observation into a slow time average.
     double observed_speed = 0.0;
@@ -710,13 +714,13 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
       }
     }
     if (speed_samples > 0) observed_speed /= speed_samples;
-    bool has_motion = tracker->observations.size() == 3 &&
+    bool has_motion = tracker->observations.size() == mp_->motion_confirmation_frames &&
                       displacement >= mp_->motion_displacement &&
                       observed_speed >= mp_->min_motion_speed;
     if (candidate.changed) tracker->last_change_stamp = cloud_stamp_;
     bool recently_changed = tracker->last_change_stamp >= tracker->observations.front().first;
     // A tracked object must still have measured motion, not just EKF velocity.
-    // Novelty may occur in the first observation, before three-frame confirmation.
+    // Novelty may occur in the first observation, before motion confirmation.
     // Sampling can move a cluster center along an unchanged surface. Refresh
     // motion only when its dense return also changes across the raw observed
     // clouds; keep the existing brief support through swing turns.
