@@ -15,7 +15,17 @@ def main():
     parser.add_argument('--rate', type=int, choices=(5, 10), required=True)
     parser.add_argument('--frames', type=int, choices=(3, 4, 5), required=True)
     parser.add_argument('--displacement', type=float, default=.08)
+    parser.add_argument('--min-speed', type=float, default=.15)
+    parser.add_argument('--min-novel', type=float, default=.3)
+    parser.add_argument('--tracked-novel', type=float)
+    parser.add_argument('--min-cluster', type=int, default=6)
     parser.add_argument('--port', type=int, default=11620)
+    parser.add_argument('--background-consistency', action='store_true')
+    parser.add_argument('--background-distance', type=float, default=.02)
+    parser.add_argument('--background-fraction', type=float, default=.8)
+    parser.add_argument('--background-before-association', action='store_true')
+    parser.add_argument('--shape-consistency', action='store_true')
+    parser.add_argument('--planes', type=int, default=6)
     args = parser.parse_args()
     os.environ['ROS_MASTER_URI'] = 'http://127.0.0.1:' + str(args.port)
     os.environ['ROS_IP'] = '127.0.0.1'
@@ -41,12 +51,21 @@ def main():
                 'rosrun', 'mot_mapping', 'mapping_node', '__name:=mapping_node',
                 '_ros/lidar_topic:=/motion_test/cloud', '_ros/odom_topic:=/motion_test/odom',
                 '_ros/frame_id:=UAV1/camera_init', '_dbscan/core_pts:=3',
-                '_dbscan/tolerance:=0.02', '_dbscan/min_cluster:=6',
+                '_dbscan/tolerance:=0.02', '_dbscan/min_cluster:=' + str(args.min_cluster),
                 '_dbscan/max_cluster:=800', '_detection/thresh_dist:=0.06',
                 '_detection/thresh_var:=0.28',
                 '_detection/motion_confirmation_frames:=' + str(args.frames),
                 '_detection/motion_displacement:=' + str(args.displacement),
-                '_detection/min_motion_speed:=0.15',
+                '_detection/min_motion_speed:=' + str(args.min_speed),
+                '_detection/min_motion_novel_fraction:=' + str(args.min_novel),
+                '_detection/tracked_motion_novel_fraction:=' + str(
+                    args.min_novel if args.tracked_novel is None else args.tracked_novel),
+                '_background_consistency/enabled:=' + str(args.background_consistency).lower(),
+                '_background_consistency/distance:=' + str(args.background_distance),
+                '_background_consistency/fraction:=' + str(args.background_fraction),
+                '_background_consistency/post_association:=' + str(not args.background_before_association).lower(),
+                '_detection/shape_consistency_enabled:=' + str(args.shape_consistency).lower(),
+                '_background_plane/max_planes:=' + str(args.planes),
                 '_association/geometry_enabled:=false', '_detection/depth_evidence_enabled:=false',
                 '__ns:=/UAV1/fapp'], stdout=log, stderr=subprocess.STDOUT,
                 start_new_session=True)
@@ -121,8 +140,33 @@ def main():
         smoke = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(smoke)
         smoke.exercise_20cm_targets(publish, count)
+        # A flat 20 cm return must not become a background plane simply
+        # because its own points are planar; six points cover the disk rim.
+        for _ in range(12):
+            publish(None, points=backdrop)
+        for step in range(12):
+            center = 1.5 + step * .08
+            disk = [(center + .1 * math.cos(angle), -.6,
+                     1 + .1 * math.sin(angle))
+                    for angle in [i * math.pi / 3 for i in range(6)]]
+            stamp = publish(None, points=backdrop + disk)
+            if step >= 4:
+                assert count(stamp) == 1, ('20 cm flat sparse target lost', step)
+        # Satisfy both the displacement window and the two-scan 6 cm novelty
+        # gate; adding confirmation frames does not extend novelty history.
+        slow_speed = max(args.min_speed + .02,
+                         args.rate * args.displacement / (args.frames - 1) * 1.1,
+                         args.rate * .06 / 2 * 1.1)
+        for sign in (1, -1):
+            for _ in range(12):
+                publish(None, points=backdrop)
+            for step in range(18):
+                stamp = publish(None, points=backdrop + sparse(
+                    2 + sign * step * slow_speed / args.rate, -.6))
+                if step >= 5:
+                    assert count(stamp) == 1, ('20 cm slow target lost', sign, step)
         assert node.poll() is None, 'Detector exited'
-        print('PASS rate={} frames={} displacement={} first={} six-point/radial/wall/reversal/ego/output'.format(
+        print('PASS rate={} frames={} displacement={} first={} six-point/radial/flat/slow/wall/reversal/ego/output'.format(
             args.rate, args.frames, args.displacement, first), flush=True)
     finally:
         for proc in (node, master):

@@ -1,6 +1,7 @@
 #pragma once
 #include <ros/ros.h>
 #include <queue>
+#include <vector>
 #include <Eigen/Geometry>
 
 struct Ekf {
@@ -17,8 +18,11 @@ struct Ekf {
   std::deque<Eigen::MatrixXd> InnoCov_list;
   std::deque<std::pair<ros::Time, Eigen::Vector3d>> observations;
   ros::Time last_change_stamp, last_motion_stamp, last_dynamic_stamp;
+  ros::Time last_published_stamp;
   int last_seen_frame = 0;
   Eigen::Vector3d observed_dense_size = Eigen::Vector3d::Zero();
+  std::vector<Eigen::Vector3d> observed_dense_points;
+  Eigen::Vector3d observed_lidar_direction = Eigen::Vector3d::Zero();
 
   Ekf(double _dt) : dt(_dt) {
     A.setIdentity(6, 6);
@@ -75,6 +79,9 @@ struct Ekf {
     update_num = 0;
     id = id_;
     observations.clear();
+    observed_dense_points.clear();
+    observed_lidar_direction.setZero();
+    last_published_stamp = ros::Time();
     last_change_stamp = ros::Time();
     last_motion_stamp = ros::Time();
     last_dynamic_stamp = ros::Time();

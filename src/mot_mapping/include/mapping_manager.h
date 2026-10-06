@@ -63,6 +63,7 @@ struct MapParam {
   int motion_confirmation_frames;
   double min_motion_speed;
   double min_motion_novel_fraction;
+  double tracked_motion_novel_fraction;
   double max_above_uav;
   bool geometry_association_enabled;
   bool depth_evidence_enabled;
@@ -72,6 +73,14 @@ struct MapParam {
   double background_plane_distance;
   int background_plane_min_points;
   int background_plane_max_planes;
+  bool background_consistency_enabled;
+  double background_consistency_distance;
+  double background_consistency_fraction;
+  int background_consistency_frames;
+  bool background_consistency_post_association;
+  bool shape_consistency_enabled;
+  double shape_consistency_distance;
+  double shape_consistency_fraction;
   // Lidar Params
   Eigen::Vector3d Range;
   // ROS Params
@@ -107,6 +116,7 @@ private:
   std::deque<PointsPtr> buffer;
   std::deque<MapData> observed_sensor_poses;
   std::deque<PointsPtr> input_point;
+  std::deque<std::shared_ptr<pcl::search::KdTree<PointType>>> background_history_;
   std::vector<pcl::PointIndices> deleted_indices;
   std::vector<BoxPointType> delete_boxes;
 

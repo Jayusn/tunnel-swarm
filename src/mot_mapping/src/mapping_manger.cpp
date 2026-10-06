@@ -112,10 +112,15 @@ void MappingRos::init() {
     throw std::runtime_error("motion_confirmation_frames must be 3, 4 or 5");
   nh.param("detection/min_motion_speed", mp_->min_motion_speed, 0.15);
   nh.param("detection/min_motion_novel_fraction", mp_->min_motion_novel_fraction, 0.3);
+  nh.param("detection/tracked_motion_novel_fraction", mp_->tracked_motion_novel_fraction,
+           mp_->min_motion_novel_fraction);
   nh.param("detection/max_above_uav", mp_->max_above_uav, 1.5);
   nh.param("association/geometry_enabled", mp_->geometry_association_enabled, false);
   nh.param("detection/depth_evidence_enabled", mp_->depth_evidence_enabled, false);
-  if (mp_->depth_evidence_enabled) {
+  nh.param("detection/shape_consistency_enabled", mp_->shape_consistency_enabled, false);
+  nh.param("detection/shape_consistency_distance", mp_->shape_consistency_distance, 0.05);
+  nh.param("detection/shape_consistency_fraction", mp_->shape_consistency_fraction, 0.5);
+  if (mp_->depth_evidence_enabled || mp_->shape_consistency_enabled) {
     std::vector<double> offset;
     // Same MID360 offset as FAST-LIO's mid360.yaml; use its live parameter
     // when the sensor stack is running. Replay supplies that parameter too.
@@ -123,13 +128,18 @@ void MappingRos::init() {
              std::vector<double>{-0.011, -0.02329, 0.04412});
     if (offset.size() != 3) throw std::runtime_error("FAST-LIO extrinsic_T requires three values");
     mp_->lidar_offset = Eigen::Vector3d(offset[0], offset[1], offset[2]);
-    ROS_INFO_STREAM("FAPP depth evidence lidar offset: " << mp_->lidar_offset.transpose());
+    ROS_INFO_STREAM("FAPP lidar offset: " << mp_->lidar_offset.transpose());
   }
   nh.param("background_surface/enabled", mp_->background_surface_enabled, true);
   nh.param("background_plane/enabled", mp_->background_plane_enabled, true);
   nh.param("background_plane/distance", mp_->background_plane_distance, 0.03);
   nh.param("background_plane/min_points", mp_->background_plane_min_points, 100);
   nh.param("background_plane/max_planes", mp_->background_plane_max_planes, 6);
+  nh.param("background_consistency/enabled", mp_->background_consistency_enabled, false);
+  nh.param("background_consistency/distance", mp_->background_consistency_distance, 0.02);
+  nh.param("background_consistency/fraction", mp_->background_consistency_fraction, 0.8);
+  nh.param("background_consistency/min_frames", mp_->background_consistency_frames, 4);
+  nh.param("background_consistency/post_association", mp_->background_consistency_post_association, true);
   nh.param("lidar/range_x", mp_->Range[0], 15.0);
   nh.param("lidar/range_y", mp_->Range[1], 15.0);
   nh.param("lidar/range_z", mp_->Range[2], 1.0);
@@ -329,6 +339,20 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
   vox.setLeafSize(0.05, 0.05, 0.05);
   vox.filter(*ClusterPoints);
 
+  // Retain bounded, registered observations, including foreground returns.
+  // Keeping foreground prevents a moving object's old position becoming a
+  // clean background plane merely because it was previously classified moving.
+  auto background_history = background_history_;
+  if (mp_->background_consistency_enabled) {
+    std::shared_ptr<pcl::search::KdTree<PointType>> tree;
+    if (!ClusterPoints->empty()) {
+      tree = std::make_shared<pcl::search::KdTree<PointType>>();
+      tree->setInputCloud(ClusterPoints);
+    }
+    background_history_.push_back(tree);
+    if (background_history_.size() > 12) background_history_.pop_front();
+  }
+
   Remaining_Points = ClusterPoints;
 
   PointsPtr All_Points(new Points);
@@ -440,8 +464,10 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     ObjectState state;
     pcl::PointIndices indices;
     bool changed;
+    bool static_background;
     double novel_fraction;
     Eigen::Vector3d dense_size;
+    std::vector<Eigen::Vector3d> dense_points;
   };
   DepthView depth_views[2];
   pcl::search::KdTree<PointType> observation_trees[2];
@@ -596,6 +622,56 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
       continue;
     }
 
+    // A changing sample on a broad, repeatedly observed plane is background
+    // even if the small current fragment alone does not look planar. Only
+    // actual historical neighborhoods qualify; no unbounded plane extension.
+    bool stable_background = false;
+    if (mp_->background_consistency_enabled) {
+      int supported_frames = 0;
+      for (const auto& tree : background_history) {
+        if (!tree) continue;
+        std::vector<int> local_indices;
+        std::vector<float> local_distances;
+        if (tree->radiusSearch(query, 0.35, local_indices, local_distances) < 20) continue;
+        auto points = tree->getInputCloud();
+        Eigen::Vector3d mean = Eigen::Vector3d::Zero();
+        for (int index : local_indices) mean += points->points[index].getVector3fMap().cast<double>();
+        mean /= local_indices.size();
+        Eigen::Matrix3d cov = Eigen::Matrix3d::Zero();
+        for (int index : local_indices) {
+          Eigen::Vector3d d = points->points[index].getVector3fMap().cast<double>() - mean;
+          cov += d * d.transpose();
+        }
+        cov /= local_indices.size();
+        Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> fit(cov);
+        bool broad_plane = fit.eigenvalues()[0] < 0.01 * fit.eigenvalues()[2] &&
+                           fit.eigenvalues()[1] >= 0.005;
+        if (!broad_plane) continue;
+        Eigen::Vector3d normal = fit.eigenvectors().col(0);
+        size_t supported = 0;
+        for (const auto& point : cluster) {
+          if ((point.getVector3fMap() - cluster[dense_index].getVector3fMap()).squaredNorm() >
+              mp_->tolerance) continue;
+          Eigen::Vector3d d = point.getVector3fMap().cast<double>() - mean;
+          double distance = std::abs(normal.dot(d));
+          if (distance <= mp_->background_consistency_distance) ++supported;
+        }
+        if (supported >= mp_->background_consistency_fraction * dense_count) ++supported_frames;
+      }
+      ROS_DEBUG_STREAM("FAPP_BACKGROUND " << cloud_stamp_.toNSec() << " "
+          << center.transpose() << " " << supported_frames << " " << background_history.size());
+      if (supported_frames >= mp_->background_consistency_frames) {
+        ROS_DEBUG_STREAM("FAPP_BACKGROUND_MATCH " << cloud_stamp_.toNSec() << " "
+            << center.transpose() << " stable_background");
+        stable_background = true;
+      }
+    }
+
+    if (stable_background && !mp_->background_consistency_post_association) {
+      ROS_DEBUG_STREAM("FAPP_REJECT " << cloud_stamp_.toNSec() << " "
+          << center.transpose() << " stable_background_before_association");
+      continue;
+    }
     double avg_dist = 0.0, var_dist = 0.0;
     for (double distance : distances) avg_dist += distance;
     if (!distances.empty()) avg_dist /= distances.size();
@@ -606,9 +682,17 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     }
     Candidate candidate;
     candidate.state.position = center;
+    candidate.static_background = stable_background;
     candidate.state.size = size;
     candidate.indices = indices;
     candidate.dense_size = dense_size;
+    if (mp_->shape_consistency_enabled) {
+      for (const auto& point : cluster) {
+        if ((point.getVector3fMap() - cluster[dense_index].getVector3fMap()).squaredNorm() <=
+            mp_->tolerance)
+          candidate.dense_points.push_back(point.getVector3fMap().cast<double>() - center);
+      }
+    }
     candidate.novel_fraction = static_cast<double>(std::max(novel_points[0],
                                                           novel_points[1])) / dense_count;
     candidate.changed = avg_dist > mp_->thresh_dist && avg_dist < 5.0 &&
@@ -672,6 +756,42 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
   for (int i = 0; i < candidates.size(); ++i) {
     int j = matched[i];
     const auto& candidate = candidates[i];
+    bool recently_published = j >= 0 && trackers[j]->last_seen_frame == frame_num - 1 &&
+        !trackers[j]->last_published_stamp.isZero() &&
+        (cloud_stamp_ - trackers[j]->last_published_stamp).toSec() <= 0.6;
+    bool shape_consistent = true;
+    Eigen::Vector3d lidar_direction = Eigen::Vector3d::Zero();
+    if (mp_->shape_consistency_enabled) {
+      lidar_direction = candidate.state.position - (md_->T + md_->R * mp_->lidar_offset);
+      if (lidar_direction.norm() > 0.0) lidar_direction.normalize();
+      // Sparse or newly acquired tracks retain the original motion decision.
+      // A substantially different viewing direction also leaves shape unknown.
+      if (j >= 0 && trackers[j]->last_seen_frame == frame_num - 1 &&
+          trackers[j]->last_dynamic_stamp == trackers[j]->observations.back().first &&
+          candidate.dense_points.size() >= 8 && trackers[j]->observed_dense_points.size() >= 8 &&
+          lidar_direction.dot(trackers[j]->observed_lidar_direction) >= std::cos(0.2617993877991494)) {
+        const auto& previous = trackers[j]->observed_dense_points;
+        size_t forward = 0, backward = 0;
+        double squared_distance = mp_->shape_consistency_distance * mp_->shape_consistency_distance;
+        for (const auto& current : candidate.dense_points) {
+          if (std::any_of(previous.begin(), previous.end(), [&](const Eigen::Vector3d& old) {
+              return (current - old).squaredNorm() <= squared_distance;
+          })) ++forward;
+        }
+        for (const auto& old : previous) {
+          if (std::any_of(candidate.dense_points.begin(), candidate.dense_points.end(),
+              [&](const Eigen::Vector3d& current) {
+                return (current - old).squaredNorm() <= squared_distance;
+              })) ++backward;
+        }
+        double fraction = std::max(static_cast<double>(forward) / candidate.dense_points.size(),
+                                   static_cast<double>(backward) / previous.size());
+        shape_consistent = fraction >= mp_->shape_consistency_fraction;
+        ROS_DEBUG_STREAM("FAPP_SHAPE " << cloud_stamp_.toNSec() << " "
+            << candidate.state.position.transpose() << " " << previous.size() << " "
+            << candidate.dense_points.size() << " " << fraction << " " << shape_consistent);
+      }
+    }
     if (j < 0) {
       auto tracker = std::make_shared<Ekf>(0.02);
       tracker->reset(candidate.state.position, id++);
@@ -690,6 +810,10 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     }
     auto& tracker = trackers[j];
     tracker->observed_dense_size = candidate.dense_size;
+    if (mp_->shape_consistency_enabled) {
+      tracker->observed_dense_points = candidate.dense_points;
+      tracker->observed_lidar_direction = lidar_direction;
+    }
     tracker->last_seen_frame = frame_num;
     tracker->observations.push_back({cloud_stamp_, candidate.state.position});
     if (tracker->observations.size() > mp_->motion_confirmation_frames)
@@ -724,8 +848,11 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     // Sampling can move a cluster center along an unchanged surface. Refresh
     // motion only when its dense return also changes across the raw observed
     // clouds; keep the existing brief support through swing turns.
+    double required_novel_fraction = recently_published && shape_consistent ?
+        std::min(mp_->min_motion_novel_fraction, mp_->tracked_motion_novel_fraction) :
+        mp_->min_motion_novel_fraction;
     if (has_motion && (recently_changed || !tracker->last_dynamic_stamp.isZero()) &&
-        candidate.novel_fraction >= mp_->min_motion_novel_fraction)
+        candidate.novel_fraction >= required_novel_fraction)
       tracker->last_motion_stamp = cloud_stamp_;
     bool confirmed = !tracker->last_motion_stamp.isZero() &&
                      (cloud_stamp_ - tracker->last_motion_stamp).toSec() <= 0.6;
@@ -736,8 +863,22 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
         << candidate.novel_fraction << " " << confirmed);
     if (!confirmed) continue;
     tracker->last_dynamic_stamp = cloud_stamp_;
+    // Apply background evidence to publication after the original association
+    // and motion bookkeeping. Removing a candidate earlier can redirect a
+    // real moving object's association and erase its startup evidence.
+    if (candidate.static_background) {
+      ROS_DEBUG_STREAM("FAPP_REJECT " << cloud_stamp_.toNSec() << " "
+          << candidate.state.position.transpose() << " stable_background");
+      continue;
+    }
+    if (!shape_consistent) {
+      ROS_DEBUG_STREAM("FAPP_REJECT " << cloud_stamp_.toNSec() << " "
+          << candidate.state.position.transpose() << " incoherent_dense_shape");
+      continue;
+    }
 
     int detection_index = detections.size();
+    tracker->last_published_stamp = cloud_stamp_;
     detections.push_back(candidate.state);
     published_pairs.push_back({detection_index, j});
     deleted_indices.push_back(candidate.indices);

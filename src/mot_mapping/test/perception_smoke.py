@@ -62,8 +62,16 @@ def main():
         launch_log = open('/tmp/match_fapp_smoke_' + port + '.log', 'w')
         launch = subprocess.Popen(['roslaunch', 'mot_mapping', 'uav1_detection.launch',
                                    'input_rate:=20',
+                                   'motion_displacement:=' + os.environ.get('FAPP_SMOKE_DISPLACEMENT', '0.08'),
+                                   'min_motion_speed:=' + os.environ.get('FAPP_SMOKE_SPEED', '0.15'),
+                                   'min_motion_novel_fraction:=' + os.environ.get('FAPP_SMOKE_NOVEL', '0.3'),
+                                   'tracked_motion_novel_fraction:=' + os.environ.get('FAPP_SMOKE_TRACKED_NOVEL', os.environ.get('FAPP_SMOKE_NOVEL', '0.3')),
+                                   'min_cluster:=' + os.environ.get('FAPP_SMOKE_MIN_CLUSTER', '6'),
                                    'geometry_enabled:=' + os.environ.get('FAPP_SMOKE_GEOMETRY', 'false'),
-                                   'depth_evidence_enabled:=' + os.environ.get('FAPP_SMOKE_DEPTH', 'false')], stdout=launch_log,
+                                   'depth_evidence_enabled:=' + os.environ.get('FAPP_SMOKE_DEPTH', 'false'),
+                                   'background_consistency_enabled:=' + os.environ.get('FAPP_SMOKE_BACKGROUND', 'false'),
+                                   'background_consistency_post_association:=' + os.environ.get('FAPP_SMOKE_BACKGROUND_POST', 'true'),
+                                   'shape_consistency_enabled:=' + os.environ.get('FAPP_SMOKE_SHAPE', 'false')], stdout=launch_log,
                                   stderr=subprocess.STDOUT, start_new_session=True)
         received = {'cloud': [], 'boxes': [], 'tracks': [], 'states': []}
         subscribers = [

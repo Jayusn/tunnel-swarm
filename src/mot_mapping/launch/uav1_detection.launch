@@ -4,8 +4,15 @@
   <arg name="input_rate" default="5.0"/>
   <arg name="motion_confirmation_frames" default="3"/>
   <arg name="motion_displacement" default="0.08"/>
+  <arg name="min_motion_speed" default="0.15"/>
+  <arg name="min_motion_novel_fraction" default="0.3"/>
+  <arg name="tracked_motion_novel_fraction" default="$(arg min_motion_novel_fraction)"/>
+  <arg name="min_cluster" default="6"/>
   <arg name="geometry_enabled" default="false"/>
   <arg name="depth_evidence_enabled" default="false"/>
+  <arg name="background_consistency_enabled" default="false"/>
+  <arg name="background_consistency_post_association" default="true"/>
+  <arg name="shape_consistency_enabled" default="false"/>
   <node pkg="topic_tools" type="throttle" name="uav1_fapp_cloud_throttle"
         args="messages $(arg cloud_topic) $(arg input_rate) /UAV1/fapp/cloud_registered_throttled"/>
   <group ns="UAV1/fapp">
@@ -15,16 +22,21 @@
       <param name="ros/frame_id" value="UAV1/camera_init"/>
       <param name="dbscan/core_pts" value="3"/>
       <param name="dbscan/tolerance" value="0.02"/>
-      <param name="dbscan/min_cluster" value="6"/>
+      <param name="dbscan/min_cluster" value="$(arg min_cluster)"/>
       <param name="dbscan/max_cluster" value="800"/>
       <param name="detection/thresh_dist" value="0.06"/>
       <param name="detection/thresh_var" value="0.28"/>
       <param name="detection/motion_displacement" value="$(arg motion_displacement)"/>
       <param name="detection/motion_confirmation_frames" value="$(arg motion_confirmation_frames)"/>
-      <param name="detection/min_motion_speed" value="0.15"/>
+      <param name="detection/min_motion_speed" value="$(arg min_motion_speed)"/>
+      <param name="detection/min_motion_novel_fraction" value="$(arg min_motion_novel_fraction)"/>
+      <param name="detection/tracked_motion_novel_fraction" value="$(arg tracked_motion_novel_fraction)"/>
       <param name="detection/max_above_uav" value="1.5"/>
       <param name="association/geometry_enabled" value="$(arg geometry_enabled)"/>
       <param name="detection/depth_evidence_enabled" value="$(arg depth_evidence_enabled)"/>
+      <param name="background_consistency/enabled" value="$(arg background_consistency_enabled)"/>
+      <param name="background_consistency/post_association" value="$(arg background_consistency_post_association)"/>
+      <param name="detection/shape_consistency_enabled" value="$(arg shape_consistency_enabled)"/>
       <param name="background_surface/enabled" value="true"/>
       <param name="background_plane/enabled" value="true"/>
       <param name="background_plane/distance" value="0.03"/>
