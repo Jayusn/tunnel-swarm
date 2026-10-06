@@ -106,6 +106,74 @@ def exercise_mixed_corner(publish, count):
         assert count(stamp) == 0, ('Mixed static corner inherited motion', step)
 
 
+def reference_cap(center, y=-.6):
+    return [(center + x, y + dy, 1 + z) for x, dy, z in
+            [(.1, 0, 0), (.06, .08, 0), (.06, -.08, 0),
+             (.06, 0, .08), (.06, 0, -.08), (0, .0707106781, .0707106781)]]
+
+
+def reference_backdrop():
+    points = [(-4, y * .1, .4 + z * .1) for y in range(-20, 21) for z in range(15)]
+    for center in (1, 1.4, 1.8):
+        points += reference_cap(center, -2.6)
+    return points
+
+
+def exercise_reference_targets(publish, count, motion_enabled, reference_enabled, frames=3):
+    # The initial backdrop is frozen. Real foreground travels out and back;
+    # its previously observed positions must never enter that background.
+    wall = reference_backdrop()
+
+    cap = reference_cap
+
+    for _ in range(5):
+        publish(None, points=wall)
+    first = None
+    for step in range(7):
+        stamp = publish(None, points=wall + cap(-2 + step * .12))
+        if count(stamp) and first is None:
+            first = step + 1
+    assert first == frames, ('Post-capture first detection delayed', first, frames)
+    # A short stop leaves a recently published track with older motion support.
+    for _ in range(3):
+        stamp = publish(None, points=wall + cap(-1.28))
+        assert count(stamp) == 1, 'Short turn lost existing support'
+    stamp = publish(None, points=wall)
+    assert count(stamp) == 0, 'Missing observation published a prediction'
+    stamp = publish(None, points=wall + cap(-1.10))
+    assert count(stamp) == int(motion_enabled), ('One-frame gap recovery incorrect', motion_enabled)
+    for step in range(1, 8):
+        stamp = publish(None, points=wall + cap(-1.10 - step * .12))
+        if step >= frames:
+            assert count(stamp) == 1, ('Frozen reference learned a repeated trajectory', step)
+    for _ in range(14):
+        stamp = publish(None, points=wall + cap(-1.94))
+    assert count(stamp) == 0, 'Reference evidence kept a stopped target moving'
+    for _ in range(5):
+        publish(None, points=wall)
+    for step in range(5):
+        stamp = publish(None, points=cap(.1 + step * .12, -2.6))
+    assert count(stamp) == 1, 'Foreground for static-fragment competition was lost'
+    # These three curved fragments were present during capture. Alternating
+    # their returns must not inherit the foreground's measured motion.
+    for step in range(12):
+        stamp = publish(None, points=cap((1, 1.4, 1.8)[step % 3], -2.6))
+        if reference_enabled:
+            assert count(stamp) == 0, ('Frozen static fragment inherited motion', step)
+    for _ in range(5):
+        publish(None, points=wall)
+    for step in range(7):
+        stamp = publish(None, points=wall + cap(-2 + step * .12))
+    for _ in range(3):
+        publish(None, points=wall + cap(-1.28))
+    for _ in range(2):
+        stamp = publish(None, points=wall)
+        assert count(stamp) == 0, 'Long gap published an unobserved target'
+    for step in range(3):
+        stamp = publish(None, points=wall + cap(-1.10 + step * .12))
+        assert count(stamp) == int(step == 2), ('Two-frame gap bypassed fresh confirmation', step)
+
+
 def main():
     port = os.environ.get('FAPP_SMOKE_PORT', '11431')
     master = subprocess.Popen(['roscore', '-p', port], stdout=subprocess.DEVNULL,
@@ -132,7 +200,11 @@ def main():
                                    'background_consistency_post_association:=' + os.environ.get('FAPP_SMOKE_BACKGROUND_POST', 'true'),
                                    'shape_consistency_enabled:=' + os.environ.get('FAPP_SMOKE_SHAPE', 'false'),
                                    'shape_consistency_distance:=' + os.environ.get('FAPP_SMOKE_SHAPE_DISTANCE', '0.05'),
-                                   'shape_consistency_fraction:=' + os.environ.get('FAPP_SMOKE_SHAPE_FRACTION', '0.5')], stdout=launch_log,
+                                   'shape_consistency_fraction:=' + os.environ.get('FAPP_SMOKE_SHAPE_FRACTION', '0.5'),
+                                   'background_reference_enabled:=' + os.environ.get('FAPP_SMOKE_REFERENCE', 'false'),
+                                   'reference_motion_enabled:=' + os.environ.get('FAPP_SMOKE_REFERENCE_MOTION', 'false'),
+                                   'background_reference_distance:=' + os.environ.get('FAPP_SMOKE_REFERENCE_DISTANCE', '0.03'),
+                                   'background_reference_fraction:=' + os.environ.get('FAPP_SMOKE_REFERENCE_FRACTION', '0.5')], stdout=launch_log,
                                   stderr=subprocess.STDOUT, start_new_session=True)
         received = {'cloud': [], 'boxes': [], 'tracks': [], 'states': []}
         subscribers = [
@@ -198,6 +270,11 @@ def main():
                 'Non-finite direction at a stop / turn'
             return number
 
+        reference_enabled = any(os.environ.get(key, 'false') == 'true' for key in
+                                ('FAPP_SMOKE_REFERENCE', 'FAPP_SMOKE_REFERENCE_MOTION'))
+        if reference_enabled:
+            for _ in range(22):
+                publish(None, points=reference_backdrop())
         for center in [2, 2, 2, 2]:
             static_stamp = publish(center)
         assert count(static_stamp) == 0, 'Stationary object classified as moving'
@@ -374,6 +451,8 @@ def main():
         exercise_dense_startup(publish, count)
         if os.environ.get('FAPP_SMOKE_LOCAL_PLANES', 'false') == 'true':
             exercise_mixed_corner(publish, count)
+        # Recovery interval limits are verified with exact 5 Hz timestamps by
+        # motion_confirmation_smoke; this full test uses wall-clock intervals.
 
         def height_points(center, z, y):
             return [(center + x, y + dy, z + dz) for x, dy, dz in

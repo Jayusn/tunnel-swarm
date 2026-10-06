@@ -29,6 +29,10 @@ def main():
     parser.add_argument('--shape-consistency', action='store_true')
     parser.add_argument('--shape-distance', type=float, default=.05)
     parser.add_argument('--shape-fraction', type=float, default=.5)
+    parser.add_argument('--background-reference', action='store_true')
+    parser.add_argument('--reference-motion', action='store_true')
+    parser.add_argument('--reference-distance', type=float, default=.03)
+    parser.add_argument('--reference-fraction', type=float, default=.5)
     parser.add_argument('--planes', type=int, default=6)
     args = parser.parse_args()
     os.environ['ROS_MASTER_URI'] = 'http://127.0.0.1:' + str(args.port)
@@ -73,6 +77,10 @@ def main():
                 '_detection/shape_consistency_enabled:=' + str(args.shape_consistency).lower(),
                 '_detection/shape_consistency_distance:=' + str(args.shape_distance),
                 '_detection/shape_consistency_fraction:=' + str(args.shape_fraction),
+                '_background_reference/enabled:=' + str(args.background_reference).lower(),
+                '_detection/reference_motion_enabled:=' + str(args.reference_motion).lower(),
+                '_background_reference/distance:=' + str(args.reference_distance),
+                '_background_reference/fraction:=' + str(args.reference_fraction),
                 '_background_plane/max_planes:=' + str(args.planes),
                 '_association/geometry_enabled:=false', '_detection/depth_evidence_enabled:=false',
                 '__ns:=/UAV1/fapp'], stdout=log, stderr=subprocess.STDOUT,
@@ -127,6 +135,13 @@ def main():
                     [(.1, 0, 0), (.06, .08, 0), (.06, -.08, 0), (.06, 0, .08),
                      (.06, 0, -.08), (0, .0707106781, .0707106781)]]
 
+        spec = importlib.util.spec_from_file_location('old_smoke',
+                Path(__file__).with_name('perception_smoke.py'))
+        smoke = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(smoke)
+        if args.background_reference or args.reference_motion:
+            for _ in range(math.ceil(5 * args.rate) + 1):
+                publish(None, points=smoke.reference_backdrop())
         backdrop = [(4, y * .1, .4 + z * .1) for y in range(-12, 13) for z in range(15)]
         for _ in range(3):
             publish(None, points=backdrop)
@@ -143,14 +158,13 @@ def main():
             stamp = publish(None, points=backdrop + sparse(3.08, -.6))
         assert count(stamp) == 0, 'Stopped target retained dynamic confirmation'
 
-        spec = importlib.util.spec_from_file_location('old_smoke',
-                Path(__file__).with_name('perception_smoke.py'))
-        smoke = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(smoke)
         smoke.exercise_20cm_targets(publish, count)
         smoke.exercise_dense_startup(publish, count, args.frames)
         if args.local_planes:
             smoke.exercise_mixed_corner(publish, count)
+        if args.background_reference or args.reference_motion:
+            smoke.exercise_reference_targets(publish, count, args.reference_motion,
+                                             args.background_reference, args.frames)
         # A flat 20 cm return must not become a background plane simply
         # because its own points are planar; six points cover the disk rim.
         for _ in range(12):

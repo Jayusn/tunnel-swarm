@@ -142,6 +142,13 @@ void MappingRos::init() {
   nh.param("background_consistency/fraction", mp_->background_consistency_fraction, 0.8);
   nh.param("background_consistency/min_frames", mp_->background_consistency_frames, 4);
   nh.param("background_consistency/post_association", mp_->background_consistency_post_association, true);
+  nh.param("background_reference/enabled", mp_->background_reference_enabled, false);
+  nh.param("detection/reference_motion_enabled", mp_->reference_motion_enabled, false);
+  nh.param("background_reference/capture_duration", mp_->reference_capture_duration, 5.0);
+  nh.param("background_reference/distance", mp_->reference_distance, 0.03);
+  nh.param("background_reference/fraction", mp_->reference_fraction, 0.5);
+  if (mp_->background_reference_enabled || mp_->reference_motion_enabled)
+    reference_points_.reset(new Points);
   nh.param("lidar/range_x", mp_->Range[0], 15.0);
   nh.param("lidar/range_y", mp_->Range[1], 15.0);
   nh.param("lidar/range_z", mp_->Range[2], 1.0);
@@ -318,6 +325,22 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
   pointsBodyToWorld(cloud_filtered, cloud_world);
   pointsBodyToWorld(latest_cloud, nonfilter_pts);
 
+  // Capture the initial static scene in the registered world frame. Once
+  // frozen, this reference never learns the trajectory of a moving object.
+  // Both trials retain the original detector throughout the capture interval.
+  if (reference_points_ && !reference_tree_) {
+    if (reference_start_stamp_.isZero()) reference_start_stamp_ = cloud_stamp_;
+    if ((cloud_stamp_ - reference_start_stamp_).toSec() < mp_->reference_capture_duration) {
+      for (const auto& point : *latest_cloud)
+        if (point.getVector3fMap().allFinite()) reference_points_->push_back(point);
+    } else if (!reference_points_->empty()) {
+      reference_tree_ = std::make_shared<pcl::search::KdTree<PointType>>();
+      reference_tree_->setInputCloud(reference_points_);
+      ROS_INFO_STREAM("FAPP_REFERENCE_READY " << cloud_stamp_.toNSec() << " "
+          << reference_points_->size() << " " << reference_start_stamp_.toNSec());
+    }
+  }
+
   // Compare novelty against the two preceding raw observations.
   PointsPtr observed_history[2];
   MapData sensor_history[2];
@@ -467,6 +490,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     pcl::PointIndices indices;
     bool changed;
     bool static_background;
+    bool reference_foreground;
     double novel_fraction;
     Eigen::Vector3d dense_size;
     std::vector<Eigen::Vector3d> dense_points;
@@ -546,6 +570,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     // must not make a curved moving return look like a long planar patch.
     Eigen::Matrix3d covariance = Eigen::Matrix3d::Zero();
     size_t novel_points[2] = {0, 0};
+    size_t reference_supported = 0;
     size_t ray_supported[2] = {0, 0}, ray_foreground[2] = {0, 0};
     std::vector<int> observed_nearest(1);
     std::vector<float> observed_squared_distance(1);
@@ -554,6 +579,10 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
           mp_->tolerance) continue;
       Eigen::Vector3d delta = Eigen::Vector3d(point.x, point.y, point.z) - center;
       covariance += delta * delta.transpose();
+      if (reference_tree_ &&
+          reference_tree_->nearestKSearch(point, 1, observed_nearest, observed_squared_distance) > 0 &&
+          observed_squared_distance[0] <= mp_->reference_distance * mp_->reference_distance)
+        ++reference_supported;
       for (int history = 0; history < 2; ++history) {
         if (!has_observed_history[history]) continue;
         int evidence = mp_->depth_evidence_enabled ? depth_views[history].classify(point) : -1;
@@ -764,6 +793,15 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     Candidate candidate;
     candidate.state.position = center;
     candidate.static_background = stable_background;
+    const double reference_fraction = static_cast<double>(reference_supported) / dense_count;
+    const bool reference_background = reference_tree_ && reference_fraction >= mp_->reference_fraction;
+    candidate.reference_foreground = reference_tree_ && !reference_background;
+    if (mp_->background_reference_enabled && reference_background)
+      candidate.static_background = true;
+    if (reference_tree_)
+      ROS_DEBUG_STREAM("FAPP_REFERENCE " << cloud_stamp_.toNSec() << " "
+          << center.transpose() << " " << dense_count << " " << reference_supported << " "
+          << reference_background);
     candidate.state.size = size;
     candidate.indices = indices;
     candidate.dense_size = dense_size;
@@ -873,6 +911,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
             << candidate.dense_points.size() << " " << fraction << " " << shape_consistent);
       }
     }
+    bool retained_gap = false;
     if (j < 0) {
       auto tracker = std::make_shared<Ekf>(0.02);
       tracker->reset(candidate.state.position, id++);
@@ -886,8 +925,19 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
         Eigen::Vector3d velocity = (candidate.state.position - previous.second) / dt;
         tracker->update(candidate.state.position, 0.5 * velocity + 0.5 * tracker->vel());
       }
-      if (tracker->last_seen_frame != frame_num - 1)
-        tracker->observations.clear();
+      if (tracker->last_seen_frame != frame_num - 1) {
+        retained_gap = mp_->reference_motion_enabled && reference_tree_ &&
+            tracker->last_seen_frame == frame_num - 2 &&
+            !tracker->last_published_stamp.isZero() &&
+            (cloud_stamp_ - tracker->last_published_stamp).toSec() <= 0.6 &&
+            (cloud_stamp_ - previous.first).toSec() <= 0.6;
+        if (mp_->reference_motion_enabled && reference_tree_)
+          ROS_DEBUG_STREAM("FAPP_REFERENCE_GAP " << cloud_stamp_.toNSec() << " "
+              << candidate.state.position.transpose() << " "
+              << frame_num - tracker->last_seen_frame << " " << retained_gap << " "
+              << tracker->observations.size());
+        if (!retained_gap) tracker->observations.clear();
+      }
     }
     auto& tracker = trackers[j];
     tracker->observed_dense_size = candidate.dense_size;
@@ -899,6 +949,10 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     tracker->observations.push_back({cloud_stamp_, candidate.state.position});
     if (tracker->observations.size() > mp_->motion_confirmation_frames)
       tracker->observations.pop_front();
+    if (retained_gap)
+      while (tracker->observations.size() > 1 &&
+             (cloud_stamp_ - tracker->observations.front().first).toSec() > 0.8)
+        tracker->observations.pop_front();
 
     double displacement = 0.0;
     for (const auto& first : tracker->observations)
@@ -932,7 +986,8 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     double required_novel_fraction = recently_published && shape_consistent ?
         std::min(mp_->min_motion_novel_fraction, mp_->tracked_motion_novel_fraction) :
         mp_->min_motion_novel_fraction;
-    if (has_motion && (recently_changed || !tracker->last_dynamic_stamp.isZero()) &&
+    bool reference_startup = mp_->reference_motion_enabled && candidate.reference_foreground;
+    if (has_motion && (recently_changed || !tracker->last_dynamic_stamp.isZero() || reference_startup) &&
         candidate.novel_fraction >= required_novel_fraction)
       tracker->last_motion_stamp = cloud_stamp_;
     bool confirmed = !tracker->last_motion_stamp.isZero() &&

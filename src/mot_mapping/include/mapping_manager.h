@@ -83,6 +83,11 @@ struct MapParam {
   bool shape_consistency_enabled;
   double shape_consistency_distance;
   double shape_consistency_fraction;
+  bool background_reference_enabled;
+  bool reference_motion_enabled;
+  double reference_capture_duration;
+  double reference_distance;
+  double reference_fraction;
   // Lidar Params
   Eigen::Vector3d Range;
   // ROS Params
@@ -119,6 +124,9 @@ private:
   std::deque<MapData> observed_sensor_poses;
   std::deque<PointsPtr> input_point;
   std::deque<std::shared_ptr<pcl::search::KdTree<PointType>>> background_history_;
+  PointsPtr reference_points_;
+  std::shared_ptr<pcl::search::KdTree<PointType>> reference_tree_;
+  ros::Time reference_start_stamp_;
   std::vector<pcl::PointIndices> deleted_indices;
   std::vector<BoxPointType> delete_boxes;
 
