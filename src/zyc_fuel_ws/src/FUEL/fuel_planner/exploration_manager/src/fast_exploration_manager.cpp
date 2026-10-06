@@ -1253,7 +1253,7 @@ bool FastExplorationManager::buildCenterGatePassage(
       ROS_WARN_THROTTLE(
           0.5,
           "[center_gate] two-sided obstacle detected, but center width is below %.2fm; "
-          "try clearance-constrained upper passage.",
+          "try horizontal bypass or clearance-constrained upper passage.",
           center_gate_min_width_);
     }
     return false;
@@ -1272,7 +1272,7 @@ bool FastExplorationManager::buildCenterGatePassage(
     ROS_WARN_THROTTLE(
         0.5,
         "[center_gate] center lane width=%.2fm at %.2fm, but the current-height "
-        "footprint corridor to the far side is not fully known-safe; try upper passage.",
+        "footprint corridor to the far side is not fully known-safe; try horizontal or upper passage.",
         gate_width, gate_ahead);
     return false;
   }
@@ -2651,8 +2651,8 @@ int FastExplorationManager::planExploreMotion(
   }
 
   // 两侧局部障碍已经形成中门时，先在当前高度穿过已知安全的门中心；
-  // 中门不满足足迹通行条件时直接尝试带顶部净空约束的上绕，不再让远处
-  // frontier 的三维A*自行选择一个贴着障碍顶部的高度。
+  // 中门不满足足迹通行条件时先尝试当前高度的侧绕，再尝试带顶部净空约束的上绕。
+  // 专用通路均不可用时继续普通选点和A*，不能用局部中缝失败否决其他绕行路线。
   bool center_gate_detected = false;
   if (!use_vertical_detour_target && !use_forced_entry_target &&
       !use_stage3_target && mission_entered_search_region_ &&
@@ -2664,16 +2664,20 @@ int FastExplorationManager::planExploreMotion(
       use_mission_forward_fallback = true;
       use_center_gate_target = true;
     } else if (center_gate_detected) {
-      if (buildVerticalDetourFallback(pos, yaw[0], recovery_forward, next_pos,
+      bool side_obstacle_detected = false;
+      if (buildWideSideBypass(pos, yaw[0], recovery_forward, next_pos,
+                              next_yaw, side_obstacle_detected)) {
+        use_mission_forward_fallback = true;
+      } else if (buildVerticalDetourFallback(pos, yaw[0], recovery_forward, next_pos,
                                       next_yaw, false, false)) {
         use_vertical_detour_target = true;
       } else {
         ROS_WARN_THROTTLE(
             0.5,
-            "[center_gate] center passage is unsafe and no upper route keeps at "
-            "least %.2fm above the obstacle top; hold and wait for a map update.",
+            "[center_gate] dedicated center/horizontal passages are unavailable and "
+            "no upper route keeps at least %.2fm above the obstacle top; "
+            "continue frontier and A* route search.",
             vertical_detour_upper_obstacle_clearance_);
-        return FAIL;
       }
     }
   }
