@@ -60,7 +60,7 @@ echo "$ROS_MASTER_URI"
 rosnode list
 ```
 
-`ROS_MASTER_URI` 应为 `http://10.106.223.212:11311`。
+`ROS_MASTER_URI` 应为 `http://10.224.119.212:11311`。
 
 ### 3.2 UAV1 终端 1：启动 Mid360
 
