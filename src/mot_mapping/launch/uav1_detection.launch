@@ -11,8 +11,13 @@
   <arg name="geometry_enabled" default="false"/>
   <arg name="depth_evidence_enabled" default="false"/>
   <arg name="background_consistency_enabled" default="false"/>
+  <arg name="background_local_planes_enabled" default="false"/>
+  <arg name="background_local_post_association" default="true"/>
+  <arg name="background_consistency_fraction" default="0.8"/>
   <arg name="background_consistency_post_association" default="true"/>
   <arg name="shape_consistency_enabled" default="false"/>
+  <arg name="shape_consistency_distance" default="0.05"/>
+  <arg name="shape_consistency_fraction" default="0.5"/>
   <node pkg="topic_tools" type="throttle" name="uav1_fapp_cloud_throttle"
         args="messages $(arg cloud_topic) $(arg input_rate) /UAV1/fapp/cloud_registered_throttled"/>
   <group ns="UAV1/fapp">
@@ -35,8 +40,13 @@
       <param name="association/geometry_enabled" value="$(arg geometry_enabled)"/>
       <param name="detection/depth_evidence_enabled" value="$(arg depth_evidence_enabled)"/>
       <param name="background_consistency/enabled" value="$(arg background_consistency_enabled)"/>
+      <param name="background_consistency/local_planes_enabled" value="$(arg background_local_planes_enabled)"/>
+      <param name="background_consistency/local_post_association" value="$(arg background_local_post_association)"/>
+      <param name="background_consistency/fraction" value="$(arg background_consistency_fraction)"/>
       <param name="background_consistency/post_association" value="$(arg background_consistency_post_association)"/>
       <param name="detection/shape_consistency_enabled" value="$(arg shape_consistency_enabled)"/>
+      <param name="detection/shape_consistency_distance" value="$(arg shape_consistency_distance)"/>
+      <param name="detection/shape_consistency_fraction" value="$(arg shape_consistency_fraction)"/>
       <param name="background_surface/enabled" value="true"/>
       <param name="background_plane/enabled" value="true"/>
       <param name="background_plane/distance" value="0.03"/>

@@ -136,6 +136,8 @@ void MappingRos::init() {
   nh.param("background_plane/min_points", mp_->background_plane_min_points, 100);
   nh.param("background_plane/max_planes", mp_->background_plane_max_planes, 6);
   nh.param("background_consistency/enabled", mp_->background_consistency_enabled, false);
+  nh.param("background_consistency/local_planes_enabled", mp_->background_local_planes_enabled, false);
+  nh.param("background_consistency/local_post_association", mp_->background_local_post_association, true);
   nh.param("background_consistency/distance", mp_->background_consistency_distance, 0.02);
   nh.param("background_consistency/fraction", mp_->background_consistency_fraction, 0.8);
   nh.param("background_consistency/min_frames", mp_->background_consistency_frames, 4);
@@ -626,8 +628,10 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     // even if the small current fragment alone does not look planar. Only
     // actual historical neighborhoods qualify; no unbounded plane extension.
     bool stable_background = false;
+    bool local_background = false;
     if (mp_->background_consistency_enabled) {
       int supported_frames = 0;
+      int local_plane_frames = 0;
       for (const auto& tree : background_history) {
         if (!tree) continue;
         std::vector<int> local_indices;
@@ -646,28 +650,105 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
         Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> fit(cov);
         bool broad_plane = fit.eigenvalues()[0] < 0.01 * fit.eigenvalues()[2] &&
                            fit.eigenvalues()[1] >= 0.005;
-        if (!broad_plane) continue;
-        Eigen::Vector3d normal = fit.eigenvectors().col(0);
+        auto dense_supported = [&](const Eigen::Vector3d& normal,
+                                   const Eigen::Vector3d& anchor) {
+          size_t supported = 0;
+          for (const auto& point : cluster) {
+            if ((point.getVector3fMap() - cluster[dense_index].getVector3fMap()).squaredNorm() >
+                mp_->tolerance) continue;
+            if (std::abs(normal.dot(point.getVector3fMap().cast<double>() - anchor)) <=
+                mp_->background_consistency_distance) ++supported;
+          }
+          return supported >= mp_->background_consistency_fraction * dense_count;
+        };
+        if (broad_plane) {
+          if (dense_supported(fit.eigenvectors().col(0), mean)) ++supported_frames;
+          continue;
+        }
+        if (!mp_->background_local_planes_enabled) continue;
+
+        // Separate at most two historical surfaces at corners. This fit only
+        // supplies background evidence; it never clips current target points.
+        PointsPtr remaining(new Points);
+        for (int index : local_indices) remaining->push_back(points->points[index]);
+        const PointsPtr neighborhood = remaining;
+        std::vector<std::pair<Eigen::Vector3d, Eigen::Vector3d>> surfaces;
+        pcl::SACSegmentation<PointType> segmentation;
+        segmentation.setOptimizeCoefficients(true);
+        segmentation.setModelType(pcl::SACMODEL_PLANE);
+        segmentation.setMethodType(pcl::SAC_RANSAC);
+        segmentation.setMaxIterations(50);
+        segmentation.setDistanceThreshold(mp_->background_consistency_distance);
+        for (int plane = 0; plane < 2 && remaining->size() >= 6; ++plane) {
+          pcl::PointIndices::Ptr inliers(new pcl::PointIndices);
+          pcl::ModelCoefficients coefficients;
+          segmentation.setInputCloud(remaining);
+          segmentation.segment(*inliers, coefficients);
+          if (inliers->indices.size() < 6 || coefficients.values.size() != 4) break;
+          Eigen::Vector3d normal(coefficients.values[0], coefficients.values[1], coefficients.values[2]);
+          double scale = normal.norm();
+          if (scale == 0.0) break;
+          normal /= scale;
+          // The first extraction removes the corner's shared edge too. Count
+          // each plane's support in the original neighborhood, not the residue.
+          std::vector<int> support;
+          for (size_t index = 0; index < neighborhood->size(); ++index)
+            if (std::abs(normal.dot(neighborhood->points[index].getVector3fMap().cast<double>()) +
+                         coefficients.values[3] / scale) <= mp_->background_consistency_distance)
+              support.push_back(index);
+          Eigen::Vector3d plane_mean = Eigen::Vector3d::Zero();
+          Eigen::Matrix3d plane_cov = Eigen::Matrix3d::Zero();
+          if (support.size() >= 20) {
+            for (int index : support)
+              plane_mean += neighborhood->points[index].getVector3fMap().cast<double>();
+            plane_mean /= support.size();
+            for (int index : support) {
+              Eigen::Vector3d d = neighborhood->points[index].getVector3fMap().cast<double>() - plane_mean;
+              plane_cov += d * d.transpose();
+            }
+            plane_cov /= support.size();
+            Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> plane_fit(plane_cov);
+            if (plane_fit.eigenvalues()[0] < 0.01 * plane_fit.eigenvalues()[2] &&
+                plane_fit.eigenvalues()[1] >= 0.005)
+              surfaces.push_back({plane_fit.eigenvectors().col(0), plane_mean});
+          }
+          pcl::ExtractIndices<PointType> extract;
+          extract.setInputCloud(remaining);
+          extract.setIndices(inliers);
+          extract.setNegative(true);
+          PointsPtr next(new Points);
+          extract.filter(*next);
+          remaining = next;
+        }
         size_t supported = 0;
         for (const auto& point : cluster) {
           if ((point.getVector3fMap() - cluster[dense_index].getVector3fMap()).squaredNorm() >
               mp_->tolerance) continue;
-          Eigen::Vector3d d = point.getVector3fMap().cast<double>() - mean;
-          double distance = std::abs(normal.dot(d));
-          if (distance <= mp_->background_consistency_distance) ++supported;
+          if (std::any_of(surfaces.begin(), surfaces.end(), [&](const auto& surface) {
+                return std::abs(surface.first.dot(point.getVector3fMap().cast<double>() - surface.second)) <=
+                       mp_->background_consistency_distance;
+              })) ++supported;
         }
-        if (supported >= mp_->background_consistency_fraction * dense_count) ++supported_frames;
+        if (supported >= mp_->background_consistency_fraction * dense_count) {
+          ++supported_frames;
+          ++local_plane_frames;
+        }
       }
+      if (mp_->background_local_planes_enabled)
+        ROS_DEBUG_STREAM("FAPP_LOCAL_BACKGROUND " << cloud_stamp_.toNSec() << " "
+            << center.transpose() << " " << local_plane_frames);
       ROS_DEBUG_STREAM("FAPP_BACKGROUND " << cloud_stamp_.toNSec() << " "
           << center.transpose() << " " << supported_frames << " " << background_history.size());
       if (supported_frames >= mp_->background_consistency_frames) {
         ROS_DEBUG_STREAM("FAPP_BACKGROUND_MATCH " << cloud_stamp_.toNSec() << " "
             << center.transpose() << " stable_background");
         stable_background = true;
+        local_background = supported_frames - local_plane_frames < mp_->background_consistency_frames;
       }
     }
 
-    if (stable_background && !mp_->background_consistency_post_association) {
+    if (stable_background && !mp_->background_consistency_post_association &&
+        !(local_background && mp_->background_local_post_association)) {
       ROS_DEBUG_STREAM("FAPP_REJECT " << cloud_stamp_.toNSec() << " "
           << center.transpose() << " stable_background_before_association");
       continue;

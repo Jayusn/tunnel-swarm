@@ -50,6 +50,62 @@ def exercise_20cm_targets(publish, count):
             assert count(stamp) == 1, '20 cm wall-adjacent reversal lost: ' + str((step, count(stamp)))
 
 
+def exercise_dense_startup(publish, count, frames=3):
+    # Nine samples on a physical 20 cm sphere exercise shape verification;
+    # the separate six-point regressions deliberately bypass that check.
+    wall = [(x * .1, .84, .4 + z * .1)
+            for x in range(40) for z in range(15)]
+
+    def cap(center):
+        return [(center + math.sqrt(.1 ** 2 - dy ** 2 - dz ** 2), .7 + dy, 1 + dz)
+                for dy in (-.06, 0, .06) for dz in (-.06, 0, .06)]
+
+    for _ in range(12):
+        publish(None, points=wall)
+    first = None
+    for step in range(10):
+        stamp = publish(None, points=wall + cap(.5 + step * .12))
+        if count(stamp) and first is None:
+            first = step + 1
+    assert first == frames, ('Dense target startup delayed', first, frames)
+    for _ in range(4):
+        stamp = publish(None, points=wall)
+        assert count(stamp) == 0, 'Occlusion emitted a dense target prediction'
+    first = None
+    for step in range(8):
+        stamp = publish(None, points=wall + cap(2.18 + step * .12))
+        if count(stamp) and first is None:
+            first = step + 1
+        if step + 1 >= frames:
+            assert count(stamp) == 1, ('Dense target reacquisition lost', step)
+    assert first == frames, ('Dense target reacquisition delayed', first, frames)
+
+
+def exercise_mixed_corner(publish, count):
+    # Two fixed 40 cm faces: together they are not one plane. A previously
+    # moving return must not lend its track to shifting samples of either face.
+    corner = [(1.4 + x * .1, 0, .4 + z * .1)
+              for x in range(5) for z in range(5)]
+    corner += [(1.4, y * .1, .4 + z * .1)
+               for y in range(5) for z in range(5)]
+    for _ in range(6):
+        publish(None, points=corner)
+    for step in range(5):
+        center_z = .17 + step * .12
+        body = [(1.6 + math.sqrt(.1 ** 2 - dy ** 2 - dz ** 2), .24 + dy, center_z + dz)
+                for dy in (-.06, 0, .06) for dz in (-.06, 0, .06)]
+        stamp = publish(None, points=corner + body)
+        if step >= 2:
+            assert count(stamp) == 1, ('Moving body beside mixed corner was lost', step)
+    for step in range(14):
+        center = 1.55 + .1 * (step % 2)
+        patch = [(center + dx, dy, .65 + dz)
+                 for dx in (-.012, 0, .012) for dy in (-.012, .012)
+                 for dz in (-.012, 0, .012)]
+        stamp = publish(None, points=corner + patch)
+        assert count(stamp) == 0, ('Mixed static corner inherited motion', step)
+
+
 def main():
     port = os.environ.get('FAPP_SMOKE_PORT', '11431')
     master = subprocess.Popen(['roscore', '-p', port], stdout=subprocess.DEVNULL,
@@ -70,8 +126,13 @@ def main():
                                    'geometry_enabled:=' + os.environ.get('FAPP_SMOKE_GEOMETRY', 'false'),
                                    'depth_evidence_enabled:=' + os.environ.get('FAPP_SMOKE_DEPTH', 'false'),
                                    'background_consistency_enabled:=' + os.environ.get('FAPP_SMOKE_BACKGROUND', 'false'),
+                                   'background_local_planes_enabled:=' + os.environ.get('FAPP_SMOKE_LOCAL_PLANES', 'false'),
+                                   'background_local_post_association:=' + os.environ.get('FAPP_SMOKE_LOCAL_POST', 'true'),
+                                   'background_consistency_fraction:=' + os.environ.get('FAPP_SMOKE_BG_FRACTION', '0.8'),
                                    'background_consistency_post_association:=' + os.environ.get('FAPP_SMOKE_BACKGROUND_POST', 'true'),
-                                   'shape_consistency_enabled:=' + os.environ.get('FAPP_SMOKE_SHAPE', 'false')], stdout=launch_log,
+                                   'shape_consistency_enabled:=' + os.environ.get('FAPP_SMOKE_SHAPE', 'false'),
+                                   'shape_consistency_distance:=' + os.environ.get('FAPP_SMOKE_SHAPE_DISTANCE', '0.05'),
+                                   'shape_consistency_fraction:=' + os.environ.get('FAPP_SMOKE_SHAPE_FRACTION', '0.5')], stdout=launch_log,
                                   stderr=subprocess.STDOUT, start_new_session=True)
         received = {'cloud': [], 'boxes': [], 'tracks': [], 'states': []}
         subscribers = [
@@ -310,6 +371,9 @@ def main():
                 assert count(stamp) == 1, 'Moving body close to wall was rejected'
 
         exercise_20cm_targets(publish, count)
+        exercise_dense_startup(publish, count)
+        if os.environ.get('FAPP_SMOKE_LOCAL_PLANES', 'false') == 'true':
+            exercise_mixed_corner(publish, count)
 
         def height_points(center, z, y):
             return [(center + x, y + dy, z + dz) for x, dy, dz in

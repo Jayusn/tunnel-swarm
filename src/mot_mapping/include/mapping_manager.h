@@ -74,6 +74,8 @@ struct MapParam {
   int background_plane_min_points;
   int background_plane_max_planes;
   bool background_consistency_enabled;
+  bool background_local_planes_enabled;
+  bool background_local_post_association;
   double background_consistency_distance;
   double background_consistency_fraction;
   int background_consistency_frames;

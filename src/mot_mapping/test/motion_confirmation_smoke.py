@@ -21,10 +21,14 @@ def main():
     parser.add_argument('--min-cluster', type=int, default=6)
     parser.add_argument('--port', type=int, default=11620)
     parser.add_argument('--background-consistency', action='store_true')
+    parser.add_argument('--local-planes', action='store_true')
+    parser.add_argument('--local-before-association', action='store_true')
     parser.add_argument('--background-distance', type=float, default=.02)
     parser.add_argument('--background-fraction', type=float, default=.8)
     parser.add_argument('--background-before-association', action='store_true')
     parser.add_argument('--shape-consistency', action='store_true')
+    parser.add_argument('--shape-distance', type=float, default=.05)
+    parser.add_argument('--shape-fraction', type=float, default=.5)
     parser.add_argument('--planes', type=int, default=6)
     args = parser.parse_args()
     os.environ['ROS_MASTER_URI'] = 'http://127.0.0.1:' + str(args.port)
@@ -44,8 +48,8 @@ def main():
     try:
         time.sleep(2)
         rospy.init_node('motion_confirmation_smoke', anonymous=True)
-        log_path = '/tmp/fapp_motion_smoke_{}_{}_{}.log'.format(
-            args.rate, args.frames, round(args.displacement * 100))
+        log_path = '/tmp/fapp_motion_smoke_{}_{}_{}_{}.log'.format(
+            args.rate, args.frames, round(args.displacement * 100), args.port)
         with open(log_path, 'w') as log:
             node = subprocess.Popen([
                 'rosrun', 'mot_mapping', 'mapping_node', '__name:=mapping_node',
@@ -61,10 +65,14 @@ def main():
                 '_detection/tracked_motion_novel_fraction:=' + str(
                     args.min_novel if args.tracked_novel is None else args.tracked_novel),
                 '_background_consistency/enabled:=' + str(args.background_consistency).lower(),
+                '_background_consistency/local_planes_enabled:=' + str(args.local_planes).lower(),
+                '_background_consistency/local_post_association:=' + str(not args.local_before_association).lower(),
                 '_background_consistency/distance:=' + str(args.background_distance),
                 '_background_consistency/fraction:=' + str(args.background_fraction),
                 '_background_consistency/post_association:=' + str(not args.background_before_association).lower(),
                 '_detection/shape_consistency_enabled:=' + str(args.shape_consistency).lower(),
+                '_detection/shape_consistency_distance:=' + str(args.shape_distance),
+                '_detection/shape_consistency_fraction:=' + str(args.shape_fraction),
                 '_background_plane/max_planes:=' + str(args.planes),
                 '_association/geometry_enabled:=false', '_detection/depth_evidence_enabled:=false',
                 '__ns:=/UAV1/fapp'], stdout=log, stderr=subprocess.STDOUT,
@@ -140,6 +148,9 @@ def main():
         smoke = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(smoke)
         smoke.exercise_20cm_targets(publish, count)
+        smoke.exercise_dense_startup(publish, count, args.frames)
+        if args.local_planes:
+            smoke.exercise_mixed_corner(publish, count)
         # A flat 20 cm return must not become a background plane simply
         # because its own points are planar; six points cover the disk rim.
         for _ in range(12):
