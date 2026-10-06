@@ -119,7 +119,8 @@ def reference_backdrop():
     return points
 
 
-def exercise_reference_targets(publish, count, motion_enabled, reference_enabled, frames=3):
+def exercise_reference_targets(publish, count, motion_enabled, reference_enabled,
+                               frames=3, strong_two_frame=False):
     # The initial backdrop is frozen. Real foreground travels out and back;
     # its previously observed positions must never enter that background.
     wall = reference_backdrop()
@@ -160,6 +161,15 @@ def exercise_reference_targets(publish, count, motion_enabled, reference_enabled
         stamp = publish(None, points=cap((1, 1.4, 1.8)[step % 3], -2.6))
         if reference_enabled:
             assert count(stamp) == 0, ('Frozen static fragment inherited motion', step)
+    if strong_two_frame:
+        for _ in range(5):
+            publish(None, points=wall)
+        first = None
+        for center in (-2.0, -1.64):
+            stamp = publish(None, points=wall + cap(center))
+            if count(stamp) and first is None:
+                first = 1 if center == -2.0 else 2
+        assert first == 2, ('Strong two-frame reference confirmation failed', first)
     for _ in range(5):
         publish(None, points=wall)
     for step in range(7):

@@ -85,6 +85,7 @@ struct MapParam {
   double shape_consistency_fraction;
   bool background_reference_enabled;
   bool reference_motion_enabled;
+  bool reference_strong_two_frame_enabled;
   double reference_capture_duration;
   double reference_distance;
   double reference_fraction;

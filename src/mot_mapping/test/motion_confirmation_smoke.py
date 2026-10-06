@@ -31,6 +31,7 @@ def main():
     parser.add_argument('--shape-fraction', type=float, default=.5)
     parser.add_argument('--background-reference', action='store_true')
     parser.add_argument('--reference-motion', action='store_true')
+    parser.add_argument('--reference-strong-two-frame', action='store_true')
     parser.add_argument('--reference-distance', type=float, default=.03)
     parser.add_argument('--reference-fraction', type=float, default=.5)
     parser.add_argument('--planes', type=int, default=6)
@@ -79,6 +80,7 @@ def main():
                 '_detection/shape_consistency_fraction:=' + str(args.shape_fraction),
                 '_background_reference/enabled:=' + str(args.background_reference).lower(),
                 '_detection/reference_motion_enabled:=' + str(args.reference_motion).lower(),
+                '_detection/reference_strong_two_frame_enabled:=' + str(args.reference_strong_two_frame).lower(),
                 '_background_reference/distance:=' + str(args.reference_distance),
                 '_background_reference/fraction:=' + str(args.reference_fraction),
                 '_background_plane/max_planes:=' + str(args.planes),
@@ -164,7 +166,8 @@ def main():
             smoke.exercise_mixed_corner(publish, count)
         if args.background_reference or args.reference_motion:
             smoke.exercise_reference_targets(publish, count, args.reference_motion,
-                                             args.background_reference, args.frames)
+                                             args.background_reference, args.frames,
+                                             args.reference_strong_two_frame)
         # A flat 20 cm return must not become a background plane simply
         # because its own points are planar; six points cover the disk rim.
         for _ in range(12):

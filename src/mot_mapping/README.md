@@ -119,3 +119,11 @@ python3 src/mot_mapping/test/motion_confirmation_smoke.py --rate 10 --frames 5 -
 本轮将真实目标最小尺寸按 20 cm 回归，保持 5 Hz、3 帧确认。启动时可选采集 5 秒静态注册点云并冻结 KD 树：`background_reference_enabled` 负责静态背景抑制，`reference_motion_enabled` 负责背景差分运动启动证据和单帧断轨重检，两个开关默认关闭。
 
 10 组静止/动态对照中，A-only 4 cm/50% 为静止代理指标最优：730→53 框、467/467 时刻、原有动态命中无损失；快摆仍为 45/53，另一段为 38/47，未达到动态检测率 90% 门槛。B 会增加静止框，A+B 4 cm 为 68 框并各恢复 1 个动态标注，但仍未通过双 90 验收，因此没有启用为默认配置。完整矩阵、诊断、最终单独回放和限制见[背景差分报告](docs/background_reference_comparison_20261006.md)。
+
+## 预采集抑制与新场景行为（2026-10-06）
+
+启用 `background_reference_enabled` 或 `reference_motion_enabled` 时，节点先采集 5 秒静态注册云。采集期间四路动态输出发送带时间戳的空消息，动态避障从背景冻结后的下一帧开始；冻结时清空预采阶段的轨迹和观测缓存。普通目标仍保持三次实际观测确认。
+
+新增默认关闭的 `reference_strong_two_frame_enabled` 仅用于对照试验，且必须同时打开 `reference_motion_enabled`。它只对参考背景前景中满足连续两帧、间隔不超过 0.4 秒、位移至少 0.30 m、实测速率至少 0.50 m/s 和新点比例至少 50% 的候选生效，普通目标不会因此改成两帧确认。
+
+参考树只冻结启动时看到的通道段。无人机移动到拐角或新场景后，新墙面进入正常点云和三帧确认流程，不会被旧背景树直接删除；新场景静态碎片仍可能在确认窗口产生短暂候选，需用拐角和转动录包单独验收。详见[背景差分对照报告](docs/background_reference_comparison_20261006.md)。

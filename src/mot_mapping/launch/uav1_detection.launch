@@ -20,6 +20,7 @@
   <arg name="shape_consistency_fraction" default="0.5"/>
   <arg name="background_reference_enabled" default="false"/>
   <arg name="reference_motion_enabled" default="false"/>
+  <arg name="reference_strong_two_frame_enabled" default="false"/>
   <arg name="background_reference_capture_duration" default="5.0"/>
   <arg name="background_reference_distance" default="0.03"/>
   <arg name="background_reference_fraction" default="0.5"/>
@@ -54,6 +55,7 @@
       <param name="detection/shape_consistency_fraction" value="$(arg shape_consistency_fraction)"/>
       <param name="background_reference/enabled" value="$(arg background_reference_enabled)"/>
       <param name="detection/reference_motion_enabled" value="$(arg reference_motion_enabled)"/>
+      <param name="detection/reference_strong_two_frame_enabled" value="$(arg reference_strong_two_frame_enabled)"/>
       <param name="background_reference/capture_duration" value="$(arg background_reference_capture_duration)"/>
       <param name="background_reference/distance" value="$(arg background_reference_distance)"/>
       <param name="background_reference/fraction" value="$(arg background_reference_fraction)"/>

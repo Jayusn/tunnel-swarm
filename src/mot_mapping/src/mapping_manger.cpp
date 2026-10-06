@@ -144,6 +144,7 @@ void MappingRos::init() {
   nh.param("background_consistency/post_association", mp_->background_consistency_post_association, true);
   nh.param("background_reference/enabled", mp_->background_reference_enabled, false);
   nh.param("detection/reference_motion_enabled", mp_->reference_motion_enabled, false);
+  nh.param("detection/reference_strong_two_frame_enabled", mp_->reference_strong_two_frame_enabled, false);
   nh.param("background_reference/capture_duration", mp_->reference_capture_duration, 5.0);
   nh.param("background_reference/distance", mp_->reference_distance, 0.03);
   nh.param("background_reference/fraction", mp_->reference_fraction, 0.5);
@@ -327,7 +328,8 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
 
   // Capture the initial static scene in the registered world frame. Once
   // frozen, this reference never learns the trajectory of a moving object.
-  // Both trials retain the original detector throughout the capture interval.
+  // Dynamic publication is suppressed during capture; the raw cloud path remains active.
+  bool reference_just_frozen = false;
   if (reference_points_ && !reference_tree_) {
     if (reference_start_stamp_.isZero()) reference_start_stamp_ = cloud_stamp_;
     if ((cloud_stamp_ - reference_start_stamp_).toSec() < mp_->reference_capture_duration) {
@@ -336,9 +338,20 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     } else if (!reference_points_->empty()) {
       reference_tree_ = std::make_shared<pcl::search::KdTree<PointType>>();
       reference_tree_->setInputCloud(reference_points_);
+      reference_just_frozen = true;
       ROS_INFO_STREAM("FAPP_REFERENCE_READY " << cloud_stamp_.toNSec() << " "
           << reference_points_->size() << " " << reference_start_stamp_.toNSec());
     }
+  }
+
+  // A track created during calibration must not carry its motion confirmation
+  // into the first scene after the reference is frozen. The raw observation
+  // history is also reset so the first post-capture candidate starts fresh.
+  if (reference_just_frozen) {
+    trackers.clear();
+    buffer.clear();
+    observed_sensor_poses.clear();
+    ROS_INFO_STREAM("FAPP_REFERENCE_RESET " << cloud_stamp_.toNSec());
   }
 
   // Compare novelty against the two preceding raw observations.
@@ -419,6 +432,31 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
 
   if (frame_num == 2){
     previous_points.push_back(cloud_world);
+    return;
+  }
+
+  // During the static-reference capture window, keep the four dynamic-output
+  // topics alive with empty, timestamped messages. Dynamic avoidance starts
+  // only after the reference is frozen; no calibration fragment is published.
+  if (reference_points_ && !reference_tree_) {
+    // Keep the registered-map bootstrap valid while the dynamic detector is
+    // intentionally bypassed. The frame-2 compatibility early return above
+    // remains unchanged, so existing output timestamp sets stay aligned.
+    previous_points.clear();
+    previous_points.push_back(cloud_world);
+    detections.clear();
+    deleted_indices.clear();
+    sensor_msgs::PointCloud2 dynamic_pts;
+    dynamic_pts.header.frame_id = frame_id_;
+    dynamic_pts.header.stamp = cloud_stamp_;
+    cloudPub.publish(dynamic_pts);
+    obj_state_msgs::ObjectsStates states;
+    states.header.stamp = cloud_stamp_;
+    states.header.frame_id = frame_id_;
+    statesPub.publish(states);
+    visualizeFunction({});
+    trackers.clear();
+    std::cout << "Tracking Time Cost (ms)： 0" << std::endl;
     return;
   }
 
@@ -912,6 +950,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
       }
     }
     bool retained_gap = false;
+    bool consecutive_observation = j >= 0 && trackers[j]->last_seen_frame == frame_num - 1;
     if (j < 0) {
       auto tracker = std::make_shared<Ekf>(0.02);
       tracker->reset(candidate.state.position, id++);
@@ -976,6 +1015,14 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     bool has_motion = tracker->observations.size() == mp_->motion_confirmation_frames &&
                       displacement >= mp_->motion_displacement &&
                       observed_speed >= mp_->min_motion_speed;
+    const double two_frame_dt = tracker->observations.size() == 2 ?
+        (tracker->observations.back().first - tracker->observations.front().first).toSec() : 0.0;
+    const bool strong_reference_motion =
+        mp_->reference_strong_two_frame_enabled && mp_->reference_motion_enabled &&
+        consecutive_observation && candidate.reference_foreground &&
+        !candidate.static_background && tracker->observations.size() == 2 &&
+        two_frame_dt <= 0.4 && displacement >= 0.30 && observed_speed >= 0.50 &&
+        candidate.novel_fraction >= 0.50;
     if (candidate.changed) tracker->last_change_stamp = cloud_stamp_;
     bool recently_changed = tracker->last_change_stamp >= tracker->observations.front().first;
     // A tracked object must still have measured motion, not just EKF velocity.
@@ -990,6 +1037,12 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     if (has_motion && (recently_changed || !tracker->last_dynamic_stamp.isZero() || reference_startup) &&
         candidate.novel_fraction >= required_novel_fraction)
       tracker->last_motion_stamp = cloud_stamp_;
+    if (strong_reference_motion) {
+      tracker->last_motion_stamp = cloud_stamp_;
+      ROS_DEBUG_STREAM("FAPP_REFERENCE_STRONG_TWO " << cloud_stamp_.toNSec() << " "
+          << candidate.state.position.transpose() << " " << displacement << " "
+          << observed_speed << " " << candidate.novel_fraction);
+    }
     bool confirmed = !tracker->last_motion_stamp.isZero() &&
                      (cloud_stamp_ - tracker->last_motion_stamp).toSec() <= 0.6;
     ROS_DEBUG_STREAM("FAPP_TRACK " << cloud_stamp_.toNSec() << " "
