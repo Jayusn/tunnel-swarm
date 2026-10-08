@@ -13,6 +13,7 @@
     <arg name="enable_planner_rosbag" default="true"/>
     <arg name="planner_rosbag_prefix" default="fuel_planner_$(arg vehicle_ns)"/>
     <arg name="planner_rosbag_split_size_mb" default="1024"/>
+    <arg name="planner_rosbag_extra_topics" default=""/>
     <!-- 纯显示适配：只把 target_reporting 观测转成 RViz 标记，不接入规划器。 -->
     <arg name="enable_detection_rviz" default="true"/>
     <!-- 本机为前机UAV0：默认启动前机LDOP；后机由其自身计算机按需启动。 -->
@@ -800,15 +801,15 @@
     </include>
 
     <!--
-      轻量规划诊断包：保留轨迹交接、状态机、局部地图和可视化输出，明确不录
-      cloud_registered、Livox 原始包、相机图像和控制器内部高频话题。
-      cwd=ROS_HOME 使文件落在 ~/.ros；-o 会自动追加启动时间戳。
+      默认保留轻量规划诊断话题；通道回放入口通过 extra_topics 补录建图点云等输入。
+      cwd=ROS_HOME 使相对路径落在 ~/.ros；-o 会自动追加启动时间戳。
     -->
     <node if="$(arg enable_planner_rosbag)" pkg="rosbag" type="record"
           name="fuel_planner_recorder" ns="$(arg vehicle_ns)"
           cwd="ROS_HOME" output="screen"
           args="--lz4 --split --size=$(arg planner_rosbag_split_size_mb)
-                -o $(arg planner_rosbag_prefix)
+                -o &quot;$(arg planner_rosbag_prefix)&quot;
+                $(arg planner_rosbag_extra_topics)
                 $(arg odom_topic)
                 $(arg start_trigger_topic)
                 /UAV0/planning/bspline
