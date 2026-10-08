@@ -300,9 +300,20 @@ run_planner_pane() {
     log "找不到 FUEL 规划器 launch：${planner_launch}"
     keep_pane_open
   fi
+  local -a recording_args=()
+  if [[ -n "${UAV0_PLANNER_ROSBAG_PREFIX:-}" ]]; then
+    mkdir -p -- "$(dirname -- "${UAV0_PLANNER_ROSBAG_PREFIX}")" || keep_pane_open
+    recording_args+=(
+      "enable_planner_rosbag:=true"
+      "planner_rosbag_prefix:=${UAV0_PLANNER_ROSBAG_PREFIX}"
+      "planner_rosbag_extra_topics:=${UAV0_PLANNER_ROSBAG_EXTRA_TOPICS:-}"
+    )
+    printf '[录包] 通道回放包：%s_时间戳_分卷.bag；在本屏 Ctrl+C 正常结束录制。\n' \
+      "${UAV0_PLANNER_ROSBAG_PREFIX}"
+  fi
   printf '[启动] UAV0 FUEL 规划器和 RViz\n'
   roslaunch "${planner_launch}" \
-    odom_topic:="${ODOM_TOPIC}"
+    odom_topic:="${ODOM_TOPIC}" "${recording_args[@]}"
   printf '[退出] FUEL 规划器分屏，返回码=%s\n' "$?"
   keep_pane_open
 }
