@@ -2,7 +2,7 @@
 
 本轮按用户后续要求改用 FAST-LIO 原生 10 Hz 实测点云，并允许从真实点簇中分离球面与吊绳。保持类别无关检测、20 cm 最小物理目标、六点稀疏目标及当前观测发布要求。冻结标注不变，在线算法没有加入球的位置范围或 65 cm 尺寸截断。
 
-**新球冻结样本命中已经超过 95%，联合验收仍未通过。** 最终候选 `final06` 达到 **111/113（98.23%）、27/27（100%）**，当前 50 个命中全部保留；同一候选静止包为 7 框/467 时刻，较 6 框基线增加 1 框。无球原生同频分段框数为 0/112/661/155，对比原生基线 0/109/607/96 全部增加，原 5 Hz 锚点为 0/41/253/61，对比基线 0/37/247/49 也增加。因此球样本已达 95%，但联合误检验收仍未通过，实验开关保持关闭。
+**新球冻结样本命中已经超过 95%，联合验收仍未通过。** 最终候选 `final06` 达到 **111/113（98.23%）、27/27（100%）**，当前 50 个命中全部保留；同一候选静止包为 7 框/467 时刻，较 6 框基线增加 1 框。无球原生同频分段框数为 0/112/661/155，对比原生基线 0/109/607/96 全部增加，原 5 Hz 锚点为 0/41/253/61，对比基线 0/37/247/49 也增加。因此球样本已达 95%，但联合误检验收仍未通过；新增分离、重检、时序和关联实验开关保持关闭，A04 原有背景/形状核验继续保留。
 
 > `final06` 的遮挡启动、无球、静止、旧下午段和另一段录包均已完成可复核回放；联合验收失败的配置不启用默认。下表只列已经取得 `PASS completed`、完整原速回放并生成 `*_metrics.json` 的结果。中断的 `ball_reacquire08` 不纳入验收。
 
@@ -91,7 +91,7 @@
 
 ## 实现语义与当前失败原因
 
-通用 `uav1_detection.launch` 默认使用 10 Hz、三帧、8 cm，实验开关仍默认关闭。`native_input_enabled=true` 时以 `topic_tools relay` 转发原始点云，保持原有 `/UAV1/fapp/cloud_registered_throttled` 入口名称和消息接口；此时 `input_rate` 不执行限频，实际频率由上游决定。本数据 FAST-LIO 上游约 10 Hz。`run_swarm.launch` 的 FAPP include 使用 `input_rate=10.0` 和原生 relay，LDOP 独立参数仍为 5.0 Hz。launch 解析已验证，实验旗在通用入口和 A04 include 中均保持关闭；`final06` 只作为离线对照，不改变新增实验开关行为。
+通用 `uav1_detection.launch` 默认使用 10 Hz、三帧、8 cm，实验开关仍默认关闭。`native_input_enabled=true` 时以 `topic_tools relay` 转发原始点云，保持原有 `/UAV1/fapp/cloud_registered_throttled` 入口名称和消息接口；此时 `input_rate` 不执行限频，实际频率由上游决定。本数据 FAST-LIO 上游约 10 Hz。`run_swarm.launch` 的 FAPP include 使用 `input_rate=10.0` 和原生 relay，LDOP 独立参数仍为 5.0 Hz。launch 解析已验证；通用入口的新实验旗全部关闭，A04 仅保留既有背景一致性、局部平面、形状核验和启动参考背景，新增分离/重检/时序/关联旗标关闭。`final06` 只作为离线对照，不改变新增实验开关行为。
 
 本轮实验参数含义：
 
@@ -129,7 +129,7 @@
 
 v5 几何关联在新球录包仍为 111/113、27/27，但旧慢摆降至 19/59，失去 40 个慢摆旧命中，加上 3 个快摆旧损失共 43。快摆有新增命中，不能抵消这些损失。该组不继续消耗无球回放，缺无球数字明确标为“未运行”；不得根据新球的 98.23% 宣称关联方案合格。
 
-`final06` 已完成几何关联关闭、开启 `detection/occlusion_startup_enabled` 的完整对照：新球 111/113、27/27，当前 50 命中零损失；无球原生分段 0/112/661/155，静止 7/467，旧下午快/慢摆 44/53、59/59（旧 104 个命中丢失 +145.672 s 一处），另一段限频录包 39/47 且保留原有 38 个命中。完整参数、缺输出和四路一致性见 `ball_final06_metrics.json`、`noball_final06_metrics.json`、`static_final06_metrics.json`、`afternoon_final06_metrics.json` 与 `latest_final06_metrics.json`。由于联合条件未通过，所有新增实验开关保持关闭。
+`final06` 已完成几何关联关闭、开启 `detection/occlusion_startup_enabled` 的完整对照：新球 111/113、27/27，当前 50 命中零损失；无球原生分段 0/112/661/155，静止 7/467，旧下午快/慢摆 44/53、59/59（旧 104 个命中丢失 +145.672 s 一处），另一段限频录包 39/47 且保留原有 38 个命中。完整参数、缺输出和四路一致性见 `ball_final06_metrics.json`、`noball_final06_metrics.json`、`static_final06_metrics.json`、`afternoon_final06_metrics.json` 与 `latest_final06_metrics.json`。由于联合条件未通过，新增分离、重检、时序和关联实验开关保持关闭；A04 原有背景和形状核验参数不变。
 
 ## 复现命令与逐时刻证据
 
@@ -193,7 +193,7 @@ python3 .fapp_ball_debug/native10_20261008/evaluate.py static_repro_priority08 a
 
 `final06` 的二进制 SHA256 为 `5131e45a9d4b9e0280865c05a88515f78985e41d15f448a3b0e1a2b434dc3040`。有球原生输入 1727 帧，实际回调 1715、四路输出 1714，整回调 p95 87.84 ms；113 个冻结时刻全部有输出，状态命中 111/113，三帧子集 27/27，当前 50 个命中全部保留。无球原生输入 763 帧，实际回调 761、输出 760，整回调 p95 82.97 ms，四路一致；相对原生基线无球分段框数 0/112/661/155 对 0/109/607/96，原 5 Hz 锚点 0/41/253/61 对 0/37/247/49，未通过误检代理门槛。静止 `static_final06` 为 7/467，对 6/467，未通过静止门槛。旧下午段为快摆 44/53、慢摆 59/59，丢旧命中 +145.672 s 一处；另一段为 39/47，原有 38 个命中均保留。各组回放均核对四路输出一致；缺输出按漏检统计，球冻结时刻无缺输出，无球有 1 个无输出回调和 2 个源帧未进入回调。
 
-主工作空间已执行 `catkin_make --pkg mot_mapping diff_planner -j2 -l2`，结果为 exit 0（日志：`/tmp/native10_build_final.log`）；实际 `devel/lib/mot_mapping/mapping_node` 产物时间为 2026-10-08 23:38:04，测试产物也已更新。`CTest` 的 `mot_mapping_density_partition`、默认与 A04 10 Hz smoke、20 cm 六点球面/平面和 launch XML 解析均通过。默认启动保持 `input_rate=10.0`、三帧、8 cm，新增实验旗全部为 false；A04 的 FAPP include 使用原生约 10 Hz relay，LDOP 仍为 5 Hz。
+主工作空间已执行 `catkin_make --pkg mot_mapping diff_planner -j2 -l2`，结果为 exit 0（日志：`/tmp/native10_build_final.log`）；实际 `devel/lib/mot_mapping/mapping_node` 产物时间为 2026-10-08 23:38:04，测试产物也已更新。`CTest` 的 `mot_mapping_density_partition`、默认与 A04 10 Hz smoke、20 cm 六点球面/平面和 launch XML 解析均通过。默认启动保持 `input_rate=10.0`、三帧、8 cm，新增分离、重检、时序和关联旗标为 false；A04 的既有背景/形状核验保持开启，FAPP 使用原生约 10 Hz relay，LDOP 仍为 5 Hz。
 
 因此 `final06` 仅作为球样本达到 95% 的离线候选，不启用为默认配置。当前可运行配置继续使用 A04 的已有参数和默认关闭的新开关。A04 入口命令为：
 
