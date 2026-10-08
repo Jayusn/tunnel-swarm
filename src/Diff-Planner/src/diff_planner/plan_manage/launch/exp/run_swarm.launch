@@ -237,6 +237,7 @@
         <arg name="background_local_post_association" value="true"/>
         <arg name="background_consistency_fraction" value="0.55"/>
         <arg name="shape_consistency_enabled" value="true"/>
+        <arg name="shape_consistency_fraction" value="0.45"/>
         <arg name="motion_displacement" value="0.06"/>
         <arg name="min_motion_speed" value="0.14"/>
         <arg name="min_motion_novel_fraction" value="0.26"/>

@@ -32,6 +32,8 @@ def main():
     parser.add_argument('--background-reference', action='store_true')
     parser.add_argument('--reference-motion', action='store_true')
     parser.add_argument('--reference-strong-two-frame', action='store_true')
+    parser.add_argument('--competition', action='store_true')
+    parser.add_argument('--occlusion-startup', action='store_true')
     parser.add_argument('--reference-distance', type=float, default=.03)
     parser.add_argument('--reference-fraction', type=float, default=.5)
     parser.add_argument('--planes', type=int, default=6)
@@ -81,6 +83,8 @@ def main():
                 '_background_reference/enabled:=' + str(args.background_reference).lower(),
                 '_detection/reference_motion_enabled:=' + str(args.reference_motion).lower(),
                 '_detection/reference_strong_two_frame_enabled:=' + str(args.reference_strong_two_frame).lower(),
+                '_association/competition_enabled:=' + str(args.competition).lower(),
+                '_detection/occlusion_startup_enabled:=' + str(args.occlusion_startup).lower(),
                 '_background_reference/distance:=' + str(args.reference_distance),
                 '_background_reference/fraction:=' + str(args.reference_fraction),
                 '_background_plane/max_planes:=' + str(args.planes),
@@ -162,6 +166,33 @@ def main():
 
         smoke.exercise_20cm_targets(publish, count)
         smoke.exercise_dense_startup(publish, count, args.frames)
+        if args.competition and args.background_consistency:
+            # Five fixed returns are visible in the raw history but do not
+            # form a candidate. A sixth return later creates a closer static
+            # competitor while the nine-point body continues moving.
+            def competing_cap(center, y):
+                return [(center + math.sqrt(.1 ** 2 - dy ** 2 - dz ** 2), y + dy, 1 + dz)
+                        for dy in (-.06, 0, .06) for dz in (-.06, 0, .06)]
+
+            fixed = competing_cap(2.15, -1.7)
+            for _ in range(12):
+                publish(None, points=backdrop)
+            # Two earlier plane observations provide background evidence
+            # without satisfying the detector's four-frame static cutoff.
+            fixed_surface = [(2.22, -1.7 + y * .1, 1 + z * .1)
+                             for y in range(-3, 4) for z in range(-3, 4)]
+            for _ in range(2):
+                publish(None, points=backdrop + fixed_surface)
+            for _ in range(2):
+                publish(None, points=backdrop + fixed[:5])
+            for center in (1.8, 1.95, 2.1):
+                stamp = publish(None, points=backdrop + fixed[:5] + competing_cap(center, -1.4))
+            assert count(stamp) == 1, 'Competition regression did not establish a moving body'
+            stamp = publish(None, points=backdrop + fixed[:6] + competing_cap(2.55, -1.4))
+            assert count(stamp) >= 1, 'Static competitor erased the moving body'
+            assert any(math.hypot(state.position.x - 2.62, state.position.y + 1.4) < .25
+                       for state in received['states'][stamp.to_nsec()].states), \
+                'Closer static fragment stole the moving body track'
         if args.local_planes:
             smoke.exercise_mixed_corner(publish, count)
         if args.background_reference or args.reference_motion:

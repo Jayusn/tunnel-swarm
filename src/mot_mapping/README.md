@@ -127,3 +127,27 @@ python3 src/mot_mapping/test/motion_confirmation_smoke.py --rate 10 --frames 5 -
 新增默认关闭的 `reference_strong_two_frame_enabled` 仅用于对照试验，且必须同时打开 `reference_motion_enabled`。它只对参考背景前景中满足连续两帧、间隔不超过 0.4 秒、位移至少 0.30 m、实测速率至少 0.50 m/s 和新点比例至少 50% 的候选生效，普通目标不会因此改成两帧确认。
 
 参考树只冻结启动时看到的通道段。无人机移动到拐角或新场景后，新墙面进入正常点云和三帧确认流程，不会被旧背景树直接删除；新场景静态碎片仍可能在确认窗口产生短暂候选，需用拐角和转动录包单独验收。详见[背景差分对照报告](docs/background_reference_comparison_20261006.md)。
+
+## 摆球漏检与竞争关联后续对照（2026-10-08）
+
+针对无人机先静止、被拿入通道观察摆球再移出的录包，增加了两个默认关闭的独立试验开关：`association/competition_enabled` 只在已发布且连续的轨迹存在静态/运动候选竞争时调整配对排序；`detection/occlusion_startup_enabled` 使用两帧历史深度视角都支持的前景遮挡证据，但仍要求三次实际观测、6 cm 位移、0.14 m/s 实测速率和当前新点比例。两者都不改变 0.82 m 配对门限、点簇输入或普通三帧确认。
+
+最终关联竞争试验把球包满足三帧可观测条件的子集命中从 19/27 提到 23/27，但无球通道包框数由 333 增至 341；遮挡启动也增加无球包框数，因此两个新开关保持关闭。仅将 A04 的形状一致性比例从 0.50 降为 0.45 时，无球包各阶段框数保持一致，旧静止包 6/467，快摆 45/53、慢摆 59/59、另一段 38/47 的 142 个原有命中全部保留，球包子集为 20/27。`run_swarm.launch` 的 A04 入口已采用 0.45；独立感知 launch 默认仍为原来的 5 Hz、3 帧、8 cm。
+
+可复现实验参数：
+
+```bash
+roslaunch mot_mapping uav1_detection.launch \
+  background_reference_enabled:=true background_reference_capture_duration:=5.0 \
+  background_reference_distance:=0.04 background_reference_fraction:=0.5 \
+  background_consistency_enabled:=true background_consistency_post_association:=false \
+  background_local_planes_enabled:=true background_local_post_association:=true \
+  background_consistency_fraction:=0.55 \
+  shape_consistency_enabled:=true shape_consistency_fraction:=0.45 \
+  input_rate:=5 motion_confirmation_frames:=3 motion_displacement:=0.06 min_motion_speed:=0.14 \
+  min_motion_novel_fraction:=0.26 tracked_motion_novel_fraction:=0.20 \
+  reference_motion_enabled:=false reference_strong_two_frame_enabled:=false \
+  competition_enabled:=false occlusion_startup_enabled:=false
+```
+
+`occlusion_startup_smoke.py` 覆盖双历史支持、缺历史、单历史、关闭开关和零阈值五种情况。球包空间标注是初步可观测性筛查，20/27 不代表全程检测率，仍未通过动态 90% 目标。完整结果、命令、失败案例和验证限制见[通道摆球后续对照](docs/corridor_recovery_comparison_20261008.md)。

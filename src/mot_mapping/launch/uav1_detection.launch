@@ -9,7 +9,9 @@
   <arg name="tracked_motion_novel_fraction" default="$(arg min_motion_novel_fraction)"/>
   <arg name="min_cluster" default="6"/>
   <arg name="geometry_enabled" default="false"/>
+  <arg name="competition_enabled" default="false"/>
   <arg name="depth_evidence_enabled" default="false"/>
+  <arg name="occlusion_startup_enabled" default="false"/>
   <arg name="background_consistency_enabled" default="false"/>
   <arg name="background_local_planes_enabled" default="false"/>
   <arg name="background_local_post_association" default="true"/>
@@ -44,7 +46,9 @@
       <param name="detection/tracked_motion_novel_fraction" value="$(arg tracked_motion_novel_fraction)"/>
       <param name="detection/max_above_uav" value="1.5"/>
       <param name="association/geometry_enabled" value="$(arg geometry_enabled)"/>
+      <param name="association/competition_enabled" value="$(arg competition_enabled)"/>
       <param name="detection/depth_evidence_enabled" value="$(arg depth_evidence_enabled)"/>
+      <param name="detection/occlusion_startup_enabled" value="$(arg occlusion_startup_enabled)"/>
       <param name="background_consistency/enabled" value="$(arg background_consistency_enabled)"/>
       <param name="background_consistency/local_planes_enabled" value="$(arg background_local_planes_enabled)"/>
       <param name="background_consistency/local_post_association" value="$(arg background_local_post_association)"/>

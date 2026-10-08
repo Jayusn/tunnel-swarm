@@ -21,6 +21,7 @@ struct Ekf {
   ros::Time last_published_stamp;
   int last_seen_frame = 0;
   Eigen::Vector3d observed_dense_size = Eigen::Vector3d::Zero();
+  size_t observed_dense_count = 0;
   std::vector<Eigen::Vector3d> observed_dense_points;
   Eigen::Vector3d observed_lidar_direction = Eigen::Vector3d::Zero();
 
@@ -79,6 +80,7 @@ struct Ekf {
     update_num = 0;
     id = id_;
     observations.clear();
+    observed_dense_count = 0;
     observed_dense_points.clear();
     observed_lidar_direction.setZero();
     last_published_stamp = ros::Time();

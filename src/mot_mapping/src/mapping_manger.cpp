@@ -116,11 +116,13 @@ void MappingRos::init() {
            mp_->min_motion_novel_fraction);
   nh.param("detection/max_above_uav", mp_->max_above_uav, 1.5);
   nh.param("association/geometry_enabled", mp_->geometry_association_enabled, false);
+  nh.param("association/competition_enabled", mp_->competition_association_enabled, false);
   nh.param("detection/depth_evidence_enabled", mp_->depth_evidence_enabled, false);
+  nh.param("detection/occlusion_startup_enabled", mp_->occlusion_startup_enabled, false);
   nh.param("detection/shape_consistency_enabled", mp_->shape_consistency_enabled, false);
   nh.param("detection/shape_consistency_distance", mp_->shape_consistency_distance, 0.05);
   nh.param("detection/shape_consistency_fraction", mp_->shape_consistency_fraction, 0.5);
-  if (mp_->depth_evidence_enabled || mp_->shape_consistency_enabled) {
+  if (mp_->depth_evidence_enabled || mp_->occlusion_startup_enabled || mp_->shape_consistency_enabled) {
     std::vector<double> offset;
     // Same MID360 offset as FAST-LIO's mid360.yaml; use its live parameter
     // when the sensor stack is running. Replay supplies that parameter too.
@@ -359,7 +361,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
   MapData sensor_history[2];
   if (!buffer.empty()) observed_history[0] = buffer.front();
   if (buffer.size() > 1) observed_history[1] = buffer.back();
-  if (mp_->depth_evidence_enabled) {
+  if (mp_->depth_evidence_enabled || mp_->occlusion_startup_enabled) {
     if (!observed_sensor_poses.empty()) sensor_history[0] = observed_sensor_poses.front();
     if (observed_sensor_poses.size() > 1) sensor_history[1] = observed_sensor_poses.back();
     MapData sensor_pose;
@@ -530,6 +532,9 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     bool static_background;
     bool reference_foreground;
     double novel_fraction;
+    double occlusion_fraction;
+    size_t dense_count;
+    int background_supported_frames;
     Eigen::Vector3d dense_size;
     std::vector<Eigen::Vector3d> dense_points;
   };
@@ -541,7 +546,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
                                    !observed_history[history]->empty();
     if (has_observed_history[history])
       observation_trees[history].setInputCloud(observed_history[history]);
-    if (mp_->depth_evidence_enabled && has_observed_history[history])
+    if ((mp_->depth_evidence_enabled || mp_->occlusion_startup_enabled) && has_observed_history[history])
       depth_views[history].build(*observed_history[history], sensor_history[history]);
   }
   std::vector<Candidate> candidates;
@@ -623,10 +628,12 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
         ++reference_supported;
       for (int history = 0; history < 2; ++history) {
         if (!has_observed_history[history]) continue;
-        int evidence = mp_->depth_evidence_enabled ? depth_views[history].classify(point) : -1;
+        int evidence = (mp_->depth_evidence_enabled || mp_->occlusion_startup_enabled) ?
+            depth_views[history].classify(point) : -1;
         if (evidence == 0) ++ray_supported[history];
         if (evidence == 1) ++ray_foreground[history];
-        bool novel = evidence == 1 || (evidence < 0 &&
+        const int novelty_evidence = mp_->depth_evidence_enabled ? evidence : -1;
+        bool novel = novelty_evidence == 1 || (novelty_evidence < 0 &&
             (observation_trees[history].nearestKSearch(point, 1, observed_nearest,
                                                      observed_squared_distance) == 0 ||
              observed_squared_distance[0] > mp_->thresh_dist * mp_->thresh_dist));
@@ -696,8 +703,8 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     // actual historical neighborhoods qualify; no unbounded plane extension.
     bool stable_background = false;
     bool local_background = false;
+    int supported_frames = 0;
     if (mp_->background_consistency_enabled) {
-      int supported_frames = 0;
       int local_plane_frames = 0;
       for (const auto& tree : background_history) {
         if (!tree) continue;
@@ -831,6 +838,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     Candidate candidate;
     candidate.state.position = center;
     candidate.static_background = stable_background;
+    candidate.background_supported_frames = supported_frames;
     const double reference_fraction = static_cast<double>(reference_supported) / dense_count;
     const bool reference_background = reference_tree_ && reference_fraction >= mp_->reference_fraction;
     candidate.reference_foreground = reference_tree_ && !reference_background;
@@ -843,6 +851,9 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     candidate.state.size = size;
     candidate.indices = indices;
     candidate.dense_size = dense_size;
+    candidate.dense_count = dense_count;
+    candidate.occlusion_fraction = static_cast<double>(std::min(ray_foreground[0], ray_foreground[1])) /
+                                   dense_count;
     if (mp_->shape_consistency_enabled) {
       for (const auto& point : cluster) {
         if ((point.getVector3fMap() - cluster[dense_index].getVector3fMap()).squaredNorm() <=
@@ -873,6 +884,8 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     int candidate, tracker;
   };
   std::vector<Match> possible_pairs;
+  std::vector<size_t> competing_candidates(trackers.size(), 0);
+  std::vector<bool> has_weak_return(trackers.size(), false), has_motion_return(trackers.size(), false);
   for (int i = 0; i < candidates.size(); ++i) {
     for (int j = 0; j < trackers.size(); ++j) {
       double distance = (candidates[i].state.position -
@@ -885,7 +898,37 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
                  0.25 * (candidates[i].dense_size - trackers[j]->observed_dense_size).norm();
         possible_pairs.push_back({trackers[j]->last_seen_frame != frame_num - 1,
                                   cost, i, j});
+        ++competing_candidates[j];
+        const bool weak = candidates[i].static_background ||
+            (candidates[i].background_supported_frames >= 2 &&
+             candidates[i].novel_fraction < mp_->min_motion_novel_fraction);
+        has_weak_return[j] = has_weak_return[j] || weak;
+        has_motion_return[j] = has_motion_return[j] || !weak;
       }
+    }
+  }
+  // Only disambiguate candidates competing for an actually published,
+  // continuously observed track. Keep every original pair available: the
+  // evidence changes sorting, never the 0.82 m gate or minimum point count.
+  if (mp_->competition_association_enabled) {
+    for (auto& pair : possible_pairs) {
+      const auto& tracker = trackers[pair.tracker];
+      if (pair.stale || competing_candidates[pair.tracker] < 2 ||
+          !has_weak_return[pair.tracker] || !has_motion_return[pair.tracker] ||
+          tracker->last_published_stamp.isZero() ||
+          (cloud_stamp_ - tracker->last_published_stamp).toSec() > 0.6) continue;
+      const auto& candidate = candidates[pair.candidate];
+      const bool weak_motion_return = candidate.static_background ||
+          (candidate.background_supported_frames >= 2 &&
+           candidate.novel_fraction < mp_->min_motion_novel_fraction);
+      const double count_difference = tracker->observed_dense_count == 0 ? 0.0 :
+          static_cast<double>(std::max(candidate.dense_count, tracker->observed_dense_count) -
+                              std::min(candidate.dense_count, tracker->observed_dense_count)) /
+          std::max(candidate.dense_count, tracker->observed_dense_count);
+      pair.distance += (weak_motion_return ? 0.30 : 0.0) + 0.20 * count_difference;
+      ROS_DEBUG_STREAM("FAPP_COMPETITION " << cloud_stamp_.toNSec() << " "
+          << candidate.state.position.transpose() << " " << tracker->id << " "
+          << weak_motion_return << " " << count_difference << " " << pair.distance);
     }
   }
   // An old position from a swing must not steal a currently observed track.
@@ -980,6 +1023,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     }
     auto& tracker = trackers[j];
     tracker->observed_dense_size = candidate.dense_size;
+    tracker->observed_dense_count = candidate.dense_count;
     if (mp_->shape_consistency_enabled) {
       tracker->observed_dense_points = candidate.dense_points;
       tracker->observed_lidar_direction = lidar_direction;
@@ -1034,7 +1078,16 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
         std::min(mp_->min_motion_novel_fraction, mp_->tracked_motion_novel_fraction) :
         mp_->min_motion_novel_fraction;
     bool reference_startup = mp_->reference_motion_enabled && candidate.reference_foreground;
-    if (has_motion && (recently_changed || !tracker->last_dynamic_stamp.isZero() || reference_startup) &&
+    const bool occlusion_startup = mp_->occlusion_startup_enabled &&
+        !candidate.static_background &&
+        candidate.occlusion_fraction > 0.0 &&
+        candidate.occlusion_fraction >= mp_->min_motion_novel_fraction;
+    if (mp_->occlusion_startup_enabled)
+      ROS_DEBUG_STREAM("FAPP_OCCLUSION_STARTUP " << cloud_stamp_.toNSec() << " "
+          << candidate.state.position.transpose() << " " << candidate.occlusion_fraction << " "
+          << has_motion << " " << occlusion_startup);
+    if (has_motion && (recently_changed || !tracker->last_dynamic_stamp.isZero() ||
+                       reference_startup || occlusion_startup) &&
         candidate.novel_fraction >= required_novel_fraction)
       tracker->last_motion_stamp = cloud_stamp_;
     if (strong_reference_motion) {

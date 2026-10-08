@@ -66,7 +66,9 @@ struct MapParam {
   double tracked_motion_novel_fraction;
   double max_above_uav;
   bool geometry_association_enabled;
+  bool competition_association_enabled;
   bool depth_evidence_enabled;
+  bool occlusion_startup_enabled;
   Eigen::Vector3d lidar_offset;
   bool background_surface_enabled;
   bool background_plane_enabled;
