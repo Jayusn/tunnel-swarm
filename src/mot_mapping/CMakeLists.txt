@@ -11,3 +11,11 @@ set_target_properties(mapping_node PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUI
 target_include_directories(mapping_node PRIVATE include ${catkin_INCLUDE_DIRS} ${EIGEN3_INCLUDE_DIRS} ${PCL_INCLUDE_DIRS})
 target_link_libraries(mapping_node ${catkin_LIBRARIES} ${PCL_LIBRARIES} Threads::Threads)
 add_dependencies(mapping_node ${catkin_EXPORTED_TARGETS})
+
+if(CATKIN_ENABLE_TESTING)
+  add_executable(density_partition_test test/density_partition_test.cpp)
+  target_compile_features(density_partition_test PRIVATE cxx_std_14)
+  target_include_directories(density_partition_test PRIVATE include ${EIGEN3_INCLUDE_DIRS} ${PCL_INCLUDE_DIRS})
+  target_link_libraries(density_partition_test ${PCL_LIBRARIES})
+  add_test(NAME mot_mapping_density_partition COMMAND density_partition_test)
+endif()

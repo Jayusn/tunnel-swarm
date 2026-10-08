@@ -56,16 +56,28 @@ struct MapParam {
   double tolerance;
   int min_cluster;
   int max_cluster;
+  double cluster_voxel_size;
+  bool density_split_enabled;
+  double core_radius;
+  double core_density_fraction;
   // Dynamic Detection Params
   double thresh_dist;
   double thresh_var;
   double motion_displacement;
   int motion_confirmation_frames;
+  bool time_evidence_enabled;
+  double motion_window;
+  bool confirmed_reacquisition_enabled;
+  double reacquisition_max_gap;
   double min_motion_speed;
   double min_motion_novel_fraction;
   double tracked_motion_novel_fraction;
   double max_above_uav;
   bool geometry_association_enabled;
+  bool global_assignment_enabled;
+  double position_measurement_variance;
+  bool translated_startup_enabled;
+  double translated_startup_fraction;
   bool competition_association_enabled;
   bool depth_evidence_enabled;
   bool occlusion_startup_enabled;
@@ -125,6 +137,13 @@ private:
   std::deque<PointsPtr> previous_points;
   std::deque<PointsPtr> buffer;
   std::deque<MapData> observed_sensor_poses;
+  struct RawObservation {
+    ros::Time stamp;
+    PointsPtr points;
+    MapData sensor_pose;
+  };
+  std::deque<RawObservation> timed_observations_;
+  ros::Time next_background_sample_stamp_, last_background_sample_stamp_;
   std::deque<PointsPtr> input_point;
   std::deque<std::shared_ptr<pcl::search::KdTree<PointType>>> background_history_;
   PointsPtr reference_points_;

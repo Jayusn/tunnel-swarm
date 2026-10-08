@@ -50,7 +50,7 @@ def exercise_20cm_targets(publish, count):
             assert count(stamp) == 1, '20 cm wall-adjacent reversal lost: ' + str((step, count(stamp)))
 
 
-def exercise_dense_startup(publish, count, frames=3):
+def exercise_dense_startup(publish, count, frames=3, gap_frames=4):
     # Nine samples on a physical 20 cm sphere exercise shape verification;
     # the separate six-point regressions deliberately bypass that check.
     wall = [(x * .1, .84, .4 + z * .1)
@@ -68,7 +68,7 @@ def exercise_dense_startup(publish, count, frames=3):
         if count(stamp) and first is None:
             first = step + 1
     assert first == frames, ('Dense target startup delayed', first, frames)
-    for _ in range(4):
+    for _ in range(gap_frames):
         stamp = publish(None, points=wall)
         assert count(stamp) == 0, 'Occlusion emitted a dense target prediction'
     first = None
@@ -120,7 +120,8 @@ def reference_backdrop():
 
 
 def exercise_reference_targets(publish, count, motion_enabled, reference_enabled,
-                               frames=3, strong_two_frame=False):
+                               frames=3, strong_two_frame=False,
+                               reacquisition_enabled=False, long_gap_frames=2):
     # The initial backdrop is frozen. Real foreground travels out and back;
     # its previously observed positions must never enter that background.
     wall = reference_backdrop()
@@ -142,7 +143,8 @@ def exercise_reference_targets(publish, count, motion_enabled, reference_enabled
     stamp = publish(None, points=wall)
     assert count(stamp) == 0, 'Missing observation published a prediction'
     stamp = publish(None, points=wall + cap(-1.10))
-    assert count(stamp) == int(motion_enabled), ('One-frame gap recovery incorrect', motion_enabled)
+    assert count(stamp) == int(motion_enabled or reacquisition_enabled), \
+        ('One-frame gap recovery incorrect', motion_enabled, reacquisition_enabled)
     for step in range(1, 8):
         stamp = publish(None, points=wall + cap(-1.10 - step * .12))
         if step >= frames:
@@ -176,12 +178,12 @@ def exercise_reference_targets(publish, count, motion_enabled, reference_enabled
         stamp = publish(None, points=wall + cap(-2 + step * .12))
     for _ in range(3):
         publish(None, points=wall + cap(-1.28))
-    for _ in range(2):
+    for _ in range(long_gap_frames):
         stamp = publish(None, points=wall)
         assert count(stamp) == 0, 'Long gap published an unobserved target'
     for step in range(3):
         stamp = publish(None, points=wall + cap(-1.10 + step * .12))
-        assert count(stamp) == int(step == 2), ('Two-frame gap bypassed fresh confirmation', step)
+        assert count(stamp) == int(step == 2), ('Long gap bypassed fresh confirmation', step)
 
 
 def main():
