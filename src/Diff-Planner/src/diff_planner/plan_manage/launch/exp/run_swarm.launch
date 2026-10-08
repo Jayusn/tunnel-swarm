@@ -229,6 +229,24 @@
         <arg name="cloud_topic" value="$(arg cloud_topic)"/>
         <arg name="odom_topic" value="$(arg odom_topic)"/>
         <arg name="input_rate" value="$(arg ldop_input_rate)"/>
+        <!-- A04：5 秒静态预采、4 cm / 50% 参考背景；普通目标保持三帧确认。 -->
+        <arg name="motion_confirmation_frames" value="3"/>
+        <arg name="background_consistency_enabled" value="true"/>
+        <arg name="background_consistency_post_association" value="false"/>
+        <arg name="background_local_planes_enabled" value="true"/>
+        <arg name="background_local_post_association" value="true"/>
+        <arg name="background_consistency_fraction" value="0.55"/>
+        <arg name="shape_consistency_enabled" value="true"/>
+        <arg name="motion_displacement" value="0.06"/>
+        <arg name="min_motion_speed" value="0.14"/>
+        <arg name="min_motion_novel_fraction" value="0.26"/>
+        <arg name="tracked_motion_novel_fraction" value="0.20"/>
+        <arg name="background_reference_enabled" value="true"/>
+        <arg name="background_reference_capture_duration" value="5.0"/>
+        <arg name="background_reference_distance" value="0.04"/>
+        <arg name="background_reference_fraction" value="0.5"/>
+        <arg name="reference_motion_enabled" value="false"/>
+        <arg name="reference_strong_two_frame_enabled" value="false"/>
     </include>
 
     <!-- 默认打开 Diff-Planner 自带 RViz，并修正配置中 drone_1 的旧话题。 -->
