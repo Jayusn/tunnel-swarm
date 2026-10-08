@@ -3427,7 +3427,16 @@ int FastExplorationManager::planExploreMotion(
       task_search_manager_ && motion_delta.norm() > 0.15 &&
       task_search_manager_->corridorMotionDirectionMatches(
           motion_delta.head<2>(), motion_corridor_direction);
-  if (mapped_turn_detected || corridor_yaw_correction) {
+  double curve_yaw=0.0;
+  const bool corridor_curve_heading = !mapped_turn_detected && !use_vertical_detour_target &&
+      corridor_yaw_lock_scope &&
+      task_search_manager_ && task_search_manager_->corridorCurveYaw(pos,curve_yaw);
+  if (corridor_curve_heading) {
+    next_yaw=curve_yaw;
+    look_forward_along_trajectory=false;
+    camera_head_sweep_active=false;
+    camera_continuous_rotation_active=false;
+  } else if (mapped_turn_detected || corridor_yaw_correction) {
     // 地图墙体轮廓独立于本次轨迹方向触发：yaw只朝向双墙确认的新通道轴线，
     // 不能跟随局部A*绕柱切线，否则一次普通侧绕也会带着机头误转。
     next_yaw = std::atan2(mapped_direction.y(), mapped_direction.x());
@@ -3476,9 +3485,17 @@ int FastExplorationManager::planExploreMotion(
                       "[corridor_yaw_lock] hold yaw=%.1fdeg; no mapped turn confirmed.",
                       yaw[0] * 180.0 / M_PI);
   }
+  std::function<double(const Eigen::Vector3d&)> channel_yaw;
+  if (corridor_curve_heading) {
+    channel_yaw=[this,next_yaw](const Eigen::Vector3d& position) {
+      double heading=next_yaw;
+      task_search_manager_->corridorCurveYaw(position,heading);
+      return heading;
+    };
+  }
   planner_manager_->planYawExplore(
       yaw, next_yaw, look_forward_along_trajectory, ep_->relax_time_,
-      camera_continuous_rotation_active, camera_rotation_rate);
+      camera_continuous_rotation_active, camera_rotation_rate, channel_yaw);
 
   double traj_plan_time = (ros::Time::now() - t1).toSec();
   t1 = ros::Time::now();
@@ -3568,6 +3585,12 @@ bool FastExplorationManager::detectMappedTurnDuringExecution(
   if (!task_search_manager_->mappedCorridorDirection(yaw, direction))
     return false;
   return task_search_manager_->turnYawAlignmentPending();
+}
+
+bool FastExplorationManager::shouldReplanCurveHeading(
+    const Vector3d& position,double reference_yaw) const {
+  return task_search_manager_ && !suspended_underpass_active_ &&
+         task_search_manager_->shouldReplanCurveHeading(position,reference_yaw);
 }
 
 bool FastExplorationManager::shouldStartInflationHistoryEscape(

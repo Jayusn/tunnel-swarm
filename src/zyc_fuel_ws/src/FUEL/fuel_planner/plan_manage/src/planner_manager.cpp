@@ -1322,7 +1322,8 @@ void FastPlannerManager::planYaw(const Eigen::Vector3d& start_yaw) {
 }
 
 void FastPlannerManager::planYawExplore(const Eigen::Vector3d& start_yaw, const double& end_yaw,
-    bool lookfwd, const double& relax_time, bool continuous_scan, double scan_yaw_rate) {
+    bool lookfwd, const double& relax_time, bool continuous_scan, double scan_yaw_rate,
+    const std::function<double(const Eigen::Vector3d&)>& channel_yaw) {
   const int seg_num = 12;
   double dt_yaw = local_data_.duration_ / seg_num;  // time of B-spline segment
   Eigen::Vector3d start_yaw3d = start_yaw;
@@ -1356,6 +1357,15 @@ void FastPlannerManager::planYawExplore(const Eigen::Vector3d& start_yaw, const 
       waypt_idx.push_back(i);
     }
     last_yaw = start_yaw3d[0] + scan_yaw_rate * (seg_num - 1) * dt_yaw;
+  } else if (channel_yaw) {
+    // 墙体给出沿通道进度的朝向；不使用位置路径的绕障切线。
+    for (int i=1; i<seg_num; ++i) {
+      double heading=channel_yaw(local_data_.position_traj_.evaluateDeBoorT(i*dt_yaw));
+      calcNextYaw(last_yaw,heading);
+      waypts.emplace_back(heading,0.0,0.0);
+      waypt_idx.push_back(i);
+      last_yaw=heading;
+    }
   } else if (lookfwd) {
     const double forward_t = 2.0;
     const int relax_num = relax_time / dt_yaw;
@@ -1380,6 +1390,8 @@ void FastPlannerManager::planYawExplore(const Eigen::Vector3d& start_yaw, const 
   }
   // Final state
   Eigen::Vector3d end_yaw3d(end_yaw, 0, 0);
+  if (channel_yaw && !continuous_scan)
+    end_yaw3d[0]=channel_yaw(local_data_.position_traj_.evaluateDeBoorT(local_data_.duration_));
   if (continuous_scan) {
     // 2026-07-24: 端点保留扫描角速度，使相邻重规划段衔接时不会每段减速到零。
     end_yaw3d =

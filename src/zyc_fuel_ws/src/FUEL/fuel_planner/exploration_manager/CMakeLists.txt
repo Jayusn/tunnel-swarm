@@ -88,6 +88,8 @@ target_link_libraries(load_obj
 )
 
 if(CATKIN_ENABLE_TESTING)
+  add_executable(corridor_curve_heading_test test/corridor_curve_heading_test.cpp)
+  add_test(NAME corridor_curve_heading_test COMMAND corridor_curve_heading_test)
   add_executable(open_space_exit_detection_test
     test/open_space_exit_detection_test.cpp src/task_search_manager.cpp)
   target_link_libraries(open_space_exit_detection_test ${catkin_LIBRARIES})

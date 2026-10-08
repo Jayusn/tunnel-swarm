@@ -7,6 +7,7 @@
 #include <plan_env/sdf_map.h>
 #include <exploration_manager/task_search_manager.h>
 #include <exploration_manager/open_space_exit_detection.h>
+#include <plan_manage/planner_manager.h>
 
 namespace {
 void check(bool condition, const char* message) {
@@ -55,6 +56,82 @@ bool detect(const Scene& scene, fast_planner::open_space_exit::Result& result) {
 namespace fast_planner {
 class TaskSearchManagerTest {
 public:
+  static void runCurveMapIntegration() {
+    ros::NodeHandle nh("~");
+    nh.setParam("mission/task_search/curve_heading/enabled",true);
+    nh.setParam("sdf_map/resolution",0.15);
+    auto map=std::make_shared<SDFMap>();
+    map->initMap(nh);
+    pcl::PointCloud<pcl::PointXYZ> walls;
+    for (double x=-0.60;x<=1.8;x+=0.04) {
+      for (double z=0.40;z<=1.40;z+=0.04) {
+        walls.push_back(pcl::PointXYZ(x,0.65+0.20*x*x,z));
+        walls.push_back(pcl::PointXYZ(x,-0.65+0.20*x*x,z));
+      }
+    }
+    for (int i=0;i<4;++i) map->inputPointCloud(walls,walls.size(),Eigen::Vector3d(0,0,1));
+    TaskSearchManager curve;
+    curve.initialize(nh);
+    curve.setMap(map);
+    curve.setCorridorFrame(Eigen::Vector3d(-3,0,1),Eigen::Vector3d::UnitX());
+    curve.updateRobotPose(Eigen::Vector3d(0,0,1),0);
+    check(curve.curveHeadingActive(),"real occupied wall columns did not activate curve yaw");
+    Eigen::Vector3d direction;
+    check(!curve.mappedCorridorDirection(0,direction) && !curve.turnYawAlignmentPending(),
+          "curve entered the stationary turn latch");
+    double near_yaw,far_yaw,bypass_yaw;
+    check(curve.corridorCurveYaw(Eigen::Vector3d(0.1,0,1),near_yaw) &&
+          curve.corridorCurveYaw(Eigen::Vector3d(0.6,0,1),far_yaw) && far_yaw>near_yaw,
+          "real map yaw did not change along the corridor");
+    curve.corridorCurveYaw(Eigen::Vector3d(0.6,0.35,1),bypass_yaw);
+    check(std::fabs(far_yaw-bypass_yaw)<1e-9,"lateral bypass changed mapped curve yaw");
+    // 前进轴随着地图更新，原有回退欠账不能被滚动坐标系清零。
+    curve.segment_high_water_=0.40;
+    curve.curve_sample_valid_=false;
+    curve.updateCurveHeading();
+    check(curve.segment_high_water_>=0.39 &&
+          !curve.isTaskMotionAllowed(curve.latest_robot_pos_),
+          "rolling axis erased actual regression");
+    curve.commitCorridorTurn(Eigen::Vector3d::UnitY());
+    curve.updateRobotPose(Eigen::Vector3d(0.1,0.1,1),0);
+    check(!curve.curveHeadingActive() && curve.turnYawAlignmentPending() &&
+          curve.mappedCorridorDirection(0,direction) && direction.y()>0.99,
+          "curve reference replaced the existing discrete turn latch");
+    nh.deleteParam("mission/task_search/curve_heading/enabled");
+    nh.setParam("sdf_map/resolution",0.10);
+    // 真实yaw优化器：相同前进进度、不同绕障侧移必须得到相同朝向轨迹。
+    nh.setParam("manager/use_optimization",true);
+    nh.setParam("optimization/ld_smooth",1.0);
+    nh.setParam("optimization/ld_start",1000.0);
+    nh.setParam("optimization/ld_end",1000.0);
+    nh.setParam("optimization/ld_waypt",100.0);
+    nh.setParam("optimization/max_iteration_num2",200);
+    nh.setParam("optimization/max_iteration_time2",0.20);
+    nh.setParam("optimization/algorithm1",15);
+    nh.setParam("optimization/algorithm2",11);
+    FastPlannerManager planner;
+    planner.initPlanModules(nh);
+    Eigen::MatrixXd control(10,3);
+    control.setZero();
+    for (int i=0;i<10;++i) control(i,0)=0.15*i;
+    const auto channel_yaw=[](const Eigen::Vector3d& point) {
+      return std::atan(0.4*point.x());
+    };
+    planner.local_data_.position_traj_.setUniformBspline(control,3,0.7);
+    planner.local_data_.duration_=planner.local_data_.position_traj_.getTimeSum();
+    planner.planYawExplore(Eigen::Vector3d::Zero(),0,false,0,false,0,channel_yaw);
+    const auto first_yaw=planner.local_data_.yaw_traj_.getControlPoint();
+    const double duration=planner.local_data_.duration_;
+    check(planner.local_data_.yaw_traj_.evaluateDeBoorT(0.8*duration)[0]>
+          planner.local_data_.yaw_traj_.evaluateDeBoorT(0.2*duration)[0]+0.10,
+          "yaw optimizer did not turn progressively while position advanced");
+    for (int i=0;i<10;++i) control(i,1)=0.30*std::sin(i*0.8);
+    planner.local_data_.position_traj_.setUniformBspline(control,3,0.7);
+    planner.planYawExplore(Eigen::Vector3d::Zero(),0,false,0,false,0,channel_yaw);
+    check((first_yaw-planner.local_data_.yaw_traj_.getControlPoint()).norm()<1e-8,
+          "yaw optimizer followed lateral detour instead of wall reference");
+    std::cout << "curve heading real map integration: passed" << std::endl;
+  }
   static void runMapIntegration() {
     ros::NodeHandle nh("~");
     nh.setParam("mission/task_search/exit/auto_crossing_enabled", false);
@@ -566,6 +643,7 @@ int main(int argc, char** argv) {
   if (argc > 1 && std::string(argv[1]) == "--map-integration") {
     ros::init(argc, argv, "open_space_exit_map_test", ros::init_options::AnonymousName);
     fast_planner::TaskSearchManagerTest::runMapIntegration();
+    fast_planner::TaskSearchManagerTest::runCurveMapIntegration();
     return 0;
   }
   fast_planner::open_space_exit::Result result;

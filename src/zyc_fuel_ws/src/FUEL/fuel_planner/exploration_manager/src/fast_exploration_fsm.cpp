@@ -992,6 +992,19 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
     }
   }
 
+  // 弧形通道的新墙体方向超出当前yaw参考时滚动接续；保留正在执行的平移，不刹停。
+  if (state_ == EXPL_STATE::EXEC_TRAJ && !active_turn_in_place_ &&
+      !active_vertical_detour_ && !active_ground_ascent_ && !inflation_escape_active_) {
+    const double time=std::max(0.0,std::min(
+        (ros::Time::now()-active_traj_.start_time_).toSec(),active_traj_.duration_));
+    const double reference_yaw=active_traj_.yaw_traj_.evaluateDeBoorT(time)[0];
+    if (expl_manager_->shouldReplanCurveHeading(fd_->odom_pos_,reference_yaw)) {
+      fd_->static_state_=false;
+      transitState(PLAN_TRAJ,"corridor-curve-follow");
+      ROS_INFO("[corridor_curve] roll translation/yaw plan from moving state.");
+    }
+  }
+
   // 候选规划会改写 planner_manager_->local_data_，这里只检查 traj_server 真正执行的快照。
   auto& trajectory = active_traj_.position_traj_;
   const double traj_time = std::max(

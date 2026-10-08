@@ -50,6 +50,7 @@ public:
   bool consumeRcSearchLandingStartRequest();
   bool shouldStartInflationHistoryEscape(const Vector3d& odom_pos) const;
   bool detectMappedTurnDuringExecution(double yaw, Vector3d& direction);
+  bool shouldReplanCurveHeading(const Vector3d& position, double reference_yaw) const;
   bool beginSuspendedUnderpass(const Vector3d& pos, double yaw);
   bool currentPlanIsTurnInPlace() const { return turn_in_place_plan_; }
   bool currentPlanIsGroundAscent() const { return ground_ascent_plan_; }

@@ -16,6 +16,7 @@
 #include <plan_manage/plan_container.hpp>
 
 #include <ros/ros.h>
+#include <functional>
 
 namespace fast_planner {
 // Fast Planner Manager
@@ -49,7 +50,8 @@ public:
   // 2026-07-24: continuous_scan为前置相机提供随位置轨迹连续单方向环扫，不改变位置规划链路。
   void planYawExplore(const Eigen::Vector3d& start_yaw, const double& end_yaw, bool lookfwd,
                       const double& relax_time, bool continuous_scan = false,
-                      double scan_yaw_rate = 0.0);
+                      double scan_yaw_rate = 0.0,
+                      const std::function<double(const Eigen::Vector3d&)>& channel_yaw = {});
   // 原地转向使用插值样条而非软终点优化，严格到达目标 yaw 且两端角速度/角加速度为零。
   bool planYawTurnInPlace(const Eigen::Vector3d& start_yaw,
                           double end_yaw);

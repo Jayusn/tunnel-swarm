@@ -8,6 +8,7 @@
 #include <ros/ros.h>
 #include <std_msgs/Bool.h>
 #include <exploration_manager/motion_direction_rules.h>
+#include <exploration_manager/corridor_curve_heading.h>
 #include <quadrotor_msgs/ExplorationGoal.h>
 
 #include <deque>
@@ -54,6 +55,11 @@ public:
   // 允许机头跟随轨迹，避免沿新通道平移数米仍保持入口航向。
   bool corridorMotionDirectionMatches(const Eigen::Vector2d& motion,
                                       Eigen::Vector3d& corridor_direction) const;
+  // 弧形朝向按双侧墙体拟合，查询位置只取通道前向进度，不使用避障路径切线。
+  bool corridorCurveYaw(const Eigen::Vector3d& position, double& yaw) const;
+  bool shouldReplanCurveHeading(const Eigen::Vector3d& position,
+                               double reference_yaw) const;
+  bool curveHeadingActive() const { return curve_heading_active_; }
   bool turnYawAlignmentPending() const { return turn_yaw_follow_latch_.active(); }
   bool hasConfirmedCorridorTurn() const { return latest_turn_anchor_valid_; }
   void completeTurnYawAlignment() { turn_yaw_follow_latch_.clear(); }
@@ -176,6 +182,7 @@ private:
   void commitCorridorTurn(const Eigen::Vector3d& turn_direction);
   bool confirmCorridorTurnEvidence(const Eigen::Vector3d& turn_direction);
   void clearPendingTurnEvidence();
+  void updateCurveHeading();
   bool allStage2TargetsFound() const;
   bool goalTemporarilyBlocked(const Eigen::Vector3d& goal) const;
   bool goalDirectionTemporarilyBlocked(const Eigen::Vector3d& goal) const;
@@ -216,6 +223,13 @@ private:
   Eigen::Vector3d corridor_dir_{1.0, 0.0, 0.0};
   Eigen::Vector2d stable_progress_direction_{1.0, 0.0};
   bool stable_progress_direction_valid_{false};
+  bool curve_heading_enabled_{false};
+  bool curve_heading_active_{false};
+  std::uint64_t curve_map_sequence_{0};
+  bool curve_sample_valid_{false};
+  Eigen::Vector3d curve_origin_{0.0, 0.0, 0.0};
+  Eigen::Vector2d curve_forward_{1.0, 0.0};
+  corridor_curve::Result curve_geometry_;
   task_search::TurnYawFollowLatch turn_yaw_follow_latch_;
   Eigen::Vector2d pending_turn_direction_{1.0, 0.0};
   Eigen::Vector3d pending_turn_probe_origin_{0.0, 0.0, 0.0};

@@ -3,6 +3,7 @@
 #include <exploration_manager/motion_direction_rules.h>
 #include <exploration_manager/frontier_clearance_policy.h>
 #include <exploration_manager/open_space_exit_detection.h>
+#include <exploration_manager/entry_forward_policy.h>
 
 #include <std_msgs/String.h>
 #include <std_msgs/Bool.h>
@@ -22,6 +23,7 @@ namespace fast_planner {
 
 void TaskSearchManager::initialize(ros::NodeHandle& nh) {
   nh.param("mission/task_search/enabled", enabled_, true);
+  nh.param("mission/task_search/curve_heading/enabled", curve_heading_enabled_, false);
   nh.param("fsm/use_diff_for_fuel_exploration",
            hybrid_constraints_enabled_, false);
   // 2026-07-16: false只关闭三类识别对任务状态切换的阻塞，不删除话题订阅和后续接入接口。
@@ -491,12 +493,13 @@ void TaskSearchManager::updateRobotPose(const Eigen::Vector3d& pos, double yaw) 
       (pos.head<2>() - visited_positions_.back().head<2>()).norm() >= visit_spacing_) {
     // 实际位移方向不能重定义通道正方向。向右前方斜飞只是局部避障动作；若在这里
     // 跟随里程计切线，恢复器会把斜向误当成新的“直行”，随后无法回到原通道轴线。
-    // stable_progress_direction_ 只在下方累计地图确认真实双墙拐弯后更新。
+    // 通道方向仅由地图墙体更新，不使用实际位移或绕障切线。
     visited_positions_.push_back(pos);
     while (static_cast<int>(visited_positions_.size()) > max_history_size_)
       visited_positions_.pop_front();
     publishSearchState();
   }
+  updateCurveHeading();
   // 2026-07-13: 出口候选在第二阶段持续后台更新，frontier 耗尽时无需临时等待重新建图。
   updateExitCandidate(pos);
 
@@ -650,6 +653,95 @@ Eigen::Vector2d TaskSearchManager::stableProgressDirection() const {
   if (corridor_frame_received_ && corridor_dir_.head<2>().norm() > 1e-3)
     return corridor_dir_.head<2>().normalized();
   return Eigen::Vector2d(std::cos(latest_robot_yaw_), std::sin(latest_robot_yaw_));
+}
+
+void TaskSearchManager::updateCurveHeading() {
+  if (!curve_heading_enabled_ || !sdf_map_ || !corridor_entry_crossed_ ||
+      entry_forward::needsAdvance((latest_robot_pos_-corridor_origin_).dot(corridor_dir_)) ||
+      mission_stage_ != SEARCH_CORRIDOR ||
+      transition_active_ || turn_yaw_follow_latch_.active()) {
+    curve_heading_active_ = false;
+    return;
+  }
+  const Eigen::Vector3d origin = latest_robot_pos_;
+  const auto sequence = sdf_map_->getUpdateSequence();
+  if (curve_sample_valid_ && sequence == curve_map_sequence_ &&
+      (origin - curve_origin_).norm() < 0.10) return;
+  const bool following_curve = curve_heading_active_;
+  curve_map_sequence_ = sequence;
+  curve_sample_valid_ = true;
+  curve_origin_ = origin;
+  curve_forward_ = stableProgressDirection();
+  const Eigen::Vector2d lateral(-curve_forward_.y(), curve_forward_.x());
+  const double resolution = sdf_map_->getResolution();
+  const double step = std::max(0.04, 0.5*resolution);
+  std::vector<Eigen::Vector2d> left, right;
+  // 内弯墙在旧轴前向切面上的长度短，近后方墙体也参与连续轮廓拟合。
+  for (int section=0; section<=12; ++section) {
+    const double x=-0.60+0.15*section;
+    for (double sign : {1.0,-1.0}) {
+      for (double distance=step; distance<=2.10; distance+=step) {
+        Eigen::Vector3d point = origin;
+        point.head<2>() += x*curve_forward_ + sign*distance*lateral;
+        int hits=0;
+        double min_z=1e9, max_z=-1e9;
+        for (double dz=-0.45; dz<=0.30+1e-6; dz+=std::max(0.05,resolution)) {
+          point.z()=origin.z()+dz;
+          if (sdf_map_->isInMap(point) &&
+              sdf_map_->getOccupancy(point)==SDFMap::OCCUPIED) {
+            ++hits; min_z=std::min(min_z,dz); max_z=std::max(max_z,dz);
+          }
+        }
+        // 看竖向墙体而非单个水平切面，悬挂物仍交给位置避障处理。
+        if (hits>=3 && max_z-min_z>=0.30-1e-6) {
+          (sign>0 ? left : right).emplace_back(x,sign*distance);
+          break;
+        }
+      }
+    }
+  }
+  corridor_curve::Result geometry;
+  curve_heading_active_ = corridor_curve::infer(
+      left,right,std::max(0.06,0.8*resolution),geometry) &&
+      (geometry.curved || (following_curve &&
+                          std::fabs(geometry.yaw(0.35))>M_PI/180.0));
+  if (!curve_heading_active_) return;
+  curve_geometry_=geometry;
+  const double heading=std::atan2(curve_forward_.y(),curve_forward_.x())+
+                       geometry.yaw(0.35);
+  const Eigen::Vector2d direction(std::cos(heading),std::sin(heading));
+  // 滚动前进轴不能把已发生的回退清零；保留原有0.25m回退容差。
+  const double regression=std::max(0.0,segment_high_water_-
+      (origin.head<2>()-segment_origin_).dot(segment_direction_));
+  segment_origin_=origin.head<2>();
+  segment_direction_=direction;
+  segment_high_water_=regression;
+  stable_progress_direction_=direction;
+  stable_progress_direction_valid_=true;
+  if (hybrid_constraints_enabled_) exploration_initial_yaw_=heading;
+  clearPendingTurnEvidence();
+  ROS_INFO_THROTTLE(0.3,
+      "[corridor_curve] bilateral walls at (%.2f,%.2f), yaw=%.1fdeg; "
+      "advance while following channel, no turn-in-place.",
+      origin.x(),origin.y(),heading*180.0/M_PI);
+}
+
+bool TaskSearchManager::corridorCurveYaw(
+    const Eigen::Vector3d& position,double& yaw) const {
+  if (!curve_heading_active_) return false;
+  const double forward=(position.head<2>()-curve_origin_.head<2>()).dot(curve_forward_);
+  // 只使用已拟合的前方墙体范围；横向绕障位移不改变通道朝向。
+  yaw=std::atan2(curve_forward_.y(),curve_forward_.x())+
+      curve_geometry_.yaw(std::max(0.0,std::min(1.0,forward+0.35)));
+  return true;
+}
+
+bool TaskSearchManager::shouldReplanCurveHeading(
+    const Eigen::Vector3d& position,double reference_yaw) const {
+  double heading;
+  return corridorCurveYaw(position,heading) &&
+      std::fabs(wrapYaw(heading-reference_yaw)) >
+          recovery_turn_yaw_release_angle_deg_*M_PI/180.0;
 }
 
 bool TaskSearchManager::corridorYawCorrectionDirection(
@@ -1326,6 +1418,13 @@ bool TaskSearchManager::mappedCorridorDirection(
         "[task_search] turn transition active; keep committed corridor direction "
         "and suppress repeated turn detection."
     );
+    return false;
+  }
+
+  updateCurveHeading();
+  if (curve_heading_active_) {
+    // 渐变双墙轮廓只更新滚动方向，不锁存一次离散转弯；直角弯仍走下方原流程。
+    clearPendingTurnEvidence();
     return false;
   }
 
