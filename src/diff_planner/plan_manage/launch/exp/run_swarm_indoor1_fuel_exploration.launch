@@ -355,6 +355,8 @@
     <rosparam param="/exploration_node/mission/task_search/inside_return_margin">0.10</rosparam>
     <!-- 单通道转弯：旧通道轴线前方终止后，直接选择占据图中仍在延伸的自由分支。 -->
     <rosparam param="/exploration_node/mission/task_search/recovery/occupancy_turn_enabled">true</rosparam>
+    <!-- 双侧墙体连续渐变时边前进边转头；直角转弯保留原地yaw流程。 -->
+    <rosparam param="/exploration_node/mission/task_search/curve_heading/enabled">true</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_probe_length">1.50</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_probe_step">0.10</rosparam>
     <rosparam param="/exploration_node/mission/task_search/recovery/turn_min_angle_deg">45.0</rosparam>
