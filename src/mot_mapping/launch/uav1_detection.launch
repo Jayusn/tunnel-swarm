@@ -1,7 +1,7 @@
 <launch>
   <arg name="cloud_topic" default="/UAV1/fast_lio/cloud_registered"/>
   <arg name="odom_topic" default="/UAV1/fast_lio/Odom_high_freq"/>
-  <arg name="input_rate" default="5.0"/>
+  <arg name="input_rate" default="10.0"/>
   <arg name="native_input_enabled" default="false"/>
   <arg name="time_evidence_enabled" default="false"/>
   <arg name="motion_window" default="0.6"/>

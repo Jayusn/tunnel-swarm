@@ -91,7 +91,7 @@
 
 ## 实现语义与当前失败原因
 
-通用 `uav1_detection.launch` 保留 5 Hz、三帧、8 cm 默认行为，新实验开关默认关闭。`native_input_enabled=true` 时以 `topic_tools relay` 转发原始点云，保持原有 `/UAV1/fapp/cloud_registered_throttled` 入口名称和消息接口；此时 `input_rate` 不执行限频，实际频率由上游决定。本数据 FAST-LIO 上游约 10 Hz。`run_swarm.launch` 中 FAPP include 沿用 `ldop_input_rate`，默认 5.0 Hz，经 throttle 接入；原生 relay 只用于本报告的离线 10 Hz 对照，不进入正式 A04 默认入口。launch 解析已验证，实验旗在通用入口和 A04 include 中均保持关闭；`final06` 只作为离线对照，不改变默认运行行为。
+通用 `uav1_detection.launch` 默认使用 10 Hz、三帧、8 cm，实验开关仍默认关闭。`native_input_enabled=true` 时以 `topic_tools relay` 转发原始点云，保持原有 `/UAV1/fapp/cloud_registered_throttled` 入口名称和消息接口；此时 `input_rate` 不执行限频，实际频率由上游决定。本数据 FAST-LIO 上游约 10 Hz。`run_swarm.launch` 的 FAPP include 使用 `input_rate=10.0` 和原生 relay，LDOP 独立参数仍为 5.0 Hz。launch 解析已验证，实验旗在通用入口和 A04 include 中均保持关闭；`final06` 只作为离线对照，不改变新增实验开关行为。
 
 本轮实验参数含义：
 
@@ -193,7 +193,7 @@ python3 .fapp_ball_debug/native10_20261008/evaluate.py static_repro_priority08 a
 
 `final06` 的二进制 SHA256 为 `5131e45a9d4b9e0280865c05a88515f78985e41d15f448a3b0e1a2b434dc3040`。有球原生输入 1727 帧，实际回调 1715、四路输出 1714，整回调 p95 87.84 ms；113 个冻结时刻全部有输出，状态命中 111/113，三帧子集 27/27，当前 50 个命中全部保留。无球原生输入 763 帧，实际回调 761、输出 760，整回调 p95 82.97 ms，四路一致；相对原生基线无球分段框数 0/112/661/155 对 0/109/607/96，原 5 Hz 锚点 0/41/253/61 对 0/37/247/49，未通过误检代理门槛。静止 `static_final06` 为 7/467，对 6/467，未通过静止门槛。旧下午段为快摆 44/53、慢摆 59/59，丢旧命中 +145.672 s 一处；另一段为 39/47，原有 38 个命中均保留。各组回放均核对四路输出一致；缺输出按漏检统计，球冻结时刻无缺输出，无球有 1 个无输出回调和 2 个源帧未进入回调。
 
-主工作空间已执行 `catkin_make --pkg mot_mapping diff_planner -j2 -l2`，结果为 exit 0（日志：`/tmp/native10_build_final.log`）；实际 `devel/lib/mot_mapping/mapping_node` 产物时间为 2026-10-08 23:38:04，测试产物也已更新。`CTest` 的 `mot_mapping_density_partition`、默认 5 Hz smoke、A04/native10 smoke、20 cm 六点球面/平面和 launch XML 解析均通过。默认启动保持 `input_rate=5.0`、三帧、8 cm，新增实验旗全部为 false；A04 的 FAPP include 使用 5 Hz throttle，原生约 10 Hz relay 仅用于离线对照，LDOP 仍为 5 Hz。
+主工作空间已执行 `catkin_make --pkg mot_mapping diff_planner -j2 -l2`，结果为 exit 0（日志：`/tmp/native10_build_final.log`）；实际 `devel/lib/mot_mapping/mapping_node` 产物时间为 2026-10-08 23:38:04，测试产物也已更新。`CTest` 的 `mot_mapping_density_partition`、默认与 A04 10 Hz smoke、20 cm 六点球面/平面和 launch XML 解析均通过。默认启动保持 `input_rate=10.0`、三帧、8 cm，新增实验旗全部为 false；A04 的 FAPP include 使用原生约 10 Hz relay，LDOP 仍为 5 Hz。
 
 因此 `final06` 仅作为球样本达到 95% 的离线候选，不启用为默认配置。当前可运行配置继续使用 A04 的已有参数和默认关闭的新开关。A04 入口命令为：
 
@@ -203,4 +203,4 @@ source /home/oem/match_ws/devel/setup.bash
 roslaunch diff_planner run_swarm.launch detector_backend:=fapp enable_rviz:=false record_dynamic_debug:=false
 ```
 
-通用 FAPP 5 Hz 入口仍为 `roslaunch mot_mapping uav1_detection.launch`；下一轮若要同时压低无球框数并保留 95% 动态命中，应先增加覆盖转角新背景、手持移动和遮挡重现的标注，再针对无球新增的 3/54/59 分段框做候选来源诊断。
+通用 FAPP 10 Hz 入口为 `roslaunch mot_mapping uav1_detection.launch`；下一轮若要同时压低无球框数并保留 95% 动态命中，应先增加覆盖转角新背景、手持移动和遮挡重现的标注，再针对无球新增的 3/54/59 分段框做候选来源诊断。
