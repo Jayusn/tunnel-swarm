@@ -232,6 +232,7 @@
         <arg name="native_input_enabled" value="true"/>
         <!-- A04：原生 10 Hz、5 秒静态预采、4 cm / 50% 背景；普通目标保持三帧确认。 -->
         <arg name="motion_confirmation_frames" value="3"/>
+        <arg name="point_source_competition_enabled" value="true"/>
         <arg name="background_consistency_enabled" value="true"/>
         <arg name="background_consistency_post_association" value="false"/>
         <arg name="background_local_planes_enabled" value="true"/>
