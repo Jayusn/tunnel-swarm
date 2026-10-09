@@ -121,7 +121,8 @@ def reference_backdrop():
 
 def exercise_reference_targets(publish, count, motion_enabled, reference_enabled,
                                frames=3, strong_two_frame=False,
-                               reacquisition_enabled=False, long_gap_frames=2):
+                               reacquisition_enabled=False, long_gap_frames=2,
+                               stop_frames=3):
     # The initial backdrop is frozen. Real foreground travels out and back;
     # its previously observed positions must never enter that background.
     wall = reference_backdrop()
@@ -137,7 +138,7 @@ def exercise_reference_targets(publish, count, motion_enabled, reference_enabled
             first = step + 1
     assert first == frames, ('Post-capture first detection delayed', first, frames)
     # A short stop leaves a recently published track with older motion support.
-    for _ in range(3):
+    for _ in range(stop_frames):
         stamp = publish(None, points=wall + cap(-1.28))
         assert count(stamp) == 1, 'Short turn lost existing support'
     stamp = publish(None, points=wall)
@@ -176,7 +177,7 @@ def exercise_reference_targets(publish, count, motion_enabled, reference_enabled
         publish(None, points=wall)
     for step in range(7):
         stamp = publish(None, points=wall + cap(-2 + step * .12))
-    for _ in range(3):
+    for _ in range(stop_frames):
         publish(None, points=wall + cap(-1.28))
     for _ in range(long_gap_frames):
         stamp = publish(None, points=wall)

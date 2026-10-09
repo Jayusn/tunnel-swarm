@@ -3,6 +3,7 @@
 
 #include <chrono>
 #include <queue>
+#include <unordered_set>
 // ROS
 #include <message_filters/subscriber.h>
 #include <message_filters/sync_policies/approximate_time.h>
@@ -42,6 +43,7 @@
 #include "target_ekf.hpp"
 #include "ikd_Tree.h"
 #include "ikd_Tree_impl.h"
+#include "online_background.h"
 
 using namespace std;
 
@@ -79,6 +81,8 @@ struct MapParam {
   bool translated_startup_enabled;
   double translated_startup_fraction;
   bool competition_association_enabled;
+  bool point_source_competition_enabled;
+  bool strict_depth_evidence_enabled;
   bool depth_evidence_enabled;
   bool occlusion_startup_enabled;
   Eigen::Vector3d lidar_offset;
@@ -103,6 +107,11 @@ struct MapParam {
   double reference_capture_duration;
   double reference_distance;
   double reference_fraction;
+  bool online_background_enabled;
+  double online_voxel_size;
+  double online_rotation_rate;
+  double online_jump_distance;
+  double online_scene_overlap;
   // Lidar Params
   Eigen::Vector3d Range;
   // ROS Params
@@ -149,6 +158,11 @@ private:
   PointsPtr reference_points_;
   std::shared_ptr<pcl::search::KdTree<PointType>> reference_tree_;
   ros::Time reference_start_stamp_;
+  std::unique_ptr<mot_mapping::OnlineBackground> online_background_;
+  std::shared_ptr<pcl::search::KdTree<PointType>> online_background_tree_;
+  MapData online_previous_pose_;
+  bool online_has_previous_pose_ = false;
+  std::unordered_set<std::string> online_previous_voxels_;
   std::vector<pcl::PointIndices> deleted_indices;
   std::vector<BoxPointType> delete_boxes;
 

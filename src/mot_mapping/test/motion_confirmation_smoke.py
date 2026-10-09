@@ -226,8 +226,10 @@ def main():
                                              args.background_reference, args.frames,
                                              args.reference_strong_two_frame,
                                              reacquisition_enabled=args.reacquisition_gap is not None,
-                                             long_gap_frames=math.ceil(long_gap * args.rate)
-                                             if args.reacquisition_gap is not None else 2)
+                                             long_gap_frames=math.ceil(long_gap * args.rate),
+                                             # Preserve the existing 0.6-second stop fixture
+                                             # when comparing 5 Hz and 10 Hz inputs.
+                                             stop_frames=math.ceil(.6 * args.rate))
         # A flat 20 cm return must not become a background plane simply
         # because its own points are planar; six points cover the disk rim.
         for _ in range(12):
