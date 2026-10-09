@@ -414,6 +414,7 @@ void TaskSearchManager::setCorridorFrame(const Eigen::Vector3d& origin,
   segment_high_water_ = 0.0;
   stable_progress_direction_ = corridor_dir_.head<2>().normalized();
   stable_progress_direction_valid_ = true;
+  turn_detection_direction_ = stable_progress_direction_;
   corridor_frame_received_ = true;
   ROS_WARN("[task_search] entry frame frozen once: origin=(%.2f,%.2f) inside_yaw=%.1fdeg; "
            "initial heading forward is permanently INSIDE.",
@@ -655,6 +656,12 @@ Eigen::Vector2d TaskSearchManager::stableProgressDirection() const {
   return Eigen::Vector2d(std::cos(latest_robot_yaw_), std::sin(latest_robot_yaw_));
 }
 
+Eigen::Vector2d TaskSearchManager::turnDetectionDirection() const {
+  if (turn_detection_direction_.norm() > 1e-3)
+    return turn_detection_direction_.normalized();
+  return stableProgressDirection();
+}
+
 void TaskSearchManager::updateCurveHeading() {
   if (!curve_heading_enabled_ || !sdf_map_ || !corridor_entry_crossed_ ||
       entry_forward::needsAdvance((latest_robot_pos_-corridor_origin_).dot(corridor_dir_)) ||
@@ -701,8 +708,16 @@ void TaskSearchManager::updateCurveHeading() {
     }
   }
   corridor_curve::Result geometry;
-  curve_heading_active_ = corridor_curve::infer(
-      left,right,std::max(0.06,0.8*resolution),geometry) &&
+  const bool fitted = corridor_curve::infer(
+      left,right,std::max(0.06,0.8*resolution),geometry);
+  // 首次局部曲线拟合不改变旧基准；连续双墙证据才用当前位置切线交接。
+  // 前视0.35m的机头参考独立计算，不把前视角度当成旧通道方向。
+  if (fitted && following_curve) {
+    const double local_yaw=std::atan2(curve_forward_.y(),curve_forward_.x())+
+                           geometry.yaw(0.0);
+    turn_detection_direction_=Eigen::Vector2d(std::cos(local_yaw),std::sin(local_yaw));
+  }
+  curve_heading_active_ = fitted &&
       (geometry.curved || (following_curve &&
                           std::fabs(geometry.yaw(0.35))>M_PI/180.0));
   if (!curve_heading_active_) return;
@@ -718,6 +733,7 @@ void TaskSearchManager::updateCurveHeading() {
   segment_high_water_=regression;
   stable_progress_direction_=direction;
   stable_progress_direction_valid_=true;
+  // 弧形只滚动任务推进方向；离散转弯另有已确认通道基准。
   if (hybrid_constraints_enabled_) exploration_initial_yaw_=heading;
   clearPendingTurnEvidence();
   ROS_INFO_THROTTLE(0.3,
@@ -747,7 +763,9 @@ bool TaskSearchManager::shouldReplanCurveHeading(
 bool TaskSearchManager::corridorYawCorrectionDirection(
     double cur_yaw, Eigen::Vector3d& direction) const {
   if (!stable_progress_direction_valid_ && !corridor_frame_received_) return false;
-  const Eigen::Vector2d stable = stableProgressDirection();
+  const Eigen::Vector2d stable = curve_heading_active_
+                                    ? stableProgressDirection()
+                                    : turnDetectionDirection();
   const double correction_threshold =
       std::max(0.0, recovery_turn_yaw_release_angle_deg_) * M_PI / 180.0;
   if (!task_search::corridorYawCorrectionNeeded(
@@ -782,8 +800,9 @@ bool TaskSearchManager::corridorMotionDirectionMatches(
   Eigen::Vector3d mapped_direction;
   double forward_free_length = 0.0;
   double turn_free_length = 0.0;
+  const Eigen::Vector2d turn_base = turnDetectionDirection();
   if (!inferOccupancyTurnDirection(
-          Eigen::Vector3d(stable.x(), stable.y(), 0.0), mapped_direction,
+          Eigen::Vector3d(turn_base.x(), turn_base.y(), 0.0), mapped_direction,
           forward_free_length, turn_free_length) ||
       !aligned(mapped_direction.head<2>()))
     return false;
@@ -1336,7 +1355,7 @@ bool TaskSearchManager::turnDirectionRetracesVisitedRoute(
 void TaskSearchManager::commitCorridorTurn(
     const Eigen::Vector3d& turn_direction) {
   if (turn_direction.head<2>().norm() < 1e-3) return;
-  Eigen::Vector2d incoming = stableProgressDirection();
+  Eigen::Vector2d incoming = turnDetectionDirection();
   if (incoming.norm() < 1e-3) incoming = corridor_dir_.head<2>();
   incoming.normalize();
   const Eigen::Vector2d outgoing = turn_direction.head<2>().normalized();
@@ -1379,6 +1398,7 @@ void TaskSearchManager::commitCorridorTurn(
   if (!exit_portal_locked_) clearExitEvidence();
   stable_progress_direction_ = outgoing;
   stable_progress_direction_valid_ = true;
+  turn_detection_direction_ = outgoing;
   // A confirmed turn starts a new FUEL segment. Keep the yaw reference tied to
   // that segment instead of letting the instantaneous body yaw redefine
   // which frontier is considered "in front".
@@ -1428,7 +1448,7 @@ bool TaskSearchManager::mappedCorridorDirection(
     return false;
   }
 
-  Eigen::Vector2d stable = stableProgressDirection();
+  Eigen::Vector2d stable = turnDetectionDirection();
   if (stable.norm() < 1e-3)
     stable = Eigen::Vector2d(std::cos(cur_yaw), std::sin(cur_yaw));
   const Eigen::Vector3d travel(stable.x(), stable.y(), 0.0);

@@ -85,6 +85,9 @@ public:
           "real map yaw did not change along the corridor");
     curve.corridorCurveYaw(Eigen::Vector3d(0.6,0.35,1),bypass_yaw);
     check(std::fabs(far_yaw-bypass_yaw)<1e-9,"lateral bypass changed mapped curve yaw");
+    check(curve.stableProgressDirection().y()>0.01 &&
+          (curve.turnDetectionDirection()-Eigen::Vector2d::UnitX()).norm()<1e-9,
+          "wall-fitted curve yaw changed the discrete turn detection baseline");
     // 前进轴随着地图更新，原有回退欠账不能被滚动坐标系清零。
     curve.segment_high_water_=0.40;
     curve.curve_sample_valid_=false;
@@ -92,11 +95,53 @@ public:
     check(curve.segment_high_water_>=0.39 &&
           !curve.isTaskMotionAllowed(curve.latest_robot_pos_),
           "rolling axis erased actual regression");
+    const Eigen::Vector2d confirmed_base=curve.turnDetectionDirection();
+    check((confirmed_base-curve.stableProgressDirection()).norm()>1e-3,
+          "local wall tangent was replaced by the lookahead yaw reference");
+    // 缺墙后的普通纠偏使用已交接的当前位置基准，不能追随残留前视yaw。
+    auto one_wall_map=std::make_shared<SDFMap>();
+    one_wall_map->initMap(nh);
+    pcl::PointCloud<pcl::PointXYZ> one_wall;
+    for (const auto& point : walls)
+      if (point.y>0) one_wall.push_back(point);
+    for (int i=0;i<4;++i)
+      one_wall_map->inputPointCloud(one_wall,one_wall.size(),Eigen::Vector3d(0,0,1));
+    curve.setMap(one_wall_map);
+    curve.updateRobotPose(Eigen::Vector3d(0.2,0,1),0);
+    check(!curve.curveHeadingActive() &&
+          curve.corridorYawCorrectionDirection(M_PI/2,direction) &&
+          (direction.head<2>()-confirmed_base).norm()<1e-9,
+          "lost curve evidence left stale yaw as the normal correction target");
     curve.commitCorridorTurn(Eigen::Vector3d::UnitY());
+    check((curve.latest_turn_incoming_direction_-confirmed_base).norm()<1e-9 &&
+          (curve.turnDetectionDirection()-Eigen::Vector2d::UnitY()).norm()<1e-9,
+          "confirmed turn did not use and update the independent baseline");
     curve.updateRobotPose(Eigen::Vector3d(0.1,0.1,1),0);
     check(!curve.curveHeadingActive() && curve.turnYawAlignmentPending() &&
           curve.mappedCorridorDirection(0,direction) && direction.y()>0.99,
           "curve reference replaced the existing discrete turn latch");
+    // 弧形已经走入新直段：双墙直线证据交接基准，不锁存原地90度转弯。
+    auto straight_map=std::make_shared<SDFMap>();
+    straight_map->initMap(nh);
+    pcl::PointCloud<pcl::PointXYZ> straight_walls;
+    for (double y=-0.60;y<=1.8;y+=0.04)
+      for (double z=0.40;z<=1.40;z+=0.04) {
+        straight_walls.push_back(pcl::PointXYZ(-0.65,y,z));
+        straight_walls.push_back(pcl::PointXYZ(0.65,y,z));
+      }
+    for (int i=0;i<4;++i)
+      straight_map->inputPointCloud(straight_walls,straight_walls.size(),Eigen::Vector3d(0,0,1));
+    TaskSearchManager curve_end;
+    curve_end.initialize(nh);
+    curve_end.setMap(straight_map);
+    curve_end.setCorridorFrame(Eigen::Vector3d(-3,0,1),Eigen::Vector3d::UnitX());
+    curve_end.stable_progress_direction_=Eigen::Vector2d::UnitY();
+    curve_end.curve_heading_active_=true;
+    curve_end.updateRobotPose(Eigen::Vector3d(0,0,1),M_PI/2);
+    check(curve_end.turnDetectionDirection().y()>0.99 &&
+          !curve_end.turnYawAlignmentPending() &&
+          !curve_end.corridorYawCorrectionDirection(M_PI/2,direction),
+          "straight walls after an arc kept the entrance turn baseline");
     nh.deleteParam("mission/task_search/curve_heading/enabled");
     nh.setParam("sdf_map/resolution",0.10);
     // 真实yaw优化器：相同前进进度、不同绕障侧移必须得到相同朝向轨迹。

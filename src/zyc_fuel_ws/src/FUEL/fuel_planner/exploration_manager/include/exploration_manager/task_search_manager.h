@@ -193,6 +193,8 @@ private:
   double knownHorizontalClearance(const Eigen::Vector3d& point) const;
   // 独立于瞬时速度维护任务推进方向：正常转弯可逐段更新，短回撤不能把前后语义翻转。
   Eigen::Vector2d stableProgressDirection() const;
+  // 原转弯检测使用入口、已确认转弯或连续双墙当前位置切线，不消费前视yaw。
+  Eigen::Vector2d turnDetectionDirection() const;
   double wrapYaw(double yaw) const;
 
   ros::Subscriber color_detection_sub_;
@@ -223,6 +225,7 @@ private:
   Eigen::Vector3d corridor_dir_{1.0, 0.0, 0.0};
   Eigen::Vector2d stable_progress_direction_{1.0, 0.0};
   bool stable_progress_direction_valid_{false};
+  Eigen::Vector2d turn_detection_direction_{0.0, 0.0};
   bool curve_heading_enabled_{false};
   bool curve_heading_active_{false};
   std::uint64_t curve_map_sequence_{0};
