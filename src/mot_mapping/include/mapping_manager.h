@@ -82,6 +82,9 @@ struct MapParam {
   double translated_startup_fraction;
   bool competition_association_enabled;
   bool point_source_competition_enabled;
+  bool publish_measured_body_position_enabled;
+  bool bidirectional_ray_evidence_enabled;
+  bool bidirectional_static_suppression_enabled;
   bool strict_depth_evidence_enabled;
   bool depth_evidence_enabled;
   bool occlusion_startup_enabled;
@@ -152,6 +155,7 @@ private:
     MapData sensor_pose;
   };
   std::deque<RawObservation> timed_observations_;
+  RawObservation bidirectional_previous_observation_;
   ros::Time next_background_sample_stamp_, last_background_sample_stamp_;
   std::deque<PointsPtr> input_point;
   std::deque<std::shared_ptr<pcl::search::KdTree<PointType>>> background_history_;

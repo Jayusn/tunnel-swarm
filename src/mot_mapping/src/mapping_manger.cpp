@@ -1,5 +1,6 @@
 #include "mapping_manager.h"
 #include "density_partition.h"
+#include "bidirectional_depth.h"
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -152,6 +153,12 @@ void MappingRos::init() {
   nh.param("association/geometry_enabled", mp_->geometry_association_enabled, false);
   nh.param("association/competition_enabled", mp_->competition_association_enabled, false);
   nh.param("association/point_source_competition_enabled", mp_->point_source_competition_enabled, false);
+  nh.param("detection/publish_measured_body_position_enabled",
+           mp_->publish_measured_body_position_enabled, false);
+  nh.param("detection/bidirectional_ray_evidence_enabled",
+           mp_->bidirectional_ray_evidence_enabled, false);
+  nh.param("detection/bidirectional_static_suppression_enabled",
+           mp_->bidirectional_static_suppression_enabled, false);
   nh.param("detection/strict_depth_evidence_enabled", mp_->strict_depth_evidence_enabled, false);
   nh.param("detection/depth_evidence_enabled", mp_->depth_evidence_enabled, false);
   nh.param("detection/occlusion_startup_enabled", mp_->occlusion_startup_enabled, false);
@@ -162,7 +169,8 @@ void MappingRos::init() {
   nh.param("detection/reference_strong_two_frame_enabled", mp_->reference_strong_two_frame_enabled, false);
   if (mp_->depth_evidence_enabled || mp_->occlusion_startup_enabled || mp_->shape_consistency_enabled ||
       mp_->time_evidence_enabled || mp_->strict_depth_evidence_enabled || mp_->online_background_enabled ||
-      mp_->reference_strong_two_frame_enabled) {
+      mp_->reference_strong_two_frame_enabled || mp_->bidirectional_ray_evidence_enabled ||
+      mp_->bidirectional_static_suppression_enabled) {
     std::vector<double> offset;
     // Same MID360 offset as FAST-LIO's mid360.yaml; use its live parameter
     // when the sensor stack is running. Replay supplies that parameter too.
@@ -413,6 +421,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     buffer.clear();
     observed_sensor_poses.clear();
     timed_observations_.clear();
+    bidirectional_previous_observation_.points.reset();
     next_background_sample_stamp_ = ros::Time();
     last_background_sample_stamp_ = ros::Time();
     if (online_background_) {
@@ -669,6 +678,9 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     double bilateral_foreground_fraction;
     double independent_motion_fraction;
     double static_plane_fraction;
+    double bidirectional_forward_fraction = 0.0;
+    double bidirectional_forward_static_fraction = 0.0;
+    bool bidirectional_forward_valid = false;
     size_t dense_count;
     int background_supported_frames;
     Eigen::Vector3d dense_size;
@@ -676,6 +688,10 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     std::vector<Eigen::Vector3d> dense_points;
   };
   DepthView depth_views[2];
+  BidirectionalDepth current_depth_view, previous_depth_view;
+  const RawObservation previous_ray = bidirectional_previous_observation_;
+  const bool need_bidirectional = mp_->bidirectional_ray_evidence_enabled ||
+      mp_->bidirectional_static_suppression_enabled;
   pcl::search::KdTree<PointType> observation_trees[2];
   bool has_observed_history[2];
   for (int history = 0; history < 2; ++history) {
@@ -687,6 +703,17 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
          mp_->strict_depth_evidence_enabled || mp_->online_background_enabled ||
          mp_->reference_strong_two_frame_enabled) && has_observed_history[history])
       depth_views[history].build(*observed_history[history], sensor_history[history]);
+  }
+  const bool have_previous_ray = previous_ray.points && !previous_ray.points->empty() &&
+      previous_ray.stamp < cloud_stamp_;
+  if (need_bidirectional) {
+    MapData current_sensor_pose;
+    current_sensor_pose.R = md_->R;
+    current_sensor_pose.T = md_->T + md_->R * mp_->lidar_offset;
+    current_depth_view.build(*latest_cloud, current_sensor_pose.R, current_sensor_pose.T);
+    if (have_previous_ray)
+      previous_depth_view.build(*previous_ray.points, previous_ray.sensor_pose.R, previous_ray.sensor_pose.T);
+    bidirectional_previous_observation_ = {cloud_stamp_, latest_cloud, current_sensor_pose};
   }
   std::vector<Candidate> candidates;
   detections.clear();
@@ -756,6 +783,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     size_t bilateral_foreground = 0, online_supported = 0;
     size_t reference_supported = 0;
     size_t ray_supported[2] = {0, 0}, ray_foreground[2] = {0, 0};
+    size_t bidirectional_forward = 0, bidirectional_forward_static = 0;
     std::vector<int> observed_nearest(1);
     std::vector<float> observed_squared_distance(1);
     for (const auto& point : cluster) {
@@ -782,7 +810,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
         if (evidence == 0) ++ray_supported[history];
         if (evidence == 1) ++ray_foreground[history];
         const int novelty_evidence = (mp_->depth_evidence_enabled || mp_->strict_depth_evidence_enabled) ? evidence : -1;
-        if (mp_->point_source_competition_enabled &&
+        if ((mp_->point_source_competition_enabled || mp_->bidirectional_static_suppression_enabled) &&
             (observation_trees[history].nearestKSearch(point, 1, observed_nearest,
                                                      observed_squared_distance) == 0 ||
              observed_squared_distance[0] > mp_->thresh_dist * mp_->thresh_dist))
@@ -792,6 +820,11 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
                                                      observed_squared_distance) == 0 ||
              observed_squared_distance[0] > mp_->thresh_dist * mp_->thresh_dist));
         if (novel) ++novel_points[history];
+      }
+      if (need_bidirectional && have_previous_ray) {
+        const auto evidence = previous_depth_view.classify(point.getVector3fMap().cast<double>());
+        if (evidence == BidirectionalDepth::Foreground) ++bidirectional_forward;
+        if (evidence == BidirectionalDepth::Static) ++bidirectional_forward_static;
       }
       if (ray_evidence[0] == 1 && ray_evidence[1] == 1) ++bilateral_foreground;
     }
@@ -889,7 +922,8 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
             if (std::abs(normal.dot(point.getVector3fMap().cast<double>() - anchor)) <=
                 mp_->background_consistency_distance) ++supported;
           }
-          if (mp_->point_source_competition_enabled)
+          if (mp_->point_source_competition_enabled ||
+              mp_->bidirectional_static_suppression_enabled)
             static_plane_fraction = std::max(static_plane_fraction,
                 static_cast<double>(supported) / dense_count);
           return supported >= mp_->background_consistency_fraction * dense_count;
@@ -954,7 +988,8 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
           remaining = next;
         }
         size_t supported = 0;
-        if (mp_->point_source_competition_enabled)
+        if (mp_->point_source_competition_enabled ||
+            mp_->bidirectional_static_suppression_enabled)
           for (const auto& surface : surfaces) dense_supported(surface.first, surface.second);
         for (const auto& point : cluster) {
           if ((point.getVector3fMap() - cluster[dense_index].getVector3fMap()).squaredNorm() >
@@ -1029,8 +1064,14 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     candidate.bilateral_foreground_fraction = static_cast<double>(bilateral_foreground) / dense_count;
     candidate.independent_motion_fraction = static_cast<double>(std::min(independent_points[0], independent_points[1])) / dense_count;
     candidate.static_plane_fraction = static_plane_fraction;
+    candidate.bidirectional_forward_valid = need_bidirectional && have_previous_ray && dense_count > 0;
+    if (candidate.bidirectional_forward_valid) {
+      candidate.bidirectional_forward_fraction = static_cast<double>(bidirectional_forward) / dense_count;
+      candidate.bidirectional_forward_static_fraction =
+          static_cast<double>(bidirectional_forward_static) / dense_count;
+    }
     if (mp_->shape_consistency_enabled || mp_->translated_startup_enabled ||
-        mp_->reference_strong_two_frame_enabled) {
+        mp_->reference_strong_two_frame_enabled || need_bidirectional) {
       for (const auto& point : cluster) {
         if ((point.getVector3fMap() - cluster[dense_index].getVector3fMap()).squaredNorm() <=
             mp_->tolerance)
@@ -1054,6 +1095,11 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
       ROS_DEBUG_STREAM("FAPP_POINT_SOURCE " << cloud_stamp_.toNSec() << " "
           << center.transpose() << " " << candidate.independent_motion_fraction << " "
           << candidate.static_plane_fraction);
+    if (need_bidirectional)
+      ROS_DEBUG_STREAM("FAPP_BIDIRECTIONAL_CANDIDATE " << cloud_stamp_.toNSec() << " "
+          << center.transpose() << " " << candidate.bidirectional_forward_valid << " "
+          << candidate.bidirectional_forward_fraction << " "
+          << candidate.bidirectional_forward_static_fraction);
     candidates.push_back(candidate);
   }
 
@@ -1403,17 +1449,51 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
         if (!retained_gap) {
           tracker->observations.clear();
           tracker->evidence_observations.clear();
+          tracker->bidirectional_evidence.clear();
           if (mp_->confirmed_reacquisition_enabled)
             tracker->last_motion_stamp = ros::Time();
         }
       }
     }
     auto& tracker = trackers[j];
+    bool bidirectional_transition_valid = false;
+
+    if (need_bidirectional && tracker->last_seen_frame == frame_num - 1 &&
+        candidate.bidirectional_forward_valid && !tracker->observations.empty() &&
+        !tracker->observed_dense_points.empty() &&
+        tracker->observations.back().first == previous_ray.stamp &&
+        (tracker->bidirectional_evidence.empty() ||
+         tracker->bidirectional_evidence.back().first == previous_ray.stamp)) {
+      size_t vacated = 0, vacated_static = 0;
+      const Eigen::Vector3d previous_center = tracker->observations.back().second;
+      for (const auto& relative : tracker->observed_dense_points) {
+        const auto evidence = current_depth_view.classify(previous_center + relative);
+        if (evidence == BidirectionalDepth::Foreground) ++vacated;
+        if (evidence == BidirectionalDepth::Static) ++vacated_static;
+      }
+      const double bidirectional_static_forward = candidate.bidirectional_forward_static_fraction;
+      const double bidirectional_static_vacated = static_cast<double>(vacated_static) /
+          tracker->observed_dense_points.size();
+      const double vacated_fraction = static_cast<double>(vacated) /
+          tracker->observed_dense_points.size();
+      const double bidirectional_motion = std::max(candidate.bidirectional_forward_fraction, vacated_fraction);
+      bidirectional_transition_valid = true;
+      tracker->bidirectional_evidence.push_back({cloud_stamp_, Eigen::Vector3d(
+          bidirectional_motion, bidirectional_static_forward, bidirectional_static_vacated)});
+      while (tracker->bidirectional_evidence.size() > 2)
+        tracker->bidirectional_evidence.pop_front();
+      ROS_DEBUG_STREAM("FAPP_BIDIRECTIONAL_TRANSITION " << cloud_stamp_.toNSec() << " "
+          << tracker->id << " " << candidate.bidirectional_forward_fraction << " "
+          << vacated_fraction << " " << bidirectional_motion << " "
+          << bidirectional_static_forward << " " << bidirectional_static_vacated);
+    }
+    if (need_bidirectional && !bidirectional_transition_valid)
+      tracker->bidirectional_evidence.clear();
     tracker->observed_dense_size = candidate.dense_size;
     tracker->observed_dense_count = candidate.dense_count;
     tracker->observed_reference_foreground = candidate.reference_foreground && !candidate.static_background &&
         (!mp_->reference_strong_two_frame_enabled || candidate.bilateral_foreground_fraction >= 0.50);
-    if (mp_->shape_consistency_enabled || mp_->reference_strong_two_frame_enabled) {
+    if (mp_->shape_consistency_enabled || mp_->reference_strong_two_frame_enabled || need_bidirectional) {
       tracker->observed_dense_points = candidate.dense_points;
       tracker->observed_lidar_direction = lidar_direction;
     }
@@ -1470,6 +1550,25 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     bool has_motion = enough_observations &&
                       displacement >= mp_->motion_displacement &&
                       observed_speed >= mp_->min_motion_speed;
+    bool bidirectional_startup = false;
+    bool bidirectional_static_suppression = false;
+    if (need_bidirectional && tracker->bidirectional_evidence.size() >= 2) {
+      const auto& first = tracker->bidirectional_evidence[tracker->bidirectional_evidence.size() - 2].second;
+      const auto& second = tracker->bidirectional_evidence.back().second;
+      const double motion_threshold = 0.26;
+      bidirectional_startup = mp_->bidirectional_ray_evidence_enabled &&
+          first.x() >= motion_threshold && second.x() >= motion_threshold;
+      bidirectional_static_suppression =
+          mp_->bidirectional_static_suppression_enabled &&
+          first.x() < motion_threshold && second.x() < motion_threshold &&
+          first.y() >= 0.55 && first.z() >= 0.55 &&
+          second.y() >= 0.55 && second.z() >= 0.55 &&
+          candidate.static_plane_fraction >= 0.55 &&
+          candidate.independent_motion_fraction < motion_threshold;
+      ROS_DEBUG_STREAM("FAPP_BIDIRECTIONAL_EVIDENCE " << cloud_stamp_.toNSec() << " "
+          << tracker->id << " " << first.x() << " " << second.x() << " "
+          << bidirectional_startup << " " << bidirectional_static_suppression);
+    }
     const double two_frame_dt = tracker->observations.size() == 2 ?
         (tracker->observations.back().first - tracker->observations.front().first).toSec() : 0.0;
     const bool strong_reference_motion =
@@ -1545,9 +1644,16 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
       ROS_DEBUG_STREAM("FAPP_STRICT_DEPTH " << cloud_stamp_.toNSec() << " "
           << candidate.state.position.transpose() << " " << candidate.bilateral_foreground_fraction
           << " " << has_motion << " " << strict_foreground);
-    const bool startup_evidence = mp_->strict_depth_evidence_enabled ? strict_foreground :
+    bool startup_evidence = mp_->strict_depth_evidence_enabled ? strict_foreground :
         (recently_changed || !tracker->last_dynamic_stamp.isZero() ||
          reference_startup || occlusion_startup || translated_startup);
+    const bool original_startup_evidence = startup_evidence;
+    if (bidirectional_startup) startup_evidence = true;
+    if (need_bidirectional)
+      ROS_DEBUG_STREAM("FAPP_BIDIRECTIONAL_DECISION " << cloud_stamp_.toNSec() << " "
+          << tracker->id << " " << original_startup_evidence << " "
+          << bidirectional_startup << " " << has_motion << " " << candidate.novel_fraction
+          << " " << bidirectional_static_suppression);
     if (has_motion && startup_evidence &&
         candidate.novel_fraction >= required_novel_fraction)
       tracker->last_motion_stamp = cloud_stamp_;
@@ -1576,6 +1682,11 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
           << candidate.state.position.transpose() << " stable_background");
       continue;
     }
+    if (bidirectional_static_suppression) {
+      ROS_DEBUG_STREAM("FAPP_REJECT " << cloud_stamp_.toNSec() << " "
+          << candidate.state.position.transpose() << " bidirectional_static");
+      continue;
+    }
     if (!shape_consistent) {
       ROS_DEBUG_STREAM("FAPP_REJECT " << cloud_stamp_.toNSec() << " "
           << candidate.state.position.transpose() << " incoherent_dense_shape");
@@ -1586,7 +1697,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     // and motion evidence must not be bypassed by splitting wall fragments.
     ObjectState published_state = candidate.state;
     pcl::PointIndices published_indices = candidate.indices;
-    if (mp_->density_split_enabled) {
+    if (mp_->density_split_enabled || mp_->publish_measured_body_position_enabled) {
       DensityPartitionOptions options;
       options.radius = mp_->core_radius;
       options.alpha = mp_->core_density_fraction;
@@ -1616,6 +1727,22 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
             << " " << partition.clusters.size() << " " << partition.leftovers.indices.size());
       }
     }
+    if (mp_->publish_measured_body_position_enabled) {
+      // An unsplit sparse parent still has a measured bounding box. Use its
+      // actual extrema rather than attaching a parent size to a dense median.
+      Points body_points;
+      for (int index : published_indices.indices)
+        body_points.push_back(ClusterPoints->points[index]);
+      pcl::PointXYZ minimum, maximum;
+      pcl::getMinMax3D(body_points, minimum, maximum);
+      published_state.position = 0.5 * (minimum.getVector3fMap().cast<double>() +
+                                      maximum.getVector3fMap().cast<double>());
+      published_state.size = maximum.getVector3fMap().cast<double>() -
+                             minimum.getVector3fMap().cast<double>();
+      ROS_DEBUG_STREAM("FAPP_MEASURED_BODY " << cloud_stamp_.toNSec() << " "
+          << tracker->id << " " << published_state.position.transpose() << " "
+          << published_state.size.transpose() << " " << published_indices.indices.size());
+    }
     int detection_index = detections.size();
     tracker->last_published_stamp = cloud_stamp_;
     detections.push_back(published_state);
@@ -1628,9 +1755,11 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
 
     obj_state_msgs::State state;
     state.header = states.header;
-    state.position.x = tracker->pos().x();
-    state.position.y = tracker->pos().y();
-    state.position.z = tracker->pos().z();
+    const Eigen::Vector3d output_position = mp_->publish_measured_body_position_enabled ?
+        published_state.position : tracker->pos();
+    state.position.x = output_position.x();
+    state.position.y = output_position.y();
+    state.position.z = output_position.z();
     state.velocity.x = tracker->vel().x();
     state.velocity.y = tracker->vel().y();
     state.velocity.z = tracker->vel().z();
@@ -1770,7 +1899,8 @@ void MappingRos::visualizeFunction(const std::vector<std::pair<int, int>> pairs)
 
     visualization_msgs::Marker poseMarker;
     ObjectState state;
-    state.position = trackers[trackerIndex]->pos();
+    state.position = mp_->publish_measured_body_position_enabled ?
+        detections[detectionIndex].position : trackers[trackerIndex]->pos();
     state.velocity = trackers[trackerIndex]->vel();
     poseMarker.id = trackerIndex+100;
     poseMarker.header.stamp = cloud_stamp_;

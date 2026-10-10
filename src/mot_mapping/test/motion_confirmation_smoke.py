@@ -40,6 +40,7 @@ def main():
     parser.add_argument('--reacquisition-gap', type=float)
     parser.add_argument('--voxel', type=float, default=.05)
     parser.add_argument('--density-split', action='store_true')
+    parser.add_argument('--measured-body-position', action='store_true')
     parser.add_argument('--core-radius', type=float, default=.08)
     parser.add_argument('--core-fraction', type=float, default=.7)
     parser.add_argument('--global-assignment', action='store_true')
@@ -103,6 +104,7 @@ def main():
                 '_detection/reacquisition_max_gap:=' + str(args.reacquisition_gap or .6),
                 '_clustering/voxel_size:=' + str(args.voxel),
                 '_clustering/density_split_enabled:=' + str(args.density_split).lower(),
+                '_detection/publish_measured_body_position_enabled:=' + str(args.measured_body_position).lower(),
                 '_clustering/core_radius:=' + str(args.core_radius),
                 '_clustering/core_density_fraction:=' + str(args.core_fraction),
                 '_association/global_assignment_enabled:=' + str(args.global_assignment).lower(),
@@ -284,7 +286,7 @@ def main():
                 # Current input is required even for an already confirmed track.
                 stamp = publish(None, points=backdrop)
                 assert count(stamp) == 0, 'Time evidence emitted an unobserved slow target'
-        if args.density_split:
+        if args.density_split or args.measured_body_position:
             # A sampled physical 20 cm sphere is joined to a long rope under
             # the original DBSCAN radius. The box describes a true partition;
             # the cloud preserves the entire confirmed parent's real returns.
@@ -338,6 +340,16 @@ def main():
                                for axis in ('x', 'y', 'z')]
                     maximum = [max(getattr(point, axis) for point in markers[0].points)
                                for axis in ('x', 'y', 'z')]
+                    if args.measured_body_position:
+                        state = received['states'][stamp.to_nsec()].states[0]
+                        arrows = [marker for marker in received['dynamic_track_markers'][
+                            stamp.to_nsec()].markers if marker.action == marker.ADD]
+                        for index, axis in enumerate(('x', 'y', 'z')):
+                            body_center = (minimum[index] + maximum[index]) / 2
+                            assert abs(getattr(state.position, axis) - body_center) < 1e-6
+                            assert abs(getattr(state.size, axis) -
+                                       maximum[index] + minimum[index]) < 1e-6
+                            assert abs(getattr(arrows[0].points[0], axis) - body_center) < 1e-6
                     assert max(high - low for low, high in zip(minimum, maximum)) < .35, \
                         ('Rope remains attached to published sphere', step)
                     assert math.hypot((minimum[0] + maximum[0]) / 2 - center - .08,

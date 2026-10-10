@@ -18,6 +18,9 @@ struct Ekf {
   std::deque<Eigen::MatrixXd> InnoCov_list;
   std::deque<std::pair<ros::Time, Eigen::Vector3d>> observations;
   std::deque<std::pair<ros::Time, Eigen::Vector3d>> evidence_observations;
+  // Each item stores {max(F,V), exact-static-F, exact-static-V} for one
+  // consecutive measured transition.
+  std::deque<std::pair<ros::Time, Eigen::Vector3d>> bidirectional_evidence;
   ros::Time last_change_stamp, last_motion_stamp, last_dynamic_stamp;
   ros::Time last_published_stamp;
   int last_seen_frame = 0;
@@ -83,6 +86,7 @@ struct Ekf {
     id = id_;
     observations.clear();
     evidence_observations.clear();
+    bidirectional_evidence.clear();
     observed_dense_count = 0;
     observed_reference_foreground = false;
     observed_dense_points.clear();

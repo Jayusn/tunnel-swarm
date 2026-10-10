@@ -20,6 +20,8 @@ import time
 
 FULL_CASES = ('six_radial_toward', 'six_radial_away', 'six_flat',
               'six_wall_reversal_ego', 'six_occlusion', 'new_corner')
+BIDIRECTIONAL_CASES = ('bidir_preloaded_toward', 'bidir_preloaded_away',
+                       'bidir_occluded', 'bidir_single_transition', 'bidir_gap')
 CASES = {
     'default': ('sparse',) + FULL_CASES,
     'online': ('sparse',) + FULL_CASES,
@@ -28,6 +30,11 @@ CASES = {
     'combo': FULL_CASES,
     'strong2': ('two_foregrounds', 'previous_background', 'new_wall', 'new_wall_line',
                 'planar_three_frame', 'line_three_frame'),
+    'body': ('sparse',) + FULL_CASES,
+    'bidir': ('sparse',) + FULL_CASES + BIDIRECTIONAL_CASES,
+    'bidir_static': ('sparse',) + FULL_CASES + BIDIRECTIONAL_CASES,
+    'body_bidir': ('sparse',) + FULL_CASES + BIDIRECTIONAL_CASES,
+    'body_bidir_static': ('sparse',) + FULL_CASES + BIDIRECTIONAL_CASES,
 }
 
 
@@ -103,12 +110,16 @@ def run_case(args):
             'detection/shape_consistency_enabled': False,
             'detection/depth_evidence_enabled': False,
             'detection/occlusion_startup_enabled': False,
+            'detection/publish_measured_body_position_enabled': args.method in ('body', 'body_bidir', 'body_bidir_static'),
+            'detection/bidirectional_ray_evidence_enabled': args.method in ('bidir', 'body_bidir', 'body_bidir_static'),
+            'detection/bidirectional_static_suppression_enabled': args.method in ('bidir_static', 'body_bidir_static'),
             'association/competition_enabled': False,
             'association/geometry_enabled': False,
             'association/global_assignment_enabled': False,
             'background_online/enabled': args.method in ('online', 'combo'),
             'detection/strict_depth_evidence_enabled': args.method in ('depth', 'combo'),
-            'association/point_source_competition_enabled': args.method in ('competition', 'combo'),
+            'association/point_source_competition_enabled': args.point_source_competition or
+                args.method in ('competition', 'combo'),
         }
         command = [args.node, '__name:=mapping_node', '__ns:=/UAV1/fapp']
         command += ['_' + key + ':=' + (str(value).lower() if isinstance(value, bool) else str(value))
@@ -165,6 +176,15 @@ def run_case(args):
             assert all(math.isfinite(component) for state in states
                        for component in (state.position.x, state.position.y, state.position.z,
                                          state.velocity.x, state.velocity.y, state.velocity.z))
+            if params['detection/publish_measured_body_position_enabled']:
+                boxes = [m for m in received['dynamic_object_markers'][value].markers if m.action == m.ADD]
+                arrows = [m for m in received['dynamic_track_markers'][value].markers if m.action == m.ADD]
+                for state, box, arrow in zip(states, boxes, arrows):
+                    for axis in ('x', 'y', 'z'):
+                        center = (min(getattr(p, axis) for p in box.points) +
+                                  max(getattr(p, axis) for p in box.points)) / 2
+                        assert abs(getattr(state.position, axis) - center) < 1e-6
+                        assert abs(getattr(arrow.points[0], axis) - center) < 1e-6
             return number
 
         def diagnostic(prefix, stamp, center=None):
@@ -305,6 +325,42 @@ def run_case(args):
                            for update in updates), 'New visible static surfaces were never learned'
                 assert any(int(update[6]) == 1 and float(update[7]) > 0
                            for update in updates), 'Rotation did not exercise paused background learning'
+        elif args.case.startswith('bidir_'):
+            # Preload all positions into the accumulated map, then remove the
+            # object from raw history. The original startup latch must be false.
+            far = [(4, y * .03, z * .03)
+                   for y in range(-45, 46) for z in range(10, 110)]
+            near = [(.8, y * .01, z * .01)
+                    for y in range(-45, 46) for z in range(10, 160)]
+            path = (1.4, 1.7, 2.0) if args.case == 'bidir_preloaded_away' else (2.0, 1.7, 1.4)
+            preload = [p for x in path for p in cap(x, 0)]
+            for _ in range(5):
+                publish(points=far + preload)
+            for _ in range(9):
+                stamp = publish(points=far)
+                assert count(stamp) == 0, 'Preloaded target published without current points'
+            counts = []
+            for step, x in enumerate(path):
+                if args.case == 'bidir_gap' and step == 2:
+                    stamp = publish(points=far)
+                    assert count(stamp) == 0, 'Missing input candidate published a prediction'
+                occluded = args.case == 'bidir_occluded' or \
+                    (args.case == 'bidir_single_transition' and step < 2)
+                stamp = publish(points=(near if occluded else far) + cap(x, 0))
+                counts.append(count(stamp))
+            positive = args.case in ('bidir_preloaded_toward', 'bidir_preloaded_away') and \
+                params['detection/bidirectional_ray_evidence_enabled']
+            assert counts == ([0, 0, 1] if positive else [0, 0, 0]), \
+                ('Supplemental startup needs two consecutive valid transitions', args.case, counts)
+            track = diagnostic('FAPP_TRACK', stamp, (path[-1] + .08, 0))
+            decisions = [line[line.index('FAPP_BIDIRECTIONAL_DECISION'):].split()
+                         for line in node_log_path.read_text().splitlines()
+                         if 'FAPP_BIDIRECTIONAL_DECISION ' in line]
+            decision = next(row for row in decisions
+                            if int(row[1]) == stamp.to_nsec() and row[2] == track[5])
+            assert decision[3] == '0', ('Original startup unintentionally covers fixture', decision)
+            assert decision[4] == ('1' if positive else '0'), \
+                ('Motion and static switches are not independent', decision)
         elif args.case in ('foreground', 'unknown', 'single_history', 'behind'):
             radial = args.case in ('foreground', 'behind')
             near_wall = [(4 if args.case != 'behind' else .8, y * .03, z * .03)
@@ -449,6 +505,7 @@ def main():
     parser.add_argument('--node', default=str(Path(__file__).resolve().parents[3] /
                                              'devel/lib/mot_mapping/mapping_node'))
     parser.add_argument('--case', default='all')
+    parser.add_argument('--point-source-competition', action='store_true')
     parser.add_argument('--log-dir', type=Path)
     args = parser.parse_args()
     assert args.case == 'all' or args.case in CASES[args.method], (args.method, args.case)
@@ -460,9 +517,12 @@ def main():
     if args.case == 'all':
         failures = []
         for index, case in enumerate(CASES[args.method]):
-            result = subprocess.run([sys.executable, str(Path(__file__).resolve()), '--method', args.method,
+            command = [sys.executable, str(Path(__file__).resolve()), '--method', args.method,
                                      '--case', case, '--port', str(args.port + index), '--node', args.node,
-                                     '--log-dir', str(args.log_dir)])
+                                     '--log-dir', str(args.log_dir)]
+            if args.point_source_competition:
+                command.append('--point-source-competition')
+            result = subprocess.run(command)
             if result.returncode:
                 failures.append((case, result.returncode))
         assert not failures, ('Convergence regression failures', args.method, failures)
