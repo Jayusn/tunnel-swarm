@@ -5974,9 +5974,14 @@
       "sha256": "73b2d2c72c6e5e03079c6f79463e1c2d1b75b3f08e295e7dbd73bb0f03862135"
     },
     {
+      "path": ".fapp_ball_debug/point_motion_20261010/cloud_pose_audit/registered_point_time.json",
+      "bytes": 851,
+      "sha256": "ca843ab7d1e34c70cf104e371c7bb9fd1d6d230f1ff415996b87c748d17cc1ea"
+    },
+    {
       "path": ".fapp_ball_debug/point_motion_20261010/update_report.py",
-      "bytes": 11872,
-      "sha256": "f4a0515668b541af5debff746fdc6fbdca14c7cd71a15c69e20ed3ad9aeee153"
+      "bytes": 12110,
+      "sha256": "24b8a4edb5f42a41a2086aadff26c10acab2e59178e731514d039b9e07e38b10"
     }
   ],
   "input_pose_audit": {
@@ -7678,5 +7683,24 @@
         ]
       }
     }
+  },
+  "input_point_time_audit": {
+    "complete": true,
+    "source": ".fapp_ball_debug/corridor_20261008_ball/evaluation.bag",
+    "source_bytes": 2242354024,
+    "cloud_frames": 1727,
+    "points": 16607010,
+    "field": "curvature",
+    "missing_field_frames": 0,
+    "nonzero_points": 0,
+    "nonzero_frames": 0,
+    "nonfinite_points": 0,
+    "minimum": 0.0,
+    "maximum": 0.0,
+    "source_code": "src/FAST_LIO/src/laserMapping.cpp",
+    "source_code_sha256": "f57f046f9cc7288cae06814ddd18d375aa74d32285824e5e8510d88ce483c5b6",
+    "source_observation": "RGBpointBodyToWorld copies x/y/z/intensity only; registered publisher uses transformed PointType, does not copy curvature. Read-only, no FAST-LIO or input changes.",
+    "scope": "Input-field availability audit only, no GT or detector scoring. Zero curvature cannot recover actual per-point acquisition times.",
+    "elapsed_seconds": 2.5573718559990084
   }
 }
