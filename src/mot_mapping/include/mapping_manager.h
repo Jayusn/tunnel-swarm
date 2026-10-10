@@ -60,6 +60,7 @@ struct MapParam {
   int max_cluster;
   double cluster_voxel_size;
   bool density_split_enabled;
+  bool candidate_partition_enabled;
   double core_radius;
   double core_density_fraction;
   // Dynamic Detection Params

@@ -24,6 +24,7 @@ struct Ekf {
   ros::Time last_change_stamp, last_motion_stamp, last_dynamic_stamp;
   ros::Time last_published_stamp;
   int last_seen_frame = 0;
+  bool supplemental_candidate = false;
   Eigen::Vector3d observed_dense_size = Eigen::Vector3d::Zero();
   size_t observed_dense_count = 0;
   bool observed_reference_foreground = false;
@@ -85,6 +86,7 @@ struct Ekf {
     update_num = 0;
     id = id_;
     observations.clear();
+    supplemental_candidate = false;
     evidence_observations.clear();
     bidirectional_evidence.clear();
     observed_dense_count = 0;

@@ -35,6 +35,8 @@ CASES = {
     'bidir_static': ('sparse',) + FULL_CASES + BIDIRECTIONAL_CASES,
     'body_bidir': ('sparse',) + FULL_CASES + BIDIRECTIONAL_CASES,
     'body_bidir_static': ('sparse',) + FULL_CASES + BIDIRECTIONAL_CASES,
+    'partition': ('partition_children', 'partition_unknown',
+                  'partition_unpublished_parent', 'sparse') + FULL_CASES,
 }
 
 
@@ -45,6 +47,17 @@ def cap(x, y=0, z=1):
 
 def backdrop():
     return [(-4, y * .1, .4 + z * .1) for y in range(-12, 13) for z in range(15)]
+
+
+def joined_bodies(x, include_child, z=1):
+    parent = [(x + math.sqrt(.1 ** 2 - dy ** 2 - dz ** 2),
+               -.6 + dy, z + dz)
+              for dy in (-.08, -.04, 0, .04, .08)
+              for dz in (-.04, 0, .04)]
+    if include_child:
+        parent += [(px, py + .5, pz) for px, py, pz in list(parent)]
+        parent += [(x + .1, y, z) for y in (-.46, -.38, -.30, -.22)]
+    return parent
 
 
 def run_case(args):
@@ -81,7 +94,7 @@ def run_case(args):
         rospy.init_node('convergence_smoke', anonymous=True)
         rospy.set_param('/UAV1/mapping/extrinsic_T', [0, 0, 0])
         complete_case = args.case in FULL_CASES
-        reference = complete_case or args.method in ('online', 'strong2', 'combo')
+        reference = complete_case or args.method in ('online', 'strong2', 'combo', 'partition')
         consistency = complete_case or args.method in ('competition', 'combo')
         params = {
             'ros/lidar_topic': '/convergence_test/cloud',
@@ -111,6 +124,7 @@ def run_case(args):
             'detection/depth_evidence_enabled': False,
             'detection/occlusion_startup_enabled': False,
             'detection/publish_measured_body_position_enabled': args.method in ('body', 'body_bidir', 'body_bidir_static'),
+            'clustering/candidate_partition_enabled': args.candidate_partition or args.method == 'partition',
             'detection/bidirectional_ray_evidence_enabled': args.method in ('bidir', 'body_bidir', 'body_bidir_static'),
             'detection/bidirectional_static_suppression_enabled': args.method in ('bidir_static', 'body_bidir_static'),
             'association/competition_enabled': False,
@@ -122,6 +136,8 @@ def run_case(args):
                 args.method in ('competition', 'combo'),
         }
         command = [args.node, '__name:=mapping_node', '__ns:=/UAV1/fapp']
+        if args.method == 'partition':
+            params['detection/publish_measured_body_position_enabled'] = True
         command += ['_' + key + ':=' + (str(value).lower() if isinstance(value, bool) else str(value))
                     for key, value in params.items()]
         with node_log_path.open('w') as node_log:
@@ -153,7 +169,8 @@ def run_case(args):
             header = Header(stamp=stamp, frame_id='UAV1/camera_init')
             odom = Odometry(header=header)
             if odom_z is None:
-                odom_z = 1 if args.case in ('six_radial_toward', 'six_radial_away') else 0
+                odom_z = 2 if args.case == 'partition_unknown' else \
+                    (1 if args.case in ('six_radial_toward', 'six_radial_away') else 0)
             odom.pose.pose.position.x, odom.pose.pose.position.z = odom_x, odom_z
             odom.pose.pose.orientation.w = math.cos(odom_yaw / 2)
             odom.pose.pose.orientation.z = math.sin(odom_yaw / 2)
@@ -202,7 +219,8 @@ def run_case(args):
             return lines[0]
 
         wall = backdrop()
-        if complete_case and args.case != 'new_corner':
+        if (complete_case and args.case != 'new_corner') or \
+                args.case in ('partition_children', 'partition_unpublished_parent'):
             # A real observed rear wall covers the six-point target's rays.
             # Keep this wall and every preceding target in raw history; in
             # particular radial-away targets may occlude their own old rays.
@@ -215,13 +233,110 @@ def run_case(args):
                     for y in range(-25, 26) for z in range(10, 81)]
         if reference:
             reference_points = wall + (cap(1, -2.6) if args.case == 'previous_background' else [])
+            fixed_parent = []
+            if args.case == 'partition_unpublished_parent':
+                fixed_parent = [(1.5 + math.sqrt(.15 ** 2 - dy ** 2 - dz ** 2),
+                                 -.6 + dy, 1 + dz)
+                                for dy in (-.12, -.08, -.04, 0, .04, .08, .12)
+                                for dz in (-.12, -.08, -.04, 0, .04, .08, .12)
+                                if dy ** 2 + dz ** 2 < .15 ** 2]
+                reference_points += fixed_parent
             for _ in range(52):
                 stamp = publish(points=reference_points)
                 if sequence > 1:
                     assert count(stamp) == 0, 'Calibration published a dynamic candidate'
             assert 'FAPP_REFERENCE_READY ' in node_log_path.read_text(), 'Five-second reference not frozen'
 
-        if args.case.startswith('six_'):
+        if args.case in ('partition_children', 'partition_unknown'):
+            # The first body already has three actual observations. A second
+            # body then enters the same DBSCAN parent through a sparse chain;
+            # it must accumulate its own three measured component candidates.
+            unknown = args.case == 'partition_unknown'
+            for step in range(3):
+                x, z = (1.5, 1 + step * .35) if unknown else (1.5 + step * .15, 1)
+                stamp = publish(points=wall + joined_bodies(x, False, z))
+                assert count(stamp) == (1 if step == 2 else 0), 'First body did not use three observations'
+            parent_track = diagnostic('FAPP_TRACK', stamp, (x + .08, -.6))
+            for step in range(4):
+                # Without a rear return, vertical translation moves both
+                # bodies outside their previous measured rays. The parent
+                # still has ordinary three-frame motion; unknown rays must
+                # not authorize the newly separated child.
+                x, z = (1.5, 2.05 + step * .35) if unknown else (1.95 + step * .15, 1)
+                stamp = publish(points=wall + joined_bodies(x, True, z))
+                count(stamp)
+                states = received['states'][stamp.to_nsec()].states
+                parent_hit = any(abs(s.position.y + .6) < .15 and abs(s.position.x - x - .08) < .2
+                                 and abs(s.position.z - z) < .15 for s in states)
+                child_hit = any(abs(s.position.y + .1) < .15 and abs(s.position.x - x - .08) < .2
+                                and abs(s.position.z - z) < .15 for s in states)
+                assert parent_hit, ('Existing measured body was lost', step)
+                assert child_hit == (step >= 2 and not unknown), \
+                    ('Child lacks its own measured confirmation and ray evidence', args.case, step, child_hit)
+                current_parent = diagnostic('FAPP_TRACK', stamp, (x + .08, -.6))
+                child_track = diagnostic('FAPP_TRACK', stamp, (x + .08, -.1))
+                assert current_parent[5] == parent_track[5] and child_track[5] != parent_track[5], \
+                    ('Supplemental candidate changed parent track ownership', current_parent, child_track)
+                assert int(child_track[7]) == min(step + 1, 3), \
+                    ('Child borrowed prior parent observations', step, child_track)
+                cloud = received['dynamic_cloud'][stamp.to_nsec()]
+                xyz = list(point_cloud2.read_points(cloud, field_names=('x', 'y', 'z'), skip_nans=True))
+                assert len(xyz) == len(set(xyz)), 'Shared dynamic parent was appended repeatedly'
+                assert any(abs(p[1] + .1) < .03 for p in xyz), 'Full actual parent points were dropped'
+            if unknown:
+                track = diagnostic('FAPP_TRACK', stamp, (x + .08, -.1))
+                assert int(track[7]) >= 3, ('Unknown-ray child lacked real observations', track)
+                assert float(track[8]) >= .06 and float(track[9]) >= .14 and track[10] == '1', \
+                    ('Unknown-ray child lacked ordinary motion startup', track)
+                transitions = [line[line.index('FAPP_BIDIRECTIONAL_TRANSITION'):].split()
+                               for line in node_log_path.read_text().splitlines()
+                               if 'FAPP_BIDIRECTIONAL_TRANSITION ' in line]
+                child_transitions = [row for row in transitions if row[2] == track[5]]
+                assert len(child_transitions) >= 2 and all(float(row[5]) == 0
+                                                          for row in child_transitions[-2:]), \
+                    ('Unknown-ray fixture contains actual foreground or vacated evidence', child_transitions)
+                gates = [line[line.index('FAPP_SUPPLEMENTAL_EVIDENCE'):].split()
+                         for line in node_log_path.read_text().splitlines()
+                         if 'FAPP_SUPPLEMENTAL_EVIDENCE ' in line]
+                gate = next(row for row in gates if int(row[1]) == stamp.to_nsec() and row[2] == track[5])
+                assert gate[4] == '1' and gate[5] == '1' and float(gate[6]) >= .26 and gate[7] == '0', \
+                    ('Unknown rays did not independently block a motion-confirmed child', gate)
+            assert 'FAPP_CANDIDATE_PARTITION ' in node_log_path.read_text(), 'Candidate partition did not execute'
+            stamp = publish(points=wall)
+            assert count(stamp) == 0, 'Missing current components published a prediction'
+        elif args.case == 'partition_unpublished_parent':
+            # A real moving component has its own three observations and
+            # repeatable foreground rays, but its densely sampled stationary
+            # parent is explained by the frozen reference and is not published.
+            for _ in range(3):
+                stamp = publish(points=wall + fixed_parent)
+                assert count(stamp) == 0, 'Frozen stationary parent was published'
+            for step in range(4):
+                x = 1.5 + step * .15
+                child = cap(x, -.1)
+                length = math.hypot(x - 1.5, .5)
+                links = math.ceil(length / .08)
+                bridge = [(1.6 + (x - 1.5) * index / links,
+                           -.6 + .5 * index / links, 1)
+                          for index in range(1, links)]
+                stamp = publish(points=wall + fixed_parent + child + bridge)
+                assert count(stamp) == 0, 'Supplemental child published without a current parent publication'
+            track = diagnostic('FAPP_TRACK', stamp, (x + .08, -.1))
+            assert int(track[7]) >= 3, ('Moving child lacked three actual observations', track)
+            transitions = [line[line.index('FAPP_BIDIRECTIONAL_TRANSITION'):].split()
+                           for line in node_log_path.read_text().splitlines()
+                           if 'FAPP_BIDIRECTIONAL_TRANSITION ' in line]
+            child_transitions = [row for row in transitions if row[2] == track[5]]
+            assert len(child_transitions) >= 2 and all(float(row[5]) >= .26
+                                                      for row in child_transitions[-2:]), \
+                ('Unpublished-parent fixture lacks repeated real motion rays', child_transitions)
+            gates = [line[line.index('FAPP_SUPPLEMENTAL_EVIDENCE'):].split()
+                     for line in node_log_path.read_text().splitlines()
+                     if 'FAPP_SUPPLEMENTAL_EVIDENCE ' in line]
+            gate = next(row for row in gates if int(row[1]) == stamp.to_nsec() and row[2] == track[5])
+            assert gate[4] == '0' and gate[5] == '1' and float(gate[6]) >= .26 and gate[7] == '1', \
+                ('Unpublished parent did not independently block a motion-confirmed child', gate)
+        elif args.case.startswith('six_'):
             def sphere(center_x, center_y=-.6, visible_side=1):
                 # Six physical surface samples from a radius-10cm sphere;
                 # the measured cap need not span its full physical diameter.
@@ -506,6 +621,7 @@ def main():
                                              'devel/lib/mot_mapping/mapping_node'))
     parser.add_argument('--case', default='all')
     parser.add_argument('--point-source-competition', action='store_true')
+    parser.add_argument('--candidate-partition', action='store_true')
     parser.add_argument('--log-dir', type=Path)
     args = parser.parse_args()
     assert args.case == 'all' or args.case in CASES[args.method], (args.method, args.case)
@@ -522,6 +638,8 @@ def main():
                                      '--log-dir', str(args.log_dir)]
             if args.point_source_competition:
                 command.append('--point-source-competition')
+            if args.candidate_partition:
+                command.append('--candidate-partition')
             result = subprocess.run(command)
             if result.returncode:
                 failures.append((case, result.returncode))

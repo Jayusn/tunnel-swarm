@@ -9,6 +9,7 @@
   <arg name="reacquisition_max_gap" default="0.6"/>
   <arg name="cluster_voxel_size" default="0.05"/>
   <arg name="density_split_enabled" default="false"/>
+  <arg name="candidate_partition_enabled" default="false"/>
   <arg name="core_radius" default="0.08"/>
   <arg name="core_density_fraction" default="0.7"/>
   <arg name="global_assignment_enabled" default="false"/>
@@ -61,6 +62,7 @@
       <param name="detection/reacquisition_max_gap" value="$(arg reacquisition_max_gap)"/>
       <param name="clustering/voxel_size" value="$(arg cluster_voxel_size)"/>
       <param name="clustering/density_split_enabled" value="$(arg density_split_enabled)"/>
+      <param name="clustering/candidate_partition_enabled" value="$(arg candidate_partition_enabled)"/>
       <param name="clustering/core_radius" value="$(arg core_radius)"/>
       <param name="clustering/core_density_fraction" value="$(arg core_density_fraction)"/>
       <param name="association/global_assignment_enabled" value="$(arg global_assignment_enabled)"/>

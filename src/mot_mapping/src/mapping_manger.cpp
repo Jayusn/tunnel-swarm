@@ -3,6 +3,7 @@
 #include "bidirectional_depth.h"
 #include <cmath>
 #include <limits>
+#include <set>
 #include <stdexcept>
 #include <unordered_map>
 
@@ -118,6 +119,7 @@ void MappingRos::init() {
   nh.param("dbscan/max_cluster", mp_->max_cluster, 800);
   nh.param("clustering/voxel_size", mp_->cluster_voxel_size, 0.05);
   nh.param("clustering/density_split_enabled", mp_->density_split_enabled, false);
+  nh.param("clustering/candidate_partition_enabled", mp_->candidate_partition_enabled, false);
   nh.param("clustering/core_radius", mp_->core_radius, 0.08);
   nh.param("clustering/core_density_fraction", mp_->core_density_fraction, 0.7);
   nh.param("association/global_assignment_enabled", mp_->global_assignment_enabled, false);
@@ -170,7 +172,7 @@ void MappingRos::init() {
   if (mp_->depth_evidence_enabled || mp_->occlusion_startup_enabled || mp_->shape_consistency_enabled ||
       mp_->time_evidence_enabled || mp_->strict_depth_evidence_enabled || mp_->online_background_enabled ||
       mp_->reference_strong_two_frame_enabled || mp_->bidirectional_ray_evidence_enabled ||
-      mp_->bidirectional_static_suppression_enabled) {
+      mp_->bidirectional_static_suppression_enabled || mp_->candidate_partition_enabled) {
     std::vector<double> offset;
     // Same MID360 offset as FAST-LIO's mid360.yaml; use its live parameter
     // when the sensor stack is running. Replay supplies that parameter too.
@@ -670,6 +672,9 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
   struct Candidate {
     ObjectState state;
     pcl::PointIndices indices;
+    pcl::PointIndices dynamic_indices;
+    bool supplemental;
+    int parent_key;
     bool changed;
     bool static_background;
     bool reference_foreground;
@@ -691,7 +696,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
   BidirectionalDepth current_depth_view, previous_depth_view;
   const RawObservation previous_ray = bidirectional_previous_observation_;
   const bool need_bidirectional = mp_->bidirectional_ray_evidence_enabled ||
-      mp_->bidirectional_static_suppression_enabled;
+      mp_->bidirectional_static_suppression_enabled || mp_->candidate_partition_enabled;
   pcl::search::KdTree<PointType> observation_trees[2];
   bool has_observed_history[2];
   for (int history = 0; history < 2; ++history) {
@@ -718,7 +723,67 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
   std::vector<Candidate> candidates;
   detections.clear();
   deleted_indices.clear();
+  std::vector<pcl::PointIndices> dynamic_parents;
+  std::vector<int> candidate_parent_keys;
+  if (mp_->candidate_partition_enabled) {
+    // Keep every original parent candidate. Additional measured components
+    // build their own observation history and never inherit confirmation.
+    DensityPartitionOptions options;
+    options.radius = mp_->core_radius;
+    options.alpha = mp_->core_density_fraction;
+    options.min_cluster = mp_->min_cluster;
+    options.max_cluster = mp_->max_cluster;
+    options.core_pts = mp_->core_pts;
+    options.squared_tolerance = mp_->tolerance;
+    const auto parents = cluster_indices;
+    dynamic_parents = parents;
+    for (size_t parent_index = 0; parent_index < parents.size(); ++parent_index)
+      candidate_parent_keys.push_back(parent_index);
+    for (size_t parent_index = 0; parent_index < parents.size(); ++parent_index) {
+      const auto& parent = parents[parent_index];
+      const auto partition = densityPartition(*ClusterPoints, parent, options);
+      if (partition.split) {
+        // Use the same first densest-neighborhood anchor as the original
+        // parent measurement. Its component is already represented by that
+        // parent and must not be proposed a second time.
+        int dense_anchor = parent.indices.front();
+        size_t dense_count = 0;
+        for (int anchor : parent.indices) {
+          size_t count = 0;
+          for (int index : parent.indices)
+            if ((ClusterPoints->points[index].getVector3fMap() -
+                 ClusterPoints->points[anchor].getVector3fMap()).squaredNorm() <= mp_->tolerance)
+              ++count;
+          if (count > dense_count) {
+            dense_count = count;
+            dense_anchor = anchor;
+          }
+        }
+        size_t supplemental_count = 0;
+        for (const auto& component : partition.clusters) {
+          if (std::find(component.indices.begin(), component.indices.end(), dense_anchor) !=
+              component.indices.end()) continue;
+          cluster_indices.push_back(component);
+          dynamic_parents.push_back(parent);
+          candidate_parent_keys.push_back(parent_index);
+          ++supplemental_count;
+        }
+        ROS_DEBUG_STREAM("FAPP_CANDIDATE_PARTITION " << cloud_stamp_.toNSec() << " "
+            << parent.indices.size() << " " << partition.clusters.size() << " "
+            << partition.leftovers.indices.size() << " " << supplemental_count);
+      }
+    }
+  }
+  size_t candidate_cluster_index = 0;
   for (const auto& indices : cluster_indices) {
+    const auto& dynamic_indices = mp_->candidate_partition_enabled ?
+        dynamic_parents[candidate_cluster_index] : indices;
+    const int parent_key = mp_->candidate_partition_enabled ?
+        candidate_parent_keys[candidate_cluster_index++] : -1;
+    const bool supplemental = mp_->candidate_partition_enabled &&
+        indices.indices != dynamic_indices.indices;
+    const bool candidate_ray_enabled = mp_->bidirectional_ray_evidence_enabled ||
+        mp_->bidirectional_static_suppression_enabled || supplemental;
     Points cluster;
     Eigen::Vector3d center = Eigen::Vector3d::Zero();
     std::vector<double> distances;
@@ -821,7 +886,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
              observed_squared_distance[0] > mp_->thresh_dist * mp_->thresh_dist));
         if (novel) ++novel_points[history];
       }
-      if (need_bidirectional && have_previous_ray) {
+      if (candidate_ray_enabled && have_previous_ray) {
         const auto evidence = previous_depth_view.classify(point.getVector3fMap().cast<double>());
         if (evidence == BidirectionalDepth::Foreground) ++bidirectional_forward;
         if (evidence == BidirectionalDepth::Static) ++bidirectional_forward_static;
@@ -1056,6 +1121,9 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
           << reference_background);
     candidate.state.size = size;
     candidate.indices = indices;
+    if (mp_->candidate_partition_enabled) candidate.dynamic_indices = dynamic_indices;
+    candidate.supplemental = supplemental;
+    candidate.parent_key = parent_key;
     candidate.dense_size = dense_size;
     candidate.dense_count = dense_count;
     candidate.dense_point_index = indices.indices[dense_index];
@@ -1064,14 +1132,14 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     candidate.bilateral_foreground_fraction = static_cast<double>(bilateral_foreground) / dense_count;
     candidate.independent_motion_fraction = static_cast<double>(std::min(independent_points[0], independent_points[1])) / dense_count;
     candidate.static_plane_fraction = static_plane_fraction;
-    candidate.bidirectional_forward_valid = need_bidirectional && have_previous_ray && dense_count > 0;
+    candidate.bidirectional_forward_valid = candidate_ray_enabled && have_previous_ray && dense_count > 0;
     if (candidate.bidirectional_forward_valid) {
       candidate.bidirectional_forward_fraction = static_cast<double>(bidirectional_forward) / dense_count;
       candidate.bidirectional_forward_static_fraction =
           static_cast<double>(bidirectional_forward_static) / dense_count;
     }
     if (mp_->shape_consistency_enabled || mp_->translated_startup_enabled ||
-        mp_->reference_strong_two_frame_enabled || need_bidirectional) {
+        mp_->reference_strong_two_frame_enabled || candidate_ray_enabled) {
       for (const auto& point : cluster) {
         if ((point.getVector3fMap() - cluster[dense_index].getVector3fMap()).squaredNorm() <=
             mp_->tolerance)
@@ -1095,7 +1163,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
       ROS_DEBUG_STREAM("FAPP_POINT_SOURCE " << cloud_stamp_.toNSec() << " "
           << center.transpose() << " " << candidate.independent_motion_fraction << " "
           << candidate.static_plane_fraction);
-    if (need_bidirectional)
+    if (candidate_ray_enabled)
       ROS_DEBUG_STREAM("FAPP_BIDIRECTIONAL_CANDIDATE " << cloud_stamp_.toNSec() << " "
           << center.transpose() << " " << candidate.bidirectional_forward_valid << " "
           << candidate.bidirectional_forward_fraction << " "
@@ -1196,6 +1264,8 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
   std::vector<bool> has_weak_return(trackers.size(), false), has_motion_return(trackers.size(), false);
   for (int i = 0; i < candidates.size(); ++i) {
     for (int j = 0; j < trackers.size(); ++j) {
+      if (mp_->candidate_partition_enabled &&
+          candidates[i].supplemental != trackers[j]->supplemental_candidate) continue;
       double distance = (candidates[i].state.position -
                          trackers[j]->observations.back().second).norm();
       if (distance < 0.82) {
@@ -1329,6 +1399,10 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
   states.header.stamp = cloud_stamp_;
   states.header.frame_id = frame_id_;
   std::vector<std::pair<int, int>> published_pairs;
+  std::set<int> published_parents;
+  std::vector<bool> published_dynamic_indices;
+  if (mp_->candidate_partition_enabled)
+    published_dynamic_indices.assign(ClusterPoints->size(), false);
   for (int i = 0; i < candidates.size(); ++i) {
     int j = matched[i];
     const auto& candidate = candidates[i];
@@ -1456,6 +1530,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
       }
     }
     auto& tracker = trackers[j];
+    tracker->supplemental_candidate = candidate.supplemental;
     bool bidirectional_transition_valid = false;
 
     if (need_bidirectional && tracker->last_seen_frame == frame_num - 1 &&
@@ -1551,11 +1626,13 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
                       displacement >= mp_->motion_displacement &&
                       observed_speed >= mp_->min_motion_speed;
     bool bidirectional_startup = false;
+    bool supplemental_ray_motion = false;
     bool bidirectional_static_suppression = false;
     if (need_bidirectional && tracker->bidirectional_evidence.size() >= 2) {
       const auto& first = tracker->bidirectional_evidence[tracker->bidirectional_evidence.size() - 2].second;
       const auto& second = tracker->bidirectional_evidence.back().second;
       const double motion_threshold = 0.26;
+      supplemental_ray_motion = first.x() >= motion_threshold && second.x() >= motion_threshold;
       bidirectional_startup = mp_->bidirectional_ray_evidence_enabled &&
           first.x() >= motion_threshold && second.x() >= motion_threshold;
       bidirectional_static_suppression =
@@ -1648,7 +1725,8 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
         (recently_changed || !tracker->last_dynamic_stamp.isZero() ||
          reference_startup || occlusion_startup || translated_startup);
     const bool original_startup_evidence = startup_evidence;
-    if (bidirectional_startup) startup_evidence = true;
+    if (bidirectional_startup || (candidate.supplemental && supplemental_ray_motion))
+      startup_evidence = true;
     if (need_bidirectional)
       ROS_DEBUG_STREAM("FAPP_BIDIRECTIONAL_DECISION " << cloud_stamp_.toNSec() << " "
           << tracker->id << " " << original_startup_evidence << " "
@@ -1693,7 +1771,20 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
       continue;
     }
 
-    // Partition only an already confirmed, publishable parent. Its background
+    if (candidate.supplemental)
+      ROS_DEBUG_STREAM("FAPP_SUPPLEMENTAL_EVIDENCE " << cloud_stamp_.toNSec() << " "
+          << tracker->id << " " << candidate.parent_key << " "
+          << published_parents.count(candidate.parent_key) << " " << has_motion << " "
+          << candidate.novel_fraction << " " << supplemental_ray_motion);
+    if (candidate.supplemental &&
+        (!published_parents.count(candidate.parent_key) || !has_motion ||
+         candidate.novel_fraction < mp_->min_motion_novel_fraction || !supplemental_ray_motion)) {
+      ROS_DEBUG_STREAM("FAPP_REJECT " << cloud_stamp_.toNSec() << " "
+          << candidate.state.position.transpose() << " supplemental_source");
+      continue;
+    }
+
+    // Partition only an already confirmed, publishable candidate. Its background
     // and motion evidence must not be bypassed by splitting wall fragments.
     ObjectState published_state = candidate.state;
     pcl::PointIndices published_indices = candidate.indices;
@@ -1746,12 +1837,27 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     int detection_index = detections.size();
     tracker->last_published_stamp = cloud_stamp_;
     detections.push_back(published_state);
+    if (mp_->candidate_partition_enabled && !candidate.supplemental)
+      published_parents.insert(candidate.parent_key);
     published_pairs.push_back({detection_index, j});
-    // Keep the original confirmed return in the dynamic cloud. The compact
-    // body box must not discard real sparse surface points from the parent.
-    deleted_indices.push_back(candidate.indices);
-    for (int index : candidate.indices.indices)
-      dynamic_points->points.push_back(ClusterPoints->points[index]);
+    // Keep the complete original return in the dynamic cloud. Independent
+    // confirmed components from one parent contribute its points only once.
+    if (mp_->candidate_partition_enabled) {
+      pcl::PointIndices unique_dynamic_indices;
+      unique_dynamic_indices.header = candidate.dynamic_indices.header;
+      for (int index : candidate.dynamic_indices.indices) {
+        if (published_dynamic_indices[index]) continue;
+        published_dynamic_indices[index] = true;
+        unique_dynamic_indices.indices.push_back(index);
+        dynamic_points->points.push_back(ClusterPoints->points[index]);
+      }
+      if (!unique_dynamic_indices.indices.empty())
+        deleted_indices.push_back(unique_dynamic_indices);
+    } else {
+      deleted_indices.push_back(candidate.indices);
+      for (int index : candidate.indices.indices)
+        dynamic_points->points.push_back(ClusterPoints->points[index]);
+    }
 
     obj_state_msgs::State state;
     state.header = states.header;
