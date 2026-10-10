@@ -29,7 +29,7 @@ class Query:
 
 class DepthFrame:
     """Retains every actual return, including independent near/far layers."""
-    def __init__(self, points, rotation=None, origin=None, event=None):
+    def __init__(self, points, rotation=None, origin=None, event=None, eligible=None):
         self.points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
         self.rotation = np.eye(3) if rotation is None else np.asarray(rotation)
         self.origin = np.zeros(3) if origin is None else np.asarray(origin)
@@ -40,7 +40,8 @@ class DepthFrame:
         self.ranges = ranges[valid]
         self.directions = rays[valid] / self.ranges[:, None]
         self.tree = cKDTree(self.directions) if len(self.indices) else None
-        self.world_tree = cKDTree(self.points) if len(self.points) else None
+        world_points = self.points if eligible is None else self.points[eligible]
+        self.world_tree = cKDTree(world_points) if len(world_points) else None
         self.event = np.zeros(len(self.points), dtype=bool) if event is None else np.asarray(event, dtype=bool)
 
     def query(self, points):
@@ -66,22 +67,27 @@ class DepthFrame:
         counts = np.fromiter((len(x) for x in neighborhoods), dtype=int)
         if not counts.sum():
             return Query(front, behind, static, unknown, nearest)
+        observed_rows = rows[counts > 0]
+        starts = np.r_[0, np.cumsum(counts[counts > 0])[:-1]]
         query_index = np.repeat(rows, counts)
         sample_index = np.concatenate(neighborhoods).astype(int)
         depth_difference = self.ranges[sample_index] - ranges[query_index]
         exact = np.abs(depth_difference) <= DEPTH
         exact_any = np.zeros(size, dtype=bool)
-        np.logical_or.at(exact_any, query_index, exact)
-        np.logical_or.at(static, query_index, exact & ~self.event[self.indices[sample_index]])
+        exact_any[observed_rows] = np.logical_or.reduceat(exact, starts)
+        static[observed_rows] = np.logical_or.reduceat(exact & ~self.event[self.indices[sample_index]], starts)
         # Real near/far layers can coexist. Use the first return, never the empty
         # interval between the layers, as the ray's visible depth.
         minimum = np.full(size, np.inf)
-        np.minimum.at(minimum, query_index, self.ranges[sample_index])
+        minimum[observed_rows] = np.minimum.reduceat(self.ranges[sample_index], starts)
         # An actual farther-layer return cannot establish visible static
         # support when a nearer return occludes the same historical ray.
         static &= ~(minimum < ranges - DEPTH)
         first = self.ranges[sample_index] == minimum[query_index]
-        nearest[query_index[first]] = self.indices[sample_index[first]]
+        # Keep the last equal-depth neighbor in the original sorted order,
+        # matching the previous repeated-index assignment.
+        last = np.maximum.reduceat(np.where(first, np.arange(len(first)), -1), starts)
+        nearest[observed_rows] = self.indices[sample_index[last]]
         observed = np.isfinite(minimum)
         front = observed & ~exact_any & (minimum > ranges + DEPTH)
         behind = observed & ~exact_any & (minimum < ranges - DEPTH)
@@ -103,11 +109,12 @@ def point_events(points, newest, older):
     chain_behind = chain_front.copy()
     chain_static = chain_front.copy()
     if len(ancestor_rows):
-        ancestors = newest.points[q1.nearest[ancestor_rows]]
+        ancestor_indices, inverse = np.unique(q1.nearest[ancestor_rows], return_inverse=True)
+        ancestors = newest.points[ancestor_indices]
         q_ancestor = older.query(ancestors)
-        chain_front[ancestor_rows] = q_ancestor.front
-        chain_behind[ancestor_rows] = q_ancestor.behind
-        chain_static[ancestor_rows] = q_ancestor.static
+        chain_front[ancestor_rows] = q_ancestor.front[inverse]
+        chain_behind[ancestor_rows] = q_ancestor.behind[inverse]
+        chain_static[ancestor_rows] = q_ancestor.static[inverse]
     stationary = q1.static | q2.static
     crossing = q1.front & q2.front & ~stationary
     toward = crossing & chain_front & ~chain_static
@@ -131,8 +138,7 @@ def candidates(points, event_types, static, history, min_cluster=6, max_cluster=
         return []
     local = points[indices]
     tree = cKDTree(local)
-    neighbors = tree.query_ball_point(local, REGION_RADIUS, workers=1)
-    core = np.array([len(n) >= 3 for n in neighbors])
+    core = tree.query_ball_point(local, REGION_RADIUS, workers=1, return_length=True) >= 3
     core_indices = np.flatnonzero(core)
     if not len(core_indices):
         return []
@@ -144,23 +150,32 @@ def candidates(points, event_types, static, history, min_cluster=6, max_cluster=
     _, core_groups = connected_components(graph, directed=False)
     groups = np.full(len(local), -1, dtype=int)
     groups[core_indices] = core_groups
-    for index in np.flatnonzero(~core):
-        adjacent = [n for n in neighbors[index] if core[n]]
+    border_indices = np.flatnonzero(~core)
+    neighbors = tree.query_ball_point(local[border_indices], REGION_RADIUS, workers=1, return_sorted=True)
+    for index, neighborhood in zip(border_indices, neighbors):
+        adjacent = [n for n in neighborhood if core[n]]
         if adjacent:
             groups[index] = groups[adjacent[0]]
-    output = []
+    members = []
     for group in range(int(groups.max()) + 1):
         member = indices[groups == group]
-        if not min_cluster <= len(member) <= max_cluster:
-            continue
+        if min_cluster <= len(member) <= max_cluster:
+            members.append(member)
+    if not members:
+        return []
+    # Query the same observed points once per historical frame, rather than
+    # restarting the tree search for every small candidate. Keep each group's
+    # original membership order and mean-distance criterion.
+    query_points = points[np.concatenate(members)]
+    distances_by_frame = [frame.world_tree.query(query_points, k=1, workers=1)[0]
+                          for frame in history if frame.world_tree is not None]
+    output, offset = [], 0
+    for member in members:
         observed = points[member]
         low, high = observed.min(axis=0), observed.max(axis=0)
-        novel = []
-        for frame in history:
-            if frame.world_tree is None:
-                continue
-            distances, _ = frame.world_tree.query(observed, k=1, workers=1)
-            novel.append(float(np.mean(distances > .06)))
+        novel = [float(np.mean(distances[offset:offset + len(member)] > .06))
+                 for distances in distances_by_frame]
+        offset += len(member)
         output.append(dict(indices=member, center=(low + high) / 2, size=high - low,
                            event_fraction=float(np.mean(event_types[member] != 0)),
                            event_counts=[int(np.sum((event_types[member] & bit) != 0)) for bit in (1, 2, 4)],
@@ -199,11 +214,9 @@ class EventDetector:
             self.history.clear()
             self.tracks.clear()
         self.was_capturing = capturing
-        current = DepthFrame(points, rotation, origin)
-        if eligible is not None:
-            # Keep the complete raw cloud for actual ray depth, while the
-            # nearest-point novelty buffer shares the candidate input ROI.
-            current.world_tree = cKDTree(points[eligible]) if np.any(eligible) else None
+        # Keep complete actual returns for ray depth and build only the ROI
+        # tree used by nearest-point novelty, rather than replacing a full tree.
+        current = DepthFrame(points, rotation, origin, eligible=eligible)
         types = np.zeros(len(points), dtype=np.uint8)
         static = np.zeros(len(points), dtype=bool)
         # Frames without a chronological, bounded pair cannot create a chain.
@@ -219,8 +232,15 @@ class EventDetector:
         if candidate_height_limit is not None:
             candidate = [v for v in candidate if v['center'][2] - .5*v['size'][2] <= candidate_height_limit]
         edges = []
+        track_tree = cKDTree([t['observations'][-1][1] for t in self.tracks]) if self.tracks else None
+        nearby_by_candidate = (track_tree.query_ball_point(
+            np.array([v['center'] for v in candidate]).reshape(-1, 3), .83, workers=1)
+            if track_tree is not None else [[] for _ in candidate])
         for ci, value in enumerate(candidate):
-            for ti, track in enumerate(self.tracks):
+            # A slightly larger search radius supplies a conservative set;
+            # the original scalar distance and .82 m gate still decide edges.
+            for ti in nearby_by_candidate[ci]:
+                track = self.tracks[ti]
                 distance = np.linalg.norm(value['center'] - track['observations'][-1][1])
                 if distance <= .82:
                     edges.append((track['sequence'] != self.sequence - 1, distance, ci, ti))
