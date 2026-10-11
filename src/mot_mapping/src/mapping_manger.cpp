@@ -1134,6 +1134,8 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
         var_dist += (distance - avg_dist) * (distance - avg_dist) / (avg_dist * avg_dist);
       var_dist /= distances.size();
     }
+    const bool parent_changed = avg_dist > mp_->thresh_dist && avg_dist < 5.0 &&
+                                var_dist < mp_->thresh_var;
     if (mp_->dense_change_evidence_enabled) {
       const double parent_mean = avg_dist, parent_variance = var_dist;
       size_t dense_reference_count = 0;
@@ -1218,6 +1220,9 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
                                                           novel_points[1])) / dense_count;
     candidate.changed = avg_dist > mp_->thresh_dist && avg_dist < 5.0 &&
                         var_dist < mp_->thresh_var;
+    // Dense evidence only verifies the original parent change. It cannot
+    // authorize an additional startup that the original parent rejected.
+    if (mp_->dense_change_evidence_enabled) candidate.changed = candidate.changed && parent_changed;
     ROS_DEBUG_STREAM("FAPP_CANDIDATE " << cloud_stamp_.toNSec() << " "
         << center.x() << " " << center.y() << " " << center.z() << " "
         << size.x() << " " << size.y() << " " << size.z() << " "
