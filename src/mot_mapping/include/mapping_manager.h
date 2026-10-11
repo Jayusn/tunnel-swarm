@@ -85,6 +85,7 @@ struct MapParam {
   bool competition_association_enabled;
   bool point_source_competition_enabled;
   bool publish_measured_body_position_enabled;
+  bool dense_change_evidence_enabled;
   bool bidirectional_ray_evidence_enabled;
   bool bidirectional_static_suppression_enabled;
   bool strict_depth_evidence_enabled;

@@ -157,6 +157,7 @@ void MappingRos::init() {
   nh.param("association/point_source_competition_enabled", mp_->point_source_competition_enabled, false);
   nh.param("detection/publish_measured_body_position_enabled",
            mp_->publish_measured_body_position_enabled, false);
+  nh.param("detection/dense_change_evidence_enabled", mp_->dense_change_evidence_enabled, false);
   nh.param("detection/bidirectional_ray_evidence_enabled",
            mp_->bidirectional_ray_evidence_enabled, false);
   nh.param("detection/bidirectional_static_suppression_enabled",
@@ -820,6 +821,8 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     Points cluster;
     Eigen::Vector3d center = Eigen::Vector3d::Zero();
     std::vector<double> distances;
+    std::vector<double> reference_distances;
+    if (mp_->dense_change_evidence_enabled) reference_distances.reserve(indices.indices.size());
     for (int index : indices.indices) {
       const auto& point = ClusterPoints->points[index];
       cluster.push_back(point);
@@ -827,8 +830,10 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
       PointVector nearest;
       std::vector<float> squared_distances(3);
       ikdtree_ptr->Nearest_Search(point, 3, nearest, squared_distances);
-      if (!nearest.empty())
-        distances.push_back(std::sqrt(squared_distances[0]));
+      const double distance = nearest.empty() ? std::numeric_limits<double>::quiet_NaN() :
+          std::sqrt(squared_distances[0]);
+      if (!nearest.empty()) distances.push_back(distance);
+      if (mp_->dense_change_evidence_enabled) reference_distances.push_back(distance);
     }
     center /= cluster.size();
     pcl::PointXYZ min_pt, max_pt;
@@ -1128,6 +1133,36 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
       for (double distance : distances)
         var_dist += (distance - avg_dist) * (distance - avg_dist) / (avg_dist * avg_dist);
       var_dist /= distances.size();
+    }
+    if (mp_->dense_change_evidence_enabled) {
+      const double parent_mean = avg_dist, parent_variance = var_dist;
+      size_t dense_reference_count = 0;
+      avg_dist = 0.0;
+      var_dist = 0.0;
+      // Reuse the same real nearest-map queries. Motion center and novelty
+      // already use this dense neighborhood; a sparse parent tail must not
+      // supply a different source for the changed/startup decision.
+      for (size_t point = 0; point < cluster.size(); ++point) {
+        if ((cluster[point].getVector3fMap() - cluster[dense_index].getVector3fMap()).squaredNorm() <=
+            mp_->tolerance && std::isfinite(reference_distances[point])) {
+          avg_dist += reference_distances[point];
+          ++dense_reference_count;
+        }
+      }
+      if (dense_reference_count > 0) avg_dist /= dense_reference_count;
+      if (avg_dist > 0.0) {
+        for (size_t point = 0; point < cluster.size(); ++point) {
+          if ((cluster[point].getVector3fMap() - cluster[dense_index].getVector3fMap()).squaredNorm() <=
+              mp_->tolerance && std::isfinite(reference_distances[point])) {
+            const double difference = reference_distances[point] - avg_dist;
+            var_dist += difference * difference / (avg_dist * avg_dist);
+          }
+        }
+        var_dist /= dense_reference_count;
+      }
+      ROS_DEBUG_STREAM("FAPP_DENSE_CHANGE " << cloud_stamp_.toNSec() << " "
+          << center.transpose() << " " << distances.size() << " " << dense_reference_count
+          << " " << parent_mean << " " << parent_variance << " " << avg_dist << " " << var_dist);
     }
     Candidate candidate;
     candidate.state.position = center;

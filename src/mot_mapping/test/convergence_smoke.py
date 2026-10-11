@@ -100,6 +100,7 @@ def run_case(args):
             'ros/lidar_topic': '/convergence_test/cloud',
             'ros/odom_topic': '/convergence_test/odom', 'ros/frame_id': 'UAV1/camera_init',
             'synchronization/nearest_available_odom_enabled': args.nearest_available_odom,
+            'detection/dense_change_evidence_enabled': args.dense_change_evidence,
             'dbscan/core_pts': 3, 'dbscan/tolerance': .02,
             'dbscan/min_cluster': 6, 'dbscan/max_cluster': 800,
             'detection/thresh_dist': .06, 'detection/thresh_var': .28,
@@ -624,6 +625,7 @@ def main():
     parser.add_argument('--point-source-competition', action='store_true')
     parser.add_argument('--candidate-partition', action='store_true')
     parser.add_argument('--nearest-available-odom', action='store_true')
+    parser.add_argument('--dense-change-evidence', action='store_true')
     parser.add_argument('--log-dir', type=Path)
     args = parser.parse_args()
     assert args.case == 'all' or args.case in CASES[args.method], (args.method, args.case)
@@ -644,6 +646,8 @@ def main():
                 command.append('--candidate-partition')
             if args.nearest_available_odom:
                 command.append('--nearest-available-odom')
+            if args.dense_change_evidence:
+                command.append('--dense-change-evidence')
             result = subprocess.run(command)
             if result.returncode:
                 failures.append((case, result.returncode))
