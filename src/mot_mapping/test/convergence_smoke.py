@@ -22,6 +22,9 @@ FULL_CASES = ('six_radial_toward', 'six_radial_away', 'six_flat',
               'six_wall_reversal_ego', 'six_occlusion', 'new_corner')
 BIDIRECTIONAL_CASES = ('bidir_preloaded_toward', 'bidir_preloaded_away',
                        'bidir_occluded', 'bidir_single_transition', 'bidir_gap')
+TRANSLATED_CASES = ('translated_preloaded_toward', 'translated_preloaded_away',
+                    'translated_irregular', 'translated_single_history', 'translated_gap',
+                    'translated_occluded', 'translated_ordinary_occluded')
 CASES = {
     'default': ('sparse',) + FULL_CASES,
     'online': ('sparse',) + FULL_CASES,
@@ -37,6 +40,7 @@ CASES = {
     'body_bidir_static': ('sparse',) + FULL_CASES + BIDIRECTIONAL_CASES,
     'partition': ('partition_children', 'partition_unknown',
                   'partition_unpublished_parent', 'sparse') + FULL_CASES,
+    'translated': TRANSLATED_CASES + ('ego_surface',) + FULL_CASES,
 }
 
 
@@ -102,6 +106,8 @@ def run_case(args):
             'synchronization/nearest_available_odom_enabled': args.nearest_available_odom,
             'detection/dense_change_evidence_enabled': args.dense_change_evidence,
             'detection/published_startup_source_enabled': args.published_startup_source,
+            'detection/translated_startup_enabled': args.method == 'translated',
+            'detection/time_evidence_enabled': args.translated_time_evidence,
             'dbscan/core_pts': 3, 'dbscan/tolerance': .02,
             'dbscan/min_cluster': 6, 'dbscan/max_cluster': 800,
             'detection/thresh_dist': .06, 'detection/thresh_var': .28,
@@ -165,9 +171,11 @@ def run_case(args):
         assert cloud_pub.get_num_connections() and odom_pub.get_num_connections(), 'Missing input subscribers'
         sequence = 0
 
-        def publish(center=None, points=None, odom_x=0, odom_z=None, odom_yaw=0):
+        def publish(center=None, points=None, odom_x=0, odom_z=None, odom_yaw=0,
+                    timestamp_ns=None):
             nonlocal sequence
-            stamp = rospy.Time.from_sec(1000 + sequence / 10)
+            stamp = rospy.Time.from_sec(1000 + sequence / 10) if timestamp_ns is None else \
+                rospy.Time(timestamp_ns // 1000000000, timestamp_ns % 1000000000)
             sequence += 1
             header = Header(stamp=stamp, frame_id='UAV1/camera_init')
             odom = Odometry(header=header)
@@ -443,6 +451,80 @@ def run_case(args):
                            for update in updates), 'New visible static surfaces were never learned'
                 assert any(int(update[6]) == 1 and float(update[7]) > 0
                            for update in updates), 'Rotation did not exercise paused background learning'
+        elif args.case.startswith('translated_'):
+            # The accumulated map has every position; only real observation
+            # correspondence can supply supplemental startup. Calibration
+            # and unrelated raw frames must not provide track observations.
+            far = [(4, y * .03, z * .03)
+                   for y in range(-45, 46) for z in range(10, 110)]
+            near = [(.8, y * .01, z * .01)
+                    for y in range(-45, 46) for z in range(10, 160)]
+            path = (1.4, 1.7, 2.0) if args.case == 'translated_preloaded_away' else \
+                (2.0, 1.7, 1.4)
+            bodies = [cap(x, 0) for x in path]
+            if args.case == 'translated_single_history':
+                bodies[0] = [(path[0] + .1 * math.cos(i * math.pi / 3), 0,
+                              1 + .1 * math.sin(i * math.pi / 3)) for i in range(6)]
+            ordinary = args.case == 'translated_ordinary_occluded'
+            for _ in range(5):
+                publish(points=far + ([] if ordinary else
+                                     [point for body in bodies for point in body]))
+            for _ in range(9):
+                stamp = publish(points=far)
+                assert count(stamp) == 0, 'Preloaded map published without current points'
+            base_ns = int(1000 + sequence / 10) * 1000000000 + 1000000000
+            offsets = (123, 600000456, 800000789) if args.case == 'translated_irregular' else \
+                ((123, 300000456, 600000789) if args.translated_time_evidence else
+                 (123, 100000456, 200000789))
+            measured_stamps = []
+            counts = []
+            for step, body in enumerate(bodies):
+                if args.case == 'translated_gap' and step == 2:
+                    missing = publish(points=far, timestamp_ns=base_ns + offsets[step] - 50000000)
+                    assert count(missing) == 0, 'Missing candidate published a prediction'
+                occluded = args.case in ('translated_occluded', 'translated_ordinary_occluded')
+                stamp = publish(points=(near if occluded else far) + body,
+                                timestamp_ns=base_ns + offsets[step])
+                measured_stamps.append(stamp.to_nsec())
+                counts.append(count(stamp))
+            positive = args.case not in ('translated_single_history', 'translated_gap') and \
+                (args.case != 'translated_occluded' or args.translated_time_evidence)
+            assert counts == ([0, 0, 1] if positive else [0, 0, 0]), \
+                ('Translated startup needs three real observations and both point sources', args.case, counts)
+            rows = [line[line.index('FAPP_TRANSLATED_SOURCE'):].split()
+                    for line in node_log_path.read_text().splitlines()
+                    if 'FAPP_TRANSLATED_SOURCE ' in line]
+            current = [row for row in rows if int(row[1]) == stamp.to_nsec()]
+            if args.case in ('translated_occluded', 'translated_ordinary_occluded') and \
+                    not args.translated_time_evidence:
+                assert not current, ('Occluded rays authorized supplemental point-source startup', current)
+                evidence = [line[line.index('FAPP_BIDIRECTIONAL_EVIDENCE'):].split()
+                            for line in node_log_path.read_text().splitlines()
+                            if 'FAPP_BIDIRECTIONAL_EVIDENCE ' in line]
+                current_evidence = [row for row in evidence if int(row[1]) == stamp.to_nsec()]
+                assert current_evidence and all(float(row[3]) < .26 and float(row[4]) < .26
+                                                for row in current_evidence), \
+                    ('Occluded fixture unexpectedly supplies actual ray motion evidence', current_evidence)
+                if ordinary:
+                    track = diagnostic('FAPP_TRACK', stamp, (path[-1] + .08, 0))
+                    assert track[10] == '1', ('Ordinary motion fixture lacks original startup', track)
+            elif positive:
+                assert len(current) == 2, ('Both historical clouds were not queried', current)
+                assert {int(row[4]) for row in current} == set(measured_stamps[:2]), \
+                    ('Translated startup borrowed a different observation stamp', current, measured_stamps)
+                for row in current:
+                    dense, moving, static = map(int, row[5:8])
+                    assert moving >= .8 * dense and moving - static >= .25 * dense, \
+                        ('Measured motion source lacks required support', row)
+                assert not any(int(row[1]) in measured_stamps[:2] for row in rows), \
+                    ('Point correspondence was used before three observations', rows)
+            elif args.case == 'translated_single_history':
+                assert current and any(int(row[6]) < .8 * int(row[5]) for row in current), \
+                    ('Single-history fixture did not exercise insufficient source support', current)
+            else:
+                assert not current, ('A gap supplied supplemental translated evidence', current)
+            stamp = publish(points=far, timestamp_ns=measured_stamps[-1] + 100000123)
+            assert count(stamp) == 0, 'Translated track published without current observation'
         elif args.case.startswith('bidir_'):
             # Preload all positions into the accumulated map, then remove the
             # object from raw history. The original startup latch must be false.
@@ -628,6 +710,7 @@ def main():
     parser.add_argument('--nearest-available-odom', action='store_true')
     parser.add_argument('--dense-change-evidence', action='store_true')
     parser.add_argument('--published-startup-source', action='store_true')
+    parser.add_argument('--translated-time-evidence', action='store_true')
     parser.add_argument('--log-dir', type=Path)
     args = parser.parse_args()
     assert args.case == 'all' or args.case in CASES[args.method], (args.method, args.case)
@@ -652,6 +735,8 @@ def main():
                 command.append('--dense-change-evidence')
             if args.published_startup_source:
                 command.append('--published-startup-source')
+            if args.translated_time_evidence:
+                command.append('--translated-time-evidence')
             result = subprocess.run(command)
             if result.returncode:
                 failures.append((case, result.returncode))

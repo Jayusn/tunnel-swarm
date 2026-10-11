@@ -153,6 +153,7 @@ private:
   int frame_num;
   std::deque<PointsPtr> previous_points;
   std::deque<PointsPtr> buffer;
+  std::deque<ros::Time> observed_cloud_stamps_;
   std::deque<MapData> observed_sensor_poses;
   struct RawObservation {
     ros::Time stamp;

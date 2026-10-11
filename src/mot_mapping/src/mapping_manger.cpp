@@ -174,7 +174,8 @@ void MappingRos::init() {
   if (mp_->depth_evidence_enabled || mp_->occlusion_startup_enabled || mp_->shape_consistency_enabled ||
       mp_->time_evidence_enabled || mp_->strict_depth_evidence_enabled || mp_->online_background_enabled ||
       mp_->reference_strong_two_frame_enabled || mp_->bidirectional_ray_evidence_enabled ||
-      mp_->bidirectional_static_suppression_enabled || mp_->candidate_partition_enabled) {
+      mp_->bidirectional_static_suppression_enabled || mp_->candidate_partition_enabled ||
+      (mp_->translated_startup_enabled && !mp_->time_evidence_enabled)) {
     std::vector<double> offset;
     // Same MID360 offset as FAST-LIO's mid360.yaml; use its live parameter
     // when the sensor stack is running. Replay supplies that parameter too.
@@ -456,6 +457,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
   if (reference_just_frozen) {
     trackers.clear();
     buffer.clear();
+    observed_cloud_stamps_.clear();
     observed_sensor_poses.clear();
     timed_observations_.clear();
     bidirectional_previous_observation_.points.reset();
@@ -507,8 +509,14 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
         << history_stamps[0].toNSec() << " " << history_stamps[1].toNSec() << " "
         << timed_observations_.size());
   } else {
-    if (!buffer.empty()) observed_history[0] = buffer.front();
-    if (buffer.size() > 1) observed_history[1] = buffer.back();
+    if (!buffer.empty()) {
+      observed_history[0] = buffer.front();
+      history_stamps[0] = observed_cloud_stamps_.front();
+    }
+    if (buffer.size() > 1) {
+      observed_history[1] = buffer.back();
+      history_stamps[1] = observed_cloud_stamps_.back();
+    }
   }
   if (!mp_->time_evidence_enabled &&
       (mp_->depth_evidence_enabled || mp_->occlusion_startup_enabled ||
@@ -523,8 +531,10 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     if (observed_sensor_poses.size() > 2) observed_sensor_poses.pop_front();
   }
   buffer.push_back(nonfilter_pts);
+  observed_cloud_stamps_.push_back(cloud_stamp_);
   if (buffer.size() > 2) {
     buffer.pop_front();
+    observed_cloud_stamps_.pop_front();
   }
   *ClusterPoints += *nonfilter_pts;
   vox.setInputCloud(ClusterPoints);
@@ -731,7 +741,8 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
   BidirectionalDepth current_depth_view, previous_depth_view;
   const RawObservation previous_ray = bidirectional_previous_observation_;
   const bool need_bidirectional = mp_->bidirectional_ray_evidence_enabled ||
-      mp_->bidirectional_static_suppression_enabled || mp_->candidate_partition_enabled;
+      mp_->bidirectional_static_suppression_enabled || mp_->candidate_partition_enabled ||
+      (mp_->translated_startup_enabled && !mp_->time_evidence_enabled);
   pcl::search::KdTree<PointType> observation_trees[2];
   bool has_observed_history[2];
   for (int history = 0; history < 2; ++history) {
@@ -818,7 +829,8 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     const bool supplemental = mp_->candidate_partition_enabled &&
         indices.indices != dynamic_indices.indices;
     const bool candidate_ray_enabled = mp_->bidirectional_ray_evidence_enabled ||
-        mp_->bidirectional_static_suppression_enabled || supplemental;
+        mp_->bidirectional_static_suppression_enabled || supplemental ||
+        (mp_->translated_startup_enabled && !mp_->time_evidence_enabled);
     Points cluster;
     Eigen::Vector3d center = Eigen::Vector3d::Zero();
     std::vector<double> distances;
@@ -1759,9 +1771,16 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
         !candidate.static_background &&
         candidate.occlusion_fraction > 0.0 &&
         candidate.occlusion_fraction >= mp_->min_motion_novel_fraction;
-    bool translated_startup = mp_->translated_startup_enabled && mp_->time_evidence_enabled &&
+    bool translated_startup = mp_->translated_startup_enabled &&
         has_motion && consecutive_observation && !candidate.static_background &&
         !candidate.dense_points.empty();
+    if (mp_->translated_startup_enabled && !mp_->time_evidence_enabled) {
+      const bool before_ray_eligible = translated_startup;
+      translated_startup = translated_startup && supplemental_ray_motion;
+      ROS_DEBUG_STREAM("FAPP_TRANSLATED_RAY " << cloud_stamp_.toNSec() << " "
+          << tracker->id << " " << before_ray_eligible << " " << supplemental_ray_motion << " "
+          << translated_startup);
+    }
     for (int history = 0; translated_startup && history < 2; ++history) {
       const auto observed = std::find_if(tracker->evidence_observations.begin(),
           tracker->evidence_observations.end(), [&](const std::pair<ros::Time, Eigen::Vector3d>& value) {
@@ -1788,6 +1807,9 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
       }
       const double moving_fraction = static_cast<double>(moving_supported) / candidate.dense_points.size();
       const double static_fraction = static_cast<double>(static_supported) / candidate.dense_points.size();
+      ROS_DEBUG_STREAM("FAPP_TRANSLATED_SOURCE " << cloud_stamp_.toNSec() << " "
+          << tracker->id << " " << history << " " << history_stamps[history].toNSec() << " "
+          << candidate.dense_points.size() << " " << moving_supported << " " << static_supported);
       translated_startup = moving_fraction >= mp_->translated_startup_fraction &&
           moving_fraction - static_fraction >= 0.25;
       ROS_DEBUG_STREAM("FAPP_TRANSLATED_STARTUP " << cloud_stamp_.toNSec() << " "

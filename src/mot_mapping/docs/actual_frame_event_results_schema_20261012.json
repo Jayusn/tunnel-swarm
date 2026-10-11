@@ -1,0 +1,200 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Closed actual-frame NN AND ray event results",
+  "type": "object",
+  "required": [
+    "schema_id",
+    "source_identity_frozen",
+    "matrix_terminal_original",
+    "runs",
+    "quality",
+    "frozen113_rows",
+    "frozen_old_rows",
+    "static467_anchor_stamps_ns",
+    "old142",
+    "full_candidate_synthetic_six",
+    "previous_NN_only_failed_round",
+    "formula_summary",
+    "backlog_reconstruction",
+    "reproduction_commands",
+    "artifact_manifest_by_phase",
+    "qualification_terminal_original",
+    "original_packaging_pending_quality",
+    "explicit_verified_preset"
+  ],
+  "properties": {
+    "schema_id": {
+      "const": "mot_mapping.actual_frame_event_results.v1"
+    },
+    "variant": {
+      "const": "actual_frame_NN_AND_two_Ray_E"
+    },
+    "runs": {
+      "type": "object",
+      "minProperties": 7,
+      "maxProperties": 7,
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "actual_all_private_parameters_verified",
+          "actual_parameter_count",
+          "original_driver",
+          "checks"
+        ],
+        "properties": {
+          "actual_all_private_parameters_verified": {
+            "const": true
+          },
+          "actual_parameter_count": {
+            "const": 73
+          }
+        }
+      }
+    },
+    "frozen113_rows": {
+      "type": "array",
+      "minItems": 113,
+      "maxItems": 113
+    },
+    "frozen_old_rows": {
+      "type": "array",
+      "minItems": 159,
+      "maxItems": 159
+    },
+    "static467_anchor_stamps_ns": {
+      "type": "array",
+      "minItems": 467,
+      "maxItems": 467,
+      "uniqueItems": true
+    },
+    "reproduction_commands": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7
+    },
+    "old142": {
+      "type": "object",
+      "properties": {
+        "required": {
+          "const": 142
+        },
+        "kept": {
+          "const": 142
+        },
+        "pass_": {
+          "const": true
+        },
+        "lost": {
+          "type": "array",
+          "maxItems": 0
+        }
+      }
+    },
+    "quality": {
+      "type": "object",
+      "required": [
+        "measured_seven_case_gates_pass",
+        "sustained_backlog_pass",
+        "joint_acceptance_pass",
+        "assessment_scope",
+        "direct_internal_ros_queue_measurement",
+        "unentered_input_drop_cause",
+        "closed_loop_pass"
+      ],
+      "properties": {
+        "measured_seven_case_gates_pass": {
+          "const": true
+        },
+        "sustained_backlog_pass": {
+          "const": true
+        },
+        "joint_acceptance_pass": {
+          "const": true
+        },
+        "observed_sustained_callback_accumulation": {
+          "const": false
+        },
+        "assessment_scope": {
+          "type": "string",
+          "minLength": 1
+        },
+        "direct_internal_ros_queue_measurement": {
+          "type": "null"
+        },
+        "unentered_input_drop_cause": {
+          "type": "null"
+        },
+        "closed_loop_pass": {
+          "type": "null"
+        }
+      }
+    },
+    "full_candidate_synthetic_six": {
+      "type": "object",
+      "properties": {
+        "pass_": {
+          "const": true
+        }
+      }
+    },
+    "qualification_terminal_original": {
+      "type": "object",
+      "required": [
+        "artifact",
+        "contents"
+      ],
+      "properties": {
+        "contents": {
+          "type": "object",
+          "required": [
+            "assessment_scope",
+            "joint_frozen_perception_acceptance_pass",
+            "direct_internal_ros_queue_measurement",
+            "unentered_input_drop_cause",
+            "closed_loop_dynamic_avoidance_pass"
+          ],
+          "properties": {
+            "assessment_scope": {
+              "type": "string"
+            },
+            "joint_frozen_perception_acceptance_pass": {
+              "const": true
+            },
+            "direct_internal_ros_queue_measurement": {
+              "type": "null"
+            },
+            "unentered_input_drop_cause": {
+              "type": "null"
+            },
+            "closed_loop_dynamic_avoidance_pass": {
+              "type": "null"
+            }
+          }
+        }
+      }
+    },
+    "explicit_verified_preset": {
+      "type": "object",
+      "required": [
+        "parameter_count",
+        "all73_exact_original_ball_ON_parameters",
+        "formal_planner_entry_switched",
+        "general_translated_default"
+      ],
+      "properties": {
+        "parameter_count": {
+          "const": 73
+        },
+        "all73_exact_original_ball_ON_parameters": {
+          "const": true
+        },
+        "formal_planner_entry_switched": {
+          "const": false
+        },
+        "general_translated_default": {
+          "const": false
+        }
+      }
+    }
+  }
+}
