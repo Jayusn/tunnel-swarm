@@ -158,6 +158,7 @@ void MappingRos::init() {
   nh.param("detection/publish_measured_body_position_enabled",
            mp_->publish_measured_body_position_enabled, false);
   nh.param("detection/dense_change_evidence_enabled", mp_->dense_change_evidence_enabled, false);
+  nh.param("detection/published_startup_source_enabled", mp_->published_startup_source_enabled, false);
   nh.param("detection/bidirectional_ray_evidence_enabled",
            mp_->bidirectional_ray_evidence_enabled, false);
   nh.param("detection/bidirectional_static_suppression_enabled",
@@ -913,15 +914,18 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
         if (evidence == 0) ++ray_supported[history];
         if (evidence == 1) ++ray_foreground[history];
         const int novelty_evidence = (mp_->depth_evidence_enabled || mp_->strict_depth_evidence_enabled) ? evidence : -1;
-        if ((mp_->point_source_competition_enabled || mp_->bidirectional_static_suppression_enabled) &&
-            (observation_trees[history].nearestKSearch(point, 1, observed_nearest,
-                                                     observed_squared_distance) == 0 ||
-             observed_squared_distance[0] > mp_->thresh_dist * mp_->thresh_dist))
+        const bool independent_enabled = mp_->point_source_competition_enabled ||
+                                         mp_->bidirectional_static_suppression_enabled;
+        // Both statistics query the same point in the same immutable raw
+        // observation. Reuse the result without changing either criterion.
+        bool nearest_novel = false;
+        if (independent_enabled || novelty_evidence < 0)
+          nearest_novel = observation_trees[history].nearestKSearch(point, 1, observed_nearest,
+              observed_squared_distance) == 0 ||
+              observed_squared_distance[0] > mp_->thresh_dist * mp_->thresh_dist;
+        if (independent_enabled && nearest_novel)
           ++independent_points[history];
-        bool novel = novelty_evidence == 1 || (novelty_evidence < 0 &&
-            (observation_trees[history].nearestKSearch(point, 1, observed_nearest,
-                                                     observed_squared_distance) == 0 ||
-             observed_squared_distance[0] > mp_->thresh_dist * mp_->thresh_dist));
+        bool novel = novelty_evidence == 1 || (novelty_evidence < 0 && nearest_novel);
         if (novel) ++novel_points[history];
       }
       if (candidate_ray_enabled && have_previous_ray) {
@@ -1798,9 +1802,16 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
       ROS_DEBUG_STREAM("FAPP_STRICT_DEPTH " << cloud_stamp_.toNSec() << " "
           << candidate.state.position.transpose() << " " << candidate.bilateral_foreground_fraction
           << " " << has_motion << " " << strict_foreground);
+    const bool historical_startup = mp_->published_startup_source_enabled ?
+        !tracker->last_published_stamp.isZero() : !tracker->last_dynamic_stamp.isZero();
     bool startup_evidence = mp_->strict_depth_evidence_enabled ? strict_foreground :
-        (recently_changed || !tracker->last_dynamic_stamp.isZero() ||
+        (recently_changed || historical_startup ||
          reference_startup || occlusion_startup || translated_startup);
+    if (mp_->published_startup_source_enabled)
+      ROS_DEBUG_STREAM("FAPP_PUBLISHED_STARTUP " << cloud_stamp_.toNSec() << " "
+          << tracker->id << " " << tracker->last_dynamic_stamp.toNSec() << " "
+          << tracker->last_published_stamp.toNSec() << " " << recently_changed << " "
+          << historical_startup << " " << startup_evidence);
     const bool original_startup_evidence = startup_evidence;
     if (bidirectional_startup || (candidate.supplemental && supplemental_ray_motion))
       startup_evidence = true;

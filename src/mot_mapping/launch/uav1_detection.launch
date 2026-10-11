@@ -43,6 +43,7 @@
   <arg name="point_source_competition_enabled" default="false"/>
   <arg name="publish_measured_body_position_enabled" default="false"/>
   <arg name="dense_change_evidence_enabled" default="false"/>
+  <arg name="published_startup_source_enabled" default="false"/>
   <arg name="bidirectional_ray_evidence_enabled" default="false"/>
   <arg name="bidirectional_static_suppression_enabled" default="false"/>
   <arg name="background_reference_capture_duration" default="5.0"/>
@@ -104,6 +105,7 @@
       <param name="association/point_source_competition_enabled" value="$(arg point_source_competition_enabled)"/>
       <param name="detection/publish_measured_body_position_enabled" value="$(arg publish_measured_body_position_enabled)"/>
       <param name="detection/dense_change_evidence_enabled" value="$(arg dense_change_evidence_enabled)"/>
+      <param name="detection/published_startup_source_enabled" value="$(arg published_startup_source_enabled)"/>
       <param name="detection/bidirectional_ray_evidence_enabled" value="$(arg bidirectional_ray_evidence_enabled)"/>
       <param name="detection/bidirectional_static_suppression_enabled" value="$(arg bidirectional_static_suppression_enabled)"/>
       <param name="background_reference/capture_duration" value="$(arg background_reference_capture_duration)"/>
