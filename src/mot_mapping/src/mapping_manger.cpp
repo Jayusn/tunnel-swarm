@@ -1802,8 +1802,12 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
       ROS_DEBUG_STREAM("FAPP_STRICT_DEPTH " << cloud_stamp_.toNSec() << " "
           << candidate.state.position.transpose() << " " << candidate.bilateral_foreground_fraction
           << " " << has_motion << " " << strict_foreground);
+    // A subsequently rejected confirmation must not carry published history
+    // into a new startup. Keep last_dynamic's existing shape/bookkeeping use.
     const bool historical_startup = mp_->published_startup_source_enabled ?
-        !tracker->last_published_stamp.isZero() : !tracker->last_dynamic_stamp.isZero();
+        (!tracker->last_published_stamp.isZero() &&
+         tracker->last_dynamic_stamp == tracker->last_published_stamp) :
+        !tracker->last_dynamic_stamp.isZero();
     bool startup_evidence = mp_->strict_depth_evidence_enabled ? strict_foreground :
         (recently_changed || historical_startup ||
          reference_startup || occlusion_startup || translated_startup);
