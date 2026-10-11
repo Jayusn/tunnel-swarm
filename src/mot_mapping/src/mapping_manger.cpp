@@ -360,6 +360,12 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
                                    const nav_msgs::OdometryConstPtr& odom) {
   cloud_stamp_ = msg->header.stamp;
   CallbackTimer callback_timer{cloud_stamp_.toNSec()};
+  ROS_DEBUG_STREAM("FAPP_SYNC_POSE " << cloud_stamp_.toNSec() << " "
+      << odom->header.stamp.toNSec() << " "
+      << odom->pose.pose.position.x << " " << odom->pose.pose.position.y << " "
+      << odom->pose.pose.position.z << " " << odom->pose.pose.orientation.x << " "
+      << odom->pose.pose.orientation.y << " " << odom->pose.pose.orientation.z << " "
+      << odom->pose.pose.orientation.w);
   const double frame_dt = previous_cloud_stamp_.isZero() ? 0.0 :
       (cloud_stamp_ - previous_cloud_stamp_).toSec();
   previous_cloud_stamp_ = cloud_stamp_;
@@ -1437,6 +1443,10 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
         }
         double fraction = std::max(static_cast<double>(forward) / candidate.dense_points.size(),
                                    static_cast<double>(backward) / previous.size());
+        ROS_DEBUG_STREAM("FAPP_SHAPE_SOURCE " << cloud_stamp_.toNSec() << " "
+            << trackers[j]->id << " " << trackers[j]->last_seen_frame << " " << frame_num
+            << " " << previous.size() << " " << candidate.dense_points.size() << " "
+            << forward << " " << backward << " " << fraction);
         shape_consistent = fraction >= mp_->shape_consistency_fraction;
         ROS_DEBUG_STREAM("FAPP_SHAPE " << cloud_stamp_.toNSec() << " "
             << candidate.state.position.transpose() << " " << previous.size() << " "
