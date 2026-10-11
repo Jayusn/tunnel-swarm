@@ -99,6 +99,7 @@ def run_case(args):
         params = {
             'ros/lidar_topic': '/convergence_test/cloud',
             'ros/odom_topic': '/convergence_test/odom', 'ros/frame_id': 'UAV1/camera_init',
+            'synchronization/nearest_available_odom_enabled': args.nearest_available_odom,
             'dbscan/core_pts': 3, 'dbscan/tolerance': .02,
             'dbscan/min_cluster': 6, 'dbscan/max_cluster': 800,
             'detection/thresh_dist': .06, 'detection/thresh_var': .28,
@@ -622,6 +623,7 @@ def main():
     parser.add_argument('--case', default='all')
     parser.add_argument('--point-source-competition', action='store_true')
     parser.add_argument('--candidate-partition', action='store_true')
+    parser.add_argument('--nearest-available-odom', action='store_true')
     parser.add_argument('--log-dir', type=Path)
     args = parser.parse_args()
     assert args.case == 'all' or args.case in CASES[args.method], (args.method, args.case)
@@ -640,6 +642,8 @@ def main():
                 command.append('--point-source-competition')
             if args.candidate_partition:
                 command.append('--candidate-partition')
+            if args.nearest_available_odom:
+                command.append('--nearest-available-odom')
             result = subprocess.run(command)
             if result.returncode:
                 failures.append((case, result.returncode))

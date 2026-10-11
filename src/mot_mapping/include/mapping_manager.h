@@ -5,6 +5,7 @@
 #include <queue>
 #include <unordered_set>
 // ROS
+#include <message_filters/cache.h>
 #include <message_filters/subscriber.h>
 #include <message_filters/sync_policies/approximate_time.h>
 #include <message_filters/sync_policies/exact_time.h>
@@ -121,6 +122,7 @@ struct MapParam {
   // ROS Params
   std::string odom_topic;
   std::string lidar_topic;
+  bool nearest_available_odom_enabled;
 };
 
 struct MapData {
@@ -190,6 +192,7 @@ private:
   typedef boost::shared_ptr<message_filters::Synchronizer<SyncPolicyCloudOdom>> SynchronizerCloudOdom;
   std::shared_ptr<message_filters::Subscriber<sensor_msgs::PointCloud2>> cloud_sub_;
   std::shared_ptr<message_filters::Subscriber<nav_msgs::Odometry>> odom_sub_;
+  std::shared_ptr<message_filters::Cache<nav_msgs::Odometry>> odom_cache_;
 
   SynchronizerCloudOdom sync_cloud_odom_;
 

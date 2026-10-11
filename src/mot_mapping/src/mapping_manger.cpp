@@ -226,6 +226,7 @@ void MappingRos::init() {
   nh.param("ros/odom_topic", mp_->odom_topic, string("/odom"));
   nh.param("ros/lidar_topic", mp_->lidar_topic, string("/livox/lidar"));
   nh.param("ros/frame_id", frame_id_, string("UAV1/camera_init"));
+  nh.param("synchronization/nearest_available_odom_enabled", mp_->nearest_available_odom_enabled, false);
 
   ros::NodeHandle output_nh("/UAV1/fapp");
   cloudPub = output_nh.advertise<sensor_msgs::PointCloud2>("dynamic_cloud", 10);
@@ -241,8 +242,16 @@ void MappingRos::init() {
       new message_filters::Subscriber<sensor_msgs::PointCloud2>(nh, mp_->lidar_topic, 50));
   odom_sub_.reset(
       new message_filters::Subscriber<nav_msgs::Odometry>(nh, mp_->odom_topic, 25));
-  sync_cloud_odom_.reset(new message_filters::Synchronizer<MappingRos::SyncPolicyCloudOdom>(
-      MappingRos::SyncPolicyCloudOdom(100), *cloud_sub_, *odom_sub_));
+  if (mp_->nearest_available_odom_enabled) {
+    odom_cache_.reset(new message_filters::Cache<nav_msgs::Odometry>(*odom_sub_, 100));
+    // Cache receives each real message before forwarding it to the unchanged
+    // synchronizer. Selection never waits for an odometry message to arrive.
+    sync_cloud_odom_.reset(new message_filters::Synchronizer<MappingRos::SyncPolicyCloudOdom>(
+        MappingRos::SyncPolicyCloudOdom(100), *cloud_sub_, *odom_cache_));
+  } else {
+    sync_cloud_odom_.reset(new message_filters::Synchronizer<MappingRos::SyncPolicyCloudOdom>(
+        MappingRos::SyncPolicyCloudOdom(100), *cloud_sub_, *odom_sub_));
+  }
   sync_cloud_odom_->registerCallback(boost::bind(&MappingRos::cloudOdomCallback, this, _1, _2));
 
   map_pub_timer_ = nh.createTimer(ros::Duration(0.05), &MappingRos::mapPubCallback, this);
@@ -357,9 +366,27 @@ void MappingRos::removeStaticPlanes(PointsPtr& points, const PointsPtr& history)
 }
 
 void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
-                                   const nav_msgs::OdometryConstPtr& odom) {
+                                   const nav_msgs::OdometryConstPtr& synchronized_odom) {
   cloud_stamp_ = msg->header.stamp;
   CallbackTimer callback_timer{cloud_stamp_.toNSec()};
+  nav_msgs::OdometryConstPtr odom = synchronized_odom;
+  if (odom_cache_) {
+    const auto received = odom_cache_->getInterval(odom_cache_->getOldestTime(),
+                                                  odom_cache_->getLatestTime());
+    const uint64_t cloud_ns = cloud_stamp_.toNSec();
+    auto distance = [&](const nav_msgs::OdometryConstPtr& value) {
+      const uint64_t stamp = value->header.stamp.toNSec();
+      return stamp >= cloud_ns ? stamp - cloud_ns : cloud_ns - stamp;
+    };
+    for (const auto& value : received) {
+      if (distance(value) < distance(odom) ||
+          (distance(value) == distance(odom) && value->header.stamp < odom->header.stamp))
+        odom = value;
+    }
+    ROS_DEBUG_STREAM("FAPP_SYNC_SELECTION " << cloud_ns << " "
+        << synchronized_odom->header.stamp.toNSec() << " " << odom->header.stamp.toNSec()
+        << " " << received.size());
+  }
   ROS_DEBUG_STREAM("FAPP_SYNC_POSE " << cloud_stamp_.toNSec() << " "
       << odom->header.stamp.toNSec() << " "
       << odom->pose.pose.position.x << " " << odom->pose.pose.position.y << " "

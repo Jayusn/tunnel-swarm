@@ -1,6 +1,7 @@
 <launch>
   <arg name="cloud_topic" default="/UAV1/fast_lio/cloud_registered"/>
   <arg name="odom_topic" default="/UAV1/fast_lio/Odom_high_freq"/>
+  <arg name="nearest_available_odom_enabled" default="false"/>
   <arg name="input_rate" default="10.0"/>
   <arg name="native_input_enabled" default="false"/>
   <arg name="time_evidence_enabled" default="false"/>
@@ -55,6 +56,7 @@
     <node pkg="mot_mapping" type="mapping_node" name="mapping_node" output="screen">
       <param name="ros/lidar_topic" value="/UAV1/fapp/cloud_registered_throttled"/>
       <param name="ros/odom_topic" value="$(arg odom_topic)"/>
+      <param name="synchronization/nearest_available_odom_enabled" value="$(arg nearest_available_odom_enabled)"/>
       <param name="ros/frame_id" value="UAV1/camera_init"/>
       <param name="detection/time_evidence_enabled" value="$(arg time_evidence_enabled)"/>
       <param name="detection/motion_window" value="$(arg motion_window)"/>
