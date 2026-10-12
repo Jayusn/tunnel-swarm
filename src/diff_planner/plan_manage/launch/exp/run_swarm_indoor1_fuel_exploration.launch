@@ -274,7 +274,7 @@
     <rosparam param="/exploration_node/mission/task_search/revisit_radius">0.65</rosparam>
     <rosparam param="/exploration_node/mission/task_search/repeat_goal_radius">0.45</rosparam>
     <rosparam param="/exploration_node/mission/task_search/max_goal_repeats">2</rosparam>
-    <!-- FUEL只负责通道，继续保持原1.90m搜索上限；门外2.0m由独立Diff地图负责。 -->
+    <!-- FUEL只负责通道，继续保持原1.90m搜索上限；门外1.8m搜索由独立Diff地图负责。 -->
     <rosparam param="/exploration_node/mission/task_search/cruise_height">0.6</rosparam>
     <rosparam param="/exploration_node/mission/task_search/min_height">0.10</rosparam>
     <rosparam param="/exploration_node/mission/task_search/max_height">1.90</rosparam>
@@ -448,7 +448,7 @@
     <rosparam param="/exploration_node/mission/task_search/exit/frontier_max_distance_increase">0.45</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/final_landing_marker_confirmation_count">3</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/final_landing_marker_consistency_radius">0.20</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/landing_approach_height">2.00</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/landing_approach_height">1.80</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/landing_trigger_distance">0.35</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/landing_column_bottom_clearance">0.20</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/landing_column_step">0.10</rosparam>
@@ -530,13 +530,13 @@
         <param name="trigger_topic" value="/UAV0/landing_diff/trigger"/>
         <param name="yaw_topic" value="/UAV0/landing_diff/yaw"/>
         <param name="landing_request_topic" value="/UAV0/mission/landing_request"/>
-        <!-- 有锁存出口时目标为出口外1m，门外人工触发则从当前位置前飞；保持航向、目标高度0.6m，到达后开始前视扫描。 -->
-        <param name="front_approach_distance" value="1.0"/>
+        <!-- 有锁存出口时目标为出口外0.2m，门外人工触发则从当前位置前飞0.2m；保持航向、目标高度0.6m，到达后开始前视扫描。 -->
+        <param name="front_approach_distance" value="0.2"/>
         <param name="front_approach_height" value="0.60"/>
         <param name="front_approach_arrive_xy" value="0.15"/>
         <param name="front_scan_anchor_topic" value="/UAV0/landing/front_scan_anchor"/>
         <param name="exit_portal_topic" value="/UAV0/mission/final_exit"/>
-        <param name="search_height" value="2.0"/>
+        <param name="search_height" value="1.8"/>
         <param name="lane_spacing" value="1.0"/>
         <!-- 下视扫描停滞时以实际停点收缩边界，换行反扫；实际移动10cm即重置计时。 -->
         <param name="sweep_stall_timeout_sec" value="4.0"/>
