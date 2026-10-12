@@ -1,0 +1,1 @@
+../src/uav0_competition_bringup/scripts/start_aruco_debug.sh
