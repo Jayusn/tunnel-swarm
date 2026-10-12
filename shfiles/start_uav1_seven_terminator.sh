@@ -25,6 +25,7 @@ ROSCORE_LOG="${UAV1_SINGLE_ROSCORE_LOG:-/tmp/uav1_single_roscore_${RUN_ID}.log}"
 WAIT_TIMEOUT="${UAV1_SINGLE_WAIT_TIMEOUT:-180}"
 THERMAL="${UAV1_SINGLE_THERMAL:-true}"
 DETECTOR="${UAV1_SINGLE_DETECTOR:-fapp}"
+DYNAMIC_AVOIDANCE="${UAV1_SINGLE_DYNAMIC_AVOIDANCE:-false}"
 
 MAVROS_STATE_TOPIC="/UAV1/mavros/state"
 LIDAR_TOPIC="/UAV1/livox/lidar"
@@ -63,11 +64,14 @@ usage() {
   - 第 6 屏执行 run_swarm.launch 中当前配置的单机预设航点。
   - 第 6 屏启动下视相机、单机 Diff/RViz 和动态检测复盘录包。
   - FAPP 使用已验证的点源与射线联合配置，原生 10 Hz，启动先采集 5 秒静态背景。
+  - 动态障碍默认只检测；使用 --dynamic-avoidance 开启 FAPP 动态避障。
   - AutoTrans 直接向 /UAV1/mavros/setpoint_raw/attitude 发布控制量。
   - 不自动解锁、不切换 OFFBOARD、不额外发送目标点。
 
 选项：
   --detector fapp|ldop       动态障碍检测算法，默认 fapp
+  --dynamic-avoidance        开启 FAPP 动态避障
+  --detection-only          关闭动态避障，只保留动态检测（默认）
   --thermal                 第 5 屏同时启动热成像检测和 D435 融合
   --no-thermal              关闭热成像
 EOF
@@ -431,6 +435,7 @@ run_planner_pane() {
   printf '[启动] diff_planner run_swarm.launch 及其原生 RViz 检测布局\n'
   roslaunch diff_planner run_swarm.launch detector_backend:="${DETECTOR}" \
     fapp_verified_preset:=true \
+    enable_fapp_dynamic_avoidance:="${DYNAMIC_AVOIDANCE}" \
     record_dynamic_debug:=true
   launch_status=$?
   stop_owned_down_camera
@@ -484,6 +489,8 @@ while (($# > 0)); do
     --detector)
       [[ $# -ge 2 ]] || { log '--detector 需要 fapp 或 ldop'; exit 2; }
       DETECTOR="$2"; shift 2 ;;
+    --dynamic-avoidance) DYNAMIC_AVOIDANCE=true; shift ;;
+    --detection-only) DYNAMIC_AVOIDANCE=false; shift ;;
     --thermal) THERMAL=true; shift ;;
     --no-thermal) THERMAL=false; shift ;;
     --thermal=*) THERMAL="${1#*=}"; shift ;;
@@ -504,6 +511,10 @@ esac
 case "${THERMAL,,}" in
   true|false) THERMAL="${THERMAL,,}" ;;
   *) log "--thermal 只能是 true 或 false，当前值：${THERMAL}"; exit 2 ;;
+esac
+case "${DYNAMIC_AVOIDANCE,,}" in
+  true|false) DYNAMIC_AVOIDANCE="${DYNAMIC_AVOIDANCE,,}" ;;
+  *) log "UAV1_SINGLE_DYNAMIC_AVOIDANCE 只能是 true 或 false，当前值：${DYNAMIC_AVOIDANCE}"; exit 2 ;;
 esac
 if [[ "${STOP_REQUEST}" == true ]]; then
   stop_terminator_window
@@ -548,6 +559,7 @@ fi
 
 export UAV1_SINGLE_THERMAL="${THERMAL}"
 export UAV1_SINGLE_DETECTOR="${DETECTOR}"
+export UAV1_SINGLE_DYNAMIC_AVOIDANCE="${DYNAMIC_AVOIDANCE}"
 
 if ! write_runtime_config; then
   exit 1
@@ -559,6 +571,7 @@ log '下排：4 视觉位姿 | 5 检测/上报 | 6 run_swarm Diff/RViz | 7 AutoT
 log "本机 ROS master：http://${LOCAL_MASTER_IP}:11311，ROS_IP=${LOCAL_ROS_IP}"
 log "检测参数：thermal=${THERMAL}, odom=${ODOM_TOPIC}"
 log "动态障碍检测：${DETECTOR}"
+log "FAPP 动态避障：${DYNAMIC_AVOIDANCE}"
 log "前级等待超时：${WAIT_TIMEOUT}s"
 log "Terminator 启动日志：${TERMINATOR_LOG}"
 
