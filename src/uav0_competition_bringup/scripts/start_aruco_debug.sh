@@ -7,7 +7,7 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
 用法：start_aruco_debug.sh [roslaunch 参数]
 
 默认启动 MID360、FAST-LIO、前视和下视相机，以及两个 ArUco 检测窗口。
-画面显示检测框、ID 和当前 LIO Z 高度（米，相对 FAST-LIO 启动原点）。
+画面显示检测框、ID 和当前 LIO X/Y/Z 坐标（米，相对 FAST-LIO 启动原点）。
 LIO Z 不是自动测得的离地高度；从地面开始测试时还需计入机体原点离地距离。
 仅启动纯观察入口，不启动 MAVROS、规划器、精降控制器或起飞节点。
 定位尚未就绪或数据过期时，画面显示等待/过期提示。
@@ -59,6 +59,6 @@ fi
 printf 'ArUco 纯检测调试：下视设备 %s\n' "$down_device"
 printf '前视：/UAV0/aruco_observer/front/height_image\n'
 printf '下视：/UAV0/aruco_observer/down/height_image\n'
-printf '同时启动 MID360 和 FAST-LIO；LIO Z 相对启动原点，单位米。按 Ctrl+C 停止。\n'
+printf '同时启动 MID360 和 FAST-LIO；LIO XYZ 相对启动原点，单位米。按 Ctrl+C 停止。\n'
 exec roslaunch uav0_competition_bringup uav0_aruco_debug.launch \
   "down_camera_device:=$down_device" "$@"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""在 ArUco 调试画面下方显示当前 FAST-LIO 高度，不发布控制指令。"""
+"""在 ArUco 调试画面下方显示当前 FAST-LIO XYZ，不发布控制指令。"""
 
 import math
 
@@ -12,14 +12,15 @@ from sensor_msgs.msg import Image
 
 def height_label(odometry, now):
     if odometry is None:
-        return "LIO Z: waiting for odometry"
+        return "LIO XYZ: waiting for odometry"
     age = (now - odometry.header.stamp).to_sec()
-    z = odometry.pose.pose.position.z
-    if odometry.header.stamp.is_zero() or not math.isfinite(z):
-        return "LIO Z: invalid odometry"
+    position = odometry.pose.pose.position
+    xyz = (position.x, position.y, position.z)
+    if odometry.header.stamp.is_zero() or not all(math.isfinite(v) for v in xyz):
+        return "LIO XYZ: invalid odometry"
     if age < -0.05 or age > 0.30:
-        return "LIO Z: odometry stale"
-    return "LIO Z: {:+.2f} m (from start origin)".format(z)
+        return "LIO XYZ: odometry stale"
+    return "LIO XYZ (m): X={:+.2f} Y={:+.2f} Z={:+.2f}".format(*xyz)
 
 
 class HeightOverlay:
