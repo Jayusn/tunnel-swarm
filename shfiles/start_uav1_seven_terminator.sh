@@ -62,6 +62,7 @@ usage() {
   - ROS master 默认使用 UAV1 本机 10.106.223.232:11311。
   - 第 6 屏执行 run_swarm.launch 中当前配置的单机预设航点。
   - 第 6 屏启动下视相机、单机 Diff/RViz 和动态检测复盘录包。
+  - FAPP 使用已验证的点源与射线联合配置，原生 10 Hz，启动先采集 5 秒静态背景。
   - AutoTrans 直接向 /UAV1/mavros/setpoint_raw/attitude 发布控制量。
   - 不自动解锁、不切换 OFFBOARD、不额外发送目标点。
 
@@ -429,6 +430,7 @@ run_planner_pane() {
   printf '[说明] 下视相机为可选显示，不作为 Diff 启动条件\n'
   printf '[启动] diff_planner run_swarm.launch 及其原生 RViz 检测布局\n'
   roslaunch diff_planner run_swarm.launch detector_backend:="${DETECTOR}" \
+    fapp_verified_preset:=true \
     record_dynamic_debug:=true
   launch_status=$?
   stop_owned_down_camera

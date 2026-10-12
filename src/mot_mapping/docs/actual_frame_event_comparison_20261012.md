@@ -2,7 +2,7 @@
 
 七场真实完整回放的已测门槛全部通过：近期球110/113、连续三帧27/27，旧fast45、slow59、latest38共142个原命中逐戳全部保留，static原467戳累计0框；无球ON四阶段0/103/585/56均不超过固定0/109/607/96上限。实际完整F06候选FULL6也全部原assert PASS、73项运行参数核验通过。独立callback-entry审计支持本机、上述有限冻结输入原速回放中未观察到持续回调积压，**有限冻结感知联合资格通过**。内部ROS队列未直接测量、未进入回调的原因及闭环效果仍为null。
 
-正式启动仍为A04＋点源竞争，`detection/translated_startup_enabled`默认false。本轮使用F06＋density_split＋confirmed_reacquisition＋measured_body_position＋bidirectional_static及点源竞争、dense V2、published strict B的实验组合，background reference distance=.05、fraction=.5；110/113不代表正式A04默认率。当前报告不把实验配置写入正式默认启动。
+本轮回放时正式启动为A04＋点源竞争，通用`detection/translated_startup_enabled`默认false。通过验收的组合使用F06＋density_split＋confirmed_reacquisition＋measured_body_position＋bidirectional_static及点源竞争、dense V2、published strict B，background reference distance=.05、fraction=.5。2026-10-12七屏脚本已通过`fapp_verified_preset:=true`选择该组合；直接启动`run_swarm.launch detector_backend:=fapp`仍保留旧A04，110/113只对应已验证预设。
 
 ## 新启动支持的实际语义
 
@@ -101,7 +101,7 @@ roslaunch mot_mapping uav1_frame_event_verified.launch
 
 该预设逐项等于原ball ON运行的73项私有参数，直接使用registered raw cloud和实际odom，不增加throttle；只允许`cloud_topic`、`odom_topic`、`frame_id`三个输入覆盖。ROOT的原[delivery验证](../../../.fapp_ball_debug/actual_frame_event_20261012/delivery_validation/terminal.json)已核验默认与覆盖参数解析、73项一致、通用与正式入口参数保留及CTest3通过，主devel重新编译后源码和实际节点身份未变。
 
-启动前须停止原检测节点，禁止与该预设同时运行。保持平台与场景静止完成已有5秒静态参考采集，期间不发布动态目标，采集后开始检测；依赖FAST-LIO实际`/UAV1/mapping/extrinsic_T`三分量平移参数。通用translated默认仍false，正式Diff-Planner用户入口尚未切换。该推荐仅由本次有限感知回放资格支持，闭环动态避障仍未测。
+独立启动时用该预设替换原检测节点。七屏脚本`bash shfiles/start_uav1_seven_terminator.sh`默认FAPP已选择该预设，两个FAPP include互斥，只启动一个检测节点；`--detector ldop`仍使用原LDOP路径。保持平台与场景静止完成已有5秒静态参考采集，期间不发布动态目标，采集后开始检测；依赖FAST-LIO实际`/UAV1/mapping/extrinsic_T`三分量平移参数。通用translated默认仍false。该推荐仅由本次有限感知回放资格支持，闭环动态避障仍未测。
 
 ## 复现与证据
 

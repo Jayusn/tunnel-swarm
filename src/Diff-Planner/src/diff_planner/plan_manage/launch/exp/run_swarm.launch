@@ -8,6 +8,7 @@
     <arg name="enable_rviz" default="true"/>
     <arg name="enable_ldop" default="false"/>
     <arg name="detector_backend" default="legacy"/>
+    <arg name="fapp_verified_preset" default="false"/>
     <arg name="start_ldop" default="$(eval arg('detector_backend') == 'ldop' or (arg('detector_backend') == 'legacy' and arg('enable_ldop')))"/>
     <arg name="ldop_input_rate" default="5.0"/>
     <arg name="flight_type" default="2"/>
@@ -225,7 +226,7 @@
         <param name="drone_id" value="1"/>
     </node>
 
-    <include if="$(eval arg('detector_backend') == 'fapp')" file="$(find mot_mapping)/launch/uav1_detection.launch">
+    <include if="$(eval arg('detector_backend') == 'fapp' and not arg('fapp_verified_preset'))" file="$(find mot_mapping)/launch/uav1_detection.launch">
         <arg name="cloud_topic" value="$(arg cloud_topic)"/>
         <arg name="odom_topic" value="$(arg odom_topic)"/>
         <arg name="input_rate" value="10.0"/>
@@ -250,6 +251,12 @@
         <arg name="background_reference_fraction" value="0.5"/>
         <arg name="reference_motion_enabled" value="false"/>
         <arg name="reference_strong_two_frame_enabled" value="false"/>
+    </include>
+
+    <include if="$(eval arg('detector_backend') == 'fapp' and arg('fapp_verified_preset'))"
+             file="$(find mot_mapping)/launch/uav1_frame_event_verified.launch">
+        <arg name="cloud_topic" value="$(arg cloud_topic)"/>
+        <arg name="odom_topic" value="$(arg odom_topic)"/>
     </include>
 
     <!-- 默认打开 Diff-Planner 自带 RViz，并修正配置中 drone_1 的旧话题。 -->
