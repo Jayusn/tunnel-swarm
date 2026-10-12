@@ -1,0 +1,47 @@
+<launch>
+  <!-- 仅用于地面检测调试：雷达定位、两路相机和高度显示。 -->
+  <arg name="enable_lidar_localization" default="true" />
+  <arg name="open_views" default="true" />
+  <arg name="odometry_topic" default="/UAV0/fast_lio/Odom_high_freq" />
+  <arg name="down_camera_device"
+       default="/dev/v4l/by-id/usb-Generic_USB_Camera_YHTek-video-index0" />
+  <arg name="down_camera_info_url"
+       default="file://$(env HOME)/.ros/camera_info/down_camera.yaml" />
+  <arg name="camera_body_tf_calibration_file"
+       default="$(env HOME)/handeye_calibration/body_camera_03.yaml" />
+
+  <include if="$(arg enable_lidar_localization)"
+           file="$(find livox_ros_driver2)/launch_ROS1/msg_MID360.launch">
+    <arg name="vehicle_ns" value="UAV0" />
+    <arg name="msg_frame_id" value="UAV0/livox_frame" />
+    <arg name="publish_freq" value="10.0" />
+    <arg name="rosbag_enable" value="false" />
+  </include>
+  <include if="$(arg enable_lidar_localization)"
+           file="$(find fast_lio)/launch/mapping_mid360.launch">
+    <arg name="vehicle_ns" value="UAV0" />
+    <arg name="rviz" value="false" />
+    <!-- 与双机总入口调用的 run_fastlio_pane 保持一致。 -->
+    <arg name="odom_topic" value="$(arg odometry_topic)" />
+    <arg name="high_freq_odom_topic" value="$(arg odometry_topic)" />
+  </include>
+
+  <include file="$(find uav0_competition_bringup)/launch/uav0_dual_aruco_observer.launch">
+    <arg name="open_views" value="false" />
+    <arg name="odometry_topic" value="$(arg odometry_topic)" />
+    <arg name="down_camera_device" value="$(arg down_camera_device)" />
+    <arg name="down_camera_info_url" value="$(arg down_camera_info_url)" />
+    <arg name="camera_body_tf_calibration_file" value="$(arg camera_body_tf_calibration_file)" />
+  </include>
+
+  <node pkg="uav0_competition_bringup" type="aruco_debug_height.py"
+        name="aruco_debug_height" ns="UAV0" output="screen" required="true">
+    <param name="odometry_topic" value="$(arg odometry_topic)" />
+  </node>
+  <node if="$(arg open_views)" pkg="rqt_image_view" type="rqt_image_view"
+        name="front_aruco_observer_view"
+        args="/UAV0/aruco_observer/front/height_image" output="screen" />
+  <node if="$(arg open_views)" pkg="rqt_image_view" type="rqt_image_view"
+        name="down_aruco_observer_view"
+        args="/UAV0/aruco_observer/down/height_image" output="screen" />
+</launch>

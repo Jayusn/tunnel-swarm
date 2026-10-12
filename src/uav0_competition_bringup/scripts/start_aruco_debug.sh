@@ -6,16 +6,18 @@ if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   cat <<'HELP'
 用法：start_aruco_debug.sh [roslaunch 参数]
 
-默认启动前视、下视相机及两个 ArUco 检测窗口，画面显示检测框和 ID。
+默认启动 MID360、FAST-LIO、前视和下视相机，以及两个 ArUco 检测窗口。
+画面显示检测框、ID 和当前 LIO Z 高度（米，相对 FAST-LIO 启动原点）。
+LIO Z 不是自动测得的离地高度；从地面开始测试时还需计入机体原点离地距离。
 仅启动纯观察入口，不启动 MAVROS、规划器、精降控制器或起飞节点。
-没有 FAST-LIO 时出现 WAITING FOR SYNCED FAST-LIO ODOM 属正常现象，
-仍可查看检测框和 ID；此时不提供世界坐标。
+定位尚未就绪或数据过期时，画面显示等待/过期提示。
 码边长沿用 front_aruco_hint.yaml 和 landing_search.yaml 中的 marker.size_m。
-在本终端按 Ctrl+C 停止相机、检测节点和窗口。
+在本终端按 Ctrl+C 停止雷达定位、相机、检测节点和窗口。
 
 示例：
   start_aruco_debug.sh
   start_aruco_debug.sh open_views:=false
+  start_aruco_debug.sh enable_lidar_localization:=false
   start_aruco_debug.sh down_camera_device:=/dev/video0
 
 环境变量：
@@ -55,8 +57,8 @@ if [[ ! -c "$down_device" ]]; then
 fi
 
 printf 'ArUco 纯检测调试：下视设备 %s\n' "$down_device"
-printf '前视：/UAV0/aruco_observer/front/debug_image\n'
-printf '下视：/UAV0/aruco_observer/down/debug_image\n'
-printf '没有 FAST-LIO 时仍可看检测框和 ID；按 Ctrl+C 停止。\n'
-exec roslaunch uav0_competition_bringup uav0_dual_aruco_observer.launch \
+printf '前视：/UAV0/aruco_observer/front/height_image\n'
+printf '下视：/UAV0/aruco_observer/down/height_image\n'
+printf '同时启动 MID360 和 FAST-LIO；LIO Z 相对启动原点，单位米。按 Ctrl+C 停止。\n'
+exec roslaunch uav0_competition_bringup uav0_aruco_debug.launch \
   "down_camera_device:=$down_device" "$@"
