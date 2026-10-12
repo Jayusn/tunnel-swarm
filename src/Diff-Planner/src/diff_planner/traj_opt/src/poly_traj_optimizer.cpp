@@ -1616,6 +1616,18 @@ namespace diff_planner
           costs(1) += omg * step * costp;
         }
 
+        // FAPP dynamic-object cost, with the same absolute-time convention as swarm.
+        if (dynamicObstacleGradCostP(t + step * j, pos, vel, gradp,
+                                    gradt, grad_prev_t, costp))
+        {
+          jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) +=
+              omg * step * beta0 * gradp.transpose();
+          gdT(i) += omg * (costp / K + step * alpha * gradt);
+          if (i > 0)
+            gdT.head(i).array() += omg * step * grad_prev_t;
+          costs(0) += omg * step * costp;
+        }
+
         // feasibility
         if (feasibilityGradCostV(vel, gradv, costv))
         {
@@ -1738,6 +1750,51 @@ namespace diff_planner
     }
 
     return ret;
+  }
+
+  bool PolyTrajOptimizer::dynamicObstacleGradCostP(
+      double time, const Eigen::Vector3d &position, const Eigen::Vector3d &velocity,
+      Eigen::Vector3d &gradient_position, double &gradient_time,
+      double &gradient_previous_time, double &cost)
+  {
+    gradient_position.setZero();
+    gradient_time = gradient_previous_time = cost = 0.0;
+    bool active = false;
+    for (const auto &obstacle : dynamic_obstacles_)
+    {
+      double clearance;
+      Eigen::Vector3d clearance_gradient, obstacle_velocity;
+      if (!evaluateDynamicObstacle(position, obstacle, t_now_ + time, t_now_,
+                                   dynamic_obstacle_config_, &clearance,
+                                   &clearance_gradient, nullptr, &obstacle_velocity))
+        continue;
+      // Start the smooth penalty before the required physical clearance, as
+      // finite-weight optimization can otherwise converge just inside it.
+      const double cost_buffer = std::max(
+          0.0, dynamic_obstacle_config_.minimum_ball_bottom -
+                   dynamic_obstacle_config_.vehicle_half_height -
+                   dynamic_obstacle_config_.margin - dynamic_underpass_height_);
+      const double error = cost_buffer - clearance;
+      if (error <= 0.0)
+        continue;
+      active = true;
+      cost += wei_dynamic_obstacle_ * error * error * error;
+      const Eigen::Vector3d gradient =
+          -3.0 * wei_dynamic_obstacle_ * error * error * clearance_gradient;
+      gradient_position += gradient;
+      gradient_time += gradient.dot(velocity - obstacle_velocity);
+      gradient_previous_time += gradient.dot(-obstacle_velocity);
+    }
+    return active;
+  }
+
+  void PolyTrajOptimizer::setDynamicObstacles(
+      const std::vector<DynamicObstacleState> &obstacles)
+  {
+    // Empty detection lists retain the last measured target until the same
+    // 0.8-second observation timeout used by the original corridor guard.
+    if (!obstacles.empty())
+      dynamic_obstacles_ = obstacles;
   }
 
   bool PolyTrajOptimizer::swarmGradCostP(const int i_dp,
@@ -1920,6 +1977,17 @@ namespace diff_planner
     nh.param("optimization/weight_obstacle", wei_obs_, -1.0);
     nh.param("optimization/weight_obstacle_soft", wei_obs_soft_, -1.0);
     nh.param("optimization/weight_swarm", wei_swarm_, -1.0);
+    nh.param("optimization/enable_fapp_dynamic_avoidance",
+             dynamic_obstacle_config_.enabled, false);
+    nh.param("optimization/fapp_vehicle_radius", dynamic_obstacle_config_.vehicle_radius, 0.262);
+    nh.param("optimization/fapp_vehicle_half_height", dynamic_obstacle_config_.vehicle_half_height, 0.125);
+    nh.param("optimization/fapp_ball_radius", dynamic_obstacle_config_.ball_radius, 0.10);
+    nh.param("optimization/fapp_margin", dynamic_obstacle_config_.margin, 0.10);
+    nh.param("optimization/fapp_observation_retention", dynamic_obstacle_config_.observation_retention, 0.80);
+    nh.param("optimization/fapp_prediction_horizon", dynamic_obstacle_config_.prediction_horizon, 1.0);
+    nh.param("optimization/fapp_minimum_ball_bottom", dynamic_obstacle_config_.minimum_ball_bottom, 0.80);
+    nh.param("optimization/fapp_underpass_height", dynamic_underpass_height_, 0.50);
+    nh.param("optimization/weight_dynamic_obstacle", wei_dynamic_obstacle_, 10000.0);
     nh.param("optimization/weight_feasibility", wei_feas_, -1.0);
     nh.param("optimization/weight_sqrvariance", wei_sqrvar_, -1.0);
     nh.param("optimization/weight_time", wei_time_, -1.0);

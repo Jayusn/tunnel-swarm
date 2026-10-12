@@ -42,6 +42,18 @@
     <arg name="swing_prediction_dt" default="0.05"/>
     <arg name="swing_release_clear_time" default="0.35"/>
     <arg name="swing_release_speed" default="0.20"/>
+    <!-- FAPP 动态球的短时预测与机体尺寸；通用入口默认关闭。 -->
+    <arg name="enable_fapp_dynamic_avoidance" default="false"/>
+    <arg name="fapp_obstacle_topic" default="/UAV1/fapp/states"/>
+    <arg name="fapp_observation_retention" default="0.80"/>
+    <arg name="fapp_prediction_horizon" default="1.0"/>
+    <arg name="fapp_vehicle_radius" default="0.262"/>
+    <arg name="fapp_vehicle_half_height" default="0.125"/>
+    <arg name="fapp_ball_radius" default="0.10"/>
+    <arg name="fapp_margin" default="0.10"/>
+    <arg name="fapp_minimum_ball_bottom" default="0.80"/>
+    <arg name="fapp_underpass_height" default="0.50"/>
+    <arg name="weight_dynamic_obstacle" default="10000.0"/>
     <!-- 起点进入膨胀障碍时，先退回近期自由位置；不可用时在实时地图中搜索宽阔的侧向安全点。 -->
     <arg name="enable_occupied_recovery" default="false"/>
     <arg name="escape_max_distance" default="0.40"/>
@@ -189,6 +201,8 @@
         <param name="fsm/swing_prediction_dt" value="$(arg swing_prediction_dt)" type="double"/>
         <param name="fsm/swing_release_clear_time" value="$(arg swing_release_clear_time)" type="double"/>
         <param name="fsm/swing_release_speed" value="$(arg swing_release_speed)" type="double"/>
+        <param name="fsm/enable_fapp_dynamic_avoidance" value="$(arg enable_fapp_dynamic_avoidance)" type="bool"/>
+        <param name="fsm/fapp_obstacle_topic" value="$(arg fapp_obstacle_topic)"/>
         <param name="fsm/enable_occupied_recovery" value="$(arg enable_occupied_recovery)" type="bool"/>
         <param name="fsm/escape_max_distance" value="$(arg escape_max_distance)" type="double"/>
         <param name="fsm/escape_history_time" value="$(arg escape_history_time)" type="double"/>
@@ -305,6 +319,16 @@
         <!-- trajectory optimization -->
         <param name="optimization/constraint_points_perPiece" value="6" type="int"/>
         <param name="optimization/weight_obstacle" value="10000.0" type="double"/>
+        <param name="optimization/enable_fapp_dynamic_avoidance" value="$(arg enable_fapp_dynamic_avoidance)" type="bool"/>
+        <param name="optimization/fapp_observation_retention" value="$(arg fapp_observation_retention)" type="double"/>
+        <param name="optimization/fapp_prediction_horizon" value="$(arg fapp_prediction_horizon)" type="double"/>
+        <param name="optimization/fapp_vehicle_radius" value="$(arg fapp_vehicle_radius)" type="double"/>
+        <param name="optimization/fapp_vehicle_half_height" value="$(arg fapp_vehicle_half_height)" type="double"/>
+        <param name="optimization/fapp_ball_radius" value="$(arg fapp_ball_radius)" type="double"/>
+        <param name="optimization/fapp_margin" value="$(arg fapp_margin)" type="double"/>
+        <param name="optimization/fapp_minimum_ball_bottom" value="$(arg fapp_minimum_ball_bottom)" type="double"/>
+        <param name="optimization/fapp_underpass_height" value="$(arg fapp_underpass_height)" type="double"/>
+        <param name="optimization/weight_dynamic_obstacle" value="$(arg weight_dynamic_obstacle)" type="double"/>
         <param name="optimization/weight_obstacle_soft" value="10000.0" type="double"/>
         <param name="optimization/weight_swarm" value="10000.0" type="double"/>
         <param name="optimization/weight_feasibility" value="10000.0" type="double"/>

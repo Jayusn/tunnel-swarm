@@ -37,6 +37,7 @@ include_directories(
 
 add_library( traj_opt 
     src/poly_traj_optimizer.cpp
+    src/dynamic_obstacle.cpp
     src/suspended_obstacle_underpass.cpp
     src/vertical_obstacle_side_lock.cpp
     )
@@ -45,6 +46,11 @@ target_link_libraries( traj_opt
     )  
 
 if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(test_dynamic_obstacle
+    test/test_dynamic_obstacle.cpp
+    src/dynamic_obstacle.cpp
+  )
+
   catkin_add_gtest(test_suspended_obstacle_underpass
     test/test_suspended_obstacle_underpass.cpp
     src/suspended_obstacle_underpass.cpp

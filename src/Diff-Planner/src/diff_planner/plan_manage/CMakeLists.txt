@@ -16,6 +16,7 @@ find_package(catkin REQUIRED COMPONENTS
   nav_msgs
   sensor_msgs
   ldop
+  obj_state_msgs
   quadrotor_msgs
   plan_env
   path_searching
@@ -30,7 +31,7 @@ find_package(catkin REQUIRED COMPONENTS
 catkin_package(
  INCLUDE_DIRS include
  LIBRARIES diff_planner
- CATKIN_DEPENDS ldop plan_env path_searching traj_opt traj_utils
+ CATKIN_DEPENDS ldop obj_state_msgs plan_env path_searching traj_opt traj_utils
 #  DEPENDS system_lib
 )
 
@@ -55,7 +56,7 @@ target_link_libraries(diff_planner_node
   ## 2026-07-07: 显式链接 Diff 侧唯一的可视化库，避免联合工作空间里误连到其他 traj_utils 实现。
   diff_traj_utils
   )
-add_dependencies(diff_planner_node ${ldop_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+add_dependencies(diff_planner_node ${ldop_EXPORTED_TARGETS} ${obj_state_msgs_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 #add_dependencies(diff_planner_node ${${PROJECT_NAME}_EXPORTED_TARGETS})
 
 catkin_install_python(PROGRAMS

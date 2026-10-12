@@ -16,6 +16,7 @@ namespace diff_planner
     mandatory_stop_ = false;
     controller_restart_pending_ = false;
     swing_wait_active_ = false;
+    fapp_wait_active_ = false;
     swing_clear_since_ = 0.0;
     swing_wait_obstacle_id_ = 0;
 
@@ -91,6 +92,9 @@ namespace diff_planner
     nh.param("fsm/enable_swing_obstacle_guard", enable_swing_obstacle_guard_, false);
     nh.param("fsm/swing_obstacle_topic", swing_obstacle_topic_,
              std::string("/UAV1/ldop/dynamic_objects"));
+    nh.param("fsm/enable_fapp_dynamic_avoidance", enable_fapp_dynamic_avoidance_, false);
+    nh.param("fsm/fapp_obstacle_topic", fapp_obstacle_topic_,
+             std::string("/UAV1/fapp/states"));
     nh.param("fsm/swing_prediction_horizon", swing_prediction_horizon_, 5.0);
     nh.param("fsm/swing_prediction_dt", swing_prediction_dt_, 0.05);
     nh.param("fsm/swing_release_clear_time", swing_release_clear_time_, 0.35);
@@ -193,6 +197,14 @@ namespace diff_planner
                swing_obstacle_guard_.config().corridor_width,
                swing_prediction_horizon_,
                swing_obstacle_guard_.config().enable_harmonic_prediction ? "on" : "off");
+    }
+    if (enable_fapp_dynamic_avoidance_)
+    {
+      fapp_obstacle_sub_ = nh.subscribe(fapp_obstacle_topic_, 10,
+                                        &DiffReplanFSM::fappObjectsCallback, this,
+                                        ros::TransportHints().tcpNoDelay());
+      ROS_INFO("FAPP dynamic avoidance enabled: topic=%s.",
+               fapp_obstacle_topic_.c_str());
     }
 
     /* Use MINCO trajectory to minimize the message size in wireless communication */
@@ -568,6 +580,35 @@ namespace diff_planner
         }
         if (swing_wait_active_)
         {
+          if (fapp_wait_active_)
+          {
+            if (mandatory_stop_)
+              break;
+            if (swing_clear_since_ > 0.0 &&
+                now_sec - swing_clear_since_ < swing_release_clear_time_)
+              break;
+            swing_clear_since_ = now_sec;
+            // Resume only after a real trajectory from odometry passes the
+            // manager's static and dynamic checks, including an underpass.
+            if (!planFromGlobalTraj(1))
+            {
+              ROS_WARN_THROTTLE(0.5, "[FAPP避障] 暂无可行绕行或下穿轨迹，保持悬停。");
+              break;
+            }
+            swing_wait_active_ = false;
+            fapp_wait_active_ = false;
+            swing_clear_since_ = 0.0;
+            swing_wait_obstacle_id_ = 0;
+            need_hover_stop_ = false;
+            periodic_replan_pending_ = false;
+            replan_fail_count_ = 0;
+            last_target_change_time_ = now_sec;
+            stuck_detect_ignore_until_ = now_sec + stuck_detect_grace_time_;
+            flag_escape_emergency_ = true;
+            publishPlanningStatus("SWING_OBSTACLE_RELEASED");
+            changeFSMExecState(EXEC_TRAJ, "FAPP_RELEASE");
+            break;
+          }
           SwingCollisionResult collision;
           const bool blocked = swingTrajectoryBlocked(sampleReleaseTrajectory(),
                                                        now_sec, &collision);
@@ -885,6 +926,28 @@ namespace diff_planner
       }
     }
 
+    if (planner_manager_->dynamicAvoidanceEnabled() && !swing_wait_active_)
+    {
+      const double query_time = ros::Time::now().toSec();
+      std::vector<std::pair<double, Eigen::Vector3d>> dynamic_samples;
+      for (const auto &sample : sampleCurrentTrajectory(query_time))
+        dynamic_samples.emplace_back(sample.time_from_now, sample.position);
+      SwingCollisionResult collision;
+      if (planner_manager_->dynamicTrajectoryBlocked(dynamic_samples, query_time,
+                                                      &collision))
+      {
+        if (planFromLocalTraj(1))
+        {
+          periodic_replan_pending_ = false;
+          replan_fail_count_ = 0;
+          changeFSMExecState(EXEC_TRAJ, "FAPP_REPLAN");
+          return;
+        }
+        startSwingWait(collision, true);
+        return;
+      }
+    }
+
     /* ---------- check trajectory ---------- */
     double t_temp = t_cur; // t_temp will be changed in the next function!
     int i_start = info->traj.locatePieceIdx(t_temp);
@@ -970,6 +1033,20 @@ namespace diff_planner
         }
       }
       j_start = 0;
+    }
+  }
+
+  void DiffReplanFSM::fappObjectsCallback(
+      const obj_state_msgs::ObjectsStatesConstPtr &msg)
+  {
+    planner_manager_->updateDynamicObjects(*msg);
+    if (!msg->header.frame_id.empty() && msg->header.frame_id != "world" &&
+        msg->header.frame_id != "UAV1/camera_init" &&
+        msg->header.frame_id != "camera_init")
+    {
+      ROS_WARN_THROTTLE(2.0,
+                       "[FAPP避障] frame_id=%s；请确认状态与规划里程计使用同一坐标系。",
+                       msg->header.frame_id.c_str());
     }
   }
 
@@ -1084,9 +1161,11 @@ namespace diff_planner
            swing_obstacle_guard_.findCollision(samples, now, result);
   }
 
-  void DiffReplanFSM::startSwingWait(const SwingCollisionResult &collision)
+  void DiffReplanFSM::startSwingWait(const SwingCollisionResult &collision,
+                                    const bool from_fapp)
   {
     swing_wait_active_ = true;
+    fapp_wait_active_ = from_fapp;
     swing_clear_since_ = 0.0;
     swing_wait_obstacle_id_ = collision.obstacle_id;
     need_hover_stop_ = true;
@@ -1813,6 +1892,13 @@ namespace diff_planner
     }
 
     controller_restart_pending_ = true;
+    if (fapp_wait_active_)
+    {
+      swing_wait_active_ = false;
+      fapp_wait_active_ = false;
+      swing_clear_since_ = 0.0;
+      swing_wait_obstacle_id_ = 0;
+    }
     replan_fail_count_ = 0;
     need_hover_stop_ = false;
     occupied_recovery_active_ = false;

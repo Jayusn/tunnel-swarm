@@ -16,6 +16,7 @@
 #include <vector>
 #include <visualization_msgs/Marker.h>
 #include <ldop/DynamicObjectArray.h>
+#include <obj_state_msgs/ObjectsStates.h>
 
 #include <optimizer/poly_traj_optimizer.h>
 #include <plan_env/grid_map.h>
@@ -123,6 +124,8 @@ namespace diff_planner
     std::string manual_goal_topic_; // 2026-07-28: UAV1接力规划使用独立目标话题，避免与前机全局/goal串线。
     bool enable_swing_obstacle_guard_;
     std::string swing_obstacle_topic_;
+    bool enable_fapp_dynamic_avoidance_;
+    std::string fapp_obstacle_topic_;
     double swing_prediction_horizon_;
     double swing_prediction_dt_;
     double swing_release_clear_time_;
@@ -132,6 +135,7 @@ namespace diff_planner
     // AutoTrans 恢复成功后置位；在基于最新里程计发布新轨迹前禁止继续使用旧局部轨迹。
     bool controller_restart_pending_;
     bool swing_wait_active_;
+    bool fapp_wait_active_{false};
     double swing_clear_since_;
     uint32_t swing_wait_obstacle_id_;
     // 当前外部目标时间戳随每条规划状态回传，供接力管理器过滤锁存/延迟回执。
@@ -171,7 +175,7 @@ namespace diff_planner
     /* ROS utils */
     ros::NodeHandle node_;
     ros::Timer exec_timer_, safety_timer_;
-    ros::Subscriber waypoint_sub_, odom_sub_, trigger_sub_, subgoal_sub_, broadcast_ploytraj_sub_, mandatory_stop_sub_, planning_restart_sub_, swing_obstacle_sub_;
+    ros::Subscriber waypoint_sub_, odom_sub_, trigger_sub_, subgoal_sub_, broadcast_ploytraj_sub_, mandatory_stop_sub_, planning_restart_sub_, swing_obstacle_sub_, fapp_obstacle_sub_;
     ros::Publisher poly_traj_pub_, data_disp_pub_, broadcast_ploytraj_pub_, heartbeat_pub_, ground_height_pub_;
     ros::Publisher planning_status_pub_;  // 2026-07-28: 向接力管理器反馈Diff规划成功/连续失败。
     SwingObstacleGuard swing_obstacle_guard_;
@@ -186,12 +190,14 @@ namespace diff_planner
     void checkCollisionCallback(const ros::TimerEvent &e);
     bool callEmergencyStop(Eigen::Vector3d stop_pos);
     void dynamicObjectsCallback(const ldop::DynamicObjectArrayConstPtr &msg);
+    void fappObjectsCallback(const obj_state_msgs::ObjectsStatesConstPtr &msg);
     std::vector<SwingTrajectorySample> sampleCurrentTrajectory(double now) const;
     std::vector<SwingTrajectorySample> sampleReleaseTrajectory() const;
     bool swingTrajectoryBlocked(const std::vector<SwingTrajectorySample> &samples,
                                 double now,
                                 SwingCollisionResult *result) const;
-    void startSwingWait(const SwingCollisionResult &collision);
+    void startSwingWait(const SwingCollisionResult &collision,
+                        bool from_fapp = false);
     bool callOccupiedRecovery(const Eigen::Vector3d &target);
     void updateFreeOdomHistory(double now);
     bool startOccupiedRecovery(double now);

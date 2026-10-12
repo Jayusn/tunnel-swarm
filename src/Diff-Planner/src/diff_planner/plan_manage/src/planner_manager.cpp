@@ -65,6 +65,52 @@ namespace diff_planner
     ploy_traj_opt_->setDroneId(pp_.drone_id);
   }
 
+  void DiffPlannerManager::updateDynamicObjects(const obj_state_msgs::ObjectsStates &msg)
+  {
+    std::vector<DynamicObstacleState> obstacles;
+    for (const auto &state : msg.states)
+    {
+      DynamicObstacleState obstacle;
+      obstacle.position = Eigen::Vector3d(state.position.x, state.position.y, state.position.z);
+      obstacle.velocity = Eigen::Vector3d(state.velocity.x, state.velocity.y, state.velocity.z);
+      const ros::Time stamp = state.header.stamp.isZero() ? msg.header.stamp : state.header.stamp;
+      obstacle.stamp = stamp.isZero() ? ros::Time::now().toSec() : stamp.toSec();
+      obstacles.push_back(obstacle);
+    }
+    ploy_traj_opt_->setDynamicObstacles(obstacles);
+  }
+
+  bool DiffPlannerManager::dynamicAvoidanceEnabled() const
+  {
+    return ploy_traj_opt_->getDynamicObstacleConfig().enabled;
+  }
+
+  bool DiffPlannerManager::dynamicTrajectoryBlocked(
+      const std::vector<std::pair<double, Eigen::Vector3d>> &samples,
+      double now, SwingCollisionResult *result) const
+  {
+    for (const auto &sample : samples)
+      for (const auto &obstacle : ploy_traj_opt_->getDynamicObstacles())
+      {
+        double clearance;
+        Eigen::Vector3d obstacle_position;
+        if (evaluateDynamicObstacle(sample.second, obstacle, now + sample.first, now,
+                                    ploy_traj_opt_->getDynamicObstacleConfig(),
+                                    &clearance, nullptr, &obstacle_position) && clearance < 0.0)
+        {
+          if (result != nullptr)
+          {
+            result->obstacle_id = 0;
+            result->time_from_now = sample.first;
+            result->obstacle_position = obstacle_position;
+            result->vehicle_position = sample.second;
+          }
+          return true;
+        }
+      }
+    return false;
+  }
+
   bool DiffPlannerManager::reboundReplan(
       const Eigen::Vector3d &start_pt, const Eigen::Vector3d &start_vel,
       const Eigen::Vector3d &start_acc, const Eigen::Vector3d &local_target_pt,
@@ -541,7 +587,8 @@ namespace diff_planner
     }
   }
 
-  bool DiffPlannerManager::setLocalTrajFromOpt(const poly_traj::MinJerkOpt &opt, const bool touch_goal)
+  bool DiffPlannerManager::setLocalTrajFromOpt(const poly_traj::MinJerkOpt &opt, const bool touch_goal,
+                                             const bool check_dynamic_obstacles)
   {
     poly_traj::Trajectory traj = opt.getTraj();
     Eigen::MatrixXd cps = opt.getInitConstraintPoints(getCpsNumPrePiece());
@@ -549,7 +596,21 @@ namespace diff_planner
     bool ret = ploy_traj_opt_->computePointsToCheck(traj, ConstraintPoints::two_thirds_id(cps, touch_goal), pts_to_check);
     if (ret && pts_to_check.size() >= 1 && pts_to_check.back().size() >= 1)
     {
-      traj_.setLocalTraj(traj, pts_to_check, ros::Time::now().toSec());
+      const double start_time = ros::Time::now().toSec();
+      if (check_dynamic_obstacles && dynamicAvoidanceEnabled())
+      {
+        std::vector<std::pair<double, Eigen::Vector3d>> samples;
+        const double step = std::min(0.05, grid_map_->getResolution() / std::max(0.1, pp_.max_vel_));
+        for (double time = 0.0; time < traj.getTotalDuration(); time += step)
+          samples.emplace_back(time, traj.getPos(time));
+        samples.emplace_back(traj.getTotalDuration(), traj.getPos(traj.getTotalDuration()));
+        if (dynamicTrajectoryBlocked(samples, start_time))
+        {
+          ROS_WARN("[FAPP动态避障] 优化后的轨迹仍与球相交，不发布该轨迹。");
+          return false;
+        }
+      }
+      traj_.setLocalTraj(traj, pts_to_check, start_time);
     }
 
     return ret;
@@ -565,7 +626,9 @@ namespace diff_planner
     stopMJO.reset(headState, tailState, 2);
     stopMJO.generate(stop_pos, Eigen::Vector2d(1.0, 1.0));
 
-    setLocalTrajFromOpt(stopMJO, false);
+    // The existing stop command must still replace the old moving trajectory
+    // when the current location itself lies inside a predicted ball envelope.
+    setLocalTrajFromOpt(stopMJO, false, false);
 
     return true;
   }

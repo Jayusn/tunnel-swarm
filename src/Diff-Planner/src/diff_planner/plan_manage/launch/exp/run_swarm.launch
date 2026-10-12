@@ -9,6 +9,7 @@
     <arg name="enable_ldop" default="false"/>
     <arg name="detector_backend" default="legacy"/>
     <arg name="fapp_verified_preset" default="false"/>
+    <arg name="enable_fapp_dynamic_avoidance" default="$(eval arg('detector_backend') == 'fapp')"/>
     <arg name="start_ldop" default="$(eval arg('detector_backend') == 'ldop' or (arg('detector_backend') == 'legacy' and arg('enable_ldop')))"/>
     <arg name="ldop_input_rate" default="5.0"/>
     <arg name="flight_type" default="2"/>
@@ -36,6 +37,17 @@
         <arg name="odom_topic" value="$(arg odom_topic)"/>
         <arg name="drone_id" value="$(arg drone_id)"/>
         <arg name="max_tracking_error" value="$(arg max_tracking_error)"/>
+        <arg name="enable_fapp_dynamic_avoidance" value="$(arg enable_fapp_dynamic_avoidance)"/>
+        <arg name="fapp_obstacle_topic" value="/UAV1/fapp/states"/>
+        <arg name="fapp_observation_retention" value="0.80"/>
+        <arg name="fapp_prediction_horizon" value="1.0"/>
+        <arg name="fapp_vehicle_radius" value="0.262"/>
+        <arg name="fapp_vehicle_half_height" value="0.125"/>
+        <arg name="fapp_ball_radius" value="0.10"/>
+        <arg name="fapp_margin" value="0.10"/>
+        <arg name="fapp_minimum_ball_bottom" value="0.80"/>
+        <arg name="fapp_underpass_height" value="0.50"/>
+        <arg name="weight_dynamic_obstacle" value="10000.0"/>
         <arg name="enable_random_local_init" value="false"/>
         <arg name="enable_suspended_obstacle_underpass" value="$(arg enable_suspended_obstacle_underpass)"/>
         <arg name="underpass_corridor_half_width" value="$(arg underpass_corridor_half_width)"/>

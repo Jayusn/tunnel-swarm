@@ -11,6 +11,8 @@
 #include <traj_utils/planning_visualization.h>
 #include <optimizer/poly_traj_utils.hpp>
 #include <plan_manage/replan_quality_gate.h>
+#include <plan_manage/swing_obstacle_guard.h>
+#include <obj_state_msgs/ObjectsStates.h>
 
 namespace diff_planner
 {
@@ -55,7 +57,13 @@ namespace diff_planner
                                const Eigen::Vector3d &target_pos,
                                double max_speed);
     bool checkCollision(int drone_id);
-    bool setLocalTrajFromOpt(const poly_traj::MinJerkOpt &opt, const bool touch_goal);
+    void updateDynamicObjects(const obj_state_msgs::ObjectsStates &msg);
+    bool dynamicTrajectoryBlocked(
+        const std::vector<std::pair<double, Eigen::Vector3d>> &samples,
+        double now, SwingCollisionResult *result = nullptr) const;
+    bool dynamicAvoidanceEnabled() const;
+    bool setLocalTrajFromOpt(const poly_traj::MinJerkOpt &opt, const bool touch_goal,
+                            bool check_dynamic_obstacles = true);
     inline double getSwarmClearance(void) { return ploy_traj_opt_->get_swarm_clearance_(); }
     inline int getCpsNumPrePiece(void) { return ploy_traj_opt_->get_cps_num_prePiece_(); }
     // inline PtsChk_t getPtsCheck(void) { return ploy_traj_opt_->get_pts_check_(); }

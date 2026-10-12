@@ -2,6 +2,7 @@
 #define _POLY_TRAJ_OPTIMIZER_H_
 
 #include <Eigen/Eigen>
+#include <optimizer/dynamic_obstacle.h>
 #include <optimizer/suspended_obstacle_underpass.h>
 #include <optimizer/vertical_obstacle_side_lock.h>
 #include <path_searching/dyn_a_star.h>
@@ -114,6 +115,10 @@ namespace diff_planner
     bool planning_timeout_reported_{false};
 
     double t_now_;
+    DynamicObstacleConfig dynamic_obstacle_config_;
+    std::vector<DynamicObstacleState> dynamic_obstacles_;
+    double wei_dynamic_obstacle_{10000.0};
+    double dynamic_underpass_height_{0.50};
 
   public:
     PolyTrajOptimizer() {}
@@ -133,6 +138,9 @@ namespace diff_planner
     void setSwarmTrajs(SwarmTrajData *swarm_trajs_ptr);
     void setDroneId(const int drone_id);
     void setIfTouchGoal(const bool touch_goal);
+    void setDynamicObstacles(const std::vector<DynamicObstacleState> &obstacles);
+    const std::vector<DynamicObstacleState> &getDynamicObstacles() const { return dynamic_obstacles_; }
+    const DynamicObstacleConfig &getDynamicObstacleConfig() const { return dynamic_obstacle_config_; }
     void setConstraintPoints(ConstraintPoints cps);
     void setUseMultitopologyTrajs(bool use_multitopology_trajs);
     void beginPlanningCycle();
@@ -168,6 +176,11 @@ namespace diff_planner
     std::vector<ConstraintPoints> distinctiveTrajs(vector<std::pair<int, int>> segments);
 
   private:
+    bool dynamicObstacleGradCostP(double time, const Eigen::Vector3d &position,
+                                  const Eigen::Vector3d &velocity,
+                                  Eigen::Vector3d &gradient_position,
+                                  double &gradient_time, double &gradient_previous_time,
+                                  double &cost);
     /* callbacks by the L-BFGS optimizer */
     static double costFunctionCallback(void *func_data, const double *x, double *grad, const int n);
 
