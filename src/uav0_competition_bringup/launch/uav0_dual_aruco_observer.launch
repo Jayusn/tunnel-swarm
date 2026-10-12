@@ -77,6 +77,8 @@
     <rosparam command="load"
               file="$(find precision_landing)/config/front_aruco_hint.yaml" />
     <param name="mission/require_stage_gate" value="false" />
+    <!-- 纯调试没有规划器的前视扫描状态，直接允许每帧识别。 -->
+    <param name="mission/require_search_state_gate" value="false" />
     <param name="topics/odometry" value="$(arg odometry_topic)" />
     <param name="topics/hint_world"
            value="/UAV0/aruco_observer/front/hint_world" />
