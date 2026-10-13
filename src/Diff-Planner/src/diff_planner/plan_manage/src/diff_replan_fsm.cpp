@@ -517,6 +517,8 @@ namespace diff_planner
             last_goal_when_baseline = final_goal_;
             last_proj_len = 0.0;
             baseline_initialized = true;
+            // 距离基准与计时基准同步重置，避免把等待起飞时间计入卡住检测。
+            last_target_change_time_ = now_sec;
           }
           Eigen::Vector3d cur_pos = odom_pos_;
           Eigen::Vector3d global2cur = cur_pos - baseline_origin;
@@ -1965,6 +1967,7 @@ namespace diff_planner
   void DiffReplanFSM::triggerCallback(const geometry_msgs::PoseStampedPtr &msg)
   {
     have_trigger_ = true;
+    last_target_change_time_ = ros::Time::now().toSec();
     // 2026-07-07: 外部触发（/traj_start_trigger 或 RViz /goal）后临时忽略 stuck detect，给首段轨迹和控制器起步留时间。
     stuck_detect_ignore_until_ = ros::Time::now().toSec() + stuck_detect_grace_time_;
     // 2026-07-07: 统一记录触发来源，便于区分是 /traj_start_trigger 还是 RViz /goal 把 flight_type=2 解锁。
