@@ -13,7 +13,7 @@
     <arg name="start_ldop" default="$(eval arg('detector_backend') == 'ldop' or (arg('detector_backend') == 'legacy' and arg('enable_ldop')))"/>
     <arg name="ldop_input_rate" default="5.0"/>
     <arg name="flight_type" default="2"/>
-    <arg name="point_num" default="4"/>
+    <arg name="point_num" default="5"/>
     <arg name="max_tracking_error" default="0.20"/>
     <arg name="enable_periodic_replan" default="false"/>
     <arg name="enable_occupied_recovery" default="false"/>
@@ -143,7 +143,7 @@
         <arg name="require_pre_agent_trajectory" value="false"/>
         <!-- global waypoints -->
         <!-- It generates a piecewise min-snap traj passing all waypoints -->
-        <!-- 本任务使用 point0～point3；不再受 run_swarm.sh 中旧的 POINT_NUM=1 影响。 -->
+        <!-- 本任务使用 point0～point4；不再受 run_swarm.sh 中旧的 POINT_NUM=1 影响。 -->
         <arg name="point_num" value="$(arg point_num)" />
 
         <arg name="point0_x" value="3.0" />
