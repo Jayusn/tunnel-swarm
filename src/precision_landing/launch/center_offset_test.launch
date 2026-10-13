@@ -1,0 +1,16 @@
+<launch>
+  <arg name="start_camera" default="true"/>
+  <arg name="marker_id" default="2"/>
+  <arg name="video_device" default="/dev/v4l/by-id/usb-Generic_USB_Camera_YHTek-video-index0"/>
+  <include if="$(arg start_camera)" file="$(find precision_landing)/launch/down_camera.launch">
+    <arg name="video_device" value="$(arg video_device)"/>
+  </include>
+  <!-- Only camera and observer: no precision controller or mission nodes. -->
+  <node pkg="precision_landing" type="center_offset_observer_node"
+        name="center_offset_observer" ns="UAV0" output="screen" required="true">
+    <rosparam command="load" file="$(find precision_landing)/config/precision_landing.yaml"/>
+    <param name="marker/requested_id" value="$(arg marker_id)"/>
+    <remap from="~image" to="/UAV0/down_camera/image_raw"/>
+    <remap from="~camera_info" to="/UAV0/down_camera/camera_info"/>
+  </node>
+</launch>

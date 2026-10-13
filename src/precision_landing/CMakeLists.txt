@@ -49,6 +49,9 @@ add_dependencies(front_aruco_hint_node ${${PROJECT_NAME}_EXPORTED_TARGETS}
 target_link_libraries(front_aruco_hint_node
   landing_search_core aruco_tracker ${catkin_LIBRARIES} ${OpenCV_LIBRARIES})
 
+add_executable(center_offset_observer_node src/center_offset_observer_node.cpp)
+target_link_libraries(center_offset_observer_node aruco_tracker ${catkin_LIBRARIES} ${OpenCV_LIBRARIES})
+
 add_executable(precision_landing_node src/precision_landing_node.cpp)
 target_link_libraries(precision_landing_node
   landing_controller landing_state_machine aruco_tracker
@@ -69,10 +72,10 @@ add_dependencies(dual_uav_landing_coordinator_node ${${PROJECT_NAME}_EXPORTED_TA
   ${catkin_EXPORTED_TARGETS})
 target_link_libraries(dual_uav_landing_coordinator_node ${catkin_LIBRARIES})
 
-catkin_install_python(PROGRAMS test/test_precision_landing_node.py
+catkin_install_python(PROGRAMS scripts/sample_center_offset.py test/test_precision_landing_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 
-install(TARGETS precision_landing_node landing_search_node front_aruco_hint_node landing_setpoint_arbiter_node
+install(TARGETS center_offset_observer_node precision_landing_node landing_search_node front_aruco_hint_node landing_setpoint_arbiter_node
         landing_debug_image_mux_node
         dual_uav_landing_coordinator_node
         landing_test_mission_node landing_controller landing_state_machine aruco_tracker
