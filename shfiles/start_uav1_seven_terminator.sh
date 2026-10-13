@@ -24,7 +24,7 @@ RUNTIME_CONFIG="${UAV1_SINGLE_RUNTIME_CONFIG:-/tmp/uav1_seven_terminator_${RUN_I
 ROSCORE_LOG="${UAV1_SINGLE_ROSCORE_LOG:-/tmp/uav1_single_roscore_${RUN_ID}.log}"
 WAIT_TIMEOUT="${UAV1_SINGLE_WAIT_TIMEOUT:-180}"
 THERMAL="${UAV1_SINGLE_THERMAL:-true}"
-DETECTOR="${UAV1_SINGLE_DETECTOR:-none}"
+DETECTOR="${UAV1_SINGLE_DETECTOR:-fapp}"
 DYNAMIC_AVOIDANCE="${UAV1_SINGLE_DYNAMIC_AVOIDANCE:-false}"
 
 MAVROS_STATE_TOPIC="/UAV1/mavros/state"
@@ -64,12 +64,12 @@ usage() {
   - 第 6 屏执行 run_swarm.launch 中当前配置的单机预设航点。
   - 第 6 屏启动下视相机、单机 Diff/RViz 和动态检测复盘录包。
   - FAPP 使用已验证的点源与射线联合配置，原生 10 Hz，启动先采集 5 秒静态背景。
-  - 动态障碍检测默认关闭；使用 --detector fapp 可重新启用检测。
+  - 动态障碍检测默认使用 FAPP；使用 --detector none 可关闭检测。
   - AutoTrans 直接向 /UAV1/mavros/setpoint_raw/attitude 发布控制量。
   - 不自动解锁、不切换 OFFBOARD、不额外发送目标点。
 
 选项：
-  --detector none|fapp|ldop  动态障碍检测算法，默认 none（关闭）
+  --detector none|fapp|ldop  动态障碍检测算法，默认 fapp
   --dynamic-avoidance        开启 FAPP 动态避障
   --detection-only          关闭动态避障，只保留动态检测（默认）
   --thermal                 第 5 屏同时启动热成像检测和 D435 融合
