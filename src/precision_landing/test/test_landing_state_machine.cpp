@@ -30,7 +30,8 @@ void ReachHighDescent(LandingStateMachine& machine) {
 
 void ReachFixedDescent(LandingStateMachine& machine) {
   ReachAlign(machine, 1.50);
-  ASSERT_EQ(machine.update(ActiveInput(0.31, 1.50)).state,
+  machine.update(ActiveInput(0.31, 1.50));
+  ASSERT_EQ(machine.update(ActiveInput(0.82, 1.50)).state,
             LandingState::FIXED_XY_DESCENT);
 }
 
@@ -102,18 +103,50 @@ TEST(LandingStateMachine, ReacquiredTargetReturnsToAlignment) {
   EXPECT_DOUBLE_EQ(output.descent_speed_mps, 0.0);
 }
 
-TEST(LandingStateMachine, HandoffHeightImmediatelyEntersFixedWorldXyDescent) {
+TEST(LandingStateMachine, HandoffHeightRequiresTwelveCmStableAlignment) {
+  precision_landing::StateMachineConfig config;
+  config.high_height_m = config.auto_land_height_m = 1.2;
+  LandingStateMachine machine(config);
+  ReachHighDescent(machine);
+  const auto hold = machine.update(ActiveInput(0.9, 1.197, 0.202));
+  EXPECT_EQ(hold.state, LandingState::ALIGN);
+  EXPECT_DOUBLE_EQ(hold.descent_speed_mps, 0.0);
+  machine.update(ActiveInput(1.0, 1.2, 0.12));
+  EXPECT_EQ(machine.update(ActiveInput(1.49, 1.2, 0.12)).state,
+            LandingState::ALIGN);
+  EXPECT_EQ(machine.update(ActiveInput(1.51, 1.2, 0.12)).state,
+            LandingState::FIXED_XY_DESCENT);
+}
+
+TEST(LandingStateMachine, FineAlignmentRestartsAfterErrorOrVisibilityBreak) {
   LandingStateMachine machine;
-  ReachAlign(machine, 1.50);
-  const auto output = machine.update(ActiveInput(0.31, 1.50, 0.24));
-  EXPECT_EQ(output.state, LandingState::FIXED_XY_DESCENT);
-  EXPECT_DOUBLE_EQ(output.descent_speed_mps, 0.10);
+  ReachAlign(machine, 1.5);
+  machine.update(ActiveInput(0.4, 1.5, 0.12));
+  machine.update(ActiveInput(1.0, 1.5, 0.121));
+  machine.update(ActiveInput(1.1, 1.5, 0.12));
+  EXPECT_EQ(machine.update(ActiveInput(1.5, 1.5, 0.12)).state, LandingState::ALIGN);
+  machine.update(ActiveInput(1.6, 1.5, 0.12, false));
+  machine.update(ActiveInput(1.7, 1.5, 0.12));
+  EXPECT_EQ(machine.update(ActiveInput(2.1, 1.5, 0.12)).state, LandingState::ALIGN);
+  EXPECT_EQ(machine.update(ActiveInput(2.51, 1.5, 0.12)).state,
+            LandingState::FIXED_XY_DESCENT);
+}
+
+TEST(LandingStateMachine, FineAlignmentDoesNotCountTimeAboveHandoffHeight) {
+  LandingStateMachine machine;
+  ReachAlign(machine, 1.5);
+  machine.update(ActiveInput(0.4, 1.5, 0.10));
+  machine.update(ActiveInput(1.0, 1.51, 0.10));
+  machine.update(ActiveInput(1.1, 1.5, 0.10));
+  EXPECT_EQ(machine.update(ActiveInput(1.5, 1.5, 0.10)).state, LandingState::ALIGN);
+  EXPECT_EQ(machine.update(ActiveInput(1.91, 1.5, 0.10)).state,
+            LandingState::FIXED_XY_DESCENT);
 }
 
 TEST(LandingStateMachine, FixedWorldXyDescentNoLongerRequiresMarker) {
   LandingStateMachine machine;
   ReachFixedDescent(machine);
-  const auto output = machine.update(ActiveInput(1.0, 0.0, 0.0, false));
+  const auto output = machine.update(ActiveInput(1.2, 0.0, 0.0, false));
   EXPECT_EQ(output.state, LandingState::FIXED_XY_DESCENT);
   EXPECT_DOUBLE_EQ(output.descent_speed_mps, 0.10);
   EXPECT_FALSE(output.request_auto_land);
@@ -122,7 +155,7 @@ TEST(LandingStateMachine, FixedWorldXyDescentNoLongerRequiresMarker) {
 TEST(LandingStateMachine, FixedDescentRequestsAutoLandOnlyAtContactGate) {
   LandingStateMachine machine;
   ReachFixedDescent(machine);
-  auto contact = ActiveInput(1.0, 0.0, 0.0, false);
+  auto contact = ActiveInput(1.2, 0.0, 0.0, false);
   contact.landing_contact = true;
   const auto output = machine.update(contact);
   EXPECT_EQ(output.state, LandingState::REQUEST_AUTO_LAND);
@@ -133,7 +166,7 @@ TEST(LandingStateMachine, FixedDescentRequestsAutoLandOnlyAtContactGate) {
 TEST(LandingStateMachine, AutoLandModeConfirmationCompletesMission) {
   LandingStateMachine machine;
   ReachFixedDescent(machine);
-  auto input = ActiveInput(1.0, 0.0, 0.0, false);
+  auto input = ActiveInput(1.2, 0.0, 0.0, false);
   input.landing_contact = true;
   machine.update(input);
   input.auto_land_active = true;
@@ -165,7 +198,7 @@ TEST(LandingStateMachine, OffboardLossPassivelyAborts) {
 TEST(LandingStateMachine, FallingTriggerDoesNotInterruptFixedDescent) {
   LandingStateMachine machine;
   ReachFixedDescent(machine);
-  auto input = ActiveInput(1.0, 0.0, 0.0, false);
+  auto input = ActiveInput(1.2, 0.0, 0.0, false);
   input.trigger = false;
   const auto output = machine.update(input);
   EXPECT_EQ(output.state, LandingState::FIXED_XY_DESCENT);

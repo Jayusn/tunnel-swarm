@@ -23,6 +23,7 @@
     <param name="timeouts/state_sec" value="2.0"/>
     <param name="state_machine/acquire_stable_sec" value="0.05"/>
     <param name="state_machine/align_stable_sec" value="0.05"/>
+    <param name="stages/auto_land/fine_stable_sec" value="0.05"/>
     <param name="state_machine/high_height_m" value="2.0"/>
     <param name="state_machine/high_align_error_m" value="0.20"/>
     <param name="state_machine/auto_land_height_m" value="2.0"/>

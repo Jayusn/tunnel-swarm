@@ -158,6 +158,8 @@ def test_every_shipped_leaf_is_a_canonical_node_private_parameter():
         "stages/high/descent_mps",
         "stages/auto_land/height_m",
         "stages/auto_land/stable_sec",
+        "stages/auto_land/error_m",
+        "stages/auto_land/fine_stable_sec",
         "stages/fixed_xy_descent/descent_mps",
         "stages/fixed_xy_descent/cutoff_height_m",
         "stages/fixed_xy_descent/ground_target_offset_m",

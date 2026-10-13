@@ -15,6 +15,8 @@ struct StateMachineConfig {
   double high_align_error_m{0.25};
   double high_descent_mps{0.25};
   double fixed_descent_mps{0.10};
+  double auto_land_error_m{0.12};
+  double fine_align_stable_sec{0.50};
   double target_loss_timeout_sec{0.50};
   double reacquire_timeout_sec{5.0};
   double total_timeout_sec{30.0};
@@ -73,6 +75,7 @@ class LandingStateMachine {
   double target_visible_since_sec_{-1.0};
   double aligned_since_sec_{-1.0};
   double target_loss_since_sec_{-1.0};
+  double fine_aligned_since_sec_{-1.0};
   double descent_gate_since_sec_{-1.0};
   LandingState descent_gate_state_{LandingState::IDLE};
   double reacquire_started_sec_{-1.0};

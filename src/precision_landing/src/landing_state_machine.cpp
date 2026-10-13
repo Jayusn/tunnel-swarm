@@ -28,6 +28,7 @@ StateOutput LandingStateMachine::update(const StateInput& input) {
   bool entered_precheck = false;
   if (!input.trigger && clearsOnFalseTrigger(state_)) {
     state_ = LandingState::IDLE;
+    fine_aligned_since_sec_ = -1.0;
     target_visible_since_sec_ = -1.0;
     aligned_since_sec_ = -1.0;
     target_loss_since_sec_ = -1.0;
@@ -81,6 +82,7 @@ StateOutput LandingStateMachine::update(const StateInput& input) {
              (state_ == LandingState::ALIGN ||
               state_ == LandingState::DESCEND_HIGH)) {
     if (!input.target_visible) {
+      fine_aligned_since_sec_ = -1.0;
       if (target_loss_since_sec_ < 0.0) {
         target_loss_since_sec_ = input.now_sec;
         reset_controller = true;
@@ -97,14 +99,21 @@ StateOutput LandingStateMachine::update(const StateInput& input) {
     } else {
       target_loss_since_sec_ = -1.0;
       if (input.marker_height_m <= config_.auto_land_height_m) {
-        // Once the visual descent reaches the handoff height, freeze the
-        // current world-frame X/Y immediately.  Do not wait for a second
-        // fine-alignment gate: the fixed-X/Y phase is intentionally
-        // independent of subsequent marker visibility.
-        state_ = LandingState::FIXED_XY_DESCENT;
+        // Hold altitude and finish visual alignment before freezing world X/Y.
+        state_ = LandingState::ALIGN;
+        aligned_since_sec_ = -1.0;
         descent_gate_since_sec_ = -1.0;
         descent_gate_state_ = LandingState::IDLE;
+        if (input.horizontal_error_m > config_.auto_land_error_m) {
+          fine_aligned_since_sec_ = -1.0;
+        } else if (fine_aligned_since_sec_ < 0.0) {
+          fine_aligned_since_sec_ = input.now_sec;
+        } else if (input.now_sec - fine_aligned_since_sec_ >=
+                   config_.fine_align_stable_sec) {
+          state_ = LandingState::FIXED_XY_DESCENT;
+        }
       } else if (state_ == LandingState::ALIGN) {
+        fine_aligned_since_sec_ = -1.0;
         const double alignment_gate =
             std::min(config_.align_error_m, config_.high_align_error_m);
         if (input.horizontal_error_m > alignment_gate) {

@@ -125,6 +125,9 @@ void validateStateMachineConfig(const StateMachineConfig& config) {
                         "stages/auto_land/height_m");
   requireFinitePositive(config.high_align_error_m, "stages/high/error_m");
   requireFinitePositive(config.high_descent_mps, "stages/high/descent_mps");
+  requireFinitePositive(config.auto_land_error_m, "stages/auto_land/error_m");
+  requireFinitePositive(config.fine_align_stable_sec,
+                        "stages/auto_land/fine_stable_sec");
   requireFinitePositive(config.fixed_descent_mps,
                         "stages/fixed_xy_descent/descent_mps");
   requireFinitePositive(config.target_loss_timeout_sec,
@@ -161,6 +164,10 @@ StateMachineConfig loadStateMachineConfig(ros::NodeHandle& private_node) {
                 "state_machine/high_align_error_m", config.high_align_error_m);
   loadParameter(private_node, "stages/high/descent_mps",
                 "state_machine/high_descent_mps", config.high_descent_mps);
+  loadParameter(private_node, "stages/auto_land/error_m",
+                config.auto_land_error_m);
+  loadParameter(private_node, "stages/auto_land/fine_stable_sec",
+                config.fine_align_stable_sec);
   loadParameter(private_node, "stages/fixed_xy_descent/descent_mps",
                 config.fixed_descent_mps);
   loadParameter(private_node, "safety/target_loss_timeout_sec",
@@ -903,6 +910,11 @@ class PrecisionLandingNode {
         critical_inputs_fresh,
         landing_contact);
     const StateOutput output = state_machine_.update(input);
+
+    if (output.state == LandingState::ALIGN &&
+        previous_state_ == LandingState::DESCEND_HIGH && fresh_pose) {
+      captureHoldPosition();
+    }
 
     if (output.state == LandingState::FIXED_XY_DESCENT &&
         previous_state_ != LandingState::FIXED_XY_DESCENT &&

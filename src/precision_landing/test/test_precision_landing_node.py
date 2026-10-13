@@ -489,7 +489,7 @@ class PrecisionLandingNodeTest(unittest.TestCase):
         self.publish_camera_info(valid=True)
         self.trigger_pub.publish(Bool(data=True))
         self.publish_centered_marker(
-            marker_id=37, frames=12, center_x=365
+            marker_id=37, frames=12, center_x=355
         )
         self.assertTrue(
             self.wait_for(
@@ -544,7 +544,7 @@ class PrecisionLandingNodeTest(unittest.TestCase):
         self.publish_camera_info(valid=True)
         self.trigger_pub.publish(Bool(data=True))
         self.publish_centered_marker(
-            marker_id=37, frames=12, center_x=365
+            marker_id=37, frames=12, center_x=355
         )
         self.assertTrue(
             self.wait_for(
