@@ -22,7 +22,7 @@
     <arg name="vehicle_ns" value="UAV0" />
     <arg name="rviz" value="false" />
     <!-- 与双机总入口调用的 run_fastlio_pane 保持一致。 -->
-    <arg name="odom_topic" value="$(arg odometry_topic)" />
+    <arg name="odom_topic" value="/UAV0/fast_lio/Odometry" />
     <arg name="high_freq_odom_topic" value="$(arg odometry_topic)" />
   </include>
 

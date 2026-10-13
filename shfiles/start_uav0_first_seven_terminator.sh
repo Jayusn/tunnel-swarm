@@ -237,7 +237,8 @@ run_fastlio_pane() {
   printf '[启动] UAV0 FAST-LIO\n'
   roslaunch fast_lio mapping_mid360.launch \
     vehicle_ns:=UAV0 \
-    odom_topic:="${ODOM_TOPIC}" \
+    odom_topic:=/UAV0/fast_lio/Odometry \
+    high_freq_odom_topic:="${ODOM_TOPIC}" \
     rviz:=false
   printf '[退出] FAST-LIO 分屏，返回码=%s\n' "$?"
   keep_pane_open

@@ -177,7 +177,8 @@ run_fastlio_pane() {
   wait_for_topic /UAV0/livox/imu 180 || keep_pane_open
   roslaunch fast_lio mapping_mid360.launch \
     vehicle_ns:=UAV0 \
-    odom_topic:="${ODOM_TOPIC}" \
+    odom_topic:=/UAV0/fast_lio/Odometry \
+    high_freq_odom_topic:="${ODOM_TOPIC}" \
     rviz:=false
   keep_pane_open
 }
