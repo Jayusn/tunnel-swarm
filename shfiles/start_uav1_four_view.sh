@@ -88,7 +88,7 @@ if [[ "${1:-}" == "--pane" ]]; then
       ;;
     fastlio)
       wait_for_master
-      run_and_keep_terminal roslaunch fast_lio mapping_mid360.launch vehicle_ns:=UAV1 odom_topic:=/UAV1/fast_lio/Odom_high_freq rviz:=false
+      run_and_keep_terminal roslaunch fast_lio mapping_mid360.launch vehicle_ns:=UAV1 odom_topic:=/UAV1/fast_lio/Odometry high_freq_odom_topic:=/UAV1/fast_lio/Odom_high_freq rviz:=false
       ;;
     detection)
       wait_for_master

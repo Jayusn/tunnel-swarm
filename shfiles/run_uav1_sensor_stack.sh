@@ -118,7 +118,10 @@ run_fastlio()
 {
     exec roslaunch fast_lio mapping_mid360.launch \
         rviz_goal_topic:=/UAV1/planning/goal \
-        publish_odometry:=false
+        vehicle_ns:=UAV1 \
+        odom_topic:=/UAV1/fast_lio/Odometry \
+        high_freq_odom_topic:=/UAV1/fast_lio/Odom_high_freq \
+        publish_odometry:=true
 }
 
 find_down_camera()
