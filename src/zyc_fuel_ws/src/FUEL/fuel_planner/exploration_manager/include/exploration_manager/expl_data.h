@@ -44,6 +44,7 @@ struct FSMParam {
   double trajectory_release_check_interval_;
   double trajectory_release_max_start_error_;
   double trajectory_release_max_velocity_error_;
+  double trajectory_restart_max_velocity_error_;
   double trajectory_release_max_acceleration_error_;
   // 预测旧轨迹将碰撞时，traj_server 只沿当前样条再执行这段时间，然后停在短段末端。
   double emergency_brake_horizon_;

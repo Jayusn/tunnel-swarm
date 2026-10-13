@@ -2642,9 +2642,7 @@ int FastExplorationManager::planExploreMotion(
                       "[mission_exploration] force entry transit to %.2f %.2f %.2f before frontier search.",
                       next_pos.x(), next_pos.y(), next_pos.z());
   }
-  if (!use_vertical_detour_target && !use_forced_entry_target && task_search_manager_ &&
-      (task_search_manager_->stage3Active() ||
-       task_search_manager_->finalExitFrontierGuardActive())) {
+  if (!use_vertical_detour_target && !use_forced_entry_target && task_search_manager_) {
     // 双侧开阔出口允许接管时，出口目标优先于普通frontier和通道中门目标。
     use_stage3_target =
         task_search_manager_->buildStage3Goal(pos, yaw[0], false, next_pos, next_yaw);

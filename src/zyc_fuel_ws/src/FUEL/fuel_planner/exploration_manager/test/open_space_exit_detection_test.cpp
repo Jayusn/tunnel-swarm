@@ -218,6 +218,36 @@ public:
     }
     check(manager.mapExitFootprintFree(Eigen::Vector3d(0.4,0,1)),
           "fully observed free body volume was rejected");
+    // 已有三次稳定出口证据但尚在1米外：普通frontier未耗尽也应优先接近。
+    TaskSearchManager pending;
+    pending.initialize(nh);
+    pending.setMap(map);
+    pending.enabled_ = true;
+    pending.exit_detection_enabled_ = true;
+    pending.exit_auto_crossing_enabled_ = true;
+    pending.require_stage2_detections_ = false;
+    pending.pending_exit_portal_outside_verified_ = true;
+    pending.pending_exit_outward_direction_ = Eigen::Vector2d::UnitX();
+    pending.pending_exit_candidate_ = Eigen::Vector3d(0.4,0,1);
+    pending.pending_exit_portal_center_ = Eigen::Vector3d(0.9,0,1);
+    pending.exit_confirmation_count_ = 3;
+    pending.exit_pending_observation_min_hits_ = 2;
+    Eigen::Vector3d pending_goal;
+    double pending_yaw = 0;
+    const Eigen::Vector3d pending_start(-0.5,0,1);
+    pending.exit_candidate_hits_ = 2;
+    check(!pending.buildStage3Goal(pending_start,0,false,pending_goal,pending_yaw),
+          "unstable exit preempted available frontiers");
+    pending.exit_candidate_hits_ = 3;
+    check(pending.buildStage3Goal(pending_start,0,false,pending_goal,pending_yaw),
+          "stable distant exit waited for frontier exhaustion");
+    check(pending_goal.x() > pending_start.x() && pending_goal.x() < 0.9 &&
+          !pending.exit_candidate_confirmed_ && !pending.exit_portal_locked_ &&
+          pending.mission_stage_ == TaskSearchManager::SEARCH_CORRIDOR,
+          "pending approach crossed or prematurely confirmed the exit");
+    pending.exit_auto_crossing_enabled_ = false;
+    check(!pending.buildStage3Goal(pending_start,0,false,pending_goal,pending_yaw),
+          "pending approach ignored observation-only mode");
     cloud.clear(); cloud.push_back(pcl::PointXYZ(0.4,0.1,1));
     for (int n=0;n<4;++n) map->inputPointCloud(cloud,1,Eigen::Vector3d(-1,0.1,1));
     check(!manager.mapExitFootprintFree(Eigen::Vector3d(0.4,0,1)),

@@ -934,7 +934,7 @@ int TaskSearchManager::selectSearchCandidate(
         matched = static_cast<int>(i);
       }
     }
-    if (matched >= 0) {
+    if (matched >= 0 && isTaskMotionAllowed(points[matched])) {
       ROS_WARN("[task_search] keep active goal idx=%d for %.2fs, match=%.2fm.", matched,
                (ros::Time::now() - active_goal_stamp_).toSec(), matched_dist);
       return matched;
@@ -943,6 +943,11 @@ int TaskSearchManager::selectSearchCandidate(
 
   for (size_t i = 0; i < points.size(); ++i) {
     const Eigen::Vector3d& point = points[i];
+    // 与选中后的任务进度检查一致，提前剔除，空集合当轮进入前向恢复。
+    if (!isTaskMotionAllowed(point)) {
+      ++rejected_revisit;
+      continue;
+    }
     if (goalTemporarilyBlocked(point) || goalDirectionTemporarilyBlocked(point)) {
       ++rejected_failed;
       continue;
@@ -2329,7 +2334,12 @@ bool TaskSearchManager::buildStage3Goal(const Eigen::Vector3d& cur_pos, double c
     // 任务允许接管时才锁定出口和冻结frontier，确认本身不阻止剩余目标搜索。
     if (require_stage2_detections_ && !allStage2TargetsFound()) return false;
     if (!exit_candidate_confirmed_) {
-      return search_exhausted && buildPendingExitObservationGoal(cur_pos, goal, goal_yaw);
+      // 稳定候选优先接近到近场确认范围，不等待普通frontier耗尽。
+      // 这里只生成门内观察目标，1米确认距离和穿越条件不变。
+      const bool stable_pending_exit =
+          exit_candidate_hits_ >= std::max(1, exit_confirmation_count_);
+      return (search_exhausted || stable_pending_exit) &&
+          buildPendingExitObservationGoal(cur_pos, goal, goal_yaw);
     }
     if (!exit_portal_outside_verified_) return false;
     beginExitCrossing(ros::Time::now());

@@ -51,6 +51,8 @@ void FastExplorationFSM::init(ros::NodeHandle& nh) {
            fp_->trajectory_release_max_start_error_, 0.20);
   nh.param("fsm/trajectory_release_max_velocity_error",
            fp_->trajectory_release_max_velocity_error_, 0.15);
+  nh.param("fsm/trajectory_restart_max_velocity_error",
+           fp_->trajectory_restart_max_velocity_error_, 0.25);
   nh.param("fsm/trajectory_release_max_acceleration_error",
            fp_->trajectory_release_max_acceleration_error_, 0.50);
   nh.param("fsm/emergency_brake_horizon", fp_->emergency_brake_horizon_, 0.12);
@@ -573,6 +575,12 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
         const double start_error = (trajectory_start - reviewed_position).norm();
         const double velocity_error =
             (trajectory_start_velocity - reviewed_velocity).norm();
+        // 只对旧轨迹结束后的端点保持放宽重新起步容差，飞行中换轨保持原值。
+        const bool restarting_from_endpoint = active_traj_valid_ && endpoint_hold_active_ &&
+            (now - active_traj_.start_time_).toSec() >= active_traj_.duration_;
+        const double max_velocity_error = restarting_from_endpoint
+            ? fp_->trajectory_restart_max_velocity_error_
+            : fp_->trajectory_release_max_velocity_error_;
         const double acceleration_error =
             (trajectory_start_acceleration - release_reference_acceleration).norm();
         // 原地转向在规划器内已经完成一次连续静止确认。这里保留位置、加速度、
@@ -585,12 +593,12 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
             : exploration_policy::isTrajectoryReleaseStateContinuous(
                   start_error, velocity_error, acceleration_error,
                   fp_->trajectory_release_max_start_error_,
-                  fp_->trajectory_release_max_velocity_error_,
+                  max_velocity_error,
                   fp_->trajectory_release_max_acceleration_error_);
         const bool position_continuous =
             start_error <= fp_->trajectory_release_max_start_error_;
         const bool velocity_continuous = pending_turn_in_place_ ||
-            velocity_error <= fp_->trajectory_release_max_velocity_error_;
+            velocity_error <= max_velocity_error;
         const bool acceleration_continuous =
             acceleration_error <= fp_->trajectory_release_max_acceleration_error_;
         const bool controlled_escape_start =

@@ -57,6 +57,14 @@ int main() {
 
   // 发布前必须同时满足位置、速度和加速度连续性，边界值允许通过。
   assert(isTrajectoryReleaseStateContinuous(0.08, 0.15, 0.50, 0.08, 0.15, 0.50));
+  // 19:05出口悬停段实测速度误差；起步0.25允许，正常换轨0.15仍拒绝。
+  for (double error : {0.158, 0.179, 0.167, 0.171, 0.159, 0.188, 0.174}) {
+    assert(isTrajectoryReleaseStateContinuous(0.052,error,0.0,0.08,0.25,0.50));
+    assert(!isTrajectoryReleaseStateContinuous(0.052,error,0.0,0.08,0.15,0.50));
+  }
+  assert(!isTrajectoryReleaseStateContinuous(0.052,0.251,0.0,0.08,0.25,0.50));
+  assert(!isTrajectoryReleaseStateContinuous(0.081,0.188,0.0,0.08,0.25,0.50));
+
   assert(!isTrajectoryReleaseStateContinuous(0.081, 0.15, 0.50, 0.08, 0.15, 0.50));
   assert(!isTrajectoryReleaseStateContinuous(0.08, 0.151, 0.50, 0.08, 0.15, 0.50));
   assert(!isTrajectoryReleaseStateContinuous(0.08, 0.15, 0.501, 0.08, 0.15, 0.50));
