@@ -35,7 +35,7 @@ input_cost_exponential: 0.5     # scaling for input costs
 # body_rate.x/y 是发给 MAVROS/PX4 的机体系角速度命令，单位 rad/s；源码值先保留，首飞前建议按内环能力复查。
 max_bodyrate_xy:    1.5       # ~ pi [rad/s]
 # body_rate.z 是机体系偏航角速度命令，单位 rad/s。
-max_bodyrate_z:    1.0     # planned yaw rate 30 deg/s, with control margin [rad/s]
+max_bodyrate_z:    2.0     # planned yaw rate 30 deg/s, with control margin [rad/s]
 # NMPC 世界系正常速度软约束；v_x/v_y/v_z 使用 ENU 世界系，单位 m/s。
 max_velocity_xy:    1.5
 max_velocity_z:     1.0
