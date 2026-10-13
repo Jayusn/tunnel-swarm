@@ -20,7 +20,7 @@ def test_search_config_uses_calibrated_down_camera_extrinsic():
     assert math.isclose(sum(value * value for value in quaternion), 1.0, abs_tol=1e-9)
     assert config["mission"]["require_stage_gate"] is True
     assert config["topics"]["landing_trigger"] == "/UAV0/need_to_land"
-    assert config["handoff"]["approach_height_m"] == 2.0
+    assert config["handoff"]["approach_height_m"] == 1.70
 
 
 def test_uav1_override_uses_its_constrained_down_camera_extrinsic():
@@ -295,7 +295,7 @@ def test_front_hint_uses_d435_depth_tf_and_separate_coarse_topic():
     config = yaml.safe_load(
         (PACKAGE / "config/front_aruco_hint.yaml").read_text()
     )
-    assert config["marker"]["size_m"] == 0.60
+    assert config["marker"]["size_m"] == 0.50
     assert config["marker"]["stable_frames"] == 5
     assert config["depth_validation"]["required"] is True
     assert config["frames"]["body"] == "UAV0/body"

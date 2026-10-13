@@ -45,13 +45,13 @@ def test_conservative_configuration_contract():
         cfg = yaml.safe_load(config_file)
 
     assert cfg["marker"]["dictionary"] == "DICT_4X4_250"
-    assert cfg["marker"]["size_m"] == 0.60
+    assert cfg["marker"]["size_m"] == 0.50
     assert cfg["topics"]["trigger"] == "/need_to_land"
     assert cfg["topics"]["image"] == "/usb_cam/image_raw"
     assert cfg["control"]["publish_rate_hz"] >= 20.0
     assert cfg["safety"]["require_camera_info"] is True
-    assert cfg["stages"]["high"]["min_height_m"] == 1.50
-    assert cfg["stages"]["auto_land"]["height_m"] == 1.50
+    assert cfg["stages"]["high"]["min_height_m"] == 1.20
+    assert cfg["stages"]["auto_land"]["height_m"] == 1.20
     assert cfg["stages"]["fixed_xy_descent"]["descent_mps"] == 0.10
     assert cfg["stages"]["fixed_xy_descent"]["cutoff_height_m"] == 0.30
 
@@ -152,6 +152,7 @@ def test_every_shipped_leaf_is_a_canonical_node_private_parameter():
         "safety/target_loss_timeout_sec",
         "safety/reacquire_timeout_sec",
         "safety/total_timeout_sec",
+        "state_machine/align_error_m",
         "stages/high/min_height_m",
         "stages/high/error_m",
         "stages/high/descent_mps",
