@@ -122,6 +122,21 @@
            value="$(arg enable_dual_uav_landing_coordinator)" />
     </include>
 
+    <!-- RViz 图像叠加 UAV0 的 FAST-LIO XYZ，仅处理显示图像。 -->
+    <node if="$(arg enable_precision_landing)"
+          pkg="uav0_competition_bringup" type="aruco_debug_height.py"
+          name="landing_xyz_overlay" ns="$(arg landing_vehicle_ns)" output="screen">
+      <param name="odometry_topic" value="/$(arg landing_vehicle_ns)/fast_lio/Odom_high_freq" />
+      <remap from="/UAV0/aruco_observer/front/debug_image"
+             to="/$(arg landing_vehicle_ns)/landing/front/debug_image" />
+      <remap from="/UAV0/aruco_observer/down/debug_image"
+             to="/$(arg landing_vehicle_ns)/landing/combined_debug_image" />
+      <remap from="/UAV0/aruco_observer/front/height_image"
+             to="/$(arg landing_vehicle_ns)/landing/front/xyz_image" />
+      <remap from="/UAV0/aruco_observer/down/height_image"
+             to="/$(arg landing_vehicle_ns)/landing/combined_xyz_image" />
+    </node>
+
     <!-- 只在前机启动一份；通过 ROS/WiFi 话题协调两机使用不同 ArUco 平台。 -->
     <include if="$(arg enable_dual_uav_landing_coordinator)"
              file="$(find precision_landing)/launch/dual_uav_landing_coordinator.launch" />

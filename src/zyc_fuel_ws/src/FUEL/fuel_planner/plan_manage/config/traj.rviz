@@ -87,7 +87,7 @@ Visualization Manager:
           Value: true
         - Class: rviz/Image
           Enabled: true
-          Image Topic: /UAV0/landing/front/debug_image
+          Image Topic: /UAV0/landing/front/xyz_image
           Max Value: 1
           Median window: 5
           Min Value: 0
@@ -99,7 +99,7 @@ Visualization Manager:
           Value: true
         - Class: rviz/Image
           Enabled: true
-          Image Topic: /UAV0/landing/combined_debug_image
+          Image Topic: /UAV0/landing/combined_xyz_image
           Max Value: 1
           Median window: 5
           Min Value: 0
