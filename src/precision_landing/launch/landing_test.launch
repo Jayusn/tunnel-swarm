@@ -1,4 +1,7 @@
 <launch>
+  <arg name="vehicle_ns" default="UAV0"/>
+  <arg name="topic_prefix" default="$(eval '/' + arg('vehicle_ns').strip('/'))"/>
+  <arg name="start_camera" default="true"/>
   <!-- 安全默认值：比赛流程禁止测试节点自行解锁、起飞和悬停。 -->
   <arg name="allow_arming" default="false"/>
   <arg name="auto_start" default="false"/>
@@ -6,10 +9,28 @@
   <!-- 2.05 m target with 0.05 m tolerance prevents handoff below 2.00 m. -->
   <arg name="takeoff_height_m" default="2.05"/>
 
-  <include file="$(find precision_landing)/launch/precision_landing.launch"/>
+  <include if="$(arg start_camera)" file="$(find precision_landing)/launch/down_camera.launch">
+    <arg name="vehicle_ns" value="$(arg vehicle_ns)"/>
+  </include>
+
+  <!-- Standalone takeoff hands over directly to precision landing, without a planner. -->
+  <include file="$(find precision_landing)/launch/precision_landing.launch">
+    <arg name="vehicle_ns" value="$(arg vehicle_ns)"/>
+    <arg name="enable_landing_search" value="false"/>
+    <arg name="enable_front_aruco_hint" value="false"/>
+    <arg name="enable_setpoint_arbiter" value="false"/>
+    <arg name="landing_setpoint_input" value="$(arg topic_prefix)/mavros/setpoint_raw/local"/>
+  </include>
 
   <node pkg="precision_landing" type="landing_test_mission_node"
         name="landing_test" output="screen" required="true">
+    <param name="mavros_state_topic" value="$(arg topic_prefix)/mavros/state"/>
+    <param name="local_pose_topic" value="$(arg topic_prefix)/mavros/local_position/pose"/>
+    <param name="position_setpoint_topic" value="$(arg topic_prefix)/mavros/setpoint_position/local"/>
+    <param name="landing_trigger_topic" value="$(arg topic_prefix)/need_to_land"/>
+    <param name="landing_state_topic" value="$(arg topic_prefix)/landing/state"/>
+    <param name="arming_service" value="$(arg topic_prefix)/mavros/cmd/arming"/>
+    <param name="set_mode_service" value="$(arg topic_prefix)/mavros/set_mode"/>
     <param name="allow_arming" value="$(arg allow_arming)"/>
     <param name="auto_start" value="$(arg auto_start)"/>
     <param name="auto_start_delay_sec" value="$(arg auto_start_delay_sec)"/>
