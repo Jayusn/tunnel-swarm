@@ -265,30 +265,26 @@ def aloam():
         rate.sleep()  # 等待下一个循环
 
 def fastlio():
-    """
-    fastlio SLAM主函数
-    以50Hz的频率获取并发布更新后的姿态
-    """
-    global local_pose
-    rate = rospy.Rate(50)  # 设置循环频率为50Hz
+    """实机按最多50Hz转发高频里程计，保留测量时刻；仿真由真值回调发布。"""
+    rate = rospy.Rate(50)
+    last_stamp = None
     while not rospy.is_shutdown():
-        try:
-            # 尝试获取从'camera_init'到'aft_mapped'的坐标变换，即fastlio里程计中对应的坐标系变换
-            tfstamped = tfBuffer.lookup_transform(fastlio_world_frame, fastlio_body_frame, rospy.Time(0))
-        except:
-            continue  # 如果获取失败，继续下一次循环
-        local_pose.header.stamp = rospy.Time().now()  # 更新时间戳
-        local_pose.pose.position = tfstamped.transform.translation  # 更新位置
-        local_pose.pose.orientation = tfstamped.transform.rotation  # 更新朝向
-        # 2026-07-28: on/aligned 仿真模式的 MAVROS 外部视觉由 gazebo_truth_callback 独占发布，
-        # 禁止与 FAST-LIO TF 两路 PoseStamped 交替灌入 PX4；off 模式保持原有真实雷达链路。
-        if not enable_truth_odom:
-            pose_pub.publish(local_pose)  # 发布更新后的姿态
-        rate.sleep()  # 等待下一个循环
-    
+        odom = latest_fastlio_odom
+        if not enable_truth_odom and odom is not None:
+            # 不把旧 TF 重新盖上当前时间，也不重复发布同一次测量。
+            if last_stamp != odom.header.stamp:
+                pose = PoseStamped()
+                pose.header.stamp = odom.header.stamp
+                pose.header.frame_id = 'map'
+                pose.pose = odom.pose.pose
+                pose_pub.publish(pose)
+                last_stamp = odom.header.stamp
+        rate.sleep()
+
 if __name__ == '__main__':
-    if enable_truth_odom:
+    if enable_truth_odom or laser_slam_type == 'fastlio':
         rospy.Subscriber(odom_topic, Odometry, odom_callback, queue_size=1)
+    if enable_truth_odom:
         rospy.Subscriber('/gazebo/model_states', ModelStates, gazebo_truth_callback, queue_size=1)
         rospy.loginfo(
             '[laser_mid360] Truth odom output is ON. mode=%s, odom=%s truth=%s frames=%s->%s.',
