@@ -533,7 +533,7 @@
         <!-- 有锁存出口时目标为出口外0.2m，门外人工触发则从当前位置前飞0.2m；保持航向、目标高度0.6m，到达后开始前视扫描。 -->
         <param name="front_approach_distance" value="0.2"/>
         <param name="front_approach_height" value="0.60"/>
-        <param name="front_approach_arrive_xy" value="0.10"/>
+        <param name="front_approach_arrive_xy" value="0.15"/>
         <param name="front_scan_anchor_topic" value="/UAV0/landing/front_scan_anchor"/>
         <param name="exit_portal_topic" value="/UAV0/mission/final_exit"/>
         <param name="search_height" value="1.7"/>
@@ -543,8 +543,8 @@
         <param name="sweep_motion_reset_distance" value="0.10"/>
         <param name="search_width" value="3.0"/>
         <param name="search_depth" value="4.0"/>
-        <param name="arrive_xy" value="0.30"/>
-        <param name="arrive_z" value="0.15"/>
+        <param name="arrive_xy" value="0.35"/>
+        <param name="arrive_z" value="0.20"/>
         <param name="front_hint_dwell_sec" value="2.0"/>
         <param name="front_hint_initial_wait_sec" value="1.0"/>
         <param name="front_yaw_scan_half_angle_rad" value="0.7854"/>
