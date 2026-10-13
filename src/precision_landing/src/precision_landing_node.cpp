@@ -444,6 +444,13 @@ class PrecisionLandingNode {
     camera_to_body_translation_ = Eigen::Vector3d(
         camera_to_body_translation_m_[0], camera_to_body_translation_m_[1],
         camera_to_body_translation_m_[2]);
+    std::vector<double> center_bias{0.0, 0.0};
+    loadParameter(private_node_, "center_alignment/bias_xy_m", center_bias);
+    if (center_bias.size() != 2U ||
+        !std::all_of(center_bias.begin(), center_bias.end(), isFinite)) {
+      throw std::runtime_error("~center_alignment/bias_xy_m must contain 2 finite values");
+    }
+    center_bias_xy_ = Eigen::Vector2d(center_bias[0], center_bias[1]);
   }
 
   void configureRosInterfaces() {
@@ -863,6 +870,9 @@ class PrecisionLandingNode {
         candidate_marker_height_m =
             latest_observation_.position_camera.z();
       }
+      // Measured error when the physical airframe center is above the marker.
+      // Apply once, before both horizontal control and alignment gates.
+      current_error_body -= center_bias_xy_;
       if (!isFinite(candidate_marker_height_m) ||
           candidate_marker_height_m <= 0.0) {
         target_visible = false;
@@ -1650,6 +1660,7 @@ class PrecisionLandingNode {
       (Eigen::Matrix3d() << 0.0, -1.0, 0.0,
                            -1.0, 0.0, 0.0,
                             0.0, 0.0, -1.0).finished()};
+  Eigen::Vector2d center_bias_xy_{Eigen::Vector2d::Zero()};
   std::vector<double> camera_to_body_translation_m_{0.0, 0.0, 0.0};
   Eigen::Vector3d camera_to_body_translation_{Eigen::Vector3d::Zero()};
 };

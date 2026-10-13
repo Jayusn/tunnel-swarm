@@ -143,6 +143,8 @@
         name="precision_landing_node" ns="$(arg vehicle_ns)" output="screen">
     <rosparam command="load"
               file="$(find precision_landing)/config/precision_landing.yaml"/>
+    <rosparam if="$(eval arg('vehicle_ns').strip('/') == 'UAV0')"
+              command="load" file="$(find precision_landing)/config/center_offset_uav0.yaml"/>
     <rosparam if="$(eval arg('camera_extrinsic_config') != '')"
               command="load" file="$(arg camera_extrinsic_config)"/>
 
