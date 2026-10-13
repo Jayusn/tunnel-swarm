@@ -121,42 +121,102 @@ bool VerticalObstacleSideLock::isGroundConnected(
       downward_occupancy, step_size, config_.min_vertical_gap);
 }
 
-double VerticalObstacleSideLock::measureSideWidth(
-    const GridMap::Ptr &grid_map, const double step_size,
-    const Eigen::Vector3d &center, const Eigen::Vector3d &direction,
-    double &center_offset) const
+std::vector<VerticalObstacleSideLock::Passage>
+VerticalObstacleSideLock::findSplitPassages(
+    const std::vector<std::vector<int>> &occupancy,
+    const double step_size, const double min_width,
+    std::pair<int, int> *divider_rows)
 {
-  bool reached_free_space = false;
-  double free_width = 0.0;
-  double first_free_offset = 0.0;
-  double last_free_offset = 0.0;
-  const int sample_count = std::max(
-      1, static_cast<int>(std::ceil(config_.corridor_half_width / step_size)));
-  for (int index = 1; index <= sample_count; ++index)
-  {
-    const Eigen::Vector3d point = center + index * step_size * direction;
-    const int occupancy = grid_map->getInflateOccupancy(point);
-    if (!reached_free_space)
+  if (occupancy.size() < 3 || occupancy.front().size() < 3 ||
+      !std::isfinite(step_size) || step_size <= 0.0 ||
+      !std::isfinite(min_width) || min_width <= 0.0)
+    return {};
+  const int rows = occupancy.size(), cols = occupancy.front().size();
+  for (const auto &row : occupancy)
+    if (static_cast<int>(row.size()) != cols)
+      return {};
+
+  // 接触采样边界的占据连通块属于外墙或尚未完整观测的障碍，不能当作中间分隔物。
+  std::vector<std::vector<bool>> visited(rows, std::vector<bool>(cols, false));
+  int first_row = rows, last_row = -1;
+  bool intersects_search_line = false;
+  for (int r = 0; r < rows; ++r)
+    for (int c = 0; c < cols; ++c)
     {
-      if (occupancy == 0)
+      if (visited[r][c] || occupancy[r][c] <= 0)
+        continue;
+      std::vector<std::pair<int, int>> component{{r, c}};
+      visited[r][c] = true;
+      bool bounded = true, intersects = false;
+      int low = r, high = r;
+      for (size_t i = 0; i < component.size(); ++i)
       {
-        reached_free_space = true;
-        first_free_offset = index * step_size;
-        last_free_offset = first_free_offset;
-        free_width = step_size;
+        const int x = component[i].first, y = component[i].second;
+        low = std::min(low, x);
+        high = std::max(high, x);
+        intersects = intersects || y == cols / 2;
+        for (int dx = -1; dx <= 1; ++dx)
+          for (int dy = -1; dy <= 1; ++dy)
+          {
+            if (dx == 0 && dy == 0)
+              continue;
+            const int nx = x + dx, ny = y + dy;
+            if (nx < 0 || nx >= rows || ny < 0 || ny >= cols ||
+                occupancy[nx][ny] < 0)
+            {
+              bounded = false;
+              continue;
+            }
+            if (occupancy[nx][ny] > 0 && !visited[nx][ny])
+            {
+              visited[nx][ny] = true;
+              component.emplace_back(nx, ny);
+            }
+          }
       }
+      if (intersects && !bounded)
+        return {};
+      if (bounded)
+      {
+        first_row = std::min(first_row, low);
+        last_row = std::max(last_row, high);
+        intersects_search_line = intersects_search_line || intersects;
+      }
+    }
+  if (!intersects_search_line || last_row < first_row)
+    return {};
+
+  // 在完整障碍段及其前后各一格上求自由空间交集，避免把局部空洞当成通路。
+  std::vector<bool> through(cols, true);
+  for (int r = first_row - 1; r <= last_row + 1; ++r)
+    for (int c = 0; c < cols; ++c)
+      through[c] = through[c] && occupancy[r][c] == 0;
+
+  std::vector<Passage> passages;
+  const auto &cross_section = occupancy[(first_row + last_row) / 2];
+  for (int c = 0; c < cols;)
+  {
+    if (!through[c])
+    {
+      ++c;
       continue;
     }
-    if (occupancy != 0)
-      break;
-    last_free_offset = index * step_size;
-    free_width += step_size;
+    const int begin = c;
+    while (c < cols && through[c])
+      ++c;
+    // 两端必须确实碰到墙或中间分隔物；扫描上限不能假装成墙。
+    if (begin == 0 || c == cols ||
+        cross_section[begin - 1] <= 0 || cross_section[c] <= 0)
+      continue;
+    if ((c - begin) * step_size + 1.0e-6 >= min_width)
+      passages.push_back({(begin - cols / 2 - 0.5) * step_size,
+                          (c - cols / 2 - 0.5) * step_size});
   }
-  const double obstacle_boundary_offset = first_free_offset - 0.5 * step_size;
-  const double wall_boundary_offset = last_free_offset + 0.5 * step_size;
-  center_offset = computePassageCenter(obstacle_boundary_offset,
-                                      wall_boundary_offset);
-  return free_width;
+  if (passages.size() < 2)
+    return {};
+  if (divider_rows)
+    *divider_rows = {first_row, last_row};
+  return passages;
 }
 
 bool VerticalObstacleSideLock::detectCandidate(
@@ -204,16 +264,29 @@ bool VerticalObstacleSideLock::detectCandidate(
         candidate.half_length,
         std::abs((point - candidate.center).dot(candidate.axis)));
   }
-  candidate.left_width = measureSideWidth(
-      grid_map, step_size, candidate.center, candidate.lateral,
-      candidate.left_center_offset);
-  candidate.right_width = measureSideWidth(
-      grid_map, step_size, candidate.center, -candidate.lateral,
-      candidate.right_center_offset);
-  return std::isfinite(candidate.left_width) &&
-         std::isfinite(candidate.right_width) &&
-         candidate.left_width >= config_.min_side_width &&
-         candidate.right_width >= config_.min_side_width;
+  // 横向覆盖完整的 1.5m 通道，包括柱子偏心时较远的一侧外墙。
+  const int lateral_cells = static_cast<int>(
+      std::ceil(2.0 * config_.corridor_half_width / step_size));
+  const int longitudinal_cells = static_cast<int>(std::ceil(
+      (candidate.half_length + config_.longitudinal_margin) / step_size)) + 2;
+  std::vector<std::vector<int>> occupancy(
+      2 * longitudinal_cells + 1, std::vector<int>(2 * lateral_cells + 1));
+  for (int r = -longitudinal_cells; r <= longitudinal_cells; ++r)
+    for (int c = -lateral_cells; c <= lateral_cells; ++c)
+      occupancy[r + longitudinal_cells][c + lateral_cells] =
+          grid_map->getInflateOccupancy(candidate.center +
+              r * step_size * candidate.axis + c * step_size * candidate.lateral);
+  std::pair<int, int> divider_rows;
+  candidate.passages = findSplitPassages(
+      occupancy, step_size, config_.min_side_width, &divider_rows);
+  if (!candidate.passages.empty())
+  {
+    candidate.center += (0.5 * (divider_rows.first + divider_rows.second) -
+                         longitudinal_cells) * step_size * candidate.axis;
+    candidate.half_length =
+        0.5 * (divider_rows.second - divider_rows.first + 1) * step_size;
+  }
+  return !candidate.passages.empty();
 }
 
 bool VerticalObstacleSideLock::trySearch(
@@ -229,115 +302,63 @@ bool VerticalObstacleSideLock::trySearch(
   Candidate candidate;
   if (!detectCandidate(grid_map, step_size, start, end, candidate))
   {
-    if (!lock_.active)
-      return false;
-
-    const Eigen::Vector3d segment = end - start;
-    const double segment_length = segment.norm();
-    if (segment_length <= 1.0e-3)
-      return false;
-    const Eigen::Vector3d segment_direction = segment / segment_length;
-    const double projection = std::max(
-        0.0, std::min(segment_length,
-                      (lock_.center - start).dot(segment_direction)));
-    const Eigen::Vector3d nearest = start + projection * segment_direction;
-    if ((nearest - lock_.center).head<2>().norm() >
-        config_.association_distance + lock_.half_length +
-            config_.longitudinal_margin)
-    {
-      lock_.active = false;
-      return false;
-    }
-
-    AStarSearchRegion locked_region;
-    locked_region.enabled = true;
-    locked_region.limit_corridor = true;
-    locked_region.limit_side = true;
-    locked_region.prefer_side_center = true;
-    locked_region.corridor_half_width = config_.corridor_half_width;
-    locked_region.side_half_length = lock_.half_length +
-                                     config_.longitudinal_margin;
-    locked_region.time_limit = config_.search_timeout;
-    locked_region.report_timeout = true;
-    locked_region.line_start = start;
-    locked_region.line_end = end;
-    locked_region.side_origin = lock_.center;
-    locked_region.side_normal = lock_.normal;
-    locked_region.side_axis = lock_.axis;
-    locked_region.side_center_offset = lock_.passage_center_offset;
-
-    path.clear();
-    if (a_star.AstarSearch(step_size, start, end, &locked_region) !=
-        ASTAR_RET::SUCCESS)
-    {
-      locked_region.prefer_side_center = false;
-      if (a_star.AstarSearch(step_size, start, end, &locked_region) !=
-          ASTAR_RET::SUCCESS)
-        return true;
-    }
-    path = a_star.getPath();
-    ROS_INFO_THROTTLE(1.0,
-                      "[接地障碍侧锁] 当前帧候选不完整，继续保持上次选定侧。");
-    return true;
+    lock_.active = false;
+    return false;
   }
 
   const bool same_obstacle = lock_.active && isSameObstacle(
       lock_.center, lock_.axis, lock_.normal, lock_.half_length,
       candidate.center, candidate.half_length, config_.association_distance,
       config_.longitudinal_margin);
-  const Eigen::Vector3d preferred_normal = chooseSideNormal(
-      unconstrained_path, candidate.center, candidate.lateral,
-      candidate.left_width, candidate.right_width,
-      config_.width_similarity_tolerance);
-  const bool widths_clearly_different =
-      std::abs(candidate.left_width - candidate.right_width) >
-      config_.width_similarity_tolerance + 1.0e-6;
-  if (!same_obstacle)
+  Passage selected = candidate.passages.front();
+  for (const auto &passage : candidate.passages)
   {
-    lock_.active = true;
-    lock_.center = candidate.center;
-    lock_.axis = candidate.axis;
-    lock_.normal = preferred_normal;
-    lock_.half_length = candidate.half_length;
-    ROS_INFO("[接地障碍侧锁] 左右净宽 %.2fm / %.2fm，锁定%s侧，通过中心偏移 %.2fm。",
-             candidate.left_width, candidate.right_width,
-             lock_.normal.dot(candidate.lateral) >= 0.0 ? "左" : "右",
-             lock_.normal.dot(candidate.lateral) >= 0.0
-                 ? candidate.left_center_offset : candidate.right_center_offset);
+    const double width = passage.max_offset - passage.min_offset;
+    const double selected_width = selected.max_offset - selected.min_offset;
+    const double center = 0.5 * (passage.min_offset + passage.max_offset);
+    const double selected_center = 0.5 * (selected.min_offset + selected.max_offset);
+    if (width > selected_width + 1.0e-6 ||
+        (same_obstacle && std::abs(width - selected_width) <= 1.0e-6 &&
+         std::abs(center - lock_.passage_center_offset) <
+             std::abs(selected_center - lock_.passage_center_offset)))
+      selected = passage;
   }
-  else
-  {
-    lock_.center = candidate.center;
-    lock_.half_length = std::max(lock_.half_length, candidate.half_length);
-    if (widths_clearly_different)
-      lock_.normal = preferred_normal;
-  }
-  const bool selected_left = lock_.normal.dot(candidate.lateral) >= 0.0;
-  lock_.passage_center_offset = selected_left
-      ? candidate.left_center_offset : candidate.right_center_offset;
+  const double passage_center = 0.5 * (selected.min_offset + selected.max_offset);
+  if (!same_obstacle ||
+      std::abs(passage_center - lock_.passage_center_offset) > step_size)
+    ROS_INFO("[通道分流侧锁] 确认 %zu 条贯通通路，选择最宽 %.2fm，中心偏移 %.2fm。",
+             candidate.passages.size(), selected.max_offset - selected.min_offset,
+             passage_center);
+  lock_.active = true;
+  lock_.center = candidate.center;
+  lock_.axis = candidate.axis;
+  lock_.normal = passage_center >= 0.0 ? candidate.lateral : -candidate.lateral;
+  lock_.half_length = candidate.half_length;
+  lock_.passage_center_offset = passage_center;
 
   AStarSearchRegion region;
   region.enabled = true;
-  region.limit_corridor = true;
-  region.limit_side = true;
+  region.limit_passage = true;
   region.prefer_side_center = true;
   region.corridor_half_width = config_.corridor_half_width;
-  region.side_half_length = candidate.half_length + config_.longitudinal_margin;
+  region.side_half_length = candidate.half_length;
   region.time_limit = config_.search_timeout;
   region.report_timeout = true;
   region.line_start = start;
   region.line_end = end;
   region.side_origin = lock_.center;
-  region.side_normal = lock_.normal;
+  region.side_normal = candidate.lateral;
   region.side_axis = lock_.axis;
-  region.side_center_offset = lock_.passage_center_offset;
+  region.side_center_offset = passage_center;
+  region.passage_min_offset = selected.min_offset;
+  region.passage_max_offset = selected.max_offset;
 
   path.clear();
   if (a_star.AstarSearch(step_size, start, end, &region) != ASTAR_RET::SUCCESS)
   {
     region.prefer_side_center = false;
     ROS_WARN_THROTTLE(1.0,
-                      "[接地障碍侧锁] 中心参考搜索失败，保持选定侧重试。");
+                      "[通道分流侧锁] 中心参考搜索失败，保持最宽通路重试。");
     if (a_star.AstarSearch(step_size, start, end, &region) != ASTAR_RET::SUCCESS)
       return true;
   }

@@ -29,6 +29,18 @@ public:
   void setConfig(const Config &config);
   const Config &config() const;
 
+  struct Passage
+  {
+    double min_offset;
+    double max_offset;
+  };
+
+  // 平面采样的行沿通道方向，列沿横向；只返回与外墙分离的障碍形成的贯通间隙。
+  static std::vector<Passage> findSplitPassages(
+      const std::vector<std::vector<int>> &occupancy,
+      double step_size, double min_width,
+      std::pair<int, int> *divider_rows = nullptr);
+
   bool trySearch(AStar &a_star, const GridMap::Ptr &grid_map, double step_size,
                  const Eigen::Vector3d &start, const Eigen::Vector3d &end,
                  const std::vector<Eigen::Vector3d> &unconstrained_path,
@@ -60,10 +72,7 @@ private:
     Eigen::Vector3d axis{Eigen::Vector3d::Zero()};
     Eigen::Vector3d lateral{Eigen::Vector3d::Zero()};
     double half_length{0.0};
-    double left_width{0.0};
-    double right_width{0.0};
-    double left_center_offset{0.0};
-    double right_center_offset{0.0};
+    std::vector<Passage> passages;
   };
 
   struct Lock
@@ -82,10 +91,6 @@ private:
                        Candidate &candidate) const;
   bool isGroundConnected(const GridMap::Ptr &grid_map, double step_size,
                          const Eigen::Vector3d &point) const;
-  double measureSideWidth(const GridMap::Ptr &grid_map, double step_size,
-                          const Eigen::Vector3d &center,
-                          const Eigen::Vector3d &direction,
-                          double &center_offset) const;
 
   Config config_;
   Lock lock_;

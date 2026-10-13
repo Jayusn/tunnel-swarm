@@ -108,6 +108,47 @@ TEST_F(AStarVehicleOccupancy, WallTimeoutWorksWithFrozenRosTime)
   EXPECT_LT(elapsed, 0.25);
 }
 
+TEST_F(AStarVehicleOccupancy, SplitPassageRestrictionIsLocalToDivider)
+{
+  search.setOccupancyChecker([](const Vector3d &position) {
+    return std::abs(position.x()) < 0.30 && std::abs(position.y()) < 0.40;
+  });
+  region.limit_passage = true;
+  region.side_origin = Vector3d(0.0, 0.0, 1.0);
+  region.side_axis = Vector3d::UnitX();
+  region.side_normal = Vector3d::UnitY();
+  region.side_half_length = 0.5;
+  region.passage_min_offset = 0.5;
+  region.passage_max_offset = 1.0;
+  // 起终点在所选通路之外，但在分隔物前后允许正常转入/转出。
+  EXPECT_EQ(search.AstarSearch(0.25, Vector3d(-1.0, 0.0, 1.0),
+      Vector3d(1.0, 0.0, 1.0), &region), ASTAR_RET::SUCCESS);
+  for (const auto &point : search.getPath())
+    if (std::abs(point.x()) <= 0.5)
+    {
+      EXPECT_GE(point.y(), 0.5 - 1.0e-6);
+      EXPECT_LE(point.y(), 1.0 + 1.0e-6);
+    }
+}
+
+TEST_F(AStarVehicleOccupancy, SplitPassageFailureDoesNotConstrainOrdinarySearch)
+{
+  search.setOccupancyChecker([](const Vector3d &position) {
+    return std::abs(position.x()) < 0.30 && std::abs(position.y()) < 0.40;
+  });
+  region.limit_passage = true;
+  region.side_origin = Vector3d(0.0, 0.0, 1.0);
+  region.side_axis = Vector3d::UnitX();
+  region.side_normal = Vector3d::UnitY();
+  region.side_half_length = 0.5;
+  region.passage_min_offset = 0.0;
+  region.passage_max_offset = 0.25;
+  const Vector3d start(-1.0, 0.0, 1.0), end(1.0, 0.0, 1.0);
+  EXPECT_EQ(search.AstarSearch(0.25, start, end, &region), ASTAR_RET::SEARCH_ERR);
+  region.limit_passage = false;
+  EXPECT_EQ(search.AstarSearch(0.25, start, end, &region), ASTAR_RET::SUCCESS);
+}
+
 } // namespace
 
 int main(int argc, char **argv)

@@ -85,6 +85,109 @@ TEST(VerticalObstacleSideLock, RejectsDifferentLateralObstacle)
       Eigen::Vector3d(1.1, 0.80, 0.6), 0.30, 0.75, 0.30));
 }
 
+// 0.05m 栅格：两侧墙位于 y=±0.75m，横向采样包含完整外墙。
+std::vector<std::vector<int>> corridorPlane()
+{
+  std::vector<std::vector<int>> plane(21, std::vector<int>(61, 0));
+  for (auto &row : plane)
+    for (int c = 0; c < 61; ++c)
+      if (c <= 15 || c >= 45)
+        row[c] = 1;
+  return plane;
+}
+
+void addDivider(std::vector<std::vector<int>> &plane,
+                int first_row, int last_row, int first_col, int last_col)
+{
+  for (int r = first_row; r <= last_row; ++r)
+    for (int c = first_col; c <= last_col; ++c)
+      plane[r][c] = 1;
+}
+
+TEST(VerticalObstacleSideLock, PlainCorridorDoesNotActivate)
+{
+  EXPECT_TRUE(VerticalObstacleSideLock::findSplitPassages(
+      corridorPlane(), 0.05, 0.20).empty());
+}
+
+TEST(VerticalObstacleSideLock, OpenFieldDoesNotActivate)
+{
+  std::vector<std::vector<int>> plane(21, std::vector<int>(61, 0));
+  addDivider(plane, 7, 13, 28, 32);
+  EXPECT_TRUE(VerticalObstacleSideLock::findSplitPassages(plane, 0.05, 0.20).empty());
+}
+
+TEST(VerticalObstacleSideLock, InternalDividerCreatesTwoThroughPassages)
+{
+  auto plane = corridorPlane();
+  addDivider(plane, 7, 13, 30, 35);
+  const auto passages = VerticalObstacleSideLock::findSplitPassages(plane, 0.05, 0.20);
+  ASSERT_EQ(passages.size(), 2U);
+  EXPECT_NEAR(passages[0].max_offset - passages[0].min_offset, 0.70, 1.0e-6);
+  EXPECT_NEAR(passages[1].max_offset - passages[1].min_offset, 0.45, 1.0e-6);
+}
+
+TEST(VerticalObstacleSideLock, MultipleDividersCreateThreePassages)
+{
+  std::vector<std::vector<int>> plane(21, std::vector<int>(61, 0));
+  for (auto &row : plane)
+    for (int c = 0; c < 61; ++c)
+      if (c <= 7 || c >= 45)
+        row[c] = 1;
+  addDivider(plane, 7, 13, 13, 15);
+  addDivider(plane, 7, 13, 30, 32);
+  const auto passages = VerticalObstacleSideLock::findSplitPassages(plane, 0.04, 0.20);
+  ASSERT_EQ(passages.size(), 3U);
+  EXPECT_NEAR(passages[0].max_offset - passages[0].min_offset, 0.20, 1.0e-6);
+  EXPECT_NEAR(passages[1].max_offset - passages[1].min_offset, 0.56, 1.0e-6);
+  EXPECT_NEAR(passages[2].max_offset - passages[2].min_offset, 0.48, 1.0e-6);
+}
+
+TEST(VerticalObstacleSideLock, BendWallConnectedToOuterWallDoesNotActivate)
+{
+  auto plane = corridorPlane();
+  addDivider(plane, 9, 11, 15, 32);
+  EXPECT_TRUE(VerticalObstacleSideLock::findSplitPassages(plane, 0.05, 0.20).empty());
+}
+
+TEST(VerticalObstacleSideLock, UShapedWallDoesNotActivate)
+{
+  auto plane = corridorPlane();
+  addDivider(plane, 0, 13, 28, 30);
+  addDivider(plane, 11, 13, 15, 30);
+  EXPECT_TRUE(VerticalObstacleSideLock::findSplitPassages(plane, 0.05, 0.20).empty());
+}
+
+TEST(VerticalObstacleSideLock, IncompleteLongDividerDoesNotActivate)
+{
+  auto plane = corridorPlane();
+  addDivider(plane, 0, 13, 28, 32);
+  EXPECT_TRUE(VerticalObstacleSideLock::findSplitPassages(plane, 0.05, 0.20).empty());
+}
+
+TEST(VerticalObstacleSideLock, OneUsablePassageDoesNotActivate)
+{
+  auto plane = corridorPlane();
+  addDivider(plane, 7, 13, 30, 42);
+  EXPECT_TRUE(VerticalObstacleSideLock::findSplitPassages(plane, 0.05, 0.20).empty());
+}
+
+TEST(VerticalObstacleSideLock, LocalPocketDoesNotCountAsThroughPassage)
+{
+  auto plane = corridorPlane();
+  addDivider(plane, 7, 13, 28, 32);
+  addDivider(plane, 7, 8, 15, 26);
+  EXPECT_TRUE(VerticalObstacleSideLock::findSplitPassages(plane, 0.05, 0.20).empty());
+}
+
+TEST(VerticalObstacleSideLock, UnknownDividerBoundaryDoesNotActivate)
+{
+  auto plane = corridorPlane();
+  addDivider(plane, 7, 13, 28, 32);
+  plane[6][30] = -1;
+  EXPECT_TRUE(VerticalObstacleSideLock::findSplitPassages(plane, 0.05, 0.20).empty());
+}
+
 } // namespace
 } // namespace diff_planner
 

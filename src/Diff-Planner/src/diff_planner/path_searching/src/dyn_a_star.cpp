@@ -196,6 +196,17 @@ bool AStar::insideSearchRegion(const Vector3d &point,
             return false;
     }
 
+    if (region->limit_passage)
+    {
+        const Vector3d relative = point - region->side_origin;
+        const double offset = relative.dot(region->side_normal);
+        if (std::abs(relative.dot(region->side_axis)) <=
+                region->side_half_length + 1.0e-6 &&
+            (offset < region->passage_min_offset - 1.0e-6 ||
+             offset > region->passage_max_offset + 1.0e-6))
+            return false;
+    }
+
     if (region->limit_local_max_z)
     {
         const Vector3d relative = point - region->height_origin;
