@@ -1612,7 +1612,18 @@ bool TaskSearchManager::isTaskMotionAllowed(const Eigen::Vector3d& candidate) co
                                           ? segment_direction_.normalized()
                                           : stableProgressDirection();
     const double progress = (candidate.head<2>() - segment_origin_).dot(direction);
-    return progress >= segment_high_water_ - 0.25 - 1e-6;
+    double minimum_progress = segment_high_water_ - 0.25;
+    {
+      std::lock_guard<std::mutex> lock(body_cloud_mutex_);
+      if (latest_robot_pose_valid_) {
+        const double current_progress =
+            (latest_robot_pos_.head<2>() - segment_origin_).dot(direction);
+        // 被动回漂已发生时，允许从实际位置向前恢复；不把历史最高进度
+        // 清零，也不额外授予从当前位置继续后退的 0.25m 容差。
+        minimum_progress = std::min(minimum_progress, current_progress);
+      }
+    }
+    return progress >= minimum_progress - 1e-6;
   }
   if (transition_active_ &&
       (candidate.head<2>() - transition_anchor_).norm() <= 0.80 + 1e-6)

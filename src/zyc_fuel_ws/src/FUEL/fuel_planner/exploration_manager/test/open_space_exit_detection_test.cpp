@@ -93,8 +93,8 @@ public:
     curve.curve_sample_valid_=false;
     curve.updateCurveHeading();
     check(curve.segment_high_water_>=0.39 &&
-          !curve.isTaskMotionAllowed(curve.latest_robot_pos_),
-          "rolling axis erased actual regression");
+          curve.isTaskMotionAllowed(curve.latest_robot_pos_),
+          "rolling axis erased regression or blocked the actual recovery start");
     const Eigen::Vector2d confirmed_base=curve.turnDetectionDirection();
     check((confirmed_base-curve.stableProgressDirection()).norm()>1e-3,
           "local wall tangent was replaced by the lookahead yaw reference");
@@ -596,7 +596,47 @@ public:
           "FUEL resumed crossing after the Diff handoff");
     std::cout << "real map freshness, observed volume, obstacle and turn checks passed" << std::endl;
   }
+  static void runDriftRecovery() {
+    TaskSearchManager m;
+    m.global_no_return_ = true;
+    m.corridor_frame_received_ = true;
+    m.hybrid_constraints_enabled_ = false;
+    m.corridor_origin_ = Eigen::Vector3d(1.53, -0.06, 0.57);
+    m.corridor_dir_ = Eigen::Vector3d::UnitX();
+    const double angle = -133.1 * M_PI / 180.0;
+    m.segment_direction_ = Eigen::Vector2d(std::cos(angle), std::sin(angle));
+    m.stable_progress_direction_ = m.segment_direction_;
+    m.stable_progress_direction_valid_ = true;
+    m.segment_origin_ = Eigen::Vector2d(5.67530488, -2.37776544);
+    m.segment_high_water_ = 0.0;
+    const Eigen::Vector3d current(5.92648958, -2.09248324, 0.40336);
+    const Eigen::Vector3d goal(4.69, -3.57, 0.60);
+    const Eigen::Vector3d forward(m.segment_direction_.x(), m.segment_direction_.y(), 0);
+    const std::vector<Eigen::Vector3d> path{current, 0.5 * (current + goal), goal};
+    check(!m.isRecoveryPathAllowed(path, false), "missing odometry relaxed history");
+    m.latest_robot_pos_ = current;
+    m.latest_robot_pose_valid_ = true;
+    check(m.isTaskMotionAllowed(current) && m.isRecoveryPathAllowed(path, false),
+          "recorded drift still blocks a forward recovery path");
+    check(m.isTaskMotionAllowed(current + 0.05 * forward),
+          "short forward step below historical threshold was blocked");
+    check(!m.isTaskMotionAllowed(current - 0.01 * forward) &&
+          !m.isRecoveryPathAllowed({current, current - 0.01 * forward, goal}, false),
+          "drift recovery granted additional backward travel");
+    check(!m.isTaskMotionAllowed(Eigen::Vector3d(0, 0, 0.6)),
+          "drift recovery bypassed entrance boundary");
+    check(m.segment_high_water_ == 0.0, "recovery erased historical progress");
+    m.latest_robot_pos_.head<2>() = m.segment_origin_;
+    check(!m.isTaskMotionAllowed(current), "old drift allowance persisted after recovery");
+    m.latest_turn_anchor_valid_ = true;
+    m.latest_turn_anchor_ = goal.head<2>() + Eigen::Vector2d::UnitX();
+    m.latest_turn_incoming_direction_ = Eigen::Vector2d::UnitX();
+    m.stable_progress_direction_ = Eigen::Vector2d::UnitX();
+    check(!m.isTaskMotionAllowed(goal), "recovery bypassed completed turn boundary");
+  }
+
   static void run() {
+    runDriftRecovery();
     ros::Time::init();
     TaskSearchManager manager;
     check(!manager.consumeExitMapUpdate(0, ros::Time(10)), "unobserved map counted as fresh");
