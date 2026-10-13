@@ -74,8 +74,8 @@
     <arg name="map_size_x" default="20.0"/>
     <arg name="map_size_y" default="20"/>
     <arg name="map_size_z" default="3.0"/>
-    <arg name="box_min_x" default="-1.0"/>
-    <arg name="box_min_y" default="-3.0"/>
+    <arg name="box_min_x" default="-10.0"/>
+    <arg name="box_min_y" default="-10.0"/>
     <arg name="box_min_z" default="0.05"/>
     <arg name="box_max_x" default="10"/>
     <arg name="box_max_y" default="10"/>
