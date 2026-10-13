@@ -3295,7 +3295,10 @@ int FastExplorationManager::planExploreMotion(
     task_search_manager_->reportGoalFailure(next_pos);
     return FAIL;
   }
-  if (!use_forced_entry_target &&
+  // 已确认出口的专用接近/穿越目标可能位于原入口平面的另一侧（U形通道）。
+  // 仅豁免该任务路径的旧入口平面检查，普通frontier仍受约束；前面的目标
+  // 足迹、A*占据检查以及后续轨迹碰撞检查继续执行。
+  if (!use_forced_entry_target && !(use_stage3_target && exit_transit_active) &&
       !pathInsideWorkspaceLock(ed_->path_next_goal_, use_entry_forward_target)) {
     // 2026-07-10: 即使 viewpoint 在门内，A* 也可能绕回起飞区；轨迹生成前必须拒绝穿门外路径。
     ROS_ERROR("[workspace_lock] reject path to next viewpoint because it crosses outside the door plane.");
