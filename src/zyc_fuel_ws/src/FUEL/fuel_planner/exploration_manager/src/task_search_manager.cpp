@@ -2153,14 +2153,29 @@ bool TaskSearchManager::buildPendingExitObservationGoal(
   }
 
   double best_travel = std::numeric_limits<double>::infinity();
+  double best_clearance = -1.0;
+  bool best_center = false;
   bool found = false;
   for (const auto& candidate : candidates) {
     const double travel = (candidate.head<2>() - cur_pos.head<2>()).norm();
     if (travel + 1e-6 < min_move || !mapPointSafe(candidate) ||
         goalTemporarilyBlocked(candidate))
       continue;
-    if (travel < best_travel) {
+    // 中心安全时不能因无人机已偏向一侧而继续选择更近的侧点。
+    // 两个中心点按距离排序；中心不可用时侧点先比净空，再比距离。
+    // 可达性及整条轨迹的碰撞检查仍由后续A*和轨迹发布流程执行。
+    const bool center = std::fabs(
+        (candidate.head<2>() - pending_exit_candidate_.head<2>()).dot(lateral)) < 1e-6;
+    const double clearance = center ? 0.0 : knownHorizontalClearance(candidate);
+    const bool better_same_class = center
+        ? travel < best_travel
+        : clearance > best_clearance + 1e-6 ||
+          (std::fabs(clearance - best_clearance) <= 1e-6 && travel < best_travel);
+    if (!found || (center && !best_center) ||
+        (center == best_center && better_same_class)) {
       best_travel = travel;
+      best_clearance = clearance;
+      best_center = center;
       goal = candidate;
       found = true;
     }

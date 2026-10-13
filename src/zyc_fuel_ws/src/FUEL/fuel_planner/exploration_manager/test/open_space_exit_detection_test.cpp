@@ -245,6 +245,21 @@ public:
           !pending.exit_candidate_confirmed_ && !pending.exit_portal_locked_ &&
           pending.mission_stage_ == TaskSearchManager::SEARCH_CORRIDOR,
           "pending approach crossed or prematurely confirmed the exit");
+    // 偏左/偏右起步都选中心，不能因侧点更近而沿墙接近。
+    for (double side : {-0.25, 0.25}) {
+      const Eigen::Vector3d offset_start(-0.5,side,1);
+      check(pending.buildStage3Goal(offset_start,0,false,pending_goal,pending_yaw) &&
+            std::fabs(pending_goal.y()) < 1e-6,
+            "off-center start selected the closer side instead of the safe center");
+    }
+    // 中心路线已失败时允许侧向替代，不把居中变成硬性禁侧绕。
+    pending.failed_goal_radius_ = 0.05;
+    pending.failed_goals_.push_back({Eigen::Vector3d(0.4,0,1),ros::Time::now()});
+    pending.failed_goals_.push_back({Eigen::Vector3d(0.2,0,1),ros::Time::now()});
+    check(pending.buildStage3Goal(pending_start,0,false,pending_goal,pending_yaw) &&
+          std::fabs(pending_goal.y()) > 0.10,
+          "failed center routes blocked the available side approach");
+    pending.failed_goals_.clear();
     pending.exit_auto_crossing_enabled_ = false;
     check(!pending.buildStage3Goal(pending_start,0,false,pending_goal,pending_yaw),
           "pending approach ignored observation-only mode");
