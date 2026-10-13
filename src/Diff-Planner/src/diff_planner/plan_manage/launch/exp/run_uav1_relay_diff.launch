@@ -13,6 +13,7 @@
     <!-- UAV1 LDOP 动态检测只使用独立限频点云，不改变 Diff 原始建图输入。 -->
     <arg name="enable_ldop" default="true"/>
     <arg name="detector_backend" default="legacy"/>
+    <arg name="fapp_verified_preset" default="false"/>
     <arg name="start_ldop" default="$(eval arg('detector_backend') == 'ldop' or (arg('detector_backend') == 'legacy' and arg('enable_ldop')))"/>
     <arg name="ldop_input_rate" default="5.0"/>
     <!-- 垂地障碍物锁定一侧，避免重规划时在障碍物两侧来回换边。 -->
@@ -147,10 +148,16 @@
         <arg name="dynamic_cluster_detector_min_points" value="4"/>
     </include>
 
-    <include if="$(eval arg('detector_backend') == 'fapp')" file="$(find mot_mapping)/launch/uav1_detection.launch">
+    <include if="$(eval arg('detector_backend') == 'fapp' and not arg('fapp_verified_preset'))" file="$(find mot_mapping)/launch/uav1_detection.launch">
         <arg name="cloud_topic" value="$(arg cloud_topic)"/>
         <arg name="odom_topic" value="$(arg odom_topic)"/>
         <arg name="input_rate" value="$(arg ldop_input_rate)"/>
+    </include>
+
+    <include if="$(eval arg('detector_backend') == 'fapp' and arg('fapp_verified_preset'))"
+             file="$(find mot_mapping)/launch/uav1_frame_event_verified.launch">
+        <arg name="cloud_topic" value="$(arg cloud_topic)"/>
+        <arg name="odom_topic" value="$(arg odom_topic)"/>
     </include>
 
     <!-- 2026-07-28: UAV1 traj_server是后机PositionCommand唯一发布者，并负责心跳超时安全锁点。 -->

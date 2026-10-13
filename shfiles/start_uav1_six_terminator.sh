@@ -333,7 +333,8 @@ run_planner_pane() {
   fi
   printf '[启动] UAV1 航点接力管理器、坐标对齐、Diff-Planner、RViz与搜索降落节点\n'
   printf '[安全] 不执行预设航点，只接收前机满足0.70m放行门槛后发布的接力目标。\n'
-  roslaunch exploration_control leader_safe_path_follower.launch detector_backend:="${DETECTOR}"
+  roslaunch exploration_control leader_safe_path_follower.launch detector_backend:="${DETECTOR}" \
+    fapp_verified_preset:=true
   local launch_status=$?
   stop_owned_down_camera
   trap - EXIT INT TERM
