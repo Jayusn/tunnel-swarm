@@ -7,6 +7,7 @@
 #include <Eigen/Eigen>
 #include <plan_env/grid_map.h>
 #include <queue>
+#include <functional>
 
 constexpr double inf = 1 >> 20;
 struct GridNode;
@@ -92,9 +93,14 @@ private:
 	inline Eigen::Vector3d Index2Coord(const Eigen::Vector3i &index) const;
 	inline bool Coord2Index(const Eigen::Vector3d &pt, Eigen::Vector3i &idx) const;
 
-	//bool (*checkOccupancyPtr)( const Eigen::Vector3d &pos );
-
-	inline int checkOccupancy(const Eigen::Vector3d &pos) { return grid_map_->getInflateOccupancy(pos); }
+	std::function<bool(const Eigen::Vector3d &)> occupancy_checker_;
+	inline int checkOccupancy(const Eigen::Vector3d &pos)
+	{
+		return occupancy_checker_ ? (occupancy_checker_(pos) ? 1 : 0)
+							  : grid_map_->getInflateOccupancy(pos);
+	}
+	bool edgeIsFree(const Eigen::Vector3d &start, const Eigen::Vector3d &end,
+					const AStarSearchRegion *region) const;
 
 	std::vector<GridNodePtr> retrievePath(GridNodePtr current);
 	bool insideSearchRegion(const Eigen::Vector3d &point,
@@ -119,6 +125,11 @@ public:
 	~AStar();
 
 	void initGridMap(GridMap::Ptr occ_map, const Eigen::Vector3i pool_size);
+	void setOccupancyChecker(
+			const std::function<bool(const Eigen::Vector3d &)> &checker)
+	{
+		occupancy_checker_ = checker;
+	}
 
 	ASTAR_RET AstarSearch(const double step_size, Eigen::Vector3d start_pt,
 						  Eigen::Vector3d end_pt,

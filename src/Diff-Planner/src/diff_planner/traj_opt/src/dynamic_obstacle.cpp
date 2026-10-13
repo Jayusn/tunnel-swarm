@@ -1,4 +1,5 @@
 #include <optimizer/dynamic_obstacle.h>
+#include <plan_env/vehicle_geometry.h>
 
 #include <algorithm>
 #include <cmath>
@@ -13,6 +14,8 @@ bool evaluateDynamicObstacle(
     double *clearance, Eigen::Vector3d *clearance_gradient,
     Eigen::Vector3d *obstacle_position, Eigen::Vector3d *obstacle_velocity)
 {
+  const bool measured_box = state.size.allFinite() &&
+      (state.size.array() >= 0.0).all() && (state.size.array() > 0.0).any();
   if (!config.enabled || !vehicle_position.allFinite() ||
       !state.position.allFinite() || !state.velocity.allFinite() ||
       !std::isfinite(state.stamp) || !std::isfinite(query_time) ||
@@ -20,13 +23,13 @@ bool evaluateDynamicObstacle(
       !std::isfinite(config.vehicle_radius) || config.vehicle_radius <= 0.0 ||
       !std::isfinite(config.vehicle_half_height) ||
       config.vehicle_half_height <= 0.0 ||
-      !std::isfinite(config.ball_radius) || config.ball_radius <= 0.0 ||
+      (!measured_box &&
+       (!std::isfinite(config.ball_radius) || config.ball_radius <= 0.0)) ||
       !std::isfinite(config.margin) || config.margin < 0.0 ||
       !std::isfinite(config.observation_retention) ||
       config.observation_retention < 0.0 ||
       !std::isfinite(config.prediction_horizon) ||
-      config.prediction_horizon < 0.0 ||
-      !std::isfinite(config.minimum_ball_bottom))
+      config.prediction_horizon < 0.0)
     return false;
 
   const double age = std::max(0.0, reference_time - state.stamp);
@@ -43,6 +46,21 @@ bool evaluateDynamicObstacle(
       raw_prediction_time >= config.prediction_horizon)
     predicted_velocity.setZero();
 
+  if (obstacle_position != nullptr)
+    *obstacle_position = predicted_position;
+  if (obstacle_velocity != nullptr)
+    *obstacle_velocity = predicted_velocity;
+
+  if (measured_box)
+  {
+    const double box_clearance = cylinderBoxClearance(
+        vehicle_position, predicted_position, state.size, config.vehicle_radius,
+        config.vehicle_half_height, config.margin, clearance_gradient);
+    if (clearance != nullptr)
+      *clearance = box_clearance;
+    return true;
+  }
+
   const Eigen::Vector3d relative = vehicle_position - predicted_position;
   const double radial_distance = relative.head<2>().norm();
   const double radial_gap = radial_distance - config.vehicle_radius;
@@ -56,10 +74,6 @@ bool evaluateDynamicObstacle(
 
   if (clearance != nullptr)
     *clearance = cylinder_distance - config.ball_radius - config.margin;
-  if (obstacle_position != nullptr)
-    *obstacle_position = predicted_position;
-  if (obstacle_velocity != nullptr)
-    *obstacle_velocity = predicted_velocity;
   if (clearance_gradient != nullptr)
   {
     Eigen::Vector3d radial_normal = Eigen::Vector3d::UnitX();

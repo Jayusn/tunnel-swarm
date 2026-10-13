@@ -35,7 +35,8 @@ namespace diff_planner
     wei_swarm_mod_ = wei_swarm_;
 
     // Preparision 2: Trajectory related params
-    t_now_ = ros::Time::now().toSec();
+    t_now_ = dynamic_obstacle_config_.enabled && planning_deadline_active_
+        ? planning_reference_time_ : ros::Time::now().toSec();
     piece_num_ = initT.size();
     jerkOpt_.reset(iniState, finState, piece_num_);
     variable_num_ = 4 * (piece_num_ - 1) + 1;
@@ -413,7 +414,7 @@ namespace diff_planner
       if (checkPlanningTimeout("fine collision occupancy scan")) return CHK_RET::ERR;
       for (size_t j = 0; j < pts_check[i].size(); ++j)
       {
-        occ = grid_map_->getInflateOccupancy(pts_check[i][j].second);
+        occ = staticPositionOccupied(pts_check[i][j].second);
 
         if (occ && !last_occ)
         {
@@ -625,7 +626,7 @@ namespace diff_planner
             cps_.flag_temp[j] = true;
             for (double a = length; a >= 0.0; a -= grid_map_->getResolution())
             {
-              bool occ = grid_map_->getInflateOccupancy((a / length) * intersection_point + (1 - a / length) * init_points.col(j));
+              bool occ = staticPositionOccupied((a / length) * intersection_point + (1 - a / length) * init_points.col(j));
 
               if (occ || a < grid_map_->getResolution())
               {
@@ -796,6 +797,16 @@ namespace diff_planner
   {
     path.clear();
     const double resolution = grid_map_->getResolution();
+    if (dynamic_obstacle_config_.enabled)
+    {
+      AStarSearchRegion region = dynamic_candidate_active_
+          ? dynamic_candidate_region_ : AStarSearchRegion();
+      region.enabled = true;
+      region.time_limit = std::min(0.2, planningTimeRemaining());
+      const ASTAR_RET result = a_star_->AstarSearch(resolution, start, end, &region);
+      if (result == ASTAR_RET::SUCCESS) path = a_star_->getPath();
+      return result;
+    }
     const SuspendedObstacleUnderpass::SearchResult underpass_result =
         suspended_underpass_.trySearch(*a_star_, grid_map_, resolution,
                                        start, end, path);
@@ -847,7 +858,7 @@ namespace diff_planner
     for (int i = 1; i <= i_end; ++i)
     {
 
-      bool occ = grid_map_->getInflateOccupancy(cps_.points.col(i));
+      bool occ = staticPositionOccupied(cps_.points.col(i));
 
       /*** check if the new collision will be valid ***/
       if (occ)
@@ -869,7 +880,7 @@ namespace diff_planner
         int j;
         for (j = i - 1; j >= 0; --j)
         {
-          occ = grid_map_->getInflateOccupancy(cps_.points.col(j));
+          occ = staticPositionOccupied(cps_.points.col(j));
           if (!occ)
           {
             in_id = j;
@@ -884,7 +895,7 @@ namespace diff_planner
 
         for (j = i + 1; j < cps_.cp_size; ++j)
         {
-          occ = grid_map_->getInflateOccupancy(cps_.points.col(j));
+          occ = staticPositionOccupied(cps_.points.col(j));
 
           if (!occ)
           {
@@ -1009,7 +1020,7 @@ namespace diff_planner
               cps_.flag_temp[j] = true;
               for (double a = length; a >= 0.0; a -= grid_map_->getResolution())
               {
-                bool occ = grid_map_->getInflateOccupancy((a / length) * intersection_point + (1 - a / length) * cps_.points.col(j));
+                bool occ = staticPositionOccupied((a / length) * intersection_point + (1 - a / length) * cps_.points.col(j));
 
                 if (occ || a < grid_map_->getResolution())
                 {
@@ -1760,7 +1771,33 @@ namespace diff_planner
     gradient_position.setZero();
     gradient_time = gradient_previous_time = cost = 0.0;
     bool active = false;
-    for (const auto &obstacle : dynamic_obstacles_)
+    if (dynamic_candidate_active_)
+    {
+      const auto &region = dynamic_candidate_region_;
+      double error = 0.0;
+      Eigen::Vector3d error_gradient = Eigen::Vector3d::Zero();
+      if (region.limit_local_max_z &&
+          std::abs((position - region.height_origin).dot(region.height_axis)) <= region.height_half_length)
+      {
+        error = 0.5 * grid_map_->getResolution() + position.z() - region.max_z;
+        error_gradient = Eigen::Vector3d::UnitZ();
+      }
+      else if (region.limit_side &&
+          std::abs((position - region.side_origin).dot(region.side_axis)) <= region.side_half_length)
+      {
+        error = 0.5 * grid_map_->getResolution() - (position - region.side_origin).dot(region.side_normal);
+        error_gradient = -region.side_normal;
+      }
+      if (error > 0.0)
+      {
+        const Eigen::Vector3d gradient = 3.0 * wei_dynamic_obstacle_ * error * error * error_gradient;
+        gradient_position += gradient;
+        gradient_time += gradient.dot(velocity);
+        cost += wei_dynamic_obstacle_ * error * error * error;
+        active = true;
+      }
+    }
+    for (const auto &obstacle : getDynamicObstacles())
     {
       double clearance;
       Eigen::Vector3d clearance_gradient, obstacle_velocity;
@@ -1770,10 +1807,7 @@ namespace diff_planner
         continue;
       // Start the smooth penalty before the required physical clearance, as
       // finite-weight optimization can otherwise converge just inside it.
-      const double cost_buffer = std::max(
-          0.0, dynamic_obstacle_config_.minimum_ball_bottom -
-                   dynamic_obstacle_config_.vehicle_half_height -
-                   dynamic_obstacle_config_.margin - dynamic_underpass_height_);
+      const double cost_buffer = 0.5 * grid_map_->getResolution();
       const double error = cost_buffer - clearance;
       if (error <= 0.0)
         continue;
@@ -2030,6 +2064,11 @@ namespace diff_planner
   {
     underpass_floor_active_ = false;
     planning_timeout_reported_ = false;
+    candidate_deadline_active_ = false;
+    dynamic_candidate_active_ = false;
+    planning_reference_time_ = ros::Time::now().toSec();
+    planning_obstacles_ = dynamic_obstacles_;
+    static_occupancy_cache_.clear();
     planning_deadline_active_ = std::isfinite(max_planning_wall_time_) &&
                                 max_planning_wall_time_ > 0.0;
     if (planning_deadline_active_)
@@ -2040,12 +2079,16 @@ namespace diff_planner
 
   void PolyTrajOptimizer::endPlanningCycle()
   {
+    endDynamicCandidate();
     planning_deadline_active_ = false;
+    static_occupancy_cache_.clear();
   }
 
   bool PolyTrajOptimizer::checkPlanningTimeout(const char *stage)
   {
-    if (!planning_deadline_active_ || ros::WallTime::now() < planning_deadline_)
+    const ros::WallTime now = ros::WallTime::now();
+    if ((!planning_deadline_active_ || now < planning_deadline_) &&
+        (!candidate_deadline_active_ || now < candidate_deadline_))
     {
       return false;
     }
@@ -2064,7 +2107,208 @@ namespace diff_planner
     grid_map_ = map;
 
     a_star_.reset(new AStar);
-    a_star_->initGridMap(grid_map_, Eigen::Vector3i(100, 100, 100));
+    // Dynamic candidates search the complete local route at map resolution;
+    // the 7.5 m corridor needs more than the old 100-cell local detour pool.
+    a_star_->initGridMap(grid_map_, dynamic_obstacle_config_.enabled
+        ? Eigen::Vector3i(160, 160, 100) : Eigen::Vector3i(100, 100, 100));
+    if (dynamic_obstacle_config_.enabled)
+      a_star_->setOccupancyChecker([this](const Eigen::Vector3d &position) {
+        if (checkPlanningTimeout("A-star whole-body query") || staticPositionOccupied(position))
+          return true;
+        if (dynamic_candidate_active_)
+          for (const auto &obstacle : getDynamicObstacles())
+          {
+            double clearance;
+            if (evaluateDynamicObstacle(position, obstacle, dynamic_candidate_query_time_,
+                                        planning_reference_time_, dynamic_obstacle_config_,
+                                        &clearance) && clearance < 0.5 * grid_map_->getResolution())
+              return true;
+          }
+        return false;
+      });
+  }
+
+  double PolyTrajOptimizer::planningTimeRemaining() const
+  {
+    const ros::WallTime now = ros::WallTime::now();
+    double remaining = planning_deadline_active_
+        ? (planning_deadline_ - now).toSec() : 0.8;
+    if (candidate_deadline_active_)
+      remaining = std::min(remaining, (candidate_deadline_ - now).toSec());
+    return std::max(0.0, remaining);
+  }
+
+  void PolyTrajOptimizer::beginDynamicCandidate(const double time_budget)
+  {
+    candidate_deadline_active_ = true;
+    candidate_deadline_ = ros::WallTime::now() + ros::WallDuration(std::max(0.0, time_budget));
+    dynamic_candidate_active_ = false;
+    underpass_floor_active_ = false;
+    planning_timeout_reported_ = false;
+  }
+
+  void PolyTrajOptimizer::endDynamicCandidate()
+  {
+    candidate_deadline_active_ = false;
+    dynamic_candidate_active_ = false;
+  }
+
+  bool PolyTrajOptimizer::staticPositionOccupied(const Eigen::Vector3d &position) const
+  {
+    if (grid_map_->getInflateOccupancy(position) != 0) return true;
+    const auto &config = dynamic_obstacle_config_;
+    if (!config.enabled) return false;
+    const std::array<double, 3> key{{position.x(), position.y(), position.z()}};
+    if (planning_deadline_active_)
+    {
+      const auto cached = static_occupancy_cache_.find(key);
+      if (cached != static_occupancy_cache_.end()) return cached->second;
+    }
+    const bool occupied = grid_map_->isVehicleOccupied(
+        position, config.vehicle_radius, config.vehicle_half_height, config.margin);
+    if (planning_deadline_active_) static_occupancy_cache_[key] = occupied;
+    return occupied;
+  }
+
+  bool PolyTrajOptimizer::trajectoryCollisionFree(
+      const poly_traj::Trajectory &trajectory, const double start_time,
+      const double reference_time)
+  {
+    const auto samples = sampleCollisionTrajectory(trajectory, 0.0,
+        trajectory.getTotalDuration(), 0.5 * grid_map_->getResolution());
+    if (samples.empty()) return false;
+    for (const auto &sample : samples)
+    {
+      if (checkPlanningTimeout("whole-body trajectory validation")) return false;
+      if (staticPositionOccupied(sample.second))
+      {
+        ROS_WARN("[FAPP validation] static collision t=%.3f p=(%.3f,%.3f,%.3f)",
+                 sample.first, sample.second.x(), sample.second.y(), sample.second.z());
+        return false;
+      }
+      if (dynamic_candidate_active_ && !candidatePointInside(sample.second))
+      {
+        ROS_WARN("[FAPP validation] candidate region t=%.3f p=(%.3f,%.3f,%.3f)",
+                 sample.first, sample.second.x(), sample.second.y(), sample.second.z());
+        return false;
+      }
+      for (const auto &obstacle : getDynamicObstacles())
+      {
+        double clearance;
+        if (evaluateDynamicObstacle(sample.second, obstacle, start_time + sample.first,
+                                    reference_time, dynamic_obstacle_config_, &clearance) &&
+            clearance < 0.0)
+        {
+          ROS_WARN("[FAPP validation] dynamic collision t=%.3f clearance=%.6f p=(%.3f,%.3f,%.3f)",
+                   sample.first, clearance, sample.second.x(), sample.second.y(), sample.second.z());
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  bool PolyTrajOptimizer::candidatePointInside(const Eigen::Vector3d &point) const
+  {
+    const auto &region = dynamic_candidate_region_;
+    // Search seeds reserve half a voxel beyond the required physical margin.
+    // Accept the optimized route against the physical passage boundary; the
+    // common collision evaluator separately checks every rounded corner.
+    const double seed_buffer = 0.5 * grid_map_->getResolution();
+    const double vehicle_extension = dynamic_obstacle_config_.vehicle_radius +
+        dynamic_obstacle_config_.margin;
+    if (region.limit_max_z && point.z() > region.max_z + 1.0e-6) return false;
+    if (region.limit_local_max_z &&
+        std::abs((point - region.height_origin).dot(region.height_axis)) <=
+            region.height_half_length - vehicle_extension &&
+        point.z() > region.max_z + seed_buffer + 1.0e-6) return false;
+    if (region.limit_side &&
+        std::abs((point - region.side_origin).dot(region.side_axis)) <=
+            region.side_half_length - vehicle_extension &&
+        (point - region.side_origin).dot(region.side_normal) < -seed_buffer - 1.0e-6) return false;
+    return true;
+  }
+
+  bool PolyTrajOptimizer::searchDynamicCandidate(
+      const Eigen::Vector3d &start, const Eigen::Vector3d &end,
+      const DynamicObstacleState &obstacle, const double collision_time,
+      const int direction, std::vector<Eigen::Vector3d> &path)
+  {
+    path.clear();
+    double clearance;
+    Eigen::Vector3d center;
+    const auto &config = dynamic_obstacle_config_;
+    dynamic_candidate_query_time_ = planning_reference_time_ + collision_time;
+    if (!evaluateDynamicObstacle(start, obstacle, dynamic_candidate_query_time_,
+                                 planning_reference_time_, config, &clearance, nullptr, &center))
+      return false;
+    Eigen::Vector3d axis = end - start;
+    axis.z() = 0.0;
+    if (axis.norm() < 1.0e-6) return false;
+    axis.normalize();
+    const Eigen::Vector3d left(-axis.y(), axis.x(), 0.0);
+    const bool valid_box = obstacle.size.allFinite() &&
+        (obstacle.size.array() >= 0.0).all() && (obstacle.size.array() > 0.0).any();
+    Eigen::Vector3d half_size = Eigen::Vector3d::Constant(config.ball_radius);
+    if (valid_box) half_size = 0.5 * obstacle.size;
+    const double resolution = grid_map_->getResolution();
+    AStarSearchRegion region;
+    region.enabled = true;
+    region.report_timeout = false;
+    if (direction == 0)
+    {
+      region.limit_local_max_z = true;
+      region.max_z = center.z() - half_size.z() - config.vehicle_half_height -
+          config.margin - 0.5 * resolution;
+      region.height_origin = center;
+      region.height_axis = axis;
+      region.height_half_length = half_size.dot(axis.cwiseAbs()) +
+          config.vehicle_radius + config.margin;
+    }
+    else
+    {
+      region.limit_side = true;
+      region.side_normal = direction > 0 ? left : -left;
+      const double offset = half_size.dot(left.cwiseAbs()) +
+          config.vehicle_radius + config.margin + 0.5 * resolution;
+      region.side_origin = center + offset * region.side_normal;
+      region.side_axis = axis;
+      region.side_half_length = half_size.dot(axis.cwiseAbs()) +
+          config.vehicle_radius + config.margin;
+      region.limit_max_z = true;
+      region.max_z = std::max(start.z(), end.z()) + resolution;
+    }
+    dynamic_candidate_region_ = region;
+    dynamic_candidate_active_ = true;
+    Eigen::Vector3d crossing = start + axis * (center - start).dot(axis);
+    crossing.z() = std::min(start.z(), end.z());
+    if (direction == 0) crossing.z() = std::min(crossing.z(), region.max_z);
+    else crossing += region.side_normal *
+        (region.side_origin - crossing).dot(region.side_normal);
+    const double half_length = half_size.dot(axis.cwiseAbs()) +
+        config.vehicle_radius + config.margin + resolution;
+    const std::vector<Eigen::Vector3d> guides{
+        start, crossing - half_length * axis, crossing + half_length * axis, end};
+    const double search_budget = std::min(0.2, 0.5 * planningTimeRemaining());
+    const ros::WallTime search_deadline = ros::WallTime::now() + ros::WallDuration(search_budget);
+    for (size_t leg = 1; leg < guides.size(); ++leg)
+    {
+      region.time_limit = std::min(planningTimeRemaining(),
+          std::max(0.0, (search_deadline - ros::WallTime::now()).toSec()));
+      if (region.time_limit <= 0.0 || checkPlanningTimeout("candidate search")) return false;
+      if (a_star_->AstarSearch(resolution, guides[leg - 1], guides[leg], &region) != ASTAR_RET::SUCCESS)
+        return false;
+      auto leg_path = a_star_->getPath();
+      if (leg_path.size() < 2) return false;
+      leg_path.front() = guides[leg - 1];
+      leg_path.back() = guides[leg];
+      if (!path.empty()) leg_path.erase(leg_path.begin());
+      path.insert(path.end(), leg_path.begin(), leg_path.end());
+    }
+    if (path.size() < 2) return false;
+    path.front() = start;
+    path.back() = end;
+    return !checkPlanningTimeout("candidate search complete");
   }
 
   void PolyTrajOptimizer::setControlPoints(const Eigen::MatrixXd &points)

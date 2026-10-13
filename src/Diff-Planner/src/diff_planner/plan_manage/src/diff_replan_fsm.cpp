@@ -344,6 +344,12 @@ namespace diff_planner
           }
           else
           {
+            SwingCollisionResult collision;
+            if (planner_manager_->dynamicCandidatesFailed(&collision))
+            {
+              startSwingWait(collision, true);
+              break;
+            }
             ROS_WARN("Failed to generate the first trajectory, keep trying");
             replan_fail_count_++;
             // 2026-07-28: 三次失败即通知上层切换已验证路线短子目标，避免原目标被机械重发到卡死。
@@ -379,6 +385,12 @@ namespace diff_planner
         }
         else
         {
+          SwingCollisionResult collision;
+          if (planner_manager_->dynamicCandidatesFailed(&collision))
+          {
+            startSwingWait(collision, true);
+            break;
+          }
           replan_fail_count_++;
           // 2026-07-28: 全局轨迹连续失败时显式反馈，而不是让接力管理器无限重发同一点。
           if (replan_fail_count_ == 3 || replan_fail_count_ % 25 == 0)
@@ -408,6 +420,12 @@ namespace diff_planner
       }
       else
       {
+        SwingCollisionResult collision;
+        if (planner_manager_->dynamicCandidatesFailed(&collision))
+        {
+          startSwingWait(collision, true);
+          break;
+        }
         replan_fail_count_++;
         // 2026-07-28: 局部重规划持续失败同样触发安全子目标恢复。
         if (replan_fail_count_ == 10 || replan_fail_count_ % 50 == 0)
@@ -933,7 +951,7 @@ namespace diff_planner
       for (const auto &sample : sampleCurrentTrajectory(query_time))
         dynamic_samples.emplace_back(sample.time_from_now, sample.position);
       SwingCollisionResult collision;
-      if (planner_manager_->dynamicTrajectoryBlocked(dynamic_samples, query_time,
+      if (planner_manager_->avoidanceTrajectoryBlocked(dynamic_samples, query_time,
                                                       &collision))
       {
         if (planFromLocalTraj(1))
@@ -1108,6 +1126,14 @@ namespace diff_planner
         std::max(0.0, std::min(local.duration, now - local.start_time));
     const double remaining = local.duration - current_time;
     const double horizon = std::min(swing_prediction_horizon_, remaining);
+    if (planner_manager_->dynamicAvoidanceEnabled())
+    {
+      for (const auto &sample : sampleCollisionTrajectory(local.traj, current_time,
+          current_time + horizon, 0.5 * planner_manager_->grid_map_->getResolution(),
+          std::min(0.05, swing_prediction_dt_)))
+        samples.push_back({sample.first, sample.second});
+      return samples;
+    }
     for (double dt = 0.0; dt < horizon; dt += swing_prediction_dt_)
       samples.push_back({dt, local.traj.getPos(current_time + dt)});
     samples.push_back({horizon, local.traj.getPos(current_time + horizon)});
@@ -1687,6 +1713,8 @@ namespace diff_planner
 
     if (!success)
     {
+      if (planner_manager_->dynamicCandidatesFailed(nullptr))
+        return false;
       if (!replan_from_odom)
         success = callReboundReplan(true, false, apply_quality_gate);
       if (!success && enable_random_local_init_)

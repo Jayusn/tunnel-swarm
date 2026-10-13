@@ -157,6 +157,8 @@ public:
   void initMap(ros::NodeHandle &nh);
   inline int getOccupancy(Eigen::Vector3d pos);
   inline int getInflateOccupancy(Eigen::Vector3d pos);
+  bool isVehicleOccupied(const Eigen::Vector3d &pos, double radius,
+                         double half_height, double margin);
   inline double getResolution();
   bool getOdomDepthTimeout() { return md_.flag_depth_odom_timeout_; }
 

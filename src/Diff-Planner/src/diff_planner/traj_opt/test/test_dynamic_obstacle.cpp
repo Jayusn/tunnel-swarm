@@ -45,6 +45,66 @@ TEST_F(DynamicObstacleTest, UnderpassUsesFiniteVehicleHeight)
   EXPECT_LT(clearanceAt(Eigen::Vector3d(0.0, 0.0, 0.70)), 0.0);
 }
 
+TEST_F(DynamicObstacleTest, MeasuredBoxUsesEachObservedExtent)
+{
+  state.size = Eigen::Vector3d(0.2, 0.8, 0.6);
+  EXPECT_NEAR(clearanceAt(Eigen::Vector3d(0.50, 0.0, 1.0)), 0.038, 1.0e-12);
+  EXPECT_NEAR(clearanceAt(Eigen::Vector3d(0.0, 0.50, 1.0)), -0.262, 1.0e-12);
+  EXPECT_NEAR(clearanceAt(Eigen::Vector3d(0.0, 0.0, 0.40)), 0.075, 1.0e-12);
+
+  state.size.x() = 0.8;
+  EXPECT_LT(clearanceAt(Eigen::Vector3d(0.50, 0.0, 1.0)), 0.0);
+}
+
+TEST_F(DynamicObstacleTest, FlatMeasuredShapesDoNotUseSphereFallback)
+{
+  state.size = Eigen::Vector3d(0.6, 0.4, 0.0);
+  EXPECT_NEAR(clearanceAt(Eigen::Vector3d(0.0, 0.0, 0.70)), 0.075, 1.0e-12);
+  state.size = Eigen::Vector3d(0.0, 0.4, 0.0);
+  EXPECT_NEAR(clearanceAt(Eigen::Vector3d(0.0, 0.50, 1.0)), -0.062, 1.0e-12);
+}
+
+TEST_F(DynamicObstacleTest, MeasuredBoxCornerUsesEuclideanMarginOnce)
+{
+  state.size = Eigen::Vector3d(0.2, 0.4, 0.6);
+  config.margin = 0.02;
+  // The nearest box corner is 0.2 m away in both horizontal axes. After
+  // subtracting the cylinder radius, the vertical surface gap is 0.025 m.
+  const double expected = std::hypot(std::sqrt(0.08) - 0.262, 0.025) - 0.02;
+  EXPECT_NEAR(clearanceAt(Eigen::Vector3d(0.3, 0.4, 1.45)), expected, 1.0e-12);
+}
+
+TEST_F(DynamicObstacleTest, MissingOrInvalidMeasuredSizeRetainsSphereGeometry)
+{
+  const Eigen::Vector3d position(0.45, 0.20, 0.62);
+  Eigen::Vector3d original_gradient;
+  const double original_clearance = clearanceAt(position, &original_gradient);
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double infinity = std::numeric_limits<double>::infinity();
+  const Eigen::Vector3d sizes[] = {
+      Eigen::Vector3d::Zero(), Eigen::Vector3d(-0.01, 0.2, 0.2),
+      Eigen::Vector3d(nan, 0.2, 0.2), Eigen::Vector3d(0.2, infinity, 0.2)};
+  for (const Eigen::Vector3d &size : sizes)
+  {
+    state.size = size;
+    Eigen::Vector3d gradient;
+    EXPECT_DOUBLE_EQ(clearanceAt(position, &gradient), original_clearance);
+    EXPECT_TRUE(gradient.isApprox(original_gradient, 1.0e-12));
+  }
+}
+
+TEST_F(DynamicObstacleTest, MeasuredBoxDoesNotDependOnUnusedSphereRadius)
+{
+  state.size = Eigen::Vector3d(0.2, 0.4, 0.6);
+  const Eigen::Vector3d position(0.5, 0.0, 1.0);
+  const double expected = clearanceAt(position);
+  config.ball_radius = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_DOUBLE_EQ(clearanceAt(position), expected);
+  state.size.setZero();
+  EXPECT_FALSE(evaluateDynamicObstacle(position, state, 10.0, 10.0,
+                                      config, nullptr));
+}
+
 TEST_F(DynamicObstacleTest, RoundedCornerRejectsGapMissedByAnEllipsoid)
 {
   config.margin = 0.0;
@@ -89,6 +149,29 @@ TEST_F(DynamicObstacleTest, GradientsMatchFiniteDifferencesAwayFromSeams)
     {
       Eigen::Vector3d offset = Eigen::Vector3d::Zero();
       offset(axis) = epsilon;
+      const double numerical =
+          (clearanceAt(position + offset) - clearanceAt(position - offset)) /
+          (2.0 * epsilon);
+      EXPECT_NEAR(gradient(axis), numerical, 1.0e-6);
+    }
+  }
+}
+
+TEST_F(DynamicObstacleTest, MeasuredBoxGradientsMatchFiniteDifferences)
+{
+  state.size = Eigen::Vector3d(0.2, 0.6, 0.4);
+  const Eigen::Vector3d positions[] = {
+      Eigen::Vector3d(0.6, 0.5, 1.02), Eigen::Vector3d(0.04, 0.03, 0.45),
+      Eigen::Vector3d(0.4, 0.5, 0.55), Eigen::Vector3d(0.3, 0.04, 1.0),
+      Eigen::Vector3d(0.04, 0.05, 0.9), Eigen::Vector3d(0.08, 0.05, 1.0)};
+  const double epsilon = 1.0e-6;
+  for (const Eigen::Vector3d &position : positions)
+  {
+    Eigen::Vector3d gradient;
+    clearanceAt(position, &gradient);
+    for (int axis = 0; axis < 3; ++axis)
+    {
+      const Eigen::Vector3d offset = epsilon * Eigen::Vector3d::Unit(axis);
       const double numerical =
           (clearanceAt(position + offset) - clearanceAt(position - offset)) /
           (2.0 * epsilon);
@@ -167,6 +250,44 @@ TEST_F(DynamicObstacleTest, GroundRelativeMinimumDoesNotAlterMeasuredHeight)
   EXPECT_DOUBLE_EQ(predicted_velocity.x(), 0.2);
 }
 
+TEST_F(DynamicObstacleTest, LegacyMinimumBottomDoesNotGateGeometry)
+{
+  config.minimum_ball_bottom = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_TRUE(evaluateDynamicObstacle(state.position, state, 10.0, 10.0,
+                                     config, nullptr));
+  state.size = Eigen::Vector3d(0.2, 0.4, 0.6);
+  EXPECT_TRUE(evaluateDynamicObstacle(state.position, state, 10.0, 10.0,
+                                     config, nullptr));
+}
+
+TEST_F(DynamicObstacleTest, MeasuredBoxTranslationPreservesPredictedGeometry)
+{
+  state.size = Eigen::Vector3d(0.2, 0.6, 0.4);
+  state.velocity = Eigen::Vector3d(0.2, -0.1, -0.15);
+  const Eigen::Vector3d position(0.45, 0.50, 0.60);
+  double original_clearance;
+  Eigen::Vector3d original_gradient;
+  ASSERT_TRUE(evaluateDynamicObstacle(position, state, 10.50, 10.0, config,
+                                      &original_clearance, &original_gradient));
+  for (const Eigen::Vector3d &translation : {
+           Eigen::Vector3d(-1.5, 0.8, -0.6), Eigen::Vector3d(2.0, -1.2, 1.5)})
+  {
+    DynamicObstacleState translated_state = state;
+    translated_state.position += translation;
+    double translated_clearance;
+    Eigen::Vector3d translated_gradient, predicted_position, predicted_velocity;
+    ASSERT_TRUE(evaluateDynamicObstacle(
+        position + translation, translated_state, 10.50, 10.0, config,
+        &translated_clearance, &translated_gradient, &predicted_position,
+        &predicted_velocity));
+    EXPECT_NEAR(translated_clearance, original_clearance, 1.0e-12);
+    EXPECT_TRUE(translated_gradient.isApprox(original_gradient, 1.0e-12));
+    EXPECT_TRUE(predicted_position.isApprox(
+        state.position + translation + 0.5 * state.velocity, 1.0e-12));
+    EXPECT_TRUE(predicted_velocity.isApprox(state.velocity, 1.0e-12));
+  }
+}
+
 TEST_F(DynamicObstacleTest, VerticalFrameTranslationPreservesGeometry)
 {
   state.velocity = Eigen::Vector3d(0.2, -0.1, -0.15);
@@ -196,6 +317,28 @@ TEST_F(DynamicObstacleTest, PredictedVelocityMatchesClearanceTimeDerivative)
 {
   state.velocity = Eigen::Vector3d(0.2, -0.1, 0.15);
   const Eigen::Vector3d position(0.45, 0.20, 0.60);
+  const double epsilon = 1.0e-6;
+  for (const double query_time : {10.5, 12.0})
+  {
+    double before, after;
+    Eigen::Vector3d gradient, predicted_velocity;
+    ASSERT_TRUE(evaluateDynamicObstacle(
+        position, state, query_time, 10.0, config, nullptr, &gradient,
+        nullptr, &predicted_velocity));
+    ASSERT_TRUE(evaluateDynamicObstacle(position, state, query_time - epsilon,
+                                       10.0, config, &before));
+    ASSERT_TRUE(evaluateDynamicObstacle(position, state, query_time + epsilon,
+                                       10.0, config, &after));
+    EXPECT_NEAR((after - before) / (2.0 * epsilon),
+                -gradient.dot(predicted_velocity), 1.0e-6);
+  }
+}
+
+TEST_F(DynamicObstacleTest, MeasuredBoxVelocityMatchesClearanceTimeDerivative)
+{
+  state.size = Eigen::Vector3d(0.2, 0.6, 0.4);
+  state.velocity = Eigen::Vector3d(0.2, -0.1, 0.15);
+  const Eigen::Vector3d position(0.45, 0.50, 0.60);
   const double epsilon = 1.0e-6;
   for (const double query_time : {10.5, 12.0})
   {

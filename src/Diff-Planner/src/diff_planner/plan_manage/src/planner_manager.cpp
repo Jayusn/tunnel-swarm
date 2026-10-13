@@ -73,6 +73,7 @@ namespace diff_planner
       DynamicObstacleState obstacle;
       obstacle.position = Eigen::Vector3d(state.position.x, state.position.y, state.position.z);
       obstacle.velocity = Eigen::Vector3d(state.velocity.x, state.velocity.y, state.velocity.z);
+      obstacle.size = Eigen::Vector3d(state.size.x, state.size.y, state.size.z);
       const ros::Time stamp = state.header.stamp.isZero() ? msg.header.stamp : state.header.stamp;
       obstacle.stamp = stamp.isZero() ? ros::Time::now().toSec() : stamp.toSec();
       obstacles.push_back(obstacle);
@@ -111,6 +112,140 @@ namespace diff_planner
     return false;
   }
 
+  bool DiffPlannerManager::avoidanceTrajectoryBlocked(
+      const std::vector<std::pair<double, Eigen::Vector3d>> &samples,
+      const double now, SwingCollisionResult *result) const
+  {
+    if (!dynamicAvoidanceEnabled()) return false;
+    for (const auto &sample : samples)
+      if (ploy_traj_opt_->staticPositionOccupied(sample.second))
+      {
+        if (result != nullptr)
+        {
+          result->time_from_now = sample.first;
+          result->vehicle_position = sample.second;
+          result->obstacle_position = sample.second;
+        }
+        return true;
+      }
+    return dynamicTrajectoryBlocked(samples, now, result);
+  }
+
+  bool DiffPlannerManager::optimizeDynamicCandidates(
+      const poly_traj::MinJerkOpt &initial, const DynamicObstacleState &obstacle,
+      const double collision_time, poly_traj::MinJerkOpt &best,
+      const std::function<bool(const poly_traj::MinJerkOpt &)> &commit)
+  {
+    const auto nominal = initial.getTraj();
+    const int last = nominal.getPieceNum();
+    Eigen::Matrix3d head, tail;
+    head << nominal.getJuncPos(0), nominal.getJuncVel(0), nominal.getJuncAcc(0);
+    tail << nominal.getJuncPos(last), nominal.getJuncVel(last), nominal.getJuncAcc(last);
+    const double budget = ploy_traj_opt_->planningTimeRemaining();
+    const double publish_budget = 0.1 * budget;
+    const double reference = ploy_traj_opt_->planningReferenceTime();
+    const int directions[] = {0, 1, -1};
+    const char *names[] = {"underpass", "left", "right"};
+    // MinJerkOpt provides deep assignment but no owning copy constructor.
+    // Keep fixed slots and sort only their costs/indices to avoid shallow
+    // copies of its banded-system allocation when a vector moves elements.
+    poly_traj::MinJerkOpt side_trajectories[2];
+    std::vector<std::pair<double, int>> sides;
+    for (int index = 0; index < 3; ++index)
+    {
+      // Cumulative deadlines carry unused time forward without letting a
+      // failed down/left attempt consume the next candidate's allocation.
+      const double remaining = ploy_traj_opt_->planningTimeRemaining();
+      const double reserved = std::max(publish_budget,
+          index == 0 ? 0.5 * budget : (index == 1 ? 0.25 * budget : 0.0));
+      ploy_traj_opt_->beginDynamicCandidate(std::max(0.0, remaining - reserved));
+      std::vector<Eigen::Vector3d> path;
+      bool success = ploy_traj_opt_->searchDynamicCandidate(
+          head.col(0), tail.col(0), obstacle, collision_time, directions[index], path);
+      double cost = std::numeric_limits<double>::infinity();
+      poly_traj::MinJerkOpt seed;
+      poly_traj::MinJerkOpt candidate;
+      if (success)
+      {
+        // Use arc-length samples of the searched route rather than reverting
+        // to a straight polynomial between the original endpoints.
+        std::vector<double> distance(path.size(), 0.0);
+        for (size_t i = 1; i < path.size(); ++i)
+          distance[i] = distance[i - 1] + (path[i] - path[i - 1]).norm();
+        const double length = distance.back();
+        const int pieces = std::max(2, static_cast<int>(std::ceil(
+            length / std::min(0.3, pp_.polyTraj_piece_length))));
+        Eigen::MatrixXd inner(3, pieces - 1);
+        size_t segment = 1;
+        for (int i = 1; i < pieces; ++i)
+        {
+          const double along = length * i / pieces;
+          while (segment + 1 < path.size() && distance[segment] < along) ++segment;
+          const double span = distance[segment] - distance[segment - 1];
+          inner.col(i - 1) = path[segment - 1] +
+              (span > 1.0e-9 ? (along - distance[segment - 1]) / span : 0.0) *
+              (path[segment] - path[segment - 1]);
+        }
+        Eigen::VectorXd durations = Eigen::VectorXd::Constant(
+            pieces, std::max(0.1, length / (pieces * pp_.max_vel_)));
+        seed.reset(head, tail, pieces);
+        seed.generate(inner, durations);
+        std::vector<std::pair<int, int>> segments;
+        success = ploy_traj_opt_->finelyCheckAndSetConstraintPoints(segments, seed, true) !=
+            PolyTrajOptimizer::CHK_RET::ERR;
+        if (success)
+        {
+          ploy_traj_opt_->setUseMultitopologyTrajs(false);
+          success = ploy_traj_opt_->optimizeTrajectory(head, tail, inner, durations, cost);
+          if (success)
+          {
+            candidate = ploy_traj_opt_->getMinJerkOpt();
+            const double now = ros::Time::now().toSec();
+            success = ploy_traj_opt_->trajectoryCollisionFree(
+                candidate.getTraj(), reference, reference) &&
+                ploy_traj_opt_->trajectoryCollisionFree(candidate.getTraj(), now, now);
+          }
+        }
+      }
+      ROS_INFO("[FAPP候选] route=%s success=%d cost=%.6f remaining=%.3fs",
+               names[index], success, cost, ploy_traj_opt_->planningTimeRemaining());
+      ploy_traj_opt_->endDynamicCandidate();
+      if (success && std::isfinite(cost))
+      {
+        if (index == 0)
+        {
+          if (commit(candidate))
+          {
+            best = candidate;
+            ROS_INFO("[FAPP候选] selected=%s cost=%.6f", names[index], cost);
+            return true;
+          }
+          // Final publication validation is part of the down attempt. If it
+          // fails, continue with both side routes under the same deadline.
+        }
+        else
+        {
+          side_trajectories[index - 1] = candidate;
+          sides.emplace_back(cost, index);
+        }
+      }
+    }
+    std::stable_sort(sides.begin(), sides.end(),
+        [](const std::pair<double, int> &a, const std::pair<double, int> &b) {
+          return a.first < b.first;
+        });
+    const double selection_time = ros::Time::now().toSec();
+    for (const auto &side : sides)
+      if (ploy_traj_opt_->trajectoryCollisionFree(side_trajectories[side.second - 1].getTraj(),
+              selection_time, selection_time) && commit(side_trajectories[side.second - 1]))
+      {
+        best = side_trajectories[side.second - 1];
+        ROS_INFO("[FAPP候选] selected=%s cost=%.6f", names[side.second], side.first);
+        return true;
+      }
+    return false;
+  }
+
   bool DiffPlannerManager::reboundReplan(
       const Eigen::Vector3d &start_pt, const Eigen::Vector3d &start_vel,
       const Eigen::Vector3d &start_acc, const Eigen::Vector3d &local_target_pt,
@@ -120,12 +255,60 @@ namespace diff_planner
   {
     if (trajectory_replaced != nullptr)
       *trajectory_replaced = false;
+    dynamic_candidates_failed_ = false;
     ros::Time t_start = ros::Time::now();
     ros::Duration t_init, t_opt;
     ploy_traj_opt_->beginPlanningCycle();
     const auto finish_planning_cycle = [this](const bool result) {
       ploy_traj_opt_->endPlanningCycle();
       return result;
+    };
+
+    bool retained_current_trajectory = false;
+    const auto commit_candidate = [&](const poly_traj::MinJerkOpt &candidate_opt) {
+      if (require_improvement && enable_replan_quality_gate_ &&
+          traj_.local_traj.traj.getPieceNum() > 0)
+      {
+        const double current_elapsed = std::max(
+            0.0, std::min(ros::Time::now().toSec() - traj_.local_traj.start_time,
+                          traj_.local_traj.duration));
+        const poly_traj::Trajectory candidate = candidate_opt.getTraj();
+        const ReplanTrajectoryMetrics current_metrics =
+            evaluateTrajectoryQuality(traj_.local_traj.traj, current_elapsed);
+        const ReplanTrajectoryMetrics candidate_metrics =
+            evaluateTrajectoryQuality(candidate, 0.0);
+        const double position_error =
+            (candidate.getPos(0.0) -
+             traj_.local_traj.traj.getPos(current_elapsed)).norm();
+        const double velocity_error =
+            (candidate.getVel(0.0) -
+             traj_.local_traj.traj.getVel(current_elapsed)).norm();
+        const ReplanQualityDecision decision = ReplanQualityGate::decide(
+            current_metrics, candidate_metrics, position_error, velocity_error,
+            replan_quality_config_);
+
+        ROS_WARN("[周期重规划验收] %s：%s；净空 old/new=%.3f/%.3f m，"
+                 "长度=%.3f/%.3f m，jerk=%.3f/%.3f，交接位置/速度误差=%.3f m/%.3f m/s。",
+                 decision.accept ? "接受新轨迹" : "保留旧轨迹",
+                 decision.reason.c_str(), current_metrics.min_clearance,
+                 candidate_metrics.min_clearance, current_metrics.length,
+                 candidate_metrics.length, current_metrics.jerk_cost,
+                 candidate_metrics.jerk_cost, position_error, velocity_error);
+        if (!decision.accept)
+        {
+          retained_current_trajectory = true;
+          return true;
+        }
+      }
+
+      if (!setLocalTrajFromOpt(candidate_opt, touch_goal))
+      {
+        ROS_ERROR("Failed to store the optimized local trajectory; report planning failure.");
+        return false;
+      }
+      if (trajectory_replaced != nullptr)
+        *trajectory_replaced = true;
+      return true;
     };
 
     static int count = 0;
@@ -162,7 +345,34 @@ namespace diff_planner
 
     Eigen::MatrixXd cstr_pts = initMJO.getInitConstraintPoints(ploy_traj_opt_->get_cps_num_prePiece_());
     vector<std::pair<int, int>> segments;
-    if (ploy_traj_opt_->finelyCheckAndSetConstraintPoints(segments, initMJO, true) == PolyTrajOptimizer::CHK_RET::ERR)
+    bool has_dynamic_conflict = false;
+    DynamicObstacleState first_obstacle;
+    double first_collision_time = 0.0;
+    const auto find_dynamic_conflict = [&](const poly_traj::Trajectory &nominal) {
+      if (!dynamicAvoidanceEnabled()) return false;
+      const auto samples = sampleCollisionTrajectory(nominal, 0.0,
+          nominal.getTotalDuration(), 0.5 * grid_map_->getResolution());
+      const double reference = ploy_traj_opt_->planningReferenceTime();
+      for (const auto &sample : samples)
+      {
+        for (const auto &obstacle : ploy_traj_opt_->getDynamicObstacles())
+        {
+          double clearance;
+          if (evaluateDynamicObstacle(sample.second, obstacle, reference + sample.first,
+                                      reference, ploy_traj_opt_->getDynamicObstacleConfig(),
+                                      &clearance) && clearance < 0.0)
+          {
+            first_obstacle = obstacle;
+            first_collision_time = sample.first;
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+    has_dynamic_conflict = find_dynamic_conflict(initMJO.getTraj());
+    if (!has_dynamic_conflict &&
+        ploy_traj_opt_->finelyCheckAndSetConstraintPoints(segments, initMJO, true) == PolyTrajOptimizer::CHK_RET::ERR)
     {
       return finish_planning_cycle(false);
     }
@@ -183,7 +393,13 @@ namespace diff_planner
 
     // ROS_ERROR("BBBB");
 
-    if (pp_.use_multitopology_trajs)
+    if (has_dynamic_conflict)
+    {
+      flag_success = optimizeDynamicCandidates(initMJO, first_obstacle,
+                                               first_collision_time, best_MJO, commit_candidate);
+      t_opt = ros::Time::now() - t_start;
+    }
+    else if (pp_.use_multitopology_trajs)
     {
       std::vector<ConstraintPoints> trajs = ploy_traj_opt_->distinctiveTrajs(segments);
       Eigen::VectorXi success = Eigen::VectorXi::Zero(trajs.size());
@@ -252,52 +468,34 @@ namespace diff_planner
     }
 
     /*** STEP 3: Store and display results ***/
+    // A static detour may introduce a dynamic conflict that was absent from
+    // the nominal initialization. Apply the same candidate selection then.
+    if (flag_success && !has_dynamic_conflict && find_dynamic_conflict(best_MJO.getTraj()))
+    {
+      has_dynamic_conflict = true;
+      poly_traj::MinJerkOpt detour;
+      detour = best_MJO;
+      flag_success = optimizeDynamicCandidates(detour, first_obstacle,
+                                               first_collision_time, best_MJO, commit_candidate);
+      t_opt = ros::Time::now() - t_start;
+    }
+    if (flag_success && !has_dynamic_conflict)
+      flag_success = commit_candidate(best_MJO);
     cout << "Success=" << (flag_success ? "yes" : "no") << endl;
+    if (has_dynamic_conflict && !flag_success)
+    {
+      dynamic_candidates_failed_ = true;
+      dynamic_candidate_failure_.time_from_now = first_collision_time;
+      dynamic_candidate_failure_.vehicle_position = start_pt;
+      dynamic_candidate_failure_.obstacle_position = first_obstacle.position;
+    }
     if (flag_success)
     {
-      if (require_improvement && enable_replan_quality_gate_ &&
-          traj_.local_traj.traj.getPieceNum() > 0)
+      if (retained_current_trajectory)
       {
-        const double current_elapsed = std::max(
-            0.0, std::min(ros::Time::now().toSec() - traj_.local_traj.start_time,
-                          traj_.local_traj.duration));
-        const poly_traj::Trajectory candidate = best_MJO.getTraj();
-        const ReplanTrajectoryMetrics current_metrics =
-            evaluateTrajectoryQuality(traj_.local_traj.traj, current_elapsed);
-        const ReplanTrajectoryMetrics candidate_metrics =
-            evaluateTrajectoryQuality(candidate, 0.0);
-        const double position_error =
-            (candidate.getPos(0.0) -
-             traj_.local_traj.traj.getPos(current_elapsed)).norm();
-        const double velocity_error =
-            (candidate.getVel(0.0) -
-             traj_.local_traj.traj.getVel(current_elapsed)).norm();
-        const ReplanQualityDecision decision = ReplanQualityGate::decide(
-            current_metrics, candidate_metrics, position_error, velocity_error,
-            replan_quality_config_);
-
-        ROS_WARN("[周期重规划验收] %s：%s；净空 old/new=%.3f/%.3f m，"
-                 "长度=%.3f/%.3f m，jerk=%.3f/%.3f，交接位置/速度误差=%.3f m/%.3f m/s。",
-                 decision.accept ? "接受新轨迹" : "保留旧轨迹",
-                 decision.reason.c_str(), current_metrics.min_clearance,
-                 candidate_metrics.min_clearance, current_metrics.length,
-                 candidate_metrics.length, current_metrics.jerk_cost,
-                 candidate_metrics.jerk_cost, position_error, velocity_error);
-        if (!decision.accept)
-        {
-          continous_failures_count_ = 0;
-          return finish_planning_cycle(true);
-        }
+        continous_failures_count_ = 0;
+        return finish_planning_cycle(true);
       }
-
-      if (!setLocalTrajFromOpt(best_MJO, touch_goal))
-      {
-        ROS_ERROR("Failed to store the optimized local trajectory; report planning failure.");
-        continous_failures_count_++;
-        return finish_planning_cycle(false);
-      }
-      if (trajectory_replaced != nullptr)
-        *trajectory_replaced = true;
       static double sum_time = 0;
       static int count_success = 0;
       sum_time += (t_init + t_opt).toSec();
@@ -316,7 +514,8 @@ namespace diff_planner
     }
     else
     {
-      cstr_pts = ploy_traj_opt_->getMinJerkOpt().getInitConstraintPoints(ploy_traj_opt_->get_cps_num_prePiece_());
+      cstr_pts = has_dynamic_conflict ? initMJO.getInitConstraintPoints(getCpsNumPrePiece())
+          : ploy_traj_opt_->getMinJerkOpt().getInitConstraintPoints(getCpsNumPrePiece());
       visualization_->displayFailedList(cstr_pts, 0);
 
       continous_failures_count_++;
@@ -599,14 +798,9 @@ namespace diff_planner
       const double start_time = ros::Time::now().toSec();
       if (check_dynamic_obstacles && dynamicAvoidanceEnabled())
       {
-        std::vector<std::pair<double, Eigen::Vector3d>> samples;
-        const double step = std::min(0.05, grid_map_->getResolution() / std::max(0.1, pp_.max_vel_));
-        for (double time = 0.0; time < traj.getTotalDuration(); time += step)
-          samples.emplace_back(time, traj.getPos(time));
-        samples.emplace_back(traj.getTotalDuration(), traj.getPos(traj.getTotalDuration()));
-        if (dynamicTrajectoryBlocked(samples, start_time))
+        if (!ploy_traj_opt_->trajectoryCollisionFree(traj, start_time, start_time))
         {
-          ROS_WARN("[FAPP动态避障] 优化后的轨迹仍与球相交，不发布该轨迹。");
+          ROS_WARN("[FAPP动态避障] 轨迹未通过静态或动态整机检查，不发布该轨迹。");
           return false;
         }
       }

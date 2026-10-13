@@ -10,6 +10,8 @@ struct DynamicObstacleState
 {
   Eigen::Vector3d position{Eigen::Vector3d::Zero()};
   Eigen::Vector3d velocity{Eigen::Vector3d::Zero()};
+  // Measured full AABB extents; all-zero or invalid extents use the sphere fallback.
+  Eigen::Vector3d size{Eigen::Vector3d::Zero()};
   double stamp{0.0};
 };
 
@@ -22,14 +24,15 @@ struct DynamicObstacleConfig
   double margin{0.10};
   double observation_retention{0.80};
   double prediction_horizon{1.0};
-  // Measured minimum ball bottom relative to the ground; used only for the
-  // optimizer's underpass preference, never to alter measured ball coordinates.
+  // Legacy launch compatibility only. Passage height now follows observed
+  // geometry and static free space, not a fixed ground-relative ball bottom.
   double minimum_ball_bottom{0.80};
 };
 
 // CV prediction follows FAPP's timed-object cost:
 // https://github.com/arclab-hku/FAPP/blob/main/src/planner/traj_opt/src/poly_traj_optimizer.cpp
-// The geometry here is a sphere against a finite vertical vehicle cylinder.
+// Valid measured extents use an AABB against a finite vertical vehicle cylinder;
+// missing or invalid extents retain the configured sphere fallback.
 // reference_time checks observation age; query_time is the trajectory sample's
 // absolute time and may be in the future. A valid observation stays valid for
 // every sample in one planning evaluation. The gradient is with respect to the

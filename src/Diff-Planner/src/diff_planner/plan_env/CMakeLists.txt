@@ -56,4 +56,8 @@ set_target_properties(diff_plan_env_target PROPERTIES OUTPUT_NAME plan_env)
 target_link_libraries( diff_plan_env_target
     ${catkin_LIBRARIES} 
     ${PCL_LIBRARIES}
-    )  
+    )
+
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(test_vehicle_geometry test/test_vehicle_geometry.cpp)
+endif()

@@ -2,7 +2,10 @@
 #define _POLY_TRAJ_OPTIMIZER_H_
 
 #include <Eigen/Eigen>
+#include <array>
+#include <map>
 #include <optimizer/dynamic_obstacle.h>
+#include <optimizer/trajectory_sampling.h>
 #include <optimizer/suspended_obstacle_underpass.h>
 #include <optimizer/vertical_obstacle_side_lock.h>
 #include <path_searching/dyn_a_star.h>
@@ -113,12 +116,20 @@ namespace diff_planner
     ros::WallTime planning_deadline_;
     bool planning_deadline_active_{false};
     bool planning_timeout_reported_{false};
+    ros::WallTime candidate_deadline_;
+    bool candidate_deadline_active_{false};
+    double planning_reference_time_{0.0};
+    std::vector<DynamicObstacleState> planning_obstacles_;
+    AStarSearchRegion dynamic_candidate_region_;
+    bool dynamic_candidate_active_{false};
+    double dynamic_candidate_query_time_{0.0};
+    mutable std::map<std::array<double, 3>, bool> static_occupancy_cache_;
 
     double t_now_;
     DynamicObstacleConfig dynamic_obstacle_config_;
     std::vector<DynamicObstacleState> dynamic_obstacles_;
     double wei_dynamic_obstacle_{10000.0};
-    double dynamic_underpass_height_{0.50};
+    double dynamic_underpass_height_{0.50}; // Legacy parameter; no fixed-height preference.
 
   public:
     PolyTrajOptimizer() {}
@@ -139,13 +150,27 @@ namespace diff_planner
     void setDroneId(const int drone_id);
     void setIfTouchGoal(const bool touch_goal);
     void setDynamicObstacles(const std::vector<DynamicObstacleState> &obstacles);
-    const std::vector<DynamicObstacleState> &getDynamicObstacles() const { return dynamic_obstacles_; }
+    const std::vector<DynamicObstacleState> &getDynamicObstacles() const {
+      return planning_deadline_active_ ? planning_obstacles_ : dynamic_obstacles_;
+    }
     const DynamicObstacleConfig &getDynamicObstacleConfig() const { return dynamic_obstacle_config_; }
     void setConstraintPoints(ConstraintPoints cps);
     void setUseMultitopologyTrajs(bool use_multitopology_trajs);
     void beginPlanningCycle();
     void endPlanningCycle();
     bool checkPlanningTimeout(const char *stage);
+    double planningTimeRemaining() const;
+    void beginDynamicCandidate(double time_budget);
+    void endDynamicCandidate();
+    bool searchDynamicCandidate(const Eigen::Vector3d &start,
+                                const Eigen::Vector3d &end,
+                                const DynamicObstacleState &obstacle,
+                                double collision_time, int direction,
+                                std::vector<Eigen::Vector3d> &path);
+    bool staticPositionOccupied(const Eigen::Vector3d &position) const;
+    bool trajectoryCollisionFree(const poly_traj::Trajectory &trajectory,
+                                 double start_time, double reference_time);
+    double planningReferenceTime() const { return planning_reference_time_; }
 
     /* helper functions */
     inline const ConstraintPoints &getControlPoints(void) { return cps_; }
@@ -217,6 +242,7 @@ namespace diff_planner
     ASTAR_RET searchObstaclePath(const Eigen::Vector3d &start,
                                  const Eigen::Vector3d &end,
                                  std::vector<Eigen::Vector3d> &path);
+    bool candidatePointInside(const Eigen::Vector3d &point) const;
 
     bool swarmGradCostP(const int i_dp,
                         const double t,

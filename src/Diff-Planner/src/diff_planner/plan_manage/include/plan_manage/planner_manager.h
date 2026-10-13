@@ -2,6 +2,7 @@
 #define _PLANNER_MANAGER_H_
 
 #include <stdlib.h>
+#include <functional>
 
 #include <optimizer/poly_traj_optimizer.h>
 #include <traj_utils/DataDisp.h>
@@ -62,6 +63,13 @@ namespace diff_planner
         const std::vector<std::pair<double, Eigen::Vector3d>> &samples,
         double now, SwingCollisionResult *result = nullptr) const;
     bool dynamicAvoidanceEnabled() const;
+    bool dynamicCandidatesFailed(SwingCollisionResult *result) const {
+      if (result != nullptr) *result = dynamic_candidate_failure_;
+      return dynamic_candidates_failed_;
+    }
+    bool avoidanceTrajectoryBlocked(
+        const std::vector<std::pair<double, Eigen::Vector3d>> &samples,
+        double now, SwingCollisionResult *result = nullptr) const;
     bool setLocalTrajFromOpt(const poly_traj::MinJerkOpt &opt, const bool touch_goal,
                             bool check_dynamic_obstacles = true);
     inline double getSwarmClearance(void) { return ploy_traj_opt_->get_swarm_clearance_(); }
@@ -73,6 +81,11 @@ namespace diff_planner
     TrajContainer traj_;
 
   private:
+    bool optimizeDynamicCandidates(const poly_traj::MinJerkOpt &initial,
+                                   const DynamicObstacleState &obstacle,
+                                   double collision_time,
+                                   poly_traj::MinJerkOpt &best,
+                                   const std::function<bool(const poly_traj::MinJerkOpt &)> &commit);
     ReplanTrajectoryMetrics evaluateTrajectoryQuality(
         const poly_traj::Trajectory &trajectory, double start_time);
     double estimateInflatedClearance(const Eigen::Vector3d &position);
@@ -80,6 +93,8 @@ namespace diff_planner
     PlanningVisualization::Ptr visualization_;
 
     PolyTrajOptimizer::Ptr ploy_traj_opt_;
+    bool dynamic_candidates_failed_{false};
+    SwingCollisionResult dynamic_candidate_failure_;
 
     int continous_failures_count_{0};
     bool enable_replan_quality_gate_{true};

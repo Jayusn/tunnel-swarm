@@ -1,4 +1,55 @@
 #include "plan_env/grid_map.h"
+#include "plan_env/vehicle_geometry.h"
+
+bool GridMap::isVehicleOccupied(const Eigen::Vector3d &pos, const double radius,
+                               const double half_height, const double margin)
+{
+  if (mp_.enable_virtual_wall_ &&
+      (pos.z() - half_height - margin <= mp_.virtual_ground_ ||
+       pos.z() + half_height + margin >= mp_.virtual_ceil_))
+    return true;
+
+  const Eigen::Vector3d extent(radius + margin, radius + margin,
+                               half_height + margin);
+  // Include the preceding voxel when the lower bound touches its upper face.
+  const Eigen::Vector3i lower = pos2GlobalIdx(pos - extent) -
+      Eigen::Vector3i::Ones();
+  const Eigen::Vector3i upper = pos2GlobalIdx(pos + extent);
+  const Eigen::Vector3d voxel_size =
+      Eigen::Vector3d::Constant(mp_.resolution_);
+  const double occupancy_threshold = md_.use_lidar_prob_for_update_
+      ? mp_.lidar_min_occupancy_log_ : mp_.min_occupancy_log_;
+  const Eigen::Vector3i first = lower.cwiseMax(md_.ringbuffer_lowbound3i_);
+  const Eigen::Vector3i last = upper.cwiseMin(md_.ringbuffer_upbound3i_);
+  const Eigen::Vector3i &buffer_size = md_.ringbuffer_size3i_;
+  // Scan contiguous buffer rows; avoid three ring-buffer divisions per voxel.
+  for (int z = first.z(); z <= last.z(); ++z)
+  {
+    int buffer_z = (z - md_.ringbuffer_origin3i_.z()) % buffer_size.z();
+    if (buffer_z < 0) buffer_z += buffer_size.z();
+    for (int y = first.y(); y <= last.y(); ++y)
+    {
+      int buffer_y = (y - md_.ringbuffer_origin3i_.y()) % buffer_size.y();
+      if (buffer_y < 0) buffer_y += buffer_size.y();
+      const int row_offset = (buffer_z * buffer_size.y() + buffer_y) *
+          buffer_size.x();
+      int buffer_x = (first.x() - md_.ringbuffer_origin3i_.x()) % buffer_size.x();
+      if (buffer_x < 0) buffer_x += buffer_size.x();
+      for (int x = first.x(); x <= last.x(); ++x)
+      {
+        const int address = row_offset + buffer_x;
+        if (++buffer_x == buffer_size.x()) buffer_x = 0;
+        if (md_.occupancy_buffer_[address] < occupancy_threshold)
+          continue;
+        if (diff_planner::cylinderBoxClearance(
+                pos, globalIdx2Pos(Eigen::Vector3i(x, y, z)), voxel_size, radius, half_height,
+                margin) <= 0.0)
+          return true;
+      }
+    }
+  }
+  return false;
+}
 
 void GridMap::initMap(ros::NodeHandle &nh)
 {

@@ -51,6 +51,10 @@ if(CATKIN_ENABLE_TESTING)
     src/dynamic_obstacle.cpp
   )
 
+  catkin_add_gtest(test_trajectory_sampling
+    test/test_trajectory_sampling.cpp
+  )
+
   catkin_add_gtest(test_suspended_obstacle_underpass
     test/test_suspended_obstacle_underpass.cpp
     src/suspended_obstacle_underpass.cpp

@@ -93,6 +93,13 @@ bool AStar::ConvertToIndexAndAdjustStartEndPoints(Vector3d start_pt, Vector3d en
     if (!Coord2Index(start_pt, start_idx) || !Coord2Index(end_pt, end_idx))
         return false;
 
+    // A whole-vehicle query must preserve the requested endpoints. Moving a
+    // colliding endpoint would conceal an invalid connection to the aircraft.
+    if (occupancy_checker_)
+        return !occupancy_checker_(start_pt) && !occupancy_checker_(end_pt) &&
+               edgeIsFree(start_pt, Index2Coord(start_idx), nullptr) &&
+               edgeIsFree(Index2Coord(end_idx), end_pt, nullptr);
+
     int occ;
     if (checkOccupancy(Index2Coord(start_idx)))
     {
@@ -137,6 +144,23 @@ bool AStar::ConvertToIndexAndAdjustStartEndPoints(Vector3d start_pt, Vector3d en
         } while (checkOccupancy(Index2Coord(end_idx)));
     }
 
+    return true;
+}
+
+bool AStar::edgeIsFree(const Vector3d &start, const Vector3d &end,
+                       const AStarSearchRegion *region) const
+{
+    if (!occupancy_checker_)
+        return true;
+    const int intervals = std::max(
+        1, static_cast<int>(std::ceil((end - start).norm() / (0.5 * step_size_))));
+    for (int sample = 0; sample <= intervals; ++sample)
+    {
+        const Vector3d point = start + (end - start) *
+            (static_cast<double>(sample) / intervals);
+        if (!insideSearchRegion(point, region) || occupancy_checker_(point))
+            return false;
+    }
     return true;
 }
 
@@ -189,6 +213,10 @@ ASTAR_RET AStar::AstarSearch(const double step_size, Vector3d start_pt,
                              const AStarSearchRegion *region)
 {
     ros::Time time_1 = ros::Time::now();
+    const ros::WallTime wall_time_1 = occupancy_checker_
+        ? ros::WallTime::now() : ros::WallTime();
+    const double time_limit =
+        region != nullptr && region->enabled ? region->time_limit : 0.2;
     ++rounds_;
 
     step_size_ = step_size;
@@ -229,6 +257,14 @@ ASTAR_RET AStar::AstarSearch(const double step_size, Vector3d start_pt,
     int num_iter = 0;
     while (!openSet_.empty())
     {
+        if (occupancy_checker_ &&
+            (ros::WallTime::now() - wall_time_1).toSec() > time_limit)
+        {
+            if (region == nullptr || !region->enabled || region->report_timeout)
+                ROS_WARN("Failed in A star path searching !!! %.3f seconds time limit exceeded.",
+                         time_limit);
+            return ASTAR_RET::SEARCH_ERR;
+        }
         num_iter++;
         current = openSet_.top();
         openSet_.pop();
@@ -274,14 +310,17 @@ ASTAR_RET AStar::AstarSearch(const double step_size, Vector3d start_pt,
                         continue; //in closed set.
                     }
 
-                    neighborPtr->rounds = rounds_;
+                    if (!occupancy_checker_)
+                        neighborPtr->rounds = rounds_;
 
                     const Vector3d neighbor_coord = Index2Coord(neighborPtr->index);
                     if (!insideSearchRegion(neighbor_coord, region) ||
-                        checkOccupancy(neighbor_coord))
+                        checkOccupancy(neighbor_coord) ||
+                        !edgeIsFree(Index2Coord(current->index), neighbor_coord, region))
                     {
                         continue;
                     }
+                    neighborPtr->rounds = rounds_;
 
                     double static_cost = sqrt(dx * dx + dy * dy + dz * dz);
                     if (region != nullptr && region->enabled &&
@@ -318,9 +357,10 @@ ASTAR_RET AStar::AstarSearch(const double step_size, Vector3d start_pt,
                     }
                 }
         ros::Time time_2 = ros::Time::now();
-        const double time_limit =
-            region != nullptr && region->enabled ? region->time_limit : 0.2;
-        if ((time_2 - time_1).toSec() > time_limit)
+        const double elapsed = occupancy_checker_
+            ? (ros::WallTime::now() - wall_time_1).toSec()
+            : (time_2 - time_1).toSec();
+        if (elapsed > time_limit)
         {
             if (region == nullptr || !region->enabled || region->report_timeout)
                 ROS_WARN("Failed in A star path searching !!! %.3f seconds time limit exceeded.",

@@ -47,4 +47,12 @@ add_library( diff_path_searching_target
 set_target_properties(diff_path_searching_target PROPERTIES OUTPUT_NAME path_searching)
 target_link_libraries( diff_path_searching_target
     ${catkin_LIBRARIES} 
-    )  
+    )
+
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(test_astar_vehicle_occupancy test/test_astar_vehicle_occupancy.cpp)
+  if(TARGET test_astar_vehicle_occupancy)
+    target_link_libraries(test_astar_vehicle_occupancy
+      diff_path_searching_target ${catkin_LIBRARIES})
+  endif()
+endif()
