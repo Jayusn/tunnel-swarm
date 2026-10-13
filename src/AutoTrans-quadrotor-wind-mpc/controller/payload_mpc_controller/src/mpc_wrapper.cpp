@@ -200,20 +200,8 @@ namespace PayloadMPC
   bool MpcWrapper::setReferencePose(
       const Eigen::Ref<const Eigen::Matrix<real_t, kStateSize, 1>> reference_state)
   {
-    acado_reference_states_.block(0, 0, kStateSize, kSamples) =
-        reference_state.replicate(1, kSamples);
-
-    acado_reference_states_.block(kStateSize, 0, kCostSize - kStateSize, kSamples) =
-        Eigen::Matrix<real_t, kCostSize - kStateSize, kSamples>::Zero();
-
-    acado_reference_states_.block(kCostSize, 0, kInputSize, kSamples) =
-        kHoverInput_.replicate(1, kSamples);
-
-    acado_reference_end_state_.segment(0, kStateSize) =
-        reference_state;
-
-    acado_reference_end_state_.segment(kStateSize, kCostSize - kStateSize) =
-        Eigen::Matrix<real_t, kCostSize - kStateSize, 1>::Zero();
+    setTrajectory(reference_state.replicate(1, kSamples + 1),
+                  kHoverInput_.replicate(1, kSamples + 1));
 
     acado_initializeNodesByForwardSimulation();
     return true;
@@ -239,6 +227,20 @@ namespace PayloadMPC
     acado_reference_end_state_.segment(kStateSize, kCostSize - kStateSize) =
         Eigen::Matrix<real_t, kCostSize - kStateSize, 1>::Zero();
 
+    // q 与 -q 表示相同姿态，但四元数分量的最小二乘代价不具有符号不变性。
+    // 以已有预测初态为锚点，沿整个窗口（含终端）连续对齐，避免旋转矩阵
+    // 转四元数时的分支变号诱发反向偏航，也保持跨周期的线性化状态一致。
+    Eigen::Matrix<real_t, 4, 1> previous = acado_states_.block<4, 1>(3, 0);
+    for (int i = 0; i < kSamples; ++i)
+    {
+      auto quaternion = acado_reference_states_.block<4, 1>(3, i);
+      if (previous.dot(quaternion) < real_t(0.0))
+        quaternion *= real_t(-1.0);
+      previous = quaternion;
+    }
+    if (previous.dot(acado_reference_end_state_.segment<4>(3)) < real_t(0.0))
+      acado_reference_end_state_.segment<4>(3) *= real_t(-1.0);
+
     return true;
   }
 
@@ -246,7 +248,10 @@ namespace PayloadMPC
   bool MpcWrapper::solve(
       const Eigen::Ref<const Eigen::Matrix<real_t, kStateSize, 1>> state)
   {
-    acado_states_ = state.replicate(1, kSamples + 1);
+    Eigen::Matrix<real_t, kStateSize, 1> aligned_state = state;
+    if (aligned_state.segment<4>(3).dot(acado_states_.block<4, 1>(3, 0)) < real_t(0.0))
+      aligned_state.segment<4>(3) *= real_t(-1.0);
+    acado_states_ = aligned_state.replicate(1, kSamples + 1);
 
     acado_inputs_ = kHoverInput_.replicate(1, kSamples);
 
@@ -264,10 +269,10 @@ namespace PayloadMPC
       return false;
     }
 
-    // Check if estimated and reference quaternion live in sthe same hemisphere.
+    // 测量姿态对齐到已准备好的预测初态，不能因参考变号翻转线性化初态。
     acado_initial_state_ = state;
     if (acado_initial_state_.segment(3, 4).dot(
-            Eigen::Matrix<real_t, 4, 1>(acado_reference_states_.block(3, 0, 4, 1))) < (real_t)0.0)
+            Eigen::Matrix<real_t, 4, 1>(acado_states_.block(3, 0, 4, 1))) < (real_t)0.0)
     {
       acado_initial_state_.segment(3, 4) = -acado_initial_state_.segment(3, 4);
     }
