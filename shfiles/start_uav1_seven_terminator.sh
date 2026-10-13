@@ -25,7 +25,7 @@ ROSCORE_LOG="${UAV1_SINGLE_ROSCORE_LOG:-/tmp/uav1_single_roscore_${RUN_ID}.log}"
 WAIT_TIMEOUT="${UAV1_SINGLE_WAIT_TIMEOUT:-180}"
 THERMAL="${UAV1_SINGLE_THERMAL:-true}"
 DETECTOR="${UAV1_SINGLE_DETECTOR:-fapp}"
-DYNAMIC_AVOIDANCE="${UAV1_SINGLE_DYNAMIC_AVOIDANCE:-false}"
+DYNAMIC_AVOIDANCE="${UAV1_SINGLE_DYNAMIC_AVOIDANCE:-true}"
 
 MAVROS_STATE_TOPIC="/UAV1/mavros/state"
 LIDAR_TOPIC="/UAV1/livox/lidar"
@@ -70,8 +70,8 @@ usage() {
 
 选项：
   --detector none|fapp|ldop  动态障碍检测算法，默认 fapp
-  --dynamic-avoidance        开启 FAPP 动态避障
-  --detection-only          关闭动态避障，只保留动态检测（默认）
+  --dynamic-avoidance        开启 FAPP 动态避障（默认）
+  --detection-only          关闭动态避障，只保留动态检测
   --thermal                 第 5 屏同时启动热成像检测和 D435 融合
   --no-thermal              关闭热成像
 EOF
