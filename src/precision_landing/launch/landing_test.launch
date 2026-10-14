@@ -2,6 +2,8 @@
   <arg name="enable_nmpc_descent" default="false"/>
   <arg name="vehicle_ns" default="UAV0"/>
   <arg name="topic_prefix" default="$(eval '/' + arg('vehicle_ns').strip('/'))"/>
+  <!-- 后机传入自身的相机外参及中心补偿配置。 -->
+  <arg name="camera_extrinsic_config" default=""/>
   <arg name="start_camera" default="true"/>
   <!-- 安全默认值：比赛流程禁止测试节点自行解锁、起飞和悬停。 -->
   <arg name="allow_arming" default="false"/>
@@ -17,6 +19,7 @@
   <!-- Standalone takeoff hands over directly to precision landing, without a planner. -->
   <include file="$(find precision_landing)/launch/precision_landing.launch">
     <arg name="vehicle_ns" value="$(arg vehicle_ns)"/>
+    <arg name="camera_extrinsic_config" value="$(arg camera_extrinsic_config)"/>
     <arg name="auto_land_at_cutoff" value="true"/>
     <arg name="enable_landing_search" value="false"/>
     <arg name="enable_front_aruco_hint" value="false"/>

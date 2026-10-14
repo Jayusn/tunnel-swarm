@@ -15,6 +15,20 @@
     <arg name="set_mode_service" value="$(arg topic_prefix)/mavros/set_mode"/>
     <arg name="setpoint_topic" value="$(arg topic_prefix)/landing_test/nmpc_attitude"/>
     <arg name="recovery_position_setpoint_topic" value="$(arg topic_prefix)/landing_test/nmpc_recovery"/>
+    <arg name="rc_land_active_topic" value="$(arg topic_prefix)/mission/rc_land_active"/>
+    <arg name="reboot_service" value="$(arg topic_prefix)/mavros/cmd/command"/>
+    <arg name="cmd_trigger_topic" value="$(arg topic_prefix)/hummingbird/goal"/>
+    <arg name="planning_stop_topic" value="$(arg topic_prefix)/planning_stop_trigger"/>
+    <arg name="planning_restart_topic" value="$(arg topic_prefix)/planning_restart_trigger"/>
+    <arg name="trajectory_topic" value="$(arg topic_prefix)/planning/autotrans_trajectory"/>
+    <arg name="position_cmd_topic" value="$(arg topic_prefix)/planning/pos_cmd"/>
+    <arg name="landing_search_state_topic" value="$(arg topic_prefix)/landing_test/search_state"/>
+    <arg name="landing_search_yaw_topic" value="$(arg topic_prefix)/landing_diff/yaw"/>
+    <arg name="raw_trajectory_topic" value="$(arg topic_prefix)/planning/bspline"/>
+    <arg name="goal_topic" value="$(arg topic_prefix)/move_base_simple/goal"/>
+    <arg name="comparison_imu_topic" value="$(arg topic_prefix)/mavros/imu/data"/>
+    <arg name="comparison_attitude_odom_topic" value="$(arg topic_prefix)/mavros/local_position/odom"/>
+    <arg name="vision_pose_topic" value="$(arg topic_prefix)/mavros/vision_pose/pose"/>
     <arg name="experiment_tag" value="precision_fixed_xy_descent"/>
     <arg name="enable_evo_report" value="false"/>
   </include>

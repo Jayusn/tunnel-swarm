@@ -7,6 +7,7 @@
   <arg name="imu_topic" default="/UAV0/livox/imu_mps2"/>
   <arg name="force_attitude_odom_topic" default="/UAV0/fast_lio/Odom_high_freq"/>
   <!-- 迁移阶段额外录制 MAVROS 数据，仅用于离线对照。 -->
+  <arg name="vision_pose_topic" default="/UAV0/mavros/vision_pose/pose"/>
   <arg name="comparison_imu_topic" default="/UAV0/mavros/imu/data"/>
   <arg name="comparison_attitude_odom_topic" default="/UAV0/mavros/local_position/odom"/>
   <!-- MAVROS topics and services are supplied by the vehicle integration launch. -->
@@ -157,7 +158,7 @@
       - "$(arg force_attitude_yaw_offset_topic)"
       - "$(arg planning_restart_topic)"
       - "$(arg planning_stop_topic)"
-      - "/UAV0/mavros/vision_pose/pose"
+      - "$(arg vision_pose_topic)"
       - "/tf"
       - "/tf_static"
       - "/rosout"
