@@ -253,8 +253,12 @@ class DescentTest(RcLandPriorityTest):
         self.assertEqual(self.last('owner').data,'NMPC')
         ref=self.last('controller/mpc/reference_trajectory').poses[0].pose
         self.assertGreater(ref.position.z,1.5)
-        # 约1秒的0.15 m/s斜坡，允许测试循环和ROS调度带来的少量时间差。
-        self.assertLess(ref.position.z,1.68)
+        # 1.70米目标分5秒爬升；约1秒应前进0.34米，允许ROS调度误差。
+        self.assertGreater(ref.position.z,1.77)
+        self.assertLess(ref.position.z,1.91)
+        drive(4.3)
+        ref=self.last('controller/mpc/reference_trajectory').poses[0].pose
+        self.assertAlmostEqual(ref.position.z,3.2,places=4)
         count=len(self.messages['mavros_position'])
         stage='ALIGN'; target.type_mask=2531; target.position.z=1.5
         target.velocity.x=.06; target.velocity.y=-.02; drive(.4)

@@ -23,6 +23,7 @@ class Router:
         self.local_pose = None
         self.landing_started = False
         self.takeoff_z = None
+        self.takeoff_speed = None
         self.takeoff_stamp = None
         self.requested = False
         self.owned = False
@@ -138,10 +139,12 @@ class Router:
                 return
             if self.takeoff_z is None:
                 self.takeoff_z = self.local_pose.pose.position.z
+                # 从接管时的高度到起飞目标，斜坡用时5秒。
+                self.takeoff_speed = max(0.0, msg.pose.position.z - self.takeoff_z) / 5.0
                 self.takeoff_stamp = now
             dt = max(0.0, min(.1, (now-self.takeoff_stamp).to_sec()))
             self.takeoff_stamp = now
-            self.takeoff_z = min(msg.pose.position.z, self.takeoff_z + .15*dt)
+            self.takeoff_z = min(msg.pose.position.z, self.takeoff_z + self.takeoff_speed*dt)
             target = self.pose_target(msg)
             target.position.z = self.takeoff_z
             self.requested = True
