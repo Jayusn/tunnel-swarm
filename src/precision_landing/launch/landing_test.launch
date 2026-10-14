@@ -20,6 +20,7 @@
   <include file="$(find precision_landing)/launch/precision_landing.launch">
     <arg name="vehicle_ns" value="$(arg vehicle_ns)"/>
     <arg name="camera_extrinsic_config" value="$(arg camera_extrinsic_config)"/>
+    <arg name="use_fast_lio_pose" value="$(arg enable_nmpc_descent)"/>
     <arg name="auto_land_at_cutoff" value="true"/>
     <arg name="enable_landing_search" value="false"/>
     <arg name="enable_front_aruco_hint" value="false"/>
@@ -34,7 +35,7 @@
   <node pkg="precision_landing" type="landing_test_mission_node"
         name="landing_test" output="screen" required="true">
     <param name="mavros_state_topic" value="$(arg topic_prefix)/mavros/state"/>
-    <param name="local_pose_topic" value="$(arg topic_prefix)/mavros/local_position/pose"/>
+    <param name="local_pose_topic" value="$(eval arg('topic_prefix') + ('/landing/fast_lio_pose' if arg('enable_nmpc_descent') else '/mavros/local_position/pose'))"/>
     <param name="position_setpoint_topic" value="$(eval arg('topic_prefix') + ('/landing_test/takeoff_position' if arg('enable_nmpc_descent') else '/mavros/setpoint_position/local'))"/>
     <param name="landing_trigger_topic" value="$(arg topic_prefix)/need_to_land"/>
     <param name="landing_state_topic" value="$(arg topic_prefix)/landing/state"/>

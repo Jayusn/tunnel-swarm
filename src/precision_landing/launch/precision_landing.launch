@@ -5,7 +5,13 @@
   <arg name="topic_prefix" default="$(eval '/' + arg('vehicle_ns').strip('/'))"/>
   <arg name="image_topic" default="$(arg topic_prefix)/down_camera/image_raw"/>
   <arg name="camera_info_topic" default="$(arg topic_prefix)/down_camera/camera_info"/>
-  <arg name="local_pose_topic" default="$(arg topic_prefix)/mavros/local_position/pose"/>
+  <arg name="use_fast_lio_pose" default="$(arg landing_via_mpc)"/>
+  <arg name="local_pose_topic" default="$(eval arg('topic_prefix') + ('/landing/fast_lio_pose' if arg('use_fast_lio_pose') else '/mavros/local_position/pose'))"/>
+  <node if="$(arg use_fast_lio_pose)" pkg="precision_landing" type="fast_lio_pose.py"
+        name="landing_fast_lio_pose" ns="$(arg vehicle_ns)" output="screen">
+    <remap from="odometry" to="$(arg topic_prefix)/fast_lio/Odom_high_freq"/>
+    <remap from="pose" to="$(arg topic_prefix)/landing/fast_lio_pose"/>
+  </node>
   <arg name="mavros_state_topic" default="$(arg topic_prefix)/mavros/state"/>
   <arg name="odometry_topic" default="$(arg topic_prefix)/fast_lio/Odom_high_freq"/>
   <arg name="trigger_topic" default="$(arg topic_prefix)/need_to_land"/>

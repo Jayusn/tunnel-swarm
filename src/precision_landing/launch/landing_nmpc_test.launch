@@ -1,6 +1,7 @@
 <launch>
   <arg name="topic_prefix" default="/UAV0"/>
   <include file="$(find payload_mpc_controller)/launch/quad_wind_mpc_controller.launch">
+    <arg name="precision_target_in_fast_lio" value="true"/>
     <arg name="precision_landing_test_mode" value="true"/>
     <arg name="precision_landing_test_target" value="$(arg topic_prefix)/landing_test/nmpc_target"/>
     <arg name="odom_topic" value="$(arg topic_prefix)/fast_lio/Odom_high_freq"/>
@@ -33,6 +34,8 @@
     <arg name="enable_evo_report" value="false"/>
   </include>
   <node pkg="precision_landing" type="landing_nmpc_test_router.py" name="landing_nmpc_test_router" output="screen" required="true">
+    <param name="targets_in_fast_lio" value="true"/>
+    <remap from="control_pose" to="$(arg topic_prefix)/landing/fast_lio_pose"/>
     <remap from="extended_state" to="$(arg topic_prefix)/mavros/extended_state"/>
     <remap from="rc_land" to="$(arg topic_prefix)/mission/rc_land_active"/>
     <remap from="arming" to="$(arg topic_prefix)/mavros/cmd/arming"/>

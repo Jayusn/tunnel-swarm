@@ -112,6 +112,7 @@ namespace PayloadMPC
 	private:
 		// 精降目标共用接口；独立测试和总流程入口分别显式启用。
         bool precision_test_mode_{false}, precision_test_started_{false};
+        bool precision_target_in_fast_lio_{false};
         bool precision_mission_mode_{false};
         bool precision_mission_active_{false};
         mavros_msgs::PositionTarget precision_test_target_;

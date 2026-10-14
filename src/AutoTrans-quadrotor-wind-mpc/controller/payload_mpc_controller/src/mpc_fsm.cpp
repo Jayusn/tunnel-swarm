@@ -200,6 +200,7 @@ namespace PayloadMPC
 								params_.rc_mode_.mid_high_threshold,
 								params_.rc_mode_.high_threshold);
 		nh_.param("precision_landing_test_mode", precision_test_mode_, false);
+        nh_.param("precision_target_in_fast_lio", precision_target_in_fast_lio_, false);
         nh_.param("precision_landing_mission_mode", precision_mission_mode_, false);
 		nh_.param("landing_search_yaw_timeout", landing_search_yaw_timeout_, 0.5);
 		nh_.param("landing_search_hold_height", landing_search_hold_height_, 0.6);
@@ -419,14 +420,24 @@ namespace PayloadMPC
             {
                 if (precision_test_target_time_.isZero() ||
                     (now_time - precision_test_target_time_).toSec() > 0.3 ||
-                    precision_test_pose_time_.isZero() ||
+                    (!precision_target_in_fast_lio_ && (precision_test_pose_time_.isZero() ||
                     (now_time - precision_test_pose_time_).toSec() > 0.3 ||
-                    (now_time - precision_test_pose_time_).toSec() < -0.05 ||
+                    (now_time - precision_test_pose_time_).toSec() < -0.05)) ||
                     !mpcControlStateValid(now_time) || !imu_is_received(now_time) ||
                     !rc_is_received(now_time) || !rc_data.mode_input_valid) return;
-                precision_test_yaw_offset_ = wrapYaw(get_yaw_from_quaternion(odom_data.q) - latest_mavros_local_yaw_);
-                precision_test_rotation_ = Eigen::AngleAxisd(precision_test_yaw_offset_, Eigen::Vector3d::UnitZ()).toRotationMatrix();
-                precision_test_translation_ = odom_data.p - precision_test_rotation_ * latest_mavros_local_position_;
+                if (precision_target_in_fast_lio_)
+                {
+                    // 目标与反馈均来自 FAST-LIO，禁止再次套用 PX4 local 坐标变换。
+                    precision_test_yaw_offset_ = 0.0;
+                    precision_test_rotation_.setIdentity();
+                    precision_test_translation_.setZero();
+                }
+                else
+                {
+                    precision_test_yaw_offset_ = wrapYaw(get_yaw_from_quaternion(odom_data.q) - latest_mavros_local_yaw_);
+                    precision_test_rotation_ = Eigen::AngleAxisd(precision_test_yaw_offset_, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+                    precision_test_translation_ = odom_data.p - precision_test_rotation_ * latest_mavros_local_position_;
+                }
                 update_hover_pose();
                 if (!controller_.resetForHover(est_state_, hover_pose_, hover_yaw_)) return;
                 precision_test_ground_z_ = odom_data.p.z();

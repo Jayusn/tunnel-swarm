@@ -21,6 +21,8 @@ class Router:
         self.disarm = rospy.ServiceProxy('arming', CommandBool)
         self.stage = ''
         self.local_pose = None
+        self.control_pose = None
+        self.targets_in_fast_lio = rospy.get_param("~targets_in_fast_lio", False)
         self.landing_started = False
         self.takeoff_z = None
         self.takeoff_speed = None
@@ -47,6 +49,9 @@ class Router:
             rospy.Subscriber('nmpc_recovery', PositionTarget, self.recovery_cb, queue_size=1),
         ]
 
+        if self.targets_in_fast_lio:
+            self.subs.append(rospy.Subscriber('control_pose', PoseStamped,
+                self.control_pose_cb, queue_size=1))
         self.disarm_timer = rospy.Timer(rospy.Duration(.5), self.disarm_tick)
 
     def rc_land_cb(self, msg):
@@ -115,6 +120,14 @@ class Router:
                     .5 < q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w < 1.5):
                 self.local_pose = msg
 
+    def control_pose_cb(self, msg):
+        with self.lock:
+            p, q = msg.pose.position, msg.pose.orientation
+            if (self.fresh(msg) and all(math.isfinite(x) for x in
+                    (p.x, p.y, p.z, q.x, q.y, q.z, q.w)) and
+                    .5 < q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w < 1.5):
+                self.control_pose = msg
+
     @staticmethod
     def pose_target(msg):
         target = PositionTarget(coordinate_frame=1, type_mask=2552)
@@ -137,8 +150,11 @@ class Router:
                 self.position.publish(hold)
             if not self.output_allowed():
                 return
+            control_pose = self.control_pose if self.targets_in_fast_lio else self.local_pose
+            if control_pose is None or not self.fresh(control_pose):
+                return
             if self.takeoff_z is None:
-                self.takeoff_z = self.local_pose.pose.position.z
+                self.takeoff_z = control_pose.pose.position.z
                 # 从接管时的高度到起飞目标，斜坡用时5秒。
                 self.takeoff_speed = max(0.0, msg.pose.position.z - self.takeoff_z) / 5.0
                 self.takeoff_stamp = now

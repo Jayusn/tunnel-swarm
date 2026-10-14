@@ -21,7 +21,39 @@ from std_msgs.msg import Bool, String
 
 
 class DescentTest(RcLandPriorityTest):
-    def test_mission_mpc_handoff(self):
+    def test_fast_lio_takeoff_router(self):
+        rospy.set_param(self.prefix+'/router/targets_in_fast_lio', True)
+        node=roslib.packages.find_node('precision_landing','landing_nmpc_test_router.py')[0]
+        self.processes.append(subprocess.Popen([node,'__name:=router','__ns:='+self.prefix],
+            stdout=self.log,stderr=self.log,start_new_session=True))
+        for t in ('mavros_position','nmpc_target'): self.subscribe(t,PositionTarget)
+        pubs={t:self.publisher(t,k) for t,k in [('local_pose',PoseStamped),
+            ('control_pose',PoseStamped),('takeoff_position',PoseStamped),('mavros_state',State)]}
+        self.wait(lambda:all(p.get_num_connections() for p in pubs.values()),'router LIO inputs')
+        local=PoseStamped();local.pose.position=Point(40,20,10);local.pose.orientation.w=1
+        lio=PoseStamped();lio.pose.position=Point(1,2,1.5);lio.pose.orientation.w=1
+        target=PoseStamped();target.pose.position=Point(1,2,3.2);target.pose.orientation.w=1
+        state=State(connected=True,armed=False,mode='POSCTL')
+        def drive(seconds):
+            until=time.monotonic()+seconds
+            while time.monotonic()<until:
+                for topic,msg in [('local_pose',local),('control_pose',lio),
+                    ('mavros_state',state),('takeoff_position',target)]:
+                    msg.header.stamp=rospy.Time.now();pubs[topic].publish(msg)
+                time.sleep(.02)
+        drive(.3)
+        self.assertIsNone(self.last('nmpc_target'))
+        self.assertAlmostEqual(self.last('mavros_position').position.z,10)
+        state.armed=True;state.mode='OFFBOARD';drive(1.0)
+        ref=self.last('nmpc_target').position
+        self.assertAlmostEqual(ref.x,1);self.assertAlmostEqual(ref.y,2)
+        self.assertGreater(ref.z,1.76);self.assertLess(ref.z,1.91)
+        self.assertAlmostEqual(self.last('mavros_position').position.z,10)
+
+    def test_fast_lio_mission_handoff(self):
+        self.test_mission_mpc_handoff(fast_lio=True)
+
+    def test_mission_mpc_handoff(self, fast_lio=False):
         base = Path(rospkg.RosPack().get_path('payload_mpc_controller'))
         def params(ns, values):
             for key, value in values.items():
@@ -30,6 +62,7 @@ class DescentTest(RcLandPriorityTest):
         for name in ('mpc.yaml', 'model.yaml'):
             params(self.prefix+'/controller', yaml.safe_load((base/'config'/name).read_text()))
         rospy.set_param(self.prefix+'/controller/precision_landing_mission_mode', True)
+        rospy.set_param(self.prefix+'/controller/precision_target_in_fast_lio', fast_lio)
         rospy.set_param(self.prefix+'/arbiter/landing_via_mpc', True)
         self.launch('precision_landing', 'landing_setpoint_arbiter_node', 'arbiter',
             trigger_topic='trigger', rc_land_active_topic='rc_land',
@@ -60,7 +93,8 @@ class DescentTest(RcLandPriorityTest):
         state=State(connected=True,armed=True,mode='OFFBOARD')
         rc=RCIn(channels=[1500]*10); rc.channels[7]=2000; rc.channels[9]=1000
         target=PositionTarget(coordinate_frame=1,type_mask=2552,yaw=0)
-        target.position=Point(4,2,1.2)
+        target.position=Point(1.2,-.7,1.2) if fast_lio else Point(4,2,1.2)
+        target.yaw=.4 if fast_lio else 0.0
         def drive(seconds):
             until=time.monotonic()+seconds
             while time.monotonic()<until:
@@ -385,5 +419,5 @@ class DescentTest(RcLandPriorityTest):
 
 
 if __name__=='__main__':
-    suite=unittest.TestSuite([DescentTest('test_mission_mpc_handoff'), DescentTest('test_repeated_marker_loss_does_not_raise_hold'), DescentTest('test_router_one_hz_state'), DescentTest('test_descent_handoff'), DescentTest('test_precision_auto_land_at_cutoff')])
+    suite=unittest.TestSuite([DescentTest('test_fast_lio_takeoff_router'), DescentTest('test_fast_lio_mission_handoff'), DescentTest('test_mission_mpc_handoff'), DescentTest('test_repeated_marker_loss_does_not_raise_hold'), DescentTest('test_router_one_hz_state'), DescentTest('test_descent_handoff'), DescentTest('test_precision_auto_land_at_cutoff')])
     sys.exit(not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful())

@@ -38,6 +38,7 @@
 
   <!-- AutoTrans 使用 UAV0 FAST-LIO 位姿/姿态、MID360 加速度和 UAV0 MAVROS 控制接口。 -->
   <include file="$(find payload_mpc_controller)/launch/quad_wind_mpc_controller.launch">
+    <arg name="precision_target_in_fast_lio" value="$(arg precision_landing_mission_mode)"/>
     <arg name="precision_landing_mission_mode" value="$(arg precision_landing_mission_mode)"/>
     <arg name="precision_landing_test_target" value="/UAV0/landing/nmpc_target"/>
     <arg name="recovery_position_setpoint_topic"
