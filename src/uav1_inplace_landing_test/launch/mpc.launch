@@ -1,4 +1,5 @@
 <launch>
+  <arg name="down_camera_image_topic" default="/UAV1/down_camera/image_raw"/>
   <arg name="precision_landing_mission_mode" default="false"/>
   <arg name="precision_landing_test_mode" default="false"/>
   <arg name="precision_landing_test_target" default="/UAV0/landing_test/nmpc_target"/>
@@ -135,6 +136,7 @@
     <param name="planning_restart_topic" value="$(arg planning_restart_topic)"/>
     <!-- 控制器调参与规划恢复诊断所需话题；默认不录原始点云。 -->
     <rosparam param="rosbag_topics" subst_value="true">
+      - "$(arg down_camera_image_topic)"
       - "$(arg odom_topic)"
       - "$(arg force_attitude_odom_topic)"
       - "$(arg imu_topic)"

@@ -1,6 +1,7 @@
 <launch>
   <arg name="topic_prefix" default="/UAV1"/>
   <include file="$(find uav1_inplace_landing_test)/launch/mpc.launch">
+    <arg name="down_camera_image_topic" value="$(arg topic_prefix)/down_camera/image_raw"/>
     <arg name="precision_landing_test_mode" value="true"/>
     <arg name="precision_landing_test_target" value="$(arg topic_prefix)/landing_test/nmpc_target"/>
     <arg name="odom_topic" value="$(arg topic_prefix)/fast_lio/Odom_high_freq"/>
