@@ -123,7 +123,6 @@ namespace diff_planner
     AStarSearchRegion dynamic_candidate_region_;
     bool dynamic_candidate_active_{false};
     double dynamic_candidate_query_time_{0.0};
-    mutable std::map<std::array<double, 3>, bool> static_occupancy_cache_;
 
     double t_now_;
     DynamicObstacleConfig dynamic_obstacle_config_;

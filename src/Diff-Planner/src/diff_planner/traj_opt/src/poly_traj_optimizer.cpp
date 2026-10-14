@@ -2068,7 +2068,6 @@ namespace diff_planner
     dynamic_candidate_active_ = false;
     planning_reference_time_ = ros::Time::now().toSec();
     planning_obstacles_ = dynamic_obstacles_;
-    static_occupancy_cache_.clear();
     planning_deadline_active_ = std::isfinite(max_planning_wall_time_) &&
                                 max_planning_wall_time_ > 0.0;
     if (planning_deadline_active_)
@@ -2081,7 +2080,6 @@ namespace diff_planner
   {
     endDynamicCandidate();
     planning_deadline_active_ = false;
-    static_occupancy_cache_.clear();
   }
 
   bool PolyTrajOptimizer::checkPlanningTimeout(const char *stage)
@@ -2113,7 +2111,7 @@ namespace diff_planner
         ? Eigen::Vector3i(160, 160, 100) : Eigen::Vector3i(100, 100, 100));
     if (dynamic_obstacle_config_.enabled)
       a_star_->setOccupancyChecker([this](const Eigen::Vector3d &position) {
-        if (checkPlanningTimeout("A-star whole-body query") || staticPositionOccupied(position))
+        if (checkPlanningTimeout("A-star occupancy query") || staticPositionOccupied(position))
           return true;
         if (dynamic_candidate_active_)
           for (const auto &obstacle : getDynamicObstacles())
@@ -2155,19 +2153,9 @@ namespace diff_planner
 
   bool PolyTrajOptimizer::staticPositionOccupied(const Eigen::Vector3d &position) const
   {
-    if (grid_map_->getInflateOccupancy(position) != 0) return true;
-    const auto &config = dynamic_obstacle_config_;
-    if (!config.enabled) return false;
-    const std::array<double, 3> key{{position.x(), position.y(), position.z()}};
-    if (planning_deadline_active_)
-    {
-      const auto cached = static_occupancy_cache_.find(key);
-      if (cached != static_occupancy_cache_.end()) return cached->second;
-    }
-    const bool occupied = grid_map_->isVehicleOccupied(
-        position, config.vehicle_radius, config.vehicle_half_height, config.margin);
-    if (planning_deadline_active_) static_occupancy_cache_[key] = occupied;
-    return occupied;
+    // Static obstacles use Diff's inflated map, independently of FAPP.
+    // Vehicle geometry remains part of dynamic-obstacle collision checks.
+    return grid_map_->getInflateOccupancy(position) != 0;
   }
 
   bool PolyTrajOptimizer::trajectoryCollisionFree(
