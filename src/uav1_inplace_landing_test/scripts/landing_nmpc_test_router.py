@@ -23,6 +23,7 @@ class Router:
         self.local_pose = None
         self.landing_started = False
         self.takeoff_z = None
+        self.takeoff_yaw = None
         self.takeoff_speed = None
         self.takeoff_stamp = None
         self.requested = False
@@ -139,6 +140,8 @@ class Router:
                 return
             if self.takeoff_z is None:
                 self.takeoff_z = self.local_pose.pose.position.z
+                # 解锁等待期间 PX4 航向可能重对齐；使用实际接管时的航向。
+                self.takeoff_yaw = hold.yaw
                 # 从接管时的高度到起飞目标，斜坡用时5秒。
                 self.takeoff_speed = max(0.0, msg.pose.position.z - self.takeoff_z) / 5.0
                 self.takeoff_stamp = now
@@ -147,6 +150,7 @@ class Router:
             self.takeoff_z = min(msg.pose.position.z, self.takeoff_z + self.takeoff_speed*dt)
             target = self.pose_target(msg)
             target.position.z = self.takeoff_z
+            target.yaw = self.takeoff_yaw
             self.requested = True
             self.target.publish(target)
 

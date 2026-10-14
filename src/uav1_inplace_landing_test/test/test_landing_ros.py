@@ -253,12 +253,24 @@ class DescentTest(RcLandPriorityTest):
         self.assertIsNone(self.last('nmpc_attitude'), 'NMPC output before arming')
         self.assertIsNotNone(self.last('mavros_position'))
         self.assertAlmostEqual(self.last('mavros_position').position.z,1.5,places=4)
+        # 起飞任务保留等待前的 -60 度，但 PX4 在解锁前已重对齐至 0 度。
+        takeoff.pose.orientation.z = math.sin(-math.pi/6)
+        takeoff.pose.orientation.w = math.cos(-math.pi/6)
+        local.pose.orientation.z = takeoff.pose.orientation.z
+        local.pose.orientation.w = takeoff.pose.orientation.w
+        drive(.4)
+        local.pose.orientation.z = 0.0
+        local.pose.orientation.w = 1.0
+        drive(.4)
+        self.assertIsNone(self.last('nmpc_attitude'), 'NMPC output during arming delay')
         state.armed=True; state.mode='OFFBOARD'; drive(.8)
         self.assertFalse(disarm_calls, 'disarm during takeoff on-ground state')
         ext.landed_state=ExtendedState.LANDED_STATE_IN_AIR; drive(.2)
         self.assertIsNotNone(self.last('mavros_attitude'), 'MPC did not take off')
         self.assertEqual(self.last('owner').data,'NMPC')
         ref=self.last('controller/mpc/reference_trajectory').poses[0].pose
+        self.assertAlmostEqual(2*math.atan2(ref.orientation.z,ref.orientation.w),.4,places=4,
+                               msg='takeoff reused stale pre-arming yaw')
         self.assertGreater(ref.position.z,1.5)
         # 1.70米目标分5秒爬升；约1秒应前进0.34米，允许ROS调度误差。
         self.assertGreater(ref.position.z,1.77)
@@ -269,6 +281,12 @@ class DescentTest(RcLandPriorityTest):
                         'independent NMPC test suppressed vertical disturbance compensation')
         ref=self.last('controller/mpc/reference_trajectory').poses[0].pose
         self.assertAlmostEqual(ref.position.z,3.2,places=4)
+        local.pose.orientation.z = math.sin(.05)
+        local.pose.orientation.w = math.cos(.05)
+        drive(.2)
+        ref=self.last('controller/mpc/reference_trajectory').poses[0].pose
+        self.assertAlmostEqual(2*math.atan2(ref.orientation.z,ref.orientation.w),.4,places=4,
+                               msg='takeoff yaw must remain latched after takeover')
         count=len(self.messages['mavros_position'])
         stage='ALIGN'; target.type_mask=2531; target.position.z=1.5
         target.velocity.x=.06; target.velocity.y=-.02; drive(.4)
