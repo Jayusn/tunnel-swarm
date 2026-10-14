@@ -89,8 +89,10 @@ class Router:
         return not msg.header.stamp.is_zero() and -0.05 <= age <= 0.3
 
     def output_allowed(self):
+        # MAVROS State 来自约 1 Hz 的心跳；与精降/控制器的 1.5 s 状态超时一致。
+        # 目标和控制量仍使用 fresh() 的 0.3 s 校验，不能套用心跳超时。
         return (not self.finished and self.flying and
-                (rospy.Time.now() - self.state_stamp).to_sec() <= 0.5)
+                (rospy.Time.now() - self.state_stamp).to_sec() <= 1.5)
 
     def stage_cb(self, msg):
         with self.lock:

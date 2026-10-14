@@ -21,6 +21,75 @@ from std_msgs.msg import Bool, String
 
 
 class DescentTest(RcLandPriorityTest):
+    def test_router_one_hz_state(self):
+        router = roslib.packages.find_node('precision_landing', 'landing_nmpc_test_router.py')[0]
+        self.processes.append(subprocess.Popen(
+            [router, '__name:=router', '__ns:='+self.prefix],
+            stdout=self.log, stderr=self.log, start_new_session=True))
+        for topic, kind in [('nmpc_target', PositionTarget), ('mavros_attitude', AttitudeTarget),
+                            ('mavros_position', PositionTarget), ('owner', String)]:
+            self.subscribe(topic, kind)
+        pubs = {t: self.publisher(t, k) for t, k in [
+            ('mavros_state', State), ('local_pose', PoseStamped),
+            ('takeoff_position', PoseStamped), ('landing_position', PositionTarget),
+            ('landing_state', String), ('nmpc_attitude', AttitudeTarget),
+            ('nmpc_recovery', PositionTarget)]}
+        self.wait(lambda: all(p.get_num_connections() for p in pubs.values()), 'router subscriptions')
+        state = State(connected=True, armed=True, mode='OFFBOARD')
+        pose = PoseStamped(); pose.pose.orientation.w = 1
+        target = PositionTarget(coordinate_frame=1, type_mask=2552)
+        attitude = AttitudeTarget(type_mask=AttitudeTarget.IGNORE_ATTITUDE, thrust=.45)
+        next_state = 0.0
+
+        def drive(seconds, stage='IDLE', heartbeat=True, recovery=False):
+            nonlocal next_state
+            until = time.monotonic()+seconds
+            while time.monotonic() < until:
+                now = rospy.Time.now()
+                if heartbeat and time.monotonic() >= next_state:
+                    state.header.stamp = now
+                    pubs['mavros_state'].publish(state)
+                    next_state = time.monotonic()+1.0
+                for msg in (pose, target, attitude): msg.header.stamp = now
+                pubs['local_pose'].publish(pose)
+                pubs['landing_state'].publish(String(data=stage))
+                if stage == 'IDLE': pubs['takeoff_position'].publish(pose)
+                else: pubs['landing_position'].publish(target)
+                if recovery: pubs['nmpc_recovery'].publish(target)
+                else: pubs['nmpc_attitude'].publish(attitude)
+                time.sleep(.02)
+
+        # 实机 State 为 1 Hz；目标和控制输出必须跨过每次心跳的后半秒。
+        for stage in ('IDLE', 'ALIGN', 'FIXED_XY_DESCENT'):
+            since = rospy.Time.now().to_sec()
+            drive(2.2, stage)
+            for topic in ('nmpc_target', 'mavros_attitude'):
+                stamps = [m.header.stamp.to_sec() for m in self.messages[topic]
+                          if m.header.stamp.to_sec() >= since]
+                self.assertGreater(len(stamps), 70, (stage, topic))
+                self.assertLess(max(b-a for a, b in zip(stamps, stamps[1:])), .2,
+                                (stage, topic, 'periodic heartbeat output gap'))
+        since = rospy.Time.now().to_sec()
+        drive(2.2, 'FIXED_XY_DESCENT', recovery=True)
+        stamps = [m.header.stamp.to_sec() for m in self.messages['mavros_position']
+                  if m.header.stamp.to_sec() >= since]
+        self.assertGreater(len(stamps), 70)
+        self.assertLess(max(b-a for a, b in zip(stamps, stamps[1:])), .2)
+        # 真正断流仍需停止转发；恢复有效状态后才继续。
+        drive(1.7, 'FIXED_XY_DESCENT', heartbeat=False)
+        counts = {t: len(self.messages[t]) for t in ('nmpc_target', 'mavros_attitude', 'mavros_position')}
+        drive(.3, 'FIXED_XY_DESCENT', heartbeat=False)
+        drive(.3, 'FIXED_XY_DESCENT', heartbeat=False, recovery=True)
+        self.assertEqual(counts, {t: len(self.messages[t]) for t in counts})
+        drive(.3, 'FIXED_XY_DESCENT')
+        self.assertGreater(len(self.messages['mavros_attitude']), counts['mavros_attitude'])
+        state.mode = 'POSCTL'; next_state = 0.0
+        drive(.15, 'FIXED_XY_DESCENT')
+        count = len(self.messages['mavros_attitude'])
+        drive(.3, 'FIXED_XY_DESCENT')
+        self.assertEqual(len(self.messages['mavros_attitude']), count)
+        self.assertEqual(self.last('owner').data, 'STOPPED')
+
     def test_precision_below_cutoff(self):
         import xml.etree.ElementTree as ET
         from test_precision_landing_node import PrecisionLandingNodeTest
@@ -95,12 +164,20 @@ class DescentTest(RcLandPriorityTest):
         ext=ExtendedState(landed_state=ExtendedState.LANDED_STATE_ON_GROUND)
         stage='IDLE'
         takeoff=PoseStamped(); takeoff.pose.position=Point(4,2,3.2); takeoff.pose.orientation.w=1
+        next_state = 0.0
+        last_state = None
         def drive(seconds, targets=True):
+            nonlocal next_state, last_state
             until=time.monotonic()+seconds
             while time.monotonic()<until:
                 now=rospy.Time.now()
                 for msg in (odom,local,imu,state,rc,target,takeoff,ext): msg.header.stamp=now
-                for topic,msg in [('odom',odom),('local',local),('imu',imu),('mavros_state',state),('rc',rc),('extended_state',ext)]: pubs[topic].publish(msg)
+                current_state = (state.connected, state.armed, state.mode)
+                if current_state != last_state or time.monotonic() >= next_state:
+                    pubs['mavros_state'].publish(state)
+                    last_state = current_state
+                    next_state = time.monotonic()+1.0
+                for topic,msg in [('odom',odom),('local',local),('imu',imu),('rc',rc),('extended_state',ext)]: pubs[topic].publish(msg)
                 pubs['landing_state'].publish(String(data=stage))
                 if targets:
                     if stage=='IDLE': pubs['takeoff_position'].publish(takeoff)
@@ -117,7 +194,8 @@ class DescentTest(RcLandPriorityTest):
         self.assertEqual(self.last('owner').data,'NMPC')
         ref=self.last('controller/mpc/reference_trajectory').poses[0].pose
         self.assertGreater(ref.position.z,1.5)
-        self.assertLess(ref.position.z,1.65)
+        # 约1秒的0.15 m/s斜坡，允许测试循环和ROS调度带来的少量时间差。
+        self.assertLess(ref.position.z,1.68)
         count=len(self.messages['mavros_position'])
         stage='ALIGN'; target.type_mask=2531; target.position.z=1.5
         target.velocity.x=.06; target.velocity.y=-.02; drive(.4)
@@ -164,5 +242,5 @@ class DescentTest(RcLandPriorityTest):
 
 
 if __name__=='__main__':
-    suite=unittest.TestSuite([DescentTest('test_descent_handoff'), DescentTest('test_precision_below_cutoff')])
+    suite=unittest.TestSuite([DescentTest('test_router_one_hz_state'), DescentTest('test_descent_handoff'), DescentTest('test_precision_below_cutoff')])
     sys.exit(not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful())
