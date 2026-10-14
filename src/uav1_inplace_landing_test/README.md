@@ -26,6 +26,9 @@ precision_landing/config/down_camera_extrinsic_uav1.yaml。
 MPC 模型、推力和调参由后机原 payload_mpc_controller/config 覆盖默认值，
 保留后机质量 1.836kg 和已有调参。State 超时为 1.5 秒以兼容飞控 1Hz 状态。
 
+当前独立测试用于落点左偏对照：X/Y 外力补偿增益为 0，Z 增益为 1。
+水平外力仍估计和记录，但不应用于控制；重启测试流程后生效。
+
 源码副本用于复现本次确认版本；后续前机改动不会自动更新此包。
 
 兼容调整：后机 PolynomialTraj 消息无 has_yaw/yaw_trajectory 扩展，测试副本移除该可选规划轨迹解析；精降航向仍由 PositionTarget.yaw 给出。

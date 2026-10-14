@@ -63,6 +63,10 @@
     <rosparam command="load" file="$(find uav1_inplace_landing_test)/config/mpc_defaults.yaml"/>
     <rosparam command="load" file="$(find payload_mpc_controller)/config/mpc.yaml"/>
     <rosparam command="load" file="$(find payload_mpc_controller)/config/model.yaml"/>
+    <!-- 独立降落左偏对照：仅保留 Z 补偿，水平外力仍估计和记录。 -->
+    <param name="force_estimator/force_axis_gain_x" value="0.0"/>
+    <param name="force_estimator/force_axis_gain_y" value="0.0"/>
+    <param name="force_estimator/force_axis_gain_z" value="1.0"/>
     <param name="msg_timeout/state" value="1.5"/>
 
     <param name="precision_landing_mission_mode" value="$(arg precision_landing_mission_mode)"/>
