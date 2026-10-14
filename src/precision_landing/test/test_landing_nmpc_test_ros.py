@@ -21,6 +21,65 @@ from std_msgs.msg import Bool, String
 
 
 class DescentTest(RcLandPriorityTest):
+    def test_repeated_marker_loss_does_not_raise_hold(self):
+        import xml.etree.ElementTree as ET
+        import numpy as np
+        from test_precision_landing_node import PrecisionLandingNodeTest
+        launch = ET.parse(Path(__file__).with_name('precision_landing_node.test'))
+        ns = self.prefix + '/precision'
+        for param in launch.getroot().find('node').findall('param'):
+            rospy.set_param(ns+'/'+param.attrib['name'], yaml.safe_load(param.attrib['value']))
+        for key in ('state_machine/high_height_m', 'state_machine/auto_land_height_m'):
+            rospy.set_param(ns+'/'+key, 1.2)
+        node = roslib.packages.find_node('precision_landing', 'precision_landing_node')[0]
+        self.processes.append(subprocess.Popen(
+            [node, '__name:=precision', '__ns:='+self.prefix],
+            stdout=self.log, stderr=self.log, start_new_session=True))
+        case = PrecisionLandingNodeTest('test_no_setpoint_before_trigger')
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        self.addCleanup(case.tearDown)
+
+        def context(z):
+            case.publish_vehicle_context(armed=True, mode='OFFBOARD', pose_z=z)
+            case.publish_camera_info(valid=True)
+
+        def lose_marker(z):
+            context(z)
+            for _ in range(14):
+                msg = case.bridge.cv2_to_imgmsg(np.full((480, 640), 255, dtype=np.uint8), encoding='mono8')
+                msg.header.stamp = rospy.Time.now()
+                case.image_pub.publish(msg)
+                rospy.sleep(.05)
+            self.assertTrue(case._state_snapshot()[-1].startswith('REACQUIRE'))
+            hold = case._setpoint_snapshot()[-1]
+            self.assertEqual(hold.type_mask, 2552)
+            return hold.position.z
+
+        context(2.0)
+        case.trigger_pub.publish(Bool(data=True))
+        case.publish_centered_marker(marker_id=37, frames=14)
+        self.assertTrue(case._state_snapshot()[-1].startswith('DESCEND_HIGH'))
+        context(1.5)
+        case.publish_centered_marker(marker_id=37, frames=4)
+        first_hold = lose_marker(1.5)
+        self.assertAlmostEqual(first_hold, 1.5, places=4)
+        # 飞机向上偏移，重识别后仍需对准，再次丢码不能抬高悬停目标。
+        context(1.7)
+        case.publish_centered_marker(marker_id=37, frames=5, center_x=400)
+        self.assertTrue(case._state_snapshot()[-1].startswith('ALIGN'))
+        self.assertAlmostEqual(case._setpoint_snapshot()[-1].position.z, first_hold, places=4)
+        self.assertAlmostEqual(lose_marker(1.8), first_hold, places=4)
+        # 即使重新进入下降阶段，也不能用上浮后的定位覆盖原来的高度上限。
+        context(1.8)
+        case.publish_centered_marker(marker_id=37, frames=10)
+        self.assertTrue(case._state_snapshot()[-1].startswith('DESCEND_HIGH'))
+        self.assertAlmostEqual(lose_marker(1.9), first_hold, places=4)
+        context(1.3)
+        case.publish_centered_marker(marker_id=37, frames=10)
+        self.assertAlmostEqual(lose_marker(1.3), 1.3, places=4)
+        self.assertEqual(case._mode_request_count(), 0)
+
     def test_router_one_hz_state(self):
         router = roslib.packages.find_node('precision_landing', 'landing_nmpc_test_router.py')[0]
         self.processes.append(subprocess.Popen(
@@ -242,5 +301,5 @@ class DescentTest(RcLandPriorityTest):
 
 
 if __name__=='__main__':
-    suite=unittest.TestSuite([DescentTest('test_router_one_hz_state'), DescentTest('test_descent_handoff'), DescentTest('test_precision_below_cutoff')])
+    suite=unittest.TestSuite([DescentTest('test_repeated_marker_loss_does_not_raise_hold'), DescentTest('test_router_one_hz_state'), DescentTest('test_descent_handoff'), DescentTest('test_precision_below_cutoff')])
     sys.exit(not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful())

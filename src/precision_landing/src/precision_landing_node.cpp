@@ -613,14 +613,17 @@ class PrecisionLandingNode {
     return yaw_captured_;
   }
 
-  bool captureHoldPosition() {
+  bool captureHoldPosition(bool preserve_descent_height = false) {
     if (!pose_valid_) {
       return false;
     }
+    const double hold_z = preserve_descent_height && hold_position_valid_
+        ? std::min(hold_position_.z(), local_pose_.pose.position.z)
+        : local_pose_.pose.position.z;
     hold_position_ = Eigen::Vector3d(
         local_pose_.pose.position.x,
         local_pose_.pose.position.y,
-        local_pose_.pose.position.z);
+        hold_z);
     hold_position_valid_ = hold_position_.allFinite();
     if (hold_position_valid_) {
       ROS_INFO("POSITION HOLD CAPTURED: x=%.3f y=%.3f z=%.3f",
@@ -888,7 +891,8 @@ class PrecisionLandingNode {
     if (target_visible) {
       last_target_visible_for_hold_ = true;
     } else if (last_target_visible_for_hold_) {
-      captureHoldPosition();
+      // Repeated marker loss must not move the descent hold target upward.
+      captureHoldPosition(true);
       last_target_visible_for_hold_ = false;
     }
 
@@ -924,7 +928,7 @@ class PrecisionLandingNode {
 
     if (output.state == LandingState::ALIGN &&
         previous_state_ == LandingState::DESCEND_HIGH && fresh_pose) {
-      captureHoldPosition();
+      captureHoldPosition(true);
     }
 
     if (output.state == LandingState::FIXED_XY_DESCENT &&
@@ -1024,7 +1028,9 @@ class PrecisionLandingNode {
           hold_position_ = Eigen::Vector3d(
               local_pose_.pose.position.x,
               local_pose_.pose.position.y,
-              local_pose_.pose.position.z);
+              hold_position_valid_
+                  ? std::min(hold_position_.z(), local_pose_.pose.position.z)
+                  : local_pose_.pose.position.z);
           hold_position_valid_ = hold_position_.allFinite();
         }
         if (output.descent_speed_mps > 0.0) {
