@@ -1,0 +1,56 @@
+<launch>
+  <arg name="enable_nmpc_descent" default="true"/>
+  <arg name="vehicle_ns" default="UAV1"/>
+  <arg name="topic_prefix" default="$(eval '/' + arg('vehicle_ns').strip('/'))"/>
+  <!-- 后机传入自身的相机外参及中心补偿配置。 -->
+  <arg name="camera_extrinsic_config" default="$(find precision_landing)/config/down_camera_extrinsic_uav1.yaml"/>
+  <arg name="start_camera" default="false"/>
+  <!-- 安全默认值：比赛流程禁止测试节点自行解锁、起飞和悬停。 -->
+  <arg name="allow_arming" default="false"/>
+  <arg name="auto_start" default="false"/>
+  <arg name="auto_start_delay_sec" default="5.0"/>
+  <!-- 2.05 m target with 0.05 m tolerance prevents handoff below 2.00 m. -->
+  <arg name="takeoff_height_m" default="1.70"/>
+
+  <include if="$(arg start_camera)" file="$(find precision_landing)/launch/down_camera.launch">
+    <arg name="vehicle_ns" value="$(arg vehicle_ns)"/>
+  </include>
+
+  <!-- Standalone takeoff hands over directly to precision landing, without a planner. -->
+  <include file="$(find uav1_inplace_landing_test)/launch/precision.launch">
+    <arg name="vehicle_ns" value="$(arg vehicle_ns)"/>
+    <arg name="camera_extrinsic_config" value="$(arg camera_extrinsic_config)"/>
+    <arg name="auto_land_at_cutoff" value="true"/>
+    <arg name="enable_landing_search" value="false"/>
+    <arg name="enable_front_aruco_hint" value="false"/>
+    <arg name="enable_setpoint_arbiter" value="false"/>
+    <arg name="landing_setpoint_input" value="$(eval arg('topic_prefix') + ('/landing_test/precision_position' if arg('enable_nmpc_descent') else '/mavros/setpoint_raw/local'))"/>
+  </include>
+
+  <include if="$(arg enable_nmpc_descent)" file="$(find uav1_inplace_landing_test)/launch/landing_nmpc_test.launch">
+    <arg name="topic_prefix" value="$(arg topic_prefix)"/>
+  </include>
+
+  <node pkg="uav1_inplace_landing_test" type="uav1_test_landing_test_mission_node"
+        name="landing_test" output="screen" required="true">
+    <param name="mavros_state_topic" value="$(arg topic_prefix)/mavros/state"/>
+    <param name="local_pose_topic" value="$(arg topic_prefix)/mavros/local_position/pose"/>
+    <param name="position_setpoint_topic" value="$(eval arg('topic_prefix') + ('/landing_test/takeoff_position' if arg('enable_nmpc_descent') else '/mavros/setpoint_position/local'))"/>
+    <param name="landing_trigger_topic" value="$(arg topic_prefix)/need_to_land"/>
+    <param name="landing_state_topic" value="$(arg topic_prefix)/landing/state"/>
+    <param name="arming_service" value="$(arg topic_prefix)/mavros/cmd/arming"/>
+    <param name="set_mode_service" value="$(arg topic_prefix)/mavros/set_mode"/>
+    <param name="allow_arming" value="$(arg allow_arming)"/>
+    <param name="auto_start" value="$(arg auto_start)"/>
+    <param name="auto_start_delay_sec" value="$(arg auto_start_delay_sec)"/>
+    <param name="takeoff_height_m" value="$(arg takeoff_height_m)"/>
+    <param name="publish_rate_hz" value="20.0"/>
+    <param name="prestream_sec" value="2.0"/>
+    <param name="hover_stable_sec" value="0.10"/>
+    <param name="altitude_tolerance_m" value="0.05"/>
+    <param name="xy_tolerance_m" value="0.20"/>
+    <param name="state_timeout_sec" value="1.50"/>
+    <param name="pose_timeout_sec" value="0.50"/>
+    <param name="operation_timeout_sec" value="30.0"/>
+  </node>
+</launch>

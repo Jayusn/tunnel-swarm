@@ -1,0 +1,51 @@
+<launch>
+  <arg name="topic_prefix" default="/UAV1"/>
+  <include file="$(find uav1_inplace_landing_test)/launch/mpc.launch">
+    <arg name="precision_landing_test_mode" value="true"/>
+    <arg name="precision_landing_test_target" value="$(arg topic_prefix)/landing_test/nmpc_target"/>
+    <arg name="odom_topic" value="$(arg topic_prefix)/fast_lio/Odom_high_freq"/>
+    <arg name="imu_topic" value="$(arg topic_prefix)/livox/imu_mps2"/>
+    <arg name="force_attitude_odom_topic" value="$(arg topic_prefix)/fast_lio/Odom_high_freq"/>
+    <arg name="state_topic" value="$(arg topic_prefix)/mavros/state"/>
+    <arg name="extended_state_topic" value="$(arg topic_prefix)/mavros/extended_state"/>
+    <arg name="rc_topic" value="$(arg topic_prefix)/mavros/rc/in"/>
+    <arg name="battery_topic" value="$(arg topic_prefix)/mavros/battery"/>
+    <arg name="esc_status_topic" value="$(arg topic_prefix)/mavros/esc_status"/>
+    <arg name="mavros_local_pose_topic" value="$(arg topic_prefix)/mavros/local_position/pose"/>
+    <arg name="set_mode_service" value="$(arg topic_prefix)/mavros/set_mode"/>
+    <arg name="setpoint_topic" value="$(arg topic_prefix)/landing_test/nmpc_attitude"/>
+    <arg name="recovery_position_setpoint_topic" value="$(arg topic_prefix)/landing_test/nmpc_recovery"/>
+    <arg name="rc_land_active_topic" value="$(arg topic_prefix)/mission/rc_land_active"/>
+    <arg name="reboot_service" value="$(arg topic_prefix)/mavros/cmd/command"/>
+    <arg name="cmd_trigger_topic" value="$(arg topic_prefix)/hummingbird/goal"/>
+    <arg name="planning_stop_topic" value="$(arg topic_prefix)/planning_stop_trigger"/>
+    <arg name="planning_restart_topic" value="$(arg topic_prefix)/planning_restart_trigger"/>
+    <arg name="trajectory_topic" value="$(arg topic_prefix)/planning/autotrans_trajectory"/>
+    <arg name="position_cmd_topic" value="$(arg topic_prefix)/planning/pos_cmd"/>
+    <arg name="landing_search_state_topic" value="$(arg topic_prefix)/landing_test/search_state"/>
+    <arg name="landing_search_yaw_topic" value="$(arg topic_prefix)/landing_diff/yaw"/>
+    <arg name="raw_trajectory_topic" value="$(arg topic_prefix)/planning/bspline"/>
+    <arg name="goal_topic" value="$(arg topic_prefix)/move_base_simple/goal"/>
+    <arg name="comparison_imu_topic" value="$(arg topic_prefix)/mavros/imu/data"/>
+    <arg name="comparison_attitude_odom_topic" value="$(arg topic_prefix)/mavros/local_position/odom"/>
+    <arg name="vision_pose_topic" value="$(arg topic_prefix)/mavros/vision_pose/pose"/>
+    <arg name="experiment_tag" value="precision_fixed_xy_descent"/>
+    <arg name="enable_evo_report" value="false"/>
+  </include>
+  <node pkg="uav1_inplace_landing_test" type="landing_nmpc_test_router.py" name="landing_nmpc_test_router" output="screen" required="true">
+    <remap from="extended_state" to="$(arg topic_prefix)/mavros/extended_state"/>
+    <remap from="rc_land" to="$(arg topic_prefix)/mission/rc_land_active"/>
+    <remap from="arming" to="$(arg topic_prefix)/mavros/cmd/arming"/>
+    <remap from="takeoff_position" to="$(arg topic_prefix)/landing_test/takeoff_position"/>
+    <remap from="local_pose" to="$(arg topic_prefix)/mavros/local_position/pose"/>
+    <remap from="landing_position" to="$(arg topic_prefix)/landing_test/precision_position"/>
+    <remap from="landing_state" to="$(arg topic_prefix)/landing/state"/>
+    <remap from="mavros_state" to="$(arg topic_prefix)/mavros/state"/>
+    <remap from="nmpc_target" to="$(arg topic_prefix)/landing_test/nmpc_target"/>
+    <remap from="nmpc_attitude" to="$(arg topic_prefix)/landing_test/nmpc_attitude"/>
+    <remap from="nmpc_recovery" to="$(arg topic_prefix)/landing_test/nmpc_recovery"/>
+    <remap from="mavros_position" to="$(arg topic_prefix)/mavros/setpoint_raw/local"/>
+    <remap from="mavros_attitude" to="$(arg topic_prefix)/mavros/setpoint_raw/attitude"/>
+    <remap from="owner" to="$(arg topic_prefix)/landing_test/descent_owner"/>
+  </node>
+</launch>
