@@ -12,8 +12,8 @@ import rospy
 import roslib.packages
 import rospkg
 import yaml
-from geometry_msgs.msg import Point, PoseStamped
-from mavros_msgs.msg import AttitudeTarget, PositionTarget, RCIn, State, ExtendedState
+from geometry_msgs.msg import Accel, Point, PoseStamped
+from mavros_msgs.msg import AttitudeTarget, PositionTarget, RCIn, State, ExtendedState, ESCStatus, ESCStatusItem
 from mavros_msgs.srv import CommandBool, CommandBoolResponse, SetMode, SetModeResponse
 from nav_msgs.msg import Odometry, Path as RosPath
 from sensor_msgs.msg import Imu
@@ -198,7 +198,8 @@ class DescentTest(RcLandPriorityTest):
                    '/mavros/set_mode':'set_mode', '/mavros/extended_state':'extended_state', '/mavros/state':'mavros_state', '/mavros/rc/in':'rc',
                    '/mavros/setpoint_raw/attitude':'nmpc_attitude',
                    '~recovery_position_setpoint':'nmpc_recovery',
-                   '~precision_landing_test_target':'nmpc_target', '~rc_land_active':'rc_land'}
+                   '~precision_landing_test_target':'nmpc_target', '~rc_land_active':'rc_land',
+                   '/mavros/esc_status':'esc_status'}
         node = roslib.packages.find_node('uav1_inplace_landing_test', 'uav1_test_mpc_controller_node')[0]
         args = [node, '__name:=controller', '__ns:=' + self.prefix]
         args += [k + ':=' + self.prefix + '/' + v for k, v in mapping.items()]
@@ -208,7 +209,11 @@ class DescentTest(RcLandPriorityTest):
             'local_pose:='+self.prefix+'/local'],stdout=self.log,stderr=self.log,start_new_session=True))
         for t, kind in [('mavros_attitude',AttitudeTarget),('mavros_position',PositionTarget),
                         ('nmpc_attitude',AttitudeTarget),('owner',String),('rc_land',Bool),
-                        ('controller/mpc/reference_trajectory',RosPath)]: self.subscribe(t,kind)
+                        ('controller/mpc/reference_trajectory',RosPath),
+                        ('controller/mpc/force_applied',Accel)]: self.subscribe(t,kind)
+        esc_pub = self.publisher('esc_status', ESCStatus)
+        # 静止 IMU 与偏大的 RPM 推力构成向下外力，验证测试模式实际应用补偿。
+        esc = ESCStatus(esc_status=[ESCStatusItem(rpm=16500) for _ in range(4)])
         pubs = {t:self.publisher(t,k) for t,k in [('odom',Odometry),('imu',Imu),('local',PoseStamped),
                ('extended_state',ExtendedState),('mavros_state',State),('rc',RCIn),('landing_position',PositionTarget),('takeoff_position',PoseStamped),('landing_state',String)]}
         self.wait(lambda: pubs['rc'].get_num_connections() > 0 and pubs['landing_position'].get_num_connections()>0,'subscriptions')
@@ -237,6 +242,8 @@ class DescentTest(RcLandPriorityTest):
                     last_state = current_state
                     next_state = time.monotonic()+1.0
                 for topic,msg in [('odom',odom),('local',local),('imu',imu),('rc',rc),('extended_state',ext)]: pubs[topic].publish(msg)
+                esc.header.stamp = now
+                esc_pub.publish(esc)
                 pubs['landing_state'].publish(String(data=stage))
                 if targets:
                     if stage=='IDLE': pubs['takeoff_position'].publish(takeoff)
@@ -257,6 +264,9 @@ class DescentTest(RcLandPriorityTest):
         self.assertGreater(ref.position.z,1.77)
         self.assertLess(ref.position.z,1.91)
         drive(4.3)
+        self.assertIsNotNone(self.last('controller/mpc/force_applied'))
+        self.assertLess(self.last('controller/mpc/force_applied').linear.z, -.2,
+                        'independent NMPC test suppressed vertical disturbance compensation')
         ref=self.last('controller/mpc/reference_trajectory').poses[0].pose
         self.assertAlmostEqual(ref.position.z,3.2,places=4)
         count=len(self.messages['mavros_position'])
@@ -284,6 +294,8 @@ class DescentTest(RcLandPriorityTest):
         local.pose.position.z = 2.5
         rc.channels[9]=2000; drive(.5)
         self.assertTrue(self.last('rc_land').data,'CH10 did not latch')
+        self.assertAlmostEqual(self.last('controller/mpc/force_applied').linear.z, 0.0,
+                               places=6, msg='CH10 descent must clear compensation')
         ref3=self.last('controller/mpc/reference_trajectory').poses[0].pose
         self.assertLess(ref3.position.z,2.5)
         self.assertFalse(mode_calls, 'normal CH10 requested AUTO.LAND')

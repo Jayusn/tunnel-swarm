@@ -436,7 +436,9 @@ namespace PayloadMPC
             }
             else if (fsm_state == MANUAL_CTRL) return;
         }
-		if (mpc_recovery_active_ || direct_auto_land_active_ || precision_test_mode_ || precision_mission_active_)
+		// 独立测试使用已配置的外力补偿，避免推力模型偏差留下起飞高度稳态误差。
+		// CH10 降落仍由 disturbanceCompensationGate 的 AUTO_LAND 状态关闭补偿。
+		if (mpc_recovery_active_ || direct_auto_land_active_ || precision_mission_active_)
 		{
 			clearAppliedDisturbance();
 		}
