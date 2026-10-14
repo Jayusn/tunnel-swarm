@@ -149,14 +149,14 @@ class DescentTest(RcLandPriorityTest):
         self.assertEqual(len(self.messages['mavros_attitude']), count)
         self.assertEqual(self.last('owner').data, 'STOPPED')
 
-    def test_precision_below_cutoff(self):
+    def test_precision_auto_land_at_cutoff(self):
         import xml.etree.ElementTree as ET
         from test_precision_landing_node import PrecisionLandingNodeTest
         launch = ET.parse(Path(__file__).with_name('precision_landing_node.test'))
         ns = self.prefix + '/precision'
         for param in launch.getroot().find('node').findall('param'):
             rospy.set_param(ns+'/'+param.attrib['name'], yaml.safe_load(param.attrib['value']))
-        rospy.set_param(ns+'/auto_land_at_cutoff', False)
+        rospy.set_param(ns+'/auto_land_at_cutoff', True)
         node=roslib.packages.find_node('precision_landing','precision_landing_node')[0]
         self.processes.append(subprocess.Popen([node,'__name:=precision','__ns:='+self.prefix],
             stdout=self.log,stderr=self.log,start_new_session=True))
@@ -169,13 +169,11 @@ class DescentTest(RcLandPriorityTest):
         case.trigger_pub.publish(Bool(data=True))
         case.publish_centered_marker(marker_id=37,frames=14)
         self.assertTrue(any(x.startswith('FIXED_XY_DESCENT') for x in case._state_snapshot()))
-        previous=case._setpoint_snapshot()[-1].position.z
         case.publish_vehicle_context(armed=True,mode='OFFBOARD',pose_z=0.0)
         case.publish_camera_info(valid=True)
         case.publish_centered_marker(marker_id=37,frames=20)
-        self.assertTrue(case._state_snapshot()[-1].startswith('FIXED_XY_DESCENT'))
-        self.assertEqual(case._mode_request_count(),0,'AUTO.LAND below cutoff')
-        self.assertLess(case._setpoint_snapshot()[-1].position.z,previous)
+        self.assertTrue(case._state_snapshot()[-1].startswith('REQUEST_AUTO_LAND'))
+        self.assertGreater(case._mode_request_count(), 0, 'no AUTO.LAND below cutoff')
 
     def test_descent_handoff(self):
         base = Path(rospkg.RosPack().get_path('payload_mpc_controller'))
@@ -186,7 +184,7 @@ class DescentTest(RcLandPriorityTest):
         for f in ('mpc.yaml', 'model.yaml'):
             params(self.prefix + '/controller', yaml.safe_load((base / 'config' / f).read_text()))
         rospy.set_param(self.prefix + '/controller/precision_landing_test_mode', True)
-        rospy.set_param(self.prefix + '/controller/land/timeout', .1)
+        rospy.set_param(self.prefix + '/controller/land/timeout', 8.0)
         disarm_calls=[]; mode_calls=[]
         disarm_service=rospy.Service(self.prefix+'/arming', CommandBool,
             lambda req: (disarm_calls.append(req.value) or CommandBoolResponse(success=False, result=1)))
@@ -280,30 +278,30 @@ class DescentTest(RcLandPriorityTest):
         drive(.6,False)
         ref2=self.last('controller/mpc/reference_trajectory').poses[0].pose
         self.assertAlmostEqual(ref2.position.z,ref.position.z,places=4)
+        odom.pose.pose.position.z = 2.5
+        local.pose.position.z = 2.5
         rc.channels[9]=2000; drive(.5)
         self.assertTrue(self.last('rc_land').data,'CH10 did not latch')
         ref3=self.last('controller/mpc/reference_trajectory').poses[0].pose
-        self.assertLess(ref3.position.z,1.5)
+        self.assertLess(ref3.position.z,2.5)
         self.assertFalse(mode_calls, 'normal CH10 requested AUTO.LAND')
         self.assertFalse(disarm_calls, 'disarm while airborne')
-        ext.landed_state=ExtendedState.LANDED_STATE_ON_GROUND; drive(.15)
-        self.assertFalse(disarm_calls, 'brief ground report caused disarm')
-        ext.landed_state=ExtendedState.LANDED_STATE_IN_AIR; drive(.15)
-        ext.landed_state=ExtendedState.LANDED_STATE_ON_GROUND; drive(1.1)
-        self.assertTrue(disarm_calls, 'no ordinary disarm after confirmed ground')
-        self.assertTrue(all(v is False for v in disarm_calls))
-        self.assertEqual(self.last('owner').data,'TOUCHDOWN_DISARMING')
-        self.assertEqual(self.last('mavros_attitude').thrust,0.0)
-        state.armed=False; drive(.2)
-        self.assertEqual(self.last('owner').data,'LANDED_DISARMED')
+        # CH10到起飞平面上方0.2米，触发近地AUTO.LAND。
+        odom.pose.pose.position.z = 1.7
+        local.pose.position.z = 1.7
+        drive(.6)
+        self.assertIn('AUTO.LAND', mode_calls)
+        self.assertFalse(disarm_calls)
+        state.mode='AUTO.LAND'; drive(.2)
+        self.assertEqual(self.last('owner').data,'STOPPED')
         count=len(self.messages['mavros_attitude']); drive(.2)
-        self.assertEqual(len(self.messages['mavros_attitude']),count,'output after disarm')
-        state.armed=True; drive(.3)
+        self.assertEqual(len(self.messages['mavros_attitude']),count,'output after AUTO.LAND')
+        state.mode='OFFBOARD'; drive(.3)
         self.assertEqual(len(self.messages['mavros_attitude']),count,'unexpected reentry')
-        self.assertFalse(mode_calls)
+
 
 
 
 if __name__=='__main__':
-    suite=unittest.TestSuite([DescentTest('test_repeated_marker_loss_does_not_raise_hold'), DescentTest('test_router_one_hz_state'), DescentTest('test_descent_handoff'), DescentTest('test_precision_below_cutoff')])
+    suite=unittest.TestSuite([DescentTest('test_repeated_marker_loss_does_not_raise_hold'), DescentTest('test_router_one_hz_state'), DescentTest('test_descent_handoff'), DescentTest('test_precision_auto_land_at_cutoff')])
     sys.exit(not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful())

@@ -807,11 +807,13 @@ namespace PayloadMPC
 			controller_.setHoverReference(hover_pose_, hover_yaw_);
 			controller_.execMPC(est_state_, mpc_predicted_states_, mpc_predicted_inputs_);
 
-			const bool low_enough = hover_pose_(2) <= params_.land_.min_target_z &&
-									odom_data.p(2) <= params_.land_.switch_odom_z;
+			const bool low_enough = precision_test_mode_
+                ? odom_data.p.z() - precision_test_ground_z_ <= 0.30
+                : (hover_pose_(2) <= params_.land_.min_target_z &&
+                   odom_data.p(2) <= params_.land_.switch_odom_z);
 			const bool timeout = params_.land_.timeout > 0.0 &&
 								 (now_time - land_start_time_).toSec() > params_.land_.timeout;
-			if (!precision_test_mode_ && controller_.lastMpcSolveSuccessful() && (low_enough || timeout))
+			if (controller_.lastMpcSolveSuccessful() && (low_enough || timeout))
 			{
 				auto_land_request_sent_ = request_px4_auto_land() || auto_land_request_sent_;
 			}

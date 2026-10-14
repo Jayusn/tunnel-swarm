@@ -17,7 +17,7 @@
   <!-- Standalone takeoff hands over directly to precision landing, without a planner. -->
   <include file="$(find precision_landing)/launch/precision_landing.launch">
     <arg name="vehicle_ns" value="$(arg vehicle_ns)"/>
-    <arg name="auto_land_at_cutoff" value="$(eval not arg('enable_nmpc_descent'))"/>
+    <arg name="auto_land_at_cutoff" value="true"/>
     <arg name="enable_landing_search" value="false"/>
     <arg name="enable_front_aruco_hint" value="false"/>
     <arg name="enable_setpoint_arbiter" value="false"/>
