@@ -33,6 +33,7 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 #include <omp.h>
+#include "performance_trace.h"
 #include <algorithm>
 #include <mutex>
 #include <math.h>
@@ -1045,14 +1046,22 @@ int main(int argc, char** argv)
     imu_mps2_pub = nh.advertise<sensor_msgs::Imu>(imu_mps2_topic, 10000);
 //------------------------------------------------------------------------------------------------------
     signal(SIGINT, SigHandle);
+    bool performance_trace_enabled = false;
+    nh.param("performance_trace_enable", performance_trace_enabled, false);
+    PerformanceTrace performance_trace(performance_trace_enabled);
     ros::Rate rate(5000);
     bool status = ros::ok();
     while (status)
     {
         if (flg_exit) break;
+        PerformanceTrace::Loop perf_loop(performance_trace);
         ros::spinOnce();
-        if(sync_packages(Measures)) 
+        perf_loop.mark(0);
+        const bool have_measurements = sync_packages(Measures);
+        perf_loop.mark(1);
+        if(have_measurements)
         {
+            perf_loop.frame(Measures.lidar_end_time, Measures.lidar->size());
             if (flg_first_scan)
             {
                 first_lidar_time = Measures.lidar_beg_time;
@@ -1082,14 +1091,17 @@ int main(int argc, char** argv)
 
             flg_EKF_inited = (Measures.lidar_beg_time - first_lidar_time) < INIT_TIME ? \
                             false : true;
+            perf_loop.mark(2);
             /*** Segment the map in lidar FOV ***/
             lasermap_fov_segment();
+            perf_loop.mark(3);
 
             /*** downsample the feature points in a scan ***/
             downSizeFilterSurf.setInputCloud(feats_undistort);
             downSizeFilterSurf.filter(*feats_down_body);
             t1 = omp_get_wtime();
             feats_down_size = feats_down_body->points.size();
+            perf_loop.mark(4);
             /*** initialize the map kdtree ***/
             if(ikdtree.Root_Node == nullptr)
             {
@@ -1102,6 +1114,7 @@ int main(int argc, char** argv)
                         pointBodyToWorld(&(feats_down_body->points[i]), &(feats_down_world->points[i]));
                     }
                     ikdtree.Build(feats_down_world->points);
+                    perf_loop.mark(5);
                 }
                 continue;
             }
@@ -1121,9 +1134,11 @@ int main(int argc, char** argv)
             feats_down_world->resize(feats_down_size);
 
             V3D ext_euler = SO3ToEuler(state_point.offset_R_L_I);
+            perf_loop.mark(5);
             fout_pre<<setw(20)<<Measures.lidar_beg_time - first_lidar_time<<" "<<euler_cur.transpose()<<" "<< state_point.pos.transpose()<<" "<<ext_euler.transpose() << " "<<state_point.offset_T_L_I.transpose()<< " " << state_point.vel.transpose() \
             <<" "<<state_point.bg.transpose()<<" "<<state_point.ba.transpose()<<" "<<state_point.grav<< endl;
 
+            perf_loop.mark(6);
             if(0) // If you need to see map point, change to "if(1)"
             {
                 PointVector ().swap(ikdtree.PCL_Storage);
@@ -1152,6 +1167,7 @@ int main(int argc, char** argv)
             geoQuat.w = state_point.rot.coeffs()[3];
 
             double t_update_end = omp_get_wtime();
+            perf_loop.mark(7);
 
             // 每次点云 EKF 校正完成后刷新 IMU 前向预测初值；普通校正里程计仍按原逻辑发布。
             init = true;
@@ -1159,10 +1175,12 @@ int main(int argc, char** argv)
 
             /******* Publish odometry *******/
             publish_odometry(pubOdomAftMapped);
+            perf_loop.mark(8);
 
             /*** add the feature points to map kdtree ***/
             t3 = omp_get_wtime();
             map_incremental();
+            perf_loop.mark(9);
             t5 = omp_get_wtime();
             
             /******* Publish points *******/
@@ -1172,6 +1190,7 @@ int main(int argc, char** argv)
             // publish_effect_world(pubLaserCloudEffect);
             // publish_map(pubLaserCloudMap);
 
+            perf_loop.mark(10);
             /*** Debug variables ***/
             if (runtime_pos_log)
             {

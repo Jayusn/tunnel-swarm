@@ -86,6 +86,7 @@ catkin_package(
 
 catkin_install_python(PROGRAMS
   scripts/livox_imu_to_body.py
+  scripts/resource_monitor.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

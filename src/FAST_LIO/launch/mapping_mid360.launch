@@ -9,6 +9,7 @@
   <param name="use_sim_time" value="false" />
 
   <!-- 是否启动 RViz；目标点默认跟随 vehicle_ns 命名空间。 -->
+  <arg name="performance_logging" default="false" />
   <arg name="rviz" default="false" />
   <arg name="vehicle_ns" default="UAV1" />
   <!-- vehicle_ns 使用不带前导斜杠的名称，例如 UAV0 或 UAV1。 -->
@@ -97,6 +98,7 @@
   <!-- 是否记录运行时位姿日志
        0：关闭（推荐，减少 IO）
        1：开启（调试 / 轨迹分析用） -->
+    <param name="performance_trace_enable" value="$(arg performance_logging)" />
     <param name="runtime_pos_log_enable" type="bool" value="0" />
 
   <!-- ===============================
@@ -121,6 +123,9 @@
        RViz 可视化（由 rviz 参数控制）
        =============================== -->
   
+  <node if="$(arg performance_logging)" pkg="fast_lio" type="resource_monitor.py"
+        name="$(arg vehicle_ns)_resource_monitor" output="log" />
+
   <group if="$(arg rviz)">
     <node pkg="rviz"
           type="rviz"
