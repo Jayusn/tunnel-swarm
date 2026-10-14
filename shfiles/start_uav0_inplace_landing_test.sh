@@ -42,7 +42,7 @@ case "${1:-}" in
     exec rosservice call /landing_test/start '{}'
     ;;
   -h|--help)
-    echo "锁点后NMPC测试：bash ${SCRIPT_PATH} --nmpc"
+    echo "全程NMPC测试：bash ${SCRIPT_PATH} --nmpc"
     echo "启动待命及画面：bash ${SCRIPT_PATH}"
     echo "定位正常、飞机放稳且遥控可接管后开始实飞：bash ${SCRIPT_PATH} start"
     exit 0

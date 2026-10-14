@@ -374,7 +374,9 @@ namespace PayloadMPC
             mavros_msgs::PositionTarget::IGNORE_AFZ | mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
         if (msg->header.stamp.isZero() || age < -0.05 || age > 0.3 ||
             msg->coordinate_frame != mavros_msgs::PositionTarget::FRAME_LOCAL_NED ||
-            msg->type_mask != expected_mask || !p.allFinite() || !std::isfinite(msg->yaw)) return;
+            (msg->type_mask != expected_mask && msg->type_mask != 2503 && msg->type_mask != 2531) ||
+            !p.allFinite() || !std::isfinite(msg->velocity.x) ||
+            !std::isfinite(msg->velocity.y) || !std::isfinite(msg->velocity.z) || !std::isfinite(msg->yaw)) return;
         // MAVROS ROS 侧的 LOCAL_NED 消息数值是 ENU，由 MAVROS 转换到飞控 NED。
         precision_test_target_ = *msg;
         precision_test_target_time_ = msg->header.stamp;
@@ -420,7 +422,7 @@ namespace PayloadMPC
                 if (!controller_.resetForHover(est_state_, hover_pose_, hover_yaw_)) return;
                 precision_test_started_ = true;
                 fsm_state = AUTO_HOVER;
-                ROS_WARN("[精降NMPC测试] 已接收锁点目标，接管下降；CH10优先。");
+                ROS_WARN("[精降NMPC测试] 已接收测试目标，全程MPC接管；CH10优先。");
             }
             else if (fsm_state == MANUAL_CTRL) return;
         }
@@ -616,14 +618,36 @@ namespace PayloadMPC
                     beginMpcRecovery(now_time, "精降测试定位或IMU失效");
                     break;
                 }
+                const double dt = std::max(0.0, std::min(0.05,
+                    (now_time - last_set_hover_pose_time).toSec()));
+                last_set_hover_pose_time = now_time;
+                Eigen::Vector3d velocity = Eigen::Vector3d::Zero();
                 if ((now_time - precision_test_target_time_).toSec() <= 0.3)
                 {
-                    const auto &p = precision_test_target_.position;
-                    hover_pose_ = precision_test_rotation_ * Eigen::Vector3d(p.x, p.y, p.z) + precision_test_translation_;
-                    hover_yaw_ = wrapYaw(precision_test_target_.yaw + precision_test_yaw_offset_);
+                    const auto &target = precision_test_target_;
+                    const auto &p = target.position;
+                    const auto &v = target.velocity;
+                    const Eigen::Vector3d position = precision_test_rotation_ *
+                        Eigen::Vector3d(p.x, p.y, p.z) + precision_test_translation_;
+                    if (target.type_mask == 2552) hover_pose_ = position;
+                    else
+                    {
+                        velocity = precision_test_rotation_ * Eigen::Vector3d(v.x, v.y, v.z);
+                        // 视觉速度指令积分为连续参考，并保留速度前馈；新速度阶段从当前定位起步。
+                        if (precision_test_previous_mask_ != target.type_mask) hover_pose_ = odom_data.p;
+                        hover_pose_ += velocity * dt;
+                        if (target.type_mask == 2531) { hover_pose_.z() = position.z(); velocity.z() = 0.0; }
+                    }
+                    precision_test_previous_mask_ = target.type_mask;
+                    hover_yaw_ = wrapYaw(target.yaw + precision_test_yaw_offset_);
                 }
                 else ROS_WARN_THROTTLE(1.0, "[精降NMPC测试] 目标超时，保持最后位置目标。");
-                controller_.setHoverReference(hover_pose_, hover_yaw_);
+                if (!controller_.setPositionCommandReference(hover_pose_, velocity,
+                    Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), hover_yaw_, 0.0))
+                {
+                    beginMpcRecovery(now_time, "精降测试参考无效");
+                    break;
+                }
                 controller_.execMPC(est_state_, mpc_predicted_states_, mpc_predicted_inputs_);
             }
             else if (landing_search_yaw_active_)

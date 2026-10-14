@@ -113,6 +113,7 @@ namespace PayloadMPC
 		// 独立精降测试专用；默认关闭，不改变比赛流程。
         bool precision_test_mode_{false}, precision_test_started_{false};
         mavros_msgs::PositionTarget precision_test_target_;
+        unsigned precision_test_previous_mask_{0};
         ros::Time precision_test_target_time_, precision_test_pose_time_;
         Eigen::Matrix3d precision_test_rotation_{Eigen::Matrix3d::Identity()};
         Eigen::Vector3d precision_test_translation_{Eigen::Vector3d::Zero()};

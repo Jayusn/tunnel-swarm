@@ -31,7 +31,7 @@
         name="landing_test" output="screen" required="true">
     <param name="mavros_state_topic" value="$(arg topic_prefix)/mavros/state"/>
     <param name="local_pose_topic" value="$(arg topic_prefix)/mavros/local_position/pose"/>
-    <param name="position_setpoint_topic" value="$(arg topic_prefix)/mavros/setpoint_position/local"/>
+    <param name="position_setpoint_topic" value="$(eval arg('topic_prefix') + ('/landing_test/takeoff_position' if arg('enable_nmpc_descent') else '/mavros/setpoint_position/local'))"/>
     <param name="landing_trigger_topic" value="$(arg topic_prefix)/need_to_land"/>
     <param name="landing_state_topic" value="$(arg topic_prefix)/landing/state"/>
     <param name="arming_service" value="$(arg topic_prefix)/mavros/cmd/arming"/>

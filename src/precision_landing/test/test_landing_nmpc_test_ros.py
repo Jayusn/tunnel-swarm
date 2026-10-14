@@ -38,40 +38,57 @@ class DescentTest(RcLandPriorityTest):
         args = [node, '__name:=controller', '__ns:=' + self.prefix]
         args += [k + ':=' + self.prefix + '/' + v for k, v in mapping.items()]
         self.processes.append(subprocess.Popen(args, stdout=self.log, stderr=self.log, start_new_session=True))
-        self.launch('precision_landing', 'landing_nmpc_test_router.py', 'router')
+        router = roslib.packages.find_node('precision_landing','landing_nmpc_test_router.py')[0]
+        self.processes.append(subprocess.Popen([router,'__name:=router','__ns:='+self.prefix,
+            'local_pose:='+self.prefix+'/local'],stdout=self.log,stderr=self.log,start_new_session=True))
         for t, kind in [('mavros_attitude',AttitudeTarget),('mavros_position',PositionTarget),
                         ('nmpc_attitude',AttitudeTarget),('owner',String),('rc_land',Bool),
                         ('controller/mpc/reference_trajectory',RosPath)]: self.subscribe(t,kind)
         pubs = {t:self.publisher(t,k) for t,k in [('odom',Odometry),('imu',Imu),('local',PoseStamped),
-               ('mavros_state',State),('rc',RCIn),('landing_position',PositionTarget),('landing_state',String)]}
+               ('mavros_state',State),('rc',RCIn),('landing_position',PositionTarget),('takeoff_position',PoseStamped),('landing_state',String)]}
         self.wait(lambda: pubs['rc'].get_num_connections() > 0 and pubs['landing_position'].get_num_connections()>0,'subscriptions')
         odom = Odometry(); odom.pose.pose.position = Point(1.2,-0.7,1.5)
         odom.pose.pose.orientation.w = math.cos(0.2); odom.pose.pose.orientation.z = math.sin(0.2)
         local = PoseStamped(); local.pose.position = Point(4,2,1.5); local.pose.orientation.w = 1
         imu = Imu(); imu.orientation=odom.pose.pose.orientation; imu.linear_acceleration.z=9.795
-        state=State(connected=True,armed=True,mode='OFFBOARD')
+        state=State(connected=True,armed=False,mode='POSCTL')
         rc=RCIn(channels=[1500]*10); rc.channels[7]=2000; rc.channels[9]=1000
         target=PositionTarget(coordinate_frame=1,type_mask=2552,yaw=0.0)
         target.position=Point(4,2,1.5)
-        stage='ALIGN'
+        stage='IDLE'
+        takeoff=PoseStamped(); takeoff.pose.position=Point(4,2,3.2); takeoff.pose.orientation.w=1
         def drive(seconds, targets=True):
             until=time.monotonic()+seconds
             while time.monotonic()<until:
                 now=rospy.Time.now()
-                for msg in (odom,local,imu,state,rc,target): msg.header.stamp=now
+                for msg in (odom,local,imu,state,rc,target,takeoff): msg.header.stamp=now
                 for topic,msg in [('odom',odom),('local',local),('imu',imu),('mavros_state',state),('rc',rc)]: pubs[topic].publish(msg)
                 pubs['landing_state'].publish(String(data=stage))
-                if targets: pubs['landing_position'].publish(target)
+                if targets:
+                    if stage=='IDLE': pubs['takeoff_position'].publish(takeoff)
+                    else: pubs['landing_position'].publish(target)
                 time.sleep(.01)
-        drive(1.2)
-        self.assertIsNone(self.last('nmpc_attitude'), 'NMPC must be inert before XY lock')
+        drive(.7)
+        self.assertIsNone(self.last('nmpc_attitude'), 'NMPC output before arming')
         self.assertIsNotNone(self.last('mavros_position'))
-        stage='FIXED_XY_DESCENT'; target.type_mask=0; drive(.3)
-        self.assertIsNone(self.last('nmpc_attitude'), 'invalid target accepted')
-        target.type_mask=2552; drive(1.0)
-        self.assertIsNotNone(self.last('mavros_attitude'), 'no NMPC takeover')
+        self.assertAlmostEqual(self.last('mavros_position').position.z,1.5,places=4)
+        state.armed=True; state.mode='OFFBOARD'; drive(.8)
+        self.assertIsNotNone(self.last('mavros_attitude'), 'MPC did not take off')
         self.assertEqual(self.last('owner').data,'NMPC')
+        ref=self.last('controller/mpc/reference_trajectory').poses[0].pose
+        self.assertGreater(ref.position.z,1.5)
+        self.assertLess(ref.position.z,1.65)
         count=len(self.messages['mavros_position'])
+        stage='ALIGN'; target.type_mask=2531; target.position.z=1.5
+        target.velocity.x=.06; target.velocity.y=-.02; drive(.4)
+        ref=self.last('controller/mpc/reference_trajectory').poses[0].pose
+        self.assertGreater(ref.position.x,1.2)
+        self.assertAlmostEqual(ref.position.z,1.5,places=4)
+        stage='DESCEND_HIGH'; target.type_mask=2503; target.velocity.z=-.1; drive(.4)
+        ref=self.last('controller/mpc/reference_trajectory').poses[0].pose
+        self.assertLess(ref.position.z,1.48)
+        self.assertEqual(len(self.messages['mavros_position']),count, 'PX4 stream during visual alignment')
+        stage='FIXED_XY_DESCENT'; target.type_mask=2552
         target.position=Point(4.04,1.98,1.45); drive(.4)
         self.assertEqual(len(self.messages['mavros_position']),count,'PX4 precision stream leaked after NMPC takeover')
         ref=self.last('controller/mpc/reference_trajectory').poses[0].pose

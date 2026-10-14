@@ -19,6 +19,8 @@
     <arg name="enable_evo_report" value="false"/>
   </include>
   <node pkg="precision_landing" type="landing_nmpc_test_router.py" name="landing_nmpc_test_router" output="screen" required="true">
+    <remap from="takeoff_position" to="$(arg topic_prefix)/landing_test/takeoff_position"/>
+    <remap from="local_pose" to="$(arg topic_prefix)/mavros/local_position/pose"/>
     <remap from="landing_position" to="$(arg topic_prefix)/landing_test/precision_position"/>
     <remap from="landing_state" to="$(arg topic_prefix)/landing/state"/>
     <remap from="mavros_state" to="$(arg topic_prefix)/mavros/state"/>
