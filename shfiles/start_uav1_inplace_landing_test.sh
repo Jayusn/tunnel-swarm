@@ -34,7 +34,7 @@ case "${1:-}" in
         sh "${SCRIPT_DIR}/run_uav1_sensor_stack.sh" landing &
         camera_pid=$!
         trap 'kill -INT "$camera_pid" 2>/dev/null || true' EXIT INT TERM
-        rosrun rqt_image_view rqt_image_view /UAV1/landing/debug_image
+        rosrun rqt_image_view rqt_image_view /UAV1/landing/xyz_image
         exit $?
         ;;
       *) echo '未知分屏' >&2; exit 2 ;;

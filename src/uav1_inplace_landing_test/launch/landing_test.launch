@@ -53,4 +53,10 @@
     <param name="pose_timeout_sec" value="0.50"/>
     <param name="operation_timeout_sec" value="30.0"/>
   </node>
+  <node pkg="uav1_inplace_landing_test" type="uav1_xyz_overlay.py"
+        name="uav1_landing_xyz_overlay" output="screen">
+    <param name="odometry_topic" value="$(arg topic_prefix)/fast_lio/Odom_high_freq"/>
+    <param name="image_topic" value="$(arg topic_prefix)/landing/debug_image"/>
+    <param name="output_topic" value="$(arg topic_prefix)/landing/xyz_image"/>
+  </node>
 </launch>
