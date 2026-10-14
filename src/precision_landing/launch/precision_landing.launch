@@ -1,4 +1,5 @@
 <launch>
+  <arg name="landing_via_mpc" default="false"/>
   <arg name="auto_land_at_cutoff" default="true"/>
   <arg name="vehicle_ns" default="UAV0"/>
   <arg name="topic_prefix" default="$(eval '/' + arg('vehicle_ns').strip('/'))"/>
@@ -132,6 +133,8 @@
     <param name="trigger_topic" value="$(arg trigger_topic)"/>
     <param name="controller_position_input" value="$(arg controller_position_input)"/>
     <param name="controller_attitude_input" value="$(arg controller_attitude_input)"/>
+    <param name="landing_via_mpc" value="$(arg landing_via_mpc)"/>
+    <param name="landing_mpc_output" value="$(arg topic_prefix)/landing/nmpc_target"/>
     <param name="landing_position_input" value="$(arg landing_setpoint_input)"/>
     <param name="mavros_position_output" value="$(arg setpoint_topic)"/>
     <param name="mavros_attitude_output" value="$(arg attitude_setpoint_topic)"/>

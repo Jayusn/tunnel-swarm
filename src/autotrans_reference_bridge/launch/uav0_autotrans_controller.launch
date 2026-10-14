@@ -1,11 +1,12 @@
 <launch>
+  <arg name="precision_landing_mission_mode" default="false"/>
   <!-- 只启动 FUEL 到 AutoTrans 的桥接和 AutoTrans MPC，不启动 FUEL 规划器。 -->
   <arg name="enable_logger" default="true"/>
   <!-- 纯FUEL模式直接接入AutoTrans；关闭时保留FUEL/DIFF任务阶段仲裁。 -->
   <arg name="pure_fuel_mode" default="false"/>
-  <!-- 双机入口通过环境变量改接降落仲裁器；单机入口继续直连MAVROS。 -->
+  <!-- MPC 总流程通过降落仲裁器统一输出；其他入口保留原接口。 -->
   <arg name="setpoint_topic"
-       default="$(optenv UAV0_AUTOTRANS_SETPOINT_TOPIC /UAV0/mavros/setpoint_raw/attitude)"/>
+       default="$(eval '/UAV0/control/attitude_setpoint' if arg('precision_landing_mission_mode') else optenv('UAV0_AUTOTRANS_SETPOINT_TOPIC', '/UAV0/mavros/setpoint_raw/attitude'))"/>
 
   <!-- 纯FUEL时直接输出控制器话题；混合模式先输出到FUEL专用话题。 -->
   <node pkg="autotrans_reference_bridge" type="fuel_autotrans_bridge_node"
@@ -37,6 +38,10 @@
 
   <!-- AutoTrans 使用 UAV0 FAST-LIO 位姿/姿态、MID360 加速度和 UAV0 MAVROS 控制接口。 -->
   <include file="$(find payload_mpc_controller)/launch/quad_wind_mpc_controller.launch">
+    <arg name="precision_landing_mission_mode" value="$(arg precision_landing_mission_mode)"/>
+    <arg name="precision_landing_test_target" value="/UAV0/landing/nmpc_target"/>
+    <arg name="recovery_position_setpoint_topic"
+         value="$(eval '/UAV0/control/position_setpoint' if arg('precision_landing_mission_mode') else '/UAV0/mavros/setpoint_raw/local')"/>
     <arg name="odom_topic" value="/UAV0/fast_lio/Odom_high_freq"/>
     <arg name="imu_topic" value="/UAV0/livox/imu_mps2"/>
     <arg name="force_attitude_odom_topic" value="/UAV0/fast_lio/Odom_high_freq"/>

@@ -21,6 +21,88 @@ from std_msgs.msg import Bool, String
 
 
 class DescentTest(RcLandPriorityTest):
+    def test_mission_mpc_handoff(self):
+        base = Path(rospkg.RosPack().get_path('payload_mpc_controller'))
+        def params(ns, values):
+            for key, value in values.items():
+                if isinstance(value, dict): params(ns+'/'+key, value)
+                else: rospy.set_param(ns+'/'+key, value)
+        for name in ('mpc.yaml', 'model.yaml'):
+            params(self.prefix+'/controller', yaml.safe_load((base/'config'/name).read_text()))
+        rospy.set_param(self.prefix+'/controller/precision_landing_mission_mode', True)
+        rospy.set_param(self.prefix+'/arbiter/landing_via_mpc', True)
+        self.launch('precision_landing', 'landing_setpoint_arbiter_node', 'arbiter',
+            trigger_topic='trigger', rc_land_active_topic='rc_land',
+            controller_position_input='recovery', controller_attitude_input='attitude',
+            landing_position_input='landing', landing_mpc_output='target',
+            mavros_position_output='position_out', mavros_attitude_output='attitude_out',
+            active_topic='active', owner_topic='owner')
+        mapping = {'~odom':'odom', '~drone_imu/data':'imu', '~mavros_local_pose':'local',
+            '/mavros/state':'state', '/mavros/rc/in':'rc',
+            '/mavros/setpoint_raw/attitude':'attitude',
+            '~recovery_position_setpoint':'recovery', '~precision_landing_test_target':'target',
+            '~rc_land_active':'rc_land'}
+        node = roslib.packages.find_node('payload_mpc_controller', 'mpc_controller_node')[0]
+        self.processes.append(subprocess.Popen([node, '__name:=controller', '__ns:='+self.prefix]+
+            [key+':='+self.prefix+'/'+value for key,value in mapping.items()],
+            stdout=self.log, stderr=self.log, start_new_session=True))
+        for topic, kind in [('target',PositionTarget),('position_out',PositionTarget),
+            ('attitude_out',AttitudeTarget),('owner',String),('rc_land',Bool),
+            ('controller/mpc/reference_trajectory',RosPath)]: self.subscribe(topic,kind)
+        pubs={topic:self.publisher(topic,kind) for topic,kind in [
+            ('odom',Odometry),('imu',Imu),('local',PoseStamped),('state',State),
+            ('rc',RCIn),('landing',PositionTarget),('trigger',Bool)]}
+        self.wait(lambda: all(pub.get_num_connections() for pub in pubs.values()), 'mission subscriptions')
+        odom=Odometry(); odom.pose.pose.position=Point(1.2,-.7,1.5)
+        odom.pose.pose.orientation.w=math.cos(.2); odom.pose.pose.orientation.z=math.sin(.2)
+        local=PoseStamped(); local.pose.position=Point(4,2,1.5); local.pose.orientation.w=1
+        imu=Imu(); imu.orientation=odom.pose.pose.orientation; imu.linear_acceleration.z=9.795
+        state=State(connected=True,armed=True,mode='OFFBOARD')
+        rc=RCIn(channels=[1500]*10); rc.channels[7]=2000; rc.channels[9]=1000
+        target=PositionTarget(coordinate_frame=1,type_mask=2552,yaw=0)
+        target.position=Point(4,2,1.2)
+        def drive(seconds):
+            until=time.monotonic()+seconds
+            while time.monotonic()<until:
+                for topic,msg in [('odom',odom),('imu',imu),('local',local),('state',state),('rc',rc),('landing',target)]:
+                    msg.header.stamp=rospy.Time.now(); pubs[topic].publish(msg)
+                time.sleep(.01)
+        drive(1.3)
+        self.assertFalse(self.messages['target'], 'landing forwarded before mission trigger')
+        self.assertTrue(self.messages['attitude_out'], 'normal controller output blocked')
+        pubs['trigger'].publish(Bool(data=True)); drive(.5)
+        self.assertEqual(self.last('owner').data,'LANDING')
+        reference=self.last('controller/mpc/reference_trajectory').poses[0].pose
+        self.assertAlmostEqual(reference.position.x,1.2,places=4)
+        self.assertAlmostEqual(reference.position.y,-.7,places=4)
+        self.assertAlmostEqual(reference.position.z,1.2,places=4)
+        self.assertAlmostEqual(2*math.atan2(reference.orientation.z,reference.orientation.w),.4,places=4)
+        self.assertFalse(self.messages['position_out'], 'precision target bypassed MPC')
+        count=len(self.messages['attitude_out']); drive(.2)
+        self.assertGreater(len(self.messages['attitude_out']),count)
+        target.type_mask=2531; target.velocity.x=.1; drive(.2)
+        reference=self.last('controller/mpc/reference_trajectory').poses[0].pose
+        self.assertGreater(reference.position.x,1.2)
+        self.assertAlmostEqual(reference.position.z,1.2,places=4)
+        target.type_mask=2503; target.velocity.z=-.1; drive(.2)
+        self.assertLess(self.last('controller/mpc/reference_trajectory').poses[0].pose.position.z,1.5)
+        target.type_mask=2552; target.position.z=1.1; drive(.2)
+        self.assertAlmostEqual(self.last('controller/mpc/reference_trajectory').poses[0].pose.position.z,1.1,places=4)
+        rc.channels[9]=2000; drive(.5)
+        self.assertTrue(self.last('rc_land').data)
+        self.assertEqual(self.last('owner').data,'RC_LAND')
+        count=len(self.messages['target']); target.position=Point(20,20,20); drive(.2)
+        self.assertEqual(len(self.messages['target']),count,'CH10 did not stop precision targets')
+        reference=self.last('controller/mpc/reference_trajectory').poses[0].pose
+        self.assertAlmostEqual(reference.position.x,1.2,places=4)
+        self.assertAlmostEqual(reference.position.y,-.7,places=4)
+        self.assertLess(reference.position.z,1.5)
+        state.mode='AUTO.LAND'; drive(.2)
+        count=len(self.messages['attitude_out']); drive(.2)
+        self.assertEqual(len(self.messages['attitude_out']),count)
+        state.mode='OFFBOARD'; drive(.2)
+        self.assertEqual(len(self.messages['attitude_out']),count,'unexpected mission reentry')
+
     def test_repeated_marker_loss_does_not_raise_hold(self):
         import xml.etree.ElementTree as ET
         import numpy as np
@@ -303,5 +385,5 @@ class DescentTest(RcLandPriorityTest):
 
 
 if __name__=='__main__':
-    suite=unittest.TestSuite([DescentTest('test_repeated_marker_loss_does_not_raise_hold'), DescentTest('test_router_one_hz_state'), DescentTest('test_descent_handoff'), DescentTest('test_precision_auto_land_at_cutoff')])
+    suite=unittest.TestSuite([DescentTest('test_mission_mpc_handoff'), DescentTest('test_repeated_marker_loss_does_not_raise_hold'), DescentTest('test_router_one_hz_state'), DescentTest('test_descent_handoff'), DescentTest('test_precision_auto_land_at_cutoff')])
     sys.exit(not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful())

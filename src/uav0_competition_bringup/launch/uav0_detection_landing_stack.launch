@@ -1,4 +1,5 @@
 <launch>
+  <arg name="landing_via_mpc" default="false"/>
   <!--
     UAV0 统一启动入口。
     默认启动 D435、三类检测和 target_reporting；下视相机、精确降落和独立 RViz
@@ -112,6 +113,7 @@
   <group if="$(arg enable_search_landing)">
     <include if="$(arg enable_precision_landing)"
              file="$(find precision_landing)/launch/precision_landing.launch">
+      <arg name="landing_via_mpc" value="$(arg landing_via_mpc)" />
       <arg name="image_topic" value="$(arg landing_image_topic)" />
       <arg name="camera_info_topic" value="$(arg landing_camera_info_topic)" />
       <arg name="vehicle_ns" value="$(arg landing_vehicle_ns)" />

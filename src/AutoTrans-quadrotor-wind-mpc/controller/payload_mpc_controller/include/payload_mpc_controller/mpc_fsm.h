@@ -110,8 +110,10 @@ namespace PayloadMPC
 		void rpmCallback(const mavros_msgs::ESCStatus::ConstPtr &msg);
 
 	private:
-		// 独立精降测试专用；默认关闭，不改变比赛流程。
+		// 精降目标共用接口；独立测试和总流程入口分别显式启用。
         bool precision_test_mode_{false}, precision_test_started_{false};
+        bool precision_mission_mode_{false};
+        bool precision_mission_active_{false};
         mavros_msgs::PositionTarget precision_test_target_;
         unsigned precision_test_previous_mask_{0};
         ros::Time precision_test_target_time_, precision_test_pose_time_;

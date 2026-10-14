@@ -12,6 +12,10 @@ class LandingSetpointArbiter {
  public:
   LandingSetpointArbiter() : nh_(), pnh_("~") {
     std::string trigger_topic;
+    std::string landing_mpc_output;
+    pnh_.param("landing_via_mpc", landing_via_mpc_, false);
+    pnh_.param<std::string>("landing_mpc_output", landing_mpc_output, "/landing/nmpc_target");
+    landing_mpc_output_ = nh_.advertise<mavros_msgs::PositionTarget>(landing_mpc_output, 1);
     std::string rc_land_topic;
     std::string controller_position_input;
     std::string controller_attitude_input;
@@ -95,14 +99,14 @@ class LandingSetpointArbiter {
 
   void controllerPositionCallback(
       const mavros_msgs::PositionTargetConstPtr& message) {
-    if (!landing_owned_) {
+    if (!landing_owned_ || landing_via_mpc_) {
       position_output_.publish(*message);
     }
   }
 
   void controllerAttitudeCallback(
       const mavros_msgs::AttitudeTargetConstPtr& message) {
-    if (!landing_owned_) {
+    if (!landing_owned_ || landing_via_mpc_) {
       attitude_output_.publish(*message);
     }
   }
@@ -119,9 +123,11 @@ class LandingSetpointArbiter {
       landing_owned_ = true;
       trigger_pending_ = false;
       publishOwner("LANDING");
-      ROS_ERROR("LANDING CONTROL TAKEOVER LATCHED: controller output blocked");
+      ROS_WARN("LANDING CONTROL TAKEOVER LATCHED: %s",
+               landing_via_mpc_ ? "precision reference to MPC" : "controller output blocked");
     }
-    position_output_.publish(*message);
+    if (landing_via_mpc_) landing_mpc_output_.publish(*message);
+    else position_output_.publish(*message);
   }
 
   void publishOwner(const std::string& owner) {
@@ -147,6 +153,8 @@ class LandingSetpointArbiter {
   ros::Publisher owner_output_;
   bool trigger_pending_{false};
   bool landing_owned_{false};
+  bool landing_via_mpc_{false};
+  ros::Publisher landing_mpc_output_;
 };
 
 }  // namespace

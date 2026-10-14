@@ -200,6 +200,7 @@ namespace PayloadMPC
 								params_.rc_mode_.mid_high_threshold,
 								params_.rc_mode_.high_threshold);
 		nh_.param("precision_landing_test_mode", precision_test_mode_, false);
+        nh_.param("precision_landing_mission_mode", precision_mission_mode_, false);
 		nh_.param("landing_search_yaw_timeout", landing_search_yaw_timeout_, 0.5);
 		nh_.param("landing_search_hold_height", landing_search_hold_height_, 0.6);
 		if (!std::isfinite(landing_search_yaw_timeout_) ||
@@ -364,7 +365,7 @@ namespace PayloadMPC
 
     void MPCFSM::precisionTestTargetCallback(const mavros_msgs::PositionTarget::ConstPtr &msg)
     {
-        if (!precision_test_mode_ || rc_land_active_) return;
+        if ((!precision_test_mode_ && !precision_mission_mode_) || rc_land_active_) return;
         const auto now = ros::Time::now();
         const double age = (now - msg->header.stamp).toSec();
         const Eigen::Vector3d p(msg->position.x, msg->position.y, msg->position.z);
@@ -377,6 +378,14 @@ namespace PayloadMPC
             (msg->type_mask != expected_mask && msg->type_mask != 2503 && msg->type_mask != 2531) ||
             !p.allFinite() || !std::isfinite(msg->velocity.x) ||
             !std::isfinite(msg->velocity.y) || !std::isfinite(msg->velocity.z) || !std::isfinite(msg->yaw)) return;
+        // 总流程只在已有自动飞行中接入精降，起飞及搜索仍走原状态机。
+        if (!precision_test_mode_ && !precision_mission_active_)
+        {
+            if ((fsm_state != AUTO_HOVER && fsm_state != CMD_CTRL) ||
+                !state_data.current_state.armed || state_data.current_state.mode != "OFFBOARD" ||
+                mpc_recovery_active_ || direct_auto_land_active_) return;
+            precision_mission_active_ = true;
+        }
         // MAVROS ROS 侧的 LOCAL_NED 消息数值是 ENU，由 MAVROS 转换到飞控 NED。
         precision_test_target_ = *msg;
         precision_test_target_time_ = msg->header.stamp;
@@ -392,7 +401,7 @@ namespace PayloadMPC
 		}
 
 		setEstimateState(odom_data, force_attitude_odom_data);
-        if (precision_test_mode_)
+        if (precision_test_mode_ || precision_mission_active_)
         {
             const bool flying = !state_data.rcv_stamp.isZero() &&
                 (now_time - state_data.rcv_stamp).toSec() < params_.msg_timeout_.state &&
@@ -423,11 +432,11 @@ namespace PayloadMPC
                 precision_test_ground_z_ = odom_data.p.z();
                 precision_test_started_ = true;
                 fsm_state = AUTO_HOVER;
-                ROS_WARN("[精降NMPC测试] 已接收测试目标，全程MPC接管；CH10优先。");
+                ROS_WARN("[精降NMPC] 已接收精降目标，MPC接管；CH10优先。");
             }
             else if (fsm_state == MANUAL_CTRL) return;
         }
-		if (mpc_recovery_active_ || direct_auto_land_active_ || precision_test_mode_)
+		if (mpc_recovery_active_ || direct_auto_land_active_ || precision_test_mode_ || precision_mission_active_)
 		{
 			clearAppliedDisturbance();
 		}
@@ -612,7 +621,7 @@ namespace PayloadMPC
 				fsm_state = AUTO_LAND;
 				ROS_WARN("[AUTO_LAND] CH10 上升沿：AUTO_HOVER -> AUTO_LAND。");
 			}
-			else if (precision_test_mode_)
+			else if (precision_test_mode_ || precision_mission_active_)
             {
                 if (!mpcControlStateValid(now_time) || !imu_is_received(now_time))
                 {

@@ -1,4 +1,5 @@
 <launch>
+  <arg name="precision_landing_mission_mode" default="false"/>
   <arg name="precision_landing_test_mode" default="false"/>
   <arg name="precision_landing_test_target" default="/UAV0/landing_test/nmpc_target"/>
   <!-- UAV0 控制状态与外力观察器统一使用 MID360/FAST-LIO 数据。 -->
@@ -60,6 +61,7 @@
     <rosparam command="load" file="$(find payload_mpc_controller)/config/mpc.yaml"/>
     <rosparam command="load" file="$(find payload_mpc_controller)/config/model.yaml"/>
 
+    <param name="precision_landing_mission_mode" value="$(arg precision_landing_mission_mode)"/>
     <param name="precision_landing_test_mode" value="$(arg precision_landing_test_mode)"/>
     <remap from="~precision_landing_test_target" to="$(arg precision_landing_test_target)"/>
     <!-- NMPC 的位置/线速度来自 FAST-LIO 高频 Odom。 -->

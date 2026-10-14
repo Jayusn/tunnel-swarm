@@ -285,6 +285,7 @@ run_detection_pane() {
     target_reporting_mission_id:="${mission_id}" \
     enable_down_camera:=true \
     enable_precision_landing:=true \
+    landing_via_mpc:="${UAV0_LANDING_VIA_MPC:-false}" \
     landing_vehicle_ns:=UAV0 \
     down_camera_device:="${down_camera}"
   printf '[退出] 检测与上报分屏，返回码=%s\n' "$?"
