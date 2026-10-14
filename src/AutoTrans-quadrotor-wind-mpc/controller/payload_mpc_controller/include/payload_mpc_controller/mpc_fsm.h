@@ -118,6 +118,7 @@ namespace PayloadMPC
         Eigen::Matrix3d precision_test_rotation_{Eigen::Matrix3d::Identity()};
         Eigen::Vector3d precision_test_translation_{Eigen::Vector3d::Zero()};
         double precision_test_yaw_offset_{0.0};
+        double precision_test_ground_z_{0.0};
         // Subscribers and publisher.
 		ros::Publisher pub_control_command, pub_predicted_trajectory_, pub_reference_trajectory_;
 		ros::Publisher pub_all_ref_data_, pub_rmse_info_;

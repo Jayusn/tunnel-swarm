@@ -1,4 +1,5 @@
 <launch>
+  <arg name="auto_land_at_cutoff" default="true"/>
   <arg name="vehicle_ns" default="UAV0"/>
   <arg name="topic_prefix" default="$(eval '/' + arg('vehicle_ns').strip('/'))"/>
   <arg name="image_topic" default="$(arg topic_prefix)/down_camera/image_raw"/>
@@ -148,6 +149,7 @@
     <rosparam if="$(eval arg('camera_extrinsic_config') != '')"
               command="load" file="$(arg camera_extrinsic_config)"/>
 
+    <param name="auto_land_at_cutoff" value="$(arg auto_land_at_cutoff)"/>
     <!-- These arguments intentionally override the corresponding YAML defaults. -->
     <param name="topics/image" value="$(arg image_topic)"/>
     <param name="topics/camera_info" value="$(arg camera_info_topic)"/>

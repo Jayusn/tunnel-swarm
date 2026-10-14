@@ -326,6 +326,7 @@ class PrecisionLandingNode {
 
  private:
   void loadRuntimeParameters() {
+    private_node_.param("auto_land_at_cutoff", auto_land_at_cutoff_, true);
     loadParameter(private_node_, "safety/require_camera_info",
                   require_camera_info_);
     if (!require_camera_info_) {
@@ -892,7 +893,7 @@ class PrecisionLandingNode {
     }
 
     bool landing_contact = false;
-    if (previous_state_ == LandingState::FIXED_XY_DESCENT &&
+    if (auto_land_at_cutoff_ && previous_state_ == LandingState::FIXED_XY_DESCENT &&
         fixed_xy_descent_valid_ && fresh_pose) {
       const double height_above_ground =
           local_pose_.pose.position.z - fixed_xy_ground_z_;
@@ -1050,7 +1051,7 @@ class PrecisionLandingNode {
     }
 
     const bool mode_request_authorized =
-        output.request_auto_land && owns_offboard &&
+        auto_land_at_cutoff_ && output.request_auto_land && owns_offboard &&
         critical_inputs_fresh;
     setModeRequestAuthorization(
         mode_request_authorized, fresh_mavros_state,
@@ -1660,6 +1661,7 @@ class PrecisionLandingNode {
       (Eigen::Matrix3d() << 0.0, -1.0, 0.0,
                            -1.0, 0.0, 0.0,
                             0.0, 0.0, -1.0).finished()};
+  bool auto_land_at_cutoff_{true};
   Eigen::Vector2d center_bias_xy_{Eigen::Vector2d::Zero()};
   std::vector<double> camera_to_body_translation_m_{0.0, 0.0, 0.0};
   Eigen::Vector3d camera_to_body_translation_{Eigen::Vector3d::Zero()};

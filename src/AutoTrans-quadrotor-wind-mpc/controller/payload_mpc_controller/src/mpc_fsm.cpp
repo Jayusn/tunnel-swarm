@@ -420,6 +420,7 @@ namespace PayloadMPC
                 precision_test_translation_ = odom_data.p - precision_test_rotation_ * latest_mavros_local_position_;
                 update_hover_pose();
                 if (!controller_.resetForHover(est_state_, hover_pose_, hover_yaw_)) return;
+                precision_test_ground_z_ = odom_data.p.z();
                 precision_test_started_ = true;
                 fsm_state = AUTO_HOVER;
                 ROS_WARN("[精降NMPC测试] 已接收测试目标，全程MPC接管；CH10优先。");
@@ -802,7 +803,7 @@ namespace PayloadMPC
 			last_set_hover_pose_time = now_time;
 			// AUTO_LAND 内部仍由 NMPC 控制，每周期降低世界系 z 方向悬停目标，单位 m。
 			hover_pose_(2) = std::max(hover_pose_(2) - params_.land_.descent_rate * delta_t,
-									  params_.land_.min_target_z);
+									  (precision_test_mode_ ? precision_test_ground_z_ - 0.03 : params_.land_.min_target_z));
 			controller_.setHoverReference(hover_pose_, hover_yaw_);
 			controller_.execMPC(est_state_, mpc_predicted_states_, mpc_predicted_inputs_);
 
@@ -810,7 +811,7 @@ namespace PayloadMPC
 									odom_data.p(2) <= params_.land_.switch_odom_z;
 			const bool timeout = params_.land_.timeout > 0.0 &&
 								 (now_time - land_start_time_).toSec() > params_.land_.timeout;
-			if (controller_.lastMpcSolveSuccessful() && (low_enough || timeout))
+			if (!precision_test_mode_ && controller_.lastMpcSolveSuccessful() && (low_enough || timeout))
 			{
 				auto_land_request_sent_ = request_px4_auto_land() || auto_land_request_sent_;
 			}

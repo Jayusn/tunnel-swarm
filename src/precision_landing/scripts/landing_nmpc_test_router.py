@@ -5,13 +5,20 @@ import math
 import threading
 import rospy
 from geometry_msgs.msg import PoseStamped
-from mavros_msgs.msg import AttitudeTarget, PositionTarget, State
-from std_msgs.msg import String
+from mavros_msgs.msg import AttitudeTarget, PositionTarget, State, ExtendedState
+from std_msgs.msg import String, Bool
+from mavros_msgs.srv import CommandBool
 
 
 class Router:
     def __init__(self):
         self.lock = threading.RLock()
+        self.seen_airborne = False
+        self.rc_land = False
+        self.ground_since = None
+        self.extended = None
+        self.touchdown = False
+        self.disarm = rospy.ServiceProxy('arming', CommandBool)
         self.stage = ''
         self.local_pose = None
         self.landing_started = False
@@ -28,6 +35,8 @@ class Router:
         self.owner = rospy.Publisher('owner', String, queue_size=1, latch=True)
         self.owner.publish(String(data='WAITING_NMPC'))
         self.subs = [
+            rospy.Subscriber('extended_state', ExtendedState, self.extended_cb, queue_size=1),
+            rospy.Subscriber('rc_land', Bool, self.rc_land_cb, queue_size=1),
             rospy.Subscriber('local_pose', PoseStamped, self.pose_cb, queue_size=1),
             rospy.Subscriber('takeoff_position', PoseStamped, self.takeoff_cb, queue_size=1),
             rospy.Subscriber('landing_state', String, self.stage_cb, queue_size=1),
@@ -36,6 +45,43 @@ class Router:
             rospy.Subscriber('nmpc_attitude', AttitudeTarget, self.attitude_cb, queue_size=1),
             rospy.Subscriber('nmpc_recovery', PositionTarget, self.recovery_cb, queue_size=1),
         ]
+
+        self.disarm_timer = rospy.Timer(rospy.Duration(.5), self.disarm_tick)
+
+    def rc_land_cb(self, msg):
+        with self.lock:
+            self.rc_land = self.rc_land or msg.data
+
+    def extended_cb(self, msg):
+        with self.lock:
+            self.extended = msg
+            if not self.fresh(msg):
+                self.ground_since = None
+                return
+            if msg.landed_state == ExtendedState.LANDED_STATE_IN_AIR:
+                self.seen_airborne = self.seen_airborne or self.flying
+            if (msg.landed_state == ExtendedState.LANDED_STATE_ON_GROUND and
+                    self.seen_airborne and self.owned and
+                    (self.stage == 'FIXED_XY_DESCENT' or self.rc_land)):
+                if self.ground_since is None:
+                    self.ground_since = rospy.Time.now()
+            else:
+                self.ground_since = None
+
+    def disarm_tick(self, _):
+        with self.lock:
+            if (not self.output_allowed() or self.extended is None or
+                    not self.fresh(self.extended) or self.ground_since is None or
+                    (rospy.Time.now()-self.ground_since).to_sec() < .5):
+                return
+            self.touchdown = True
+            self.owner.publish(String(data='TOUCHDOWN_DISARMING'))
+        # 普通上锁请求；不使用强制解锁/上锁的MAV_CMD参数。
+        try:
+            if not self.disarm(value=False).success:
+                rospy.logwarn_throttle(2, '飞控未接受落地上锁请求，等待确认后重试')
+        except rospy.ServiceException as exc:
+            rospy.logwarn_throttle(2, '落地上锁服务失败: %s', exc)
 
     @staticmethod
     def fresh(msg):
@@ -56,7 +102,7 @@ class Router:
             self.flying = msg.connected and msg.armed and msg.mode == 'OFFBOARD'
             if self.owned and not self.flying:
                 self.finished = True
-                self.owner.publish(String(data='STOPPED'))
+                self.owner.publish(String(data='LANDED_DISARMED' if self.touchdown and not msg.armed else 'STOPPED'))
 
     def pose_cb(self, msg):
         with self.lock:
@@ -125,11 +171,16 @@ class Router:
             if (self.requested and self.output_allowed() and self.fresh(msg) and
                     all(math.isfinite(v) for v in values) and 0 <= msg.thrust <= 1):
                 self.take_control()
-                self.attitude.publish(msg)
+                if self.touchdown:
+                    idle = AttitudeTarget(type_mask=AttitudeTarget.IGNORE_ATTITUDE, thrust=0.0)
+                    idle.header.stamp = rospy.Time.now()
+                    self.attitude.publish(idle)
+                else:
+                    self.attitude.publish(msg)
 
     def recovery_cb(self, msg):
         with self.lock:
-            if self.requested and self.output_allowed() and self.fresh(msg):
+            if self.requested and not self.touchdown and self.output_allowed() and self.fresh(msg):
                 self.take_control()
                 self.position.publish(msg)
 
