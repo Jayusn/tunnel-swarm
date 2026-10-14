@@ -114,6 +114,7 @@ namespace PayloadMPC
 			ROS_WARN_THROTTLE(1.0, "[NMPC恢复] 忽略无效的 MAVROS 本地位姿。");
 			return;
 		}
+		precision_test_pose_time_ = msg->header.stamp;
 		latest_mavros_local_position_ = position;
 		latest_mavros_local_yaw_ = get_yaw_from_quaternion(attitude.normalized());
 		mavros_local_pose_valid_ = std::isfinite(latest_mavros_local_yaw_);
@@ -198,6 +199,7 @@ namespace PayloadMPC
 								params_.rc_mode_.mid_low_threshold,
 								params_.rc_mode_.mid_high_threshold,
 								params_.rc_mode_.high_threshold);
+		nh_.param("precision_landing_test_mode", precision_test_mode_, false);
 		nh_.param("landing_search_yaw_timeout", landing_search_yaw_timeout_, 0.5);
 		nh_.param("landing_search_hold_height", landing_search_hold_height_, 0.6);
 		if (!std::isfinite(landing_search_yaw_timeout_) ||
@@ -360,6 +362,24 @@ namespace PayloadMPC
 
 	*/
 
+    void MPCFSM::precisionTestTargetCallback(const mavros_msgs::PositionTarget::ConstPtr &msg)
+    {
+        if (!precision_test_mode_ || rc_land_active_) return;
+        const auto now = ros::Time::now();
+        const double age = (now - msg->header.stamp).toSec();
+        const Eigen::Vector3d p(msg->position.x, msg->position.y, msg->position.z);
+        const unsigned expected_mask = mavros_msgs::PositionTarget::IGNORE_VX |
+            mavros_msgs::PositionTarget::IGNORE_VY | mavros_msgs::PositionTarget::IGNORE_VZ |
+            mavros_msgs::PositionTarget::IGNORE_AFX | mavros_msgs::PositionTarget::IGNORE_AFY |
+            mavros_msgs::PositionTarget::IGNORE_AFZ | mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
+        if (msg->header.stamp.isZero() || age < -0.05 || age > 0.3 ||
+            msg->coordinate_frame != mavros_msgs::PositionTarget::FRAME_LOCAL_NED ||
+            msg->type_mask != expected_mask || !p.allFinite() || !std::isfinite(msg->yaw)) return;
+        // MAVROS ROS 侧的 LOCAL_NED 消息数值是 ENU，由 MAVROS 转换到飞控 NED。
+        precision_test_target_ = *msg;
+        precision_test_target_time_ = msg->header.stamp;
+    }
+
 	void MPCFSM::process()
 	{
 		ros::Time now_time = ros::Time::now();
@@ -370,7 +390,41 @@ namespace PayloadMPC
 		}
 
 		setEstimateState(odom_data, force_attitude_odom_data);
-		if (mpc_recovery_active_ || direct_auto_land_active_)
+        if (precision_test_mode_)
+        {
+            const bool flying = !state_data.rcv_stamp.isZero() &&
+                (now_time - state_data.rcv_stamp).toSec() < params_.msg_timeout_.state &&
+                state_data.current_state.connected && state_data.current_state.armed &&
+                state_data.current_state.mode == "OFFBOARD";
+            // 待命期间不输出预流、不按CH8起飞；退出OFFBOARD后不重新接管。
+            if (!flying)
+            {
+                if (precision_test_started_ && fsm_state != MANUAL_CTRL)
+                { clearAutonomousState(); fsm_state = MANUAL_CTRL; }
+                rc_data.enter_land_mode = false;
+                return;
+            }
+            if (!precision_test_started_)
+            {
+                if (precision_test_target_time_.isZero() ||
+                    (now_time - precision_test_target_time_).toSec() > 0.3 ||
+                    precision_test_pose_time_.isZero() ||
+                    (now_time - precision_test_pose_time_).toSec() > 0.3 ||
+                    (now_time - precision_test_pose_time_).toSec() < -0.05 ||
+                    !mpcControlStateValid(now_time) || !imu_is_received(now_time) ||
+                    !rc_is_received(now_time) || !rc_data.mode_input_valid) return;
+                precision_test_yaw_offset_ = wrapYaw(get_yaw_from_quaternion(odom_data.q) - latest_mavros_local_yaw_);
+                precision_test_rotation_ = Eigen::AngleAxisd(precision_test_yaw_offset_, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+                precision_test_translation_ = odom_data.p - precision_test_rotation_ * latest_mavros_local_position_;
+                update_hover_pose();
+                if (!controller_.resetForHover(est_state_, hover_pose_, hover_yaw_)) return;
+                precision_test_started_ = true;
+                fsm_state = AUTO_HOVER;
+                ROS_WARN("[精降NMPC测试] 已接收锁点目标，接管下降；CH10优先。");
+            }
+            else if (fsm_state == MANUAL_CTRL) return;
+        }
+		if (mpc_recovery_active_ || direct_auto_land_active_ || precision_test_mode_)
 		{
 			clearAppliedDisturbance();
 		}
@@ -555,7 +609,24 @@ namespace PayloadMPC
 				fsm_state = AUTO_LAND;
 				ROS_WARN("[AUTO_LAND] CH10 上升沿：AUTO_HOVER -> AUTO_LAND。");
 			}
-			else if (landing_search_yaw_active_)
+			else if (precision_test_mode_)
+            {
+                if (!mpcControlStateValid(now_time) || !imu_is_received(now_time))
+                {
+                    beginMpcRecovery(now_time, "精降测试定位或IMU失效");
+                    break;
+                }
+                if ((now_time - precision_test_target_time_).toSec() <= 0.3)
+                {
+                    const auto &p = precision_test_target_.position;
+                    hover_pose_ = precision_test_rotation_ * Eigen::Vector3d(p.x, p.y, p.z) + precision_test_translation_;
+                    hover_yaw_ = wrapYaw(precision_test_target_.yaw + precision_test_yaw_offset_);
+                }
+                else ROS_WARN_THROTTLE(1.0, "[精降NMPC测试] 目标超时，保持最后位置目标。");
+                controller_.setHoverReference(hover_pose_, hover_yaw_);
+                controller_.execMPC(est_state_, mpc_predicted_states_, mpc_predicted_inputs_);
+            }
+            else if (landing_search_yaw_active_)
 			{
 				processLandingSearchYawHold(now_time);
 			}

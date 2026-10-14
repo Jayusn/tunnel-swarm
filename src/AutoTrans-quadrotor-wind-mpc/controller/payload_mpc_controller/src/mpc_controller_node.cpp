@@ -71,6 +71,12 @@ int main(int argc, char **argv)
                                                      ros::VoidConstPtr(),
                                                      ros::TransportHints().tcpNoDelay());
 
+    ros::Subscriber precision_test_target_sub;
+    if (nh.param<bool>("precision_landing_test_mode", false))
+        precision_test_target_sub = nh.subscribe<mavros_msgs::PositionTarget>(
+            "precision_landing_test_target", 1,
+            &PayloadMPC::MPCFSM::precisionTestTargetCallback, &fsm);
+
     ros::Subscriber cmd_sub =
         nh.subscribe<quadrotor_msgs::PositionCommand>("cmd",
                                                       100,

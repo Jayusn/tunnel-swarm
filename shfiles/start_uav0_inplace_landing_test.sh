@@ -24,7 +24,8 @@ case "${1:-}" in
         # MAVROS 所在分屏负责启动 master，避免多个 roslaunch 同时创建它。
         until rosnode list >/dev/null 2>&1; do sleep 1; done
         exec rosrun precision_landing start_landing_test.sh \
-          allow_arming:=true auto_start:=false takeoff_height_m:=1.70
+          allow_arming:=true auto_start:=false takeoff_height_m:=1.70 \
+          enable_nmpc_descent:="${UAV0_TEST_NMPC_DESCENT:-false}"
         ;;
       image)
         source_ros
@@ -34,12 +35,14 @@ case "${1:-}" in
       *) echo '未知分屏' >&2; exit 2 ;;
     esac
     ;;
+  --nmpc) export UAV0_TEST_NMPC_DESCENT=true ;;
   start)
     source_ros
     echo '触发实飞：OFFBOARD → 解锁 → 原地起飞 1.70 米 → 精降。'
     exec rosservice call /landing_test/start '{}'
     ;;
   -h|--help)
+    echo "锁点后NMPC测试：bash ${SCRIPT_PATH} --nmpc"
     echo "启动待命及画面：bash ${SCRIPT_PATH}"
     echo "定位正常、飞机放稳且遥控可接管后开始实飞：bash ${SCRIPT_PATH} start"
     exit 0

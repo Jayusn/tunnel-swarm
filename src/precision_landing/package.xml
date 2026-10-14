@@ -24,6 +24,7 @@
   <build_depend>message_generation</build_depend>
   <exec_depend>message_runtime</exec_depend>
   <exec_depend>rosbag</exec_depend>
+  <exec_depend>payload_mpc_controller</exec_depend>
   <depend>eigen</depend>
   <depend>libopencv-dev</depend>
   <depend>rostest</depend>

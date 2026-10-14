@@ -72,7 +72,7 @@ add_dependencies(dual_uav_landing_coordinator_node ${${PROJECT_NAME}_EXPORTED_TA
   ${catkin_EXPORTED_TARGETS})
 target_link_libraries(dual_uav_landing_coordinator_node ${catkin_LIBRARIES})
 
-catkin_install_python(PROGRAMS scripts/sample_center_offset.py test/test_precision_landing_node.py
+catkin_install_python(PROGRAMS scripts/landing_nmpc_test_router.py scripts/sample_center_offset.py test/test_precision_landing_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 
 install(TARGETS center_offset_observer_node precision_landing_node landing_search_node front_aruco_hint_node landing_setpoint_arbiter_node

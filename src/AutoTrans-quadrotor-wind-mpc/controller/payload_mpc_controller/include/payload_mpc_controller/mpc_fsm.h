@@ -93,6 +93,7 @@ namespace PayloadMPC
 		MPCFSM(const ros::NodeHandle &nh, MpcParams &params, MpcController &controller);
 
 		void process();
+		void precisionTestTargetCallback(const mavros_msgs::PositionTarget::ConstPtr &msg);
 		void CMD_CTRL_process();
 
 		bool rc_is_received(const ros::Time &now_time) const;
@@ -109,7 +110,14 @@ namespace PayloadMPC
 		void rpmCallback(const mavros_msgs::ESCStatus::ConstPtr &msg);
 
 	private:
-		// Subscribers and publisher.
+		// 独立精降测试专用；默认关闭，不改变比赛流程。
+        bool precision_test_mode_{false}, precision_test_started_{false};
+        mavros_msgs::PositionTarget precision_test_target_;
+        ros::Time precision_test_target_time_, precision_test_pose_time_;
+        Eigen::Matrix3d precision_test_rotation_{Eigen::Matrix3d::Identity()};
+        Eigen::Vector3d precision_test_translation_{Eigen::Vector3d::Zero()};
+        double precision_test_yaw_offset_{0.0};
+        // Subscribers and publisher.
 		ros::Publisher pub_control_command, pub_predicted_trajectory_, pub_reference_trajectory_;
 		ros::Publisher pub_all_ref_data_, pub_rmse_info_;
 		State_t fsm_state; // 只在 MPCFSM::process() 中修改主模式，避免状态跳转分散。

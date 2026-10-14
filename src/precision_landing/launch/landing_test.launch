@@ -1,4 +1,5 @@
 <launch>
+  <arg name="enable_nmpc_descent" default="false"/>
   <arg name="vehicle_ns" default="UAV0"/>
   <arg name="topic_prefix" default="$(eval '/' + arg('vehicle_ns').strip('/'))"/>
   <arg name="start_camera" default="true"/>
@@ -19,7 +20,11 @@
     <arg name="enable_landing_search" value="false"/>
     <arg name="enable_front_aruco_hint" value="false"/>
     <arg name="enable_setpoint_arbiter" value="false"/>
-    <arg name="landing_setpoint_input" value="$(arg topic_prefix)/mavros/setpoint_raw/local"/>
+    <arg name="landing_setpoint_input" value="$(eval arg('topic_prefix') + ('/landing_test/precision_position' if arg('enable_nmpc_descent') else '/mavros/setpoint_raw/local'))"/>
+  </include>
+
+  <include if="$(arg enable_nmpc_descent)" file="$(find precision_landing)/launch/landing_nmpc_test.launch">
+    <arg name="topic_prefix" value="$(arg topic_prefix)"/>
   </include>
 
   <node pkg="precision_landing" type="landing_test_mission_node"

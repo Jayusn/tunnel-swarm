@@ -1,0 +1,32 @@
+<launch>
+  <arg name="topic_prefix" default="/UAV0"/>
+  <include file="$(find payload_mpc_controller)/launch/quad_wind_mpc_controller.launch">
+    <arg name="precision_landing_test_mode" value="true"/>
+    <arg name="precision_landing_test_target" value="$(arg topic_prefix)/landing_test/nmpc_target"/>
+    <arg name="odom_topic" value="$(arg topic_prefix)/fast_lio/Odom_high_freq"/>
+    <arg name="imu_topic" value="$(arg topic_prefix)/livox/imu_mps2"/>
+    <arg name="force_attitude_odom_topic" value="$(arg topic_prefix)/fast_lio/Odom_high_freq"/>
+    <arg name="state_topic" value="$(arg topic_prefix)/mavros/state"/>
+    <arg name="extended_state_topic" value="$(arg topic_prefix)/mavros/extended_state"/>
+    <arg name="rc_topic" value="$(arg topic_prefix)/mavros/rc/in"/>
+    <arg name="battery_topic" value="$(arg topic_prefix)/mavros/battery"/>
+    <arg name="esc_status_topic" value="$(arg topic_prefix)/mavros/esc_status"/>
+    <arg name="mavros_local_pose_topic" value="$(arg topic_prefix)/mavros/local_position/pose"/>
+    <arg name="set_mode_service" value="$(arg topic_prefix)/mavros/set_mode"/>
+    <arg name="setpoint_topic" value="$(arg topic_prefix)/landing_test/nmpc_attitude"/>
+    <arg name="recovery_position_setpoint_topic" value="$(arg topic_prefix)/landing_test/nmpc_recovery"/>
+    <arg name="experiment_tag" value="precision_fixed_xy_descent"/>
+    <arg name="enable_evo_report" value="false"/>
+  </include>
+  <node pkg="precision_landing" type="landing_nmpc_test_router.py" name="landing_nmpc_test_router" output="screen" required="true">
+    <remap from="landing_position" to="$(arg topic_prefix)/landing_test/precision_position"/>
+    <remap from="landing_state" to="$(arg topic_prefix)/landing/state"/>
+    <remap from="mavros_state" to="$(arg topic_prefix)/mavros/state"/>
+    <remap from="nmpc_target" to="$(arg topic_prefix)/landing_test/nmpc_target"/>
+    <remap from="nmpc_attitude" to="$(arg topic_prefix)/landing_test/nmpc_attitude"/>
+    <remap from="nmpc_recovery" to="$(arg topic_prefix)/landing_test/nmpc_recovery"/>
+    <remap from="mavros_position" to="$(arg topic_prefix)/mavros/setpoint_raw/local"/>
+    <remap from="mavros_attitude" to="$(arg topic_prefix)/mavros/setpoint_raw/attitude"/>
+    <remap from="owner" to="$(arg topic_prefix)/landing_test/descent_owner"/>
+  </node>
+</launch>
