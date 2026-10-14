@@ -1,4 +1,5 @@
 <launch>
+  <arg name="precision_landing_enabled" default="false"/>
   <!-- CAV1 单机集成入口：传感器/MAVROS 由 start_autotrans_quad_wind_lidar.sh 启动。 -->
   <!-- NMPC 平移状态来源：FAST-LIO 高频预测里程计，提供 camera_init 世界系位置和速度。 -->
   <arg name="odom_topic" default="/UAV1/fast_lio/Odom_high_freq"/>
@@ -60,6 +61,10 @@
   <group ns="UAV1">
   <!-- AutoTrans 的位置、速度和姿态统一来自 FAST-LIO 高频里程计，只发布唯一的 attitude setpoint。 -->
   <include if="$(arg enable_controller)" file="$(find payload_mpc_controller)/launch/quad_wind_mpc_controller.launch">
+    <arg name="precision_landing_enabled" value="$(arg precision_landing_enabled)"/>
+    <arg name="landing_target_topic" value="/UAV1/landing/nmpc_target"/>
+    <arg name="landing_state_topic" value="/UAV1/landing/state"/>
+    <arg name="rc_land_active_topic" value="/UAV1/landing/rc_land_active"/>
     <arg name="odom_topic" value="$(arg odom_topic)"/>
     <arg name="trajectory_topic" value="$(arg trajectory_topic)"/>
     <arg name="safety_hold_topic" value="$(arg safety_hold_topic)"/>

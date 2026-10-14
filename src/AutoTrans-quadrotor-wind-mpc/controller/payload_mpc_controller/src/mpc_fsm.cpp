@@ -33,6 +33,13 @@ namespace PayloadMPC
 																							  controller_(controller),
 																							  odom_spike_guard_(makeOdomSpikeGuardConfig(params))
 	{
+        nh_.param("precision_landing_enabled", precision_landing_enabled_, false);
+        if (precision_landing_enabled_)
+        {
+            landing_target_sub_ = nh_.subscribe("landing_target", 1, &MPCFSM::landingTargetCallback, this);
+            landing_state_sub_ = nh_.subscribe("landing_state", 1, &MPCFSM::landingStateCallback, this);
+            rc_land_active_pub_ = nh_.advertise<std_msgs::Bool>("rc_land_active", 1, true);
+        }
 		fsm_state = MANUAL_CTRL;
 		exec_traj_state_ = HOVER;
 		hover_pose_.setZero();
@@ -114,6 +121,7 @@ namespace PayloadMPC
 			return;
 		}
 
+		local_pose_time_ = msg->header.stamp;
 		latest_mavros_local_position_ = position;
 		latest_mavros_local_yaw_ = get_yaw_from_quaternion(attitude.normalized());
 		mavros_local_pose_valid_ = std::isfinite(latest_mavros_local_yaw_);
@@ -174,10 +182,115 @@ namespace PayloadMPC
 
 	*/
 
+    void MPCFSM::landingStateCallback(const std_msgs::String::ConstPtr &msg)
+    {
+        if (!rc_land_active_ && msg->data.substr(0, msg->data.find(':')) == "FIXED_XY_DESCENT" && !landing_fixed_stage_)
+        {
+            landing_fixed_stage_ = true;
+            landing_fixed_stage_time_ = ros::Time::now();
+        }
+    }
+
+    void MPCFSM::landingTargetCallback(const mavros_msgs::PositionTarget::ConstPtr &msg)
+    {
+        if (rc_land_active_ || rc_data.enter_land_mode ||
+            (fsm_state != AUTO_HOVER && fsm_state != CMD_CTRL) ||
+            mpc_recovery_active_ || direct_auto_land_active_) return;
+        const auto now = ros::Time::now();
+        const double age = (now - msg->header.stamp).toSec();
+        const Eigen::Vector3d p(msg->position.x, msg->position.y, msg->position.z);
+        if (msg->header.stamp.isZero() || age < -0.05 || age > 0.3 ||
+            msg->coordinate_frame != mavros_msgs::PositionTarget::FRAME_LOCAL_NED ||
+            (msg->type_mask != 2552 && msg->type_mask != 2503 && msg->type_mask != 2531) ||
+            !p.allFinite() || !std::isfinite(msg->velocity.x) ||
+            !std::isfinite(msg->velocity.y) || !std::isfinite(msg->velocity.z) ||
+            !std::isfinite(msg->yaw)) return;
+        if (!precision_landing_active_)
+        {
+            if (!state_data.current_state.armed || state_data.current_state.mode != "OFFBOARD" ||
+                !mavros_local_pose_valid_ || local_pose_time_.isZero() ||
+                (now - local_pose_time_).toSec() > 0.3 ||
+                (now - local_pose_time_).toSec() < -0.05 ||
+                !odom_is_received(now) || !odom_state_valid()) return;
+            landing_yaw_offset_ = get_yaw_from_quaternion(odom_data.q) - latest_mavros_local_yaw_;
+            landing_rotation_ = Eigen::AngleAxisd(landing_yaw_offset_, Eigen::Vector3d::UnitZ()).toRotationMatrix();
+            landing_translation_ = odom_data.p - landing_rotation_ * latest_mavros_local_position_;
+            update_hover_pose();
+            trajectory_data.exec_traj = 0;
+            exec_traj_state_ = HOVER;
+            precision_landing_active_ = true;
+            // 已在自动飞行；不解锁、不起飞，只切换参考来源。
+            fsm_state = AUTO_HOVER;
+            ROS_WARN("[精降NMPC] 任务精降接管，CH10仍优先。");
+        }
+        landing_target_ = *msg;
+        landing_target_time_ = msg->header.stamp;
+    }
+
+    void MPCFSM::processPrecisionLanding(const ros::Time &now)
+    {
+        if (!odom_is_received(now) || !odom_state_valid() || !imu_is_received(now))
+        {
+            beginMpcRecovery(now, "精降定位或IMU失效");
+            return;
+        }
+        const double dt = std::max(0.0, std::min(0.05, (now - last_set_hover_pose_time).toSec()));
+        last_set_hover_pose_time = now;
+        Eigen::Vector3d velocity = Eigen::Vector3d::Zero();
+        if ((now - landing_target_time_).toSec() <= 0.3)
+        {
+            const auto &target = landing_target_;
+            const auto &p = target.position;
+            const auto &v = target.velocity;
+            const Eigen::Vector3d position = landing_rotation_ * Eigen::Vector3d(p.x, p.y, p.z) + landing_translation_;
+            if (target.type_mask == 2552)
+            {
+                if (landing_fixed_stage_ && target.header.stamp >= landing_fixed_stage_time_)
+                {
+                    if (!landing_fixed_latched_)
+                    {
+                        landing_fixed_origin_ = odom_data.p;
+                        landing_fixed_source_z_ = p.z;
+                        landing_fixed_latched_ = true;
+                        ROS_WARN("[精降NMPC] FAST-LIO锁点 x=%.3f y=%.3f z=%.3f", odom_data.p.x(), odom_data.p.y(), odom_data.p.z());
+                    }
+                    hover_pose_ = landing_fixed_origin_;
+                    hover_pose_.z() += p.z - landing_fixed_source_z_;
+                }
+                else hover_pose_ = position;
+            }
+            else
+            {
+                velocity = landing_rotation_ * Eigen::Vector3d(v.x, v.y, v.z);
+                if (landing_previous_mask_ != target.type_mask) hover_pose_ = odom_data.p;
+                hover_pose_ += velocity * dt;
+                if (target.type_mask == 2531) { hover_pose_.z() = position.z(); velocity.z() = 0.0; }
+            }
+            landing_previous_mask_ = target.type_mask;
+            hover_yaw_ = target.yaw + landing_yaw_offset_;
+        }
+        else ROS_WARN_THROTTLE(1.0, "[精降NMPC] 目标超时，保持最后位置目标。");
+        if (!controller_.setPositionCommandReference(hover_pose_, velocity,
+            Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), hover_yaw_, 0.0))
+        {
+            beginMpcRecovery(now, "精降参考无效");
+            return;
+        }
+        controller_.execMPC(est_state_, mpc_predicted_states_, mpc_predicted_inputs_);
+    }
+
 	void MPCFSM::process()
 	{
 		ros::Time now_time = ros::Time::now();
 		manual_setpoint_published_ = false;
+        if (precision_landing_enabled_ && rc_data.enter_land_mode && !rc_land_active_)
+        {
+            rc_land_active_ = true;
+            precision_landing_active_ = false;
+            std_msgs::Bool active;
+            active.data = true;
+            rc_land_active_pub_.publish(active);
+        }
 		const bool auto_state = fsm_state == AUTO_TAKEOFF || fsm_state == AUTO_HOVER ||
 			fsm_state == CMD_CTRL || fsm_state == AUTO_LAND;
 		const bool state_fresh = !state_data.rcv_stamp.isZero() &&
@@ -418,6 +531,10 @@ namespace PayloadMPC
 				fsm_state = AUTO_LAND;
 				ROS_WARN("[AUTO_LAND] CH10 触发：AUTO_HOVER -> AUTO_LAND。");
 			}
+            else if (precision_landing_active_)
+            {
+                processPrecisionLanding(now_time);
+            }
 			else if (rc_data.is_command_mode)
 			{
 				if (((USE_PX4_OR_ARDUPILOT == 1) && (state_data.current_state.mode == "GUIDED_NOGPS")) || ((USE_PX4_OR_ARDUPILOT == 0) && (state_data.current_state.mode == "OFFBOARD")))
@@ -1028,6 +1145,10 @@ namespace PayloadMPC
 
 	void MPCFSM::clear_autonomous_inputs()
 	{
+        precision_landing_active_ = false;
+        landing_fixed_stage_ = false;
+        landing_fixed_latched_ = false;
+        landing_previous_mask_ = 0;
 		controller_.waitForPreparation();
 		trajectory_data.total_traj_start_time = ros::Time(0);
 		trajectory_data.total_traj_end_time = ros::Time(0);
@@ -1269,8 +1390,8 @@ namespace PayloadMPC
 		{
 			fq_applied_ = fq_estimated_;
 			const auto &axis_gain = params_.force_estimator_param_;
-			fq_applied_(0) *= axis_gain.force_axis_gain_x;
-			fq_applied_(1) *= axis_gain.force_axis_gain_y;
+			fq_applied_(0) *= precision_landing_active_ ? 0.0 : axis_gain.force_axis_gain_x;
+			fq_applied_(1) *= precision_landing_active_ ? 0.0 : axis_gain.force_axis_gain_y;
 			fq_applied_(2) *= axis_gain.force_axis_gain_z;
 			const double scaled_norm = fq_applied_.norm();
 			const double max_applied_force = params_.force_estimator_param_.max_applied_force;

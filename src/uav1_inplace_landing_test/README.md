@@ -41,3 +41,26 @@ MPC 模型、推力和调参由后机原 payload_mpc_controller/config 覆盖默
 兼容调整：后机 PolynomialTraj 消息无 has_yaw/yaw_trajectory 扩展，测试副本移除该可选规划轨迹解析；精降航向仍由 PositionTarget.yaw 给出。
 
 复制源码仅清理行尾空白，SOURCE_MANIFEST 记录清理前的前机原始文件哈希。
+
+## 六窗口双机流程的精降接入
+
+`bash /home/oem/match_ws/shfiles/start_uav1_six_terminator.sh` 已启用任务精降。
+六窗口流程继续由原来的平台分配、UAV0 放行和搜索节点触发 `/UAV1/need_to_land`，
+随后使用本包的视觉精降节点、50 cm 码参数、UAV1 相机外参和 `center_offset_uav1.yaml` 中的中心补偿。
+
+视觉目标经仲裁器转发到 `/UAV1/landing/nmpc_target`，由原任务 NMPC 执行，
+不再直接把视觉位置指令送给飞控。末段进入 `FIXED_XY_DESCENT` 后，锁住当时 FAST-LIO 的 XY，
+Z 只跟随精降目标的下降增量，抵达既有 0.30 m 截止高度后请求 PX4 `AUTO.LAND`。
+精降期间水平外力补偿为零，正常任务阶段保持原配置。CH10 打断后继续走任务控制器原来的降落逻辑，
+视觉精降停止输出和切模式请求；再次测试前重启流程。
+
+此入口不启动独立测试的自动解锁/起飞节点，也不需要再运行 `start_uav1_inplace_landing_test.sh start`。
+独立测试中的起飞高度 10 cm 容差仍只属于独立测试；总流程的起飞与接力航点条件不变。
+降落 rosbag 同时记录下视原图、相机参数、MAVROS 位置和精降状态/目标，便于复核落点。
+
+离线接管验证（自动使用隔离 ROS master，不连接飞控）：
+
+```bash
+source /home/oem/match_ws/devel/setup.bash
+python3 /home/oem/match_ws/src/uav1_inplace_landing_test/test/test_mission_landing_ros.py
+```

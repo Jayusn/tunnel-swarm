@@ -316,6 +316,49 @@ namespace PayloadMPC
     reference_inputs_ = hover_in.replicate(1, kSamples + 1);
   }
 
+  bool MpcController::setPositionCommandReference(
+      const Eigen::Ref<const Eigen::Vector3d> &position,
+      const Eigen::Ref<const Eigen::Vector3d> &velocity,
+      const Eigen::Ref<const Eigen::Vector3d> &acceleration,
+      const Eigen::Ref<const Eigen::Vector3d> &jerk,
+      double yaw,
+      double yaw_rate)
+  {
+    // 入口点的位置、速度和加速度位于规划器世界系；yaw/yaw_rate 由 FSM 提供。
+    Eigen::Quaterniond quad_q;
+    double thrust = 0.0;
+    Eigen::Vector3d body_rate = Eigen::Vector3d::Zero();
+
+    if (!position.allFinite() || !velocity.allFinite() || !acceleration.allFinite() ||
+        !jerk.allFinite() || !std::isfinite(yaw) || !std::isfinite(yaw_rate))
+    {
+      ROS_ERROR_THROTTLE(1.0, "[CMD] 拒绝非有限 PositionCommand 参考。");
+      return false;
+    }
+
+    computeQuadrotorFlatness(acceleration, jerk, yaw, yaw_rate, quad_q, thrust, body_rate);
+    if (!quad_q.coeffs().allFinite() || !std::isfinite(thrust) || !body_rate.allFinite())
+    {
+      ROS_ERROR_THROTTLE(1.0, "[CMD] 拒绝无效 PositionCommand 平坦性参考。");
+      return false;
+    }
+
+    Eigen::Matrix<real_t, kStateSize, 1> reference_state;
+    quad_q.normalize();
+    reference_state << position.x(), position.y(), position.z(),
+        quad_q.w(), quad_q.x(), quad_q.y(), quad_q.z(),
+        velocity.x(), velocity.y(), velocity.z();
+
+    Eigen::Matrix<real_t, kInputSize, 1> reference_input = hover_input_.col(0);
+    reference_input(kThrust) = thrust;
+    reference_input(kRateX) = body_rate.x();
+    reference_input(kRateY) = body_rate.y();
+    reference_input(kRateZ) = body_rate.z();
+    reference_states_ = reference_state.replicate(1, kSamples + 1);
+    reference_inputs_ = reference_input.replicate(1, kSamples + 1);
+    return true;
+  }
+
   void MpcController::setTrajectoyReference(Trajectory &traj, double tstart, double start_yaw)
   {
     const double t_step = mpc_time_step_;

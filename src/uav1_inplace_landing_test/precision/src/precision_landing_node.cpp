@@ -496,6 +496,10 @@ class PrecisionLandingNode {
         pose_topic, 1, &PrecisionLandingNode::poseCallback, this);
     mavros_state_subscriber_ = node_.subscribe(
         mavros_state_topic, 1, &PrecisionLandingNode::mavrosStateCallback, this);
+    std::string rc_land_topic;
+    private_node_.param<std::string>("topics/rc_land_active", rc_land_topic, "");
+    if (!rc_land_topic.empty())
+      rc_land_subscriber_ = node_.subscribe(rc_land_topic, 1, &PrecisionLandingNode::rcLandCallback, this);
     trigger_subscriber_ = node_.subscribe(
         trigger_topic, 1, &PrecisionLandingNode::triggerCallback, this);
     target_id_subscriber_ = node_.subscribe(
@@ -776,7 +780,17 @@ class PrecisionLandingNode {
     }
   }
 
+  void rcLandCallback(const std_msgs::BoolConstPtr& message) {
+    if (!message->data) return;
+    rc_land_active_ = true;
+    setModeRequestAuthorization(false);
+    std_msgs::Bool::Ptr stop(new std_msgs::Bool());
+    stop->data = false;
+    triggerCallback(stop);
+  }
+
   void triggerCallback(const std_msgs::BoolConstPtr& message) {
+    if (rc_land_active_ && message->data) return;
     const bool rising_edge = message->data && !trigger_;
     const bool falling_edge = !message->data && trigger_;
     trigger_ = message->data;
@@ -820,6 +834,7 @@ class PrecisionLandingNode {
   }
 
   void controlTimerCallback(const ros::TimerEvent& event) {
+    if (rc_land_active_) return;
     const ros::Time now = event.current_real;
     const bool fresh_image = imageFresh(now);
     const bool fresh_camera_info = cameraInfoFresh(now);
@@ -1583,6 +1598,8 @@ class PrecisionLandingNode {
   ros::Subscriber camera_info_subscriber_;
   ros::Subscriber pose_subscriber_;
   ros::Subscriber mavros_state_subscriber_;
+  bool rc_land_active_{false};
+  ros::Subscriber rc_land_subscriber_;
   ros::Subscriber trigger_subscriber_;
   ros::Subscriber target_id_subscriber_;
   ros::Publisher setpoint_publisher_;

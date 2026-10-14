@@ -41,6 +41,13 @@ class LandingSetpointArbiter {
     pnh_.param<std::string>("owner_topic", owner_topic,
                             "/landing/control_owner");
 
+    pnh_.param("landing_via_mpc", landing_via_mpc_, false);
+    if (landing_via_mpc_)
+    {
+      std::string target_topic;
+      pnh_.param<std::string>("mpc_target_topic", target_topic, "/landing/nmpc_target");
+      mpc_target_output_ = nh_.advertise<mavros_msgs::PositionTarget>(target_topic, 1);
+    }
     position_output_ =
         nh_.advertise<mavros_msgs::PositionTarget>(mavros_position_output, 10);
     attitude_output_ =
@@ -80,14 +87,14 @@ class LandingSetpointArbiter {
 
   void controllerPositionCallback(
       const mavros_msgs::PositionTargetConstPtr& message) {
-    if (!landing_owned_) {
+    if (!landing_owned_ || landing_via_mpc_) {
       position_output_.publish(*message);
     }
   }
 
   void controllerAttitudeCallback(
       const mavros_msgs::AttitudeTargetConstPtr& message) {
-    if (!landing_owned_) {
+    if (!landing_owned_ || landing_via_mpc_) {
       attitude_output_.publish(*message);
     }
   }
@@ -103,9 +110,10 @@ class LandingSetpointArbiter {
       landing_owned_ = true;
       trigger_pending_ = false;
       publishOwner("LANDING");
-      ROS_ERROR("LANDING CONTROL TAKEOVER LATCHED: controller output blocked");
+      ROS_WARN("LANDING CONTROL TAKEOVER LATCHED: via_mpc=%s", landing_via_mpc_ ? "true" : "false");
     }
-    position_output_.publish(*message);
+    if (landing_via_mpc_) mpc_target_output_.publish(*message);
+    else position_output_.publish(*message);
   }
 
   void publishOwner(const std::string& owner) {
@@ -127,6 +135,8 @@ class LandingSetpointArbiter {
   ros::Publisher attitude_output_;
   ros::Publisher active_output_;
   ros::Publisher owner_output_;
+  ros::Publisher mpc_target_output_;
+  bool landing_via_mpc_{false};
   bool trigger_pending_{false};
   bool landing_owned_{false};
 };

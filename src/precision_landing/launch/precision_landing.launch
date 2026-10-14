@@ -1,4 +1,11 @@
 <launch>
+  <arg name="landing_via_mpc" default="false"/>
+  <arg name="precision_node_package" default="precision_landing"/>
+  <arg name="precision_node_type" default="precision_landing_node"/>
+  <arg name="precision_config" default="$(find precision_landing)/config/precision_landing.yaml"/>
+  <arg name="center_offset_config" default=""/>
+  <arg name="rc_land_active_topic" default=""/>
+
   <arg name="vehicle_ns" default="UAV0"/>
   <arg name="topic_prefix" default="$(eval '/' + arg('vehicle_ns').strip('/'))"/>
   <arg name="image_topic" default="$(arg topic_prefix)/down_camera/image_raw"/>
@@ -106,6 +113,12 @@
               $(arg topic_prefix)/landing/front/locked_id
               $(arg topic_prefix)/landing/front/status
               $(arg front_aruco_hint_topic)
+              $(arg image_topic)
+              $(arg camera_info_topic)
+              $(arg local_pose_topic)
+              $(arg topic_prefix)/landing/state
+              $(arg topic_prefix)/landing/error_xy
+              $(arg landing_setpoint_input)
               $(arg candidates_topic)
               $(arg topic_prefix)/landing/search/target_world
               $(arg topic_prefix)/landing/search/locked_id
@@ -128,6 +141,8 @@
   <node if="$(arg enable_setpoint_arbiter)" pkg="precision_landing"
         type="landing_setpoint_arbiter_node" name="landing_setpoint_arbiter"
         ns="$(arg vehicle_ns)" output="screen" required="true">
+    <param name="landing_via_mpc" value="$(arg landing_via_mpc)"/>
+    <param name="mpc_target_topic" value="$(arg topic_prefix)/landing/nmpc_target"/>
     <param name="trigger_topic" value="$(arg trigger_topic)"/>
     <param name="controller_position_input" value="$(arg controller_position_input)"/>
     <param name="controller_attitude_input" value="$(arg controller_attitude_input)"/>
@@ -138,16 +153,18 @@
     <param name="owner_topic" value="$(arg topic_prefix)/landing/control_owner"/>
   </node>
 
-  <node pkg="precision_landing" type="precision_landing_node"
+  <node pkg="$(arg precision_node_package)" type="$(arg precision_node_type)"
         name="precision_landing_node" ns="$(arg vehicle_ns)" output="screen">
     <rosparam command="load"
-              file="$(find precision_landing)/config/precision_landing.yaml"/>
+              file="$(arg precision_config)"/>
     <rosparam if="$(eval arg('camera_extrinsic_config') != '')"
               command="load" file="$(arg camera_extrinsic_config)"/>
 
     <!-- These arguments intentionally override the corresponding YAML defaults. -->
     <param name="topics/image" value="$(arg image_topic)"/>
     <param name="topics/camera_info" value="$(arg camera_info_topic)"/>
+    <rosparam if="$(eval arg('center_offset_config') != '')" command="load" file="$(arg center_offset_config)"/>
+    <param name="topics/rc_land_active" value="$(arg rc_land_active_topic)"/>
     <param name="topics/local_pose" value="$(arg local_pose_topic)"/>
     <param name="topics/mavros_state" value="$(arg mavros_state_topic)"/>
     <param name="topics/trigger" value="$(arg trigger_topic)"/>

@@ -334,7 +334,7 @@ run_planner_pane() {
   printf '[启动] UAV1 航点接力管理器、坐标对齐、Diff-Planner、RViz与搜索降落节点\n'
   printf '[安全] 不执行预设航点，只接收前机满足0.70m放行门槛后发布的接力目标。\n'
   roslaunch exploration_control leader_safe_path_follower.launch detector_backend:="${DETECTOR}" \
-    fapp_verified_preset:=true
+    fapp_verified_preset:=true use_nmpc_landing:=true
   local launch_status=$?
   stop_owned_down_camera
   trap - EXIT INT TERM
@@ -351,7 +351,9 @@ run_controller_pane() {
   printf '[启动] UAV1 轨迹桥接、AutoTrans、日志和自动 rosbag\n'
   printf '[说明] uav1_diff_autotrans.launch 默认不重复启动 Diff-Planner\n'
   roslaunch autotrans_reference_bridge uav1_diff_autotrans.launch \
-    setpoint_topic:=/UAV1/control/attitude_setpoint
+    setpoint_topic:=/UAV1/control/attitude_setpoint \
+    position_setpoint_topic:=/UAV1/control/position_setpoint \
+    precision_landing_enabled:=true
   printf '[退出] AutoTrans 分屏，返回码=%s\n' "$?"
   keep_pane_open
 }

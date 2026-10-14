@@ -8,6 +8,7 @@
 #include <nav_msgs/Odometry.h>
 #include <std_msgs/Empty.h>
 #include <std_msgs/Bool.h>
+#include <std_msgs/String.h>
 #include "mpc_params.h"
 #include "mpc_input.h"
 #include "mpc_controller.h"
@@ -95,6 +96,20 @@ namespace PayloadMPC
 		void safetyHoldCallback(const std_msgs::Bool::ConstPtr &msg);
 
 	private:
+        void landingTargetCallback(const mavros_msgs::PositionTarget::ConstPtr &msg);
+        void landingStateCallback(const std_msgs::String::ConstPtr &msg);
+        void processPrecisionLanding(const ros::Time &now);
+        ros::Subscriber landing_target_sub_, landing_state_sub_;
+        ros::Publisher rc_land_active_pub_;
+        bool precision_landing_enabled_{false}, precision_landing_active_{false};
+        bool rc_land_active_{false}, landing_fixed_stage_{false}, landing_fixed_latched_{false};
+        ros::Time landing_target_time_{0}, local_pose_time_{0}, landing_fixed_stage_time_{0};
+        mavros_msgs::PositionTarget landing_target_;
+        Eigen::Matrix3d landing_rotation_{Eigen::Matrix3d::Identity()};
+        Eigen::Vector3d landing_translation_{Eigen::Vector3d::Zero()};
+        Eigen::Vector3d landing_fixed_origin_{Eigen::Vector3d::Zero()};
+        double landing_yaw_offset_{0.0}, landing_fixed_source_z_{0.0};
+        unsigned landing_previous_mask_{0};
 		// Subscribers and publisher.
 		ros::Publisher pub_control_command, pub_predicted_trajectory_, pub_reference_trajectory_;
 		ros::Publisher pub_all_ref_data_, pub_rmse_info_;

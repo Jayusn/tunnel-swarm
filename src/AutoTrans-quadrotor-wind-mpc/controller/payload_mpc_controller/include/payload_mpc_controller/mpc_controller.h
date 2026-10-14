@@ -74,6 +74,11 @@ namespace PayloadMPC
     void execMPC(const Eigen::Matrix<real_t, kStateSize, 1> &estimated_state,
                  Eigen::Matrix<real_t, kStateSize, kSamples + 1> &predicted_states,
                  Eigen::Matrix<real_t, kInputSize, kSamples> &control_inputs);
+    bool setPositionCommandReference(
+        const Eigen::Ref<const Eigen::Vector3d> &position,
+        const Eigen::Ref<const Eigen::Vector3d> &velocity,
+        const Eigen::Ref<const Eigen::Vector3d> &acceleration,
+        const Eigen::Ref<const Eigen::Vector3d> &jerk, double yaw, double yaw_rate);
     void setHoverReference(const Eigen::Ref<const Eigen::Vector3d> &quad_position, const double yaw);
     void setTrajectoyReference(Trajectory &traj, double tstart,double start_yaw);
     double getTimeStep(){return mpc_time_step_;}

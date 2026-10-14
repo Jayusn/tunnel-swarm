@@ -1,4 +1,9 @@
 <launch>
+  <arg name="precision_landing_enabled" default="false"/>
+  <arg name="landing_target_topic" default="/landing/nmpc_target"/>
+  <arg name="landing_state_topic" default="/landing/state"/>
+  <arg name="rc_land_active_topic" default="/landing/rc_land_active"/>
+
   <!-- NMPC 平移状态来自 odom_topic，姿态来自 force_attitude_odom_topic。 -->
   <arg name="odom_topic" default="/Odometry"/>
   <!-- 通用入口默认共用里程计；实机入口可将该参数覆盖为 MAVROS 融合里程计。 -->
@@ -55,6 +60,10 @@
     <rosparam command="load" file="$(find payload_mpc_controller)/config/mpc.yaml"/>
     <rosparam command="load" file="$(find payload_mpc_controller)/config/model.yaml"/>
 
+    <param name="precision_landing_enabled" value="$(arg precision_landing_enabled)"/>
+    <remap from="~landing_target" to="$(arg landing_target_topic)"/>
+    <remap from="~landing_state" to="$(arg landing_state_topic)"/>
+    <remap from="~rc_land_active" to="$(arg rc_land_active_topic)"/>
     <!-- World-frame position, velocity, and attitude estimate from PX4 EKF. -->
     <remap from="~odom" to="$(arg odom_topic)"/>
     <!-- Only the force estimator consumes this attitude source. -->
