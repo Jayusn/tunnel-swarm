@@ -23,7 +23,7 @@
     <arg name="planning_restart_topic" value="$(arg topic_prefix)/planning_restart_trigger"/>
     <arg name="trajectory_topic" value="$(arg topic_prefix)/planning/autotrans_trajectory"/>
     <arg name="position_cmd_topic" value="$(arg topic_prefix)/planning/pos_cmd"/>
-    <arg name="landing_search_state_topic" value="$(arg topic_prefix)/landing_test/search_state"/>
+    <arg name="landing_search_state_topic" value="$(arg topic_prefix)/landing/state"/>
     <arg name="landing_search_yaw_topic" value="$(arg topic_prefix)/landing_diff/yaw"/>
     <arg name="raw_trajectory_topic" value="$(arg topic_prefix)/planning/bspline"/>
     <arg name="goal_topic" value="$(arg topic_prefix)/move_base_simple/goal"/>

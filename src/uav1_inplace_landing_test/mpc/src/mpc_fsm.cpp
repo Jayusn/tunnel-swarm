@@ -297,6 +297,15 @@ namespace PayloadMPC
 	{
 		if (rc_land_active_) return;
 		const std::string state = firstToken(msg->data);
+		if (precision_test_mode_)
+		{
+			if (state == "FIXED_XY_DESCENT" && !precision_fixed_stage_)
+			{
+				precision_fixed_stage_ = true;
+				precision_fixed_stage_time_ = ros::Time::now();
+			}
+			return;
+		}
 		const bool active = isLandingSearchYawState(state);
 		// 只允许搜索降落状态启用局部 yaw 覆盖。WAIT_EXIT_SWITCH、LANDING_HANDOFF
 		// 以及未知状态均恢复普通规划器的航向策略。
@@ -641,7 +650,25 @@ namespace PayloadMPC
                     const auto &v = target.velocity;
                     const Eigen::Vector3d position = precision_test_rotation_ *
                         Eigen::Vector3d(p.x, p.y, p.z) + precision_test_translation_;
-                    if (target.type_mask == 2552) hover_pose_ = position;
+                    if (target.type_mask == 2552)
+                    {
+                        if (precision_test_mode_ && precision_fixed_stage_ &&
+                            target.header.stamp >= precision_fixed_stage_time_)
+                        {
+                            // 末段锁住当前 FAST-LIO 位置，不沿用起飞时的绝对坐标变换。
+                            if (!precision_fixed_latched_)
+                            {
+                                precision_fixed_origin_ = odom_data.p;
+                                precision_fixed_source_z_ = p.z;
+                                precision_fixed_latched_ = true;
+                                ROS_WARN("[精降NMPC] FAST-LIO锁点 x=%.3f y=%.3f z=%.3f，后续仅传递下降增量。",
+                                         odom_data.p.x(), odom_data.p.y(), odom_data.p.z());
+                            }
+                            hover_pose_ = precision_fixed_origin_;
+                            hover_pose_.z() += p.z - precision_fixed_source_z_;
+                        }
+                        else hover_pose_ = position;
+                    }
                     else
                     {
                         velocity = precision_test_rotation_ * Eigen::Vector3d(v.x, v.y, v.z);

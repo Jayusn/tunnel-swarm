@@ -116,6 +116,10 @@ namespace PayloadMPC
         bool precision_mission_active_{false};
         mavros_msgs::PositionTarget precision_test_target_;
         unsigned precision_test_previous_mask_{0};
+        bool precision_fixed_stage_{false}, precision_fixed_latched_{false};
+        ros::Time precision_fixed_stage_time_;
+        Eigen::Vector3d precision_fixed_origin_{Eigen::Vector3d::Zero()};
+        double precision_fixed_source_z_{0.0};
         ros::Time precision_test_target_time_, precision_test_pose_time_;
         Eigen::Matrix3d precision_test_rotation_{Eigen::Matrix3d::Identity()};
         Eigen::Vector3d precision_test_translation_{Eigen::Vector3d::Zero()};

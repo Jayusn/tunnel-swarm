@@ -199,7 +199,7 @@ class DescentTest(RcLandPriorityTest):
                    '/mavros/setpoint_raw/attitude':'nmpc_attitude',
                    '~recovery_position_setpoint':'nmpc_recovery',
                    '~precision_landing_test_target':'nmpc_target', '~rc_land_active':'rc_land',
-                   '/mavros/esc_status':'esc_status'}
+                   '/mavros/esc_status':'esc_status', '~landing_search_state':'landing_state'}
         node = roslib.packages.find_node('uav1_inplace_landing_test', 'uav1_test_mpc_controller_node')[0]
         args = [node, '__name:=controller', '__ns:=' + self.prefix]
         args += [k + ':=' + self.prefix + '/' + v for k, v in mapping.items()]
@@ -280,13 +280,26 @@ class DescentTest(RcLandPriorityTest):
         self.assertLess(ref.position.z,1.48)
         self.assertEqual(len(self.messages['mavros_position']),count, 'PX4 stream during visual alignment')
         stage='FIXED_XY_DESCENT'; target.type_mask=2552
-        target.position=Point(4.04,1.98,1.45); drive(.4)
+        # 模拟 MAVROS 相对起飞时坐标关系偏移 10 cm；锁点不得跟随旧变换跳走。
+        local.pose.position.y += .10
+        target.position=Point(4.04,2.10,1.45); drive(.4)
         self.assertEqual(len(self.messages['mavros_position']),count,'PX4 precision stream leaked after NMPC takeover')
         ref=self.last('controller/mpc/reference_trajectory').poses[0].pose
-        self.assertAlmostEqual(ref.position.x,1.2 + .04*math.cos(.4) + .02*math.sin(.4),places=4)
-        self.assertAlmostEqual(ref.position.y,-.7 + .04*math.sin(.4) - .02*math.cos(.4),places=4)
-        self.assertAlmostEqual(ref.position.z,1.45,places=4)
+        self.assertAlmostEqual(ref.position.x,1.2,places=4)
+        self.assertAlmostEqual(ref.position.y,-.7,places=4)
+        self.assertAlmostEqual(ref.position.z,1.5,places=4)
         self.assertAlmostEqual(2*math.atan2(ref.orientation.z,ref.orientation.w),.4,places=4)
+        # 后续定位漂移不重新锁点，只传递源目标的 Z 下降增量。
+        odom.pose.pose.position.x += .08
+        odom.pose.pose.position.y += .06
+        target.position.x += .10
+        target.position.y += .10
+        target.position.z -= .10
+        stage='REACQUIRE'; drive(.4)
+        ref=self.last('controller/mpc/reference_trajectory').poses[0].pose
+        self.assertAlmostEqual(ref.position.x,1.2,places=4)
+        self.assertAlmostEqual(ref.position.y,-.7,places=4)
+        self.assertAlmostEqual(ref.position.z,1.4,places=4)
         drive(.6,False)
         ref2=self.last('controller/mpc/reference_trajectory').poses[0].pose
         self.assertAlmostEqual(ref2.position.z,ref.position.z,places=4)

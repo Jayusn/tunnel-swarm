@@ -20,6 +20,11 @@ bash /home/oem/match_ws/shfiles/start_uav1_inplace_landing_test.sh start
 相对码高度不高于 1.2m 且水平误差不超过 12cm 连续 0.5 秒后锁 XY；
 估计距码面 0.3m 时切 AUTO.LAND。CH10 可优先打断。
 
+独立 NMPC 收到 `FIXED_XY_DESCENT` 状态及该阶段的位置目标后，
+一次性锁存当前 FAST-LIO 的 XY 和 Z。后续保持该 XY，Z 只叠加精降目标的下降增量，
+避免起飞时保存的 MAVROS→FAST-LIO 变换在末段造成锁点偏移。
+该修正不改变视觉对准门槛；下降位置跟踪误差仍需实飞复核。
+
 相机内参使用后机 ~/.ros/camera_info/down_camera.yaml，外参使用后机
 precision_landing/config/down_camera_extrinsic_uav1.yaml。
 不使用前机的机体中心补偿；后机 bias_xy_m 初始为零，需要后机重新测试标定。
