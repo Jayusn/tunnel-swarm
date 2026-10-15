@@ -68,6 +68,7 @@ struct MapParam {
   bool density_split_enabled;
   bool candidate_partition_enabled;
   bool object_candidate_split_enabled = false;
+  bool object_candidate_isolation_enabled = false;
   double core_radius;
   double core_density_fraction;
   // Dynamic Detection Params

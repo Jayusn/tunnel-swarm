@@ -121,6 +121,7 @@ void MappingRos::init() {
   nh.param("clustering/density_split_enabled", mp_->density_split_enabled, false);
   nh.param("clustering/candidate_partition_enabled", mp_->candidate_partition_enabled, false);
   nh.param("clustering/object_candidate_split_enabled", mp_->object_candidate_split_enabled, false);
+  nh.param("association/object_candidate_isolation_enabled", mp_->object_candidate_isolation_enabled, false);
   nh.param("clustering/core_radius", mp_->core_radius, 0.08);
   nh.param("clustering/core_density_fraction", mp_->core_density_fraction, 0.7);
   nh.param("association/global_assignment_enabled", mp_->global_assignment_enabled, false);
@@ -734,6 +735,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     pcl::PointIndices indices;
     pcl::PointIndices dynamic_indices;
     bool supplemental;
+    bool object_component;
     int parent_key;
     bool changed;
     bool static_background;
@@ -786,6 +788,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     bidirectional_previous_observation_ = {cloud_stamp_, latest_cloud, current_sensor_pose};
   }
   std::vector<Candidate> candidates;
+  std::vector<bool> object_components(cluster_indices.size(), false);
   if (mp_->object_candidate_split_enabled) {
     // Preserve each original candidate and its measured center. Propose only
     // other measured components, each subject to the ordinary pipeline with
@@ -816,6 +819,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
         if (std::find(component.indices.begin(), component.indices.end(), dense_anchor) !=
             component.indices.end()) continue;
         cluster_indices.push_back(component);
+        object_components.push_back(true);
         ++added;
       }
       ROS_DEBUG_STREAM("FAPP_OBJECT_CANDIDATES " << cloud_stamp_.toNSec() << " "
@@ -866,6 +870,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
           if (std::find(component.indices.begin(), component.indices.end(), dense_anchor) !=
               component.indices.end()) continue;
           cluster_indices.push_back(component);
+          object_components.push_back(object_components[parent_index]);
           dynamic_parents.push_back(parent);
           candidate_parent_keys.push_back(parent_index);
           ++supplemental_count;
@@ -881,7 +886,8 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     const auto& dynamic_indices = mp_->candidate_partition_enabled ?
         dynamic_parents[candidate_cluster_index] : indices;
     const int parent_key = mp_->candidate_partition_enabled ?
-        candidate_parent_keys[candidate_cluster_index++] : -1;
+        candidate_parent_keys[candidate_cluster_index] : -1;
+    const bool object_component = object_components[candidate_cluster_index++];
     const bool supplemental = mp_->candidate_partition_enabled &&
         indices.indices != dynamic_indices.indices;
     const bool candidate_ray_enabled = mp_->object_motion_evidence_enabled ||
@@ -1266,6 +1272,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     candidate.indices = indices;
     if (mp_->candidate_partition_enabled) candidate.dynamic_indices = dynamic_indices;
     candidate.supplemental = supplemental;
+    candidate.object_component = object_component;
     candidate.parent_key = parent_key;
     candidate.dense_size = dense_size;
     candidate.dense_count = dense_count;
@@ -1412,6 +1419,8 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     for (int j = 0; j < trackers.size(); ++j) {
       if (mp_->candidate_partition_enabled &&
           candidates[i].supplemental != trackers[j]->supplemental_candidate) continue;
+      if (mp_->object_candidate_isolation_enabled &&
+          candidates[i].object_component != trackers[j]->object_component) continue;
       double distance = (candidates[i].state.position -
                          trackers[j]->observations.back().second).norm();
       if (distance < 0.82) {
@@ -1702,6 +1711,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     }
     auto& tracker = trackers[j];
     tracker->supplemental_candidate = candidate.supplemental;
+    tracker->object_component = candidate.object_component;
     bool bidirectional_transition_valid = false;
 
     if (need_bidirectional && tracker->last_seen_frame == frame_num - 1 &&

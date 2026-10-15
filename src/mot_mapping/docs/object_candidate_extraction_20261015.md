@@ -229,3 +229,6 @@ roslaunch mot_mapping uav1_frame_event_verified.launch \
 资料位于 `/home/oem/fapp_component_kind_20261015/`：`historical_coverage.json`、
 `gained_candidate_followup.json`、`incremental_candidate_audit.json`、
 `lost_hit_audit.json` 和 `track_history_audit.json`。
+
+后续用户已明确授权关联隔离实验；实现与完整历史回放结果见
+[关联隔离实验](object_candidate_isolation_20261015.md)。原候选提取实验的上述结果不变。

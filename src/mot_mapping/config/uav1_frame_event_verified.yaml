@@ -31,6 +31,8 @@ clustering/core_density_fraction: 0.7
 clustering/core_radius: 0.08
 clustering/density_split_enabled: true
 clustering/object_candidate_split_enabled: false
+# Experimental: keep original and added component track histories separate.
+association/object_candidate_isolation_enabled: false
 clustering/voxel_size: 0.05
 dbscan/core_pts: 3
 dbscan/max_cluster: 800
