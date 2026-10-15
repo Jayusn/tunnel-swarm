@@ -132,14 +132,62 @@ TEST(LandingStateMachine, FineAlignmentRestartsAfterErrorOrVisibilityBreak) {
             LandingState::FIXED_XY_DESCENT);
 }
 
-TEST(LandingStateMachine, FineAlignmentDoesNotCountTimeAboveHandoffHeight) {
-  LandingStateMachine machine;
-  ReachAlign(machine, 1.5);
-  machine.update(ActiveInput(0.4, 1.5, 0.10));
-  machine.update(ActiveInput(1.0, 1.51, 0.10));
-  machine.update(ActiveInput(1.1, 1.5, 0.10));
-  EXPECT_EQ(machine.update(ActiveInput(1.5, 1.5, 0.10)).state, LandingState::ALIGN);
-  EXPECT_EQ(machine.update(ActiveInput(1.91, 1.5, 0.10)).state,
+TEST(LandingStateMachine, StableHighAlignmentLocksImmediatelyAtHandoffHeight) {
+  precision_landing::StateMachineConfig config;
+  config.high_height_m = config.auto_land_height_m = 1.3;
+  LandingStateMachine machine(config);
+  ReachHighDescent(machine);
+  EXPECT_EQ(machine.update(ActiveInput(1.31, 1.31, 0.033)).state,
+            LandingState::DESCEND_HIGH);
+  const auto locked = machine.update(ActiveInput(1.32, 1.30, 0.033));
+  EXPECT_EQ(locked.state, LandingState::FIXED_XY_DESCENT);
+  EXPECT_DOUBLE_EQ(locked.descent_speed_mps, config.fixed_descent_mps);
+  const auto lost = machine.update(ActiveInput(1.33, 1.30, 0.033, false));
+  EXPECT_EQ(lost.state, LandingState::FIXED_XY_DESCENT);
+  EXPECT_DOUBLE_EQ(lost.descent_speed_mps, config.fixed_descent_mps);
+}
+
+TEST(LandingStateMachine, PartialHighAlignmentContinuesAcrossHeightThreshold) {
+  precision_landing::StateMachineConfig config;
+  config.high_height_m = config.auto_land_height_m = 1.3;
+  LandingStateMachine machine(config);
+  ReachHighDescent(machine);  // Fine alignment starts at 0.8 seconds.
+  EXPECT_EQ(machine.update(ActiveInput(1.0, 1.30)).state, LandingState::ALIGN);
+  EXPECT_EQ(machine.update(ActiveInput(1.2, 1.31)).state, LandingState::ALIGN);
+  const auto hold = machine.update(ActiveInput(1.29, 1.29));
+  EXPECT_EQ(hold.state, LandingState::ALIGN);
+  EXPECT_DOUBLE_EQ(hold.descent_speed_mps, 0.0);
+  EXPECT_EQ(machine.update(ActiveInput(1.31, 1.30)).state,
+            LandingState::FIXED_XY_DESCENT);
+}
+
+TEST(LandingStateMachine, ErrorAboveHandoffHeightClearsFineAlignment) {
+  precision_landing::StateMachineConfig config;
+  config.high_height_m = config.auto_land_height_m = 1.3;
+  LandingStateMachine machine(config);
+  ReachHighDescent(machine);
+  machine.update(ActiveInput(1.31, 1.5, 0.12));
+  machine.update(ActiveInput(1.32, 1.4, 0.121));
+  const auto hold = machine.update(ActiveInput(1.33, 1.3, 0.12));
+  EXPECT_EQ(hold.state, LandingState::ALIGN);
+  EXPECT_DOUBLE_EQ(hold.descent_speed_mps, 0.0);
+  EXPECT_EQ(machine.update(ActiveInput(1.82, 1.3, 0.12)).state, LandingState::ALIGN);
+  EXPECT_EQ(machine.update(ActiveInput(1.84, 1.3, 0.12)).state,
+            LandingState::FIXED_XY_DESCENT);
+}
+
+TEST(LandingStateMachine, LossAtHandoffHeightCannotLockUsingEarlierAlignment) {
+  precision_landing::StateMachineConfig config;
+  config.high_height_m = config.auto_land_height_m = 1.3;
+  LandingStateMachine machine(config);
+  ReachHighDescent(machine);
+  machine.update(ActiveInput(1.31, 1.4));
+  const auto lost = machine.update(ActiveInput(1.32, 1.3, 0.033, false));
+  EXPECT_NE(lost.state, LandingState::FIXED_XY_DESCENT);
+  EXPECT_DOUBLE_EQ(lost.descent_speed_mps, 0.0);
+  machine.update(ActiveInput(1.4, 1.3));
+  EXPECT_EQ(machine.update(ActiveInput(1.89, 1.3)).state, LandingState::ALIGN);
+  EXPECT_EQ(machine.update(ActiveInput(1.91, 1.3)).state,
             LandingState::FIXED_XY_DESCENT);
 }
 

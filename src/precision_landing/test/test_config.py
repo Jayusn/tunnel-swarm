@@ -50,8 +50,8 @@ def test_conservative_configuration_contract():
     assert cfg["topics"]["image"] == "/usb_cam/image_raw"
     assert cfg["control"]["publish_rate_hz"] >= 20.0
     assert cfg["safety"]["require_camera_info"] is True
-    assert cfg["stages"]["high"]["min_height_m"] == 1.20
-    assert cfg["stages"]["auto_land"]["height_m"] == 1.20
+    assert cfg["stages"]["high"]["min_height_m"] == 1.30
+    assert cfg["stages"]["auto_land"]["height_m"] == 1.30
     assert cfg["stages"]["fixed_xy_descent"]["descent_mps"] == 0.10
     assert cfg["stages"]["fixed_xy_descent"]["cutoff_height_m"] == 0.30
 
