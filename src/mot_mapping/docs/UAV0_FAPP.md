@@ -37,7 +37,7 @@ FUEL 联调用例为 `plan_manage` 包的 `fapp_fuel_smoke`，应在独立 local
 
 ## 规划优先开关
 
-原启动命令追加 `--planner-priority` 开启，追加 `--strict-dynamic` 恢复默认的动态硬检查。环境变量为 `UAV0_FAPP_PLANNER_PRIORITY`，默认 `false`；launch 参数为 `fapp_planner_priority`，FUEL 节点参数为 `fapp/planner_priority`。
+原启动脚本默认开启规划优先，无需追加参数；追加 `--strict-dynamic` 恢复动态硬检查，追加 `--planner-priority` 可明确开启。环境变量 `UAV0_FAPP_PLANNER_PRIORITY` 可覆盖脚本默认值。直接调用 launch 或节点时，`fapp_planner_priority`、`fapp/planner_priority` 的底层默认值仍为 `false`。
 
 开启后，FAPP 仍参与 B 样条优化；直线路径遇到动态目标仍进入优化，但动态预测不再强制要求下穿/侧绕引导候选，也不再单独否决发布和执行。固定 XY 的垂直轨迹保持原有几何约束。原有静态地图、动力学和轨迹交接检查继续生效。`--detection-only` 仍关闭 FAPP 动态代价。
 

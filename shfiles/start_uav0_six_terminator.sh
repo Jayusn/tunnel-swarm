@@ -38,8 +38,8 @@ FUEL/RViz、FUEL bridge + AutoTrans NMPC + logger + rosbag。
 FAPP 开关（默认 swing-only，开启动态避障）：
   --dynamic-mode swing-only|general
   --dynamic-avoidance
-  --planner-priority    保留 FAPP 优化代价，允许轨迹与动态预测重叠
-  --strict-dynamic      恢复 FAPP 动态碰撞硬检查（默认）
+  --planner-priority    保留 FAPP 优化代价，允许轨迹与动态预测重叠（默认）
+  --strict-dynamic      恢复 FAPP 动态碰撞硬检查
   --detection-only
 EOF
 }
@@ -137,7 +137,7 @@ case "${UAV0_FAPP_DYNAMIC_MODE:-swing-only}" in
   swing-only|general) ;;
   *) log '--dynamic-mode 只能是 swing-only 或 general'; exit 2 ;;
 esac
-case "${UAV0_FAPP_PLANNER_PRIORITY:-false}" in
+case "${UAV0_FAPP_PLANNER_PRIORITY:-true}" in
   true|false) ;;
   *) log 'UAV0_FAPP_PLANNER_PRIORITY 只能是 true 或 false'; exit 2 ;;
 esac
