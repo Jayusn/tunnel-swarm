@@ -120,6 +120,7 @@ void MappingRos::init() {
   nh.param("clustering/voxel_size", mp_->cluster_voxel_size, 0.05);
   nh.param("clustering/density_split_enabled", mp_->density_split_enabled, false);
   nh.param("clustering/candidate_partition_enabled", mp_->candidate_partition_enabled, false);
+  nh.param("clustering/object_candidate_split_enabled", mp_->object_candidate_split_enabled, false);
   nh.param("clustering/core_radius", mp_->core_radius, 0.08);
   nh.param("clustering/core_density_fraction", mp_->core_density_fraction, 0.7);
   nh.param("association/global_assignment_enabled", mp_->global_assignment_enabled, false);
@@ -785,6 +786,43 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     bidirectional_previous_observation_ = {cloud_stamp_, latest_cloud, current_sensor_pose};
   }
   std::vector<Candidate> candidates;
+  if (mp_->object_candidate_split_enabled) {
+    // Preserve each original candidate and its measured center. Propose only
+    // other measured components, each subject to the ordinary pipeline with
+    // its own evidence; no component inherits the parent's confirmation.
+    DensityPartitionOptions options;
+    options.radius = mp_->core_radius;
+    options.alpha = mp_->core_density_fraction;
+    options.min_cluster = mp_->min_cluster;
+    options.max_cluster = mp_->max_cluster;
+    options.core_pts = mp_->core_pts;
+    options.squared_tolerance = mp_->tolerance;
+    const auto parents = cluster_indices;
+    for (const auto& parent : parents) {
+      const auto partition = densityPartition(*ClusterPoints, parent, options);
+      if (!partition.split) continue;
+      int dense_anchor = parent.indices.front();
+      size_t dense_count = 0;
+      for (int anchor : parent.indices) {
+        size_t count = 0;
+        for (int index : parent.indices)
+          if ((ClusterPoints->points[index].getVector3fMap() -
+               ClusterPoints->points[anchor].getVector3fMap()).squaredNorm() <= mp_->tolerance)
+            ++count;
+        if (count > dense_count) { dense_count = count; dense_anchor = anchor; }
+      }
+      size_t added = 0;
+      for (const auto& component : partition.clusters) {
+        if (std::find(component.indices.begin(), component.indices.end(), dense_anchor) !=
+            component.indices.end()) continue;
+        cluster_indices.push_back(component);
+        ++added;
+      }
+      ROS_DEBUG_STREAM("FAPP_OBJECT_CANDIDATES " << cloud_stamp_.toNSec() << " "
+          << parent.indices.size() << " " << partition.clusters.size() << " "
+          << partition.leftovers.indices.size() << " " << added);
+    }
+  }
   detections.clear();
   deleted_indices.clear();
   std::vector<pcl::PointIndices> dynamic_parents;
