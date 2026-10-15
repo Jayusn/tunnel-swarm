@@ -2,9 +2,11 @@
     <arg name="enable_fapp_detection" default="false"/>
     <arg name="dynamic_mode" default="swing-only"/>
     <arg name="enable_fapp_dynamic_avoidance" default="false"/>
+    <arg name="fapp_planner_priority" default="false"/>
     <include if="$(arg enable_fapp_detection)" file="$(find mot_mapping)/launch/uav0_frame_event_verified.launch">
         <arg name="dynamic_mode" value="$(arg dynamic_mode)"/>
     </include>
+    <param name="/exploration_node/fapp/planner_priority" value="$(arg fapp_planner_priority)" type="bool"/>
     <param name="/exploration_node/fapp/enabled" value="$(arg enable_fapp_dynamic_avoidance)"/>
     <param name="/exploration_node/fapp/topic" value="/UAV0/fapp/states"/>
     <param name="/exploration_node/fapp/frame_id" value="UAV0/camera_init"/>
