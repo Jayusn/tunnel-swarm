@@ -121,7 +121,7 @@ run_fastlio()
         vehicle_ns:=UAV1 \
         odom_topic:=/UAV1/fast_lio/Odometry \
         high_freq_odom_topic:=/UAV1/fast_lio/Odom_high_freq \
-        performance_logging:=true \
+        performance_logging:=false \
         publish_odometry:=true
 }
 

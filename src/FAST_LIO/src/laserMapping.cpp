@@ -1005,18 +1005,20 @@ int main(int argc, char** argv)
     kf.init_dyn_share(get_f, df_dx, df_dw, h_share_model, NUM_MAX_ITERATIONS, epsi);
 
     /*** debug record ***/
-    FILE *fp;
-    string pos_log_dir = root_dir + "/Log/pos_log.txt";
-    fp = fopen(pos_log_dir.c_str(),"w");
-
+    FILE *fp = nullptr;
     ofstream fout_pre, fout_out, fout_dbg;
-    fout_pre.open(DEBUG_FILE_DIR("mat_pre.txt"),ios::out);
-    fout_out.open(DEBUG_FILE_DIR("mat_out.txt"),ios::out);
-    fout_dbg.open(DEBUG_FILE_DIR("dbg.txt"),ios::out);
-    if (fout_pre && fout_out)
-        cout << "~~~~"<<ROOT_DIR<<" file opened" << endl;
-    else
-        cout << "~~~~"<<ROOT_DIR<<" doesn't exist" << endl;
+    if (runtime_pos_log)
+    {
+        string pos_log_dir = root_dir + "/Log/pos_log.txt";
+        fp = fopen(pos_log_dir.c_str(),"w");
+        fout_pre.open(DEBUG_FILE_DIR("mat_pre.txt"),ios::out);
+        fout_out.open(DEBUG_FILE_DIR("mat_out.txt"),ios::out);
+        fout_dbg.open(DEBUG_FILE_DIR("dbg.txt"),ios::out);
+        if (fout_pre && fout_out)
+            cout << "~~~~"<<ROOT_DIR<<" file opened" << endl;
+        else
+            cout << "~~~~"<<ROOT_DIR<<" doesn't exist" << endl;
+    }
 
     /*** ROS subscribe initialization ***/
     ros::Subscriber sub_pcl = p_pre->lidar_type == AVIA ? \
@@ -1135,8 +1137,11 @@ int main(int argc, char** argv)
 
             V3D ext_euler = SO3ToEuler(state_point.offset_R_L_I);
             perf_loop.mark(5);
-            fout_pre<<setw(20)<<Measures.lidar_beg_time - first_lidar_time<<" "<<euler_cur.transpose()<<" "<< state_point.pos.transpose()<<" "<<ext_euler.transpose() << " "<<state_point.offset_T_L_I.transpose()<< " " << state_point.vel.transpose() \
-            <<" "<<state_point.bg.transpose()<<" "<<state_point.ba.transpose()<<" "<<state_point.grav<< endl;
+            if (runtime_pos_log)
+            {
+                fout_pre<<setw(20)<<Measures.lidar_beg_time - first_lidar_time<<" "<<euler_cur.transpose()<<" "<< state_point.pos.transpose()<<" "<<ext_euler.transpose() << " "<<state_point.offset_T_L_I.transpose()<< " " << state_point.vel.transpose() \
+                <<" "<<state_point.bg.transpose()<<" "<<state_point.ba.transpose()<<" "<<state_point.grav<< endl;
+            }
 
             perf_loop.mark(6);
             if(0) // If you need to see map point, change to "if(1)"
