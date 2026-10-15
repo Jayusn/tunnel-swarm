@@ -27,7 +27,7 @@ THERMAL="${UAV1_SINGLE_THERMAL:-true}"
 DETECTOR="${UAV1_SINGLE_DETECTOR:-fapp}"
 DYNAMIC_AVOIDANCE="${UAV1_SINGLE_DYNAMIC_AVOIDANCE:-true}"
 DYNAMIC_MODE="${UAV1_SINGLE_DYNAMIC_MODE:-swing-only}"
-PLANNER_PRIORITY="${UAV1_SINGLE_PLANNER_PRIORITY:-false}"
+PLANNER_PRIORITY="${UAV1_SINGLE_PLANNER_PRIORITY:-true}"
 
 MAVROS_STATE_TOPIC="/UAV1/mavros/state"
 LIDAR_TOPIC="/UAV1/livox/lidar"
@@ -75,8 +75,8 @@ usage() {
   --dynamic-mode swing-only|general  动态目标模式，默认 swing-only
   --dynamic-avoidance        开启 FAPP 动态避障（默认）
   --detection-only          关闭动态避障，只保留动态检测
-  --planner-priority        保留 FAPP 优化代价，允许轨迹与动态预测重叠
-  --strict-dynamic          恢复 FAPP 动态碰撞硬检查（默认）
+  --planner-priority        保留 FAPP 优化代价，允许轨迹与动态预测重叠（默认）
+  --strict-dynamic          恢复 FAPP 动态碰撞硬检查
   --thermal                 第 5 屏同时启动热成像检测和 D435 融合
   --no-thermal              关闭热成像
 EOF
