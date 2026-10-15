@@ -121,6 +121,11 @@ roslaunch mot_mapping uav1_frame_event_verified.launch \
 
 ## 下游开销与提前背景过滤的边界
 
+**诊断限制更正：本节最初的片段实验从 bag 第 70 秒启动，重新采集了约第 70–75 秒
+的初始参考背景，并清空了此前跟踪历史。它只支持该片段初始化条件下的测量，不能
+直接代表完整回放的阶段耗时、背景占比或轨迹状态。以下旧数字保留作为实验记录，
+候选来源结论以本节末尾从 bag 起点重新运行的复核为准。此前完整回放的验收表不受影响。**
+
 使用独立诊断程序对历史球包第 70–100 秒片段顺序进行半速回放；正式源码、主工作空间
 二进制及识别阈值不变。半速只用于定位计算成本，不用于原生速率验收。
 
@@ -157,3 +162,22 @@ roslaunch mot_mapping uav1_frame_event_verified.launch \
 `/home/oem/fapp_point_reuse_20261015/reuse_summary.json`、
 `/home/oem/fapp_candidate_origin_20261015/origin_summary.json` 和
 `/home/oem/fapp_candidate_origin_20261015/early_background_audit.json`。
+
+### 保留完整初始化的复核
+
+从历史球 bag 起点连续回放前 100 秒（半速），只统计实际 bag 起点后 70–100 秒。
+第一轮因会话中断在约第 9 秒停止，未使用其部分结果；完成的回放另存为
+`ball_swing-only_fullprefix_complete`。该轮参考采集起点为 `1791429217565721035`，
+冻结时间为 `1791429222665558338`，参考点数为 528,589，与原完整回放的日志一致。
+仍然不能用半速诊断代替原生速率验收。
+
+修正后的窗口共记录 6,282 次新增组件观测，1,075 次形成有效运动观测，3,477 次
+运动观测无效；无效记录中初始背景命中 2,252 次、历史背景命中 2,402 次，原因重叠。
+中心对应后，3,432 次新增组件命中初始或历史背景且进入跟踪，其中 3,383 次匹配已有
+轨迹、49 次创建新轨迹。未发现这些背景组件靠近该窗口的有效球标注，但这不能证明
+其他片段的过滤安全。背景候选参与关联的结论仍成立，旧片段初始化下的具体计数不再
+作为完整状态诊断依据；未据此增加提前过滤。
+
+复核资料位于 `/home/oem/fapp_candidate_origin_20261015/`：
+`fullprefix_complete_replay.log`、`fullprefix_origin_summary.json`、
+`fullprefix_early_background_audit.json` 以及完成回放目录下的 `node.log` 和 `output.bag`。
