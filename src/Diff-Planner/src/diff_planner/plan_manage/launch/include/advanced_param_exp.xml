@@ -43,6 +43,7 @@
     <arg name="swing_release_clear_time" default="0.35"/>
     <arg name="swing_release_speed" default="0.20"/>
     <!-- FAPP 动态球的短时预测与机体尺寸；通用入口默认关闭。 -->
+    <arg name="fapp_planner_priority" default="false"/>
     <arg name="enable_fapp_dynamic_avoidance" default="false"/>
     <arg name="fapp_obstacle_topic" default="/UAV1/fapp/states"/>
     <arg name="fapp_observation_retention" default="0.80"/>
@@ -319,6 +320,7 @@
         <!-- trajectory optimization -->
         <param name="optimization/constraint_points_perPiece" value="6" type="int"/>
         <param name="optimization/weight_obstacle" value="10000.0" type="double"/>
+        <param name="optimization/fapp_planner_priority" value="$(arg fapp_planner_priority)" type="bool"/>
         <param name="optimization/enable_fapp_dynamic_avoidance" value="$(arg enable_fapp_dynamic_avoidance)" type="bool"/>
         <param name="optimization/fapp_observation_retention" value="$(arg fapp_observation_retention)" type="double"/>
         <param name="optimization/fapp_prediction_horizon" value="$(arg fapp_prediction_horizon)" type="double"/>

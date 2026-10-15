@@ -2013,6 +2013,7 @@ namespace diff_planner
     nh.param("optimization/weight_swarm", wei_swarm_, -1.0);
     nh.param("optimization/enable_fapp_dynamic_avoidance",
              dynamic_obstacle_config_.enabled, false);
+    nh.param("optimization/fapp_planner_priority", fapp_planner_priority_, false);
     nh.param("optimization/fapp_vehicle_radius", dynamic_obstacle_config_.vehicle_radius, 0.262);
     nh.param("optimization/fapp_vehicle_half_height", dynamic_obstacle_config_.vehicle_half_height, 0.125);
     nh.param("optimization/fapp_ball_radius", dynamic_obstacle_config_.ball_radius, 0.10);
@@ -2180,6 +2181,8 @@ namespace diff_planner
                  sample.first, sample.second.x(), sample.second.y(), sample.second.z());
         return false;
       }
+      // Planner priority keeps the static validation and the dynamic optimization cost.
+      if (fapp_planner_priority_) continue;
       for (const auto &obstacle : getDynamicObstacles())
       {
         double clearance;

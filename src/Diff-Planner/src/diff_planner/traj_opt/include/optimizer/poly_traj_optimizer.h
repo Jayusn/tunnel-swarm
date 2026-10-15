@@ -126,6 +126,7 @@ namespace diff_planner
 
     double t_now_;
     DynamicObstacleConfig dynamic_obstacle_config_;
+    bool fapp_planner_priority_{false};
     std::vector<DynamicObstacleState> dynamic_obstacles_;
     double wei_dynamic_obstacle_{10000.0};
     double dynamic_underpass_height_{0.50}; // Legacy parameter; no fixed-height preference.
@@ -153,6 +154,7 @@ namespace diff_planner
       return planning_deadline_active_ ? planning_obstacles_ : dynamic_obstacles_;
     }
     const DynamicObstacleConfig &getDynamicObstacleConfig() const { return dynamic_obstacle_config_; }
+    bool fappPlannerPriority() const { return fapp_planner_priority_; }
     void setConstraintPoints(ConstraintPoints cps);
     void setUseMultitopologyTrajs(bool use_multitopology_trajs);
     void beginPlanningCycle();

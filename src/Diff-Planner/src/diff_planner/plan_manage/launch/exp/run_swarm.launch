@@ -11,6 +11,7 @@
     <arg name="detector_backend" default="legacy"/>
     <arg name="fapp_verified_preset" default="false"/>
     <arg name="enable_fapp_dynamic_avoidance" default="false"/>
+    <arg name="fapp_planner_priority" default="false"/>
     <arg name="start_ldop" default="$(eval arg('detector_backend') == 'ldop' or (arg('detector_backend') == 'legacy' and arg('enable_ldop')))"/>
     <arg name="ldop_input_rate" default="5.0"/>
     <arg name="flight_type" default="2"/>
@@ -39,6 +40,7 @@
         <arg name="drone_id" value="$(arg drone_id)"/>
         <arg name="max_tracking_error" value="$(arg max_tracking_error)"/>
         <arg name="enable_fapp_dynamic_avoidance" value="$(arg enable_fapp_dynamic_avoidance)"/>
+        <arg name="fapp_planner_priority" value="$(arg fapp_planner_priority)"/>
         <arg name="fapp_obstacle_topic" value="/UAV1/fapp/states"/>
         <arg name="fapp_observation_retention" value="0.80"/>
         <arg name="fapp_prediction_horizon" value="1.0"/>

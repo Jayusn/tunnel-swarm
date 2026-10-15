@@ -128,7 +128,8 @@ namespace diff_planner
         }
         return true;
       }
-    return dynamicTrajectoryBlocked(samples, now, result);
+    return !ploy_traj_opt_->fappPlannerPriority() &&
+        dynamicTrajectoryBlocked(samples, now, result);
   }
 
   bool DiffPlannerManager::optimizeDynamicCandidates(
@@ -349,7 +350,9 @@ namespace diff_planner
     DynamicObstacleState first_obstacle;
     double first_collision_time = 0.0;
     const auto find_dynamic_conflict = [&](const poly_traj::Trajectory &nominal) {
-      if (!dynamicAvoidanceEnabled()) return false;
+      // In planner priority mode the normal optimizer still includes FAPP cost,
+      // without requiring a dynamic-clear candidate before it can run.
+      if (!dynamicAvoidanceEnabled() || ploy_traj_opt_->fappPlannerPriority()) return false;
       const auto samples = sampleCollisionTrajectory(nominal, 0.0,
           nominal.getTotalDuration(), 0.5 * grid_map_->getResolution());
       const double reference = ploy_traj_opt_->planningReferenceTime();

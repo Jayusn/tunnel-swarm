@@ -24,7 +24,8 @@ import traceback
 import xml.etree.ElementTree as ET
 
 
-SCENARIOS = ('baseline', 'disabled', 'swing', 'blocked', 'dropout')
+SCENARIOS = ('baseline', 'disabled', 'swing', 'blocked', 'dropout',
+             'planner_priority', 'priority_static')
 HALF_BODY = (.185, .185, .125)
 BALL_RADIUS = .10
 START = (0., 0., .60)
@@ -65,13 +66,14 @@ def sphere_box_gap(position, center):
     return math.sqrt(squared) - BALL_RADIUS
 
 
-def static_clearance(position, gate):
+def static_clearance(position, gate, wall=False):
     clearance = min(position[i] - HALF_BODY[i] - CORRIDOR[i][0]
                     for i in range(3))
     clearance = min(clearance, *(CORRIDOR[i][1] - position[i] - HALF_BODY[i]
                                  for i in range(3)))
     if gate:
-        for box in GATE_BOXES:
+        boxes = GATE_BOXES + ((((1.70, 2.30), (-.75, .75), (0., 1.50)),) if wall else ())
+        for box in boxes:
             # At least one separating axis is necessary for disjoint boxes.
             separation = max(box[i][0] - position[i] - HALF_BODY[i]
                              if position[i] < box[i][0]
@@ -208,7 +210,9 @@ def run_scenario(args, log_dir):
     from traj_utils.msg import PolyTraj
 
     enabled = args.scenario != 'disabled'
-    gate = args.scenario in ('blocked', 'dropout', 'gate_baseline')
+    priority = args.scenario in ('planner_priority', 'priority_static')
+    gate = args.scenario in ('blocked', 'dropout', 'gate_baseline') or priority
+    static_wall = args.scenario == 'priority_static'
     dynamic = args.scenario not in ('baseline', 'gate_baseline')
     swing = args.scenario in ('swing', 'disabled')
     # Keep the gate fixture at its static aperture height, separating dynamic
@@ -239,6 +243,7 @@ def run_scenario(args, log_dir):
             time.sleep(.05)
         rospy.init_node('fapp_dynamic_avoidance_smoke', anonymous=True, disable_signals=True)
         params = planner_parameters(args.workspace, enabled)
+        params['optimization/fapp_planner_priority'] = priority
         for name, value in params.items():
             rospy.set_param('/fapp_fixture_planner/' + name, value)
         (log_dir / 'parameters.json').write_text(json.dumps(params, indent=2) + '\n')
@@ -265,6 +270,8 @@ def run_scenario(args, log_dir):
         if gate:
             for box in GATE_BOXES:
                 points.update(surface_points(box))
+        if static_wall:
+            points.update(surface_points(((1.70, 2.30), (-.75, .75), (0., 1.50))))
         cloud = point_cloud2.create_cloud_xyz32(Header(frame_id='world'), sorted(points))
 
         def on_status(message):
@@ -283,7 +290,7 @@ def run_scenario(args, log_dir):
                 elapsed = min(duration, index * duration / samples)
                 position = poly_state(message, elapsed)
                 assert all(map(math.isfinite, position)), 'Nonfinite PolyTraj coefficients'
-                static_min = min(static_min, static_clearance(position, gate))
+                static_min = min(static_min, static_clearance(position, gate, static_wall))
                 if dynamic:
                     center, _ = ball_state(message.start_time.to_sec() + elapsed, state['epoch'], swing)
                     dynamic_min = min(dynamic_min, sphere_box_gap(position, center))
@@ -296,7 +303,7 @@ def run_scenario(args, log_dir):
                               duration=duration, traj_id=message.traj_id,
                               minimum_static_clearance=static_min,
                               minimum_physical_ball_clearance=dynamic_min if dynamic else None,
-                              ball_constraint_expected=valid_ball,
+                              ball_constraint_expected=valid_ball and not priority,
                               final_position=poly_state(message, duration),
                               crossing_z_min=min((p[2] for p in crossing), default=None),
                               crossing_z_max=max((p[2] for p in crossing), default=None),
@@ -306,7 +313,7 @@ def run_scenario(args, log_dir):
                 result['trajectories'].append(record)
                 if static_min < -1e-5:
                     result['failures'].append('Published trajectory intersects physical static geometry')
-                if valid_ball and dynamic_min < -1e-5:
+                if valid_ball and not priority and dynamic_min < -1e-5:
                     result['failures'].append('Published trajectory intersects physical ball')
                 state['trajectory'] = message
 
@@ -381,7 +388,7 @@ def run_scenario(args, log_dir):
         goal_pub.publish(goal)
         goal_sent = rospy.Time.now().to_sec()
         deadline = time.monotonic() + args.timeout
-        if gate and dynamic:
+        if gate and dynamic and (not priority or static_wall):
             # Initial planning can keep the vehicle stationary without first
             # publishing a moving trajectory.  Do not require a new FSM state
             # when the existing retry path already implements that wait.
@@ -440,6 +447,11 @@ def run_scenario(args, log_dir):
             if args.scenario == 'swing':
                 assert any(item['crossing_z_min'] is not None for item in result['trajectories']), \
                     'No trajectory crossed the ball region'
+        if args.scenario == 'planner_priority':
+            assert any(item['minimum_physical_ball_clearance'] < 0.
+                       for item in result['trajectories']), 'Fixture did not exercise FAPP overlap'
+            assert not any('SWING_OBSTACLE_WAIT' in item['text']
+                           for item in result['statuses']), 'FAPP still interrupted execution'
         assert not result['failures'], '; '.join(sorted(set(result['failures'])))
         result['pass_'] = True
         result['goal_sent_time'] = goal_sent
