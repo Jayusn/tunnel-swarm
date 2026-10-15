@@ -1,4 +1,14 @@
 <launch>
+    <arg name="enable_fapp_detection" default="false"/>
+    <arg name="dynamic_mode" default="swing-only"/>
+    <arg name="enable_fapp_dynamic_avoidance" default="false"/>
+    <include if="$(arg enable_fapp_detection)" file="$(find mot_mapping)/launch/uav0_frame_event_verified.launch">
+        <arg name="dynamic_mode" value="$(arg dynamic_mode)"/>
+    </include>
+    <param name="/exploration_node/fapp/enabled" value="$(arg enable_fapp_dynamic_avoidance)"/>
+    <param name="/exploration_node/fapp/topic" value="/UAV0/fapp/states"/>
+    <param name="/exploration_node/fapp/frame_id" value="UAV0/camera_init"/>
+
     <!-- 2026-07-07: 这是给 indoor1 雷达未知环境做验证的混合探索入口，保留当前 /Odometry + /cloud_registered 链路，但上层任务从固定 waypoint 改成 FUEL exploration_manager。 -->
     <!-- 2026-07-07: 该 launch 依赖 /home/togan/老张/zyc_fuel_ws 已经 source 且其中的 exploration_manager、plan_manage、waypoint_generator 已编译可用。 -->
     <!-- 2026-07-08: 按未来飞行器大赛 2.1 的任务语义重整入口：探索任务以“统一开始信号后自主搜索狭窄通道与目标作业区域”为主，
@@ -17,7 +27,7 @@
     <!-- 纯显示适配：只把 target_reporting 观测转成 RViz 标记，不接入规划器。 -->
     <arg name="enable_detection_rviz" default="true"/>
     <!-- 本机为前机UAV0：默认启动前机LDOP；后机由其自身计算机按需启动。 -->
-    <arg name="enable_ldop_detection" default="true"/>
+    <arg name="enable_ldop_detection" default="$(eval not arg('enable_fapp_detection'))"/>
     <arg name="enable_follower_ldop_detection" default="false"/>
     <arg name="ldop_input_rate" default="5.0"/>
     <!-- 与后机 run_swarm.launch 的 LDOP 实飞覆盖值保持一致，并允许从主入口调整。 -->
