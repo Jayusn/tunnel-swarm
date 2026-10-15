@@ -98,22 +98,24 @@ StateOutput LandingStateMachine::update(const StateInput& input) {
       }
     } else {
       target_loss_since_sec_ = -1.0;
+      // 提前累计视觉精对准时间；到达切换高度时沿用连续对准结果。
+      // 丢码或横向误差超限仍会清零，未到切换高度不能锁定 XY。
+      if (input.horizontal_error_m > config_.auto_land_error_m) {
+        fine_aligned_since_sec_ = -1.0;
+      } else if (fine_aligned_since_sec_ < 0.0) {
+        fine_aligned_since_sec_ = input.now_sec;
+      }
       if (input.marker_height_m <= config_.auto_land_height_m) {
         // Hold altitude and finish visual alignment before freezing world X/Y.
         state_ = LandingState::ALIGN;
         aligned_since_sec_ = -1.0;
         descent_gate_since_sec_ = -1.0;
         descent_gate_state_ = LandingState::IDLE;
-        if (input.horizontal_error_m > config_.auto_land_error_m) {
-          fine_aligned_since_sec_ = -1.0;
-        } else if (fine_aligned_since_sec_ < 0.0) {
-          fine_aligned_since_sec_ = input.now_sec;
-        } else if (input.now_sec - fine_aligned_since_sec_ >=
-                   config_.fine_align_stable_sec) {
+        if (fine_aligned_since_sec_ >= 0.0 &&
+            input.now_sec - fine_aligned_since_sec_ >= config_.fine_align_stable_sec) {
           state_ = LandingState::FIXED_XY_DESCENT;
         }
       } else if (state_ == LandingState::ALIGN) {
-        fine_aligned_since_sec_ = -1.0;
         const double alignment_gate =
             std::min(config_.align_error_m, config_.high_align_error_m);
         if (input.horizontal_error_m > alignment_gate) {

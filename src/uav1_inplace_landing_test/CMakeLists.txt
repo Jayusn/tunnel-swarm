@@ -55,3 +55,11 @@ target_link_libraries(uav1_test_mpc_controller_node
 
 
 catkin_install_python(PROGRAMS scripts/landing_nmpc_test_router.py scripts/autotrans_mpc_logger.py DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
+
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(test_uav1_landing_state_machine
+    test/test_landing_state_machine.cpp test/gtest_main.cpp)
+  if(TARGET test_uav1_landing_state_machine)
+    target_link_libraries(test_uav1_landing_state_machine uav1_test_landing_core ${catkin_LIBRARIES})
+  endif()
+endif()
