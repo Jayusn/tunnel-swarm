@@ -70,6 +70,7 @@
     <include if="$(arg enable_search_landing)"
              file="$(find precision_landing)/launch/precision_landing.launch">
         <arg name="vehicle_ns" value="UAV1"/>
+        <arg name="enable_aruco_rosbag" value="false"/>
         <arg name="landing_via_mpc" value="$(arg use_nmpc_landing)"/>
         <arg name="precision_node_package" value="$(eval 'uav1_inplace_landing_test' if arg('use_nmpc_landing') else 'precision_landing')"/>
         <arg name="precision_node_type" value="$(eval 'uav1_test_precision_landing_node' if arg('use_nmpc_landing') else 'precision_landing_node')"/>
