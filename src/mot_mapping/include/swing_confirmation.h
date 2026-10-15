@@ -24,7 +24,7 @@ class SwingConfirmation {
     // Do not invent a second timeout based on sparse input frame spacing.
     // A local quadratic fit admits smooth reversal but rejects fragment jumps.
     size_t first = samples_.size() > 6 ? samples_.size() - 6 : 0;
-    while (first+1 < samples_.size() && time-samples_[first].time > 0.4) ++first;
+    while (first+1 < samples_.size() && time-samples_[first].time > 0.35) ++first;
     const size_t count = samples_.size()-first;
     if (count >= 4) {
       Eigen::MatrixXd a(count,3), p(count,3);
@@ -35,7 +35,7 @@ class SwingConfirmation {
         p.row(i) = (samples_[first+i].position - samples_[first].position).transpose();
       }
       const Eigen::MatrixXd residual = p - a * a.colPivHouseholderQr().solve(p);
-      if (residual.rowwise().norm().maxCoeff() > 0.02) {
+      if (residual.rowwise().norm().maxCoeff() > 0.03) {
         clear(); return false;
       }
     }
