@@ -9,7 +9,7 @@ configure_dual_uav_ros_network() {
 
   case "${role}" in
     uav0) local_ip="${UAV0_ROS_IP:-10.191.167.212}" ;;
-    uav1) local_ip="${UAV1_ROS_IP:-10.224.119.232}" ;;
+    uav1) local_ip="${UAV1_ROS_IP:-10.191.167.232}" ;;
     *)
       printf '[dual_uav_ros][错误] 角色必须是 uav0 或 uav1\n' >&2
       return 2
