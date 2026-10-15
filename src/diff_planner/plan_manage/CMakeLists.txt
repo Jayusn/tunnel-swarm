@@ -77,6 +77,7 @@ add_dependencies(planner_command_arbiter ${ldop_EXPORTED_TARGETS})
 target_link_libraries(planner_command_arbiter ${catkin_LIBRARIES})
 
 if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(test_entry_point_to_point test/test_entry_point_to_point.cpp)
   catkin_add_nosetests(test/test_global_retention_launch.py)
   catkin_add_nosetests(test/test_landing_diff_switch_launch.py)
   catkin_add_nosetests(test/test_fuel_diff_exploration_contract.py)

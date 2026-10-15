@@ -11,6 +11,7 @@
 #include <deque>
 #include <limits>
 #include <string>
+#include <stdexcept>
 #include <unordered_map>
 #include <vector>
 
@@ -24,6 +25,7 @@
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <diff_planner/entry_frame_rules.h>
+#include <diff_planner/entry_point_to_point.h>
 #include <std_msgs/Bool.h>
 #include <visualization_msgs/Marker.h>
 
@@ -248,6 +250,13 @@ public:
              entry_detection_mode_ == "c" ? "nearest geometric frame" :
              (entry_detection_mode_ == "b" ? "soft frame" : "legacy"));
 
+    nh_.param("search_manager/entry_max_speed", entry_max_speed_, 0.4);
+    nh_.param("search_manager/entry_max_acceleration", entry_max_acceleration_, 0.4);
+    if (!std::isfinite(entry_max_speed_) || entry_max_speed_ <= 0.0 ||
+        !std::isfinite(entry_max_acceleration_) || entry_max_acceleration_ <= 0.0) {
+      throw std::invalid_argument("entry speed and acceleration must be finite and positive");
+    }
+
     odom_sub_ = nh_.subscribe(odom_topic_, 1, &CorridorSearchManager::odomCallback, this);
     cloud_sub_ = nh_.subscribe(cloud_topic_, 1, &CorridorSearchManager::cloudCallback, this);
     map_occ_sub_ = nh_.subscribe(map_occ_topic_, 1, &CorridorSearchManager::mapOccCallback, this);
@@ -263,6 +272,8 @@ public:
     marker_pub_ = nh_.advertise<visualization_msgs::Marker>("/corridor_search/debug_goal", 1, true);
     // 2026-07-09: 发布内部累计地图，方便 RViz 直接对照“找门实际看的地图”，避免把 FUEL 原始显示和内部判据混淆。
     accumulated_map_pub_ = nh_.advertise<sensor_msgs::PointCloud2>("/corridor_search/accumulated_occ_map", 1, true);
+    entry_command_timer_ = nh_.createTimer(ros::Duration(0.02),
+        &CorridorSearchManager::entryCommandTimerCallback, this);
     timer_ = nh_.createTimer(ros::Duration(search_period_), &CorridorSearchManager::timerCallback, this);
   }
 
@@ -574,6 +585,7 @@ private:
           candidate.door_detected && support_ok && progress_ok && distance_ok && door_confirmed;
       if (entry_ready) {
         publishGoal(candidate, now, "confirmed_entry");
+        if (publish_pre_entry_pos_cmd_) startEntryMotion(active_goal_, now);
       } else {
         CandidateScore hold_candidate = makeHoldCandidate(entry_search_ref_yaw_);
         publishGoal(hold_candidate, now, "entry_wait_hold");
@@ -626,7 +638,9 @@ private:
       goal_pub_.publish(active_goal_);
       publishMarker(active_goal_, "locked_entry", 0.95, 0.55, 0.05);
       if (publish_pre_entry_pos_cmd_) publishPositionCommand(active_goal_, now);
-      if (hasReachedEntry()) {
+      if ((!entry_motion_active_ ||
+           (now - entry_motion_start_time_).toSec() >= entry_motion_duration_) &&
+          hasReachedEntry()) {
         triggerExploration(now);
         return;
       }
@@ -1910,6 +1924,7 @@ private:
     }
     // 交接瞬间用当前位置、零速度和当前航向覆盖旧入口目标。否则机体略微越过门前目标后，
     // 旧目标会落到机尾，控制器在 FUEL 首条轨迹到达前把小幅回拉解释成 180 度掉头。
+    entry_motion_active_ = false;
     if (publish_pre_entry_pos_cmd_) publishPositionCommand(trigger_msg, now);
     exploration_trigger_pub_.publish(trigger_msg);
     exploration_triggered_ = true;
@@ -1918,7 +1933,56 @@ private:
              trigger_msg.pose.position.x, trigger_msg.pose.position.y, trigger_msg.pose.position.z);
   }
 
+  void startEntryMotion(const geometry_msgs::PoseStamped& goal, const ros::Time& now) {
+    entry_motion_start_ = odom_.pose.pose.position;
+    entry_motion_goal_ = goal;
+    const auto& a = entry_motion_start_;
+    const auto& b = goal.pose.position;
+    const double distance = std::sqrt((b.x-a.x)*(b.x-a.x) +
+        (b.y-a.y)*(b.y-a.y) + (b.z-a.z)*(b.z-a.z));
+    entry_motion_duration_ = diff_planner::entry_point_to_point::duration(
+        distance, entry_max_speed_, entry_max_acceleration_);
+    entry_motion_start_time_ = now;
+    entry_motion_id_ = static_cast<uint32_t>(trajectory_id_++);
+    entry_motion_yaw_ = current_yaw_;
+    entry_motion_active_ = true;
+    ROS_INFO("[entry_point_to_point] distance=%.3fm duration=%.3fs speed<=%.3fm/s acceleration<=%.3fm/s^2 id=%u",
+             distance, entry_motion_duration_, entry_max_speed_, entry_max_acceleration_, entry_motion_id_);
+  }
+
+  void entryCommandTimerCallback(const ros::TimerEvent&) {
+    if (entry_motion_active_ && !exploration_triggered_)
+      publishPositionCommand(entry_motion_goal_, ros::Time::now());
+  }
+
   void publishPositionCommand(const geometry_msgs::PoseStamped& goal, const ros::Time& now) {
+    if (entry_motion_active_) {
+      const auto s = diff_planner::entry_point_to_point::sample(
+          (now - entry_motion_start_time_).toSec(), entry_motion_duration_);
+      quadrotor_msgs::PositionCommand cmd;
+      cmd.header.stamp = now;
+      cmd.header.frame_id = world_frame_;
+      const auto& a = entry_motion_start_;
+      const auto& b = entry_motion_goal_.pose.position;
+      cmd.position.x = a.x + (b.x-a.x)*s.position;
+      cmd.position.y = a.y + (b.y-a.y)*s.position;
+      cmd.position.z = a.z + (b.z-a.z)*s.position;
+      cmd.velocity.x = (b.x-a.x)*s.velocity;
+      cmd.velocity.y = (b.y-a.y)*s.velocity;
+      cmd.velocity.z = (b.z-a.z)*s.velocity;
+      cmd.acceleration.x = (b.x-a.x)*s.acceleration;
+      cmd.acceleration.y = (b.y-a.y)*s.acceleration;
+      cmd.acceleration.z = (b.z-a.z)*s.acceleration;
+      cmd.jerk.x = (b.x-a.x)*s.jerk;
+      cmd.jerk.y = (b.y-a.y)*s.jerk;
+      cmd.jerk.z = (b.z-a.z)*s.jerk;
+      cmd.yaw = entry_motion_yaw_;
+      cmd.yaw_dot = 0.0;
+      cmd.trajectory_id = entry_motion_id_;
+      cmd.trajectory_flag = quadrotor_msgs::PositionCommand::TRAJECTORY_STATUS_READY;
+      pos_cmd_pub_.publish(cmd);
+      return;
+    }
     quadrotor_msgs::PositionCommand cmd;
     cmd.header.stamp = now;
     cmd.header.frame_id = world_frame_;
@@ -2155,6 +2219,16 @@ private:
 	  ros::Publisher marker_pub_;
 	  ros::Publisher accumulated_map_pub_;
   ros::Timer timer_;
+  ros::Timer entry_command_timer_;
+  bool entry_motion_active_{false};
+  geometry_msgs::Point entry_motion_start_;
+  geometry_msgs::PoseStamped entry_motion_goal_;
+  ros::Time entry_motion_start_time_;
+  double entry_motion_duration_{0.0};
+  double entry_motion_yaw_{0.0};
+  double entry_max_speed_{0.4};
+  double entry_max_acceleration_{0.4};
+  uint32_t entry_motion_id_{0};
 
   nav_msgs::Odometry odom_;
 	  pcl::PointCloud<pcl::PointXYZ> local_cloud_;
