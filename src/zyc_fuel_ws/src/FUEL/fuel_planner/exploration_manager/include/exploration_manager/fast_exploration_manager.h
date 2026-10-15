@@ -87,6 +87,7 @@ public:
   geometry_msgs::PointStamped cmu_pose;
   bool cmu_exploration;
 private:
+  friend class TurnEscapeTest;
   shared_ptr<EDTEnvironment> edt_environment_;
   shared_ptr<SDFMap> sdf_map_;
   // 2026-07-13: 门后第二阶段由任务搜索模块维护覆盖、重复站点和三类作业目标，FUEL 降级为地图与轨迹后端。
@@ -308,7 +309,7 @@ private:
   bool isKnownSafeGroundAscentPath(const Vector3d& start,
                                    const Vector3d& target) const;
   bool buildTurnInPlacePlan(const Vector3d& pos, const Vector3d& vel,
-                            const Vector3d& yaw,
+                            const Vector3d& acc, const Vector3d& yaw,
                             const Vector3d& turn_direction);
   bool buildVerticalDetourFallback(const Vector3d& pos, double cur_yaw,
                                    const Vector3d& forward, Vector3d& next_pos,

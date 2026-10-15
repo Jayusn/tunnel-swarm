@@ -117,6 +117,7 @@ public:
   }
 
 private:
+  friend class TurnEscapeTest;
   friend class TaskSearchManagerTest;
 
   struct TargetRecord {

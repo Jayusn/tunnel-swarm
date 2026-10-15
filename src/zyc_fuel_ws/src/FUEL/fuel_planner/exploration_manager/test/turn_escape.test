@@ -1,0 +1,4 @@
+<launch>
+  <test test-name="turn_escape" pkg="exploration_manager"
+        type="turn_escape_test" time-limit="60" />
+</launch>

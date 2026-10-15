@@ -2025,7 +2025,13 @@ bool FastExplorationManager::planInflationHistoryEscape(
     ed_->next_goal_ = candidate.path.back();
     last_requested_goal_ = ed_->next_goal_;
     has_last_requested_goal_ = true;
-    planner_manager_->planYawExplore(yaw, yaw[0], false, ep_->relax_time_);
+    // 转向前的脱困只保持当前航向，复用硬约束yaw样条，避免零航向常量
+    // 进入普通yaw优化器时产生退化问题；平移轨迹及其安全检查保持不变。
+    if (turn_in_place_session_active_) {
+      if (!planner_manager_->planYawTurnInPlace(yaw, yaw[0])) continue;
+    } else {
+      planner_manager_->planYawExplore(yaw, yaw[0], false, ep_->relax_time_);
+    }
     ROS_ERROR("[inflation_history_escape] publish %s %s escape %.2fm "
               "to (%.2f %.2f %.2f), yaw held at %.1fdeg, start_contacts=%d.",
               candidate.backward ? "BACKWARD" : "FORWARD", candidate.label,
@@ -2042,8 +2048,8 @@ bool FastExplorationManager::planInflationHistoryEscape(
 }
 
 bool FastExplorationManager::buildTurnInPlacePlan(
-    const Vector3d& pos, const Vector3d& vel, const Vector3d& yaw,
-    const Vector3d& turn_direction) {
+    const Vector3d& pos, const Vector3d& vel, const Vector3d& acc,
+    const Vector3d& yaw, const Vector3d& turn_direction) {
   if (!turn_in_place_enabled_ || !task_search_manager_ ||
       !task_search_manager_->turnYawAlignmentPending() ||
       turn_direction.head<2>().norm() < 1e-3)
@@ -2056,6 +2062,17 @@ bool FastExplorationManager::buildTurnInPlacePlan(
     turn_in_place_final_yaw_ = detected_target_yaw;
     turn_in_place_still_since_ = ros::Time(0);
     skip_straight_extension_after_turn_ = true;
+  }
+  // 原地转向无法退出足迹接触/膨胀区域；先复用经过完整路径和轨迹检查的
+  // 脱困平移，保持最终转向目标锁存，离开接触区域后再从实时位置转向。
+  if (!planner_manager_->isPositionSafe(pos)) {
+    turn_in_place_plan_ = false;
+    turn_in_place_still_since_ = ros::Time(0);
+    ROS_WARN_THROTTLE(0.5,
+                      "[turn_in_place] clear footprint/inflation contact before yaw "
+                      "alignment; final yaw remains %.1fdeg.",
+                      turn_in_place_final_yaw_ * 180.0 / M_PI);
+    return !external_selection_only_ && planInflationHistoryEscape(pos, vel, acc, yaw);
   }
   const ros::Time now = ros::Time::now();
   const double speed = vel.norm();
@@ -2545,7 +2562,7 @@ int FastExplorationManager::planExploreMotion(
     cancelActiveLowProbe("confirmed mapped turn has higher motion priority");
     const Vector3d locked_direction(std::cos(turn_in_place_final_yaw_),
                                     std::sin(turn_in_place_final_yaw_), 0.0);
-    return buildTurnInPlacePlan(pos, vel, yaw, locked_direction) ? SUCCEED : FAIL;
+    return buildTurnInPlacePlan(pos, vel, acc, yaw, locked_direction) ? SUCCEED : FAIL;
   }
   // 先生成并验证本轮平移目标，再在轨迹发布前检查是否为真实弯道。局部左右绕障
   // 必须先拥有解释权，不能在A*尚未选路时被独立占据射线提前改写通道方向。
@@ -3457,7 +3474,7 @@ int FastExplorationManager::planExploreMotion(
     if (mapped_turn_detected) {
       // 本轮前半段可能已经生成了下穿目标；转弯确认后该目标不得跨周期保留。
       cancelActiveLowProbe("new mapped turn has higher motion priority");
-      if (buildTurnInPlacePlan(pos, vel, yaw, mapped_direction)) return SUCCEED;
+      if (buildTurnInPlacePlan(pos, vel, acc, yaw, mapped_direction)) return SUCCEED;
       // 转弯已经锁存但仍在刹停/静止确认时，禁止回落到刚生成的普通平移轨迹。
       return FAIL;
     }
