@@ -250,8 +250,8 @@ public:
              entry_detection_mode_ == "c" ? "nearest geometric frame" :
              (entry_detection_mode_ == "b" ? "soft frame" : "legacy"));
 
-    nh_.param("search_manager/entry_max_speed", entry_max_speed_, 0.4);
-    nh_.param("search_manager/entry_max_acceleration", entry_max_acceleration_, 0.4);
+    nh_.param("search_manager/entry_max_speed", entry_max_speed_, 1.0);
+    nh_.param("search_manager/entry_max_acceleration", entry_max_acceleration_, 1.0);
     if (!std::isfinite(entry_max_speed_) || entry_max_speed_ <= 0.0 ||
         !std::isfinite(entry_max_acceleration_) || entry_max_acceleration_ <= 0.0) {
       throw std::invalid_argument("entry speed and acceleration must be finite and positive");
@@ -1946,7 +1946,7 @@ private:
     entry_motion_id_ = static_cast<uint32_t>(trajectory_id_++);
     entry_motion_yaw_ = current_yaw_;
     entry_motion_active_ = true;
-    ROS_INFO("[entry_point_to_point] distance=%.3fm duration=%.3fs speed<=%.3fm/s acceleration<=%.3fm/s^2 id=%u",
+    ROS_INFO("[entry_point_to_point] pieces=2 distance=%.3fm duration=%.3fs speed<=%.3fm/s acceleration<=%.3fm/s^2 id=%u",
              distance, entry_motion_duration_, entry_max_speed_, entry_max_acceleration_, entry_motion_id_);
   }
 
@@ -2226,8 +2226,8 @@ private:
   ros::Time entry_motion_start_time_;
   double entry_motion_duration_{0.0};
   double entry_motion_yaw_{0.0};
-  double entry_max_speed_{0.4};
-  double entry_max_acceleration_{0.4};
+  double entry_max_speed_{1.0};
+  double entry_max_acceleration_{1.0};
   uint32_t entry_motion_id_{0};
 
   nav_msgs::Odometry odom_;

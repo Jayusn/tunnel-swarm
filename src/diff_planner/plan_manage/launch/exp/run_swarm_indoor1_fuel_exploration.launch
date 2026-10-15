@@ -625,9 +625,9 @@
         <param name="search_manager/entry_reach_by_search_region" value="true"/>
         <param name="search_manager/publish_entry_marker" value="true"/>
         <param name="search_manager/publish_pre_entry_pos_cmd" value="true"/>
-        <!-- 已确认入口的直线点到点参考：平滑起停，单位 m/s 和 m/s^2。 -->
-        <param name="search_manager/entry_max_speed" value="0.4"/>
-        <param name="search_manager/entry_max_acceleration" value="0.4"/>
+        <!-- 已确认入口的两段直线点到点参考：先加速后减速，单位 m/s 和 m/s^2。 -->
+        <param name="search_manager/entry_max_speed" value="1.0"/>
+        <param name="search_manager/entry_max_acceleration" value="1.0"/>
         <param name="search_manager/min_start_height" value="0.35"/>
         <param name="search_manager/goal_height_mode" value="keep_current"/>
         <!-- 2026-07-14: 入门搜索同样限制在低空层，避免前置门搜索节点继续发布 0.8-1.0m 高目标。 -->
