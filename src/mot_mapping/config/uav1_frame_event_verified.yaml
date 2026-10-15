@@ -71,3 +71,10 @@ ros/lidar_topic: /UAV1/fast_lio/cloud_registered
 ros/odom_topic: /UAV1/fast_lio/Odom_high_freq
 synchronization/nearest_available_odom_enabled: false
 tracking/position_measurement_variance: 0.01
+
+# Experimental: three valid observations, two supported measured transitions.
+# Defaults stay disabled until labeled recall, false alarms and latency pass.
+detection/object_motion_evidence_enabled: false
+detection/object_motion_match_fraction: 0.45
+detection/object_motion_match_advantage: 0.30
+detection/object_motion_depth_fraction: 0.40

@@ -55,6 +55,10 @@ typedef vector<PointType, Eigen::aligned_allocator<PointType>>  PointVector;
 
 struct MapParam {
   bool swing_only = false;
+  bool object_motion_evidence_enabled = false;
+  double object_motion_match_fraction = 0.45;
+  double object_motion_match_advantage = 0.30;
+  double object_motion_depth_fraction = 0.40;
   // DBSCAN Params
   int core_pts;
   double tolerance;
