@@ -26,6 +26,7 @@ WAIT_TIMEOUT="${UAV1_SINGLE_WAIT_TIMEOUT:-180}"
 THERMAL="${UAV1_SINGLE_THERMAL:-true}"
 DETECTOR="${UAV1_SINGLE_DETECTOR:-fapp}"
 DYNAMIC_AVOIDANCE="${UAV1_SINGLE_DYNAMIC_AVOIDANCE:-true}"
+DYNAMIC_MODE="${UAV1_SINGLE_DYNAMIC_MODE:-swing-only}"
 
 MAVROS_STATE_TOPIC="/UAV1/mavros/state"
 LIDAR_TOPIC="/UAV1/livox/lidar"
@@ -70,6 +71,7 @@ usage() {
 
 选项：
   --detector none|fapp|ldop  动态障碍检测算法，默认 fapp
+  --dynamic-mode swing-only|general  动态目标模式，默认 swing-only
   --dynamic-avoidance        开启 FAPP 动态避障（默认）
   --detection-only          关闭动态避障，只保留动态检测
   --thermal                 第 5 屏同时启动热成像检测和 D435 融合
@@ -434,7 +436,7 @@ run_planner_pane() {
   printf '[说明] 下视相机为可选显示，不作为 Diff 启动条件\n'
   printf '[启动] diff_planner run_swarm.launch 及其原生 RViz 检测布局\n'
   roslaunch diff_planner run_swarm.launch detector_backend:="${DETECTOR}" \
-    fapp_verified_preset:=true \
+    fapp_verified_preset:=true dynamic_mode:="${DYNAMIC_MODE}" \
     enable_fapp_dynamic_avoidance:="${DYNAMIC_AVOIDANCE}" \
     record_dynamic_debug:=true
   launch_status=$?
@@ -489,6 +491,9 @@ while (($# > 0)); do
     --detector)
       [[ $# -ge 2 ]] || { log '--detector 需要 none、fapp 或 ldop'; exit 2; }
       DETECTOR="$2"; shift 2 ;;
+    --dynamic-mode)
+      [[ $# -ge 2 ]] || { log "--dynamic-mode 需要 swing-only 或 general"; exit 2; }
+      DYNAMIC_MODE="$2"; shift 2 ;;
     --dynamic-avoidance) DYNAMIC_AVOIDANCE=true; shift ;;
     --detection-only) DYNAMIC_AVOIDANCE=false; shift ;;
     --thermal) THERMAL=true; shift ;;
@@ -504,6 +509,11 @@ if [[ "${SHOW_HELP}" == true ]]; then
   usage
   exit 0
 fi
+case "${DYNAMIC_MODE}" in
+  swing-only|general) ;;
+  *) log "--dynamic-mode 只能是 swing-only 或 general"; exit 2 ;;
+esac
+
 case "${DETECTOR}" in
   none|fapp|ldop) ;;
   *) log '--detector 只能是 none、fapp 或 ldop'; exit 2 ;;
@@ -559,6 +569,7 @@ fi
 
 export UAV1_SINGLE_THERMAL="${THERMAL}"
 export UAV1_SINGLE_DETECTOR="${DETECTOR}"
+export UAV1_SINGLE_DYNAMIC_MODE="${DYNAMIC_MODE}"
 export UAV1_SINGLE_DYNAMIC_AVOIDANCE="${DYNAMIC_AVOIDANCE}"
 
 if ! write_runtime_config; then
@@ -571,7 +582,7 @@ log '下排：4 视觉位姿 | 5 检测/上报 | 6 run_swarm Diff/RViz | 7 AutoT
 log "本机 ROS master：http://${LOCAL_MASTER_IP}:11311，ROS_IP=${LOCAL_ROS_IP}"
 log "检测参数：thermal=${THERMAL}, odom=${ODOM_TOPIC}"
 log "动态障碍检测：${DETECTOR}"
-log "FAPP 动态避障：${DYNAMIC_AVOIDANCE}"
+log "FAPP 动态避障：${DYNAMIC_AVOIDANCE}，模式：${DYNAMIC_MODE}"
 log "前级等待超时：${WAIT_TIMEOUT}s"
 log "Terminator 启动日志：${TERMINATOR_LOG}"
 

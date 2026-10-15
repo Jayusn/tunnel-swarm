@@ -1,12 +1,14 @@
 #pragma once
 #include <ros/ros.h>
 #include <queue>
+#include "swing_confirmation.h"
 #include <vector>
 #include <Eigen/Geometry>
 
 struct Ekf {
   typedef std::shared_ptr<Ekf> Ptr;
   int id;
+  mot_mapping::SwingConfirmation swing_confirmation;
   double dt;
   ros::Time last_update_stamp_;
   int age, update_num;
@@ -29,6 +31,7 @@ struct Ekf {
   size_t observed_dense_count = 0;
   bool observed_reference_foreground = false;
   std::vector<Eigen::Vector3d> observed_dense_points;
+  std::vector<Eigen::Vector3d> swing_shape_points;
   Eigen::Vector3d observed_lidar_direction = Eigen::Vector3d::Zero();
 
   Ekf(double _dt) : dt(_dt) {
@@ -86,6 +89,8 @@ struct Ekf {
     update_num = 0;
     id = id_;
     observations.clear();
+    swing_confirmation.clear();
+    swing_shape_points.clear();
     supplemental_candidate = false;
     evidence_observations.clear();
     bidirectional_evidence.clear();

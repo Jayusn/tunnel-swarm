@@ -54,6 +54,7 @@ typedef pcl::PointCloud<PointType>::Ptr PointsPtr;
 typedef vector<PointType, Eigen::aligned_allocator<PointType>>  PointVector;
 
 struct MapParam {
+  bool swing_only = false;
   // DBSCAN Params
   int core_pts;
   double tolerance;

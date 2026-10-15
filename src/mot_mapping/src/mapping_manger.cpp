@@ -140,6 +140,11 @@ void MappingRos::init() {
   nh.param("detection/motion_confirmation_frames", mp_->motion_confirmation_frames, 3);
   if (mp_->motion_confirmation_frames < 3 || mp_->motion_confirmation_frames > 5)
     throw std::runtime_error("motion_confirmation_frames must be 3, 4 or 5");
+  std::string dynamic_mode;
+  nh.param<std::string>("detection/dynamic_mode", dynamic_mode, "general");
+  if (dynamic_mode != "general" && dynamic_mode != "swing-only")
+    throw std::runtime_error("detection/dynamic_mode must be general or swing-only");
+  mp_->swing_only = dynamic_mode == "swing-only";
   nh.param("detection/time_evidence_enabled", mp_->time_evidence_enabled, false);
   nh.param("detection/motion_window", mp_->motion_window, 0.6);
   nh.param("detection/confirmed_reacquisition_enabled", mp_->confirmed_reacquisition_enabled, false);
@@ -1499,41 +1504,60 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
         !trackers[j]->last_published_stamp.isZero() &&
         (cloud_stamp_ - trackers[j]->last_published_stamp).toSec() <= 0.6;
     bool shape_consistent = true;
+    std::vector<Eigen::Vector3d> swing_shape_points;
     Eigen::Vector3d lidar_direction = Eigen::Vector3d::Zero();
     if (mp_->shape_consistency_enabled) {
+      if (mp_->swing_only) {
+        swing_shape_points = candidate.dense_points;
+        // A six-point cluster can have fewer than six dense-neighborhood
+        // points. Use its full measured shape for this sparse-only check.
+        if (candidate.indices.indices.size() >= 6 && candidate.indices.indices.size() <= 7) {
+          swing_shape_points.clear();
+          for (int index : candidate.indices.indices)
+            swing_shape_points.push_back(ClusterPoints->points[index].getVector3fMap().cast<double>() -
+                                         candidate.state.position);
+        }
+      }
+      const auto& current_shape = mp_->swing_only ? swing_shape_points : candidate.dense_points;
       lidar_direction = candidate.state.position - (md_->T + md_->R * mp_->lidar_offset);
       if (lidar_direction.norm() > 0.0) lidar_direction.normalize();
-      // Sparse or newly acquired tracks retain the original motion decision.
-      // A substantially different viewing direction also leaves shape unknown.
+      // Swing evidence also checks sparse returns and observations collected
+      // before ordinary dynamic confirmation. General mode keeps its rules.
+      // A substantially different viewing direction leaves shape unknown.
+      const size_t minimum_shape_points = mp_->swing_only ? 6 : 8;
       if (j >= 0 && (trackers[j]->last_seen_frame == frame_num - 1 ||
           (mp_->confirmed_reacquisition_enabled && !association_stale[j])) &&
-          trackers[j]->last_dynamic_stamp == trackers[j]->observations.back().first &&
-          candidate.dense_points.size() >= 8 && trackers[j]->observed_dense_points.size() >= 8 &&
+          (mp_->swing_only ||
+           trackers[j]->last_dynamic_stamp == trackers[j]->observations.back().first) &&
+          current_shape.size() >= minimum_shape_points &&
+          (mp_->swing_only ? trackers[j]->swing_shape_points.size() :
+                            trackers[j]->observed_dense_points.size()) >= minimum_shape_points &&
           lidar_direction.dot(trackers[j]->observed_lidar_direction) >= std::cos(0.2617993877991494)) {
-        const auto& previous = trackers[j]->observed_dense_points;
+        const auto& previous = mp_->swing_only ? trackers[j]->swing_shape_points :
+                                               trackers[j]->observed_dense_points;
         size_t forward = 0, backward = 0;
         double squared_distance = mp_->shape_consistency_distance * mp_->shape_consistency_distance;
-        for (const auto& current : candidate.dense_points) {
+        for (const auto& current : current_shape) {
           if (std::any_of(previous.begin(), previous.end(), [&](const Eigen::Vector3d& old) {
               return (current - old).squaredNorm() <= squared_distance;
           })) ++forward;
         }
         for (const auto& old : previous) {
-          if (std::any_of(candidate.dense_points.begin(), candidate.dense_points.end(),
+          if (std::any_of(current_shape.begin(), current_shape.end(),
               [&](const Eigen::Vector3d& current) {
                 return (current - old).squaredNorm() <= squared_distance;
               })) ++backward;
         }
-        double fraction = std::max(static_cast<double>(forward) / candidate.dense_points.size(),
+        double fraction = std::max(static_cast<double>(forward) / current_shape.size(),
                                    static_cast<double>(backward) / previous.size());
         ROS_DEBUG_STREAM("FAPP_SHAPE_SOURCE " << cloud_stamp_.toNSec() << " "
             << trackers[j]->id << " " << trackers[j]->last_seen_frame << " " << frame_num
-            << " " << previous.size() << " " << candidate.dense_points.size() << " "
+            << " " << previous.size() << " " << current_shape.size() << " "
             << forward << " " << backward << " " << fraction);
         shape_consistent = fraction >= mp_->shape_consistency_fraction;
         ROS_DEBUG_STREAM("FAPP_SHAPE " << cloud_stamp_.toNSec() << " "
             << candidate.state.position.transpose() << " " << previous.size() << " "
-            << candidate.dense_points.size() << " " << fraction << " " << shape_consistent);
+            << current_shape.size() << " " << fraction << " " << shape_consistent);
       }
     }
     bool retained_gap = false;
@@ -1615,6 +1639,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
               << tracker->observations.size());
         if (!retained_gap) {
           tracker->observations.clear();
+          tracker->swing_confirmation.clear();
           tracker->evidence_observations.clear();
           tracker->bidirectional_evidence.clear();
           if (mp_->confirmed_reacquisition_enabled)
@@ -1657,6 +1682,9 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     }
     if (need_bidirectional && !bidirectional_transition_valid)
       tracker->bidirectional_evidence.clear();
+    // Do not seed a later swing with positions across a rejected shape change.
+    if (mp_->swing_only && !shape_consistent)
+      tracker->observations.clear();
     tracker->observed_dense_size = candidate.dense_size;
     tracker->observed_dense_count = candidate.dense_count;
     tracker->observed_reference_foreground = candidate.reference_foreground && !candidate.static_background &&
@@ -1665,6 +1693,8 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
       tracker->observed_dense_points = candidate.dense_points;
       tracker->observed_lidar_direction = lidar_direction;
     }
+    if (mp_->swing_only && mp_->shape_consistency_enabled)
+      tracker->swing_shape_points = std::move(swing_shape_points);
     tracker->last_seen_frame = frame_num;
     tracker->observations.push_back({cloud_stamp_, candidate.state.position});
     if (mp_->translated_startup_enabled) {
@@ -1864,6 +1894,9 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
         << matched[i] << " " << tracker->observations.size() << " "
         << displacement << " " << observed_speed << " " << candidate.changed << " "
         << candidate.novel_fraction << " " << confirmed);
+    if (mp_->swing_only && (!confirmed || candidate.static_background ||
+        bidirectional_static_suppression || !shape_consistent))
+      tracker->swing_confirmation.clear();
     if (!confirmed) continue;
     tracker->last_dynamic_stamp = cloud_stamp_;
     // Apply background evidence to publication after the original association
@@ -1948,8 +1981,27 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
           << tracker->id << " " << published_state.position.transpose() << " "
           << published_state.size.transpose() << " " << published_indices.indices.size());
     }
-    int detection_index = detections.size();
+    // Preserve the detector's qualified-candidate feedback even before swing
+    // publication, otherwise published_startup_source prevents confirmation.
     tracker->last_published_stamp = cloud_stamp_;
+    if (mp_->swing_only) {
+      // The short history has already passed the detector's motion checks.
+      // Include its first observations instead of discarding the outward leg
+      // while waiting for ordinary motion confirmation.
+      if (tracker->swing_confirmation.empty()) {
+        for (size_t k = 0; k + 1 < tracker->observations.size(); ++k) {
+          const auto& observation = tracker->observations[k];
+          tracker->swing_confirmation.update(observation.first.toSec(),
+                                             observation.second, true);
+        }
+      }
+      const bool swing = tracker->swing_confirmation.update(
+          cloud_stamp_.toSec(), candidate.state.position, true);
+      ROS_DEBUG_STREAM("FAPP_SWING " << cloud_stamp_.toNSec() << " "
+          << tracker->id << " " << swing);
+      if (!swing) continue;
+    }
+    int detection_index = detections.size();
     detections.push_back(published_state);
     if (mp_->candidate_partition_enabled && !candidate.supplemental)
       published_parents.insert(candidate.parent_key);

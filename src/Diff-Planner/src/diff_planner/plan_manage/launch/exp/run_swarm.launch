@@ -1,4 +1,5 @@
 <launch>
+    <arg name="dynamic_mode" default="general"/>
     <!-- 与 run_uav1_relay_diff.launch 对齐：使用 UAV1 的 FAST-LIO 输入和规划输出话题。 -->
     <arg name="odom_topic" default="/UAV1/fast_lio/Odom_high_freq"/>
     <arg name="cloud_topic" default="/UAV1/fast_lio/cloud_registered"/>
@@ -239,6 +240,7 @@
     </node>
 
     <include if="$(eval arg('detector_backend') == 'fapp' and not arg('fapp_verified_preset'))" file="$(find mot_mapping)/launch/uav1_detection.launch">
+        <arg name="dynamic_mode" value="$(arg dynamic_mode)"/>
         <arg name="cloud_topic" value="$(arg cloud_topic)"/>
         <arg name="odom_topic" value="$(arg odom_topic)"/>
         <arg name="input_rate" value="10.0"/>
@@ -267,6 +269,7 @@
 
     <include if="$(eval arg('detector_backend') == 'fapp' and arg('fapp_verified_preset'))"
              file="$(find mot_mapping)/launch/uav1_frame_event_verified.launch">
+        <arg name="dynamic_mode" value="$(arg dynamic_mode)"/>
         <arg name="cloud_topic" value="$(arg cloud_topic)"/>
         <arg name="odom_topic" value="$(arg odom_topic)"/>
     </include>

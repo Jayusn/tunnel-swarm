@@ -1,4 +1,5 @@
 <launch>
+  <arg name="dynamic_mode" default="general"/>
   <!-- Explicit trial preset; the general detection launch retains its defaults. -->
   <arg name="cloud_topic" default="/UAV1/fast_lio/cloud_registered"/>
   <arg name="odom_topic" default="/UAV1/fast_lio/Odom_high_freq"/>
@@ -6,6 +7,9 @@
   <group ns="UAV1/fapp">
     <node pkg="mot_mapping" type="mapping_node" name="mapping_node" output="screen">
       <rosparam command="load" file="$(find mot_mapping)/config/uav1_frame_event_verified.yaml"/>
+      <!-- Swing confirmation supplies its own local continuity test. -->
+      <param if="$(eval arg('dynamic_mode') == 'swing-only')" name="detection/motion_confirmation_duration" value="0.0"/>
+      <param name="detection/dynamic_mode" value="$(arg dynamic_mode)"/>
       <param name="ros/lidar_topic" value="$(arg cloud_topic)"/>
       <param name="ros/odom_topic" value="$(arg odom_topic)"/>
       <param name="ros/frame_id" value="$(arg frame_id)"/>

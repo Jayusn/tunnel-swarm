@@ -1,4 +1,5 @@
 <launch>
+  <arg name="dynamic_mode" default="general"/>
   <arg name="cloud_topic" default="/UAV1/fast_lio/cloud_registered"/>
   <arg name="odom_topic" default="/UAV1/fast_lio/Odom_high_freq"/>
   <arg name="nearest_available_odom_enabled" default="false"/>
@@ -56,6 +57,7 @@
         args="$(arg cloud_topic) /UAV1/fapp/cloud_registered_throttled"/>
   <group ns="UAV1/fapp">
     <node pkg="mot_mapping" type="mapping_node" name="mapping_node" output="screen">
+      <param name="detection/dynamic_mode" value="$(arg dynamic_mode)"/>
       <param name="ros/lidar_topic" value="/UAV1/fapp/cloud_registered_throttled"/>
       <param name="ros/odom_topic" value="$(arg odom_topic)"/>
       <param name="synchronization/nearest_available_odom_enabled" value="$(arg nearest_available_odom_enabled)"/>

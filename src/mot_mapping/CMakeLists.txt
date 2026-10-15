@@ -13,6 +13,10 @@ target_link_libraries(mapping_node ${catkin_LIBRARIES} ${PCL_LIBRARIES} Threads:
 add_dependencies(mapping_node ${catkin_EXPORTED_TARGETS})
 
 if(CATKIN_ENABLE_TESTING)
+  add_executable(swing_confirmation_test test/swing_confirmation_test.cpp)
+  target_compile_features(swing_confirmation_test PRIVATE cxx_std_14)
+  target_include_directories(swing_confirmation_test PRIVATE include ${EIGEN3_INCLUDE_DIRS})
+  add_test(NAME mot_mapping_swing_confirmation COMMAND swing_confirmation_test)
   add_executable(bidirectional_depth_test test/bidirectional_depth_test.cpp)
   target_compile_features(bidirectional_depth_test PRIVATE cxx_std_14)
   target_include_directories(bidirectional_depth_test PRIVATE include ${EIGEN3_INCLUDE_DIRS} ${PCL_INCLUDE_DIRS})
