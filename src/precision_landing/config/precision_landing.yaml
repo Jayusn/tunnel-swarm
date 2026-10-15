@@ -45,9 +45,9 @@ state_machine:
   align_error_m: 0.15
 
 stages:
-  high: {min_height_m: 1.20, error_m: 0.20, descent_mps: 0.25}
+  high: {min_height_m: 1.30, error_m: 0.20, descent_mps: 0.25}
   # 到达此高度先保持高度；水平误差连续0.5秒不超过12厘米后锁定XY。
-  auto_land: {height_m: 1.20, stable_sec: 0.50, error_m: 0.12, fine_stable_sec: 0.50}
+  auto_land: {height_m: 1.30, stable_sec: 0.50, error_m: 0.12, fine_stable_sec: 0.50}
   fixed_xy_descent:
     descent_mps: 0.10
     cutoff_height_m: 0.30
