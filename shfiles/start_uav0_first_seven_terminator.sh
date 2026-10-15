@@ -54,6 +54,8 @@ usage() {
 FAPP 开关（默认 swing-only，开启动态避障）：
   --dynamic-mode swing-only|general
   --dynamic-avoidance
+  --planner-priority    保留 FAPP 优化代价，允许轨迹与动态预测重叠
+  --strict-dynamic      恢复 FAPP 动态碰撞硬检查（默认）
   --detection-only
 EOF
 }
@@ -317,13 +319,14 @@ run_planner_pane() {
     printf '[录包] 通道回放包：%s_时间戳_分卷.bag；在本屏 Ctrl+C 正常结束录制。\n' \
       "${UAV0_PLANNER_ROSBAG_PREFIX}"
   fi
-  printf '[FAPP] 模式=%s，动态避障=%s\n' "${UAV0_FAPP_DYNAMIC_MODE:-swing-only}" "${UAV0_FAPP_DYNAMIC_AVOIDANCE:-true}"
+  printf '[FAPP] 模式=%s，动态避障=%s，规划优先=%s\n' "${UAV0_FAPP_DYNAMIC_MODE:-swing-only}" "${UAV0_FAPP_DYNAMIC_AVOIDANCE:-true}" "${UAV0_FAPP_PLANNER_PRIORITY:-false}"
   printf '[启动] UAV0 FUEL 规划器和 RViz\n'
   roslaunch "${planner_launch}" \
     odom_topic:="${ODOM_TOPIC}" "${recording_args[@]}" \
     enable_fapp_detection:=true \
     dynamic_mode:="${UAV0_FAPP_DYNAMIC_MODE:-swing-only}" \
-    enable_fapp_dynamic_avoidance:="${UAV0_FAPP_DYNAMIC_AVOIDANCE:-true}"
+    enable_fapp_dynamic_avoidance:="${UAV0_FAPP_DYNAMIC_AVOIDANCE:-true}" \
+    fapp_planner_priority:="${UAV0_FAPP_PLANNER_PRIORITY:-false}"
   printf '[退出] FUEL 规划器分屏，返回码=%s\n' "$?"
   keep_pane_open
 }
@@ -363,6 +366,8 @@ while (($# > 0)); do
       export UAV0_FAPP_DYNAMIC_MODE="$2"; shift 2 ;;
     --dynamic-avoidance) export UAV0_FAPP_DYNAMIC_AVOIDANCE=true; shift ;;
     --detection-only) export UAV0_FAPP_DYNAMIC_AVOIDANCE=false; shift ;;
+    --planner-priority) export UAV0_FAPP_PLANNER_PRIORITY=true; shift ;;
+    --strict-dynamic) export UAV0_FAPP_PLANNER_PRIORITY=false; shift ;;
     --pane)
       if [[ $# -lt 2 ]]; then
         log '--pane 需要指定 mavros/mid360/fastlio/pose/detection/planner/controller'
@@ -419,6 +424,10 @@ fi
 case "${UAV0_FAPP_DYNAMIC_MODE:-swing-only}" in
   swing-only|general) ;;
   *) log '--dynamic-mode 只能是 swing-only 或 general'; exit 2 ;;
+esac
+case "${UAV0_FAPP_PLANNER_PRIORITY:-false}" in
+  true|false) ;;
+  *) log 'UAV0_FAPP_PLANNER_PRIORITY 只能是 true 或 false'; exit 2 ;;
 esac
 case "${UAV0_FAPP_DYNAMIC_AVOIDANCE:-true}" in
   true|false) ;;

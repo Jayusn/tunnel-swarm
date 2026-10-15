@@ -34,3 +34,13 @@ FAPP 使用 `/UAV0/fast_lio/cloud_registered`、`/UAV0/fast_lio/Odom_high_freq`�
 FUEL 联调用例为 `plan_manage` 包的 `fapp_fuel_smoke`，应在独立 localhost ROS master 中运行。测试用例会在自身私有命名空间设置合成地图与规划参数。
 
 原文件备份和验证日志：`/home/asus/match_ws_transfer_backups/fapp_20261015/`。
+
+## 规划优先开关
+
+原启动命令追加 `--planner-priority` 开启，追加 `--strict-dynamic` 恢复默认的动态硬检查。环境变量为 `UAV0_FAPP_PLANNER_PRIORITY`，默认 `false`；launch 参数为 `fapp_planner_priority`，FUEL 节点参数为 `fapp/planner_priority`。
+
+开启后，FAPP 仍参与 B 样条优化；直线路径遇到动态目标仍进入优化，但动态预测不再强制要求下穿/侧绕引导候选，也不再单独否决发布和执行。固定 XY 的垂直轨迹保持原有几何约束。原有静态地图、动力学和轨迹交接检查继续生效。`--detection-only` 仍关闭 FAPP 动态代价。
+
+该模式允许轨迹与预测目标重叠，真实动态障碍也可能被放行；规划自身失败时不会强制发布。开关作用于本机 FUEL，不改变出口后独立 Diff 的配置。
+
+扩展的 `fapp_fuel_smoke` 在独立 localhost ROS master 下验证开关关闭时原有行为、开启后的动态放行、动态优化代价仍有效，以及静态占据仍阻止发布和执行。未进行实飞验证。

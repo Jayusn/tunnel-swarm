@@ -62,6 +62,7 @@ void FastPlannerManager::initPlanModules(ros::NodeHandle& nh) {
   turn_time_scale_ = std::max(1.0, turn_time_scale_);
 
   nh.param("fapp/enabled", fapp_config_.enabled, false);
+  nh.param("fapp/planner_priority", fapp_planner_priority_, false);
   nh.param<std::string>("fapp/frame_id", fapp_frame_, "UAV0/camera_init");
   if (fapp_config_.enabled) {
     std::string topic;
@@ -153,7 +154,8 @@ bool FastPlannerManager::fappPositionSafe(const Eigen::Vector3d& point,
 }
 
 bool FastPlannerManager::fappGuidePath(std::vector<Eigen::Vector3d>& path) const {
-  if (!fapp_config_.enabled || fapp_states_.empty() || path.size()<2) return true;
+  // Planner priority retains the B-spline dynamic cost without requiring a clear guide.
+  if (fapp_planner_priority_ || !fapp_config_.enabled || fapp_states_.empty() || path.size()<2) return true;
   const double reference=ros::Time::now().toSec();
   const double speed=std::max(0.1,pp_.max_vel_*0.5);
   auto clear=[&](const std::vector<Eigen::Vector3d>& candidate,
@@ -221,7 +223,7 @@ bool FastPlannerManager::checkTrajCollision(LocalTrajData& trajectory, double& d
 
   const double reference = ros::Time::now().toSec();
   Eigen::Vector3d cur_pt = trajectory.position_traj_.evaluateDeBoorT(t_now);
-  if (!fappPositionSafe(cur_pt, trajectory.start_time_.toSec()+t_now, reference)) {
+  if (!fapp_planner_priority_ && !fappPositionSafe(cur_pt, trajectory.start_time_.toSec()+t_now, reference)) {
     distance=0.0; return false;
   }
   double radius = 0.0;
@@ -250,7 +252,7 @@ bool FastPlannerManager::checkTrajCollision(LocalTrajData& trajectory, double& d
 
   while (radius < 6.0 && t_now + fut_t < trajectory.duration_) {
     fut_pt = trajectory.position_traj_.evaluateDeBoorT(t_now + fut_t);
-    if (!fappPositionSafe(fut_pt, trajectory.start_time_.toSec()+t_now+fut_t, reference)) {
+    if (!fapp_planner_priority_ && !fappPositionSafe(fut_pt, trajectory.start_time_.toSec()+t_now+fut_t, reference)) {
       distance=radius; return false;
     }
     // double dist = edt_environment_->sdf_map_->getDistance(fut_pt);
@@ -459,7 +461,7 @@ bool FastPlannerManager::isTrajectorySafe(double sample_dt,
   for (int sample = 0; sample <= samples; ++sample) {
     const double t = duration * static_cast<double>(sample) / static_cast<double>(samples);
     const Eigen::Vector3d point = local_data_.position_traj_.evaluateDeBoorT(t);
-    if (!fappPositionSafe(point, fapp_reference+t, fapp_reference)) return false;
+    if (!fapp_planner_priority_ && !fappPositionSafe(point, fapp_reference+t, fapp_reference)) return false;
     // 2026-07-27: 与几何路径一致，轨迹起点若已在膨胀层只能沿ESDF净空不下降方向连续退出。
     bool safe = false;
     if (sample == 0) {
@@ -959,7 +961,10 @@ bool FastPlannerManager::planStraightTraj(
     const double t=duration*i/kSegments;
     if (!fappPositionSafe(local_data_.position_traj_.evaluateDeBoorT(t), reference+t, reference)) {
       // Vertical recovery must retain its fixed-XY contract.
-      if ((target-start).head<2>().norm()<1e-6) return false;
+      if ((target-start).head<2>().norm()<1e-6) {
+        if (fapp_planner_priority_) break;
+        return false;
+      }
       return planExploreTraj({start, 0.5*(start+target), target},
                              Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
     }

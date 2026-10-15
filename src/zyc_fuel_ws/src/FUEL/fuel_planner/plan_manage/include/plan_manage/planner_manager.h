@@ -99,6 +99,7 @@ public:
 private:
   ros::Subscriber fapp_sub_;
   fuel_fapp::DynamicObstacleConfig fapp_config_;
+  bool fapp_planner_priority_{false};
   std::vector<fuel_fapp::DynamicObstacleState> fapp_states_;
   std::string fapp_frame_;
   void fappCallback(const obj_state_msgs::ObjectsStates::ConstPtr& message);

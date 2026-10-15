@@ -1,4 +1,5 @@
 #include <plan_manage/planner_manager.h>
+#include <plan_env/sdf_map.h>
 #include <obj_state_msgs/ObjectsStates.h>
 #include <stdexcept>
 #include <iostream>
@@ -29,6 +30,7 @@ int main(int argc,char** argv){
  require(manager.planStraightTraj(a,b),"baseline planning failed");
  require(manager.isTrajectorySafe(),"baseline trajectory unsafe");
  const auto baseline=manager.local_data_.position_traj_.getControlPoint();
+ const auto baseline_data=manager.local_data_;
  obj_state_msgs::ObjectsStates msg;msg.header.frame_id="UAV0/camera_init";
  obj_state_msgs::State o;o.position.z=1;o.size.x=.2;o.size.y=.2;o.size.z=.2;
  msg.states.push_back(o);
@@ -56,6 +58,34 @@ int main(int argc,char** argv){
  fast_planner::FastPlannerManager disabled;disabled.initPlanModules(nh);
  require(disabled.planStraightTraj(a,b)&&disabled.isTrajectorySafe(),"disabled mode consumed obstacles");
  require(disabled.local_data_.position_traj_.getControlPoint().isApprox(baseline,1e-12),"disabled mode changed baseline");
+ // Planner priority accepts a native trajectory despite current dynamic overlap.
+ nh.setParam("fapp/enabled",true);nh.setParam("fapp/planner_priority",true);
+ fast_planner::FastPlannerManager priority;priority.initPlanModules(nh);
+ priority.local_data_=baseline_data;
+ send();
+ require(priority.isTrajectorySafe(),"priority mode vetoed release on FAPP overlap");
+ priority.local_data_.start_time_=ros::Time::now();
+ require(priority.checkTrajCollision(distance),"priority mode vetoed execution on FAPP overlap");
+ // A fully overlapping prediction must not prevent the native optimizer from running.
+ require(priority.planExploreTraj({a,Eigen::Vector3d(0,0,1),b},
+     Eigen::Vector3d::Zero(),Eigen::Vector3d::Zero()),"priority guide still vetoed native optimization");
+ // Use an ordinary target to verify that the soft FAPP cost still changes optimization.
+ msg.states={o};send();
+ require(priority.planExploreTraj({a,Eigen::Vector3d(0,0,1),b},
+     Eigen::Vector3d::Zero(),Eigen::Vector3d::Zero()),"priority optimization failed");
+ const auto with_dynamic=priority.local_data_.position_traj_.getControlPoint();
+ msg.states.clear();send();
+ require(priority.planExploreTraj({a,Eigen::Vector3d(0,0,1),b},
+     Eigen::Vector3d::Zero(),Eigen::Vector3d::Zero()),"priority empty optimization failed");
+ require(!with_dynamic.isApprox(priority.local_data_.position_traj_.getControlPoint(),1e-6),
+     "priority mode removed dynamic optimization cost");
+ // Static map checks remain effective before release and during execution.
+ priority.local_data_=baseline_data;
+ priority.edt_environment_->sdf_map_->setOccupied(Eigen::Vector3d(0,0,1));
+ require(!priority.isTrajectorySafe(),"priority mode bypassed static release check");
+ priority.local_data_.start_time_=ros::Time::now();
+ require(!priority.checkTrajCollision(distance),"priority mode bypassed static execution check");
+ std::cout<<"PASS planner priority release/execution, native optimization, retained dynamic cost and static checks"<<std::endl;
  msg.states.clear();send();require(manager.planStraightTraj(a,b)&&manager.isTrajectorySafe(),"empty update did not restore baseline");
  msg.states.push_back(o);send();ros::WallDuration(.85).sleep();
  require(manager.isTrajectorySafe(),"stale obstacle retained");
