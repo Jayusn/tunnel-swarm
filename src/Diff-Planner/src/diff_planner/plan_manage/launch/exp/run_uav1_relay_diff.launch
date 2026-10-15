@@ -14,6 +14,8 @@
     <arg name="enable_ldop" default="true"/>
     <arg name="detector_backend" default="legacy"/>
     <arg name="fapp_verified_preset" default="false"/>
+    <arg name="enable_fapp_dynamic_avoidance" default="false"/>
+    <arg name="fapp_planner_priority" default="false"/>
     <arg name="start_ldop" default="$(eval arg('detector_backend') == 'ldop' or (arg('detector_backend') == 'legacy' and arg('enable_ldop')))"/>
     <arg name="ldop_input_rate" default="5.0"/>
     <!-- 垂地障碍物锁定一侧，避免重规划时在障碍物两侧来回换边。 -->
@@ -41,6 +43,8 @@
     <!-- 2026-07-28: flight_type=1启用运行时外部目标；占位航点不会在该模式执行。 -->
     <include file="$(find diff_planner)/launch/include/advanced_param_exp.xml">
         <arg name="drone_id" value="1"/>
+        <arg name="enable_fapp_dynamic_avoidance" value="$(arg enable_fapp_dynamic_avoidance)"/>
+        <arg name="fapp_planner_priority" value="$(arg fapp_planner_priority)"/>
         <arg name="planner_heartbeat_topic" value="/drone_1_planning/heartbeat"/>
         <arg name="odom_topic" value="$(arg odom_topic)"/>
         <arg name="camera_pose_topic" value="no_use_uav1_pose"/>

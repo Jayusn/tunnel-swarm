@@ -27,6 +27,8 @@ RUNTIME_CONFIG="${UAV1_SIX_RUNTIME_CONFIG:-/tmp/uav1_six_terminator_${RUN_ID}.co
 WAIT_TIMEOUT="${UAV1_SIX_WAIT_TIMEOUT:-180}"
 THERMAL="${UAV1_SIX_THERMAL:-true}"
 DETECTOR="${UAV1_SIX_DETECTOR:-fapp}"
+DYNAMIC_AVOIDANCE="${UAV1_SIX_DYNAMIC_AVOIDANCE:-true}"
+PLANNER_PRIORITY="${UAV1_SIX_PLANNER_PRIORITY:-true}"
 
 MAVROS_STATE_TOPIC="/UAV1/mavros/state"
 LIDAR_TOPIC="/UAV1/livox/lidar"
@@ -67,6 +69,10 @@ usage() {
 
 选项：
   --detector fapp|ldop       动态障碍检测算法，默认 fapp
+  --dynamic-avoidance        开启 FAPP 动态避障（默认）
+  --detection-only          关闭 FAPP 动态避障，只保留检测
+  --planner-priority        开启 FAPP 规划优先（默认）
+  --strict-dynamic          恢复 FAPP 动态碰撞硬检查
   --thermal                 第 5 屏同时启动热成像检测和 D435 融合
   --no-thermal              关闭热成像
 EOF
@@ -334,7 +340,9 @@ run_planner_pane() {
   printf '[启动] UAV1 航点接力管理器、坐标对齐、Diff-Planner、RViz与搜索降落节点\n'
   printf '[安全] 不执行预设航点，只接收前机满足0.70m放行门槛后发布的接力目标。\n'
   roslaunch exploration_control leader_safe_path_follower.launch detector_backend:="${DETECTOR}" \
-    fapp_verified_preset:=true use_nmpc_landing:=true
+    fapp_verified_preset:=true use_nmpc_landing:=true \
+    enable_fapp_dynamic_avoidance:="${DYNAMIC_AVOIDANCE}" \
+    fapp_planner_priority:="${PLANNER_PRIORITY}"
   local launch_status=$?
   stop_owned_down_camera
   trap - EXIT INT TERM
@@ -386,6 +394,10 @@ while (($# > 0)); do
       DETECTOR="$2"
       shift 2
       ;;
+    --dynamic-avoidance) DYNAMIC_AVOIDANCE=true; shift ;;
+    --detection-only) DYNAMIC_AVOIDANCE=false; shift ;;
+    --planner-priority) PLANNER_PRIORITY=true; shift ;;
+    --strict-dynamic) PLANNER_PRIORITY=false; shift ;;
     --thermal)
       THERMAL=true
       shift
@@ -421,6 +433,14 @@ fi
 case "${DETECTOR}" in
   fapp|ldop) ;;
   *) log '--detector 只能是 fapp 或 ldop'; exit 2 ;;
+esac
+case "${DYNAMIC_AVOIDANCE,,}" in
+  true|false) DYNAMIC_AVOIDANCE="${DYNAMIC_AVOIDANCE,,}" ;;
+  *) log 'UAV1_SIX_DYNAMIC_AVOIDANCE 只能是 true 或 false'; exit 2 ;;
+esac
+case "${PLANNER_PRIORITY,,}" in
+  true|false) PLANNER_PRIORITY="${PLANNER_PRIORITY,,}" ;;
+  *) log 'UAV1_SIX_PLANNER_PRIORITY 只能是 true 或 false'; exit 2 ;;
 esac
 case "${THERMAL,,}" in
   true|false) THERMAL="${THERMAL,,}" ;;
@@ -474,6 +494,8 @@ fi
 # 主入口的可选热成像参数通过环境传给 Terminator 子分屏。
 export UAV1_SIX_THERMAL="${THERMAL}"
 export UAV1_SIX_DETECTOR="${DETECTOR}"
+export UAV1_SIX_DYNAMIC_AVOIDANCE="${DYNAMIC_AVOIDANCE}"
+export UAV1_SIX_PLANNER_PRIORITY="${PLANNER_PRIORITY}"
 
 sed "s|__UAV1_SIX_SCRIPT__|${SCRIPT_PATH}|g" \
   "${LAYOUT_CONFIG}" > "${RUNTIME_CONFIG}"
@@ -482,7 +504,7 @@ log '打开 UAV1 Terminator 七分屏'
 log '上排：1 MAVROS | 2 MID360 | 3 FAST-LIO'
 log '下排：4 视觉位姿 | 5 检测/上报 | 6 Diff/RViz | 7 AutoTrans/日志/rosbag'
 log "检测参数：thermal=${THERMAL}, odom=${ODOM_TOPIC}"
-log "动态障碍检测：${DETECTOR}"
+log "动态障碍检测：${DETECTOR}，FAPP 动态避障：${DYNAMIC_AVOIDANCE}，规划优先：${PLANNER_PRIORITY}"
 log "前级等待超时：${WAIT_TIMEOUT}s"
 log "Terminator 启动日志：${TERMINATOR_LOG}"
 
