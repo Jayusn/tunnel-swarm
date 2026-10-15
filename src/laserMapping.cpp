@@ -152,23 +152,14 @@ V3D latest_P, latest_V, latest_Ba, latest_Bg, latest_acc_0, latest_gyr_0, acc_0,
 M3D latest_Q;
 bool init = false;
 
-void updateLatestStates()
-{
-    latest_time = lidar_end_time;
-    latest_P = state_point.pos;
-    latest_Q = state_point.rot;
-    latest_V = state_point.vel;
-    latest_Ba = state_point.ba;
-    latest_Bg = state_point.bg;
-    // 保持东北大学 REAL_DRONE_400 高频预测实现的初始化顺序和状态定义。
-}
-
-void fastPredictIMU(double t, V3D acc, V3D gyr)
+// 只传播状态，不发布；点云校正后重放缓存 IMU 时不能重复发送旧时间戳。
+void predictIMUState(double t, V3D acc, V3D gyr)
 {
     // MID360 驱动发布的线加速度单位为 g。使用 FAST-LIO 初始化得到的静止模长，
     // 与普通 IMU 传播保持相同归一化，将其转换为 m/s^2 后再扣除零偏并积分。
     acc = acc * G_m_s2 / p_imu->GetMeanAccNorm();
-    double dt = t - latest_time;
+    const double dt = t - latest_time;
+    if (dt <= 0.0) return;
     latest_time = t;
     V3D un_acc_0 = latest_Q * (latest_acc_0 - latest_Ba) +
                    V3D(state_point.grav[0], state_point.grav[1], state_point.grav[2]);
@@ -181,6 +172,55 @@ void fastPredictIMU(double t, V3D acc, V3D gyr)
     latest_V = latest_V + dt * un_acc;
     latest_acc_0 = acc;
     latest_gyr_0 = gyr;
+
+}
+
+void updateLatestStates()
+{
+    latest_time = lidar_end_time;
+    latest_P = state_point.pos;
+    latest_Q = state_point.rot;
+    latest_V = state_point.vel;
+    latest_Ba = state_point.ba;
+    latest_Bg = state_point.bg;
+
+    // sync_packages 保留扫描结束后的 IMU；Measures 中最后一帧位于结束时刻之前。
+    // 积分起点也必须回到扫描结束时刻，不能沿用上次预测末端的 IMU。
+    const auto &before = Measures.imu.back();
+    V3D acc(before->linear_acceleration.x, before->linear_acceleration.y,
+            before->linear_acceleration.z);
+    V3D gyr(before->angular_velocity.x, before->angular_velocity.y,
+            before->angular_velocity.z);
+    if (!imu_buffer.empty())
+    {
+        const auto &after = imu_buffer.front();
+        const double span = after->header.stamp.toSec() - before->header.stamp.toSec();
+        if (span > 0.0)
+        {
+            const double alpha = (lidar_end_time - before->header.stamp.toSec()) / span;
+            acc += alpha * (V3D(after->linear_acceleration.x, after->linear_acceleration.y,
+                               after->linear_acceleration.z) - acc);
+            gyr += alpha * (V3D(after->angular_velocity.x, after->angular_velocity.y,
+                               after->angular_velocity.z) - gyr);
+        }
+    }
+    latest_acc_0 = acc * G_m_s2 / p_imu->GetMeanAccNorm();
+    latest_gyr_0 = gyr;
+
+    // 回调和校正在同一 spinOnce 主线程运行；缓存已包含此前收到的未来 IMU。
+    // 逐帧重放到最新采样时刻，避免用最新两帧一步跨过整个校正延迟。
+    for (const auto &imu : imu_buffer)
+    {
+        predictIMUState(imu->header.stamp.toSec(),
+            V3D(imu->linear_acceleration.x, imu->linear_acceleration.y, imu->linear_acceleration.z),
+            V3D(imu->angular_velocity.x, imu->angular_velocity.y, imu->angular_velocity.z));
+    }
+}
+
+void fastPredictIMU(double t, V3D acc, V3D gyr)
+{
+    if (t <= latest_time) return;
+    predictIMUState(t, acc, gyr);
 
     nav_msgs::Odometry odomHigh;
     Eigen::Quaterniond quadrotor_Q = Eigen::Quaterniond(latest_Q);
