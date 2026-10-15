@@ -35,6 +35,10 @@ usage() {
 FUEL/RViz、FUEL bridge + AutoTrans NMPC + logger + rosbag。
 
 脚本不自动解锁、不切换 OFFBOARD、不发送目标点。
+FAPP 开关（默认 swing-only，开启动态避障）：
+  --dynamic-mode swing-only|general
+  --dynamic-avoidance
+  --detection-only
 EOF
 }
 
@@ -112,6 +116,27 @@ run_controller_pane() {
   printf '[退出] AutoTrans 分屏，返回码=%s\n' "$?"
   keep_open
 }
+
+remaining_args=()
+while (($# > 0)); do
+  case "$1" in
+    --dynamic-mode)
+      [[ $# -ge 2 ]] || { log '--dynamic-mode 需要 swing-only 或 general'; exit 2; }
+      export UAV0_FAPP_DYNAMIC_MODE="$2"; shift 2 ;;
+    --dynamic-avoidance) export UAV0_FAPP_DYNAMIC_AVOIDANCE=true; shift ;;
+    --detection-only) export UAV0_FAPP_DYNAMIC_AVOIDANCE=false; shift ;;
+    *) remaining_args+=("$1"); shift ;;
+  esac
+done
+set -- "${remaining_args[@]}"
+case "${UAV0_FAPP_DYNAMIC_MODE:-swing-only}" in
+  swing-only|general) ;;
+  *) log '--dynamic-mode 只能是 swing-only 或 general'; exit 2 ;;
+esac
+case "${UAV0_FAPP_DYNAMIC_AVOIDANCE:-true}" in
+  true|false) ;;
+  *) log 'UAV0_FAPP_DYNAMIC_AVOIDANCE 只能是 true 或 false'; exit 2 ;;
+esac
 
 case "${1:-}" in
   --pane)

@@ -113,6 +113,7 @@ void BsplineOptimizer::optimize(Eigen::MatrixXd& points, double& dt, const int& 
     ROS_ERROR("Initial state undefined!");
     return;
   }
+  fapp_reference_ = ros::Time::now().toSec();
   control_points_ = points;
   knot_span_ = dt;
   max_num_id_ = max_num_id;
@@ -584,6 +585,17 @@ void BsplineOptimizer::combineCost(const std::vector<double>& x, std::vector<dou
     for (int i = 0; i < point_num_; i++)
       for (int j = 0; j < dim_; j++)
         grad[dim_ * i + j] += ld_dist_ * g_distance_[i](j);
+  }
+  if (fapp_config_.enabled && dim_ == 3 && bspline_degree_ == 3 &&
+      (cost_function_ & DISTANCE)) {
+    std::vector<Eigen::Vector3d> gradient;
+    double time_gradient;
+    const double cost = fuel_fapp::bsplineCost(g_q_, dt, fapp_states_, fapp_config_,
+        fapp_reference_, fapp_reference_, gradient, time_gradient);
+    f_combine += ld_dist_ * cost;
+    for (int i=0;i<point_num_;++i) for (int j=0;j<3;++j)
+      grad[3*i+j] += ld_dist_ * gradient[i](j);
+    if (optimize_time_) grad[variable_num_-1] += ld_dist_ * time_gradient;
   }
   if (cost_function_ & FEASIBILITY) {
     double f_feasibility = 0.0, gt_feasibility = 0.0;

@@ -14,6 +14,7 @@ find_package(catkin REQUIRED COMPONENTS
   roscpp
   std_msgs
   geometry_msgs
+  obj_state_msgs
   quadrotor_msgs
   poly_traj
   fuel_plan_env
@@ -29,7 +30,7 @@ find_package(catkin REQUIRED COMPONENTS
 catkin_package(
  INCLUDE_DIRS include
  LIBRARIES plan_manage
- CATKIN_DEPENDS fuel_plan_env fuel_path_searching bspline bspline_opt active_perception fuel_traj_utils)
+ CATKIN_DEPENDS obj_state_msgs fuel_plan_env fuel_path_searching bspline bspline_opt active_perception fuel_traj_utils)
 
 include_directories(
   include
@@ -95,4 +96,13 @@ if(CATKIN_ENABLE_TESTING)
   add_executable(trajectory_dynamics_test test/trajectory_dynamics_test.cpp)
   target_link_libraries(trajectory_dynamics_test bspline ${catkin_LIBRARIES})
   add_test(NAME trajectory_dynamics_test COMMAND trajectory_dynamics_test)
+endif()
+
+add_dependencies(plan_manage ${catkin_EXPORTED_TARGETS})
+add_dependencies(fast_planner_node ${catkin_EXPORTED_TARGETS})
+
+if(CATKIN_ENABLE_TESTING)
+  add_executable(fapp_fuel_smoke test/fapp_fuel_smoke.cpp)
+  target_link_libraries(fapp_fuel_smoke plan_manage ${catkin_LIBRARIES})
+  add_dependencies(fapp_fuel_smoke ${catkin_EXPORTED_TARGETS})
 endif()

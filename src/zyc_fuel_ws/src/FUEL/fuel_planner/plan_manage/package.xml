@@ -86,4 +86,5 @@
     <!-- Other tools can request additional information be placed here -->
 
   </export>
+  <depend>obj_state_msgs</depend>
 </package>

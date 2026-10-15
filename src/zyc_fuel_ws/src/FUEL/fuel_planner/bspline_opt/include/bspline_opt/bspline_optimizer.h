@@ -4,6 +4,7 @@
 #include <Eigen/Eigen>
 #include <active_perception/traj_visibility.h>
 #include <ros/ros.h>
+#include <bspline_opt/fapp_bspline_cost.h>
 
 // Gradient and elasitc band optimization
 
@@ -36,6 +37,10 @@ public:
   /* main API */
   void setEnvironment(const shared_ptr<EDTEnvironment>& env);
   void setParam(ros::NodeHandle& nh);
+  void setFappObstacles(const std::vector<fuel_fapp::DynamicObstacleState>& states,
+                        const fuel_fapp::DynamicObstacleConfig& config) {
+    fapp_states_ = states; fapp_config_ = config;
+  }
   void optimize(Eigen::MatrixXd& points, double& dt, const int& cost_function, const int& max_num_id,
                 const int& max_time_id);
 
@@ -59,6 +64,9 @@ public:
   vector<Eigen::Vector3d> matrixToVectors(const Eigen::MatrixXd& ctrl_pts);
 
 private:
+  std::vector<fuel_fapp::DynamicObstacleState> fapp_states_;
+  fuel_fapp::DynamicObstacleConfig fapp_config_;
+  double fapp_reference_{0.0};
   // Wrapper of cost function
   static double costFunction(const std::vector<double>& x, std::vector<double>& grad, void* func_data);
   void combineCost(const std::vector<double>& x, vector<double>& grad, double& cost);

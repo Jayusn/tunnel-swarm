@@ -1,5 +1,6 @@
 #ifndef _PLANNER_MANAGER_H_
 #define _PLANNER_MANAGER_H_
+#include <obj_state_msgs/ObjectsStates.h>
 
 #include <bspline_opt/bspline_optimizer.h>
 #include <bspline/non_uniform_bspline.h>
@@ -96,6 +97,13 @@ public:
   unique_ptr<TopologyPRM> topo_prm_;
 
 private:
+  ros::Subscriber fapp_sub_;
+  fuel_fapp::DynamicObstacleConfig fapp_config_;
+  std::vector<fuel_fapp::DynamicObstacleState> fapp_states_;
+  std::string fapp_frame_;
+  void fappCallback(const obj_state_msgs::ObjectsStates::ConstPtr& message);
+  bool fappGuidePath(std::vector<Eigen::Vector3d>& path) const;
+  bool fappPositionSafe(const Eigen::Vector3d& point, double query, double reference) const;
   /* main planning algorithms & modules */
   shared_ptr<SDFMap> sdf_map_;
 

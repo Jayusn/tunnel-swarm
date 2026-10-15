@@ -1,0 +1,123 @@
+<launch>
+  <arg name="dynamic_mode" default="general"/>
+  <arg name="cloud_topic" default="/UAV0/fast_lio/cloud_registered"/>
+  <arg name="odom_topic" default="/UAV0/fast_lio/Odom_high_freq"/>
+  <arg name="nearest_available_odom_enabled" default="false"/>
+  <arg name="input_rate" default="10.0"/>
+  <arg name="native_input_enabled" default="false"/>
+  <arg name="time_evidence_enabled" default="false"/>
+  <arg name="motion_window" default="0.6"/>
+  <arg name="confirmed_reacquisition_enabled" default="false"/>
+  <arg name="reacquisition_max_gap" default="0.6"/>
+  <arg name="cluster_voxel_size" default="0.05"/>
+  <arg name="density_split_enabled" default="false"/>
+  <arg name="candidate_partition_enabled" default="false"/>
+  <arg name="core_radius" default="0.08"/>
+  <arg name="core_density_fraction" default="0.7"/>
+  <arg name="global_assignment_enabled" default="false"/>
+  <arg name="position_measurement_variance" default="0.09"/>
+  <arg name="translated_startup_enabled" default="false"/>
+  <arg name="translated_startup_fraction" default="0.8"/>
+  <arg name="motion_confirmation_frames" default="3"/>
+  <arg name="motion_displacement" default="0.08"/>
+  <arg name="min_motion_speed" default="0.15"/>
+  <arg name="min_motion_novel_fraction" default="0.3"/>
+  <arg name="tracked_motion_novel_fraction" default="$(arg min_motion_novel_fraction)"/>
+  <arg name="min_cluster" default="6"/>
+  <arg name="geometry_enabled" default="false"/>
+  <arg name="competition_enabled" default="false"/>
+  <arg name="depth_evidence_enabled" default="false"/>
+  <arg name="occlusion_startup_enabled" default="false"/>
+  <arg name="background_consistency_enabled" default="false"/>
+  <arg name="background_local_planes_enabled" default="false"/>
+  <arg name="background_local_post_association" default="true"/>
+  <arg name="background_consistency_fraction" default="0.8"/>
+  <arg name="background_consistency_post_association" default="true"/>
+  <arg name="shape_consistency_enabled" default="false"/>
+  <arg name="shape_consistency_distance" default="0.05"/>
+  <arg name="shape_consistency_fraction" default="0.5"/>
+  <arg name="background_reference_enabled" default="false"/>
+  <arg name="reference_motion_enabled" default="false"/>
+  <arg name="reference_strong_two_frame_enabled" default="false"/>
+  <arg name="background_online_enabled" default="false"/>
+  <arg name="strict_depth_evidence_enabled" default="false"/>
+  <arg name="point_source_competition_enabled" default="false"/>
+  <arg name="publish_measured_body_position_enabled" default="false"/>
+  <arg name="dense_change_evidence_enabled" default="false"/>
+  <arg name="published_startup_source_enabled" default="false"/>
+  <arg name="bidirectional_ray_evidence_enabled" default="false"/>
+  <arg name="bidirectional_static_suppression_enabled" default="false"/>
+  <arg name="background_reference_capture_duration" default="5.0"/>
+  <arg name="background_reference_distance" default="0.03"/>
+  <arg name="background_reference_fraction" default="0.5"/>
+  <node unless="$(arg native_input_enabled)" pkg="topic_tools" type="throttle" name="uav0_fapp_cloud_throttle"
+        args="messages $(arg cloud_topic) $(arg input_rate) /UAV0/fapp/cloud_registered_throttled"/>
+  <!-- FAST-LIO's native 10 Hz stream preserves real observations and stamps. -->
+  <node if="$(arg native_input_enabled)" pkg="topic_tools" type="relay" name="uav0_fapp_cloud_throttle"
+        args="$(arg cloud_topic) /UAV0/fapp/cloud_registered_throttled"/>
+  <group ns="UAV0/fapp">
+    <node pkg="mot_mapping" type="mapping_node" name="mapping_node" output="screen">
+      <param name="detection/dynamic_mode" value="$(arg dynamic_mode)"/>
+      <param name="ros/lidar_topic" value="/UAV0/fapp/cloud_registered_throttled"/>
+      <param name="ros/odom_topic" value="$(arg odom_topic)"/>
+      <param name="synchronization/nearest_available_odom_enabled" value="$(arg nearest_available_odom_enabled)"/>
+      <param name="ros/frame_id" value="UAV0/camera_init"/>
+      <param name="detection/time_evidence_enabled" value="$(arg time_evidence_enabled)"/>
+      <param name="detection/motion_window" value="$(arg motion_window)"/>
+      <param name="detection/confirmed_reacquisition_enabled" value="$(arg confirmed_reacquisition_enabled)"/>
+      <param name="detection/reacquisition_max_gap" value="$(arg reacquisition_max_gap)"/>
+      <param name="clustering/voxel_size" value="$(arg cluster_voxel_size)"/>
+      <param name="clustering/density_split_enabled" value="$(arg density_split_enabled)"/>
+      <param name="clustering/candidate_partition_enabled" value="$(arg candidate_partition_enabled)"/>
+      <param name="clustering/core_radius" value="$(arg core_radius)"/>
+      <param name="clustering/core_density_fraction" value="$(arg core_density_fraction)"/>
+      <param name="association/global_assignment_enabled" value="$(arg global_assignment_enabled)"/>
+      <param name="tracking/position_measurement_variance" value="$(arg position_measurement_variance)"/>
+      <param name="detection/translated_startup_enabled" value="$(arg translated_startup_enabled)"/>
+      <param name="detection/translated_startup_fraction" value="$(arg translated_startup_fraction)"/>
+      <param name="dbscan/core_pts" value="3"/>
+      <param name="dbscan/tolerance" value="0.02"/>
+      <param name="dbscan/min_cluster" value="$(arg min_cluster)"/>
+      <param name="dbscan/max_cluster" value="800"/>
+      <param name="detection/thresh_dist" value="0.06"/>
+      <param name="detection/thresh_var" value="0.28"/>
+      <param name="detection/motion_displacement" value="$(arg motion_displacement)"/>
+      <param name="detection/motion_confirmation_frames" value="$(arg motion_confirmation_frames)"/>
+      <param name="detection/min_motion_speed" value="$(arg min_motion_speed)"/>
+      <param name="detection/min_motion_novel_fraction" value="$(arg min_motion_novel_fraction)"/>
+      <param name="detection/tracked_motion_novel_fraction" value="$(arg tracked_motion_novel_fraction)"/>
+      <param name="detection/max_above_uav" value="1.5"/>
+      <param name="association/geometry_enabled" value="$(arg geometry_enabled)"/>
+      <param name="association/competition_enabled" value="$(arg competition_enabled)"/>
+      <param name="detection/depth_evidence_enabled" value="$(arg depth_evidence_enabled)"/>
+      <param name="detection/occlusion_startup_enabled" value="$(arg occlusion_startup_enabled)"/>
+      <param name="background_consistency/enabled" value="$(arg background_consistency_enabled)"/>
+      <param name="background_consistency/local_planes_enabled" value="$(arg background_local_planes_enabled)"/>
+      <param name="background_consistency/local_post_association" value="$(arg background_local_post_association)"/>
+      <param name="background_consistency/fraction" value="$(arg background_consistency_fraction)"/>
+      <param name="background_consistency/post_association" value="$(arg background_consistency_post_association)"/>
+      <param name="detection/shape_consistency_enabled" value="$(arg shape_consistency_enabled)"/>
+      <param name="detection/shape_consistency_distance" value="$(arg shape_consistency_distance)"/>
+      <param name="detection/shape_consistency_fraction" value="$(arg shape_consistency_fraction)"/>
+      <param name="background_reference/enabled" value="$(arg background_reference_enabled)"/>
+      <param name="detection/reference_motion_enabled" value="$(arg reference_motion_enabled)"/>
+      <param name="detection/reference_strong_two_frame_enabled" value="$(arg reference_strong_two_frame_enabled)"/>
+      <param name="background_online/enabled" value="$(arg background_online_enabled)"/>
+      <param name="detection/strict_depth_evidence_enabled" value="$(arg strict_depth_evidence_enabled)"/>
+      <param name="association/point_source_competition_enabled" value="$(arg point_source_competition_enabled)"/>
+      <param name="detection/publish_measured_body_position_enabled" value="$(arg publish_measured_body_position_enabled)"/>
+      <param name="detection/dense_change_evidence_enabled" value="$(arg dense_change_evidence_enabled)"/>
+      <param name="detection/published_startup_source_enabled" value="$(arg published_startup_source_enabled)"/>
+      <param name="detection/bidirectional_ray_evidence_enabled" value="$(arg bidirectional_ray_evidence_enabled)"/>
+      <param name="detection/bidirectional_static_suppression_enabled" value="$(arg bidirectional_static_suppression_enabled)"/>
+      <param name="background_reference/capture_duration" value="$(arg background_reference_capture_duration)"/>
+      <param name="background_reference/distance" value="$(arg background_reference_distance)"/>
+      <param name="background_reference/fraction" value="$(arg background_reference_fraction)"/>
+      <param name="background_surface/enabled" value="true"/>
+      <param name="background_plane/enabled" value="true"/>
+      <param name="background_plane/distance" value="0.03"/>
+      <param name="background_plane/min_points" value="100"/>
+      <param name="background_plane/max_planes" value="6"/>
+    </node>
+  </group>
+</launch>

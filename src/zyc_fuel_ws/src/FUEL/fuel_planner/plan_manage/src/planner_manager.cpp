@@ -11,6 +11,7 @@
 #include <visualization_msgs/Marker.h>
 
 #include <cmath>
+#include <limits>
 
 namespace fast_planner {
 // SECTION interfaces for setup and query
@@ -59,6 +60,14 @@ void FastPlannerManager::initPlanModules(ros::NodeHandle& nh) {
   turn_slowdown_angle_deg_ =
       std::max(5.0, std::min(90.0, turn_slowdown_angle_deg_));
   turn_time_scale_ = std::max(1.0, turn_time_scale_);
+
+  nh.param("fapp/enabled", fapp_config_.enabled, false);
+  nh.param<std::string>("fapp/frame_id", fapp_frame_, "UAV0/camera_init");
+  if (fapp_config_.enabled) {
+    std::string topic;
+    nh.param<std::string>("fapp/topic", topic, "/UAV0/fapp/states");
+    fapp_sub_ = nh.subscribe(topic, 10, &FastPlannerManager::fappCallback, this);
+  }
 
   bool use_geometric_path, use_kinodynamic_path, use_topo_path, use_optimization,
       use_active_perception;
@@ -114,6 +123,89 @@ void FastPlannerManager::initPlanModules(ros::NodeHandle& nh) {
   }
 }
 
+void FastPlannerManager::fappCallback(const obj_state_msgs::ObjectsStates::ConstPtr& message) {
+  if (!message->header.frame_id.empty() && message->header.frame_id != fapp_frame_)
+    ROS_WARN_THROTTLE(2.0, "[FAPP] verify state frame %s against %s",
+                      message->header.frame_id.c_str(), fapp_frame_.c_str());
+  fapp_states_.clear();
+  for (const auto& state : message->states) {
+    fuel_fapp::DynamicObstacleState obstacle;
+    obstacle.position = Eigen::Vector3d(state.position.x,state.position.y,state.position.z);
+    obstacle.velocity = Eigen::Vector3d(state.velocity.x,state.velocity.y,state.velocity.z);
+    obstacle.size = Eigen::Vector3d(state.size.x,state.size.y,state.size.z);
+    const ros::Time stamp = state.header.stamp.isZero() ? message->header.stamp : state.header.stamp;
+    obstacle.stamp = stamp.isZero() ? ros::Time::now().toSec() : stamp.toSec();
+    fapp_states_.push_back(obstacle);
+  }
+  for (auto& optimizer : bspline_optimizers_)
+    optimizer->setFappObstacles(fapp_states_, fapp_config_);
+}
+
+bool FastPlannerManager::fappPositionSafe(const Eigen::Vector3d& point,
+                                         double query, double reference) const {
+  for (const auto& obstacle : fapp_states_) {
+    double clearance;
+    if (fuel_fapp::evaluateDynamicObstacle(point,obstacle,query,reference,
+                                          fapp_config_,&clearance) && clearance < 0.0)
+      return false;
+  }
+  return true;
+}
+
+bool FastPlannerManager::fappGuidePath(std::vector<Eigen::Vector3d>& path) const {
+  if (!fapp_config_.enabled || fapp_states_.empty() || path.size()<2) return true;
+  const double reference=ros::Time::now().toSec();
+  const double speed=std::max(0.1,pp_.max_vel_*0.5);
+  auto clear=[&](const std::vector<Eigen::Vector3d>& candidate,
+                 fuel_fapp::DynamicObstacleState* hit, Eigen::Vector3d* center) {
+    double elapsed=0;
+    for(size_t i=1;i<candidate.size();++i) {
+      const double length=(candidate[i]-candidate[i-1]).norm();
+      const int count=std::max(1,static_cast<int>(std::ceil(length/0.05)));
+      for(int j=0;j<=count;++j) {
+        const double u=double(j)/count;
+        const Eigen::Vector3d point=candidate[i-1]+u*(candidate[i]-candidate[i-1]);
+        for(const auto& obstacle:fapp_states_) {
+          double clearance; Eigen::Vector3d predicted;
+          if(fuel_fapp::evaluateDynamicObstacle(point,obstacle,
+              reference+elapsed+u*length/speed,reference,fapp_config_,&clearance,
+              nullptr,&predicted) && clearance<0.0) {
+            if(hit)*hit=obstacle;if(center)*center=predicted;return false;
+          }
+        }
+      }
+      elapsed+=length/speed;
+    }
+    return true;
+  };
+  fuel_fapp::DynamicObstacleState hit;Eigen::Vector3d center;
+  if(clear(path,&hit,&center))return true;
+  Eigen::Vector3d axis=path.back()-path.front();axis.z()=0;
+  if(axis.norm()<1e-6)return false;
+  axis.normalize();const Eigen::Vector3d side(-axis.y(),axis.x(),0);
+  Eigen::Vector3d half=Eigen::Vector3d::Constant(fapp_config_.ball_radius);
+  if(hit.size.allFinite()&&(hit.size.array()>=0).all()&&(hit.size.array()>0).any())half=.5*hit.size;
+  // The same three geometric choices as the rear planner, checked in FUEL's map.
+  const double along=half.dot(axis.cwiseAbs())+fapp_config_.vehicle_radius+fapp_config_.margin+0.15;
+  const double lateral=half.dot(side.cwiseAbs())+fapp_config_.vehicle_radius+fapp_config_.margin+0.15;
+  const double below=half.z()+fapp_config_.vehicle_half_height+fapp_config_.margin+0.15;
+  std::vector<Eigen::Vector3d> best;double best_length=std::numeric_limits<double>::infinity();
+  for(int direction=0;direction<3;++direction) {
+    const Eigen::Vector3d offset=direction==0?Eigen::Vector3d(0,0,-below):
+        Eigen::Vector3d((direction==1?1.0:-1.0)*lateral*side);
+    std::vector<Eigen::Vector3d> candidate{path.front(),center-along*axis+offset,
+                                          center+along*axis+offset,path.back()};
+    double length=0;bool distinct=true;
+    for(size_t i=1;i<candidate.size();++i){double d=(candidate[i]-candidate[i-1]).norm();
+      distinct=distinct&&d>1e-3;length+=d;}
+    if(distinct&&length<best_length&&isPathSafe(candidate)&&clear(candidate,nullptr,nullptr)) {
+      best=candidate;best_length=length;
+    }
+  }
+  if(best.empty())return false;
+  path.swap(best);return true;
+}
+
 void FastPlannerManager::setGlobalWaypoints(vector<Eigen::Vector3d>& waypoints) {
   plan_data_.global_waypoints_ = waypoints;
 }
@@ -127,7 +219,11 @@ bool FastPlannerManager::checkTrajCollision(LocalTrajData& trajectory, double& d
   const double t_now = std::max(
       0.0, std::min((ros::Time::now() - trajectory.start_time_).toSec(), trajectory.duration_));
 
+  const double reference = ros::Time::now().toSec();
   Eigen::Vector3d cur_pt = trajectory.position_traj_.evaluateDeBoorT(t_now);
+  if (!fappPositionSafe(cur_pt, trajectory.start_time_.toSec()+t_now, reference)) {
+    distance=0.0; return false;
+  }
   double radius = 0.0;
   Eigen::Vector3d fut_pt;
   double fut_t = 0.02;
@@ -154,6 +250,9 @@ bool FastPlannerManager::checkTrajCollision(LocalTrajData& trajectory, double& d
 
   while (radius < 6.0 && t_now + fut_t < trajectory.duration_) {
     fut_pt = trajectory.position_traj_.evaluateDeBoorT(t_now + fut_t);
+    if (!fappPositionSafe(fut_pt, trajectory.start_time_.toSec()+t_now+fut_t, reference)) {
+      distance=radius; return false;
+    }
     // double dist = edt_environment_->sdf_map_->getDistance(fut_pt);
     // 2026-07-13: 不能只检查轨迹中心点；橙色柱旁中心安全时，Iris 旋翼仍可能已经接触障碍物。
     bool safe = false;
@@ -351,6 +450,7 @@ bool FastPlannerManager::isTrajectorySafe(double sample_dt,
   const double duration = local_data_.position_traj_.getTimeSum();
   if (duration <= 0.0) return false;
 
+  const double fapp_reference = ros::Time::now().toSec();
   sample_dt = std::max(0.01, sample_dt);
   const int samples = std::max(1, static_cast<int>(std::ceil(duration / sample_dt)));
   bool escaping_inflation = false;
@@ -359,6 +459,7 @@ bool FastPlannerManager::isTrajectorySafe(double sample_dt,
   for (int sample = 0; sample <= samples; ++sample) {
     const double t = duration * static_cast<double>(sample) / static_cast<double>(samples);
     const Eigen::Vector3d point = local_data_.position_traj_.evaluateDeBoorT(t);
+    if (!fappPositionSafe(point, fapp_reference+t, fapp_reference)) return false;
     // 2026-07-27: 与几何路径一致，轨迹起点若已在膨胀层只能沿ESDF净空不下降方向连续退出。
     bool safe = false;
     if (sample == 0) {
@@ -579,8 +680,10 @@ bool FastPlannerManager::kinodynamicReplan(const Eigen::Vector3d& start_pt,
   return true;
 }
 
-bool FastPlannerManager::planExploreTraj(const vector<Eigen::Vector3d>& tour,
+bool FastPlannerManager::planExploreTraj(const vector<Eigen::Vector3d>& input_tour,
     const Eigen::Vector3d& cur_vel, const Eigen::Vector3d& cur_acc, const double& time_lb) {
+  std::vector<Eigen::Vector3d> tour=input_tour;
+
   // 2026-07-14: PolynomialTraj 至少需要两个有效分段；单点/两点及重复点会构造零维矩阵并触发 Eigen 越界。
   if (tour.size() < 3) {
     ROS_ERROR("[trajectory_input] reject exploration path with only %zu waypoint(s).", tour.size());
@@ -596,6 +699,8 @@ bool FastPlannerManager::planExploreTraj(const vector<Eigen::Vector3d>& tour,
       return false;
     }
   }
+
+  if (!fappGuidePath(tour)) return false;
 
   // Generate traj through waypoints-based method
   const int pt_num = tour.size();
@@ -849,6 +954,16 @@ bool FastPlannerManager::planStraightTraj(
       dt, samples, boundary_derivatives, 3, control_points);
   if (control_points.rows() < 4 || !control_points.allFinite()) return false;
   local_data_.position_traj_.setUniformBspline(control_points, 3, dt);
+  const double reference = ros::Time::now().toSec();
+  for (int i=0;i<=kSegments;++i) {
+    const double t=duration*i/kSegments;
+    if (!fappPositionSafe(local_data_.position_traj_.evaluateDeBoorT(t), reference+t, reference)) {
+      // Vertical recovery must retain its fixed-XY contract.
+      if ((target-start).head<2>().norm()<1e-6) return false;
+      return planExploreTraj({start, 0.5*(start+target), target},
+                             Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
+    }
+  }
   local_data_.position_traj_.setPhysicalLimits(pp_.max_vel_, pp_.max_acc_);
   if (!local_data_.position_traj_.checkFeasibility(false)) {
     ROS_ERROR("[straight_trajectory] spline exceeds velocity/acceleration limit for %.2fm.",

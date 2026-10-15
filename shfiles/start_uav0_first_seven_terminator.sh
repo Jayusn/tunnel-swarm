@@ -51,6 +51,10 @@ usage() {
   bash shfiles/start_uav0_first_seven_terminator.sh
   bash shfiles/start_uav0_first_seven_terminator.sh --no-thermal
   bash shfiles/start_uav0_first_seven_terminator.sh --odom-topic /Odometry
+FAPP 开关（默认 swing-only，开启动态避障）：
+  --dynamic-mode swing-only|general
+  --dynamic-avoidance
+  --detection-only
 EOF
 }
 
@@ -313,9 +317,13 @@ run_planner_pane() {
     printf '[录包] 通道回放包：%s_时间戳_分卷.bag；在本屏 Ctrl+C 正常结束录制。\n' \
       "${UAV0_PLANNER_ROSBAG_PREFIX}"
   fi
+  printf '[FAPP] 模式=%s，动态避障=%s\n' "${UAV0_FAPP_DYNAMIC_MODE:-swing-only}" "${UAV0_FAPP_DYNAMIC_AVOIDANCE:-true}"
   printf '[启动] UAV0 FUEL 规划器和 RViz\n'
   roslaunch "${planner_launch}" \
-    odom_topic:="${ODOM_TOPIC}" "${recording_args[@]}"
+    odom_topic:="${ODOM_TOPIC}" "${recording_args[@]}" \
+    enable_fapp_detection:=true \
+    dynamic_mode:="${UAV0_FAPP_DYNAMIC_MODE:-swing-only}" \
+    enable_fapp_dynamic_avoidance:="${UAV0_FAPP_DYNAMIC_AVOIDANCE:-true}"
   printf '[退出] FUEL 规划器分屏，返回码=%s\n' "$?"
   keep_pane_open
 }
@@ -350,6 +358,11 @@ run_pane() {
 
 while (($# > 0)); do
   case "$1" in
+    --dynamic-mode)
+      [[ $# -ge 2 ]] || { log '--dynamic-mode 需要 swing-only 或 general'; exit 2; }
+      export UAV0_FAPP_DYNAMIC_MODE="$2"; shift 2 ;;
+    --dynamic-avoidance) export UAV0_FAPP_DYNAMIC_AVOIDANCE=true; shift ;;
+    --detection-only) export UAV0_FAPP_DYNAMIC_AVOIDANCE=false; shift ;;
     --pane)
       if [[ $# -lt 2 ]]; then
         log '--pane 需要指定 mavros/mid360/fastlio/pose/detection/planner/controller'
@@ -402,6 +415,15 @@ if [[ "${SHOW_HELP}" == true ]]; then
   usage
   exit 0
 fi
+
+case "${UAV0_FAPP_DYNAMIC_MODE:-swing-only}" in
+  swing-only|general) ;;
+  *) log '--dynamic-mode 只能是 swing-only 或 general'; exit 2 ;;
+esac
+case "${UAV0_FAPP_DYNAMIC_AVOIDANCE:-true}" in
+  true|false) ;;
+  *) log 'UAV0_FAPP_DYNAMIC_AVOIDANCE 只能是 true 或 false'; exit 2 ;;
+esac
 
 case "${THERMAL,,}" in
   true|false) THERMAL="${THERMAL,,}" ;;

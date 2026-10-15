@@ -44,6 +44,7 @@ include_directories(
 
 
 add_library( bspline_opt 
+    src/fapp_dynamic_obstacle.cpp
     src/bspline_optimizer.cpp 
     )
 target_link_libraries( bspline_opt
@@ -51,3 +52,8 @@ target_link_libraries( bspline_opt
     ${NLOPT_LIBRARIES}
     # /usr/local/lib/libnlopt.so
     )  
+
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(test_fapp_dynamic test/test_fapp_dynamic.cpp src/fapp_dynamic_obstacle.cpp)
+  catkin_add_gtest(test_fapp_bspline_cost test/test_fapp_bspline_cost.cpp src/fapp_dynamic_obstacle.cpp)
+endif()
