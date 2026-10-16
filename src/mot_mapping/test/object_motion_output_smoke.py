@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Exercise measured-motion confirmation against an observed background on localhost."""
+import argparse
 import math
 import os
 import signal
@@ -10,6 +11,9 @@ import time
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--local-bidirectional', action='store_true')
+    args = parser.parse_args()
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))
         port = sock.getsockname()[1]
@@ -35,6 +39,7 @@ def main():
             from obj_state_msgs.msg import ObjectsStates
             rospy.init_node('swing_output_smoke', anonymous=True)
             rospy.set_param('/UAV1/fapp/mapping_node/detection/object_motion_evidence_enabled', True)
+            rospy.set_param('/UAV1/fapp/mapping_node/detection/object_motion_local_bidirectional_enabled', args.local_bidirectional)
             rospy.set_param('/UAV1/fapp/mapping_node/detection/motion_confirmation_duration', .5)
             start(['roslaunch', 'mot_mapping', 'uav1_detection.launch',
                    'dynamic_mode:=general', 'native_input_enabled:=true',

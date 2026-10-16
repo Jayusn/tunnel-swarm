@@ -78,6 +78,10 @@ tracking/position_measurement_variance: 0.01
 # Experimental: three valid observations, two supported measured transitions.
 # Defaults stay disabled until labeled recall, false alarms and latency pass.
 detection/object_motion_evidence_enabled: false
+# Experimental: require both measured track shapes to support translation.
+detection/object_motion_local_bidirectional_enabled: false
+detection/object_motion_local_match_fraction: 0.60
+detection/object_motion_local_match_advantage: 0.20
 detection/object_motion_match_fraction: 0.45
 detection/object_motion_match_advantage: 0.30
 detection/object_motion_depth_fraction: 0.40

@@ -13,6 +13,10 @@ target_link_libraries(mapping_node ${catkin_LIBRARIES} ${PCL_LIBRARIES} Threads:
 add_dependencies(mapping_node ${catkin_EXPORTED_TARGETS})
 
 if(CATKIN_ENABLE_TESTING)
+  add_executable(object_motion_local_test test/object_motion_local_test.cpp)
+  target_compile_features(object_motion_local_test PRIVATE cxx_std_14)
+  target_include_directories(object_motion_local_test PRIVATE include ${EIGEN3_INCLUDE_DIRS})
+  add_test(NAME mot_mapping_object_motion_local COMMAND object_motion_local_test)
   add_executable(object_motion_evidence_test test/object_motion_evidence_test.cpp)
   target_compile_features(object_motion_evidence_test PRIVATE cxx_std_14)
   target_include_directories(object_motion_evidence_test PRIVATE include)

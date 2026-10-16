@@ -1,6 +1,9 @@
 <launch>
   <arg name="dynamic_mode" default="general"/>
   <arg name="object_motion_evidence_enabled" default="false"/>
+  <arg name="object_motion_local_bidirectional_enabled" default="false"/>
+  <arg name="object_motion_local_match_fraction" default="0.60"/>
+  <arg name="object_motion_local_match_advantage" default="0.20"/>
   <arg name="object_candidate_split_enabled" default="false"/>
   <arg name="object_candidate_isolation_enabled" default="false"/>
   <!-- Explicit trial preset; the general detection launch retains its defaults. -->
@@ -13,6 +16,9 @@
       <!-- Swing confirmation supplies its own local continuity test. -->
       <param if="$(eval arg('dynamic_mode') == 'swing-only')" name="detection/motion_confirmation_duration" value="0.0"/>
       <param name="detection/object_motion_evidence_enabled" value="$(arg object_motion_evidence_enabled)"/>
+      <param name="detection/object_motion_local_bidirectional_enabled" value="$(arg object_motion_local_bidirectional_enabled)"/>
+      <param name="detection/object_motion_local_match_fraction" value="$(arg object_motion_local_match_fraction)"/>
+      <param name="detection/object_motion_local_match_advantage" value="$(arg object_motion_local_match_advantage)"/>
       <param name="clustering/object_candidate_split_enabled" value="$(arg object_candidate_split_enabled)"/>
       <param name="association/object_candidate_isolation_enabled" value="$(arg object_candidate_isolation_enabled)"/>
       <param name="detection/dynamic_mode" value="$(arg dynamic_mode)"/>

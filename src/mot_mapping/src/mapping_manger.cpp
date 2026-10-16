@@ -1,6 +1,7 @@
 #include "mapping_manager.h"
 #include "density_partition.h"
 #include "bidirectional_depth.h"
+#include "object_motion_local.h"
 #include <cmath>
 #include <limits>
 #include <set>
@@ -151,7 +152,11 @@ void MappingRos::init() {
   nh.param("detection/object_motion_match_fraction", mp_->object_motion_match_fraction, 0.45);
   nh.param("detection/object_motion_match_advantage", mp_->object_motion_match_advantage, 0.30);
   nh.param("detection/object_motion_depth_fraction", mp_->object_motion_depth_fraction, 0.40);
-  for (double value : {mp_->object_motion_match_fraction, mp_->object_motion_match_advantage,
+  nh.param("detection/object_motion_local_bidirectional_enabled", mp_->object_motion_local_bidirectional_enabled, false);
+  nh.param("detection/object_motion_local_match_fraction", mp_->object_motion_local_match_fraction, 0.60);
+  nh.param("detection/object_motion_local_match_advantage", mp_->object_motion_local_match_advantage, 0.20);
+  for (double value : {mp_->object_motion_local_match_fraction, mp_->object_motion_local_match_advantage,
+                       mp_->object_motion_match_fraction, mp_->object_motion_match_advantage,
                        mp_->object_motion_depth_fraction})
     if (!std::isfinite(value) || value <= 0.0 || value > 1.0)
       throw std::runtime_error("object motion evidence fractions must be in (0, 1]");
@@ -1770,9 +1775,23 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
         static_fraction = double(stationary) / candidate.dense_points.size();
         depth_fraction = tracker->bidirectional_evidence.back().second.x();
       }
+      bool local_supported = true;
+      if (mp_->object_motion_local_bidirectional_enabled) {
+        mot_mapping::LocalMotionMatch local;
+        if (valid_observation && bidirectional_transition_valid)
+          local = mot_mapping::matchLocalMotion(tracker->observed_dense_points,
+              candidate.dense_points, candidate.state.position - tracker->observations.back().second);
+        local_supported = local.supports(mp_->object_motion_local_match_fraction,
+                                         mp_->object_motion_local_match_advantage);
+        ROS_DEBUG_STREAM("FAPP_OBJECT_LOCAL " << cloud_stamp_.toNSec() << " " << tracker->id
+            << " " << previous_ray.stamp.toNSec() << " " << local.valid
+            << " " << local.forward_moving << " " << local.forward_static
+            << " " << local.reverse_moving << " " << local.reverse_static
+            << " " << local_supported);
+      }
       object_motion_ready = tracker->object_motion_evidence.update(
           cloud_stamp_.toNSec(), previous_ray.stamp.toNSec(), valid_observation,
-          bidirectional_transition_valid, moving_fraction, static_fraction, depth_fraction,
+          bidirectional_transition_valid && local_supported, moving_fraction, static_fraction, depth_fraction,
           mp_->object_motion_match_fraction, mp_->object_motion_match_advantage,
           mp_->object_motion_depth_fraction);
       ROS_DEBUG_STREAM("FAPP_OBJECT_MOTION " << cloud_stamp_.toNSec() << " " << tracker->id

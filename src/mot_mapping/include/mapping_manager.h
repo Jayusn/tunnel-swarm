@@ -56,6 +56,9 @@ typedef vector<PointType, Eigen::aligned_allocator<PointType>>  PointVector;
 struct MapParam {
   bool swing_only = false;
   bool object_motion_evidence_enabled = false;
+  bool object_motion_local_bidirectional_enabled = false;
+  double object_motion_local_match_fraction = 0.60;
+  double object_motion_local_match_advantage = 0.20;
   double object_motion_match_fraction = 0.45;
   double object_motion_match_advantage = 0.30;
   double object_motion_depth_fraction = 0.40;
