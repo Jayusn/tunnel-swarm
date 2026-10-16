@@ -21,14 +21,11 @@ class VisionForwardingTest(unittest.TestCase):
             return False
         def sleep():
             state['index'] += 1
-        last_sample = [None]
-        def publish(sample):
-            if sample.header.stamp != last_sample[0]:
-                published.append(sample)
-                last_sample[0] = sample.header.stamp
+        def pose():
+            return NS(header=NS(stamp=None, frame_id=''), pose=None)
         scope = dict(rospy=NS(Rate=lambda hz: NS(sleep=sleep), is_shutdown=stopped),
                      latest_fastlio_odom=None, enable_truth_odom=truth,
-                     fastlio_sender=NS(publish=publish))
+                     PoseStamped=pose, pose_pub=NS(publish=published.append))
         exec(compile(ast.Module(body=[function], type_ignores=[]), str(source), 'exec'), scope)
         scope['fastlio']()
         return published
@@ -38,8 +35,8 @@ class VisionForwardingTest(unittest.TestCase):
         second = NS(header=NS(stamp=10.02), pose=NS(pose=NS(x=2.0)))
         output = self.run_loop([None, first, first, second])
         self.assertEqual([p.header.stamp for p in output], [10.0, 10.02])
-        self.assertIs(output[0], first)
-        self.assertIs(output[1], second)
+        self.assertIs(output[0].pose, first.pose.pose)
+        self.assertIs(output[1].pose, second.pose.pose)
 
     def test_truth_mode_has_no_second_pose_publisher(self):
         sample = NS(header=NS(stamp=10.0), pose=NS(pose=NS(x=1.0)))

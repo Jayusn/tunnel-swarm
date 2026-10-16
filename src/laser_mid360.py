@@ -5,96 +5,8 @@ import sys
 from sensor_msgs.msg import LaserScan
 from nav_msgs.msg import Odometry
 from gazebo_msgs.msg import ModelStates
-from tf.transformations import quaternion_matrix, quaternion_from_matrix, quaternion_multiply
+from tf.transformations import quaternion_matrix, quaternion_from_matrix
 import numpy as np
-import fcntl
-import os
-import struct
-from mavros_msgs.msg import Mavlink
-from pymavlink.dialects.v20 import common as mavlink2
-
-
-class FastLioOdometrySender:
-    """通过 MAVROS 原始通道发送带局部坐标系和重置计数的外部位姿。"""
-
-    def __init__(self, publisher, reset_file, system_id=1, component_id=191):
-        self.publisher = publisher
-        self.reset_file = reset_file
-        self.encoder = mavlink2.MAVLink(None, srcSystem=system_id, srcComponent=component_id)
-        self.reset_counter = None
-        self.last_sample = None
-
-    def next_reset_counter(self):
-        # ROS 参数随 roscore 退出会丢失，计数写在 ROS_HOME，跨脚本/ROS 重启保持。
-        os.makedirs(os.path.dirname(self.reset_file), exist_ok=True)
-        with open(self.reset_file, 'a+', encoding='ascii') as state:
-            fcntl.flock(state, fcntl.LOCK_EX)
-            state.seek(0)
-            previous = state.read().strip()
-            counter = (int(previous or '0') + 1) % 256
-            state.seek(0)
-            state.truncate()
-            state.write(str(counter))
-            state.flush()
-            os.fsync(state.fileno())
-        return counter
-
-    def publish(self, odom):
-        stamp = odom.header.stamp.to_nsec()
-        sample = (stamp, odom.header.seq, odom.header.frame_id)
-        if self.last_sample is not None:
-            if sample == self.last_sample:
-                return False
-            # 只认源序号/时间回退或坐标系变更，不用位置、角度突变猜测重置。
-            restarted = (stamp < self.last_sample[0] or
-                         (odom.header.seq < self.last_sample[1] and
-                          self.last_sample[1] != 0xffffffff) or
-                         odom.header.frame_id != self.last_sample[2])
-        else:
-            restarted = True
-        if restarted:
-            self.reset_counter = self.next_reset_counter()
-
-        pose = odom.pose.pose
-        q = pose.orientation
-        # 保持原 MAVROS vision_pose 的 ENU->NED、FLU->FRD 数值转换。
-        # LOCAL_FRD 仅声明该局部世界轴不以磁北为基准，不额外旋转规划坐标系。
-        world_rotation = [np.sqrt(0.5), np.sqrt(0.5), 0.0, 0.0]
-        body_rotation = [1.0, 0.0, 0.0, 0.0]
-        rotation = quaternion_multiply(
-            quaternion_multiply(world_rotation, [q.x, q.y, q.z, q.w]), body_rotation)
-        position = pose.position
-        unknown = float('nan')
-        msg = self.encoder.odometry_encode(
-            stamp // 1000, mavlink2.MAV_FRAME_LOCAL_FRD, mavlink2.MAV_FRAME_BODY_FRD,
-            position.y, position.x, -position.z,
-            [rotation[3], rotation[0], rotation[1], rotation[2]],
-            unknown, unknown, unknown, unknown, unknown, unknown,
-            # 原 PoseStamped 接口给 PX4 的位姿协方差为零；速度仍不提供。
-            [0.0] * 21, [unknown] * 21, self.reset_counter,
-            # PX4 1.16 的外部视觉入口接受 VISION，不接受 LIDAR 枚举。
-            mavlink2.MAV_ESTIMATOR_TYPE_VISION, 0)
-        msg.pack(self.encoder)
-        self.encoder.seq = (self.encoder.seq + 1) % 256
-        payload = msg.get_payload()
-        padded = payload + b'\0' * (-len(payload) % 8)
-        header = msg.get_header()
-        wire = Mavlink()
-        wire.header.stamp = odom.header.stamp
-        wire.framing_status = Mavlink.FRAMING_OK
-        wire.magic = Mavlink.MAVLINK_V20
-        wire.len = len(payload)
-        wire.seq = msg.get_seq()
-        wire.sysid = msg.get_srcSystem()
-        wire.compid = msg.get_srcComponent()
-        wire.msgid = msg.get_msgId()
-        wire.incompat_flags = header.incompat_flags
-        wire.compat_flags = header.compat_flags
-        wire.checksum = msg.get_crc()
-        wire.payload64 = struct.unpack('<%dQ' % (len(padded) // 8), padded)
-        self.publisher.publish(wire)
-        self.last_sample = sample
-        return True
 
 print("sys.argv 内容：", sys.argv)
 
@@ -122,22 +34,8 @@ vision_pose_topic = rospy.get_param('~vision_pose_topic', vehicle_ns + '/mavros/
 fastlio_world_frame = rospy.get_param('~fastlio_world_frame', ros_vehicle_name + '/camera_init')
 fastlio_body_frame = rospy.get_param('~fastlio_body_frame', ros_vehicle_name + '/body')
 
-# 实机 FAST-LIO 只发送 ODOMETRY，避免旧 vision_pose 同时参与融合。
-use_fastlio_odometry = laser_slam_type == 'fastlio' and not enable_truth_odom
-pose_pub = None
-fastlio_sender = None
-if use_fastlio_odometry:
-    mavlink_topic = vehicle_ns + '/mavlink/to'
-    reset_file = os.path.join(os.environ.get('ROS_HOME', os.path.expanduser('~/.ros')),
-                              ros_vehicle_name + '_fastlio_odom_reset_counter')
-    fastlio_sender = FastLioOdometrySender(
-        rospy.Publisher(mavlink_topic, Mavlink, queue_size=1), reset_file,
-        int(rospy.get_param(vehicle_ns + '/mavros/system_id', 1)),
-        int(rospy.get_param(vehicle_ns + '/mavros/component_id', 191)))
-    rospy.loginfo('[laser_mid360] FAST-LIO -> %s: ODOMETRY LOCAL_FRD, pose only; '
-                  'reset counter persists in %s.', mavlink_topic, reset_file)
-else:
-    pose_pub = rospy.Publisher(vision_pose_topic, PoseStamped, queue_size=1)
+# 创建发布者，用于发布视觉姿态信息
+pose_pub = rospy.Publisher(vision_pose_topic, PoseStamped, queue_size=1)
 truth_odom_pub = None
 truth_model_index = None
 latest_fastlio_odom = None
@@ -369,10 +267,18 @@ def aloam():
 def fastlio():
     """实机按最多50Hz转发高频里程计，保留测量时刻；仿真由真值回调发布。"""
     rate = rospy.Rate(50)
+    last_stamp = None
     while not rospy.is_shutdown():
         odom = latest_fastlio_odom
         if not enable_truth_odom and odom is not None:
-            fastlio_sender.publish(odom)
+            # 不把旧 TF 重新盖上当前时间，也不重复发布同一次测量。
+            if last_stamp != odom.header.stamp:
+                pose = PoseStamped()
+                pose.header.stamp = odom.header.stamp
+                pose.header.frame_id = 'map'
+                pose.pose = odom.pose.pose
+                pose_pub.publish(pose)
+                last_stamp = odom.header.stamp
         rate.sleep()
 
 if __name__ == '__main__':
