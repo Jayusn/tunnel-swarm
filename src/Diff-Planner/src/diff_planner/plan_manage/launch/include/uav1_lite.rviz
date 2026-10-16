@@ -465,18 +465,6 @@ Visualization Manager:
               Value: true
             - Class: rviz/Image
               Enabled: true
-              Image Topic: /UAV1/landing/front/debug_image
-              Max Value: 1
-              Median window: 5
-              Min Value: 0
-              Name: landing_front_aruco_image
-              Normalize Range: true
-              Queue Size: 2
-              Transport Hint: raw
-              Unreliable: false
-              Value: true
-            - Class: rviz/Image
-              Enabled: true
               Image Topic: /UAV1/landing/combined_debug_image
               Max Value: 1
               Median window: 5
@@ -627,8 +615,6 @@ Window Geometry:
   color_detection_image:
     collapsed: false
   landing_down_combined_image:
-    collapsed: false
-  landing_front_aruco_image:
     collapsed: false
   qr_detection_image:
     collapsed: false
