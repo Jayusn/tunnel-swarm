@@ -31,13 +31,26 @@ TEST_F(AStarVehicleOccupancy, RejectsOccupiedActualEndpoint)
   EXPECT_EQ(search.AstarSearch(0.5, start, end, &region), ASTAR_RET::INIT_ERR);
 }
 
+TEST_F(AStarVehicleOccupancy, NegativeRelativeCoordinateKeepsFreeEndpoint)
+{
+  search.setOccupancyChecker([](const Vector3d &position) {
+    return std::abs(position.x() + 0.5) < 0.1 &&
+           std::abs(position.y()) < 0.2;
+  });
+  // The free start at -1 must not be truncated to the occupied node at -0.5.
+  EXPECT_EQ(search.AstarSearch(0.5, Vector3d(-1.0, 0.0, 1.0),
+      Vector3d(1.0, 0.0, 1.0), &region), ASTAR_RET::SUCCESS);
+}
+
 TEST_F(AStarVehicleOccupancy, ChecksActualEndpointToGridConnection)
 {
   search.setOccupancyChecker([](const Vector3d &position) {
-    return std::abs(position.x() + 0.175) < 0.025;
+    // Keep both endpoints free and block the connection to (-0.5, -0.5).
+    return std::abs(position.x() + 0.38) < 0.025 &&
+           std::abs(position.y() + 0.38) < 0.025;
   });
-  EXPECT_EQ(search.AstarSearch(0.5, Vector3d(-0.35, 0.0, 1.0),
-      Vector3d(1.35, 0.0, 1.0), &region), ASTAR_RET::INIT_ERR);
+  EXPECT_EQ(search.AstarSearch(0.5, Vector3d(-0.26, -0.26, 1.0),
+      Vector3d(1.26, 1.26, 1.0), &region), ASTAR_RET::INIT_ERR);
 }
 
 TEST_F(AStarVehicleOccupancy, SamplesBetweenNeighborNodes)

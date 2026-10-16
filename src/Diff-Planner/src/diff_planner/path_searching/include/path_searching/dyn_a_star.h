@@ -153,7 +153,9 @@ inline Eigen::Vector3d AStar::Index2Coord(const Eigen::Vector3i &index) const
 
 inline bool AStar::Coord2Index(const Eigen::Vector3d &pt, Eigen::Vector3i &idx) const
 {
-	idx = ((pt - center_) * inv_step_size_ + Eigen::Vector3d(0.5, 0.5, 0.5)).cast<int>() + CENTER_IDX_;
+	// Round negative offsets too; casting directly truncates them toward zero.
+	idx = (((pt - center_) * inv_step_size_ + Eigen::Vector3d::Constant(0.5))
+			.array().floor().cast<int>().matrix()) + CENTER_IDX_;
 
 	if (idx(0) < 0 || idx(0) >= POOL_SIZE_(0) || idx(1) < 0 || idx(1) >= POOL_SIZE_(1) || idx(2) < 0 || idx(2) >= POOL_SIZE_(2))
 	{

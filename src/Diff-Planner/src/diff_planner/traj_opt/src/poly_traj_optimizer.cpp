@@ -474,6 +474,21 @@ namespace diff_planner
       Eigen::Vector3d in(init_points.col(segment_ids[i].second)), out(init_points.col(segment_ids[i].first));
       std::vector<Eigen::Vector3d> search_path;
       ASTAR_RET ret = searchObstaclePath(in, out, search_path);
+      // These are internal detour endpoints, not the aircraft start/goal.
+      // A sampled collision boundary can still leave its control point or
+      // grid connection occupied. Extend along the original trajectory until
+      // A-star accepts both connections; keep the collision segment unchanged.
+      int search_begin = segment_ids[i].first;
+      int search_end = segment_ids[i].second;
+      while (ret == ASTAR_RET::INIT_ERR && !dynamic_candidate_active_ &&
+             (search_begin > 0 || search_end + 1 < init_points.cols()))
+      {
+        if (checkPlanningTimeout("fine collision endpoint selection")) return CHK_RET::ERR;
+        if (search_begin > 0) --search_begin;
+        if (search_end + 1 < init_points.cols()) ++search_end;
+        ret = searchObstaclePath(init_points.col(search_end),
+                                 init_points.col(search_begin), search_path);
+      }
       if (ret == ASTAR_RET::SUCCESS)
       {
         a_star_pathes.push_back(std::move(search_path));
