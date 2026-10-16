@@ -77,7 +77,7 @@ armed `OFFBOARD` state. Treat it as flight-critical software: begin every
 session without propellers and keep an RC takeover mode available.
 
 精降已识别过目标后，连续丢码满 `safety.reacquire_timeout_sec`（默认 `5.0 s`）
-会锁定当时的 FAST-LIO 世界坐标 XY，以 `0.10 m/s` 慢降，不再无限悬停找码；平台高度沿用
+会锁定当时的 FAST-LIO 世界坐标 XY，以 `0.25 m/s` 慢降，不再无限悬停找码；平台高度沿用
 最后一次有效视觉观测的估计，离平台 `0.30 m` 时才请求 PX4 `AUTO.LAND`。
 计时从首次丢码开始，包含前 `0.5 s` 的丢码确认时间；期间重新识别到目标会
 清零计时。精降从未识别到目标时继续保持并搜索；已进入固定 XY 下降时沿用原流程。
@@ -196,7 +196,7 @@ As soon as the detected marker height reaches `1.50 m` or lower, the node
 records the current fused local X/Y and estimated ground height and enters
 fixed-X/Y descent immediately; there is no second fine-alignment dwell at the
 handoff height. It then holds full XYZ position targets: X/Y and yaw remain
-fixed while the Z target moves down at `0.10 m/s`; ArUco visibility is no
+fixed while the Z target moves down at `0.25 m/s`; ArUco visibility is no
 longer required during this phase. The node stays in `OFFBOARD` until an
 estimated height of `0.30 m` or lower, then requests PX4 to switch to
 `AUTO.LAND` for the final descent and motor stop.
@@ -292,6 +292,6 @@ mode change.
 5. Handoff height: at or below `1.50 m`, confirm the controller immediately
    records the current fused X/Y and enters fixed-X/Y descent.
 6. Fixed-XYZ descent: confirm the recorded fused X/Y stays fixed while the Z
-   target descends at `0.10 m/s`, including when ArUco leaves the image.
+   target descends at `0.25 m/s`, including when ArUco leaves the image.
 7. Low-height cutoff: confirm the node logs the `0.30 m` threshold and requests
    PX4 `AUTO.LAND`; PX4 completes the final descent and motor stop.

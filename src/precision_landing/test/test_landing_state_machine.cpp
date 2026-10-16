@@ -92,7 +92,7 @@ TEST(LandingStateMachine, FiveSecondsOfLossLocksXyAndDescendsBeforeAutoLand) {
             LandingState::REACQUIRE);
   const auto timeout = machine.update(ActiveInput(5.90, 2.0, 0.05, false));
   EXPECT_EQ(timeout.state, LandingState::FIXED_XY_DESCENT);
-  EXPECT_DOUBLE_EQ(timeout.descent_speed_mps, 0.10);
+  EXPECT_DOUBLE_EQ(timeout.descent_speed_mps, 0.25);
   EXPECT_FALSE(timeout.request_auto_land);
   EXPECT_EQ(machine.update(ActiveInput(20.0, 2.0, 0.05, false)).state,
             LandingState::FIXED_XY_DESCENT);
@@ -207,7 +207,7 @@ TEST(LandingStateMachine, FixedWorldXyDescentNoLongerRequiresMarker) {
   ReachFixedDescent(machine);
   const auto output = machine.update(ActiveInput(1.2, 0.0, 0.0, false));
   EXPECT_EQ(output.state, LandingState::FIXED_XY_DESCENT);
-  EXPECT_DOUBLE_EQ(output.descent_speed_mps, 0.10);
+  EXPECT_DOUBLE_EQ(output.descent_speed_mps, 0.25);
   EXPECT_FALSE(output.request_auto_land);
 }
 
@@ -261,7 +261,7 @@ TEST(LandingStateMachine, FallingTriggerDoesNotInterruptFixedDescent) {
   input.trigger = false;
   const auto output = machine.update(input);
   EXPECT_EQ(output.state, LandingState::FIXED_XY_DESCENT);
-  EXPECT_DOUBLE_EQ(output.descent_speed_mps, 0.10);
+  EXPECT_DOUBLE_EQ(output.descent_speed_mps, 0.25);
 }
 
 TEST(LandingStateMachine, FalseTriggerResetsAbortToIdle) {

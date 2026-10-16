@@ -702,7 +702,7 @@ class PrecisionLandingNodeTest(unittest.TestCase):
         last = descent[-2:]
         speed = ((last[0].position.z - last[1].position.z)
                  / (last[1].header.stamp - last[0].header.stamp).to_sec())
-        self.assertAlmostEqual(speed, 0.10, delta=0.01)
+        self.assertAlmostEqual(speed, 0.25, delta=0.01)
 
         # Ground estimate comes from the last visible marker at vehicle z=2.0.
         ground_z = 2.0 - 600.0 * 0.60 / 119.0

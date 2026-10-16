@@ -52,7 +52,7 @@ def test_conservative_configuration_contract():
     assert cfg["safety"]["require_camera_info"] is True
     assert cfg["stages"]["high"]["min_height_m"] == 1.30
     assert cfg["stages"]["auto_land"]["height_m"] == 1.30
-    assert cfg["stages"]["fixed_xy_descent"]["descent_mps"] == 0.10
+    assert cfg["stages"]["fixed_xy_descent"]["descent_mps"] == 0.25
     assert cfg["stages"]["fixed_xy_descent"]["cutoff_height_m"] == 0.30
 
 

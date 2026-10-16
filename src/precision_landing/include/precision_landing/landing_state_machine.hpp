@@ -14,7 +14,7 @@ struct StateMachineConfig {
   double auto_land_height_m{1.50};
   double high_align_error_m{0.25};
   double high_descent_mps{0.25};
-  double fixed_descent_mps{0.10};
+  double fixed_descent_mps{0.25};
   double auto_land_error_m{0.12};
   double fine_align_stable_sec{0.50};
   double target_loss_timeout_sec{0.50};
