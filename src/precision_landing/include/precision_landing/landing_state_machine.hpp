@@ -74,6 +74,7 @@ class LandingStateMachine {
   LandingState state_{LandingState::IDLE};
   double target_visible_since_sec_{-1.0};
   double aligned_since_sec_{-1.0};
+  bool target_seen_{false};
   double target_loss_since_sec_{-1.0};
   double fine_aligned_since_sec_{-1.0};
   double descent_gate_since_sec_{-1.0};

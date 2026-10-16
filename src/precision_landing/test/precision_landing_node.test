@@ -31,5 +31,5 @@
   </node>
 
   <test test-name="precision_landing_node_test" pkg="precision_landing"
-        type="test_precision_landing_node.py" time-limit="45.0"/>
+        type="test_precision_landing_node.py" time-limit="60.0"/>
 </launch>

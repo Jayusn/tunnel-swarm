@@ -76,6 +76,12 @@ This package controls a PX4 vehicle through MAVROS only after a rising
 armed `OFFBOARD` state. Treat it as flight-critical software: begin every
 session without propellers and keep an RC takeover mode available.
 
+精降已识别过目标后，连续丢码满 `safety.reacquire_timeout_sec`（默认 `5.0 s`）
+会锁定当时的 FAST-LIO 世界坐标 XY，以 `0.10 m/s` 慢降，不再无限悬停找码；平台高度沿用
+最后一次有效视觉观测的估计，离平台 `0.30 m` 时才请求 PX4 `AUTO.LAND`。
+计时从首次丢码开始，包含前 `0.5 s` 的丢码确认时间；期间重新识别到目标会
+清零计时。精降从未识别到目标时继续保持并搜索；已进入固定 XY 下降时沿用原流程。
+
 ## Build and configure
 
 From the Catkin workspace root, install declared ROS dependencies and build:

@@ -659,6 +659,70 @@ class PrecisionLandingNodeTest(unittest.TestCase):
             "mock SetMode callback did not finish before test teardown",
         )
 
+    def test_loss_timeout_locks_xy_until_point_three_meter_cutoff(self):
+        self.publish_vehicle_context(armed=True, mode="OFFBOARD")
+        self.publish_camera_info(valid=True)
+        self.trigger_pub.publish(Bool(data=True))
+        self.publish_centered_marker(
+            marker_id=37, frames=12, marker_size_px=120
+        )
+        self.assertTrue(self.wait_for(
+            lambda: "DESCEND_HIGH" in self._state_snapshot()
+        ))
+
+        blank = self.bridge.cv2_to_imgmsg(
+            np.full((480, 640), 255, dtype=np.uint8), encoding="mono8"
+        )
+        blank.header.frame_id = "camera"
+        lost_at = time.monotonic()
+        setpoint_start = self._setpoint_count()
+        while time.monotonic() - lost_at < 5.8:
+            blank.header.stamp = rospy.Time.now()
+            self.image_pub.publish(blank)
+            self.publish_camera_info(valid=True)
+            # Simulate some vertical drift while the marker is missing.
+            self.publish_vehicle_context(
+                armed=True, mode="OFFBOARD", pose_z=1.8
+            )
+            self.assertEqual(self._mode_request_count(), 0)
+            if time.monotonic() - lost_at < 4.9:
+                self.assertNotIn("FIXED_XY_DESCENT", self._state_snapshot())
+
+        self.assertIn("REACQUIRE", self._state_snapshot())
+        self.assertIn("FIXED_XY_DESCENT", self._state_snapshot())
+        descent = self._setpoint_snapshot()[setpoint_start:]
+        self.assertTrue(any(msg.position.z < 1.79 for msg in descent))
+        self.assertTrue(all(
+            not (msg.type_mask & PositionTarget.IGNORE_PX)
+            and not (msg.type_mask & PositionTarget.IGNORE_PY)
+            and abs(msg.position.x) < 1.0e-6
+            and abs(msg.position.y) < 1.0e-6
+            for msg in descent
+        ))
+        last = descent[-2:]
+        speed = ((last[0].position.z - last[1].position.z)
+                 / (last[1].header.stamp - last[0].header.stamp).to_sec())
+        self.assertAlmostEqual(speed, 0.10, delta=0.01)
+
+        # Ground estimate comes from the last visible marker at vehicle z=2.0.
+        ground_z = 2.0 - 600.0 * 0.60 / 119.0
+        self.publish_vehicle_context(
+            armed=True, mode="OFFBOARD", pose_z=ground_z + 0.35
+        )
+        self.assertEqual(self._mode_request_count(), 0)
+        self.assertNotIn("REQUEST_AUTO_LAND", self._state_snapshot())
+        self.publish_vehicle_context(
+            armed=True, mode="OFFBOARD", pose_z=ground_z + 0.25
+        )
+        self.assertTrue(self.wait_for(
+            lambda: "REQUEST_AUTO_LAND" in self._state_snapshot()
+        ))
+        self.assertTrue(self.wait_for(lambda: self._mode_request_count() > 0))
+        with self.lock:
+            self.assertTrue(all(mode == "AUTO.LAND" for mode in self.mode_requests))
+        self.publish_vehicle_context(armed=True, mode="AUTO.LAND")
+        self.assertTrue(self.wait_for(lambda: "DONE" in self._state_snapshot()))
+
     def test_manual_mode_change_stops_stream(self):
         self.publish_vehicle_context(armed=True, mode="OFFBOARD")
         self.publish_camera_info(valid=True)
@@ -792,6 +856,7 @@ if __name__ == "__main__":
         "test_auto_land_request_does_not_block_control_loop": 9,
         "test_falling_trigger_keeps_fixed_descent_active": 10,
         "test_manual_mode_change_stops_stream": 11,
+        "test_loss_timeout_locks_xy_until_point_three_meter_cutoff": 12,
     }
 
     def compare_test_names(left, right):

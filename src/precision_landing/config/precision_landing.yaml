@@ -36,9 +36,8 @@ safety:
   # skew accommodates normal ROS callback scheduling and synchronized clocks.
   max_header_future_sec: 0.05
   target_loss_timeout_sec: 0.50
-  # Target search and reacquisition continue while positioning, camera,
-  # MAVROS and OFFBOARD remain healthy. total_timeout_sec only controls the
-  # long-search warning; reacquire_timeout_sec is retained for compatibility.
+  # 已见过目标后，从首次丢码开始连续计时，满 5 秒锁定 XY 慢降，至 0.30 m 再 AUTO.LAND。
+  # 重新识别到目标会清零计时；total_timeout_sec 只控制长时间搜索告警。
   reacquire_timeout_sec: 5.0
   total_timeout_sec: 30.0
 state_machine:

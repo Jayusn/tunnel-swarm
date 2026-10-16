@@ -31,6 +31,7 @@ StateOutput LandingStateMachine::update(const StateInput& input) {
     fine_aligned_since_sec_ = -1.0;
     target_visible_since_sec_ = -1.0;
     aligned_since_sec_ = -1.0;
+    target_seen_ = false;
     target_loss_since_sec_ = -1.0;
     descent_gate_since_sec_ = -1.0;
     descent_gate_state_ = LandingState::IDLE;
@@ -41,6 +42,14 @@ StateOutput LandingStateMachine::update(const StateInput& input) {
     state_ = LandingState::PRECHECK;
     mission_started_sec_ = input.now_sec;
     entered_precheck = true;
+  }
+
+  const bool visual_tracking =
+      state_ == LandingState::ACQUIRE || state_ == LandingState::ALIGN ||
+      state_ == LandingState::DESCEND_HIGH || state_ == LandingState::REACQUIRE;
+  if (visual_tracking && input.target_visible) {
+    target_seen_ = true;
+    target_loss_since_sec_ = -1.0;
   }
 
   if (!entered_precheck && state_ == LandingState::REQUEST_AUTO_LAND &&
@@ -59,9 +68,17 @@ StateOutput LandingStateMachine::update(const StateInput& input) {
   } else if (!entered_precheck && state_ == LandingState::PRECHECK && input.precheck_ok &&
              input.offboard) {
     state_ = LandingState::ACQUIRE;
+    target_seen_ = input.target_visible;
     target_visible_since_sec_ = input.target_visible ? input.now_sec : -1.0;
+  } else if (!entered_precheck && visual_tracking &&
+             !input.target_visible && target_loss_since_sec_ >= 0.0 &&
+             input.now_sec - target_loss_since_sec_ >= config_.reacquire_timeout_sec) {
+    state_ = LandingState::FIXED_XY_DESCENT;
   } else if (!entered_precheck && state_ == LandingState::ACQUIRE) {
     if (!input.target_visible) {
+      if (target_seen_ && target_loss_since_sec_ < 0.0) {
+        target_loss_since_sec_ = input.now_sec;
+      }
       target_visible_since_sec_ = -1.0;
     } else if (target_visible_since_sec_ < 0.0) {
       target_visible_since_sec_ = input.now_sec;

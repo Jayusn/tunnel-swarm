@@ -788,6 +788,7 @@ class PrecisionLandingNode {
       latest_observation_ = TargetObservation();
       last_error_body_.setZero();
       last_marker_height_m_ = 0.0;
+      last_marker_ground_z_ = 0.0;
       yaw_captured_ = poseFresh(now) && captureCurrentYaw();
       captureHoldPosition();
       mission_trigger_time_ = now;
@@ -885,6 +886,7 @@ class PrecisionLandingNode {
         marker_height_m = candidate_marker_height_m;
         last_error_body_ = current_error_body;
         last_marker_height_m_ = marker_height_m;
+        last_marker_ground_z_ = local_pose_.pose.position.z - marker_height_m;
       }
     }
 
@@ -933,11 +935,11 @@ class PrecisionLandingNode {
 
     if (output.state == LandingState::FIXED_XY_DESCENT &&
         previous_state_ != LandingState::FIXED_XY_DESCENT &&
-        fresh_pose && target_visible) {
+        fresh_pose) {
       fixed_xy_position_ = Eigen::Vector2d(
           local_pose_.pose.position.x, local_pose_.pose.position.y);
-      fixed_xy_ground_z_ =
-          local_pose_.pose.position.z - marker_height_m;
+      // 丢码超时也沿用最后一次有效视觉观测估算的平台高度。
+      fixed_xy_ground_z_ = last_marker_ground_z_;
       fixed_xy_target_z_ = local_pose_.pose.position.z;
       fixed_xy_descent_valid_ =
           fixed_xy_position_.allFinite() &&
@@ -958,6 +960,7 @@ class PrecisionLandingNode {
       yaw_captured_ = false;
       last_error_body_.setZero();
       last_marker_height_m_ = 0.0;
+      last_marker_ground_z_ = 0.0;
       hold_position_valid_ = false;
       fixed_xy_descent_valid_ = false;
       mission_trigger_time_ = ros::Time(0);
@@ -1624,6 +1627,7 @@ class PrecisionLandingNode {
   TargetObservation latest_observation_;
   Eigen::Vector2d last_error_body_{Eigen::Vector2d::Zero()};
   double last_marker_height_m_{0.0};
+  double last_marker_ground_z_{0.0};
 
   bool trigger_{false};
   int active_requested_id_{-1};
