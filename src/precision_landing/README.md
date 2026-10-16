@@ -76,6 +76,10 @@ This package controls a PX4 vehicle through MAVROS only after a rising
 armed `OFFBOARD` state. Treat it as flight-critical software: begin every
 session without propellers and keep an RC takeover mode available.
 
+总流程通过 AutoTrans MPC 执行精降时，继续使用控制器已配置的外力估计和补偿，
+接管后不再强制清零；参数关闭、传感器失效、落地和 CH10 降落仍按控制器原有逻辑处理。
+独立 NMPC 精降测试入口保留关闭补偿的行为。
+
 精降已识别过目标后，连续丢码满 `safety.reacquire_timeout_sec`（默认 `5.0 s`）
 会锁定当时的 FAST-LIO 世界坐标 XY，以 `0.25 m/s` 慢降，不再无限悬停找码；平台高度沿用
 最后一次有效视觉观测的估计，离平台 `0.30 m` 时才请求 PX4 `AUTO.LAND`。

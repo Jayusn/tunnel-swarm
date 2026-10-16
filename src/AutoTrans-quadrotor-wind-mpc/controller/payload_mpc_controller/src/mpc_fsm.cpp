@@ -447,7 +447,8 @@ namespace PayloadMPC
             }
             else if (fsm_state == MANUAL_CTRL) return;
         }
-		if (mpc_recovery_active_ || direct_auto_land_active_ || precision_test_mode_ || precision_mission_active_)
+		// 总流程精降沿用已有外力补偿；独立测试仍保持原有关闭行为。
+		if (mpc_recovery_active_ || direct_auto_land_active_ || precision_test_mode_)
 		{
 			clearAppliedDisturbance();
 		}
