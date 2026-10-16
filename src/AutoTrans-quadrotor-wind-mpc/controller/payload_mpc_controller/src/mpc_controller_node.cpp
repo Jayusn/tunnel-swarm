@@ -47,8 +47,8 @@ int main(int argc, char **argv)
     ros::Subscriber force_attitude_odom_sub =
         nh.subscribe<nav_msgs::Odometry>("force_attitude_odom",
                                          100,
-                                         boost::bind(&Odom_Data_t::feed, &fsm.force_attitude_odom_data, _1),
-                                         ros::VoidConstPtr(),
+                                         &PayloadMPC::MPCFSM::forceAttitudeOdomCallback,
+                                         &fsm,
                                          ros::TransportHints().tcpNoDelay());
 
     // NMPC recovery uses the PX4-local pose as the hold target for PX4's native
@@ -94,8 +94,8 @@ int main(int argc, char **argv)
     ros::Subscriber imu_sub =
         nh.subscribe<sensor_msgs::Imu>("drone_imu/data",
                                        100,
-                                       boost::bind(&Imu_Data_t::feed, &fsm.imu_data, _1),
-                                       ros::VoidConstPtr(),
+                                       &PayloadMPC::MPCFSM::imuCallback,
+                                       &fsm,
                                        ros::TransportHints().tcpNoDelay());
     fsm.imu_data.set_filter_params(param.filter_param_.sample_freq_quad_acc, param.filter_param_.cutoff_freq_quad_acc,
                                    param.filter_param_.sample_freq_quad_omg, param.filter_param_.cutoff_freq_quad_omg);
@@ -116,8 +116,8 @@ int main(int argc, char **argv)
     ros::Subscriber esc_sub =
         nh.subscribe<mavros_msgs::ESCStatus>("/mavros/esc_status",
                                              100,
-                                             boost::bind(&Rpm_Data_t::feed, &fsm.rpm_data, _1),
-                                             ros::VoidConstPtr(),
+                                             &PayloadMPC::MPCFSM::rpmCallback,
+                                             &fsm,
                                              ros::TransportHints().tcpNoDelay());
     fsm.rpm_data.set_filter_params(param.filter_param_.sample_freq_rpm, param.filter_param_.cutoff_freq_rpm);
 

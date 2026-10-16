@@ -48,10 +48,20 @@ namespace PayloadMPC
 			double max_force;
 			// 实际写入 NMPC OnlineData 的世界系补偿力模长上限，单位 N。
 			double max_applied_force;
+			// 实际补偿力变化率，单位 N/s；Z 补偿低通截止频率，单位 Hz（0 为旁路）。
+			double max_applied_force_rate_xy;
+			double max_applied_force_rate_z;
+			double cutoff_freq_applied_force_z;
 			// 是否运行并发布世界系无人机外力 f_Q，单位 N；该开关本身不授权 NMPC 使用补偿。
 			bool enable_force_estimation;
 			// 是否把有效的 f_Q 写入 NMPC OnlineData；关闭时 NMPC 始终接收零外力。
 			bool enable_disturbance_compensation;
+			// 源时间戳用于插值，本机接收时间用于判断外力输入新鲜度。
+			bool enable_input_sync;
+			double force_sync_history_duration;
+			double force_sync_max_interp_gap;
+			double force_sync_max_age;
+			double force_sync_reset_backjump;
 			// 写入 NMPC 前的世界系三轴补偿增益，范围 [0, 1]。
 			double force_axis_gain_x{1.0};
 			double force_axis_gain_y{1.0};
@@ -520,6 +530,25 @@ namespace PayloadMPC
 			read_essential_param(nh, "force_estimator/imu_body_length", force_estimator_param_.imu_body_length);
 			read_essential_param(nh, "force_estimator/enable_force_estimation", force_estimator_param_.enable_force_estimation);
 			read_essential_param(nh, "force_estimator/enable_disturbance_compensation", force_estimator_param_.enable_disturbance_compensation);
+			read_essential_param(nh, "force_estimator/enable_input_sync", force_estimator_param_.enable_input_sync);
+			read_essential_param(nh, "force_estimator/force_sync_history_duration", force_estimator_param_.force_sync_history_duration);
+			read_essential_param(nh, "force_estimator/force_sync_max_interp_gap", force_estimator_param_.force_sync_max_interp_gap);
+			read_essential_param(nh, "force_estimator/force_sync_max_age", force_estimator_param_.force_sync_max_age);
+			read_essential_param(nh, "force_estimator/force_sync_reset_backjump", force_estimator_param_.force_sync_reset_backjump);
+			if (!std::isfinite(force_estimator_param_.force_sync_history_duration) ||
+				!std::isfinite(force_estimator_param_.force_sync_max_interp_gap) ||
+				!std::isfinite(force_estimator_param_.force_sync_max_age) ||
+				!std::isfinite(force_estimator_param_.force_sync_reset_backjump) ||
+				force_estimator_param_.force_sync_history_duration <= 0.0 ||
+				force_estimator_param_.force_sync_max_interp_gap <= 0.0 ||
+				force_estimator_param_.force_sync_max_age <= 0.0 ||
+				force_estimator_param_.force_sync_reset_backjump <= 0.0 ||
+				force_estimator_param_.force_sync_history_duration <
+					force_estimator_param_.force_sync_max_interp_gap)
+			{
+				ROS_ERROR("[参数] 外力输入同步参数无效。");
+				ROS_BREAK();
+			}
 			read_essential_param(nh, "force_estimator/force_axis_gain_x", force_estimator_param_.force_axis_gain_x);
 			read_essential_param(nh, "force_estimator/force_axis_gain_y", force_estimator_param_.force_axis_gain_y);
 			read_essential_param(nh, "force_estimator/force_axis_gain_z", force_estimator_param_.force_axis_gain_z);
@@ -544,6 +573,24 @@ namespace PayloadMPC
 			read_essential_param(nh, "force_estimator/USE_CONSTANT_MOMENT", force_estimator_param_.USE_CONSTANT_MOMENT);
 			read_essential_param(nh, "force_estimator/max_force", force_estimator_param_.max_force);
 			read_essential_param(nh, "force_estimator/max_applied_force", force_estimator_param_.max_applied_force);
+			read_essential_param(nh, "force_estimator/max_applied_force_rate_xy", force_estimator_param_.max_applied_force_rate_xy);
+			read_essential_param(nh, "force_estimator/max_applied_force_rate_z", force_estimator_param_.max_applied_force_rate_z);
+			read_essential_param(nh, "force_estimator/cutoff_freq_applied_force_z", force_estimator_param_.cutoff_freq_applied_force_z);
+			if (!std::isfinite(force_estimator_param_.max_applied_force_rate_xy) ||
+				!std::isfinite(force_estimator_param_.max_applied_force_rate_z) ||
+				force_estimator_param_.max_applied_force_rate_xy <= 0.0 ||
+				force_estimator_param_.max_applied_force_rate_z <= 0.0)
+			{
+				ROS_ERROR("[参数] 外力补偿变化率上限必须为有限正数。");
+				ROS_BREAK();
+			}
+			if (!std::isfinite(force_estimator_param_.cutoff_freq_applied_force_z) ||
+				force_estimator_param_.cutoff_freq_applied_force_z < 0.0 ||
+				force_estimator_param_.cutoff_freq_applied_force_z >= ctrl_freq_max_ / 2.0)
+			{
+				ROS_ERROR("[参数] cutoff_freq_applied_force_z 必须位于 [0, ctrl_freq_max/2) Hz。");
+				ROS_BREAK();
+			}
 			if (!std::isfinite(force_estimator_param_.max_force) ||
 				!std::isfinite(force_estimator_param_.max_applied_force) ||
 				force_estimator_param_.max_force <= 0.0 ||

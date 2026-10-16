@@ -66,6 +66,12 @@ namespace PayloadMPC
 		pub_rmse_info_ = nh_.advertise<std_msgs::Float64MultiArray>("mpc/rmse_info", 1);
 
 		force_estimator_.init(params_);
+		const auto &force_params = params_.force_estimator_param_;
+		force_input_synchronizer_.configure(
+			force_params.force_sync_history_duration, force_params.force_sync_max_interp_gap,
+			force_params.force_sync_max_age, force_params.force_sync_reset_backjump);
+		vertical_disturbance_low_pass_.configure(
+			params_.ctrl_freq_max_, force_params.cutoff_freq_applied_force_z);
 		rc_data.set_mode_params(params_.rc_mode_.mode_channel,
 								params_.rc_mode_.land_channel,
 								params_.rc_mode_.low_threshold,
@@ -104,6 +110,39 @@ namespace PayloadMPC
 		{
 			ROS_ERROR("[ODOM_SPIKE] FAST-LIO 异常已连续 %.2f s，锁存故障并进入 NMPC 原有恢复流程。",
 				params_.odom_spike_guard_.fault_duration);
+		}
+	}
+
+	void MPCFSM::forceAttitudeOdomCallback(const nav_msgs::Odometry::ConstPtr &msg)
+	{
+		force_attitude_odom_data.feed(msg);
+		if (params_.force_estimator_param_.enable_input_sync)
+		{
+			recordForceSyncInputResult(force_input_synchronizer_.addAttitude(
+				msg->header.stamp.toSec(), force_attitude_odom_data.rcv_stamp.toSec(),
+				force_attitude_odom_data.q), "attitude");
+		}
+	}
+
+	void MPCFSM::imuCallback(const sensor_msgs::Imu::ConstPtr &msg)
+	{
+		imu_data.feed(msg);
+		if (params_.force_estimator_param_.enable_input_sync)
+		{
+			recordForceSyncInputResult(force_input_synchronizer_.addAcceleration(
+				msg->header.stamp.toSec(), imu_data.rcv_stamp.toSec(), imu_data.filtered_a), "imu");
+		}
+	}
+
+	void MPCFSM::rpmCallback(const mavros_msgs::ESCStatus::ConstPtr &msg)
+	{
+		rpm_data.feed(msg);
+		if (msg->esc_status.size() < 4)
+			return;
+		if (params_.force_estimator_param_.enable_input_sync)
+		{
+			recordForceSyncInputResult(force_input_synchronizer_.addRpm(
+				msg->header.stamp.toSec(), rpm_data.rcv_stamp.toSec(), rpm_data.filtered_rpm), "rpm");
 		}
 	}
 
@@ -926,7 +965,9 @@ namespace PayloadMPC
 
 	void MPCFSM::addNewForceObseverState()
 	{
-		force_observer_input_valid_ = false;
+		// 同步模式没有新公共时间戳时沿用已有窗口，不重复加入同一组样本。
+		if (!params_.force_estimator_param_.enable_input_sync)
+			force_observer_input_valid_ = false;
 		if (!params_.force_estimator_param_.enable_force_estimation)
 		{
 			clearForceObserverState();
@@ -979,17 +1020,63 @@ namespace PayloadMPC
 			return;
 		}
 
-		if (rpm_data.filtered_rpm.minCoeff() < params_.force_estimator_param_.min_valid_rpm)
+		Eigen::Vector3d observer_acceleration = imu_data.filtered_a;
+		Eigen::Quaterniond observer_attitude = force_attitude_odom_data.q;
+		Eigen::Vector4d observer_rpm = rpm_data.filtered_rpm;
+		if (params_.force_estimator_param_.enable_input_sync)
+		{
+			ForceObserverSynchronizedInput input;
+			const auto result = force_input_synchronizer_.synchronize(now.toSec(), input);
+			reportForceSync(result, result == ForceObserverSyncResult::READY ? &input : nullptr, now);
+			if (result != ForceObserverSyncResult::READY)
+				return;
+			observer_acceleration = input.acceleration;
+			observer_attitude = input.attitude;
+			observer_rpm = input.rpm;
+		}
+
+		if (observer_rpm.minCoeff() < params_.force_estimator_param_.min_valid_rpm)
 		{
 			// 地面未解锁时低 RPM 属于正常状态，仅通过门控状态变化提示，不重复报错。
 			clearForceObserverState();
 			return;
 		}
-		// 加速度来自 MAVROS IMU 机体系；姿态与 NMPC 共用 MAVROS local odom。
+		// 使用现有 IMU 机体系加速度及外力姿态来源；同步只对齐三路输入的采样时刻。
 		// 两个传感器的机体系安装偏差必须在标定中消除，否则会形成虚假外力分量。
 		force_estimator_.setSystemState(
-			imu_data.filtered_a, force_attitude_odom_data.q, rpm_data.filtered_rpm);
+			observer_acceleration, observer_attitude, observer_rpm);
 		force_observer_input_valid_ = true;
+	}
+
+	void MPCFSM::recordForceSyncInputResult(ForceObserverInputResult result, const char *source)
+	{
+		if (result == ForceObserverInputResult::SOURCE_RESET)
+			ROS_WARN("[外力同步] %s 源时间戳回退，已清空同步缓存。", source);
+		else if (result == ForceObserverInputResult::INVALID)
+			ROS_WARN_THROTTLE(1.0, "[外力同步] 忽略 %s 的无效时间戳或数据。", source);
+	}
+
+	void MPCFSM::reportForceSync(ForceObserverSyncResult result,
+		const ForceObserverSynchronizedInput *input, const ros::Time &now)
+	{
+		if (input)
+		{
+			++force_sync_accepted_since_report_;
+			last_force_sync_input_ = *input;
+		}
+		else
+			++force_sync_rejected_since_report_;
+		if (!last_force_sync_report_time_.isZero() &&
+			(now - last_force_sync_report_time_).toSec() < 1.0)
+			return;
+		ROS_INFO("[外力同步] result=%s accepted=%zu skipped=%zu age=%.4f s offsets(imu/att/rpm)=%.4f/%.4f/%.4f s",
+			forceObserverSyncResultName(result), force_sync_accepted_since_report_,
+			force_sync_rejected_since_report_, last_force_sync_input_.age,
+			last_force_sync_input_.acceleration_offset, last_force_sync_input_.attitude_offset,
+			last_force_sync_input_.rpm_offset);
+		force_sync_accepted_since_report_ = 0;
+		force_sync_rejected_since_report_ = 0;
+		last_force_sync_report_time_ = now;
 	}
 
 	MPCFSM::ThrustModelGateReason MPCFSM::thrustModelGate(const ros::Time &now) const
@@ -1122,15 +1209,18 @@ namespace PayloadMPC
 	void MPCFSM::clearForceObserverState()
 	{
 		force_estimator_.reset();
+		force_input_synchronizer_.reset();
 		force_observer_input_valid_ = false;
 		fq_estimate_valid_ = false;
 		fq_estimated_.setZero();
-		fq_applied_.setZero();
-		controller_.setExternalForce(fq_applied_);
+		clearAppliedDisturbance();
 	}
 
 	void MPCFSM::clearAppliedDisturbance()
 	{
+		disturbance_slew_limiter_.reset();
+		vertical_disturbance_low_pass_.reset();
+		last_disturbance_slew_update_time_ = ros::Time(0);
 		fq_applied_.setZero();
 		controller_.setExternalForce(fq_applied_);
 	}
@@ -1384,30 +1474,60 @@ namespace PayloadMPC
 		fq_estimate_valid_ = force_observer_input_valid_ &&
 			force_estimator_.caculate_force(fl_, fq_estimated_);
 
-		const DisturbanceGateReason gate_reason = disturbanceCompensationGate(ros::Time::now());
+		const ros::Time now = ros::Time::now();
+		const DisturbanceGateReason gate_reason = disturbanceCompensationGate(now);
 		reportDisturbanceGate(gate_reason);
 		if (gate_reason == DisturbanceGateReason::ACTIVE)
 		{
-			fq_applied_ = fq_estimated_;
+			Eigen::Vector3d target_force = fq_estimated_;
+			const auto filtered_z = vertical_disturbance_low_pass_.update(target_force.z());
+			if (!filtered_z.valid)
+			{
+				clearAppliedDisturbance();
+				target_force.setZero();
+			}
+			else
+				target_force.z() = filtered_z.value;
 			const auto &axis_gain = params_.force_estimator_param_;
-			fq_applied_(0) *= precision_landing_active_ ? 0.0 : axis_gain.force_axis_gain_x;
-			fq_applied_(1) *= precision_landing_active_ ? 0.0 : axis_gain.force_axis_gain_y;
-			fq_applied_(2) *= axis_gain.force_axis_gain_z;
-			const double scaled_norm = fq_applied_.norm();
+			target_force(0) *= precision_landing_active_ ? 0.0 : axis_gain.force_axis_gain_x;
+			target_force(1) *= precision_landing_active_ ? 0.0 : axis_gain.force_axis_gain_y;
+			target_force(2) *= axis_gain.force_axis_gain_z;
+			const double scaled_norm = target_force.norm();
 			const double max_applied_force = params_.force_estimator_param_.max_applied_force;
 			if (scaled_norm > max_applied_force)
 			{
-				fq_applied_ *= max_applied_force / scaled_norm;
+				target_force *= max_applied_force / scaled_norm;
 				ROS_WARN_THROTTLE(
 					1.0,
 					"[MPC CTRL] Disturbance compensation saturated: scaled_norm=%.3f N, applied_norm=%.3f N",
 					scaled_norm,
 					max_applied_force);
 			}
+			const double nominal_dt = 1.0 / params_.ctrl_freq_max_;
+			double dt = nominal_dt;
+			if (!last_disturbance_slew_update_time_.isZero())
+			{
+				const double elapsed = (now - last_disturbance_slew_update_time_).toSec();
+				if (std::isfinite(elapsed) && elapsed > 0.0)
+					dt = std::min(elapsed, 2.0 * nominal_dt);
+			}
+			const auto limited = disturbance_slew_limiter_.update(target_force, dt,
+				axis_gain.max_applied_force_rate_xy, axis_gain.max_applied_force_rate_z,
+				max_applied_force);
+			if (!limited.valid)
+				clearAppliedDisturbance();
+			else
+			{
+				fq_applied_ = limited.value;
+				// 保留后机精降期间立即关闭 XY 补偿的既有行为。
+				if (precision_landing_active_)
+					fq_applied_.head<2>().setZero();
+				last_disturbance_slew_update_time_ = now;
+			}
 		}
 		else
 		{
-			fq_applied_.setZero();
+			clearAppliedDisturbance();
 		}
 		controller_.setExternalForce(fq_applied_);
 

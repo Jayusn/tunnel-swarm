@@ -102,6 +102,16 @@ target_link_libraries(mpc_controller_node
 )
 
 if(CATKIN_ENABLE_TESTING)
+  foreach(force_test force_observer_input_synchronizer disturbance_slew_limiter vertical_disturbance_low_pass)
+    catkin_add_gtest(test_${force_test} test/test_${force_test}.cpp)
+    if(TARGET test_${force_test})
+      target_include_directories(test_${force_test} PRIVATE
+        include/payload_mpc_controller
+        ${EIGEN3_INCLUDE_DIR}
+      )
+    endif()
+  endforeach()
+
   # 使用与实机相同的 ACADO/qpOASES，回归旋转矩阵转四元数的符号边界。
   get_target_property(quaternion_test_sources mpc_controller_node SOURCES)
   list(REMOVE_ITEM quaternion_test_sources

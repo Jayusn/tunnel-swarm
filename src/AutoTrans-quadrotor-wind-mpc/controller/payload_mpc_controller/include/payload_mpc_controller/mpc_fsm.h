@@ -14,6 +14,9 @@
 #include "mpc_controller.h"
 #include "odom_spike_guard.h"
 #include "recovery_control.h"
+#include "force_observer_input_synchronizer.h"
+#include "disturbance_slew_limiter.h"
+#include "vertical_disturbance_low_pass.h"
 #include "polynomial_trajectory.h"
 #include <mavros_msgs/SetMode.h>
 #include <mavros_msgs/CommandLong.h>
@@ -92,6 +95,9 @@ namespace PayloadMPC
 		bool recv_new_odom();
 		void addNewForceObseverState();
 		void odomCallback(const nav_msgs::Odometry::ConstPtr &msg);
+		void forceAttitudeOdomCallback(const nav_msgs::Odometry::ConstPtr &msg);
+		void imuCallback(const sensor_msgs::Imu::ConstPtr &msg);
+		void rpmCallback(const mavros_msgs::ESCStatus::ConstPtr &msg);
 		void mavrosLocalPoseCallback(const geometry_msgs::PoseStamped::ConstPtr &msg);
 		void safetyHoldCallback(const std_msgs::Bool::ConstPtr &msg);
 
@@ -123,6 +129,9 @@ namespace PayloadMPC
 		MpcParams &params_;
 		MpcController &controller_;
 		MultiOptForceEstimator force_estimator_;
+		ForceObserverInputSynchronizer force_input_synchronizer_;
+		DisturbanceSlewLimiter disturbance_slew_limiter_;
+		VerticalDisturbanceLowPass vertical_disturbance_low_pass_;
 		OdomSpikeGuard odom_spike_guard_;
 		ros::Time land_start_time_;
 		bool auto_land_lockout_{false};
@@ -176,6 +185,11 @@ namespace PayloadMPC
 		bool fq_estimate_valid_{false};
 		bool was_in_air_{false};
 		ros::Time airborne_since_{0};
+		ros::Time last_disturbance_slew_update_time_{0};
+		ros::Time last_force_sync_report_time_{0};
+		std::size_t force_sync_accepted_since_report_{0};
+		std::size_t force_sync_rejected_since_report_{0};
+		ForceObserverSynchronizedInput last_force_sync_input_;
 
 		enum class DisturbanceGateReason
 		{
@@ -215,6 +229,9 @@ namespace PayloadMPC
 						  const Odom_Data_t &attitude_odom);
 		void setForceEstimation();
 		void clearForceObserverState();
+		void recordForceSyncInputResult(ForceObserverInputResult result, const char *source);
+		void reportForceSync(ForceObserverSyncResult result,
+			const ForceObserverSynchronizedInput *input, const ros::Time &now);
 		DisturbanceGateReason disturbanceCompensationGate(const ros::Time &now) const;
 		void reportDisturbanceGate(DisturbanceGateReason reason);
 		void clearAppliedDisturbance();
