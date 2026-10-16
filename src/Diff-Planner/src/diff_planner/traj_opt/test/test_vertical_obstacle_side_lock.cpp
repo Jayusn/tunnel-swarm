@@ -165,11 +165,13 @@ TEST(VerticalObstacleSideLock, IncompleteLongDividerDoesNotActivate)
   EXPECT_TRUE(VerticalObstacleSideLock::findSplitPassages(plane, 0.05, 0.20).empty());
 }
 
-TEST(VerticalObstacleSideLock, OneUsablePassageDoesNotActivate)
+TEST(VerticalObstacleSideLock, KeepsOnlyUsablePassage)
 {
   auto plane = corridorPlane();
   addDivider(plane, 7, 13, 30, 42);
-  EXPECT_TRUE(VerticalObstacleSideLock::findSplitPassages(plane, 0.05, 0.20).empty());
+  const auto passages = VerticalObstacleSideLock::findSplitPassages(plane, 0.05, 0.20);
+  ASSERT_EQ(passages.size(), 1U);
+  EXPECT_LT(passages.front().max_offset, 0.0);
 }
 
 TEST(VerticalObstacleSideLock, LocalPocketDoesNotCountAsThroughPassage)
@@ -177,7 +179,21 @@ TEST(VerticalObstacleSideLock, LocalPocketDoesNotCountAsThroughPassage)
   auto plane = corridorPlane();
   addDivider(plane, 7, 13, 28, 32);
   addDivider(plane, 7, 8, 15, 26);
-  EXPECT_TRUE(VerticalObstacleSideLock::findSplitPassages(plane, 0.05, 0.20).empty());
+  const auto passages = VerticalObstacleSideLock::findSplitPassages(plane, 0.05, 0.20);
+  ASSERT_EQ(passages.size(), 1U);
+  EXPECT_GT(passages.front().min_offset, 0.0);
+}
+
+TEST(VerticalObstacleSideLock, DistinguishesBlockedDividerFromMissingObservation)
+{
+  auto plane = corridorPlane();
+  addDivider(plane, 7, 13, 18, 42);
+  std::pair<int, int> rows;
+  EXPECT_TRUE(VerticalObstacleSideLock::findSplitPassages(plane, 0.05, 0.20, &rows).empty());
+  EXPECT_GE(rows.first, 0);
+  EXPECT_GE(rows.second, rows.first);
+  EXPECT_TRUE(VerticalObstacleSideLock::findSplitPassages(corridorPlane(), 0.05, 0.20, &rows).empty());
+  EXPECT_LT(rows.first, 0);
 }
 
 TEST(VerticalObstacleSideLock, UnknownDividerBoundaryDoesNotActivate)

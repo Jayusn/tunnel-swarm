@@ -127,6 +127,7 @@ VerticalObstacleSideLock::findSplitPassages(
     const double step_size, const double min_width,
     std::pair<int, int> *divider_rows)
 {
+  if (divider_rows) *divider_rows = {-1, -1};
   if (occupancy.size() < 3 || occupancy.front().size() < 3 ||
       !std::isfinite(step_size) || step_size <= 0.0 ||
       !std::isfinite(min_width) || min_width <= 0.0)
@@ -185,6 +186,7 @@ VerticalObstacleSideLock::findSplitPassages(
     }
   if (!intersects_search_line || last_row < first_row)
     return {};
+  if (divider_rows) *divider_rows = {first_row, last_row};
 
   // 在完整障碍段及其前后各一格上求自由空间交集，避免把局部空洞当成通路。
   std::vector<bool> through(cols, true);
@@ -212,10 +214,6 @@ VerticalObstacleSideLock::findSplitPassages(
       passages.push_back({(begin - cols / 2 - 0.5) * step_size,
                           (c - cols / 2 - 0.5) * step_size});
   }
-  if (passages.size() < 2)
-    return {};
-  if (divider_rows)
-    *divider_rows = {first_row, last_row};
   return passages;
 }
 
@@ -279,14 +277,14 @@ bool VerticalObstacleSideLock::detectCandidate(
   std::pair<int, int> divider_rows;
   candidate.passages = findSplitPassages(
       occupancy, step_size, config_.min_side_width, &divider_rows);
-  if (!candidate.passages.empty())
+  if (divider_rows.first >= 0)
   {
     candidate.center += (0.5 * (divider_rows.first + divider_rows.second) -
                          longitudinal_cells) * step_size * candidate.axis;
     candidate.half_length =
         0.5 * (divider_rows.second - divider_rows.first + 1) * step_size;
   }
-  return !candidate.passages.empty();
+  return divider_rows.first >= 0;
 }
 
 bool VerticalObstacleSideLock::trySearch(
@@ -302,8 +300,33 @@ bool VerticalObstacleSideLock::trySearch(
   Candidate candidate;
   if (!detectCandidate(grid_map, step_size, start, end, candidate))
   {
-    lock_.active = false;
-    return false;
+    if (!lock_.active) return false;
+    // 与基准版本一致：同一障碍观测暂时不完整时继续使用既有侧锁。
+    const Eigen::Vector3d segment = end - start;
+    const double length = segment.norm();
+    if (length <= 1.0e-3) return false;
+    const Eigen::Vector3d axis = segment / length;
+    const double along = std::max(0.0, std::min(length,
+        (lock_.center - start).dot(axis)));
+    if ((start + along * axis - lock_.center).head<2>().norm() >
+        config_.association_distance + lock_.half_length + config_.longitudinal_margin)
+    {
+      lock_.active = false;
+      return false;
+    }
+    candidate.center = lock_.center;
+    candidate.axis = lock_.axis;
+    candidate.lateral = lock_.normal;
+    candidate.half_length = lock_.half_length;
+    candidate.passages.push_back({lock_.passage_min_offset, lock_.passage_max_offset});
+    ROS_INFO_THROTTLE(1.0, "[通道分流侧锁] 当前观测不完整，保持同一障碍的既有通路。");
+  }
+
+  if (candidate.passages.empty())
+  {
+    path.clear();
+    ROS_WARN_THROTTLE(1.0, "[通道分流侧锁] 分隔物两侧均无可用贯通通路。");
+    return true;
   }
 
   const bool same_obstacle = lock_.active && isSameObstacle(
@@ -315,26 +338,41 @@ bool VerticalObstacleSideLock::trySearch(
   {
     const double width = passage.max_offset - passage.min_offset;
     const double selected_width = selected.max_offset - selected.min_offset;
-    const double center = 0.5 * (passage.min_offset + passage.max_offset);
-    const double selected_center = 0.5 * (selected.min_offset + selected.max_offset);
-    if (width > selected_width + 1.0e-6 ||
-        (same_obstacle && std::abs(width - selected_width) <= 1.0e-6 &&
-         std::abs(center - lock_.passage_center_offset) <
-             std::abs(selected_center - lock_.passage_center_offset)))
+    if (width > selected_width + 1.0e-6)
       selected = passage;
   }
+  const double widest = selected.max_offset - selected.min_offset;
+  double reference_offset = 0.0;
+  if (same_obstacle)
+    reference_offset = (lock_.center + lock_.passage_center_offset * lock_.normal -
+                         candidate.center).dot(candidate.lateral);
+  else
+    for (const auto &point : unconstrained_path)
+    {
+      const double offset = (point - candidate.center).dot(candidate.lateral);
+      if (std::abs(offset) > std::abs(reference_offset)) reference_offset = offset;
+    }
+  // 宽度相近时保持既有侧；首次选边参考原A*，明显更宽时才换侧。
+  for (const auto &passage : candidate.passages)
+    if (widest - (passage.max_offset - passage.min_offset) <=
+            config_.width_similarity_tolerance + 1.0e-6 &&
+        std::abs(0.5 * (passage.min_offset + passage.max_offset) - reference_offset) <
+            std::abs(0.5 * (selected.min_offset + selected.max_offset) - reference_offset))
+      selected = passage;
   const double passage_center = 0.5 * (selected.min_offset + selected.max_offset);
   if (!same_obstacle ||
       std::abs(passage_center - lock_.passage_center_offset) > step_size)
-    ROS_INFO("[通道分流侧锁] 确认 %zu 条贯通通路，选择最宽 %.2fm，中心偏移 %.2fm。",
+    ROS_INFO("[通道分流侧锁] 确认 %zu 条贯通通路，选定净宽 %.2fm，中心偏移 %.2fm。",
              candidate.passages.size(), selected.max_offset - selected.min_offset,
              passage_center);
   lock_.active = true;
   lock_.center = candidate.center;
   lock_.axis = candidate.axis;
-  lock_.normal = passage_center >= 0.0 ? candidate.lateral : -candidate.lateral;
+  lock_.normal = candidate.lateral;
   lock_.half_length = candidate.half_length;
   lock_.passage_center_offset = passage_center;
+  lock_.passage_min_offset = selected.min_offset;
+  lock_.passage_max_offset = selected.max_offset;
 
   AStarSearchRegion region;
   region.enabled = true;
@@ -363,6 +401,17 @@ bool VerticalObstacleSideLock::trySearch(
       return true;
   }
   path = a_star.getPath();
+  return true;
+}
+
+bool VerticalObstacleSideLock::passageCenterError(
+    const Eigen::Vector3d &position, double &error, Eigen::Vector3d &direction) const
+{
+  if (!lock_.active ||
+      std::abs((position - lock_.center).dot(lock_.axis)) > lock_.half_length)
+    return false;
+  error = (position - lock_.center).dot(lock_.normal) - lock_.passage_center_offset;
+  direction = lock_.normal;
   return true;
 }
 

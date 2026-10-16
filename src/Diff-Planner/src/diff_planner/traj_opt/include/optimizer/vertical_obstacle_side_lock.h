@@ -45,6 +45,8 @@ public:
                  const Eigen::Vector3d &start, const Eigen::Vector3d &end,
                  const std::vector<Eigen::Vector3d> &unconstrained_path,
                  std::vector<Eigen::Vector3d> &path);
+  bool passageCenterError(const Eigen::Vector3d &position,
+                          double &error, Eigen::Vector3d &direction) const;
 
   static bool widthsAreComparable(double left_width, double right_width,
                                   double min_width, double tolerance);
@@ -83,6 +85,8 @@ private:
     Eigen::Vector3d normal{Eigen::Vector3d::Zero()};
     double half_length{0.0};
     double passage_center_offset{0.0};
+    double passage_min_offset{0.0};
+    double passage_max_offset{0.0};
   };
 
   bool detectCandidate(const GridMap::Ptr &grid_map, double step_size,

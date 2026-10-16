@@ -812,10 +812,11 @@ namespace diff_planner
   {
     path.clear();
     const double resolution = grid_map_->getResolution();
-    if (dynamic_obstacle_config_.enabled)
+    // 只有针对已识别动态目标的候选搜索使用动态约束；普通静态绕障
+    // 始终执行下穿、净宽比较和侧锁，不能被FAPP总开关绕过。
+    if (dynamic_candidate_active_)
     {
-      AStarSearchRegion region = dynamic_candidate_active_
-          ? dynamic_candidate_region_ : AStarSearchRegion();
+      AStarSearchRegion region = dynamic_candidate_region_;
       region.enabled = true;
       region.time_limit = std::min(0.2, planningTimeRemaining());
       const ASTAR_RET result = a_star_->AstarSearch(resolution, start, end, &region);
@@ -1747,6 +1748,18 @@ namespace diff_planner
 
     gradp.setZero();
     costp = 0;
+
+    double passage_error;
+    Eigen::Vector3d passage_direction;
+    if (!dynamic_candidate_active_ && vertical_obstacle_side_lock_.passageCenterError(
+            p, passage_error, passage_direction))
+    {
+      // 与A*使用同一通路中心，避免平滑优化又切向另一侧。
+      const double magnitude = std::abs(passage_error);
+      costp += wei_obs_ * magnitude * magnitude * magnitude;
+      gradp += 3.0 * wei_obs_ * magnitude * passage_error * passage_direction;
+      ret = true;
+    }
 
     // Obatacle cost
     for (size_t j = 0; j < cps_.direction[i_dp].size(); ++j)
