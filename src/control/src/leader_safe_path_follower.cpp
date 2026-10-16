@@ -432,6 +432,8 @@ class LeaderSafePathFollower {
       traj_started_pub_ = nh_.advertise<std_msgs::Empty>(traj_started_topic_, 1, true);
     }
     diff_goal_pub_ = nh_.advertise<geometry_msgs::PoseStamped>(diff_goal_topic_, 1, true);
+    diff_entry_goal_pub_ =
+        nh_.advertise<geometry_msgs::PoseStamped>(diff_goal_topic_ + "/entry", 1, true);
     follower_landing_target_pub_ =
         nh_.advertise<geometry_msgs::PoseStamped>(follower_landing_target_topic_, 1, true);
     follower_landing_request_pub_ =
@@ -1918,10 +1920,16 @@ class LeaderSafePathFollower {
     const double pass_projection =
         (current_world.x - desired_world.position.x) * std::cos(desired_world.yaw) +
         (current_world.y - desired_world.position.y) * std::sin(desired_world.yaw);
+    // 入口两段轨迹要完成末段减速，不能像普通FIFO点一样在40cm处截断。
+    const bool entry_settled = !desired_world.is_door ||
+        (horizontal_error <= diff_endpoint_capture_radius_ &&
+         follower_horizontal_speed_ <= relay_arrive_max_horizontal_speed_ &&
+         follower_vertical_speed_ <= relay_arrive_max_vertical_speed_);
     const bool waypoint_arrival = !terminal_relay &&
         horizontal_error <= relay_arrive_radius_ &&
-        vertical_error <= relay_arrive_z_tolerance_;
+        vertical_error <= relay_arrive_z_tolerance_ && entry_settled;
     const bool waypoint_passed = !terminal_relay &&
+        !desired_world.is_door &&
         std::isfinite(desired_world.yaw) && pass_projection >= 0.0;
 
     // 已到达或越过当前普通点时直接消费，不能再被旧点的间距保护拉回。
@@ -2047,7 +2055,9 @@ class LeaderSafePathFollower {
     }
 
     if (!diff_goal_published_ && now >= simple_diff_retry_not_before_) {
-      if (diff_goal_pub_.getNumSubscribers() == 0) {
+      ros::Publisher& goal_pub = desired_world.is_door
+          ? diff_entry_goal_pub_ : diff_goal_pub_;
+      if (goal_pub.getNumSubscribers() == 0) {
         setDiffWaitPositionHold(true, "waiting for Diff subscriber");
         publishState("WAIT_UAV1_DIFF_SUBSCRIBER", 1.0, 0.4, 0.0);
         return true;
@@ -2061,7 +2071,7 @@ class LeaderSafePathFollower {
       goal.pose.orientation.w = std::cos(local_yaw * 0.5);
       goal.pose.orientation.z = std::sin(local_yaw * 0.5);
       stampDiffGoalId(&goal);
-      diff_goal_pub_.publish(goal);
+      goal_pub.publish(goal);
       if (!desired_world.is_door) simple_door_hover_active_ = false;
       diff_goal_index_ = active_relay_index_;
       diff_goal_published_ = true;
@@ -4022,7 +4032,7 @@ class LeaderSafePathFollower {
   ros::Subscriber leader_task_status_sub_, landing_search_state_sub_,
       front_scan_anchor_sub_;
   ros::Subscriber diff_status_sub_;  // 2026-07-28: UAV1 Diff轨迹成功/失败反馈。
-  ros::Publisher command_pub_, traj_started_pub_, diff_goal_pub_, route_pub_, relay_path_pub_, target_pub_, state_pub_;
+  ros::Publisher command_pub_, traj_started_pub_, diff_goal_pub_, diff_entry_goal_pub_, route_pub_, relay_path_pub_, target_pub_, state_pub_;
   ros::Publisher follower_landing_target_pub_, follower_landing_request_pub_;
   ros::Publisher follower_detection_enable_pub_;  // UAV1独立LDOP阶段状态。
   ros::Publisher follower_safety_hold_pub_;  // 2026-07-28: LIO跳变时请求控制器按MAVROS坐标锁点。

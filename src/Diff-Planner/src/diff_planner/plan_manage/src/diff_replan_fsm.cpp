@@ -225,6 +225,8 @@ namespace diff_planner
     {
       // 2026-07-28: 不再把手动目标硬编码到全局/goal，防止UAV0的RViz目标误触发UAV1规划器。
       waypoint_sub_ = nh.subscribe(manual_goal_topic_, 1, &DiffReplanFSM::waypointCallback, this);
+      entry_waypoint_sub_ = nh.subscribe(manual_goal_topic_ + "/entry", 1,
+                                         &DiffReplanFSM::entryWaypointCallback, this);
     }
     else if (target_type_ == TARGET_TYPE::PRESET_TARGET)
     {
@@ -1798,6 +1800,8 @@ namespace diff_planner
     refreshOdometry();
     bool success = false;
     std::vector<Eigen::Vector3d> one_pt_wps;
+    if (planner_manager_->two_piece_entry_)
+      one_pt_wps.push_back(0.5 * (odom_pos_ + next_wp));
     one_pt_wps.push_back(next_wp);
     success = planner_manager_->planGlobalTrajWaypoints(
         odom_pos_, odom_vel_, Eigen::Vector3d::Zero(),
@@ -1891,6 +1895,17 @@ namespace diff_planner
 
   void DiffReplanFSM::waypointCallback(const geometry_msgs::PoseStampedPtr &msg)
   {
+    handleWaypoint(msg, false);
+  }
+
+  void DiffReplanFSM::entryWaypointCallback(const geometry_msgs::PoseStampedPtr &msg)
+  {
+    handleWaypoint(msg, true);
+  }
+
+  void DiffReplanFSM::handleWaypoint(const geometry_msgs::PoseStampedPtr &msg,
+                                    const bool two_piece_entry)
+  {
     refreshOdometry();
     active_external_goal_stamp_ns_ = msg->header.stamp.toNSec();
     external_goal_modified_ = false;
@@ -1902,6 +1917,7 @@ namespace diff_planner
       return;
     }
     ROS_INFO("Received goal: %f, %f, %f", end_wp(0), end_wp(1), end_wp(2));
+    planner_manager_->two_piece_entry_ = two_piece_entry;
     if (planNextWaypoint(end_wp, true))
     {
       last_target_change_time_ = ros::Time::now().toSec();

@@ -15,6 +15,7 @@
     <arg name="max_jer"/>
     <!-- 轨迹发布前动态可行性检查允许超过 max_vel 的余量。 -->
     <arg name="vel_tolerance" default="1.0"/>
+    <arg name="acc_tolerance" default="1.0"/>
     <arg name="planning_horizon"/>
     <!-- 旧局部轨迹预测与实际里程计的三维偏差超过该值时，从里程计强制重规划。 -->
     <arg name="max_tracking_error" default="0.30"/>
@@ -352,7 +353,7 @@
         <param name="optimization/max_vel" value="$(arg max_vel)" type="double"/>
         <param name="optimization/vel_tolerance" value="$(arg vel_tolerance)" type="double"/>
         <param name="optimization/max_acc" value="$(arg max_acc)" type="double"/>
-        <param name="optimization/acc_tolerance" value="1.0" type="double"/>
+        <param name="optimization/acc_tolerance" value="$(arg acc_tolerance)" type="double"/>
         <param name="optimization/max_jer" value="$(arg max_jer)" type="double"/>
         <param name="optimization/max_planning_wall_time" value="$(arg planning_timeout)" type="double"/>
         <param name="optimization/record_opt" value="true"/>

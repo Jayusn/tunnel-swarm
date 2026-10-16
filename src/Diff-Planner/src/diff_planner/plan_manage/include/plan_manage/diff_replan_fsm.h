@@ -179,6 +179,7 @@ namespace diff_planner
     ros::NodeHandle node_, odom_node_;
     ros::Timer exec_timer_, safety_timer_;
     ros::Subscriber waypoint_sub_, odom_sub_, trigger_sub_, subgoal_sub_, broadcast_ploytraj_sub_, mandatory_stop_sub_, planning_restart_sub_, swing_obstacle_sub_, fapp_obstacle_sub_;
+    ros::Subscriber entry_waypoint_sub_;
     ros::Publisher poly_traj_pub_, data_disp_pub_, broadcast_ploytraj_pub_, heartbeat_pub_, ground_height_pub_;
     ros::Publisher planning_status_pub_;  // 2026-07-28: 向接力管理器反馈Diff规划成功/连续失败。
     SwingObstacleGuard swing_obstacle_guard_;
@@ -233,6 +234,8 @@ namespace diff_planner
 
     /* global trajectory */
     void waypointCallback(const geometry_msgs::PoseStampedPtr &msg);
+    void entryWaypointCallback(const geometry_msgs::PoseStampedPtr &msg);
+    void handleWaypoint(const geometry_msgs::PoseStampedPtr &msg, bool two_piece_entry);
     void readGivenWpsAndPlan();
     bool planNextWaypoint(const Eigen::Vector3d next_wp, bool flag_2replan);
     bool mondifyInCollisionFinalGoal();

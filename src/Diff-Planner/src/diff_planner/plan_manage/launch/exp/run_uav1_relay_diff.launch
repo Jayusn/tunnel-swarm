@@ -5,7 +5,7 @@
     <arg name="cloud_topic" default="/UAV1/fast_lio/cloud_registered"/>
     <arg name="goal_topic" default="/UAV1/planning/goal"/>
     <arg name="position_cmd_topic" default="/UAV1/planning/pos_cmd"/>
-    <arg name="max_vel" default="0.30"/>
+    <arg name="max_vel" default="1.00"/>
     <arg name="max_acc" default="1.00"/>
     <arg name="enable_rviz" default="true"/>
     <arg name="record_dynamic_debug" default="false"/>
@@ -70,9 +70,11 @@
         <arg name="cy" value="239.09725952148438"/>
         <arg name="fx" value="386.2706298828125"/>
         <arg name="fy" value="386.2706298828125"/>
-        <!-- 2026-07-28: 按实验要求与前机对齐到0.5m/s、1.0m/s^2，轨迹仍由Diff连续优化。 -->
+        <!-- 后机规划最大速度1.0m/s、最大加速度1.0m/s²，取消额外超限余量。 -->
         <arg name="max_vel" value="$(arg max_vel)"/>
         <arg name="max_acc" value="$(arg max_acc)"/>
+        <arg name="vel_tolerance" value="0.0"/>
+        <arg name="acc_tolerance" value="0.0"/>
         <arg name="max_jer" value="8.0"/>
         <!-- 后机点云建图与优化共享单线程回调，给一次困难目标留出完整的规划窗口。 -->
         <arg name="planning_timeout" value="2.0"/>

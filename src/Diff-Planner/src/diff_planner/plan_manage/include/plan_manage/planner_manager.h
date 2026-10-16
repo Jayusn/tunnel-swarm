@@ -77,6 +77,7 @@ namespace diff_planner
     // inline PtsChk_t getPtsCheck(void) { return ploy_traj_opt_->get_pts_check_(); }
 
     PlanParameters pp_;
+    bool two_piece_entry_{false};
     GridMap::Ptr grid_map_;
     TrajContainer traj_;
 

@@ -25,6 +25,43 @@ public:
   CallResult call() override { called = true; return Success; }
 };
 
+TEST(EntryTwoPiece, ContinuousMidpointAndBoundedSpeedAndAcceleration)
+{
+  diff_planner::DiffPlannerManager manager;
+  manager.two_piece_entry_ = true;
+  manager.pp_.max_vel_ = manager.pp_.max_acc_ = 1.0;
+  const Eigen::Vector3d start(0.3, -0.2, 0.6);
+  const Eigen::Vector3d direction = Eigen::Vector3d(3.0, 4.0, 0.0).normalized();
+  for (double distance : {0.0, 0.001, 0.1, 1.66, 10.0})
+  {
+    const Eigen::Vector3d goal = start + distance * direction;
+    poly_traj::MinJerkOpt polynomial;
+    ASSERT_TRUE(manager.computeInitState(start, Eigen::Vector3d::Zero(),
+        Eigen::Vector3d::Zero(), goal, Eigen::Vector3d::Zero(), true, false,
+        1.5, polynomial));
+    const auto trajectory = polynomial.getTraj();
+    ASSERT_EQ(trajectory.getPieceNum(), 2);
+    const double half = trajectory.getDurations()(0);
+    EXPECT_LT((trajectory[0].getPos(half) - trajectory[1].getPos(0.0)).norm(), 1e-8);
+    EXPECT_LT((trajectory[0].getVel(half) - trajectory[1].getVel(0.0)).norm(), 1e-8);
+    EXPECT_LT((trajectory[0].getAcc(half) - trajectory[1].getAcc(0.0)).norm(), 1e-8);
+    EXPECT_LT((trajectory.getJuncPos(1) - 0.5 * (start + goal)).norm(), 1e-8);
+    if (distance > 0.0) {
+      EXPECT_GT(trajectory.getJuncVel(1).norm(), 0.0);
+    }
+    const double duration = trajectory.getTotalDuration();
+    EXPECT_LT((trajectory.getPos(duration) - goal).norm(), 1e-8);
+    EXPECT_LT(trajectory.getVel(duration).norm(), 1e-8);
+    EXPECT_LT(trajectory.getAcc(duration).norm(), 1e-8);
+    for (int i = 0; i <= 1000; ++i)
+    {
+      const double t = duration * i / 1000.0;
+      EXPECT_LE(trajectory.getVel(t).norm(), 1.0 + 1e-8);
+      EXPECT_LE(trajectory.getAcc(t).norm(), 1.0 + 1e-8);
+    }
+  }
+}
+
 TEST(PlannerOdometry, LatestStateIsAvailableBeforeQueuedMapWork)
 {
   ros::NodeHandle nh("~");
@@ -204,6 +241,42 @@ TEST_F(PlannerEndpoint, CollisionTimerFinishesOldGoalBeforeReplanning)
     planner.checkCollisionCallback(ros::TimerEvent());
   }
   expectNoReplacement();
+}
+
+TEST_F(PlannerEndpoint, EntryGoalUsesTwoPiecesAndNormalGoalRestoresDefault)
+{
+  auto message = boost::make_shared<geometry_msgs::PoseStamped>();
+  message->header.stamp = ros::Time::now();
+  message->pose.position.x = goal.x();
+  message->pose.position.y = goal.y();
+  message->pose.position.z = goal.z();
+  planner.entryWaypointCallback(message);
+  ASSERT_TRUE(planner.planner_manager_->two_piece_entry_);
+  EXPECT_EQ(planner.planner_manager_->traj_.global_traj.traj.getPieceNum(), 2);
+  planner.waypointCallback(message);
+  EXPECT_FALSE(planner.planner_manager_->two_piece_entry_);
+  EXPECT_EQ(planner.planner_manager_->traj_.global_traj.traj.getPieceNum(), 1);
+}
+
+TEST_F(PlannerEndpoint, EntryPublishesTwoContinuousOptimizedPieces)
+{
+  auto message = boost::make_shared<geometry_msgs::PoseStamped>();
+  message->header.stamp = ros::Time::now();
+  message->pose.position.x = goal.x() + 1.0;
+  message->pose.position.y = goal.y();
+  message->pose.position.z = goal.z();
+  planner.entryWaypointCallback(message);
+  exec();
+  exec();
+  ASSERT_EQ(planner.exec_state_, FSM::EXEC_TRAJ);
+  const auto& trajectory = planner.planner_manager_->traj_.local_traj.traj;
+  ASSERT_EQ(trajectory.getPieceNum(), 2);
+  const double half = trajectory.getDurations()(0);
+  EXPECT_LT((trajectory[0].getPos(half) - trajectory[1].getPos(0.0)).norm(), 1e-8);
+  EXPECT_LT((trajectory[0].getVel(half) - trajectory[1].getVel(0.0)).norm(), 1e-8);
+  EXPECT_LT((trajectory[0].getAcc(half) - trajectory[1].getAcc(0.0)).norm(), 1e-8);
+  drain();
+  EXPECT_GT(published, 0);
 }
 
 TEST_F(PlannerEndpoint, MainTimerAlsoFinishesUsingMeasuredArrival)

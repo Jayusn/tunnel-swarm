@@ -617,6 +617,22 @@ namespace diff_planner
       const bool flag_polyInit, const bool flag_randomPolyTraj, const double &ts,
       poly_traj::MinJerkOpt &initMJO)
   {
+    if (two_piece_entry_)
+    {
+      // 参考UAV0 e61be99入口段：按速度/加速度共同分配两段时间，
+      // 中间点联合求解导数，不把入口拆成两次独立目标或中途停稳。
+      const double distance = (local_target_pt - start_pt).norm();
+      const double half_duration = std::max(0.01, std::max(
+          distance / pp_.max_vel_, std::sqrt(1.5 * distance / pp_.max_acc_)));
+      Eigen::Matrix3d head, tail;
+      head << start_pt, start_vel, start_acc;
+      tail << local_target_pt, local_target_vel, Eigen::Vector3d::Zero();
+      Eigen::MatrixXd midpoint(3, 1);
+      midpoint.col(0) = 0.5 * (start_pt + local_target_pt);
+      initMJO.reset(head, tail, 2);
+      initMJO.generate(midpoint, Eigen::Vector2d::Constant(half_duration));
+      return true;
+    }
 
     static bool flag_first_call = true;
 
