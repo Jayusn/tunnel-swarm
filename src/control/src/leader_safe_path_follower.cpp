@@ -355,6 +355,8 @@ class LeaderSafePathFollower {
     pnh_.param("relay_approach_speed", relay_approach_speed_, 0.20);
     pnh_.param("relay_arrive_max_horizontal_speed", relay_arrive_max_horizontal_speed_, 0.10);
     pnh_.param("relay_arrive_max_vertical_speed", relay_arrive_max_vertical_speed_, 0.08);
+    pnh_.param("entry_arrive_max_horizontal_speed", entry_arrive_max_horizontal_speed_, 0.15);
+    pnh_.param("entry_arrive_max_vertical_speed", entry_arrive_max_vertical_speed_, 0.12);
     pnh_.param("relay_arrive_dwell", relay_arrive_dwell_, 0.50);
     // 2026-07-28: Diff末端速度差分可能尚未降到严格门槛；小半径内先锁点，再用停驻时间完成接力点。
     pnh_.param("diff_endpoint_capture_radius", diff_endpoint_capture_radius_, 0.15);
@@ -1923,8 +1925,8 @@ class LeaderSafePathFollower {
     // 入口两段轨迹要完成末段减速，不能像普通FIFO点一样在40cm处截断。
     const bool entry_settled = !desired_world.is_door ||
         (horizontal_error <= diff_endpoint_capture_radius_ &&
-         follower_horizontal_speed_ <= relay_arrive_max_horizontal_speed_ &&
-         follower_vertical_speed_ <= relay_arrive_max_vertical_speed_);
+         follower_horizontal_speed_ <= entry_arrive_max_horizontal_speed_ &&
+         follower_vertical_speed_ <= entry_arrive_max_vertical_speed_);
     const bool waypoint_arrival = !terminal_relay &&
         horizontal_error <= relay_arrive_radius_ &&
         vertical_error <= relay_arrive_z_tolerance_ && entry_settled;
@@ -4188,6 +4190,7 @@ class LeaderSafePathFollower {
   double relay_goal_backtrack_max_distance_{1.00};
   double relay_slowdown_radius_{0.55}, relay_approach_speed_{0.20};
   double relay_arrive_max_horizontal_speed_{0.10}, relay_arrive_max_vertical_speed_{0.08};
+  double entry_arrive_max_horizontal_speed_{0.15}, entry_arrive_max_vertical_speed_{0.12};
   double relay_arrive_dwell_{0.50};
   double follower_horizontal_speed_{0.0}, follower_vertical_speed_{0.0};
   bool enable_relay_goal_clearance_{false};

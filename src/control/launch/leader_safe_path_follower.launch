@@ -250,6 +250,9 @@
         <param name="relay_approach_speed" value="0.20"/>
         <param name="relay_arrive_max_horizontal_speed" value="0.10"/>
         <param name="relay_arrive_max_vertical_speed" value="0.08"/>
+        <!-- 入口单独放宽到达速度；终端降落仍使用上面的严格阈值。 -->
+        <param name="entry_arrive_max_horizontal_speed" value="0.15"/>
+        <param name="entry_arrive_max_vertical_speed" value="0.12"/>
         <param name="relay_arrive_dwell" value="0.50"/>
         <!-- 2026-07-28: 普通接力点进入15cm后先锁点0.45s，避免轨迹结束与速度门槛之间形成到点死锁。 -->
         <param name="diff_endpoint_capture_radius" value="0.15"/>

@@ -416,6 +416,54 @@ TEST_F(FifoEntrySpacing, SlowPlanningResponseStartsFreshCommandWait) {
   EXPECT_FALSE(follower->diff_goal_published_);
 }
 
+TEST_F(FifoEntrySpacing, DoorUsesIndependentRelaxedSpeedLimits) {
+  queuePoint(0.0, true);
+  follower->relay_arrive_radius_ = 0.4;
+  follower->follower_odom_.pose.pose.position.x = -0.1;
+  follower->follower_horizontal_speed_ = 0.151;
+  follower->follower_vertical_speed_ = 0.12;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(follower->relay_waypoints_.size(), 1U);
+  follower->follower_horizontal_speed_ = 0.15;
+  follower->follower_vertical_speed_ = 0.121;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(follower->relay_waypoints_.size(), 1U);
+  follower->follower_vertical_speed_ = 0.12;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->relay_waypoints_.empty());
+  EXPECT_TRUE(follower->simple_door_hover_active_);
+}
+
+TEST_F(FifoEntrySpacing, RelaxedDoorSpeedsStillRequireFifteenCentimeterDistance) {
+  queuePoint(0.0, true);
+  follower->relay_arrive_radius_ = 0.4;
+  follower->follower_horizontal_speed_ = 0.15;
+  follower->follower_vertical_speed_ = 0.12;
+  follower->follower_odom_.pose.pose.position.x = -0.151;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(follower->relay_waypoints_.size(), 1U);
+  follower->follower_odom_.pose.pose.position.x = -0.15;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->relay_waypoints_.empty());
+}
+
+TEST_F(FifoEntrySpacing, TerminalArrivalKeepsOriginalStrictSpeedLimits) {
+  queuePoint(0.0);
+  follower->terminal_mode_active_ = true;
+  follower->terminal_waypoint_index_ = 0;
+  follower->relay_arrive_dwell_ = 0.0;
+  follower->follower_horizontal_speed_ = 0.15;
+  follower->follower_vertical_speed_ = 0.12;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_FALSE(follower->follower_landing_requested_);
+  follower->follower_horizontal_speed_ = 0.10;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_FALSE(follower->follower_landing_requested_);
+  follower->follower_vertical_speed_ = 0.08;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->follower_landing_requested_);
+}
+
 int main(int argc, char** argv) {
   ros::init(argc, argv, "test_fifo_entry_spacing",
             ros::init_options::AnonymousName | ros::init_options::NoSigintHandler);
