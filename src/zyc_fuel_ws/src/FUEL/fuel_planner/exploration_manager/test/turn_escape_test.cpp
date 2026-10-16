@@ -177,6 +177,10 @@ public:
       task.failed_goals_.push_back({point(0.2, 0, 1), ros::Time::now()});
     }
     const Vector3d start = point(-0.7, lateral_offset, 1);
+    // 普通绕柱侧偏好不能抢占出口候选接近。
+    manager.recovery_side_latched_ = true;
+    manager.recovery_side_origin_ = start;
+    manager.recovery_side_dir_ = lateral;
     check(task.exitVerificationActive() && !task.exitTransitActive(),
           "fixture must remain in unconfirmed exit verification");
     check(manager.planExploreMotion(start, Vector3d::Zero(), Vector3d::Zero(),
@@ -195,6 +199,124 @@ public:
             "pending exit lateral correction rotated the nose away from the exit");
     }
   }
+
+  static void runSideRecovery(double side, bool block_side) {
+    ros::NodeHandle nh("~");
+    nh.setParam("manager/use_geometric_path", true);
+    nh.setParam("astar/resolution_astar", 0.05);
+    nh.setParam("astar/allocate_num", 100000);
+    nh.setParam("astar/lambda_heu", 1.0);
+    nh.setParam("astar/max_search_time", 1.0);
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    auto& planner = *manager.planner_manager_;
+    const Vector3d origin(0.013, 0.017, 1.013);
+    // 从两边观测墙面，生成带真实FREE证据的走廊；之后补入挡住直行的立柱。
+    pcl::PointCloud<pcl::PointXYZ> cloud;
+    for (double x : {-1.5, 1.5}) {
+      cloud.clear();
+      for (double y=-1.3; y<=1.3; y+=0.025)
+        for (double z=0.25; z<=1.75; z+=0.025)
+          cloud.push_back(pcl::PointXYZ(x, y, z));
+      for (int i=0; i<5; ++i)
+        manager.sdf_map_->inputPointCloud(cloud, cloud.size(),
+                                        Vector3d(-0.85*x, 0, 1));
+    }
+    cloud.clear();
+    for (double y=-0.10; y<=0.10; y+=0.025)
+      for (double z=0.25; z<=1.75; z+=0.025)
+        cloud.push_back(pcl::PointXYZ(0.50, y, z));
+    for (int i=0; i<6; ++i)
+      manager.sdf_map_->inputPointCloud(cloud, cloud.size(), origin);
+    manager.sdf_map_->updateESDF3d();
+    manager.edt_environment_ = planner.edt_environment_;
+    Eigen::Vector3d map_origin, size;
+    manager.sdf_map_->getRegion(map_origin, size);
+    ViewNode::caster_ = std::make_shared<RayCaster>();
+    ViewNode::caster_->setParams(manager.sdf_map_->getResolution(), map_origin);
+    nh.setParam("frontier/cluster_min", 1000000);
+    manager.frontier_finder_ = std::make_shared<FrontierFinder>(manager.edt_environment_, nh);
+    manager.mission_entered_search_region_ = true;
+    manager.ep_->mission_use_forward_fallback_ = true;
+    manager.ep_->mission_use_workspace_lock_ = true;
+    manager.ep_->mission_forward_fallback_step_ = 0.20;
+    manager.ep_->mission_forward_fallback_max_ = 1.0;
+    manager.mission_workspace_lock_received_ = true;
+    manager.mission_workspace_origin_ = origin - Vector3d(1, 0, 0);
+    manager.mission_workspace_dir_ = Vector3d::UnitX();
+    auto& task = *manager.task_search_manager_;
+    task.setMap(manager.sdf_map_);
+    task.enabled_ = true;
+    task.exit_detection_enabled_ = false;
+    task.global_no_return_ = false;
+    task.stable_progress_direction_ = Eigen::Vector2d::UnitX();
+    task.stable_progress_direction_valid_ = true;
+    manager.vertical_detour_enabled_ = false;
+    manager.ground_ascent_enabled_ = false;
+    manager.inflation_history_escape_enabled_ = false;
+    manager.turn_in_place_enabled_ = false;
+    manager.center_gate_enabled_ = false;
+    manager.camera_head_sweep_enabled_ = false;
+
+    const Vector3d original_side_goal = origin + Vector3d(0, side*0.35, 0);
+    manager.rememberSideRecovery(origin, 0.0, {origin, original_side_goal,
+                                original_side_goal + Vector3d(0.8, 0, 0)});
+    check(manager.recovery_side_latched_ && manager.recovery_side_dir_.y()*side > 0.9,
+          "safe local detour did not retain its chosen side");
+    manager.last_requested_goal_ = original_side_goal;
+    manager.has_last_requested_goal_ = true;
+    manager.reportTrajectoryCollision();
+    check(manager.recovery_side_latched_, "collision feedback erased the detour side");
+
+    const Vector3d displaced = origin + Vector3d(0, side*0.22, 0);
+    task.updateRobotPose(displaced, 0.0);
+    check(!manager.isLowProbeCorridorSafe(displaced, Vector3d::UnitX(), 0.40),
+          "fixture did not keep the forward footprint blocked after 0.22m side progress");
+    if (block_side) {
+      cloud.clear();
+      for (double x=-0.3; x<=0.3; x+=0.025)
+        for (double z=0.25; z<=1.75; z+=0.025)
+          cloud.push_back(pcl::PointXYZ(x, displaced.y()+side*0.35, z));
+      for (int i=0; i<6; ++i)
+        manager.sdf_map_->inputPointCloud(cloud, cloud.size(), displaced);
+      manager.sdf_map_->updateESDF3d();
+      Vector3d next;
+      double yaw = 0.0;
+      check(!manager.buildSideRecoveryContinuation(displaced, 0.0, next, yaw) &&
+            !manager.recovery_side_latched_, "unavailable same side became a hard lock");
+      check(manager.buildMissionForwardFallback(displaced, 0.0, next, yaw),
+            "same-side failure prevented the original recovery strategies");
+      check(planner.isPositionSafe(next), "fallback selected an unsafe endpoint");
+      return;
+    }
+
+    check(manager.planExploreMotion(displaced, Vector3d::Zero(), Vector3d::Zero(),
+                                   Vector3d(0.10, 0, 0)) == SUCCEED,
+          "same-side continuation failed to generate a trajectory");
+    check(manager.recovery_side_latched_ && !manager.recovery_side_continuation_pending_,
+          "0.22m lateral progress released the side or successful plan stayed pending");
+    const double duration = planner.local_data_.duration_;
+    const Vector3d end = planner.local_data_.position_traj_.evaluateDeBoorT(duration);
+    check((end-displaced).y()*side >= 0.15 && std::fabs(end.z()-displaced.z()) < 0.05,
+          "replan switched sides or changed the recovery height");
+    check(planner.isTrajectorySafe(), "same-side spline bypassed footprint safety");
+    Vector3d next;
+    double yaw = 0.0;
+    check(manager.isLowProbeCorridorSafe(end, Vector3d::UnitX(), 0.40) &&
+          manager.buildSideRecoveryContinuation(end, 0.0, next, yaw) &&
+          next.x() > end.x()+0.15 && std::fabs(next.y()-end.y()) < 1e-6,
+          "clear same-side lane did not resume forward motion");
+    check(!manager.buildSideRecoveryContinuation(end+Vector3d(0.25, 0, 0),
+                                                 0.0, next, yaw) &&
+          !manager.recovery_side_latched_, "clear forward progress did not release the side");
+    manager.recovery_side_latched_ = true;
+    manager.low_probe_phase_ = vertical_detour::LowProbePhase::VERIFYING;
+    check(!manager.buildSideRecoveryContinuation(displaced, 0.0, next, yaw) &&
+          manager.recovery_side_latched_, "side preference took over an active vertical probe");
+    manager.low_probe_phase_ = vertical_detour::LowProbePhase::IDLE;
+    manager.completeTurnInPlace(displaced);
+    check(!manager.recovery_side_latched_, "confirmed turn kept the old obstacle side");
+  }
 };
 }
 TEST(TurnEscape, ClearsContactBeforeResumingLatchedYaw) {
@@ -212,6 +334,18 @@ TEST(ExitApproach, LateralCorrectionKeepsExitYaw) {
 
 TEST(ExitApproach, SideObservationKeepsExitYaw) {
   fast_planner::TurnEscapeTest::runPendingExitApproach(M_PI, -0.35, true);
+}
+
+TEST(SideRecovery, LeftDetourSurvivesCollisionAndLateralProgress) {
+  fast_planner::TurnEscapeTest::runSideRecovery(1.0, false);
+}
+
+TEST(SideRecovery, RightDetourSurvivesCollisionAndLateralProgress) {
+  fast_planner::TurnEscapeTest::runSideRecovery(-1.0, false);
+}
+
+TEST(SideRecovery, BlockedSameSideYieldsToExistingRecovery) {
+  fast_planner::TurnEscapeTest::runSideRecovery(1.0, true);
 }
 
 int main(int argc,char** argv) {

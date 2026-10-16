@@ -1501,6 +1501,87 @@ bool FastExplorationManager::buildWideSideBypass(
   return true;
 }
 
+void FastExplorationManager::rememberSideRecovery(
+    const Vector3d& pos, double cur_yaw, const vector<Vector3d>& path) {
+  if (recovery_side_latched_ || !task_search_manager_ ||
+      !ep_->mission_use_forward_fallback_) return;
+  const Vector3d forward = task_search_manager_->recoveryForwardDirection(cur_yaw);
+  if (!hasCurrentHeightForwardObstacle(pos, forward)) return;
+  const Vector3d lateral(-forward.y(), forward.x(), 0.0);
+  // 记住已通过检查的近段绕行侧，不用远端frontier的位置代替实际绕柱方向。
+  double length = 0.0;
+  Vector3d previous = pos;
+  for (const auto& point : path) {
+    const Vector3d delta = point - previous;
+    const double remaining = 0.60 - length;
+    const Vector3d probe = delta.norm() > remaining
+                              ? Vector3d(previous + delta.normalized() * remaining)
+                              : point;
+    const double side = (probe - pos).dot(lateral);
+    if (std::fabs(side) >= 0.10) {
+      recovery_side_latched_ = true;
+      recovery_side_origin_ = pos;
+      recovery_side_dir_ = (side > 0.0 ? 1.0 : -1.0) * lateral;
+      return;
+    }
+    length += delta.norm();
+    if (length >= 0.60) break;
+    previous = point;
+  }
+}
+
+bool FastExplorationManager::buildSideRecoveryContinuation(
+    const Vector3d& pos, double cur_yaw, Vector3d& next_pos, double& next_yaw) {
+  if (!recovery_side_latched_ || !task_search_manager_ || !sdf_map_ ||
+      !planner_manager_ || !ep_->mission_use_forward_fallback_ ||
+      task_search_manager_->stage3Active() ||
+      task_search_manager_->finalExitFrontierGuardActive() ||
+      low_probe_phase_ != vertical_detour::LowProbePhase::IDLE)
+    return false;
+  const Vector3d forward =
+      task_search_manager_->recoveryForwardDirection(cur_yaw).normalized();
+  const Vector3d lateral(-forward.y(), forward.x(), 0.0);
+  const double side = recovery_side_dir_.dot(lateral);
+  // 确认新通道后旧侧向不再有效，不让旧绕柱偏好约束正常转弯。
+  if (std::fabs(side) < 0.5) {
+    recovery_side_latched_ = false;
+    return false;
+  }
+  const bool forward_clear = isLowProbeCorridorSafe(pos, forward, 0.40);
+  if (forward_clear && (pos - recovery_side_origin_).dot(forward) >=
+                           recovery_side_release_distance_) {
+    recovery_side_latched_ = false;
+    ROS_WARN("[side_recovery] forward passage clear after %.2fm advance; "
+             "resume normal selection.", recovery_side_release_distance_);
+    return false;
+  }
+  const Vector3d direction = forward_clear
+      ? forward : Vector3d((side > 0.0 ? 1.0 : -1.0) * lateral);
+  for (double distance : {0.40, 0.30, 0.20}) {
+    const Vector3d candidate = pos + distance * direction;
+    const vector<Vector3d> path{pos, candidate};
+    if (!pointInsideWorkspaceLock(candidate) ||
+        !task_search_manager_->isRecoveryCandidateUseful(candidate) ||
+        !isLowProbeCorridorSafe(pos, direction, distance) ||
+        !pathInsideWorkspaceLock(path) ||
+        !task_search_manager_->isRecoveryPathAllowed(path, false))
+      continue;
+    next_pos = candidate;
+    next_yaw = cur_yaw;
+    recovery_side_continuation_pending_ = true;
+    task_search_manager_->recordSelectedGoal(next_pos);
+    ROS_WARN("[side_recovery] keep %s side; %s %.2fm at current z=%.2fm "
+             "target=(%.2f,%.2f,%.2f).",
+             side > 0.0 ? "left" : "right", forward_clear ? "advance" : "translate",
+             distance, pos.z(), next_pos.x(), next_pos.y(), next_pos.z());
+    return true;
+  }
+  // 只是先尝试原侧；同侧短路不可行时本轮直接交还原有换边/上下绕行。
+  recovery_side_latched_ = false;
+  ROS_WARN("[side_recovery] continuation unavailable; yield to existing recovery.");
+  return false;
+}
+
 bool FastExplorationManager::buildMissionForwardFallback(const Vector3d& pos, double cur_yaw,
                                                          Vector3d& next_pos,
                                                          double& next_yaw) {
@@ -1508,6 +1589,7 @@ bool FastExplorationManager::buildMissionForwardFallback(const Vector3d& pos, do
       !mission_workspace_lock_received_) {
     return false;
   }
+  if (buildSideRecoveryContinuation(pos, cur_yaw, next_pos, next_yaw)) return true;
 
   const double step = std::max(0.2, ep_->mission_forward_fallback_step_);
   const double max_dist = std::max(step, ep_->mission_forward_fallback_max_);
@@ -1518,12 +1600,6 @@ bool FastExplorationManager::buildMissionForwardFallback(const Vector3d& pos, do
   const Vector3d recovery_forward = task_search_manager_
                                         ? task_search_manager_->recoveryForwardDirection(cur_yaw)
                                         : Vector3d(std::cos(cur_yaw), std::sin(cur_yaw), 0.0);
-  if (recovery_side_latched_ &&
-      (pos - recovery_side_origin_).head<2>().norm() >= recovery_side_release_distance_) {
-    recovery_side_latched_ = false;
-    ROS_WARN("[mission_exploration] side recovery released after %.2fm progress; "
-             "straight-forward priority restored.", recovery_side_release_distance_);
-  }
   // 2026-07-28: 所有前向方向仍保持任务层顺序；短回撤候选改按目标点ESDF净空降序，
   // 让无人机优先退向通道中部，而不是因为±135度枚举顺序固定地退向某一侧墙。
   std::stable_sort(directions.begin(), directions.end(), [&](const Vector3d& lhs,
@@ -1619,8 +1695,8 @@ bool FastExplorationManager::buildMissionForwardFallback(const Vector3d& pos, do
       recovery_side_latched_ = true;
       recovery_side_origin_ = pos;
       recovery_side_dir_ = choice.direction.normalized();
-      ROS_WARN("[mission_exploration] straight recovery unavailable; latch side translation "
-               "until %.2fm progress.",
+      ROS_WARN("[mission_exploration] straight recovery unavailable; keep side translation "
+               "until forward passage is clear and %.2fm forward progress is reached.",
                recovery_side_release_distance_);
     }
     if (task_search_manager_ && !external_selection_only_)
@@ -2143,6 +2219,7 @@ void FastExplorationManager::completeTurnInPlace(const Vector3d&) {
   if (task_search_manager_) task_search_manager_->completeTurnYawAlignment();
   // 转向完成后直接恢复平移规划；爬升和上绕由正常避障选路决定。
   turn_in_place_session_active_ = false;
+  recovery_side_latched_ = false;
   turn_in_place_still_since_ = ros::Time(0);
 }
 
@@ -2523,6 +2600,9 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
 
 int FastExplorationManager::planExploreMotion(
     const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, const Vector3d& yaw) {
+  // 上轮同侧短步若未生成成功，不在下一轮反复强选同一点。
+  if (recovery_side_continuation_pending_) recovery_side_latched_ = false;
+  recovery_side_continuation_pending_ = false;
   turn_in_place_plan_ = false;
   ground_ascent_plan_ = false;
   vertical_detour_plan_ = false;
@@ -2665,12 +2745,23 @@ int FastExplorationManager::planExploreMotion(
         task_search_manager_->buildStage3Goal(pos, yaw[0], false, next_pos, next_yaw);
   }
 
+  // 同侧短步先于普通frontier重选，但不抢占入口、出口和已启动的垂直避障。
+  if (!use_vertical_detour_target && !use_forced_entry_target &&
+      !use_stage3_target && !use_mission_forward_fallback &&
+      mission_entered_search_region_ && task_search_manager_ &&
+      task_search_manager_->enabled() &&
+      buildSideRecoveryContinuation(pos, yaw[0], next_pos, next_yaw)) {
+    use_mission_forward_fallback = true;
+    use_center_gate_target = true;  // 已验证直线短步，复用中门的路径生成入口。
+  }
+
   // 两侧局部障碍已经形成中门时，先在当前高度穿过已知安全的门中心；
   // 中门不满足足迹通行条件时先尝试当前高度的侧绕，再尝试带顶部净空约束的上绕。
   // 专用通路均不可用时继续普通选点和A*，不能用局部中缝失败否决其他绕行路线。
   bool center_gate_detected = false;
   if (!use_vertical_detour_target && !use_forced_entry_target &&
-      !use_stage3_target && mission_entered_search_region_ &&
+      !use_stage3_target && !use_mission_forward_fallback &&
+      mission_entered_search_region_ &&
       task_search_manager_ && task_search_manager_->enabled()) {
     const Vector3d recovery_forward =
         task_search_manager_->recoveryForwardDirection(yaw[0]);
@@ -2971,6 +3062,7 @@ int FastExplorationManager::planExploreMotion(
     external_selected_yaw_ = next_yaw;
     last_requested_goal_ = next_pos;
     has_last_requested_goal_ = true;
+    recovery_side_continuation_pending_ = false;
     ROS_INFO("[fuel_diff] selected complete viewpoint (%.2f, %.2f, %.2f), yaw=%.1fdeg.",
              next_pos.x(), next_pos.y(), next_pos.z(), next_yaw * 180.0 / M_PI);
     return SUCCEED;
@@ -3539,6 +3631,12 @@ int FastExplorationManager::planExploreMotion(
               pending_short_backtrack_target_.z());
   }
 
+  if (!use_forced_entry_target && !use_stage3_target &&
+      !use_vertical_detour_target && !pending_short_backtrack_ &&
+      mission_entered_search_region_ && task_search_manager_ &&
+      task_search_manager_->enabled())
+    rememberSideRecovery(pos, yaw[0], ed_->path_next_goal_);
+  recovery_side_continuation_pending_ = false;
   return SUCCEED;
 }
 

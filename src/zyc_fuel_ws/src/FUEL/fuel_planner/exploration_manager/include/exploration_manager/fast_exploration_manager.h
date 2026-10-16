@@ -133,8 +133,9 @@ private:
   // 2026-07-14: 保存任务层请求的最终目标；执行期碰撞不能只冷却 5m 截断后的中间点。
   Vector3d last_requested_goal_{0.0, 0.0, 0.0};
   bool has_last_requested_goal_{false};
-  // 正前方不可行后短暂锁定同一侧绕行，推进0.2m后重新允许选择。
+  // 绕障侧只作可让出的连续性偏好；横移不解除，前方短路可通并前进后解除。
   bool recovery_side_latched_{false};
+  bool recovery_side_continuation_pending_{false};
   Vector3d recovery_side_origin_{0.0, 0.0, 0.0};
   Vector3d recovery_side_dir_{1.0, 0.0, 0.0};
   double recovery_side_release_distance_{0.20};
@@ -283,6 +284,10 @@ private:
   // 2026-07-13: 动态门后阶段改为多方向任务搜索恢复，不再永久沿入口朝向直飞。
   bool buildMissionForwardFallback(const Vector3d& pos, double cur_yaw, Vector3d& next_pos,
                                    double& next_yaw);
+  bool buildSideRecoveryContinuation(const Vector3d& pos, double cur_yaw,
+                                     Vector3d& next_pos, double& next_yaw);
+  void rememberSideRecovery(const Vector3d& pos, double cur_yaw,
+                            const vector<Vector3d>& path);
   bool buildWideSideBypass(const Vector3d& pos, double cur_yaw,
                            const Vector3d& forward, Vector3d& next_pos,
                            double& next_yaw, bool& split_obstacle_detected);
