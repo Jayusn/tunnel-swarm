@@ -405,6 +405,8 @@ namespace diff_planner
 
     case REPLAN_TRAJ:
     {
+      if (handleManualTrajectoryEnd(now_sec))
+        break;
       const bool periodic_replan = periodic_replan_pending_;
       if (planFromLocalTraj(1, periodic_replan))
       {
@@ -440,6 +442,8 @@ namespace diff_planner
 
     case EXEC_TRAJ:
     {
+      if (handleManualTrajectoryEnd(now_sec))
+        break;
       /* determine if need to replan */
       LocalTrajData *info = &planner_manager_->traj_.local_traj;
       double t_cur = ros::Time::now().toSec() - info->start_time;
@@ -472,7 +476,8 @@ namespace diff_planner
         wpt_id_++;
         planNextWaypoint(wps_[wpt_id_], true);
       }
-      else if ((t_cur > info->duration - 1e-2) && touch_the_goal) // case 3: the final waypoint reached
+      else if (target_type_ != TARGET_TYPE::MANUAL_TARGET &&
+               (t_cur > info->duration - 1e-2) && touch_the_goal) // case 3: the final waypoint reached
       {
         have_target_ = false;
         // 2026-07-08: SEARCH_TARGET 模式下 RViz 触发语义应在整轮搜索期间持续有效，
@@ -896,6 +901,47 @@ namespace diff_planner
     return std::pair<int, FSM_EXEC_STATE>(continously_called_times_, exec_state_);
   }
 
+  bool DiffReplanFSM::handleManualTrajectoryEnd(double now)
+  {
+    // Relay FIFO goals use MANUAL_TARGET. A consumed waypoint may still have
+    // a trajectory finishing in the controller while the next goal waits.
+    if (target_type_ != TARGET_TYPE::MANUAL_TARGET ||
+        (exec_state_ != EXEC_TRAJ && exec_state_ != REPLAN_TRAJ) ||
+        !have_target_ || !have_odom_ || have_new_target_)
+      return false;
+
+    const LocalTrajData &info = planner_manager_->traj_.local_traj;
+    if (info.traj_id <= 0 || info.duration <= 0.0 ||
+        info.traj.getPieceNum() == 0 || !std::isfinite(now) ||
+        !std::isfinite(info.start_time) || !std::isfinite(info.duration) ||
+        now < info.start_time + info.duration ||
+        (local_target_pt_ - final_goal_).norm() >= 1e-2 ||
+        (info.traj.getPos(info.duration) - final_goal_).norm() >= 1e-2)
+      return false;
+
+    const double error = (odom_pos_ - final_goal_).norm();
+    if (!std::isfinite(error) || error > max_tracking_error_)
+      return false; // A real tracking deviation still needs replanning.
+
+    periodic_replan_pending_ = false;
+    replan_fail_count_ = 0;
+    if (error <= no_replan_thresh_)
+    {
+      have_target_ = false;
+      have_trigger_ = false;
+      ROS_INFO("[TRAJECTORY_COMPLETED] goal=(%.3f, %.3f, %.3f), error=%.3f m; "
+               "keep endpoint hover and wait for the next goal.",
+               final_goal_.x(), final_goal_.y(), final_goal_.z(), error);
+      changeFSMExecState(WAIT_TARGET, "TRAJECTORY_COMPLETED");
+    }
+    else if (exec_state_ == REPLAN_TRAJ)
+      changeFSMExecState(EXEC_TRAJ, "ENDPOINT_CONVERGING");
+
+    // Expiration alone is not a tracking fault. Keep the controller's terminal
+    // reference while it converges; do not generate another trip to this goal.
+    return true;
+  }
+
   void DiffReplanFSM::checkCollisionCallback(const ros::TimerEvent &e)
   {
     refreshOdometry();
@@ -937,6 +983,11 @@ namespace diff_planner
       changeFSMExecState(EMERGENCY_STOP, "OCCUPIED_SAFETY_PREEMPT");
       return;
     }
+
+    // This timer can run before execFSMCallback after the trajectory expires.
+    // Actual-position occupancy and depth checks above retain their priority.
+    if (handleManualTrajectoryEnd(ros::Time::now().toSec()))
+      return;
 
     if (enable_swing_obstacle_guard_ && !swing_wait_active_)
     {

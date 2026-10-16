@@ -186,6 +186,7 @@ namespace diff_planner
     /* state machine functions */
     void initOdometry(ros::NodeHandle &nh);
     void refreshOdometry();
+    bool handleManualTrajectoryEnd(double now);
     void execFSMCallback(const ros::TimerEvent &e);
     void changeFSMExecState(FSM_EXEC_STATE new_state, string pos_call);
     void printFSMExecState();
