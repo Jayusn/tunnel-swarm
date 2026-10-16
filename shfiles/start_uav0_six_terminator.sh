@@ -62,8 +62,10 @@ keep_open() {
 
 wait_for_topic() {
   local topic="$1" elapsed=0
+  local -a echo_args=(-n 1)
+  [[ -n "${2:-}" ]] && echo_args+=(--filter "$2")
   while (( elapsed < WAIT_TIMEOUT )); do
-    if timeout 2 rostopic echo -n 1 "${topic}" >/dev/null 2>&1; then
+    if timeout 2 rostopic echo "${echo_args[@]}" "${topic}" >/dev/null 2>&1; then
       printf '[就绪] 已收到话题数据：%s\n' "${topic}"
       return 0
     fi
@@ -109,7 +111,7 @@ run_controller_pane() {
   wait_for_topic "${ODOM_TOPIC}" || keep_open
   wait_for_topic /UAV0/livox/imu_mps2 || keep_open
   wait_for_topic /UAV0/mavros/local_position/odom || keep_open
-  wait_for_topic /UAV0/mavros/vision_pose/pose || keep_open
+  wait_for_topic /UAV0/mavlink/to 'm.msgid == 331' || keep_open
 
   printf '[启动] UAV0 FUEL bridge、AutoTrans NMPC、logger 与同目录 rosbag\n'
   printf '[安全] 本屏不重复启动 FUEL，不自动解锁或切换 OFFBOARD。\n'
