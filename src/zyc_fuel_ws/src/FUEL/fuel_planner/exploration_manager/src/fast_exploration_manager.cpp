@@ -2959,9 +2959,10 @@ int FastExplorationManager::planExploreMotion(
 
   // 2026-07-16: 比赛使用360度Mid360时航向直接对准运动方向；相机模式保留原始viewpoint航向接口。
   const Eigen::Vector2d motion_delta = next_pos.head<2>() - pos.head<2>();
-  // 已确认出口的接近/穿越保持任务给出的出口朝向，横向修正不能带着机头转。
+  // 出口候选观察、确认后的接近/穿越均保持出口朝向，横向修正不能带着机头转。
   const bool use_locked_exit_yaw = use_stage3_target && task_search_manager_ &&
-      task_search_manager_->exitTransitActive();
+      (task_search_manager_->exitTransitActive() ||
+       task_search_manager_->exitVerificationActive());
   if (!use_locked_exit_yaw && !use_camera_viewpoint_yaw_ && motion_delta.norm() > 0.15)
     next_yaw = std::atan2(motion_delta.y(), motion_delta.x());
 
@@ -3098,7 +3099,7 @@ int FastExplorationManager::planExploreMotion(
             camera_clear_sweep_period_);
       }
     }
-  } else if (!corridor_yaw_lock_scope && exit_verification_active &&
+  } else if (!use_locked_exit_yaw && !corridor_yaw_lock_scope && exit_verification_active &&
              motion_delta.norm() > 0.15) {
     // 2026-07-24: 连续5帧门验证期间只看飞行方向，不保持上一环扫角，也不叠加左右摆头。
     next_yaw = std::atan2(motion_delta.y(), motion_delta.x());

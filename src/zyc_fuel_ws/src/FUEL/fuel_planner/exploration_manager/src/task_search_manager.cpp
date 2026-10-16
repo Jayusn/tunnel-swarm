@@ -2181,8 +2181,8 @@ bool TaskSearchManager::buildPendingExitObservationGoal(
     }
   }
   if (!found) return false;
-  goal_yaw = std::atan2(pending_exit_portal_center_.y() - goal.y(),
-                        pending_exit_portal_center_.x() - goal.x());
+  // 观察点可横移避障，但机头始终沿出口法向，不能随侧向候选点偏转。
+  goal_yaw = std::atan2(direction.y(), direction.x());
   return true;
 }
 
