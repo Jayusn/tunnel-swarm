@@ -70,11 +70,9 @@
         <arg name="cy" value="239.09725952148438"/>
         <arg name="fx" value="386.2706298828125"/>
         <arg name="fy" value="386.2706298828125"/>
-        <!-- 后机规划最大速度1.0m/s、最大加速度1.0m/s²，取消额外超限余量。 -->
+        <!-- 后机速度、加速度规划上限均为1.0，沿用规划器原有的可行性检查容差。 -->
         <arg name="max_vel" value="$(arg max_vel)"/>
         <arg name="max_acc" value="$(arg max_acc)"/>
-        <arg name="vel_tolerance" value="0.0"/>
-        <arg name="acc_tolerance" value="0.0"/>
         <arg name="max_jer" value="8.0"/>
         <!-- 后机点云建图与优化共享单线程回调，给一次困难目标留出完整的规划窗口。 -->
         <arg name="planning_timeout" value="2.0"/>
