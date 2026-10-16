@@ -18,7 +18,8 @@ public:
   {
     NOT_APPLICABLE,
     SUCCESS,
-    SEARCH_FAILED
+    SEARCH_FAILED,
+    INIT_ERR
   };
 
   struct Config

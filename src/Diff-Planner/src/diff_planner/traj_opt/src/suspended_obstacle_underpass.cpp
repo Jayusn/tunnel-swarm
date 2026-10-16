@@ -214,7 +214,11 @@ SuspendedObstacleUnderpass::SearchResult SuspendedObstacleUnderpass::trySearch(
   region.height_axis = passage.axis;
   region.height_half_length = passage.half_length + step_size;
 
-  if (a_star.AstarSearch(step_size, start, end, &region) != ASTAR_RET::SUCCESS)
+  const ASTAR_RET result = a_star.AstarSearch(step_size, start, end, &region);
+  // 保留局部端点初始化错误，让调用方已有的端点外扩重试继续执行。
+  if (result == ASTAR_RET::INIT_ERR)
+    return SearchResult::INIT_ERR;
+  if (result != ASTAR_RET::SUCCESS)
   {
     ROS_WARN_THROTTLE(1.0,
                       "[悬空障碍下穿] 已找到下方空间，但指定高度内搜索失败。");

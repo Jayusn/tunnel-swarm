@@ -838,6 +838,8 @@ namespace diff_planner
                minimum->z());
       return ASTAR_RET::SUCCESS;
     }
+    if (underpass_result == SuspendedObstacleUnderpass::SearchResult::INIT_ERR)
+      return ASTAR_RET::INIT_ERR;
     if (underpass_result ==
         SuspendedObstacleUnderpass::SearchResult::SEARCH_FAILED)
     {

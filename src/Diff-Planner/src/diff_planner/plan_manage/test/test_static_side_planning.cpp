@@ -229,4 +229,105 @@ TEST_F(StaticSidePlanning, OptimizedTrajectoryStaysInSelectedStaticPassageWithFa
     optimizer.endPlanningCycle();
   }
 }
+class UnderpassEndpointPlanning : public StaticSidePlanning
+{
+protected:
+  void SetUp() override
+  {
+    StaticSidePlanning::SetUp();
+    for (int z = 0; z < 30; ++z)
+      for (int y = -40; y < 40; ++y)
+        for (int x = -30; x < 30; ++x)
+        {
+          const Eigen::Vector3i cell(x, y, z);
+          const Vector3d p = map->globalIdx2Pos(cell);
+          const bool suspended = std::abs(p.x()) <= 0.25 &&
+              std::abs(p.y()) <= 0.4 && p.z() >= 0.5 && p.z() <= 0.8;
+          map->md_.occupancy_buffer_inflate_[map->globalIdx2InfBufIdx(cell)] =
+              std::abs(p.y()) >= 0.8 || suspended;
+        }
+  }
+
+  void configureUnderpass(PolyTrajOptimizer &optimizer)
+  {
+    configure(optimizer, true);
+    diff_planner::SuspendedObstacleUnderpass::Config config;
+    config.enabled = true;
+    config.min_height = 0.15;
+    config.search_timeout = 1.0;
+    optimizer.suspended_underpass_.setConfig(config);
+  }
+};
+
+TEST_F(UnderpassEndpointPlanning, InvalidLocalEndpointCanRetryWithExpandedEndpoints)
+{
+  PolyTrajOptimizer optimizer;
+  configureUnderpass(optimizer);
+  std::vector<Vector3d> path;
+  ASSERT_EQ(map->getInflateOccupancy(start), 0);
+  ASSERT_EQ(map->getInflateOccupancy(end), 0);
+  EXPECT_EQ(optimizer.searchObstaclePath(Vector3d(0.0, 0.0, 0.6), end, path),
+            ASTAR_RET::INIT_ERR);
+  EXPECT_TRUE(path.empty());
+  ASSERT_EQ(optimizer.searchObstaclePath(start, end, path), ASTAR_RET::SUCCESS);
+  ASSERT_FALSE(path.empty());
+  bool passed_below = false;
+  for (const auto &p : path)
+  {
+    EXPECT_EQ(map->getInflateOccupancy(p), 0);
+    EXPECT_GE(p.z(), 0.15 - 1e-6);
+    passed_below = passed_below || (std::abs(p.x()) <= 0.25 && p.z() < 0.5);
+  }
+  EXPECT_TRUE(passed_below);
+}
+
+TEST_F(UnderpassEndpointPlanning, FineCollisionCheckExecutesExistingEndpointExpansion)
+{
+  PolyTrajOptimizer optimizer;
+  configureUnderpass(optimizer);
+  optimizer.beginPlanningCycle();
+  const auto occupancy_checker = optimizer.a_star_->occupancy_checker_;
+  std::vector<Vector3d> attempted_starts;
+  int last_round = 0;
+  optimizer.a_star_->setOccupancyChecker([&](const Vector3d &p) {
+    const int round = optimizer.a_star_->rounds_;
+    if (round != last_round)
+    {
+      attempted_starts.push_back(p);
+      last_round = round;
+    }
+    // 确定性注入第一次局部端点初始化失败，验证真实外层循环会外扩重试。
+    return round == 1 || occupancy_checker(p);
+  });
+  poly_traj::MinJerkOpt seed;
+  Eigen::Matrix3d head, tail;
+  head << start, Vector3d::Zero(), Vector3d::Zero();
+  tail << end, Vector3d::Zero(), Vector3d::Zero();
+  Eigen::MatrixXd midpoint(3, 1);
+  midpoint.col(0) = 0.5 * (start + end);
+  seed.reset(head, tail, 2);
+  seed.generate(midpoint, Eigen::Vector2d::Constant(2.0));
+  std::vector<std::pair<int, int>> segments;
+  EXPECT_EQ(optimizer.finelyCheckAndSetConstraintPoints(segments, seed, true),
+            PolyTrajOptimizer::FINISH);
+  ASSERT_GE(attempted_starts.size(), 2u);
+  EXPECT_GT(attempted_starts[1].x(), attempted_starts[0].x());
+  EXPECT_TRUE(optimizer.underpass_floor_active_);
+  optimizer.endPlanningCycle();
+}
+
+TEST_F(UnderpassEndpointPlanning, ActualSearchFailureStillForbidsOrdinaryFallback)
+{
+  PolyTrajOptimizer optimizer;
+  configureUnderpass(optimizer);
+  const auto occupancy_checker = optimizer.a_star_->occupancy_checker_;
+  // 下方空间已由地图确认，但碰撞查询拒绝穿越；不能误判为端点错误。
+  optimizer.a_star_->setOccupancyChecker([&](const Vector3d &p) {
+    return std::abs(p.x()) <= 0.25 || occupancy_checker(p);
+  });
+  std::vector<Vector3d> path;
+  EXPECT_EQ(optimizer.searchObstaclePath(start, end, path), ASTAR_RET::POLICY_ERR);
+  EXPECT_TRUE(path.empty());
+  EXPECT_EQ(optimizer.a_star_->rounds_, 1);
+}
 } // namespace
