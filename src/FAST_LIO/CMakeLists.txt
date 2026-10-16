@@ -95,3 +95,7 @@ target_link_libraries(fastlio_mapping ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${PYT
 target_include_directories(fastlio_mapping PRIVATE ${PYTHON_INCLUDE_DIRS})
 
 add_compile_options(-Wall -Wextra -g -fstack-protector-all -O0)
+
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_nosetests(test/test_imu_repropagation.py)
+endif()
