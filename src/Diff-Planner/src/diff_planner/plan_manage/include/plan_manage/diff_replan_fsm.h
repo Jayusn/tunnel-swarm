@@ -9,6 +9,7 @@
 #include <nav_msgs/Path.h>
 #include <sensor_msgs/Imu.h>
 #include <ros/ros.h>
+#include <ros/callback_queue.h>
 #include <sstream>  // 2026-07-28: 规划成功状态附带Diff修正后的实际目标坐标。
 #include <std_msgs/Empty.h>
 #include <std_msgs/Float64.h>
@@ -149,6 +150,7 @@ namespace diff_planner
     Eigen::Vector3d final_goal_;                             // goal state
     Eigen::Vector3d local_target_pt_, local_target_vel_; // local target state
     Eigen::Vector3d odom_pos_, odom_vel_, odom_acc_;     // odometry state
+    ros::Time odom_stamp_;
     std::vector<Eigen::Vector3d> wps_;
 
     struct FreeOdomSample
@@ -173,7 +175,8 @@ namespace diff_planner
     bool occupied_recovery_failure_reported_;
 
     /* ROS utils */
-    ros::NodeHandle node_;
+    ros::CallbackQueue odom_callback_queue_;
+    ros::NodeHandle node_, odom_node_;
     ros::Timer exec_timer_, safety_timer_;
     ros::Subscriber waypoint_sub_, odom_sub_, trigger_sub_, subgoal_sub_, broadcast_ploytraj_sub_, mandatory_stop_sub_, planning_restart_sub_, swing_obstacle_sub_, fapp_obstacle_sub_;
     ros::Publisher poly_traj_pub_, data_disp_pub_, broadcast_ploytraj_pub_, heartbeat_pub_, ground_height_pub_;
@@ -181,6 +184,8 @@ namespace diff_planner
     SwingObstacleGuard swing_obstacle_guard_;
 
     /* state machine functions */
+    void initOdometry(ros::NodeHandle &nh);
+    void refreshOdometry();
     void execFSMCallback(const ros::TimerEvent &e);
     void changeFSMExecState(FSM_EXEC_STATE new_state, string pos_call);
     void printFSMExecState();

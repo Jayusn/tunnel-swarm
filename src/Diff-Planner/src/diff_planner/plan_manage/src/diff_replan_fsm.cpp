@@ -183,7 +183,7 @@ namespace diff_planner
     exec_timer_ = nh.createTimer(ros::Duration(0.01), &DiffReplanFSM::execFSMCallback, this);
     safety_timer_ = nh.createTimer(ros::Duration(0.05), &DiffReplanFSM::checkCollisionCallback, this);
 
-    odom_sub_ = nh.subscribe("odom_world", 1, &DiffReplanFSM::odometryCallback, this);
+    initOdometry(nh);
     mandatory_stop_sub_ = nh.subscribe("mandatory_stop", 1, &DiffReplanFSM::mandatoryStopCallback, this);
     planning_restart_sub_ = nh.subscribe("/planning_restart_trigger", 1,
                                          &DiffReplanFSM::planningRestartCallback, this);
@@ -238,6 +238,7 @@ namespace diff_planner
       while (ros::ok() && count++ < 2000)
       {
         ros::spinOnce();
+        refreshOdometry();
         ros::Duration(0.001).sleep();
       }
 
@@ -257,6 +258,7 @@ namespace diff_planner
   void DiffReplanFSM::execFSMCallback(const ros::TimerEvent &e)
   {
     exec_timer_.stop(); // To avoid blockage
+    refreshOdometry();
     std_msgs::Empty heartbeat_msg;
     heartbeat_pub_.publish(heartbeat_msg);
 
@@ -625,6 +627,7 @@ namespace diff_planner
             last_target_change_time_ = now_sec;
             stuck_detect_ignore_until_ = now_sec + stuck_detect_grace_time_;
             flag_escape_emergency_ = true;
+            publishPlanningStatus("TRAJECTORY_PUBLISHED");
             publishPlanningStatus("SWING_OBSTACLE_RELEASED");
             changeFSMExecState(EXEC_TRAJ, "FAPP_RELEASE");
             break;
@@ -895,6 +898,7 @@ namespace diff_planner
 
   void DiffReplanFSM::checkCollisionCallback(const ros::TimerEvent &e)
   {
+    refreshOdometry();
     // check ground height by the way
     if (enable_ground_height_measurement_)
     {
@@ -1627,6 +1631,7 @@ namespace diff_planner
 
   bool DiffReplanFSM::planFromGlobalTraj(const int trial_times /*=1*/) //zx-todo
   {
+    refreshOdometry();
 
     start_pt_ = odom_pos_;
     start_vel_ = odom_vel_;
@@ -1649,6 +1654,7 @@ namespace diff_planner
   bool DiffReplanFSM::planFromLocalTraj(const int trial_times /*=1*/,
                                         const bool require_improvement /*=false*/)
   {
+    refreshOdometry();
 
     LocalTrajData *info = &planner_manager_->traj_.local_traj;
     const double t_cur_raw = ros::Time::now().toSec() - info->start_time;
@@ -1694,10 +1700,11 @@ namespace diff_planner
       start_acc_.setZero();
       ROS_WARN("[TRACKING_DEVIATION_REPLAN] error=%.3f m, limit=%.3f m, "
                "trajectory_time=%.3f/%.3f s, predicted=(%.3f, %.3f, %.3f), "
-               "odom=(%.3f, %.3f, %.3f). Replanning from odometry.",
+               "odom=(%.3f, %.3f, %.3f), odom_age=%.3f s. Replanning from odometry.",
                tracking_error, max_tracking_error_, t_cur_raw, duration,
                predicted_pos.x(), predicted_pos.y(), predicted_pos.z(),
-               odom_pos_.x(), odom_pos_.y(), odom_pos_.z());
+               odom_pos_.x(), odom_pos_.y(), odom_pos_.z(),
+               odom_stamp_.isZero() ? 0.0 : (ros::Time::now() - odom_stamp_).toSec());
       publishPlanningStatus("TRACKING_DEVIATION_REPLAN");
     }
     else
@@ -1737,6 +1744,7 @@ namespace diff_planner
 
     bool DiffReplanFSM::planNextWaypoint(const Eigen::Vector3d next_wp, bool flag_2replan)
   {
+    refreshOdometry();
     bool success = false;
     std::vector<Eigen::Vector3d> one_pt_wps;
     one_pt_wps.push_back(next_wp);
@@ -1832,6 +1840,7 @@ namespace diff_planner
 
   void DiffReplanFSM::waypointCallback(const geometry_msgs::PoseStampedPtr &msg)
   {
+    refreshOdometry();
     active_external_goal_stamp_ns_ = msg->header.stamp.toNSec();
     external_goal_modified_ = false;
     Eigen::Vector3d end_wp(msg->pose.position.x, msg->pose.position.y, msg->pose.position.z);
@@ -1951,8 +1960,23 @@ namespace diff_planner
     ROS_WARN("[控制器恢复] 保留当前目标和航点，从最新里程计位置、速度强制生成新轨迹。");
   }
 
+  void DiffReplanFSM::initOdometry(ros::NodeHandle &nh)
+  {
+    odom_node_ = nh;
+    odom_node_.setCallbackQueue(&odom_callback_queue_);
+    odom_sub_ = odom_node_.subscribe("odom_world", 1,
+        &DiffReplanFSM::odometryCallback, this, ros::TransportHints().tcpNoDelay());
+  }
+
+  void DiffReplanFSM::refreshOdometry()
+  {
+    // Drain only odometry on this same thread, ahead of queued map/timer work.
+    odom_callback_queue_.callAvailable(ros::WallDuration(0));
+  }
+
   void DiffReplanFSM::odometryCallback(const nav_msgs::OdometryConstPtr &msg)
   {
+    odom_stamp_ = msg->header.stamp;
     odom_pos_(0) = msg->pose.pose.position.x;
     odom_pos_(1) = msg->pose.pose.position.y;
     odom_pos_(2) = msg->pose.pose.position.z;

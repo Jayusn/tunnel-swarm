@@ -81,6 +81,15 @@ add_executable(landing_diff_search_manager src/landing_diff_search_manager.cpp)
 target_link_libraries(landing_diff_search_manager ${catkin_LIBRARIES})
 
 if(CATKIN_ENABLE_TESTING)
+  find_package(rostest REQUIRED)
+  add_rostest_gtest(test_planner_odometry test/planner_odometry.test
+    test/test_planner_odometry.cpp
+    src/diff_replan_fsm.cpp src/planner_manager.cpp
+    src/swing_obstacle_guard.cpp src/replan_quality_gate.cpp)
+  if(TARGET test_planner_odometry)
+    add_dependencies(test_planner_odometry ${catkin_EXPORTED_TARGETS})
+    target_link_libraries(test_planner_odometry ${catkin_LIBRARIES} diff_traj_utils)
+  endif()
   catkin_add_gtest(test_swing_obstacle_guard
     test/test_swing_obstacle_guard.cpp
     src/swing_obstacle_guard.cpp

@@ -203,6 +203,79 @@ TEST_F(FifoEntrySpacing, RetreatResponseUnlocksOnlyMatchingRetreatGoal) {
   EXPECT_TRUE(follower->relay_waypoints_.empty());
 }
 
+TEST_F(FifoEntrySpacing, OrdinaryArrivalContinuesToNextPointWithoutHold) {
+  follower->door_waypoint_released_ = true;
+  follower->relay_arrive_radius_ = 0.4;
+  follower->follower_odom_.pose.pose.position.x = 0.65;
+  queuePoint(1.0);
+  queuePoint(2.0);
+  setLeader(4.0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(follower->relay_waypoints_.size(), 1U);
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->diff_goal_published_);
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+}
+
+TEST_F(FifoEntrySpacing, EmptyQueueLetsLastOrdinaryTrajectoryFinish) {
+  follower->door_waypoint_released_ = true;
+  follower->relay_arrive_radius_ = 0.4;
+  follower->follower_odom_.pose.pose.position.x = 0.65;
+  queuePoint(1.0);
+  setLeader(3.0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_TRUE(follower->relay_waypoints_.empty());
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+}
+
+TEST_F(FifoEntrySpacing, UnclearedNextPointDoesNotInterruptPreviousSegment) {
+  follower->door_waypoint_released_ = true;
+  follower->relay_arrive_radius_ = 0.4;
+  follower->follower_odom_.pose.pose.position.x = 0.65;
+  queuePoint(1.0);
+  queuePoint(2.0);
+  setLeader(2.5);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_FALSE(follower->diff_goal_published_);
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+  setLeader(3.0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_TRUE(follower->diff_goal_published_);
+  setLeader(2.5);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->diff_wait_hold_active_);
+  EXPECT_FALSE(follower->diff_goal_published_);
+}
+
+TEST_F(FifoEntrySpacing, SlowPlanningResponseStartsFreshCommandWait) {
+  queuePoint(2.0);
+  setLeader(4.0);
+  follower->setDiffWaitPositionHold(true, "waiting for trajectory");
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_TRUE(follower->diff_goal_published_);
+  follower->diff_goal_publish_stamp_ = ros::Time::now() - ros::Duration(3.0);
+  std_msgs::String::Ptr status(new std_msgs::String);
+  status->data = "TRAJECTORY_PUBLISHED goal_stamp_ns=" +
+      std::to_string(follower->diff_active_goal_stamp_ns_ - 1) + " 2 0 0.6";
+  follower->diffStatusCallback(status);
+  EXPECT_TRUE(follower->diff_trajectory_response_stamp_.isZero());
+  EXPECT_TRUE(follower->diff_wait_hold_active_);
+  status->data = "TRAJECTORY_PUBLISHED goal_stamp_ns=" +
+      std::to_string(follower->diff_active_goal_stamp_ns_) + " 2 0 0.6";
+  follower->diffStatusCallback(status);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->diff_goal_published_);
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+  follower->diff_trajectory_response_stamp_ = ros::Time::now() -
+      ros::Duration(follower->diff_command_stale_timeout_ + 0.1);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->diff_wait_hold_active_);
+  EXPECT_FALSE(follower->diff_goal_published_);
+}
+
 int main(int argc, char** argv) {
   ros::init(argc, argv, "test_fifo_entry_spacing",
             ros::init_options::AnonymousName | ros::init_options::NoSigintHandler);
