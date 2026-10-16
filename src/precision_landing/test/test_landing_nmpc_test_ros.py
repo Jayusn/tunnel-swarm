@@ -339,7 +339,13 @@ class DescentTest(RcLandPriorityTest):
         self.assertTrue(case._state_snapshot()[-1].startswith('REQUEST_AUTO_LAND'))
         self.assertGreater(case._mode_request_count(), 0, 'no AUTO.LAND below cutoff')
 
-    def test_descent_handoff(self):
+    def test_standalone_keeps_disturbance_compensation(self):
+        self.test_descent_handoff(with_disturbance=True)
+
+    def test_standalone_respects_disabled_disturbance_compensation(self):
+        self.test_descent_handoff(with_disturbance=True, compensation_enabled=False)
+
+    def test_descent_handoff(self, with_disturbance=False, compensation_enabled=True):
         base = Path(rospkg.RosPack().get_path('payload_mpc_controller'))
         def params(ns, d):
             for k, v in d.items():
@@ -348,6 +354,9 @@ class DescentTest(RcLandPriorityTest):
         for f in ('mpc.yaml', 'model.yaml'):
             params(self.prefix + '/controller', yaml.safe_load((base / 'config' / f).read_text()))
         rospy.set_param(self.prefix + '/controller/precision_landing_test_mode', True)
+        if with_disturbance:
+            rospy.set_param(self.prefix + '/controller/force_estimator/enable_disturbance_compensation',
+                            compensation_enabled)
         rospy.set_param(self.prefix + '/controller/land/timeout', 8.0)
         disarm_calls=[]; mode_calls=[]
         disarm_service=rospy.Service(self.prefix+'/arming', CommandBool,
@@ -360,7 +369,8 @@ class DescentTest(RcLandPriorityTest):
                    '/mavros/set_mode':'set_mode', '/mavros/extended_state':'extended_state', '/mavros/state':'mavros_state', '/mavros/rc/in':'rc',
                    '/mavros/setpoint_raw/attitude':'nmpc_attitude',
                    '~recovery_position_setpoint':'nmpc_recovery',
-                   '~precision_landing_test_target':'nmpc_target', '~rc_land_active':'rc_land'}
+                   '~precision_landing_test_target':'nmpc_target', '~rc_land_active':'rc_land',
+                   '/mavros/esc_status':'rpm'}
         node = roslib.packages.find_node('payload_mpc_controller', 'mpc_controller_node')[0]
         args = [node, '__name:=controller', '__ns:=' + self.prefix]
         args += [k + ':=' + self.prefix + '/' + v for k, v in mapping.items()]
@@ -384,6 +394,12 @@ class DescentTest(RcLandPriorityTest):
         target.position=Point(4,2,1.5)
         ext=ExtendedState(landed_state=ExtendedState.LANDED_STATE_ON_GROUND)
         stage='IDLE'
+        if with_disturbance:
+            self.subscribe('controller/mpc/force_applied', Accel)
+            pubs['rpm'] = self.publisher('rpm', ESCStatus)
+            imu.linear_acceleration.x = .3 / 1.817
+            rpm = round(math.sqrt(1.817 * 9.795 / (4 * 1.785e-8)))
+            esc = ESCStatus(esc_status=[ESCStatusItem(rpm=rpm) for _ in range(4)])
         takeoff=PoseStamped(); takeoff.pose.position=Point(4,2,3.2); takeoff.pose.orientation.w=1
         next_state = 0.0
         last_state = None
@@ -400,6 +416,8 @@ class DescentTest(RcLandPriorityTest):
                     next_state = time.monotonic()+1.0
                 for topic,msg in [('odom',odom),('local',local),('imu',imu),('rc',rc),('extended_state',ext)]: pubs[topic].publish(msg)
                 pubs['landing_state'].publish(String(data=stage))
+                if with_disturbance:
+                    esc.header.stamp = now; pubs['rpm'].publish(esc)
                 if targets:
                     if stage=='IDLE': pubs['takeoff_position'].publish(takeoff)
                     else: pubs['landing_position'].publish(target)
@@ -421,6 +439,10 @@ class DescentTest(RcLandPriorityTest):
         drive(4.3)
         ref=self.last('controller/mpc/reference_trajectory').poses[0].pose
         self.assertAlmostEqual(ref.position.z,3.2,places=4)
+        if with_disturbance:
+            self.assertIsNotNone(self.last('controller/mpc/force_applied'),
+                                 'standalone test did not update force compensation')
+            force_count = len(self.messages['controller/mpc/force_applied'])
         count=len(self.messages['mavros_position'])
         stage='ALIGN'; target.type_mask=2531; target.position.z=1.5
         target.velocity.x=.06; target.velocity.y=-.02; drive(.4)
@@ -439,6 +461,19 @@ class DescentTest(RcLandPriorityTest):
         self.assertAlmostEqual(ref.position.y,-.7 + .04*math.sin(.4) - .02*math.cos(.4),places=4)
         self.assertAlmostEqual(ref.position.z,1.45,places=4)
         self.assertAlmostEqual(2*math.atan2(ref.orientation.z,ref.orientation.w),.4,places=4)
+        if with_disturbance:
+            self.assertGreater(len(self.messages['controller/mpc/force_applied']), force_count + 50)
+            force = self.last('controller/mpc/force_applied').linear
+            q = ref.orientation
+            if compensation_enabled:
+                self.assertAlmostEqual(force.x, .3 * math.cos(.4), delta=.02)
+                self.assertAlmostEqual(force.y, .3 * math.sin(.4), delta=.02)
+                self.assertAlmostEqual(1.817 * 9.795 * 2 * (q.w*q.y + q.x*q.z) + force.x,
+                                       0.0, delta=.02)
+                self.assertGreater(abs(q.x) + abs(q.y), .001)
+            else:
+                self.assertAlmostEqual(abs(force.x) + abs(force.y) + abs(force.z), 0.0)
+                self.assertAlmostEqual(abs(q.x) + abs(q.y), 0.0)
         drive(.6,False)
         ref2=self.last('controller/mpc/reference_trajectory').poses[0].pose
         self.assertAlmostEqual(ref2.position.z,ref.position.z,places=4)
@@ -448,6 +483,8 @@ class DescentTest(RcLandPriorityTest):
         self.assertTrue(self.last('rc_land').data,'CH10 did not latch')
         ref3=self.last('controller/mpc/reference_trajectory').poses[0].pose
         self.assertLess(ref3.position.z,2.5)
+        if with_disturbance:
+            self.assertAlmostEqual(abs(ref3.orientation.x) + abs(ref3.orientation.y), 0.0)
         self.assertFalse(mode_calls, 'normal CH10 requested AUTO.LAND')
         self.assertFalse(disarm_calls, 'disarm while airborne')
         # CH10到起飞平面上方0.2米，触发近地AUTO.LAND。
@@ -467,5 +504,5 @@ class DescentTest(RcLandPriorityTest):
 
 
 if __name__=='__main__':
-    suite=unittest.TestSuite([DescentTest('test_fast_lio_takeoff_router'), DescentTest('test_fast_lio_mission_handoff'), DescentTest('test_mission_keeps_disturbance_compensation'), DescentTest('test_mission_respects_disabled_disturbance_compensation'), DescentTest('test_mission_mpc_handoff'), DescentTest('test_repeated_marker_loss_does_not_raise_hold'), DescentTest('test_router_one_hz_state'), DescentTest('test_descent_handoff'), DescentTest('test_precision_auto_land_at_cutoff')])
+    suite=unittest.TestSuite([DescentTest('test_fast_lio_takeoff_router'), DescentTest('test_fast_lio_mission_handoff'), DescentTest('test_mission_keeps_disturbance_compensation'), DescentTest('test_mission_respects_disabled_disturbance_compensation'), DescentTest('test_mission_mpc_handoff'), DescentTest('test_repeated_marker_loss_does_not_raise_hold'), DescentTest('test_router_one_hz_state'), DescentTest('test_descent_handoff'), DescentTest('test_standalone_keeps_disturbance_compensation'), DescentTest('test_standalone_respects_disabled_disturbance_compensation'), DescentTest('test_precision_auto_land_at_cutoff')])
     sys.exit(not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful())

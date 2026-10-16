@@ -4,7 +4,7 @@
 set -eo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 MATCH_WS="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
-SCRIPT_PATH="${SCRIPT_DIR}/start_uav0_inplace_landing_test.sh"
+SCRIPT_PATH="${SCRIPT_DIR}/$(basename -- "${BASH_SOURCE[0]}")"
 
 source_ros() {
   source /opt/ros/noetic/setup.bash
