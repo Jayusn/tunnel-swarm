@@ -1630,6 +1630,15 @@ namespace diff_planner
           costs(0) += omg * step * costp;
         }
 
+        // 下穿高度代价覆盖整段轨迹，不受普通避障前 2/3 段裁剪影响。
+        if (underpassFloorGradCostP(pos, gradp, costp))
+        {
+          jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) +=
+              omg * step * beta0 * gradp.transpose();
+          gdT(i) += omg * (costp / K + step * alpha * gradp.dot(vel));
+          costs(0) += omg * step * costp;
+        }
+
         // swarm
         double gradt, grad_prev_t;
         if (swarmGradCostP(i_dp, t + step * j, pos, vel, gradp, gradt, grad_prev_t, costp))
@@ -1736,6 +1745,25 @@ namespace diff_planner
     }
 
     costs(3) += var;
+  }
+
+  bool PolyTrajOptimizer::underpassFloorGradCostP(
+      const Eigen::Vector3d &p, Eigen::Vector3d &gradp, double &costp)
+  {
+    gradp.setZero();
+    costp = 0.0;
+    const double min_height = suspended_underpass_.config().min_height;
+    if (!underpass_floor_active_ || min_height <= 0.0)
+      return false;
+
+    // 提前半个栅格介入，为有限权重优化和采样点之间的曲线留出余量。
+    // 最终可行性检查仍使用原始 min_height。
+    const double error = min_height + 0.5 * grid_map_->getResolution() - p.z();
+    if (error <= 0.0)
+      return false;
+    costp = wei_underpass_floor_ * error * error * error;
+    gradp.z() = -3.0 * wei_underpass_floor_ * error * error;
+    return true;
   }
 
   bool PolyTrajOptimizer::obstacleGradCostP(const int i_dp,
@@ -2040,6 +2068,7 @@ namespace diff_planner
     nh.param("optimization/constraint_points_perPiece", cps_num_prePiece_, -1);
     nh.param("optimization/weight_obstacle", wei_obs_, -1.0);
     nh.param("optimization/weight_obstacle_soft", wei_obs_soft_, -1.0);
+    nh.param("optimization/weight_underpass_floor", wei_underpass_floor_, 1.0e6);
     nh.param("optimization/weight_swarm", wei_swarm_, -1.0);
     nh.param("optimization/enable_fapp_dynamic_avoidance",
              dynamic_obstacle_config_.enabled, false);

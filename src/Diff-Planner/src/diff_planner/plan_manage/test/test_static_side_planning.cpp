@@ -330,4 +330,160 @@ TEST_F(UnderpassEndpointPlanning, ActualSearchFailureStillForbidsOrdinaryFallbac
   EXPECT_TRUE(path.empty());
   EXPECT_EQ(optimizer.a_star_->rounds_, 1);
 }
+
+TEST_F(UnderpassEndpointPlanning, FloorCostOnlyActsWhenActiveAndBelowBufferedHeight)
+{
+  PolyTrajOptimizer optimizer;
+  configureUnderpass(optimizer);
+  Vector3d gradient;
+  double cost;
+  EXPECT_FALSE(optimizer.underpassFloorGradCostP(Vector3d(0, 0, 0.1), gradient, cost));
+  EXPECT_DOUBLE_EQ(cost, 0.0);
+  optimizer.underpass_floor_active_ = true;
+  EXPECT_TRUE(optimizer.underpassFloorGradCostP(Vector3d(0, 0, 0.16), gradient, cost));
+  EXPECT_GT(cost, 0.0);
+  EXPECT_LT(gradient.z(), 0.0);
+  EXPECT_FALSE(optimizer.underpassFloorGradCostP(Vector3d(0, 0, 0.2), gradient, cost));
+  EXPECT_DOUBLE_EQ(cost, 0.0);
+  EXPECT_TRUE(gradient.isZero());
+  auto config = optimizer.suspended_underpass_.config();
+  config.min_height = 0.0;
+  optimizer.suspended_underpass_.setConfig(config);
+  EXPECT_FALSE(optimizer.underpassFloorGradCostP(Vector3d(0, 0, -0.1), gradient, cost));
+}
+
+TEST_F(UnderpassEndpointPlanning, FloorGradientMatchesPositionAndTimeDifferencesIncludingTail)
+{
+  PolyTrajOptimizer optimizer;
+  configureUnderpass(optimizer);
+  optimizer.setIfTouchGoal(false);
+  // 隔离高度项，避免高速短轨迹的巨大动力学罚项在相减时损失精度。
+  optimizer.wei_obs_ = optimizer.wei_obs_soft_ = optimizer.wei_feas_ = 0.0;
+  optimizer.wei_swarm_ = optimizer.wei_dynamic_obstacle_ = 0.0;
+  optimizer.wei_sqrvar_ = optimizer.wei_time_ = 0.0;
+  optimizer.piece_num_ = 2;
+  optimizer.t_now_ = 0.0;
+  optimizer.wei_swarm_mod_ = optimizer.wei_swarm_;
+  optimizer.cps_.resize_cp(13);
+  Eigen::Matrix3d head, tail;
+  head << start, Vector3d::Zero(), Vector3d::Zero();
+  tail << Vector3d(0.9, 0.0, 0.08), Vector3d::Zero(), Vector3d::Zero();
+  optimizer.jerkOpt_.reset(head, tail, 2);
+  // 仅尾部低于下限，确保没有沿用普通避障的前 2/3 段裁剪。
+  Eigen::VectorXd x(5);
+  x << 0.0, 0.0, 0.6, 0.0, 0.0;
+  auto floor_cost = [&](const Eigen::VectorXd &variables, Eigen::VectorXd &gradient) {
+    Eigen::VectorXd active_gradient(5), inactive_gradient(5);
+    optimizer.iter_num_ = 0;
+    optimizer.underpass_floor_active_ = true;
+    const double active = PolyTrajOptimizer::costFunctionCallback(
+        &optimizer, variables.data(), active_gradient.data(), 5);
+    optimizer.iter_num_ = 0;
+    optimizer.underpass_floor_active_ = false;
+    const double inactive = PolyTrajOptimizer::costFunctionCallback(
+        &optimizer, variables.data(), inactive_gradient.data(), 5);
+    gradient = active_gradient - inactive_gradient;
+    return active - inactive;
+  };
+  Eigen::VectorXd gradient;
+  ASSERT_GT(floor_cost(x, gradient), 0.0);
+  const double epsilon = 1e-6;
+  for (int i = 0; i < x.size(); ++i)
+  {
+    SCOPED_TRACE(i);
+    Eigen::VectorXd plus = x, minus = x, unused;
+    plus(i) += epsilon;
+    minus(i) -= epsilon;
+    const double numerical = (floor_cost(plus, unused) - floor_cost(minus, unused)) /
+        (2.0 * epsilon);
+    EXPECT_NEAR(gradient(i), numerical, 1e-4 * std::max(1.0, std::abs(numerical)));
+  }
+}
+
+TEST_F(UnderpassEndpointPlanning, FloorCostResolvesUnderpassHeightRejection)
+{
+  for (bool enable_cost : {false, true})
+  {
+    PolyTrajOptimizer optimizer;
+    configureUnderpass(optimizer);
+    optimizer.obs_clearance_ = 0.18;
+    optimizer.obs_clearance_soft_ = 0.35;
+    if (!enable_cost) optimizer.wei_underpass_floor_ = 0.0;
+    optimizer.beginPlanningCycle();
+    poly_traj::MinJerkOpt seed;
+    Eigen::Matrix3d head, tail;
+    head << start, Vector3d::Zero(), Vector3d::Zero();
+    tail << end, Vector3d::Zero(), Vector3d::Zero();
+    Eigen::MatrixXd midpoint(3, 1);
+    midpoint.col(0) = 0.5 * (start + end);
+    const Eigen::VectorXd durations = Eigen::Vector2d::Constant(2.0);
+    seed.reset(head, tail, 2);
+    seed.generate(midpoint, durations);
+    std::vector<std::pair<int, int>> segments;
+    ASSERT_NE(optimizer.finelyCheckAndSetConstraintPoints(segments, seed, true),
+              PolyTrajOptimizer::ERR);
+    ASSERT_TRUE(optimizer.underpass_floor_active_);
+    double cost;
+    const bool success = optimizer.optimizeTrajectory(head, tail, midpoint, durations, cost);
+    const auto trajectory = optimizer.getMinJerkOpt().getTraj();
+    double minimum_z = 1e9;
+    for (int i = 0; i <= 2000; ++i)
+    {
+      const auto p = trajectory.getPos(trajectory.getTotalDuration() * i / 2000.0);
+      minimum_z = std::min(minimum_z, p.z());
+      if (enable_cost)
+      {
+        EXPECT_EQ(map->getInflateOccupancy(p), 0);
+      }
+    }
+    if (enable_cost)
+    {
+      EXPECT_TRUE(success);
+      EXPECT_GE(minimum_z, 0.15 - 1e-6);
+    }
+    else
+    {
+      EXPECT_FALSE(success);
+      EXPECT_LT(minimum_z, 0.15);
+    }
+    RecordProperty(enable_cost ? "minimum_z_with_floor_cost" : "minimum_z_without_floor_cost",
+                   std::to_string(minimum_z));
+    optimizer.endPlanningCycle();
+  }
+}
+
+TEST_F(UnderpassEndpointPlanning, NoRouteAboveFloorStillFailsFinalChecks)
+{
+  // 唯一通道在 z < 0.15 m，侧面和上方均封闭，无法同时满足避障与高度下限。
+  for (int z = 0; z < 30; ++z)
+    for (int y = -40; y < 40; ++y)
+      for (int x = -30; x < 30; ++x)
+      {
+        const Eigen::Vector3i cell(x, y, z);
+        const Vector3d p = map->globalIdx2Pos(cell);
+        map->md_.occupancy_buffer_inflate_[map->globalIdx2InfBufIdx(cell)] =
+            std::abs(p.y()) >= 0.8 || (std::abs(p.x()) <= 0.25 && p.z() >= 0.15);
+      }
+  PolyTrajOptimizer optimizer;
+  configureUnderpass(optimizer);
+  optimizer.beginPlanningCycle();
+  poly_traj::MinJerkOpt seed;
+  Eigen::Matrix3d head, tail;
+  head << start, Vector3d::Zero(), Vector3d::Zero();
+  tail << end, Vector3d::Zero(), Vector3d::Zero();
+  Eigen::MatrixXd midpoint(3, 1);
+  midpoint.col(0) = 0.5 * (start + end);
+  const Eigen::VectorXd durations = Eigen::Vector2d::Constant(2.0);
+  seed.reset(head, tail, 2);
+  seed.generate(midpoint, durations);
+  std::vector<std::pair<int, int>> segments;
+  ASSERT_NE(optimizer.finelyCheckAndSetConstraintPoints(segments, seed, true),
+            PolyTrajOptimizer::ERR);
+  // 模拟已选择下穿后地图更新、通道变窄，最终检查不能被软代价替代。
+  optimizer.underpass_floor_active_ = true;
+  double cost;
+  EXPECT_FALSE(optimizer.optimizeTrajectory(head, tail, midpoint, durations, cost));
+  EXPECT_FALSE(optimizer.planning_timeout_reported_);
+  optimizer.endPlanningCycle();
+}
 } // namespace

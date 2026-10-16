@@ -75,6 +75,7 @@ namespace diff_planner
     AStar::Ptr a_star_;
     SuspendedObstacleUnderpass suspended_underpass_;
     bool underpass_floor_active_{false};
+    double wei_underpass_floor_{1.0e6};
     VerticalObstacleSideLock vertical_obstacle_side_lock_;
     poly_traj::MinJerkOpt jerkOpt_;
     SwarmTrajData *swarm_trajs_{NULL}; // Can not use shared_ptr and no need to free
@@ -237,6 +238,9 @@ namespace diff_planner
                            const Eigen::Vector3d &p,
                            Eigen::Vector3d &gradp,
                            double &costp);
+
+    bool underpassFloorGradCostP(const Eigen::Vector3d &p,
+                                 Eigen::Vector3d &gradp, double &costp);
 
     bool addNearObstacleConstraints(int id_end);
 
