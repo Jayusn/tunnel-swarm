@@ -137,6 +137,7 @@ class LeaderSafePathFollower {
                diff_history_target_max_distance_, 1.50);
     pnh_.param("leader_segment_endpoint_radius",
                leader_segment_endpoint_radius_, 0.20);
+    // 停稳门限仅供非FIFO模式使用；逐段FIFO确认前机实际到达即可。
     pnh_.param("leader_segment_endpoint_max_speed",
                leader_segment_endpoint_max_speed_, 0.12);
     pnh_.param("leader_segment_endpoint_dwell",
@@ -1052,11 +1053,12 @@ class LeaderSafePathFollower {
     pending_leader_segment_trajectory_id_ = msg->traj_id;
     leader_segment_endpoint_dwell_start_ = ros::Time(0);
     ROS_INFO("[safe_follower] track UAV0 B-spline endpoint id=%ld world=(%.2f,%.2f,%.2f); "
-             "cache only after actual stop.",
+             "cache after actual %s.",
              static_cast<long>(msg->traj_id),
              pending_leader_segment_endpoint_.position.x,
              pending_leader_segment_endpoint_.position.y,
-             pending_leader_segment_endpoint_.position.z);
+             pending_leader_segment_endpoint_.position.z,
+             simple_segment_endpoint_following_ ? "arrival" : "stop");
   }
 
   void confirmPendingLeaderSegmentEndpoint(const RoutePoint& actual_point,
@@ -1066,22 +1068,27 @@ class LeaderSafePathFollower {
     const double endpoint_error = std::hypot(
         actual_point.position.x - pending_leader_segment_endpoint_.position.x,
         actual_point.position.y - pending_leader_segment_endpoint_.position.y);
-    const double speed = std::sqrt(
-        actual_twist.linear.x * actual_twist.linear.x +
-        actual_twist.linear.y * actual_twist.linear.y +
-        actual_twist.linear.z * actual_twist.linear.z);
-    if (endpoint_error > leader_segment_endpoint_radius_ ||
-        speed > leader_segment_endpoint_max_speed_) {
+    if (endpoint_error > leader_segment_endpoint_radius_) {
       leader_segment_endpoint_dwell_start_ = ros::Time(0);
       return;
     }
-    if (leader_segment_endpoint_dwell_start_.isZero()) {
-      leader_segment_endpoint_dwell_start_ = now;
-      return;
-    }
-    if ((now - leader_segment_endpoint_dwell_start_).toSec() + 1.0e-6 <
-        leader_segment_endpoint_dwell_) {
-      return;
+    if (!simple_segment_endpoint_following_) {
+      const double speed = std::sqrt(
+          actual_twist.linear.x * actual_twist.linear.x +
+          actual_twist.linear.y * actual_twist.linear.y +
+          actual_twist.linear.z * actual_twist.linear.z);
+      if (speed > leader_segment_endpoint_max_speed_) {
+        leader_segment_endpoint_dwell_start_ = ros::Time(0);
+        return;
+      }
+      if (leader_segment_endpoint_dwell_start_.isZero()) {
+        leader_segment_endpoint_dwell_start_ = now;
+        return;
+      }
+      if ((now - leader_segment_endpoint_dwell_start_).toSec() + 1.0e-6 <
+          leader_segment_endpoint_dwell_) {
+        return;
+      }
     }
 
     RoutePoint confirmed = actual_point;
@@ -1103,11 +1110,18 @@ class LeaderSafePathFollower {
       while (leader_segment_endpoints_.size() > 200U) {
         leader_segment_endpoints_.pop_front();
       }
-      ROS_WARN("[safe_follower] CONFIRM UAV0 segment endpoint id=%ld progress=%.2f "
-               "world=(%.2f,%.2f,%.2f), actual stop %.2fs.",
-               static_cast<long>(pending_leader_segment_trajectory_id_),
-               confirmed.progress, confirmed.position.x, confirmed.position.y,
-               confirmed.position.z, leader_segment_endpoint_dwell_);
+      if (simple_segment_endpoint_following_)
+        ROS_WARN("[safe_follower] CONFIRM UAV0 segment endpoint id=%ld progress=%.2f "
+                 "world=(%.2f,%.2f,%.2f), actual arrival.",
+                 static_cast<long>(pending_leader_segment_trajectory_id_),
+                 confirmed.progress, confirmed.position.x, confirmed.position.y,
+                 confirmed.position.z);
+      else
+        ROS_WARN("[safe_follower] CONFIRM UAV0 segment endpoint id=%ld progress=%.2f "
+                 "world=(%.2f,%.2f,%.2f), actual stop %.2fs.",
+                 static_cast<long>(pending_leader_segment_trajectory_id_),
+                 confirmed.progress, confirmed.position.x, confirmed.position.y,
+                 confirmed.position.z, leader_segment_endpoint_dwell_);
       if (simple_segment_endpoint_following_ && door_waypoint_released_ &&
           !exit_waypoint_released_ && !terminal_mode_active_) {
         const bool already_queued = !relay_waypoints_.empty() &&
@@ -1282,7 +1296,7 @@ class LeaderSafePathFollower {
 
     // 2026-07-28: 最终出口门心已排队后不再生成门外内部点；稠密实飞路线仍继续记录供终点接力使用。
     if (exit_waypoint_released_) return;
-    // 简化模式仅消费前机真实停稳的分段终点；禁止按里程再插入内部候选点。
+    // 简化模式仅消费前机实际到达的分段终点；禁止按里程再插入内部候选点。
     if (simple_segment_endpoint_following_) return;
 
     // 2026-07-16: 0或负数表示任务全程滚动发点；正数仅保留为调试时的可选安全上限。

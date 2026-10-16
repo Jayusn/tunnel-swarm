@@ -76,6 +76,30 @@ class FifoEntrySpacing : public ::testing::Test {
     follower->appendRelayWaypoint(point, door ? "DOOR" : "SEGMENT_ENDPOINT");
   }
 
+  void trackSegment(double x, int id) {
+    bspline::Bspline::Ptr trajectory(new bspline::Bspline);
+    trajectory->order = 3;
+    trajectory->traj_id = id;
+    trajectory->start_time = ros::Time::now();
+    geometry_msgs::Point endpoint;
+    endpoint.x = x;
+    endpoint.z = 0.6;
+    trajectory->pos_pts.assign(4, endpoint);
+    for (int i = 0; i < 8; ++i) trajectory->knots.push_back(i);
+    follower->leaderTrajectoryCallback(trajectory);
+  }
+
+  void reachSegment(double x, double speed) {
+    setLeader(x);
+    follower->leader_route_progress_ = x;
+    RoutePoint actual;
+    actual.position = follower->leader_odom_.pose.pose.position;
+    actual.position.z = 0.6;
+    geometry_msgs::Twist twist;
+    twist.linear.x = speed;
+    follower->confirmPendingLeaderSegmentEndpoint(actual, twist, ros::Time::now());
+  }
+
   ros::NodeHandle nh;
   ros::Subscriber sink;
   std::unique_ptr<LeaderSafePathFollower> follower;
@@ -104,6 +128,74 @@ TEST_F(FifoEntrySpacing, NormalPointWaitsForOneMeterLeaderClearance) {
   setLeader(2.0);
   follower->handleSimpleDiffPlannerExecution(ros::Time::now());
   EXPECT_TRUE(follower->diff_goal_published_);
+}
+
+TEST_F(FifoEntrySpacing, MovingLeaderArrivalQueuesPointImmediately) {
+  follower->door_waypoint_released_ = true;
+  trackSegment(1.0, 1);
+  reachSegment(0.95, 0.5);
+  ASSERT_EQ(follower->relay_waypoints_.size(), 1U);
+  EXPECT_NEAR(follower->relay_waypoints_.front().position.x, 0.95, 1e-9);
+  EXPECT_FALSE(follower->pending_leader_segment_endpoint_valid_);
+}
+
+TEST_F(FifoEntrySpacing, UnreachedPlannedEndpointDoesNotEnterFifo) {
+  follower->door_waypoint_released_ = true;
+  trackSegment(2.0, 1);
+  reachSegment(1.7, 0.0);
+  EXPECT_TRUE(follower->pending_leader_segment_endpoint_valid_);
+  EXPECT_TRUE(follower->relay_waypoints_.empty());
+}
+
+TEST_F(FifoEntrySpacing, NewTrajectoryReplacesUnreachedCandidate) {
+  follower->door_waypoint_released_ = true;
+  trackSegment(1.0, 1);
+  trackSegment(2.0, 2);
+  reachSegment(1.0, 0.5);
+  ASSERT_TRUE(follower->relay_waypoints_.empty());
+  EXPECT_EQ(follower->pending_leader_segment_trajectory_id_, 2);
+  reachSegment(2.0, 0.5);
+  ASSERT_EQ(follower->relay_waypoints_.size(), 1U);
+  EXPECT_NEAR(follower->relay_waypoints_.front().position.x, 2.0, 1e-9);
+}
+
+TEST_F(FifoEntrySpacing, ContinuousNextSegmentKeepsAlreadyReachedPoint) {
+  follower->door_waypoint_released_ = true;
+  trackSegment(1.0, 1);
+  reachSegment(0.95, 0.5);
+  trackSegment(2.0, 2);
+  ASSERT_EQ(follower->relay_waypoints_.size(), 1U);
+  reachSegment(1.95, 0.5);
+  ASSERT_EQ(follower->relay_waypoints_.size(), 2U);
+  EXPECT_NEAR(follower->relay_waypoints_[0].position.x, 0.95, 1e-9);
+  EXPECT_NEAR(follower->relay_waypoints_[1].position.x, 1.95, 1e-9);
+}
+
+TEST_F(FifoEntrySpacing, MovingArrivalStillWaitsForLeaderToClearOneMeter) {
+  follower->door_waypoint_released_ = true;
+  trackSegment(1.0, 1);
+  reachSegment(1.0, 0.5);
+  ASSERT_EQ(follower->relay_waypoints_.size(), 1U);
+  setLeader(1.99);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_FALSE(follower->diff_goal_published_);
+  setLeader(2.0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->diff_goal_published_);
+}
+
+TEST_F(FifoEntrySpacing, LegacyModeKeepsItsStopConfirmation) {
+  follower->simple_segment_endpoint_following_ = false;
+  trackSegment(1.0, 1);
+  reachSegment(1.0, 0.5);
+  EXPECT_TRUE(follower->leader_segment_endpoints_.empty());
+  reachSegment(1.0, 0.0);
+  EXPECT_TRUE(follower->leader_segment_endpoints_.empty());
+  follower->leader_segment_endpoint_dwell_start_ = ros::Time::now() -
+      ros::Duration(follower->leader_segment_endpoint_dwell_ + 0.01);
+  reachSegment(1.0, 0.0);
+  EXPECT_EQ(follower->leader_segment_endpoints_.size(), 1U);
+  EXPECT_TRUE(follower->relay_waypoints_.empty());
 }
 
 TEST_F(FifoEntrySpacing, DoorArrivalAndHoverIgnoreOneMeterSpacing) {
