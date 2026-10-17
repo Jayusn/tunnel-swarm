@@ -54,17 +54,20 @@ source_ros()
 
 wait_for_mavros()
 {
-    now=$(date +%s)
-    deadline=$((now + WAIT_TIMEOUT))
+    local deadline=$((SECONDS + WAIT_TIMEOUT)) check_timeout
     echo "[UAV1 MAVROS] 等待 /UAV1/mavros/state connected: True ..."
 
-    while ! timeout --kill-after=1s 5s rostopic echo -n 1 /UAV1/mavros/state 2>/dev/null |
-        grep -q 'connected: True'; do
-        now=$(date +%s)
-        [ "$now" -lt "$deadline" ] ||
-            fail "等待 UAV1 MAVROS 连接超时。"
-        sleep 1
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        check_timeout=$((deadline - SECONDS))
+        [ "$check_timeout" -gt 0 ] || break
+        if [ "$check_timeout" -gt 5 ]; then check_timeout=5; fi
+        if timeout --kill-after=1s "${check_timeout}s" rostopic echo -n 1 /UAV1/mavros/state 2>/dev/null |
+            grep -q 'connected: True'; then
+            return 0
+        fi
+        if [ "$SECONDS" -lt "$deadline" ]; then sleep 1; fi
     done
+    fail "等待 UAV1 MAVROS 连接超时。"
 }
 
 set_interval()
@@ -76,7 +79,7 @@ set_interval()
 
     while [ "$attempt" -le 3 ]; do
         echo "[UAV1 MAVROS] 设置 $description: $interval_us us（第 $attempt 次）"
-        if rosrun mavros mavcmd -n /UAV1/mavros long 511 "$message_id" "$interval_us" 0 0 0 0 0; then
+        if timeout --kill-after=1s 5s rosrun mavros mavcmd -n /UAV1/mavros long 511 "$message_id" "$interval_us" 0 0 0 0 0; then
             return 0
         fi
         attempt=$((attempt + 1))

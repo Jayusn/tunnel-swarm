@@ -65,7 +65,7 @@ usage() {
   - 第 7 屏的 uav1_diff_autotrans.launch 默认 enable_planner=false，
     因此不会与第 6 屏重复启动 Diff-Planner。
   - 第 5 屏默认启动热成像检测和 D435 融合；未接设备时可加 --no-thermal。
-  - 可用环境变量 UAV1_SIX_WAIT_TIMEOUT 修改前级等待超时，默认 180 秒。
+  - 可用环境变量 UAV1_SIX_WAIT_TIMEOUT 修改前级等待超时，默认按实际时间等待 180 秒。
 
 选项：
   --detector fapp|ldop       动态障碍检测算法，默认 fapp
@@ -176,52 +176,68 @@ stop_terminator_window() {
   rm -f -- "${TERMINATOR_PID_FILE}"
 }
 
+# 按实际经过时间计时；每次查询最多 5 秒，另留 1 秒退出时间。
 wait_for_ros_master() {
-  local elapsed=0
-  while (( elapsed < WAIT_TIMEOUT )); do
-    if rosnode list >/dev/null 2>&1; then
+  local started=${SECONDS} deadline=$((SECONDS + WAIT_TIMEOUT))
+  local elapsed next_log=0 check_timeout
+  while (( SECONDS < deadline )); do
+    elapsed=$((SECONDS - started))
+    if (( elapsed >= next_log )); then
+      printf '[等待] ROS master 尚未就绪（%ss/%ss）\n' "${elapsed}" "${WAIT_TIMEOUT}"
+      next_log=$((elapsed + 10))
+    fi
+    check_timeout=$((deadline - SECONDS))
+    if (( check_timeout <= 0 )); then break; fi
+    if (( check_timeout > 5 )); then check_timeout=5; fi
+    if timeout --kill-after=1s "${check_timeout}s" rosnode list >/dev/null 2>&1; then
       return 0
     fi
-    if (( elapsed == 0 || elapsed % 10 == 0 )); then
-      printf '[等待] ROS master 尚未就绪（%ss/%ss）\n' "${elapsed}" "${WAIT_TIMEOUT}"
-    fi
-    sleep 1
-    elapsed=$((elapsed + 1))
+    if (( SECONDS < deadline )); then sleep 1; fi
   done
   printf '[错误] 等待 ROS master 超时：%ss\n' "${WAIT_TIMEOUT}"
   return 1
 }
 
 wait_for_topic_message() {
-  local topic="$1" elapsed=0
-  while (( elapsed < WAIT_TIMEOUT )); do
-    if timeout 2 rostopic echo -n 1 "${topic}" >/dev/null 2>&1; then
+  local topic="$1" started=${SECONDS} deadline=$((SECONDS + WAIT_TIMEOUT))
+  local elapsed next_log=0 check_timeout
+  while (( SECONDS < deadline )); do
+    elapsed=$((SECONDS - started))
+    if (( elapsed >= next_log )); then
+      printf '[等待] 尚未收到 %s（%ss/%ss）\n' "${topic}" "${elapsed}" "${WAIT_TIMEOUT}"
+      next_log=$((elapsed + 10))
+    fi
+    check_timeout=$((deadline - SECONDS))
+    if (( check_timeout <= 0 )); then break; fi
+    if (( check_timeout > 5 )); then check_timeout=5; fi
+    if timeout --kill-after=1s "${check_timeout}s" rostopic echo -n 1 "${topic}" >/dev/null 2>&1; then
       printf '[就绪] 已收到话题数据：%s\n' "${topic}"
       return 0
     fi
-    if (( elapsed == 0 || elapsed % 10 == 0 )); then
-      printf '[等待] 尚未收到 %s（%ss/%ss）\n' "${topic}" "${elapsed}" "${WAIT_TIMEOUT}"
-    fi
-    sleep 1
-    elapsed=$((elapsed + 1))
+    if (( SECONDS < deadline )); then sleep 1; fi
   done
   printf '[错误] 等待话题数据超时：%s\n' "${topic}"
   return 1
 }
 
 wait_for_mavros_connected() {
-  local elapsed=0
-  while (( elapsed < WAIT_TIMEOUT )); do
-    if timeout --kill-after=1s 5s rostopic echo -n 1 "${MAVROS_STATE_TOPIC}" 2>/dev/null |
+  local started=${SECONDS} deadline=$((SECONDS + WAIT_TIMEOUT))
+  local elapsed next_log=0 check_timeout
+  while (( SECONDS < deadline )); do
+    elapsed=$((SECONDS - started))
+    if (( elapsed >= next_log )); then
+      printf '[等待] UAV1 MAVROS 尚未连接（%ss/%ss）\n' "${elapsed}" "${WAIT_TIMEOUT}"
+      next_log=$((elapsed + 10))
+    fi
+    check_timeout=$((deadline - SECONDS))
+    if (( check_timeout <= 0 )); then break; fi
+    if (( check_timeout > 5 )); then check_timeout=5; fi
+    if timeout --kill-after=1s "${check_timeout}s" rostopic echo -n 1 "${MAVROS_STATE_TOPIC}" 2>/dev/null |
         grep -F 'connected: True' >/dev/null 2>&1; then
       printf '[就绪] UAV1 MAVROS 已连接飞控\n'
       return 0
     fi
-    if (( elapsed == 0 || elapsed % 10 == 0 )); then
-      printf '[等待] UAV1 MAVROS 尚未连接（%ss/%ss）\n' "${elapsed}" "${WAIT_TIMEOUT}"
-    fi
-    sleep 1
-    elapsed=$((elapsed + 1))
+    if (( SECONDS < deadline )); then sleep 1; fi
   done
   printf '[错误] 等待 UAV1 MAVROS 连接超时\n'
   return 1
@@ -324,7 +340,7 @@ run_planner_pane() {
   wait_for_topic_message "${ODOM_TOPIC}" || keep_pane_open
   wait_for_topic_message "${CLOUD_TOPIC}" || keep_pane_open
   wait_for_topic_message /UAV0/fast_lio/Odom_high_freq || keep_pane_open
-  if timeout 2 rostopic echo -n 1 "${DOWN_CAMERA_TOPIC}" >/dev/null 2>&1; then
+  if timeout --kill-after=1s 5s rostopic echo -n 1 "${DOWN_CAMERA_TOPIC}" >/dev/null 2>&1; then
     printf '[复用] UAV1 下视相机已经发布：%s\n' "${DOWN_CAMERA_TOPIC}"
   else
     printf '[启动] UAV1 下视相机；合并标注画面将在 Diff RViz 中显示\n'
