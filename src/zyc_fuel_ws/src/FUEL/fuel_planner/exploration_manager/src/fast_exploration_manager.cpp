@@ -1289,35 +1289,17 @@ bool FastExplorationManager::buildCenterGatePassage(
   return true;
 }
 
-bool FastExplorationManager::buildWideSideBypass(
-    const Vector3d& pos, double cur_yaw, const Vector3d& forward,
-    Vector3d& next_pos, double& next_yaw, bool& split_obstacle_detected) {
-  split_obstacle_detected = false;
-  if (!wide_side_bypass_enabled_ || !sdf_map_ || !planner_manager_ ||
-      forward.head<2>().norm() < 1e-3)
-    return false;
-
+FastExplorationManager::SplitEvidence FastExplorationManager::findWideSideSplit(
+    const Vector3d& pos, const Vector3d& forward) const {
+  SplitEvidence split;
+  if (!wide_side_bypass_enabled_ || !sdf_map_ || forward.head<2>().norm() < 1e-3)
+    return split;
   const Vector3d travel(forward.head<2>().normalized().x(),
                         forward.head<2>().normalized().y(), 0.0);
   const Vector3d lateral(-travel.y(), travel.x(), 0.0);
   const double sample_step = std::max(0.05, sdf_map_->getResolution());
   const int side_samples = std::max(
-      1, static_cast<int>(std::floor(wide_side_bypass_lateral_range_ /
-                                    sample_step)));
-
-  struct SplitEvidence {
-    bool valid{false};
-    double forward_distance{0.0};
-    double obstacle_min_offset{0.0};
-    double obstacle_max_offset{0.0};
-    double left_free_min{0.0};
-    double left_free_max{0.0};
-    double right_free_min{0.0};
-    double right_free_max{0.0};
-    double left_width{0.0};
-    double right_width{0.0};
-  } split;
-  bool suspended_obstacle_seen = false;
+      1, static_cast<int>(std::floor(wide_side_bypass_lateral_range_ / sample_step)));
 
   auto knownFree = [&](double forward_distance, double side_offset) {
     const Vector3d probe = pos + forward_distance * travel + side_offset * lateral;
@@ -1342,7 +1324,7 @@ bool FastExplorationManager::buildWideSideBypass(
       // 低位支撑只决定是否可以从障碍下方穿过，不能阻止普通的水平绕障。
       // 如果下方通道尚未确认安全，先把障碍作为当前高度的竖直障碍，
       // 交给左右分流；buildMissionForwardFallback() 会在此之前优先尝试已确认的下穿。
-      if (!hasLowVerticalSupport(probe, pos.z())) suspended_obstacle_seen = true;
+      if (!hasLowVerticalSupport(probe, pos.z())) split.suspended_obstacle_seen = true;
       obstacle_min_idx = std::min(obstacle_min_idx, side_idx);
       obstacle_max_idx = std::max(obstacle_max_idx, side_idx);
       // 横截面两侧的占据不是前方挡路证据；至少一个实际占据栅格必须
@@ -1382,8 +1364,22 @@ bool FastExplorationManager::buildWideSideBypass(
     break;
   }
 
+  return split;
+}
+
+bool FastExplorationManager::buildWideSideBypass(
+    const Vector3d& pos, double cur_yaw, const Vector3d& forward,
+    Vector3d& next_pos, double& next_yaw, bool& split_obstacle_detected) {
+  split_obstacle_detected = false;
+  if (!wide_side_bypass_enabled_ || !sdf_map_ || !planner_manager_ ||
+      forward.head<2>().norm() < 1e-3)
+    return false;
+  const Vector3d travel(forward.head<2>().normalized().x(),
+                        forward.head<2>().normalized().y(), 0.0);
+  const Vector3d lateral(-travel.y(), travel.x(), 0.0);
+  const SplitEvidence split = findWideSideSplit(pos, forward);
   split_obstacle_detected = split.valid;
-  if (!split.valid && suspended_obstacle_seen) {
+  if (!split.valid && split.suspended_obstacle_seen) {
     ROS_INFO_THROTTLE(
         0.5,
         "[wide_side_bypass] current-height obstacle has no continuous low support; "
@@ -1499,6 +1495,91 @@ bool FastExplorationManager::buildWideSideBypass(
       choose_right ? "right" : "left", chosen_width, other_width,
       std::fabs(best.lateral_offset), best.forward_step, next_pos.x(), next_pos.y(),
       next_pos.z(), best.path_clearance, next_yaw * 180.0 / M_PI);
+  return true;
+}
+
+bool FastExplorationManager::selectEntryForwardGoal(
+    const Vector3d& pos, const Vector3d& forward, double remaining,
+    entry_forward::Goal& selected) {
+  const Vector3d lateral(-forward.y(), forward.x(), 0.0);
+  const double sample_step = std::max(0.05, sdf_map_->getResolution());
+  const SplitEvidence split = findWideSideSplit(pos, forward);
+  double preferred_side = split.right_width > split.left_width ? -1.0 : 1.0;
+  // 复用已经选定的绕行侧；只有这一侧仍有可行跨障候选时才会保留。
+  if (recovery_side_latched_ && std::fabs(recovery_side_dir_.dot(lateral)) > 0.5)
+    preferred_side = recovery_side_dir_.dot(lateral) > 0.0 ? 1.0 : -1.0;
+  const auto evaluate = [&](entry_forward::Goal& goal) {
+    const Vector3d& candidate = goal.position;
+    double& clearance = goal.clearance;
+    double& continuation = goal.continuation;
+    const Vector3d delta = candidate - pos;
+    if (!pointInsideWorkspaceLock(candidate) ||
+        !isLowProbeCorridorSafe(pos, delta, delta.head<2>().norm()) ||
+        !task_search_manager_->isTaskMotionAllowed(candidate))
+      return false;
+    clearance = std::max(0.0, sdf_map_->getDistance(candidate));
+    continuation = 0.0;
+    for (double angle : {0.0, -M_PI / 6.0, M_PI / 6.0, -M_PI_4, M_PI_4}) {
+      const Vector3d direction(
+          forward.x() * std::cos(angle) - forward.y() * std::sin(angle),
+          forward.x() * std::sin(angle) + forward.y() * std::cos(angle), 0.0);
+      for (double distance : {0.40, 0.20}) {
+        if (distance <= continuation + 1e-6) continue;
+        const Vector3d next = candidate + distance * direction;
+        if (pointInsideWorkspaceLock(next) &&
+            task_search_manager_->isTaskMotionAllowed(next) &&
+            isLowProbeCorridorSafe(candidate, direction, distance))
+          continuation = distance;
+      }
+      if (continuation >= 0.40) break;
+    }
+    // 跨过已观测的阻挡截面后仍有足迹可行通路，才提升排序。
+    // 第一段不能先走到通路反侧，第二段也不能折返抵消已做的侧移。
+    if (split.valid) {
+      for (double side : {1.0, -1.0}) {
+        const double width = side > 0.0 ? split.left_width : split.right_width;
+        if (width < 0.20) continue;
+        const double offset = side > 0.0
+            ? 0.5 * (split.left_free_min + split.left_free_max)
+            : 0.5 * (split.right_free_min + split.right_free_max);
+        if (goal.side * offset < -1e-6 ||
+            (std::fabs(goal.side) > 1e-3 &&
+             goal.side * (offset - goal.side) < -std::fabs(goal.side) * sample_step))
+          continue;
+        const double crossing_progress = split.forward_distance +
+            std::max(0.15, 2.0 * sample_step);
+        const Vector3d gate = pos + crossing_progress * forward + offset * lateral;
+        const Vector3d delta = gate - candidate;
+        if (delta.dot(forward) < -1e-6 || !pointInsideWorkspaceLock(gate) ||
+            !task_search_manager_->isTaskMotionAllowed(gate) ||
+            !isLowProbeCorridorSafe(candidate, delta, delta.head<2>().norm()))
+          continue;
+        const int priority = side == preferred_side ? 2 : 1;
+        if (priority > goal.passage_priority) {
+          goal.passage_priority = priority;
+          goal.passage_side = side;
+        }
+      }
+    }
+    return true;
+  };
+  if (!entry_forward::selectGoal(pos, forward, remaining, evaluate, selected))
+    return false;
+  if (selected.passage_priority > 0) {
+    if (!recovery_side_latched_ || recovery_side_dir_.dot(lateral) * selected.passage_side < 0.5)
+      recovery_side_origin_ = pos;
+    recovery_side_latched_ = true;
+    recovery_side_dir_ = selected.passage_side * lateral;
+  } else if (split.valid) {
+    recovery_side_latched_ = false;
+  }
+  if (split.valid)
+    ROS_WARN("[entry_forward] obstacle %.2fm ahead, lanes left=%.2fm right=%.2fm; "
+             "connected passage=%s priority=%d.", split.forward_distance,
+             split.left_width, split.right_width,
+             selected.passage_side > 0.0 ? "left" :
+                 (selected.passage_side < 0.0 ? "right" : "unconfirmed"),
+             selected.passage_priority);
   return true;
 }
 
@@ -2763,32 +2844,7 @@ int FastExplorationManager::planExploreMotion(
     if (entry_forward::needsAdvance(entry_progress)) {
       const double remaining = 1.05 - entry_progress;
       entry_forward::Goal selected;
-      const auto evaluate = [&](const Vector3d& candidate, double& clearance,
-                                double& continuation) {
-        const Vector3d delta = candidate - pos;
-        if (!pointInsideWorkspaceLock(candidate) ||
-            !isLowProbeCorridorSafe(pos, delta, delta.head<2>().norm()) ||
-            !task_search_manager_->isTaskMotionAllowed(candidate))
-          return false;
-        clearance = std::max(0.0, sdf_map_->getDistance(candidate));
-        continuation = 0.0;
-        for (double angle : {0.0, -M_PI / 6.0, M_PI / 6.0, -M_PI_4, M_PI_4}) {
-          const Vector3d direction(
-              forward.x() * std::cos(angle) - forward.y() * std::sin(angle),
-              forward.x() * std::sin(angle) + forward.y() * std::cos(angle), 0.0);
-          for (double distance : {0.40, 0.20}) {
-            if (distance <= continuation + 1e-6) continue;
-            const Vector3d next = candidate + distance * direction;
-            if (pointInsideWorkspaceLock(next) &&
-                task_search_manager_->isTaskMotionAllowed(next) &&
-                isLowProbeCorridorSafe(candidate, direction, distance))
-              continuation = distance;
-          }
-          if (continuation >= 0.40) break;
-        }
-        return true;
-      };
-      if (entry_forward::selectGoal(pos, forward, remaining, evaluate, selected)) {
+      if (selectEntryForwardGoal(pos, forward, remaining, selected)) {
         next_pos = selected.position;
         next_yaw = std::atan2(forward.y(), forward.x());
         use_mission_forward_fallback = true;

@@ -32,7 +32,8 @@ int main() {
                               rotated_origin, rotated_forward, 0.10),
         "任意入口位置与航向均支持斜向前起步");
 
-  const auto open = [](const Eigen::Vector3d&, double& clearance, double& continuation) {
+  const auto open = [](Goal& goal) {
+    double& clearance = goal.clearance; double& continuation = goal.continuation;
     clearance = 0.6; continuation = 0.4; return true;
   };
   check(selectGoal(start, forward, 1.05, open, goal), "开放通道有目标");
@@ -40,7 +41,9 @@ int main() {
         "开放通道保持直行并优先长步");
 
   // 正前方终点仍可到达，但前方被障碍封住；右侧有净空和下一段连接。
-  const auto bypass = [](const Eigen::Vector3d& p, double& clearance, double& continuation) {
+  const auto bypass = [](Goal& goal) {
+    const auto& p = goal.position;
+    double& clearance = goal.clearance; double& continuation = goal.continuation;
     if (p.y() < -0.1 || p.y() > 0.45) return false; // 两侧墙壁
     clearance = p.y() >= 0.19 ? 0.4 : 0.15;
     continuation = p.y() >= 0.19 ? 0.4 : 0.0;
@@ -50,14 +53,18 @@ int main() {
   check(goal.advance > 0.5 && goal.side > 0.0 && goal.position.z() == start.z(),
         "净空与后续连接评分选择斜前方且保持高度");
 
-  const auto connected = [](const Eigen::Vector3d& p, double& clearance, double& continuation) {
+  const auto connected = [](Goal& goal) {
+    const auto& p = goal.position;
+    double& clearance = goal.clearance; double& continuation = goal.continuation;
     clearance = 0.2;
     continuation = p.y() >= 0.19 ? 0.4 : 0.0;
     return std::fabs(p.y()) < 0.3;
   };
   check(selectGoal(start, forward, 1.05, connected, goal) && goal.side > 0.0,
         "相同净空时优先有下一段连接的斜前方");
-  const auto clear = [](const Eigen::Vector3d& p, double& clearance, double& continuation) {
+  const auto clear = [](Goal& goal) {
+    const auto& p = goal.position;
+    double& clearance = goal.clearance; double& continuation = goal.continuation;
     clearance = p.y() >= 0.19 ? 0.4 : 0.15;
     continuation = 0.4;
     return std::fabs(p.y()) < 0.3;
@@ -65,14 +72,36 @@ int main() {
   check(selectGoal(start, forward, 1.05, clear, goal) && goal.side > 0.0,
         "相同后续连接时优先净空更好的斜前方");
 
-  const auto narrow = [](const Eigen::Vector3d& p, double& clearance, double& continuation) {
+  // 复现“右侧短步净空更大，但只有左侧能接到障碍后方”的评分冲突。
+  const auto passage = [](Goal& candidate) {
+    if (std::fabs(candidate.side) > 0.21) return false;
+    candidate.clearance = candidate.side < -0.1 ? 0.60 : 0.20;
+    candidate.continuation = 0.40;
+    candidate.passage_priority = candidate.side > 0.1 ? 2 : 0;
+    return true;
+  };
+  check(selectGoal(start, forward, 0.62, passage, goal) && goal.side > 0.0,
+        "跨障通路优先于错误侧的短步大净空");
+  const auto alternate = [](Goal& candidate) {
+    candidate.clearance = 0.20;
+    candidate.continuation = 0.40;
+    // 原选左侧已不可用，右侧仍能跨过障碍；不能被旧侧偏好锁住。
+    candidate.passage_priority = candidate.side < -0.1 ? 1 : 0;
+    return true;
+  };
+  check(selectGoal(start, forward, 0.62, alternate, goal) && goal.side < 0.0,
+        "原侧跨障不可用时允许另一侧可行通路");
+
+  const auto narrow = [](Goal& goal) {
+    const auto& p = goal.position;
+    double& clearance = goal.clearance; double& continuation = goal.continuation;
     clearance = 0.10; continuation = 0.0;
     return std::fabs(p.y()) < 0.1 && p.x() < 0.7;
   };
   check(selectGoal(start, forward, 1.05, narrow, goal), "短可通行段仍可前进");
   check(goal.advance >= 0.2 && goal.advance < 0.7 && goal.side == 0.0,
         "不额外要求大净空或下一段必须通行");
-  const auto blocked = [](const Eigen::Vector3d&, double&, double&) { return false; };
+  const auto blocked = [](Goal&) { return false; };
   check(!selectGoal(start, forward, 1.05, blocked, goal), "没有可行路径时不造目标");
   check(selectGoal(start, Eigen::Vector3d(0.0, 1.0, 0.0), 0.15, open, goal),
         "小于步长的剩余距离支持旋转入口方向");

@@ -12,6 +12,7 @@
 #include <quadrotor_msgs/ExplorationMotionConstraint.h>
 #include <exploration_manager/vertical_detour_policy.h>
 #include <exploration_manager/manual_waypoint_path.h>
+#include <exploration_manager/entry_forward_policy.h>
 using Eigen::Vector3d;
 using std::shared_ptr;
 using std::unique_ptr;
@@ -295,6 +296,22 @@ private:
                                      Vector3d& next_pos, double& next_yaw);
   void rememberSideRecovery(const Vector3d& pos, double cur_yaw,
                             const vector<Vector3d>& path);
+  struct SplitEvidence {
+    bool valid{false};
+    bool suspended_obstacle_seen{false};
+    double forward_distance{0.0};
+    double obstacle_min_offset{0.0};
+    double obstacle_max_offset{0.0};
+    double left_free_min{0.0};
+    double left_free_max{0.0};
+    double right_free_min{0.0};
+    double right_free_max{0.0};
+    double left_width{0.0};
+    double right_width{0.0};
+  };
+  SplitEvidence findWideSideSplit(const Vector3d& pos, const Vector3d& forward) const;
+  bool selectEntryForwardGoal(const Vector3d& pos, const Vector3d& forward,
+                              double remaining, entry_forward::Goal& selected);
   bool buildWideSideBypass(const Vector3d& pos, double cur_yaw,
                            const Vector3d& forward, Vector3d& next_pos,
                            double& next_yaw, bool& split_obstacle_detected);

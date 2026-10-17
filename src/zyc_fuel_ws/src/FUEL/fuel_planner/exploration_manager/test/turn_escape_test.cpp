@@ -241,6 +241,81 @@ public:
     }
   }
 
+  static void runEntryPassage(int open_side) {
+    ros::NodeHandle nh("~");
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    auto& task = *manager.task_search_manager_;
+    task.setMap(manager.sdf_map_);
+    task.enabled_ = true;
+    task.global_no_return_ = false;
+    task.exit_detection_enabled_ = false;
+    const double mirror = open_side < 0 ? -1.0 : 1.0;
+    const Vector3d start(0.033, -0.103*mirror, 0.473);
+    task.updateRobotPose(start, 0.0);
+    pcl::PointCloud<pcl::PointXYZ> walls;
+    // 采用本次入口的尺寸：左墙+0.60、右墙-0.95，障碍位于前方0.67m，
+    // 从右墙延伸到Y=-0.10。镜像用例应自动选择右侧。
+    for (double x=-1.7; x<=1.7; x+=0.04)
+      for (double z=0.15; z<=1.45; z+=0.04)
+        for (double y : {-0.95, 0.60})
+          walls.push_back(pcl::PointXYZ(x, mirror*y, z));
+    for (double x : {-1.7, 1.7})
+      for (double y=-0.95; y<=0.60; y+=0.04)
+        for (double z=0.15; z<=1.45; z+=0.04)
+          walls.push_back(pcl::PointXYZ(x, mirror*y, z));
+    for (const Vector3d& viewpoint : {start, Vector3d(1.3, 0, 0.6)})
+      for (int i=0; i<5; ++i)
+        manager.sdf_map_->inputPointCloud(walls, walls.size(), viewpoint);
+    if (open_side != 0) {
+      pcl::PointCloud<pcl::PointXYZ> obstacle;
+      const double wall_x = open_side == 2 ? 0.30 : 0.70;
+      const double wall_y_end = open_side == 2 ? 0.60 : -0.10;
+      for (double y=-0.95; y<=wall_y_end+1e-6; y+=0.025)
+        for (double z=0.15; z<=1.45; z+=0.025)
+          obstacle.push_back(pcl::PointXYZ(wall_x, mirror*y, z));
+      for (int i=0; i<6; ++i)
+        manager.sdf_map_->inputPointCloud(obstacle, obstacle.size(), start);
+    }
+    manager.sdf_map_->updateESDF3d();
+    entry_forward::Goal goal;
+    const bool selected = manager.selectEntryForwardGoal(start, Vector3d::UnitX(), 0.62, goal);
+    if (open_side == 2) {
+      check(!selected, "blocked entry generated a segment through the wall");
+      return;
+    }
+    check(selected, "entry fixture has no known-free forward candidate");
+    std::cout << "entry fixture side=" << open_side << " advance=" << goal.advance
+              << " side=" << goal.side << " passage=" << goal.passage_priority
+              << " selected_lane=" << goal.passage_side << std::endl;
+    if (open_side == 0) {
+      check(std::fabs(goal.side) < 1e-6 && goal.passage_priority == 0,
+            "open entry acquired a false obstacle-side preference");
+    } else {
+      check(goal.passage_priority > 0 && goal.passage_side*open_side > 0.0 &&
+            goal.side*open_side > 0.0,
+            "entry selected the obstructed side despite a connected passage");
+      // 下一轮从已执行短步继续；现有绕行侧仍可用时不能被局部净空改成反侧。
+      const Vector3d midway = 0.5 * (start + goal.position);
+      task.updateRobotPose(midway, 0.0);
+      entry_forward::Goal next;
+      const double remaining = 0.62 - 0.5 * goal.advance;
+      if (remaining >= 0.20) {
+        check(manager.selectEntryForwardGoal(midway, Vector3d::UnitX(), remaining, next),
+              "same-side entry could not continue from its selected endpoint");
+        check(next.side*open_side >= -1e-6,
+              "entry reversed its side while the observed passage remained open");
+      }
+    }
+    check(manager.planner_manager_->planStraightTraj(start, goal.position) &&
+          manager.planner_manager_->isTrajectorySafe(),
+          "entry passage candidate failed final straight-trajectory footprint checks");
+    const double duration = manager.planner_manager_->local_data_.duration_;
+    const Vector3d end = manager.planner_manager_->local_data_.position_traj_.evaluateDeBoorT(duration);
+    check(end.x()-start.x() >= 0.20-1e-3 && std::fabs(end.z()-start.z()) < 1e-6,
+          "entry passage lost actual forward progress or changed height");
+  }
+
   static void runSideRecovery(double side, bool block_side) {
     ros::NodeHandle nh("~");
     nh.setParam("manager/use_geometric_path", true);
@@ -395,6 +470,22 @@ TEST(SideRecovery, RightDetourSurvivesCollisionAndLateralProgress) {
 
 TEST(SideRecovery, BlockedSameSideYieldsToExistingRecovery) {
   fast_planner::TurnEscapeTest::runSideRecovery(1.0, true);
+}
+
+TEST(EntryPassage, ChoosesLeftOfRightWallObstacle) {
+  fast_planner::TurnEscapeTest::runEntryPassage(1);
+}
+
+TEST(EntryPassage, ChoosesRightOfMirroredObstacle) {
+  fast_planner::TurnEscapeTest::runEntryPassage(-1);
+}
+
+TEST(EntryPassage, OpenEntryKeepsStraightMotion) {
+  fast_planner::TurnEscapeTest::runEntryPassage(0);
+}
+
+TEST(EntryPassage, FullyBlockedEntryDoesNotCrossWall) {
+  fast_planner::TurnEscapeTest::runEntryPassage(2);
 }
 
 int main(int argc,char** argv) {
