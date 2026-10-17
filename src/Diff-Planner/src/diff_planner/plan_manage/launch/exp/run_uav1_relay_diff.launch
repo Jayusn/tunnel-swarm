@@ -22,8 +22,8 @@
     <arg name="enable_vertical_obstacle_side_lock" default="true"/>
     <arg name="side_lock_corridor_half_width" default="0.75"/>
     <arg name="side_lock_width_similarity_tolerance" default="0.05"/>
-    <!-- 悬空障碍物有可行下方通道时，允许轨迹降低高度通过。 -->
-    <arg name="enable_suspended_obstacle_underpass" default="true"/>
+    <!-- 关闭强制下穿分支，使用普通三维搜索选择上绕、侧绕或下绕。 -->
+    <arg name="enable_suspended_obstacle_underpass" default="false"/>
     <arg name="underpass_corridor_half_width" default="0.25"/>
     <arg name="underpass_min_descent" default="0.20"/>
     <arg name="underpass_min_vertical_gap" default="0.25"/>
