@@ -47,6 +47,9 @@ detection/max_above_uav: 1.5
 detection/min_motion_novel_fraction: 0.26
 detection/min_motion_speed: 0.14
 detection/motion_confirmation_frames: 3
+# Require a continuous 0.5 s motion history; do not count wall-fragment jumps.
+detection/motion_confirmation_duration: 0.5
+detection/motion_continuity_tolerance: 0.04
 detection/motion_displacement: 0.06
 detection/motion_window: 0.6
 detection/occlusion_startup_enabled: true

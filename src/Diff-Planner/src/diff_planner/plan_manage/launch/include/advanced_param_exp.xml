@@ -85,7 +85,7 @@
     <!-- 2026-07-28: 暴露占据衰减时间；默认保持原Diff激光地图不衰减，动态场景可按实例启用。 -->
     <arg name="fading_time" default="-1.0"/>
     <!-- 2026-07-07: 暴露轨迹优化的硬障碍间隙，便于按场景提升贴墙余量。 -->
-    <arg name="obstacle_clearance" default="0.2"/>
+    <arg name="obstacle_clearance" default="0.15"/>
     <!-- 悬空障碍下穿默认关闭，由需要该行为的实飞 launch 单独开启。 -->
     <arg name="enable_suspended_obstacle_underpass" default="false"/>
     <arg name="underpass_corridor_half_width" default="0.12"/>
@@ -336,7 +336,7 @@
         <param name="optimization/weight_swarm" value="10000.0" type="double"/>
         <param name="optimization/weight_feasibility" value="10000.0" type="double"/>
         <param name="optimization/weight_sqrvariance" value="10000.0" type="double"/>
-        <param name="optimization/weight_time" value="10.0" type="double"/>
+        <param name="optimization/weight_time" value="5.0" type="double"/>
         <!-- 2026-07-07: 允许实验 launch 覆盖优化器的障碍硬约束间隙，避免窄通道里按过小安全距离贴墙飞。 -->
         <param name="optimization/obstacle_clearance" value="$(arg obstacle_clearance)" type="double"/>
         <param name="optimization/enable_suspended_obstacle_underpass" value="$(arg enable_suspended_obstacle_underpass)" type="bool"/>
@@ -348,7 +348,7 @@
         <param name="optimization/enable_vertical_obstacle_side_lock" value="$(arg enable_vertical_obstacle_side_lock)" type="bool"/>
         <param name="optimization/side_lock_corridor_half_width" value="$(arg side_lock_corridor_half_width)" type="double"/>
         <param name="optimization/side_lock_width_similarity_tolerance" value="$(arg side_lock_width_similarity_tolerance)" type="double"/>
-        <param name="optimization/obstacle_clearance_soft" value="0.46" type="double"/>
+        <param name="optimization/obstacle_clearance_soft" value="0.30" type="double"/>
         <param name="optimization/swarm_clearance" value="0.15000000000000002" type="double"/> <!-- heterogeneous support: my required clearance -->
         <param name="optimization/max_vel" value="$(arg max_vel)" type="double"/>
         <param name="optimization/vel_tolerance" value="$(arg vel_tolerance)" type="double"/>

@@ -17,20 +17,20 @@
     <arg name="flight_type" default="2"/>
     <arg name="point_num" default="5"/>
     <arg name="max_tracking_error" default="0.20"/>
-    <arg name="enable_periodic_replan" default="false"/>
+    <arg name="enable_periodic_replan" default="true"/>
     <arg name="enable_occupied_recovery" default="false"/>
     <arg name="enable_swing_obstacle_guard" default="false"/>
-    <arg name="enable_swing_harmonic_prediction" default="true"/>
+    <arg name="enable_swing_harmonic_prediction" default="false"/>
     <arg name="enable_suspended_obstacle_underpass" default="true"/>
     <arg name="underpass_corridor_half_width" default="0.25"/>
-    <arg name="underpass_min_descent" default="0.10"/>
-    <arg name="underpass_min_vertical_gap" default="0.35"/>
+    <arg name="underpass_min_descent" default="0.20"/>
+    <arg name="underpass_min_vertical_gap" default="0.25"/>
     <arg name="underpass_search_timeout" default="0.15"/>
     <arg name="enable_vertical_obstacle_side_lock" default="true"/>
     <arg name="side_lock_corridor_half_width" default="0.75"/>
-    <arg name="side_lock_width_similarity_tolerance" default="0.15"/>
+    <arg name="side_lock_width_similarity_tolerance" default="0.05"/>
     <!-- 动态障碍调试包：默认与本次规划器启动同步录制，退出 roslaunch 时自动封包。 -->
-    <arg name="record_dynamic_debug" default="false"/>
+    <arg name="record_dynamic_debug" default="true"/>
     <arg name="dynamic_bag_prefix" default="/home/oem/bags/corridor_debug"/>
     <!-- 保留碰撞、新航点等必要重规划；关闭固定时间到期触发，避免绕障轨迹被过早拉直。 -->
     <param name="/drone_$(arg drone_id)_diff_planner_node/fsm/enable_periodic_replan"
@@ -110,8 +110,8 @@
         <arg name="fx" value="386.2706298828125"/>
         <arg name="fy" value="386.2706298828125"/>
         <!-- 窄通道实飞采用保守的速度/加速度上限，降低冲门和急停时的跟踪误差。 -->
-        <arg name="max_vel" value="0.20" />
-        <arg name="max_acc" value="1.0" />
+        <arg name="max_vel" value="0.50" />
+        <arg name="max_acc" value="0.5" />
         <arg name="max_jer" value="20.0"/>
         <!-- 恢复 Diff 原始三轴合速度检查容差。 -->
         <arg name="vel_tolerance" value="1.0"/>
@@ -120,16 +120,16 @@
         <!-- map parameters  -->
         <!-- GridMap 中 local_update_range 是半尺寸：以下对应总窗口 15m × 9m × 2m。 -->
         <arg name="local_map_size_x" value="7.5"/>
-        <arg name="local_map_size_y" value="4.5"/>
+        <arg name="local_map_size_y" value="9.0"/>
         <arg name="local_map_size_z" value="1.0"/>
         <arg name="enable_virtual_wall" value="true"/>
         <arg name="virtual_ceil" value="1.5"/>
-        <arg name="virtual_ground" value="-0.2"/>
+        <arg name="virtual_ground" value="0.10"/>
         <!-- 1.5m窄通道使用10cm体素；障碍膨胀两格，给机体和停车漂移留出余量。 -->
-        <arg name="map_resolution" value="0.10"/>
-        <arg name="inflation_size" value="0.099"/>
+        <arg name="map_resolution" value="0.05"/>
+        <arg name="inflation_size" value="0.099 "/>
         <!-- 动态球旧位置0.8s内退出占据层；持续观测到的墙体仍会保持占据。 -->
-        <arg name="fading_time" value="0.8"/>
+        <arg name="fading_time" value="1.0"/>
         <arg name="lidar_hit_dominates_miss" value="false"/>
 
         <!-- UAV1 FAST-LIO 的里程计和点云共用局部坐标系，不能重复叠加出生点偏移。 -->
@@ -148,40 +148,36 @@
         <!-- It generates a piecewise min-snap traj passing all waypoints -->
         <!-- 本任务使用 point0～point4；不再受 run_swarm.sh 中旧的 POINT_NUM=1 影响。 -->
         <arg name="point_num" value="$(arg point_num)" />
-
-        <arg name="point0_x" value="3.0" />
+        <arg name="point0_x" value="4.8" />
         <arg name="point0_y" value="0.0" />
         <arg name="point0_z" value="0.6" />
-        <arg name="point1_x" value="6.2" />
-        <arg name="point1_y" value="2.1" />
+        <arg name="point1_x" value="6.9" />
+        <arg name="point1_y" value="-0.4" />
         <arg name="point1_z" value="0.6" />
-        <arg name="point2_x" value="9.7" />
-        <arg name="point2_y" value="0" />
+        <arg name="point2_x" value="7.0" />
+        <arg name="point2_y" value="-2.8" />
         <arg name="point2_z" value="0.6" />
-        <arg name="point3_x" value="13.2"/>
-        <arg name="point3_y" value="0 "/>
+        <arg name="point3_x" value="4.6" />
+        <arg name="point3_y" value="-3.2" />
         <arg name="point3_z" value="0.6" />
-        <arg name="point4_x" value="5.0" />
-        <arg name="point4_y" value="5.9" />
-        <arg name="point4_z" value="0.6" />
 
 
         <!-- <arg name="point0_x" value="3.1" />
         <arg name="point0_y" value="0.0" />
         <arg name="point0_z" value="0.6" />
-        <arg name="point1_x" value="5.1" />
+        <arg name="point1_x" value="5" />
         <arg name="point1_y" value="0" />
         <arg name="point1_z" value="0.6" />
-        <arg name="point2_x" value="5.1" />
-        <arg name="point2_y" value="3.05" />
+        <arg name="point2_x" value="5" />
+        <arg name="point2_y" value="1.4" />
         <arg name="point2_z" value="0.6" />
         <arg name="point3_x" value="5.1" />
-        <arg name="point3_y" value="5.3" />
+        <arg name="point3_y" value="5.0" />
         <arg name="point3_z" value="0.6" /> -->
         <!-- advanced_param_exp.xml 固定声明到 point4；point_num=5 时执行全部航点。 -->
-        <!-- <arg name="point4_x" value="5.0" />
-        <arg name="point4_y" value="5.9" />
-        <arg name="point4_z" value="0.6" /> -->
+        <arg name="point4_x" value="1.5" />
+        <arg name="point4_y" value="-3.2" />
+        <arg name="point4_z" value="0.6" />
     </include>
 
     <!-- Diff 保持原始点云频率，LDOP 单独限频，避免动态检测积压旧帧。 -->
@@ -195,16 +191,16 @@
         <arg name="input_cloud_topic" value="/UAV1/ldop/cloud_registered_throttled"/>
         <arg name="ufomap_resolution" value="0.05"/>
         <arg name="ufomap_inflate_hits_dist" value="0.1"/>
-        <arg name="corridor_min_lateral_span" value="0.0"/>
+        <arg name="corridor_min_lateral_span" value="0.15"/>
         <arg name="corridor_min_confirm_hits" value="3"/>
-        <arg name="corridor_min_cluster_points" value="3"/>
-        <arg name="corridor_max_cluster_extent" value="2.0"/>
-        <arg name="corridor_oversized_split_enabled" value="true"/>
+        <arg name="corridor_min_cluster_points" value="4"/>
+        <arg name="corridor_max_cluster_extent" value="0.8"/>
+        <arg name="corridor_oversized_split_enabled" value="false"/>
         <arg name="corridor_split_min_cluster_points" value="3"/>
-        <arg name="corridor_max_candidates" value="10"/>
-        <arg name="corridor_reject_candidate_count" value="10"/>
+        <arg name="corridor_max_candidates" value="3"/>
+        <arg name="corridor_reject_candidate_count" value="5"/>
         <arg name="corridor_wall_clearance" value="0.10"/>
-        <arg name="dynamic_cluster_detector_min_points" value="3"/>
+        <arg name="dynamic_cluster_detector_min_points" value="4"/>
     </include>
 
     <node pkg="diff_planner" name="drone_$(arg drone_id)_traj_server" type="traj_server" output="screen">
@@ -214,7 +210,7 @@
         <remap from="~heartbeat" to="/drone_$(arg drone_id)_traj_server/heartbeat"/>
         <remap from="/planning/traj_started" to="/UAV1/planning/traj_started"/>
         <param name="traj_server/time_forward" value="1.0" type="double"/>
-        <param name="traj_server/heartbeat_timeout" value="2.0" type="double"/>
+        <param name="traj_server/heartbeat_timeout" value="180.0" type="double"/>
         <param name="traj_server/yaw_dot_max" value="3.14" type="double"/>
         <param name="traj_server/yaw_dot_dot_max" value="15.71" type="double"/>
     </node>

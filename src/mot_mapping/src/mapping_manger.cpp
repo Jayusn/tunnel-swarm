@@ -1,4 +1,5 @@
 #include "mapping_manager.h"
+#include "motion_continuity.h"
 #include "density_partition.h"
 #include "bidirectional_depth.h"
 #include "object_motion_local.h"
@@ -162,6 +163,12 @@ void MappingRos::init() {
       throw std::runtime_error("object motion evidence fractions must be in (0, 1]");
   nh.param("detection/time_evidence_enabled", mp_->time_evidence_enabled, false);
   nh.param("detection/motion_window", mp_->motion_window, 0.6);
+  nh.param("detection/motion_confirmation_duration", mp_->motion_confirmation_duration, 0.0);
+  nh.param("detection/motion_continuity_tolerance", mp_->motion_continuity_tolerance, 0.04);
+  if (!std::isfinite(mp_->motion_confirmation_duration) || mp_->motion_confirmation_duration < 0.0 ||
+      mp_->motion_confirmation_duration > mp_->motion_window ||
+      !std::isfinite(mp_->motion_continuity_tolerance) || mp_->motion_continuity_tolerance <= 0.0)
+    throw std::runtime_error("invalid motion continuity window or tolerance");
   nh.param("detection/confirmed_reacquisition_enabled", mp_->confirmed_reacquisition_enabled, false);
   nh.param("detection/reacquisition_max_gap", mp_->reacquisition_max_gap, 0.6);
   if (!std::isfinite(mp_->motion_window) || mp_->motion_window <= 0.0 ||
@@ -1822,7 +1829,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
       while (tracker->evidence_observations.size() > 16)
         tracker->evidence_observations.pop_front();
     }
-    if (mp_->time_evidence_enabled) {
+    if (mp_->time_evidence_enabled || mp_->motion_confirmation_duration > 0.0) {
       const double observation_window = confirmed_reacquisition ?
           mp_->reacquisition_max_gap + 0.8 : mp_->motion_window;
       while (tracker->observations.size() > mp_->motion_confirmation_frames &&
@@ -1861,9 +1868,22 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
       }
     }
     if (speed_samples > 0) observed_speed /= speed_samples;
-    bool enough_observations = mp_->time_evidence_enabled ?
+    bool enough_observations = (mp_->time_evidence_enabled || mp_->motion_confirmation_duration > 0.0) ?
         tracker->observations.size() >= mp_->motion_confirmation_frames :
         tracker->observations.size() == mp_->motion_confirmation_frames;
+    MotionContinuity continuity;
+    if (mp_->motion_confirmation_duration > 0.0) {
+      std::vector<MotionSample> samples;
+      for (const auto& observation : tracker->observations)
+        samples.push_back({observation.first.toSec(), observation.second});
+      continuity = motionContinuity(samples, mp_->motion_confirmation_duration,
+                                    mp_->motion_continuity_tolerance);
+      enough_observations = enough_observations && continuity.ready && continuity.continuous;
+      if (!enough_observations) tracker->last_motion_stamp = ros::Time();
+      ROS_DEBUG_STREAM("FAPP_CONTINUITY " << cloud_stamp_.toNSec() << " " << tracker->id
+          << " " << samples.size() << " " << continuity.ready << " " << continuity.continuous
+          << " " << continuity.max_residual);
+    }
     if (mp_->object_motion_evidence_enabled)
       enough_observations = tracker->observations.size() == 3;
     bool has_motion = enough_observations &&
@@ -2000,7 +2020,9 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     if (has_motion && startup_evidence &&
         candidate.novel_fraction >= required_novel_fraction)
       tracker->last_motion_stamp = cloud_stamp_;
-    if (strong_reference_motion && (!mp_->strict_depth_evidence_enabled || strict_foreground)) {
+    if (strong_reference_motion &&
+        (mp_->motion_confirmation_duration <= 0.0 || enough_observations) &&
+        (!mp_->strict_depth_evidence_enabled || strict_foreground)) {
       tracker->last_motion_stamp = cloud_stamp_;
       ROS_DEBUG_STREAM("FAPP_REFERENCE_STRONG_TWO " << cloud_stamp_.toNSec() << " "
           << candidate.state.position.transpose() << " " << displacement << " "

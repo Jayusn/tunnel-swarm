@@ -81,6 +81,7 @@ struct MapParam {
   int motion_confirmation_frames;
   bool time_evidence_enabled;
   double motion_window;
+  double motion_confirmation_duration, motion_continuity_tolerance;
   bool confirmed_reacquisition_enabled;
   double reacquisition_max_gap;
   double min_motion_speed;
