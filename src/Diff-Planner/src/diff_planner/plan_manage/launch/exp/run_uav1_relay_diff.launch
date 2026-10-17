@@ -86,8 +86,8 @@
         <arg name="virtual_ceil" value="2.25"/>
         <arg name="virtual_ground" value="0.05"/>
         <arg name="map_resolution" value="0.05"/>
-        <!-- 0.10m分辨率配合0.099m膨胀保持单栅格安全边界，避免向上取整成双栅格反包后机起点。 -->
-        <arg name="inflation_size" value="0.099"/>
+        <!-- 0.05m分辨率下向外膨胀3格，各轴实际膨胀约0.15m。 -->
+        <arg name="inflation_size" value="0.1499"/>
         <!-- 2026-07-28: UAV1门洞点云偶发假占据时用更强FREE射线及时清除，避免目标被改回当前位置。 -->
         <arg name="lidar_p_miss" value="0.35"/>
         <!-- 2026-07-28: 后机最新日志在第4个点出现start_occ=3并持续50s；3s衰减移动球/前机鬼影，
