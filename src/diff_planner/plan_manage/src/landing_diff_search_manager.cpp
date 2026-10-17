@@ -617,12 +617,23 @@ class LandingDiffSearchManager {
     }
     const ros::Time now = ros::Time::now();
     const double distance = std::hypot(goal.x - current.x, goal.y - current.y);
-    if (!sweep_tracking_ ||
-        sweep_progress_distance_ - distance >= sweep_motion_reset_distance_) {
-      // 只有比先前记录更靠近航点才重置；墙边往复晃动不能反复延长等待。
+    if (!sweep_tracking_) {
       sweep_progress_distance_ = distance;
       sweep_last_motion_time_ = now;
       sweep_tracking_ = true;
+      sweep_progress_started_ = false;
+      return true;
+    }
+    // 新航点刚切换时，飞机可能仍沿上一段轨迹减速，暂时远离新目标。
+    // 以换向期间的最远距离作为首次进度参考，但远离本身不刷新停滞计时。
+    if (!sweep_progress_started_) {
+      sweep_progress_distance_ = std::max(sweep_progress_distance_, distance);
+    }
+    if (sweep_progress_distance_ - distance >= sweep_motion_reset_distance_) {
+      // 开始接近后只认累计净进度，墙边往复晃动不能反复延长等待。
+      sweep_progress_distance_ = distance;
+      sweep_last_motion_time_ = now;
+      sweep_progress_started_ = true;
     } else if ((now - sweep_last_motion_time_).toSec() >= sweep_stall_timeout_sec_) {
       // 固定端点在墙后时，Diff 会停在可达区域。用实际停点缩短这一侧的
       // 后续航点，保留原蛇形顺序：反扫本行或沿边前进一行后反扫。
@@ -797,6 +808,7 @@ class LandingDiffSearchManager {
   std::size_t sweep_index_{0};
   bool sweep_climb_complete_{false};
   bool sweep_tracking_{false};
+  bool sweep_progress_started_{false};
   double sweep_progress_distance_{0.0};
   ros::Time sweep_last_motion_time_;
   double sweep_stall_timeout_sec_{4.0}, sweep_motion_reset_distance_{0.10};

@@ -80,6 +80,8 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_gtest(test_entry_point_to_point test/test_entry_point_to_point.cpp)
   catkin_add_nosetests(test/test_global_retention_launch.py)
   catkin_add_nosetests(test/test_landing_diff_switch_launch.py)
+  catkin_add_nosetests(test/test_landing_sweep_progress.py
+    DEPENDENCIES landing_diff_search_manager)
   catkin_add_nosetests(test/test_fuel_diff_exploration_contract.py)
 endif()
 # add_executable(monitor_node src/monitor_node.cpp)
