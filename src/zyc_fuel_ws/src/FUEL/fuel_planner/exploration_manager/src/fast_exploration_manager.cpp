@@ -1266,6 +1266,8 @@ bool FastExplorationManager::buildCenterGatePassage(
   const Vector3d direct_delta = candidate - pos;
   if (!pointInsideWorkspaceLock(candidate) ||
       !planner_manager_->isPositionSafe(candidate) ||
+      (task_search_manager_ && task_search_manager_->enabled() &&
+       !task_search_manager_->isHoverPositionSafe(candidate)) ||
       sdf_map_->getOccupancy(candidate) != SDFMap::FREE ||
       !isKnownSafeHorizontalCorridor(pos, direct_delta, direct_delta.head<2>().norm()) ||
       (task_search_manager_ &&
@@ -1442,6 +1444,8 @@ bool FastExplorationManager::buildWideSideBypass(
       candidate.z() = pos.z();
       if (!pointInsideWorkspaceLock(candidate) ||
           !planner_manager_->isPositionSafe(candidate) ||
+          (task_search_manager_ && task_search_manager_->enabled() &&
+           !task_search_manager_->isHoverPositionSafe(candidate)) ||
           sdf_map_->getOccupancy(candidate) == SDFMap::UNKNOWN ||
           (task_search_manager_ &&
            !task_search_manager_->isRecoveryCandidateUseful(candidate)))
@@ -1498,6 +1502,41 @@ bool FastExplorationManager::buildWideSideBypass(
   return true;
 }
 
+bool FastExplorationManager::currentPlanHasHoverClearance() const {
+  if (!hover_clearance_required_) return true;
+  auto& trajectory = planner_manager_->local_data_.position_traj_;
+  return task_search_manager_->isHoverPositionSafe(
+      trajectory.evaluateDeBoorT(trajectory.getTimeSum()));
+}
+
+bool FastExplorationManager::trimPathToHoverPoint(vector<Vector3d>& path) const {
+  if (path.size() < 2) return false;
+  if (task_search_manager_->isHoverPositionSafe(path.back())) return true;
+  const double step = std::max(0.02, sdf_map_->getResolution());
+  double progress = Astar::pathLength(path);
+  for (size_t i = path.size() - 1; i > 0; --i) {
+    const Vector3d delta = path[i] - path[i - 1];
+    const double length = delta.norm();
+    if (length < 1e-6) continue;
+    const int samples = std::max(1, static_cast<int>(std::ceil(length / step)));
+    for (int sample = 0; sample <= samples; ++sample) {
+      const double retreat = length * static_cast<double>(sample) / samples;
+      if (progress - retreat < 0.20 - 1e-6) break;
+      const Vector3d candidate = path[i] - retreat * delta / length;
+      if (!task_search_manager_->isHoverPositionSafe(candidate)) continue;
+      path.resize(i);
+      if ((path.back() - candidate).norm() > 1e-3) path.push_back(candidate);
+      ROS_WARN("[hover_clearance] move segment stop to earlier known-free point "
+               "(%.2f,%.2f,%.2f), center radius=%.2fm.",
+               candidate.x(), candidate.y(), candidate.z(),
+               task_search_manager_->hoverClearanceRadius());
+      return true;
+    }
+    progress -= length;
+  }
+  return false;
+}
+
 bool FastExplorationManager::selectEntryForwardGoal(
     const Vector3d& pos, const Vector3d& forward, double remaining,
     entry_forward::Goal& selected) {
@@ -1515,7 +1554,8 @@ bool FastExplorationManager::selectEntryForwardGoal(
     const Vector3d delta = candidate - pos;
     if (!pointInsideWorkspaceLock(candidate) ||
         !isLowProbeCorridorSafe(pos, delta, delta.head<2>().norm()) ||
-        !task_search_manager_->isTaskMotionAllowed(candidate))
+        !task_search_manager_->isTaskMotionAllowed(candidate) ||
+        !task_search_manager_->isHoverPositionSafe(candidate))
       return false;
     clearance = std::max(0.0, sdf_map_->getDistance(candidate));
     continuation = 0.0;
@@ -1644,6 +1684,7 @@ bool FastExplorationManager::buildSideRecoveryContinuation(
     const vector<Vector3d> path{pos, candidate};
     if (!pointInsideWorkspaceLock(candidate) ||
         !task_search_manager_->isRecoveryCandidateUseful(candidate) ||
+        !task_search_manager_->isHoverPositionSafe(candidate) ||
         !isLowProbeCorridorSafe(pos, direction, distance) ||
         !pathInsideWorkspaceLock(path) ||
         !task_search_manager_->isRecoveryPathAllowed(path, false))
@@ -1882,6 +1923,8 @@ bool FastExplorationManager::buildMissionForwardFallback(const Vector3d& pos, do
       }
       // 2026-07-13: 恢复点不能只检查中心栅格，必须容纳 0.15m 膨胀外的完整 Iris 足迹。
       if (!planner_manager_->isPositionSafe(candidate) ||
+          (task_search_manager_ && task_search_manager_->enabled() &&
+           !task_search_manager_->isHoverPositionSafe(candidate)) ||
           sdf_map_->getOccupancy(candidate) == SDFMap::UNKNOWN) {
         ++rejected_position;
         continue;
@@ -2767,6 +2810,7 @@ int FastExplorationManager::planExploreMotion(
   turn_in_place_plan_ = false;
   ground_ascent_plan_ = false;
   vertical_detour_plan_ = false;
+  hover_clearance_required_ = false;
   pending_short_backtrack_ = false;
   ros::Time t1 = ros::Time::now();
   auto t2 = t1;
@@ -3369,6 +3413,9 @@ int FastExplorationManager::planExploreMotion(
                        "[vertical_detour] failed to build fixed-xy vertical trajectory.");
     return FAIL;
   }
+  // 普通水平探索段会成为双机接力停点，独立于通行足迹检查停车余量。
+  hover_clearance_required_ = task_search_manager_ && task_search_manager_->enabled() &&
+      !use_stage3_target && !use_forced_entry_target && !use_vertical_detour_target;
   if (task_search_manager_ && !exit_transit_active &&
       !stationary_vertical_detour &&
       !task_search_manager_->isTaskMotionAllowed(next_pos)) {
@@ -3497,6 +3544,16 @@ int FastExplorationManager::planExploreMotion(
              route_horizon, ed_->path_next_goal_.back().x(), ed_->path_next_goal_.back().y(),
              ed_->path_next_goal_.back().z());
   }
+  if (hover_clearance_required_ &&
+      !task_search_manager_->isHoverPositionSafe(ed_->path_next_goal_.back())) {
+    if (!trimPathToHoverPoint(ed_->path_next_goal_)) {
+      ROS_WARN_THROTTLE(0.5, "[hover_clearance] no usable stop point on the local route.");
+      task_search_manager_->reportGoalFailure(next_pos);
+      return FAIL;
+    }
+    next_pos = ed_->path_next_goal_.back();
+    last_requested_goal_ = next_pos;
+  }
   // 2026-07-23: 截断后的出口任务短步同样豁免旧航迹门控，但不豁免后续障碍物/足迹检查。
   if (task_search_manager_ && !exit_transit_active &&
       !stationary_vertical_path &&
@@ -3603,7 +3660,7 @@ int FastExplorationManager::planExploreMotion(
     ROS_ERROR("Lower bound not satified!");
 
   // 2026-07-14: 优化后的 B-spline 可能切入柱体/墙面；发布前拒绝并切换任务目标，而不是交给控制器反复急停。
-  if (!planner_manager_->isTrajectorySafe()) {
+  if (!planner_manager_->isTrajectorySafe() || !currentPlanHasHoverClearance()) {
     // 2026-07-16: 远目标平滑轨迹切弯失败时，沿已经通过足迹检查的A*路径先走0.8m安全前缀。
     // 比赛中宁可分段推进并重规划，也不能在宽通道对同一远目标永久FAIL/悬停。
     constexpr double conservative_advance = 0.80;
@@ -3622,18 +3679,24 @@ int FastExplorationManager::planExploreMotion(
         prefix_length += delta.norm();
       }
     }
+    if (hover_clearance_required_ && !trimPathToHoverPoint(safe_prefix)) {
+      task_search_manager_->reportGoalFailure(next_pos);
+      return FAIL;
+    }
     if (safe_prefix.size() == 2)
       safe_prefix.insert(safe_prefix.begin() + 1, 0.5 * (safe_prefix[0] + safe_prefix[1]));
 
     const bool prefix_generated = safe_prefix.size() >= 3 &&
                                   planner_manager_->isPathSafe(safe_prefix) &&
                                   planner_manager_->planExploreTraj(safe_prefix, vel, acc, 0.0);
-    if (!prefix_generated || !planner_manager_->isTrajectorySafe()) {
+    if (!prefix_generated || !planner_manager_->isTrajectorySafe() ||
+        !currentPlanHasHoverClearance()) {
       ROS_ERROR_THROTTLE(1.0,
                          "[stuck_recovery] full trajectory and 0.8m safe-prefix trajectory both failed.");
       if (task_search_manager_) task_search_manager_->reportGoalFailure(next_pos);
       return FAIL;
     }
+    prefix_length = Astar::pathLength(safe_prefix);
     ed_->next_goal_ = safe_prefix.back();
     ROS_WARN("[stuck_recovery] full trajectory unsafe; publish %.2fm A* safe prefix to (%.2f %.2f %.2f).",
              prefix_length, ed_->next_goal_.x(), ed_->next_goal_.y(), ed_->next_goal_.z());

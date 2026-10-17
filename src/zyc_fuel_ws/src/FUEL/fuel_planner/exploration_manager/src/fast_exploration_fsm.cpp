@@ -612,14 +612,15 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
                 0.80, 0.02, controlled_escape_start);
         const bool trajectory_safe = planner_manager_->isTrajectorySafe(
             0.03, controlled_escape_start);
+        const bool hover_endpoint_safe = expl_manager_->currentPlanHasHoverClearance();
         const bool release_safe = raw_start_safe && clears_inflation &&
-                                  release_state_continuous && trajectory_safe;
+                                  release_state_continuous && trajectory_safe && hover_endpoint_safe;
         if (!release_safe) {
           // 首条轨迹的速度只要尚未连续稳定就继续悬停审核，不销毁已经通过位置和地图
           // 检查的候选；这样单帧尖峰不会触发无休止的“规划-拒绝”循环。
           if (!active_traj_valid_ && position_continuous && acceleration_continuous &&
               !velocity_continuous && raw_start_safe && clears_inflation &&
-              trajectory_safe) {
+              trajectory_safe && hover_endpoint_safe) {
             pending_traj_safe_since_ = ros::Time(0);
             ROS_WARN_THROTTLE(
                 1.0,
@@ -630,12 +631,13 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
           }
           ROS_ERROR("[trajectory_release] reject before publish: position_error=%.3fm "
                     "velocity_error=%.3fm/s acceleration_error=%.3fm/s^2 continuous=%d "
-                    "turn_policy=%d raw_safe=%d inflated=%d clears=%d.",
+                    "turn_policy=%d raw_safe=%d inflated=%d clears=%d hover_endpoint=%d.",
                     start_error, velocity_error, acceleration_error,
                     static_cast<int>(release_state_continuous),
                     static_cast<int>(pending_turn_in_place_),
                     static_cast<int>(raw_start_safe),
-                    static_cast<int>(starts_in_inflation), static_cast<int>(clears_inflation));
+                    static_cast<int>(starts_in_inflation), static_cast<int>(clears_inflation),
+                    static_cast<int>(hover_endpoint_safe));
           if (!release_state_continuous) {
             requestActiveTrajectoryBrake("stale trajectory start state before publish");
             if (!active_traj_valid_)

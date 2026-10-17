@@ -241,6 +241,82 @@ public:
     }
   }
 
+  static void runHoverClearance() {
+    ros::NodeHandle nh("~");
+    nh.setParam("mission/hover_clearance_margin", 0.20);
+    nh.setParam("manager/footprint_check_radius", 0.18);
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    auto& task = *manager.task_search_manager_;
+    auto& planner = *manager.planner_manager_;
+    task.setMap(manager.sdf_map_);
+    task.global_no_return_ = false;
+    const Vector3d start(0.013, 0.017, 1.013);
+    task.updateRobotPose(start, 0.0);
+    pcl::PointCloud<pcl::PointXYZ> walls;
+    for (double t=-1.5; t<=1.5; t+=0.04)
+      for (double z=0.15; z<=1.75; z+=0.04) {
+        walls.push_back(pcl::PointXYZ(1.5, t, z));
+        walls.push_back(pcl::PointXYZ(-1.5, t, z));
+        walls.push_back(pcl::PointXYZ(t, 1.5, z));
+        walls.push_back(pcl::PointXYZ(t, -1.5, z));
+      }
+    for (const Vector3d& viewpoint : {start, Vector3d(-0.6, 0.5, 1.013)})
+      for (int i=0; i<6; ++i)
+        manager.sdf_map_->inputPointCloud(walls, walls.size(), viewpoint);
+    check(task.isHoverPositionSafe(start), "open observed space rejected a hover point");
+    check(!task.isHoverPositionSafe(Vector3d(1.8, 1.8, 1)),
+          "unobserved space was accepted as hover clearance");
+    walls.clear();
+    for (double y=-1.3; y<=1.3; y+=0.025)
+      for (double z=0.15; z<=1.75; z+=0.025)
+        walls.push_back(pcl::PointXYZ(0.80, y, z));
+    for (int i=0; i<6; ++i)
+      manager.sdf_map_->inputPointCloud(walls, walls.size(), start);
+    manager.sdf_map_->updateESDF3d();
+    const Vector3d near_wall(0.52, 0.017, 1.013), roomy(0.25, -0.45, 1.013);
+    check(std::fabs(task.hoverClearanceRadius()-0.38) < 1e-9,
+          "hover radius did not add the configured 20cm outside the 18cm body");
+    check(planner.isPositionSafe(near_wall) &&
+          planner.isPathSafe({start, near_wall}) && !task.isHoverPositionSafe(near_wall),
+          "transit-safe point with only 10cm outside the body became a hover target");
+    check(task.isHoverPositionSafe(roomy), "roomy alternative was lost");
+    task.recordSelectedGoal(near_wall);
+    const int chosen = task.selectSearchCandidate({near_wall, roomy}, {0, 0}, {}, start, 0.0);
+    check(chosen == 1, "retained near-wall goal bypassed the hover filter");
+    vector<Vector3d> route{start, start+Vector3d(0.20, 0, 0), near_wall};
+    check(manager.trimPathToHoverPoint(route) && route.back().x() < 0.45 &&
+          task.isHoverPositionSafe(route.back()) && (route.back()-start).norm() >= 0.20,
+          "short-route endpoint did not retreat to a usable hover point");
+    manager.hover_clearance_required_ = true;
+    check(planner.planStraightTraj(start, near_wall) && planner.isTrajectorySafe() &&
+          !manager.currentPlanHasHoverClearance(),
+          "optimized endpoint check accepted the original near-wall stop");
+    check(planner.planStraightTraj(start, route.back()) &&
+          manager.currentPlanHasHoverClearance(), "corrected endpoint failed hover validation");
+    // 复现首条轨迹发布前重锚：旧终点安全，实时平移后进入停车余量区。
+    Eigen::MatrixXd shifted = planner.local_data_.position_traj_.getControlPoint();
+    shifted.col(0).array() += 0.12;
+    NonUniformBspline moved(shifted, 3, planner.local_data_.position_traj_.getKnotSpan());
+    moved.setKnot(planner.local_data_.position_traj_.getKnot());
+    planner.local_data_.position_traj_ = moved;
+    check(!manager.currentPlanHasHoverClearance(),
+          "release re-anchor moved a safe endpoint near the wall without detection");
+    // 同一地图补入窄通道：可通行不等于可以在其中停车，不能偷偷增大通行半径。
+    walls.clear();
+    for (double x=-1.2; x<=0.6; x+=0.025)
+      for (double z=0.15; z<=1.75; z+=0.025)
+        for (double y : {-0.30, 0.30})
+          walls.push_back(pcl::PointXYZ(x, y, z));
+    for (int i=0; i<6; ++i)
+      manager.sdf_map_->inputPointCloud(walls, walls.size(), start);
+    manager.sdf_map_->updateESDF3d();
+    vector<Vector3d> narrow{Vector3d(-0.60, 0, 1.013), Vector3d(0.30, 0, 1.013)};
+    check(planner.isPathSafe(narrow) && !task.isHoverPositionSafe(narrow.back()) &&
+          !manager.trimPathToHoverPoint(narrow),
+          "narrow transit corridor acquired a false hover point or lost passability");
+  }
+
   static void runEntryPassage(int open_side) {
     ros::NodeHandle nh("~");
     FastExplorationManager manager;
@@ -293,18 +369,18 @@ public:
             "open entry acquired a false obstacle-side preference");
     } else {
       check(goal.passage_priority > 0 && goal.passage_side*open_side > 0.0 &&
-            goal.side*open_side > 0.0,
-            "entry selected the obstructed side despite a connected passage");
+            goal.side*open_side >= -1e-6 && task.isHoverPositionSafe(goal.position),
+            "entry selected the obstructed side or a stop without hover clearance");
       // 下一轮从已执行短步继续；现有绕行侧仍可用时不能被局部净空改成反侧。
       const Vector3d midway = 0.5 * (start + goal.position);
       task.updateRobotPose(midway, 0.0);
       entry_forward::Goal next;
       const double remaining = 0.62 - 0.5 * goal.advance;
       if (remaining >= 0.20) {
-        check(manager.selectEntryForwardGoal(midway, Vector3d::UnitX(), remaining, next),
-              "same-side entry could not continue from its selected endpoint");
-        check(next.side*open_side >= -1e-6,
-              "entry reversed its side while the observed passage remained open");
+        // 停车余量不足时可交还普通A*绕行，不能为保持入口短步强造近障停点。
+        if (manager.selectEntryForwardGoal(midway, Vector3d::UnitX(), remaining, next))
+          check(next.side*open_side >= -1e-6 && task.isHoverPositionSafe(next.position),
+                "entry reversed sides or forced a near-wall stop on replan");
       }
     }
     check(manager.planner_manager_->planStraightTraj(start, goal.position) &&
@@ -338,6 +414,15 @@ public:
         manager.sdf_map_->inputPointCloud(cloud, cloud.size(),
                                         Vector3d(-0.85*x, 0, 1));
     }
+    // 停车余量需要已知FREE证据，补足真实侧墙观测，避免端墙射线留下未知扇区。
+    cloud.clear();
+    for (double x=-1.5; x<=1.5; x+=0.025)
+      for (double z=0.25; z<=1.75; z+=0.025)
+        for (double y : {-1.3, 1.3})
+          cloud.push_back(pcl::PointXYZ(x, y, z));
+    for (const Vector3d& viewpoint : {origin, Vector3d(0, -0.8, 1)})
+      for (int i=0; i<5; ++i)
+        manager.sdf_map_->inputPointCloud(cloud, cloud.size(), viewpoint);
     cloud.clear();
     for (double y=-0.10; y<=0.10; y+=0.025)
       for (double z=0.25; z<=1.75; z+=0.025)
@@ -400,9 +485,15 @@ public:
       double yaw = 0.0;
       check(!manager.buildSideRecoveryContinuation(displaced, 0.0, next, yaw) &&
             !manager.recovery_side_latched_, "unavailable same side became a hard lock");
-      check(manager.buildMissionForwardFallback(displaced, 0.0, next, yaw),
-            "same-side failure prevented the original recovery strategies");
-      check(planner.isPositionSafe(next), "fallback selected an unsafe endpoint");
+      // 新停车余量下，原有仅可通行的微调点可能已经不适合停车；恢复器可
+      // 换到合格位置，也可返回无可用点，但不能重新锁死原侧或发布近墙点。
+      if (manager.buildMissionForwardFallback(displaced, 0.0, next, yaw)) {
+        check(planner.isPositionSafe(next) && task.isHoverPositionSafe(next),
+              "fallback selected a transit-only near-wall stop");
+      } else {
+        check(!manager.recovery_side_latched_,
+              "unavailable recovery restored a hard lock on the blocked side");
+      }
       return;
     }
 
@@ -470,6 +561,10 @@ TEST(SideRecovery, RightDetourSurvivesCollisionAndLateralProgress) {
 
 TEST(SideRecovery, BlockedSameSideYieldsToExistingRecovery) {
   fast_planner::TurnEscapeTest::runSideRecovery(1.0, true);
+}
+
+TEST(HoverClearance, StopsAwayFromWallAndRechecksActualEndpoint) {
+  fast_planner::TurnEscapeTest::runHoverClearance();
 }
 
 TEST(EntryPassage, ChoosesLeftOfRightWallObstacle) {
