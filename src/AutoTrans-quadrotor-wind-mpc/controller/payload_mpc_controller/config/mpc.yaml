@@ -226,7 +226,7 @@ odom_spike_guard:
 thrust_model: # 将 NMPC 物理总推力 T（N）转换为 MAVROS/PX4 归一化推力。
     # 初次模式 1 实机验证时以 1 Hz 打印在线推力比例、悬停比例和 RPM 推力。
     print_value: true
-    accurate_thrust_model: 1
+    accurate_thrust_model: 0
     # 0：使用固定比例将推力映射为控制指令，不进行在线标定。
     # 1：使用比例将推力映射为控制指令，并根据电机转速在线标定该比例。
     # 原工程模式 2 依赖负载/电缆动力学；普通四旋翼版本已禁止该模式，配置为 2 时节点拒绝启动。
