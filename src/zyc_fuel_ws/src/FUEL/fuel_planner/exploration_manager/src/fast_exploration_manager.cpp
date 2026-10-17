@@ -1369,7 +1369,8 @@ FastExplorationManager::SplitEvidence FastExplorationManager::findWideSideSplit(
 
 bool FastExplorationManager::buildWideSideBypass(
     const Vector3d& pos, double cur_yaw, const Vector3d& forward,
-    Vector3d& next_pos, double& next_yaw, bool& split_obstacle_detected) {
+    Vector3d& next_pos, double& next_yaw, bool& split_obstacle_detected,
+    bool replace_latched_side_only) {
   split_obstacle_detected = false;
   if (!wide_side_bypass_enabled_ || !sdf_map_ || !planner_manager_ ||
       forward.head<2>().norm() < 1e-3)
@@ -1377,8 +1378,23 @@ bool FastExplorationManager::buildWideSideBypass(
   const Vector3d travel(forward.head<2>().normalized().x(),
                         forward.head<2>().normalized().y(), 0.0);
   const Vector3d lateral(-travel.y(), travel.x(), 0.0);
+  if (replace_latched_side_only &&
+      (!recovery_side_latched_ || !ep_->mission_use_forward_fallback_ ||
+       !task_search_manager_ || task_search_manager_->stage3Active() ||
+       task_search_manager_->finalExitFrontierGuardActive() ||
+       low_probe_phase_ != vertical_detour::LowProbePhase::IDLE))
+    return false;
   const SplitEvidence split = findWideSideSplit(pos, forward);
   split_obstacle_detected = split.valid;
+  // 旧绕行侧不能替代当前障碍的宽度比较；仅另一侧更宽且能通过原有
+  // A*/机体足迹检查时提前换侧。等宽、同侧更宽或宽侧不可达时仍用原恢复逻辑。
+  if (replace_latched_side_only) {
+    const double remembered_side = recovery_side_dir_.dot(lateral);
+    if (!split.valid || std::fabs(remembered_side) < 0.5 ||
+        (remembered_side > 0.0 ? split.right_width <= split.left_width
+                               : split.left_width <= split.right_width))
+      return false;
+  }
   if (!split.valid && split.suspended_obstacle_seen) {
     ROS_INFO_THROTTLE(
         0.5,
@@ -1671,6 +1687,13 @@ bool FastExplorationManager::buildMissionForwardFallback(const Vector3d& pos, do
       !mission_workspace_lock_received_) {
     return false;
   }
+  const Vector3d recovery_forward = task_search_manager_
+                                        ? task_search_manager_->recoveryForwardDirection(cur_yaw)
+                                        : Vector3d(std::cos(cur_yaw), std::sin(cur_yaw), 0.0);
+  bool current_split_detected = false;
+  if (buildWideSideBypass(pos, cur_yaw, recovery_forward, next_pos, next_yaw,
+                          current_split_detected, true))
+    return true;
   if (buildSideRecoveryContinuation(pos, cur_yaw, next_pos, next_yaw)) return true;
 
   const double step = std::max(0.2, ep_->mission_forward_fallback_step_);
@@ -1679,9 +1702,6 @@ bool FastExplorationManager::buildMissionForwardFallback(const Vector3d& pos, do
   auto directions = task_search_manager_
                               ? task_search_manager_->recoveryDirections(cur_yaw)
                               : vector<Vector3d>{mission_workspace_dir_};
-  const Vector3d recovery_forward = task_search_manager_
-                                        ? task_search_manager_->recoveryForwardDirection(cur_yaw)
-                                        : Vector3d(std::cos(cur_yaw), std::sin(cur_yaw), 0.0);
   // 2026-07-28: 所有前向方向仍保持任务层顺序；短回撤候选改按目标点ESDF净空降序，
   // 让无人机优先退向通道中部，而不是因为±135度枚举顺序固定地退向某一侧墙。
   std::stable_sort(directions.begin(), directions.end(), [&](const Vector3d& lhs,
@@ -2883,14 +2903,21 @@ int FastExplorationManager::planExploreMotion(
         task_search_manager_->buildStage3Goal(pos, yaw[0], false, next_pos, next_yaw);
   }
 
-  // 同侧短步先于普通frontier重选，但不抢占入口、出口和已启动的垂直避障。
+  // 当前障碍的可行宽侧先于旧侧向记忆；随后才尝试同侧短步和普通frontier。
+  // 不抢占入口、出口和已启动的垂直避障。
   if (!use_vertical_detour_target && !use_forced_entry_target &&
       !use_stage3_target && !use_mission_forward_fallback &&
       mission_entered_search_region_ && task_search_manager_ &&
-      task_search_manager_->enabled() &&
-      buildSideRecoveryContinuation(pos, yaw[0], next_pos, next_yaw)) {
-    use_mission_forward_fallback = true;
-    use_center_gate_target = true;  // 已验证直线短步，复用中门的路径生成入口。
+      task_search_manager_->enabled()) {
+    bool current_split_detected = false;
+    const Vector3d forward = task_search_manager_->recoveryForwardDirection(yaw[0]);
+    if (buildWideSideBypass(pos, yaw[0], forward, next_pos, next_yaw,
+                            current_split_detected, true)) {
+      use_mission_forward_fallback = true;
+    } else if (buildSideRecoveryContinuation(pos, yaw[0], next_pos, next_yaw)) {
+      use_mission_forward_fallback = true;
+      use_center_gate_target = true;  // 仅同侧直线短步复用中门路径入口。
+    }
   }
 
   // 两侧局部障碍已经形成中门时，先在当前高度穿过已知安全的门中心；

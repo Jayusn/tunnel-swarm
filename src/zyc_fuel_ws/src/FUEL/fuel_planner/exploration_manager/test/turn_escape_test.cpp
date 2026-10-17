@@ -316,6 +316,102 @@ public:
           "entry passage lost actual forward progress or changed height");
   }
 
+  static void runWiderSideRecovery(double wide_side, bool fallback_only) {
+    ros::NodeHandle nh("~");
+    nh.setParam("manager/use_geometric_path", true);
+    nh.setParam("astar/resolution_astar", 0.05);
+    nh.setParam("astar/allocate_num", 100000);
+    nh.setParam("astar/lambda_heu", 1.0);
+    nh.setParam("astar/max_search_time", 1.0);
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    auto& planner = *manager.planner_manager_;
+    const Vector3d start(0.013, 0.017, 1.013);
+    pcl::PointCloud<pcl::PointXYZ> cloud;
+    // 先双向观测出FREE，再加入柱子和窄侧墙，复现左0.35m、右0.90m的间隙。
+    for (double x : {-1.5, 1.5}) {
+      cloud.clear();
+      for (double y=-1.3; y<=1.3; y+=0.025)
+        for (double z=0.25; z<=1.75; z+=0.025)
+          cloud.push_back(pcl::PointXYZ(x, y, z));
+      for (int i=0; i<5; ++i)
+        manager.sdf_map_->inputPointCloud(cloud, cloud.size(),
+                                        Vector3d(-0.85*x, 0, 1));
+    }
+    cloud.clear();
+    for (double x=-1.4; x<=1.4; x+=0.025)
+      for (double z=0.25; z<=1.75; z+=0.025)
+        for (double y : {-0.45, 1.0})
+          cloud.push_back(pcl::PointXYZ(x, wide_side*y, z));
+    for (int i=0; i<6; ++i)
+      manager.sdf_map_->inputPointCloud(cloud, cloud.size(), start);
+    cloud.clear();
+    for (double y=-0.10; y<=0.10; y+=0.025)
+      for (double z=0.25; z<=1.75; z+=0.025)
+        cloud.push_back(pcl::PointXYZ(0.55, y, z));
+    for (int i=0; i<6; ++i)
+      manager.sdf_map_->inputPointCloud(cloud, cloud.size(), start);
+    manager.sdf_map_->updateESDF3d();
+    manager.edt_environment_ = planner.edt_environment_;
+    Eigen::Vector3d map_origin, size;
+    manager.sdf_map_->getRegion(map_origin, size);
+    ViewNode::caster_ = std::make_shared<RayCaster>();
+    ViewNode::caster_->setParams(manager.sdf_map_->getResolution(), map_origin);
+    nh.setParam("frontier/cluster_min", 1000000);
+    manager.frontier_finder_ = std::make_shared<FrontierFinder>(manager.edt_environment_, nh);
+    manager.mission_entered_search_region_ = true;
+    manager.ep_->mission_use_forward_fallback_ = true;
+    manager.ep_->mission_use_workspace_lock_ = true;
+    manager.ep_->mission_forward_fallback_step_ = 0.20;
+    manager.ep_->mission_forward_fallback_max_ = 1.0;
+    manager.mission_workspace_lock_received_ = true;
+    manager.mission_workspace_origin_ = start - Vector3d(1, 0, 0);
+    manager.mission_workspace_dir_ = Vector3d::UnitX();
+    auto& task = *manager.task_search_manager_;
+    task.setMap(manager.sdf_map_);
+    task.enabled_ = true;
+    task.exit_detection_enabled_ = false;
+    task.global_no_return_ = false;
+    task.stable_progress_direction_ = Eigen::Vector2d::UnitX();
+    task.stable_progress_direction_valid_ = true;
+    task.updateRobotPose(start, 0.0);
+    manager.vertical_detour_enabled_ = false;
+    manager.ground_ascent_enabled_ = false;
+    manager.inflation_history_escape_enabled_ = false;
+    manager.turn_in_place_enabled_ = false;
+    manager.center_gate_enabled_ = false;
+    manager.camera_head_sweep_enabled_ = false;
+    manager.recovery_side_latched_ = true;
+    manager.recovery_side_origin_ = start - Vector3d(1, 0, 0);
+    manager.recovery_side_dir_ = Vector3d(0, -wide_side, 0);
+    const auto split = manager.findWideSideSplit(start, Vector3d::UnitX());
+    check(split.valid && (wide_side > 0 ? split.left_width > split.right_width
+                                       : split.right_width > split.left_width),
+          "fixture did not provide a wider lane opposite the old detour");
+    check(manager.isLowProbeCorridorSafe(start, manager.recovery_side_dir_, 0.20),
+          "old narrow-side short step must be feasible to reproduce the priority bug");
+    Vector3d next;
+    double yaw = 0.10;
+    if (fallback_only) {
+      check(manager.buildMissionForwardFallback(start, yaw, next, yaw),
+            "disconnected-frontier recovery failed to find the wider side");
+    } else {
+      check(manager.planExploreMotion(start, Vector3d::Zero(), Vector3d::Zero(),
+                                     Vector3d(yaw, 0, 0)) == SUCCEED,
+            "wider-side priority failed to generate a trajectory");
+      next = planner.local_data_.position_traj_.evaluateDeBoorT(planner.local_data_.duration_);
+      check(planner.isTrajectorySafe(), "wider-side trajectory bypassed footprint checks");
+    }
+    std::cout << "wider-side fixture side=" << wide_side << " fallback=" << fallback_only
+              << " widths=" << split.left_width << "," << split.right_width
+              << " next=" << next.transpose()
+              << " remembered=" << manager.recovery_side_dir_.transpose() << std::endl;
+    check((next-start).y()*wide_side >= 0.10 &&
+          std::fabs(next.z()-start.z()) < 0.05 &&
+          manager.recovery_side_dir_.y()*wide_side > 0.9,
+          "old narrow-side preference overrode the current pillar's feasible wider lane");
+  }
+
   static void runSideRecovery(double side, bool block_side) {
     ros::NodeHandle nh("~");
     nh.setParam("manager/use_geometric_path", true);
@@ -470,6 +566,19 @@ TEST(SideRecovery, RightDetourSurvivesCollisionAndLateralProgress) {
 
 TEST(SideRecovery, BlockedSameSideYieldsToExistingRecovery) {
   fast_planner::TurnEscapeTest::runSideRecovery(1.0, true);
+}
+
+TEST(SideRecovery, CurrentWiderRightLaneOverridesOldLeftBeforeFrontier) {
+  fast_planner::TurnEscapeTest::runWiderSideRecovery(-1.0, false);
+}
+
+TEST(SideRecovery, CurrentWiderLeftLaneOverridesOldRightBeforeFrontier) {
+  fast_planner::TurnEscapeTest::runWiderSideRecovery(1.0, false);
+}
+
+TEST(SideRecovery, DisconnectedFrontierUsesWiderLaneBeforeOldSide) {
+  fast_planner::TurnEscapeTest::runWiderSideRecovery(-1.0, true);
+  fast_planner::TurnEscapeTest::runWiderSideRecovery(1.0, true);
 }
 
 TEST(EntryPassage, ChoosesLeftOfRightWallObstacle) {
