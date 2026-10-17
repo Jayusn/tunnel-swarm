@@ -22,6 +22,10 @@ class LockedExitYaw : public ::testing::Test {
     controller->waitForPreparation();
   }
 
+  void TearDown() override {
+    ros::Time::init();
+  }
+
   void publishYaw(double yaw) {
     quadrotor_msgs::PositionCommand command;
     command.yaw = yaw;
@@ -63,12 +67,62 @@ class LockedExitYaw : public ::testing::Test {
 };
 
 TEST_F(LockedExitYaw, CorridorHeadingStillFollowsTrajectoryBeforeExitMessage) {
+  ros::Time::setNow(ros::Time(1000));
   controller->setHoverReference(Eigen::Vector3d(0.0, 0.0, 0.6), 0.0);
   Trajectory trajectory = line(Eigen::Vector3d(0.0, 0.3, 0.0));
-  for (int i = 0; i < 40; ++i)
+  for (int i = 0; i < 40; ++i) {
+    ros::Time::setNow(ros::Time(1000) + ros::Duration(0.01*(i+1)));
     controller->setTrajectoyReference(trajectory, 0.01*i, 0.0);
+  }
   EXPECT_GT(referenceYaw(), 0.1);
   EXPECT_GT(std::abs(std::remainder(referenceYaw() - exit_yaw, 2.0*M_PI)), 0.1);
+}
+
+TEST_F(LockedExitYaw, CurrentHeadingUsesControlTimeAndPredictionUsesModelTime) {
+  ros::Time::setNow(ros::Time(1000));
+  controller->setHoverReference(Eigen::Vector3d::Zero(), 0.0);
+  Trajectory trajectory = line(Eigen::Vector3d(0.0, 0.3, 0.0));
+  const double yaw_rate = params.max_bodyrate_z_;
+  for (int i = 1; i <= 100; ++i) {
+    ros::Time::setNow(ros::Time(1000) + ros::Duration(0.01*i));
+    // 重规划将轨迹时间归零，实际偏航仍应按连续的控制时间推进。
+    const double trajectory_time = 0.01 * (i <= 50 ? i : i - 50);
+    controller->setTrajectoyReference(trajectory, trajectory_time, 0.0);
+    ASSERT_NEAR(referenceYaw(), yaw_rate * 0.01*i, 1e-5);
+  }
+  EXPECT_NEAR(referenceYaw(1) - referenceYaw(), yaw_rate * params.step_T_, 1e-5);
+  EXPECT_NEAR(controller->reference_inputs_(kRateZ, 0), yaw_rate, 1e-5);
+}
+
+TEST_F(LockedExitYaw, HeadingUsesIrregularElapsedTimeWithoutAdvancingTwice) {
+  ros::Time::setNow(ros::Time(1000));
+  controller->setHoverReference(Eigen::Vector3d::Zero(), 0.0);
+  Trajectory trajectory = line(Eigen::Vector3d(0.0, 0.3, 0.0));
+  double elapsed = 0.0;
+  for (double dt : {0.007, 0.025, 0.012, 0.003, 0.018}) {
+    elapsed += dt;
+    ros::Time::setNow(ros::Time(1000) + ros::Duration(elapsed));
+    controller->setTrajectoyReference(trajectory, elapsed, 0.0);
+    EXPECT_NEAR(referenceYaw(), params.max_bodyrate_z_ * elapsed, 1e-5);
+    controller->setTrajectoyReference(trajectory, elapsed, 0.0);
+    EXPECT_NEAR(referenceYaw(), params.max_bodyrate_z_ * elapsed, 1e-5);
+    EXPECT_NEAR(controller->reference_inputs_(kRateZ, 0), 0.0, 1e-5);
+    EXPECT_TRUE(controller->reference_states_.allFinite());
+    EXPECT_TRUE(controller->reference_inputs_.allFinite());
+  }
+}
+
+TEST_F(LockedExitYaw, HoverRestartsHeadingClockBeforeAnotherTrajectory) {
+  ros::Time::setNow(ros::Time(1000));
+  controller->setHoverReference(Eigen::Vector3d::Zero(), 0.0);
+  Trajectory trajectory = line(Eigen::Vector3d(0.0, 0.3, 0.0));
+  ros::Time::setNow(ros::Time(1000, 10000000));
+  controller->setTrajectoyReference(trajectory, 0.0, 0.0);
+  ros::Time::setNow(ros::Time(1010));
+  controller->setHoverReference(Eigen::Vector3d::Zero(), 0.2);
+  ros::Time::setNow(ros::Time(1010, 10000000));
+  controller->setTrajectoyReference(trajectory, 0.0, 0.2);
+  EXPECT_NEAR(referenceYaw(), 0.2 + params.max_bodyrate_z_ * 0.01, 1e-5);
 }
 
 TEST_F(LockedExitYaw, PlatformApproachAndReplanningKeepPublishedExitYaw) {

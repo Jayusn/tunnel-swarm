@@ -132,6 +132,7 @@ namespace PayloadMPC
     double last_yaw_{0.0};
     double last_yaw_dot_{0.0};
     bool yaw_reference_initialized_{false};
+    ros::Time last_yaw_update_time_{0};
     bool locked_yaw_active_{false};
     double locked_yaw_{0.0};
     // Internal helper functions.

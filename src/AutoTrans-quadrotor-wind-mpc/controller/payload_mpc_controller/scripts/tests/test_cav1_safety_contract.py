@@ -259,7 +259,7 @@ def test_dynamic_yaw_is_continuous_across_replans_and_advances_once_per_cycle():
     assert "yaw_reference_initialized_" in header
     assert "reset last_yaw_ from the first point" not in trajectory_reference
     assert "if (i == 0)" in trajectory_reference
-    assert "calculate_yaw(vel_quad, t_step, last_yaw_, last_yaw_dot_)" in trajectory_reference
+    assert "calculate_yaw(vel_quad, yaw_update_dt, last_yaw_, last_yaw_dot_)" in trajectory_reference
     assert "calculate_yaw(vel_quad, t_step, predicted_yaw, predicted_yaw_dot)" in trajectory_reference
     assert "constexpr double kYawHoldSpeed = 0.12" in yaw_helper
     assert "vel.head<2>().norm() < kYawHoldSpeed" in yaw_helper

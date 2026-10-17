@@ -305,6 +305,7 @@ namespace PayloadMPC
     last_yaw_ = angle_limit(yaw);
     last_yaw_dot_ = 0.0;
     yaw_reference_initialized_ = true;
+    last_yaw_update_time_ = ros::Time::now();
 
     Eigen::Matrix<real_t, 3, 1> quad_pos = quad_position.cast<real_t>();
     Eigen::Quaterniond quad_q;
@@ -377,6 +378,11 @@ namespace PayloadMPC
   void MpcController::setTrajectoyReference(Trajectory &traj, double tstart, double start_yaw)
   {
     const double t_step = mpc_time_step_;
+    const ros::Time now = ros::Time::now();
+    const double yaw_update_dt = last_yaw_update_time_.isZero()
+                                     ? 1.0 / params_.ctrl_freq_max_
+                                     : (now - last_yaw_update_time_).toSec();
+    last_yaw_update_time_ = now;
     double t_all = traj.getTotalDuration() - 1.0e-3;
     double t = tstart;
     double yaw, yaw_dot;
@@ -439,7 +445,8 @@ namespace PayloadMPC
       {
         if (i == 0)
         {
-          calculate_yaw(vel_quad, t_step, last_yaw_, last_yaw_dot_);
+          // 当前参考按真实控制周期推进；预测窗口才使用模型步长。
+          calculate_yaw(vel_quad, yaw_update_dt, last_yaw_, last_yaw_dot_);
           predicted_yaw = last_yaw_;
           predicted_yaw_dot = last_yaw_dot_;
         }
@@ -510,6 +517,11 @@ namespace PayloadMPC
   void MpcController::calculate_yaw(const Eigen::Vector3d &vel, const double dt,
                                     double &yaw_state, double &yawdot_state)
   {
+    if (dt <= 0.0)
+    {
+      yawdot_state = 0.0;
+      return;
+    }
     const double YAW_DOT_MAX_PER_SEC = params_.max_bodyrate_z_;
     constexpr double kYawHoldSpeed = 0.12;
 

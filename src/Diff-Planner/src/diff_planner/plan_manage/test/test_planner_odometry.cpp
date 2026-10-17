@@ -356,6 +356,22 @@ TEST_F(PlannerEndpoint, ActualOccupiedPositionRetainsEmergencyPriority)
   EXPECT_TRUE(planner.have_target_);
 }
 
+TEST_F(PlannerEndpoint, DisabledGoalModificationRetainsOccupiedTargetAndStops)
+{
+  publishPoint(goal + Eigen::Vector3d(0.10, 0.0, 0.0));
+  ASSERT_NE(planner.planner_manager_->grid_map_->getInflateOccupancy(goal), 0);
+  ASSERT_EQ(planner.planner_manager_->grid_map_->getInflateOccupancy(planner.odom_pos_), 0);
+  planner.mondify_final_goal_ = false;
+  planner.exec_state_ = FSM::GEN_NEW_TRAJ;
+
+  exec();
+
+  EXPECT_EQ(planner.exec_state_, FSM::EMERGENCY_STOP);
+  EXPECT_NEAR((planner.final_goal_ - goal).norm(), 0.0, 1e-9);
+  EXPECT_TRUE(planner.have_target_);
+  expectNoReplacement();
+}
+
 TEST_F(PlannerEndpoint, EmergencyResumesAsSoonAsCurrentPositionIsFree)
 {
   ASSERT_EQ(planner.planner_manager_->grid_map_->getInflateOccupancy(planner.odom_pos_), 0);

@@ -70,6 +70,7 @@
     <arg name="history_only_occupied_recovery" default="false"/>
     <arg name="wait_new_target_after_occupied_recovery" default="false"/>
     <arg name="preserve_modified_goal_height" default="false"/>
+    <arg name="mondify_final_goal" default="true"/>
     <!-- 2026-07-07: 暴露预设航点切换距离阈值，便于窄门洞场景避免还没穿过去就切下一个 waypoint。 -->
     <arg name="waypoint_switch_dist" default="-1.0"/>
     <arg name="enable_virtual_wall"/>
@@ -222,7 +223,7 @@
         <param name="fsm/realworld_experiment" value="true"/>
         <param name="fsm/fail_safe" value="true"/>
         <!-- Allow final goal modification -->
-        <param name="fsm/mondify_final_goal" value="true"/>
+        <param name="fsm/mondify_final_goal" value="$(arg mondify_final_goal)" type="bool"/>
         <param name="fsm/preserve_modified_goal_height" value="$(arg preserve_modified_goal_height)" type="bool"/>
         <!-- 2026-07-07: 允许实验 launch 覆盖 stuck detect 行为，避免窄通道环境误判卡死。 -->
         <param name="fsm/enable_stuck_detect" value="$(arg enable_stuck_detect)"/>
