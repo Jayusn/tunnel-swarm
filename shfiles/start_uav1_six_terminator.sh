@@ -212,7 +212,7 @@ wait_for_topic_message() {
 wait_for_mavros_connected() {
   local elapsed=0
   while (( elapsed < WAIT_TIMEOUT )); do
-    if timeout 2 rostopic echo -n 1 "${MAVROS_STATE_TOPIC}" 2>/dev/null |
+    if timeout --kill-after=1s 5s rostopic echo -n 1 "${MAVROS_STATE_TOPIC}" 2>/dev/null |
         grep -F 'connected: True' >/dev/null 2>&1; then
       printf '[就绪] UAV1 MAVROS 已连接飞控\n'
       return 0

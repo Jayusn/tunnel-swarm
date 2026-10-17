@@ -58,7 +58,7 @@ wait_for_mavros()
     deadline=$((now + WAIT_TIMEOUT))
     echo "[UAV1 MAVROS] 等待 /UAV1/mavros/state connected: True ..."
 
-    while ! timeout 2 rostopic echo -n 1 /UAV1/mavros/state 2>/dev/null |
+    while ! timeout --kill-after=1s 5s rostopic echo -n 1 /UAV1/mavros/state 2>/dev/null |
         grep -q 'connected: True'; do
         now=$(date +%s)
         [ "$now" -lt "$deadline" ] ||
