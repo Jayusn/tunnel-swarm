@@ -82,6 +82,24 @@ int main() {
   };
   check(selectGoal(start, forward, 0.62, passage, goal) && goal.side > 0.0,
         "跨障通路优先于错误侧的短步大净空");
+  const auto widths = [](Goal& candidate) {
+    if (std::fabs(candidate.side) < 0.1 || std::fabs(candidate.side) > 0.21) return false;
+    candidate.passage_priority = candidate.side > 0.0 ? 2 : 1;
+    candidate.clearance = candidate.side > 0.0 ? 0.15 : 0.60;
+    candidate.continuation = 0.40;
+    return true;
+  };
+  check(selectGoal(start, forward, 0.62, widths, goal) && goal.side > 0.0,
+        "两侧均可跨障时先选间距更宽侧，不能由窄侧大净空覆盖");
+  const auto equal_widths = [](Goal& candidate) {
+    if (std::fabs(candidate.side) < 0.1 || std::fabs(candidate.side) > 0.21) return false;
+    candidate.passage_priority = 2;
+    candidate.clearance = candidate.side < 0.0 ? 0.60 : 0.20;
+    candidate.continuation = candidate.side < 0.0 ? 0.0 : 0.40;
+    return true;
+  };
+  check(selectGoal(start, forward, 0.62, equal_widths, goal) && goal.side < 0.0,
+        "相同间距的可行跨障通路再比较净空");
   const auto alternate = [](Goal& candidate) {
     candidate.clearance = 0.20;
     candidate.continuation = 0.40;

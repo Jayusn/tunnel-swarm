@@ -316,7 +316,8 @@ public:
           "entry passage lost actual forward progress or changed height");
   }
 
-  static void runWiderSideRecovery(double wide_side, bool fallback_only) {
+  static void runWiderSideRecovery(double wide_side, bool fallback_only,
+                                   bool remember_side = true, bool entry = false) {
     ros::NodeHandle nh("~");
     nh.setParam("manager/use_geometric_path", true);
     nh.setParam("astar/resolution_astar", 0.05);
@@ -341,7 +342,7 @@ public:
     cloud.clear();
     for (double x=-1.4; x<=1.4; x+=0.025)
       for (double z=0.25; z<=1.75; z+=0.025)
-        for (double y : {-0.45, 1.0})
+        for (double y : {entry ? -0.85 : -0.45, 1.0})
           cloud.push_back(pcl::PointXYZ(x, wide_side*y, z));
     for (int i=0; i<6; ++i)
       manager.sdf_map_->inputPointCloud(cloud, cloud.size(), start);
@@ -359,7 +360,9 @@ public:
     ViewNode::caster_->setParams(manager.sdf_map_->getResolution(), map_origin);
     nh.setParam("frontier/cluster_min", 1000000);
     manager.frontier_finder_ = std::make_shared<FrontierFinder>(manager.edt_environment_, nh);
-    manager.mission_entered_search_region_ = true;
+    // 动态入口飞行已完成一米推进，可能还未进入静态搜索框；同样必须先比较宽度。
+    manager.mission_entered_search_region_ = fallback_only;
+    manager.entry_forward_complete_ = !fallback_only;
     manager.ep_->mission_use_forward_fallback_ = true;
     manager.ep_->mission_use_workspace_lock_ = true;
     manager.ep_->mission_forward_fallback_step_ = 0.20;
@@ -381,7 +384,7 @@ public:
     manager.turn_in_place_enabled_ = false;
     manager.center_gate_enabled_ = false;
     manager.camera_head_sweep_enabled_ = false;
-    manager.recovery_side_latched_ = true;
+    manager.recovery_side_latched_ = remember_side;
     manager.recovery_side_origin_ = start - Vector3d(1, 0, 0);
     manager.recovery_side_dir_ = Vector3d(0, -wide_side, 0);
     const auto split = manager.findWideSideSplit(start, Vector3d::UnitX());
@@ -390,6 +393,13 @@ public:
           "fixture did not provide a wider lane opposite the old detour");
     check(manager.isLowProbeCorridorSafe(start, manager.recovery_side_dir_, 0.20),
           "old narrow-side short step must be feasible to reproduce the priority bug");
+    if (entry) {
+      entry_forward::Goal goal;
+      check(manager.selectEntryForwardGoal(start, Vector3d::UnitX(), 0.62, goal) &&
+            goal.passage_side*wide_side > 0.0 && goal.side*wide_side > 0.0,
+            "entry preferred the remembered narrower lane over a feasible wider passage");
+      return;
+    }
     Vector3d next;
     double yaw = 0.10;
     if (fallback_only) {
@@ -509,7 +519,8 @@ public:
           "0.22m lateral progress released the side or successful plan stayed pending");
     const double duration = planner.local_data_.duration_;
     const Vector3d end = planner.local_data_.position_traj_.evaluateDeBoorT(duration);
-    check((end-displaced).y()*side >= 0.15 && std::fabs(end.z()-displaced.z()) < 0.05,
+    // 宽侧规划走A*，既有短路径截断会让首段约横移0.14m，仍须保持所选方向。
+    check((end-displaced).y()*side >= 0.10 && std::fabs(end.z()-displaced.z()) < 0.05,
           "replan switched sides or changed the recovery height");
     check(planner.isTrajectorySafe(), "same-side spline bypassed footprint safety");
     Vector3d next;
@@ -579,6 +590,21 @@ TEST(SideRecovery, CurrentWiderLeftLaneOverridesOldRightBeforeFrontier) {
 TEST(SideRecovery, DisconnectedFrontierUsesWiderLaneBeforeOldSide) {
   fast_planner::TurnEscapeTest::runWiderSideRecovery(-1.0, true);
   fast_planner::TurnEscapeTest::runWiderSideRecovery(1.0, true);
+}
+
+TEST(SideRecovery, FirstObstacleChoosesWiderLaneBeforeFrontier) {
+  fast_planner::TurnEscapeTest::runWiderSideRecovery(-1.0, false, false);
+  fast_planner::TurnEscapeTest::runWiderSideRecovery(1.0, false, false);
+}
+
+TEST(SideRecovery, FirstObstacleFallbackChoosesWiderLane) {
+  fast_planner::TurnEscapeTest::runWiderSideRecovery(-1.0, true, false);
+  fast_planner::TurnEscapeTest::runWiderSideRecovery(1.0, true, false);
+}
+
+TEST(EntryPassage, CurrentWidthOverridesRememberedNarrowerPassage) {
+  fast_planner::TurnEscapeTest::runWiderSideRecovery(-1.0, false, true, true);
+  fast_planner::TurnEscapeTest::runWiderSideRecovery(1.0, false, true, true);
 }
 
 TEST(EntryPassage, ChoosesLeftOfRightWallObstacle) {

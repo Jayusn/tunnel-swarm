@@ -39,12 +39,12 @@ struct Goal {
   double side{0.0};
   double clearance{0.0};
   double continuation{0.0};
-  // 0：普通短步；1：另一侧跨障通路；2：较宽或已选侧的跨障通路。
+  // 0：普通短步；1：较窄的跨障通路；2：较宽的跨障通路（等宽时两侧同级）。
   int passage_priority{0};
   double passage_side{0.0};
 };
 
-// 先选能接到已观测障碍通路的候选，再比较短步净空；无通路证据时沿用原评分。
+// 先按可连通的跨障通路宽度分级，再比较短步净空；无通路证据时沿用原评分。
 template <typename Evaluate>
 bool selectGoal(const Eigen::Vector3d& start, const Eigen::Vector3d& forward,
                 double remaining, Evaluate evaluate, Goal& best) {
@@ -63,9 +63,12 @@ bool selectGoal(const Eigen::Vector3d& start, const Eigen::Vector3d& forward,
       const double score = 2.0 * std::min(0.60, candidate.clearance) +
                            1.5 * candidate.continuation + 0.50 * advance -
                            0.25 * std::fabs(side);
+      const bool compare_clearance = candidate.passage_priority > 0 &&
+          std::fabs(candidate.clearance - best.clearance) > 1e-6;
       if (candidate.passage_priority > best_passage_priority ||
           (candidate.passage_priority == best_passage_priority &&
-           score > best_score + 1e-6)) {
+           (compare_clearance ? candidate.clearance > best.clearance
+                              : score > best_score + 1e-6))) {
         best_passage_priority = candidate.passage_priority;
         best = candidate;
         best_score = score;

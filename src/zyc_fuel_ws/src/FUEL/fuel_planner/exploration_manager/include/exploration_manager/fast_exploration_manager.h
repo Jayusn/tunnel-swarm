@@ -314,8 +314,7 @@ private:
                               double remaining, entry_forward::Goal& selected);
   bool buildWideSideBypass(const Vector3d& pos, double cur_yaw,
                            const Vector3d& forward, Vector3d& next_pos,
-                           double& next_yaw, bool& split_obstacle_detected,
-                           bool replace_latched_side_only = false);
+                           double& next_yaw, bool& split_obstacle_detected);
   bool buildCenterGatePassage(const Vector3d& pos, double cur_yaw,
                               const Vector3d& forward, Vector3d& next_pos,
                               double& next_yaw, bool& gate_detected);
