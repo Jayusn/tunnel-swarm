@@ -56,7 +56,8 @@ namespace diff_planner
     bool EmergencyStop(Eigen::Vector3d stop_pos);
     bool OccupiedStartRecovery(const Eigen::Vector3d &start_pos,
                                const Eigen::Vector3d &target_pos,
-                               double max_speed);
+                               double max_speed,
+                               double max_initial_occupied_prefix = 0.20);
     bool checkCollision(int drone_id);
     void updateDynamicObjects(const obj_state_msgs::ObjectsStates &msg);
     bool dynamicTrajectoryBlocked(
@@ -71,7 +72,8 @@ namespace diff_planner
         const std::vector<std::pair<double, Eigen::Vector3d>> &samples,
         double now, SwingCollisionResult *result = nullptr) const;
     bool setLocalTrajFromOpt(const poly_traj::MinJerkOpt &opt, const bool touch_goal,
-                            bool check_dynamic_obstacles = true);
+                            bool check_dynamic_obstacles = true,
+                            double max_initial_occupied_prefix = 0.0);
     inline double getSwarmClearance(void) { return ploy_traj_opt_->get_swarm_clearance_(); }
     inline int getCpsNumPrePiece(void) { return ploy_traj_opt_->get_cps_num_prePiece_(); }
     // inline PtsChk_t getPtsCheck(void) { return ploy_traj_opt_->get_pts_check_(); }

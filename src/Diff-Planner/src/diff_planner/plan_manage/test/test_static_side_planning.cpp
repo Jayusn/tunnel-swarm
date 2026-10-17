@@ -109,10 +109,73 @@ protected:
     EXPECT_TRUE(crossed);
   }
 
+  poly_traj::Trajectory recoveryLine(const Vector3d &from, const Vector3d &to)
+  {
+    Eigen::Matrix3d head, tail;
+    head << from, Vector3d::Zero(), Vector3d::Zero();
+    tail << to, Vector3d::Zero(), Vector3d::Zero();
+    poly_traj::MinJerkOpt polynomial;
+    polynomial.reset(head, tail, 1);
+    polynomial.generate(Eigen::MatrixXd(3, 0), Eigen::VectorXd::Constant(1, 2.0));
+    return polynomial.getTraj();
+  }
+
   GridMap::Ptr map;
   diff_planner::SwarmTrajData swarm;
   const Vector3d start{-0.9, 0.0, 0.6}, end{0.9, 0.0, 0.6};
 };
+
+TEST_F(StaticSidePlanning, RecoveryValidationAllowsOnlyAShortInitialOccupiedSegment)
+{
+  PolyTrajOptimizer optimizer;
+  configure(optimizer, true);
+  const auto trajectory = recoveryLine(Vector3d(0.225, 0.025, 0.625),
+                                        Vector3d(0.8, 0.025, 0.625));
+  const double now = ros::Time::now().toSec();
+  EXPECT_FALSE(optimizer.trajectoryCollisionFree(trajectory, now, now));
+  EXPECT_TRUE(optimizer.trajectoryCollisionFree(trajectory, now, now, 0.20));
+  const auto long_prefix = recoveryLine(Vector3d(-0.20, 0.025, 0.625),
+                                       Vector3d(0.8, 0.025, 0.625));
+  EXPECT_FALSE(optimizer.trajectoryCollisionFree(long_prefix, now, now, 0.20));
+}
+
+TEST_F(StaticSidePlanning, RecoveryValidationRequiresLeavingOccupiedSpace)
+{
+  PolyTrajOptimizer optimizer;
+  configure(optimizer, true);
+  const auto trajectory = recoveryLine(Vector3d(0.175, 0.025, 0.625),
+                                        Vector3d(0.225, 0.025, 0.625));
+  const double now = ros::Time::now().toSec();
+  EXPECT_FALSE(optimizer.trajectoryCollisionFree(trajectory, now, now, 0.20));
+}
+
+TEST_F(StaticSidePlanning, RecoveryValidationRejectsAnotherObstacleAfterFreeSpace)
+{
+  PolyTrajOptimizer optimizer;
+  configure(optimizer, true);
+  const auto trajectory = recoveryLine(Vector3d(0.225, 0.025, 0.625),
+                                        Vector3d(0.8, 0.025, 0.625));
+  const double now = ros::Time::now().toSec();
+  ASSERT_TRUE(optimizer.trajectoryCollisionFree(trajectory, now, now, 0.20));
+  map->md_.occupancy_buffer_inflate_[
+      map->globalIdx2InfBufIdx(Eigen::Vector3i(9, 0, 12))] = 1;
+  EXPECT_FALSE(optimizer.trajectoryCollisionFree(trajectory, now, now, 0.20));
+}
+
+TEST_F(StaticSidePlanning, RecoveryValidationStillChecksDynamicObstacles)
+{
+  PolyTrajOptimizer optimizer;
+  configure(optimizer, true);
+  const auto trajectory = recoveryLine(Vector3d(0.225, 0.025, 0.625),
+                                        Vector3d(0.8, 0.025, 0.625));
+  const double now = ros::Time::now().toSec();
+  ASSERT_TRUE(optimizer.trajectoryCollisionFree(trajectory, now, now, 0.20));
+  diff_planner::DynamicObstacleState obstacle;
+  obstacle.position = Vector3d(0.70, 0.025, 0.625);
+  obstacle.stamp = now;
+  optimizer.setDynamicObstacles({obstacle});
+  EXPECT_FALSE(optimizer.trajectoryCollisionFree(trajectory, now, now, 0.20));
+}
 
 TEST_F(StaticSidePlanning, FappEnabledAndDisabledBothChooseWiderStaticPassage)
 {

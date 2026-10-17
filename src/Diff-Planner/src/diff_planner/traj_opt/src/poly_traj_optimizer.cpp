@@ -2220,19 +2220,33 @@ namespace diff_planner
 
   bool PolyTrajOptimizer::trajectoryCollisionFree(
       const poly_traj::Trajectory &trajectory, const double start_time,
-      const double reference_time)
+      const double reference_time, const double max_initial_occupied_prefix)
   {
     const auto samples = sampleCollisionTrajectory(trajectory, 0.0,
         trajectory.getTotalDuration(), 0.5 * grid_map_->getResolution());
     if (samples.empty()) return false;
+    bool reached_free_space = false;
+    double prefix_distance = 0.0;
+    Eigen::Vector3d previous_position = samples.front().second;
     for (const auto &sample : samples)
     {
       if (checkPlanningTimeout("whole-body trajectory validation")) return false;
+      prefix_distance += (sample.second - previous_position).norm();
+      previous_position = sample.second;
       if (staticPositionOccupied(sample.second))
       {
-        ROS_WARN("[FAPP validation] static collision t=%.3f p=(%.3f,%.3f,%.3f)",
-                 sample.first, sample.second.x(), sample.second.y(), sample.second.z());
-        return false;
+        // 脱障沿用已有的短初始占据段规则；普通轨迹默认不允许占据段。
+        if (max_initial_occupied_prefix <= 0.0 || reached_free_space ||
+            prefix_distance > max_initial_occupied_prefix + 1.0e-6)
+        {
+          ROS_WARN("[FAPP validation] static collision t=%.3f p=(%.3f,%.3f,%.3f)",
+                   sample.first, sample.second.x(), sample.second.y(), sample.second.z());
+          return false;
+        }
+      }
+      else
+      {
+        reached_free_space = true;
       }
       if (dynamic_candidate_active_ && !candidatePointInside(sample.second))
       {
@@ -2255,7 +2269,7 @@ namespace diff_planner
         }
       }
     }
-    return true;
+    return reached_free_space;
   }
 
   bool PolyTrajOptimizer::candidatePointInside(const Eigen::Vector3d &point) const

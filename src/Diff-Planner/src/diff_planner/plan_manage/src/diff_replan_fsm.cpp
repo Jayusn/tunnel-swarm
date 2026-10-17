@@ -1539,7 +1539,8 @@ namespace diff_planner
 
   bool DiffReplanFSM::callOccupiedRecovery(const Eigen::Vector3d &target)
   {
-    if (!planner_manager_->OccupiedStartRecovery(odom_pos_, target, escape_speed_))
+    if (!planner_manager_->OccupiedStartRecovery(
+            odom_pos_, target, escape_speed_, escape_max_occupied_prefix_))
       return false;
 
     traj_utils::PolyTraj poly_msg;

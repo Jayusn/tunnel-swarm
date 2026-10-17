@@ -806,7 +806,8 @@ namespace diff_planner
   }
 
   bool DiffPlannerManager::setLocalTrajFromOpt(const poly_traj::MinJerkOpt &opt, const bool touch_goal,
-                                             const bool check_dynamic_obstacles)
+                                             const bool check_dynamic_obstacles,
+                                             const double max_initial_occupied_prefix)
   {
     poly_traj::Trajectory traj = opt.getTraj();
     Eigen::MatrixXd cps = opt.getInitConstraintPoints(getCpsNumPrePiece());
@@ -817,7 +818,8 @@ namespace diff_planner
       const double start_time = ros::Time::now().toSec();
       if (check_dynamic_obstacles && dynamicAvoidanceEnabled())
       {
-        if (!ploy_traj_opt_->trajectoryCollisionFree(traj, start_time, start_time))
+        if (!ploy_traj_opt_->trajectoryCollisionFree(
+                traj, start_time, start_time, max_initial_occupied_prefix))
         {
           ROS_WARN("[FAPP动态避障] 轨迹未通过静态或动态整机检查，不发布该轨迹。");
           return false;
@@ -848,7 +850,8 @@ namespace diff_planner
 
   bool DiffPlannerManager::OccupiedStartRecovery(const Eigen::Vector3d &start_pos,
                                                  const Eigen::Vector3d &target_pos,
-                                                 double max_speed)
+                                                 double max_speed,
+                                                 double max_initial_occupied_prefix)
   {
     const double distance = (target_pos - start_pos).norm();
     if (!start_pos.allFinite() || !target_pos.allFinite() ||
@@ -873,7 +876,7 @@ namespace diff_planner
     durations(0) = duration;
     recovery_mjo.generate(inner_points, durations);
 
-    if (!setLocalTrajFromOpt(recovery_mjo, false))
+    if (!setLocalTrajFromOpt(recovery_mjo, false, true, max_initial_occupied_prefix))
     {
       ROS_ERROR("Failed to store occupied-start recovery trajectory.");
       return false;

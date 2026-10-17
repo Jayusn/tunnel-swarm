@@ -171,7 +171,8 @@ namespace diff_planner
                                 std::vector<Eigen::Vector3d> &path);
     bool staticPositionOccupied(const Eigen::Vector3d &position) const;
     bool trajectoryCollisionFree(const poly_traj::Trajectory &trajectory,
-                                 double start_time, double reference_time);
+                                 double start_time, double reference_time,
+                                 double max_initial_occupied_prefix = 0.0);
     double planningReferenceTime() const { return planning_reference_time_; }
 
     /* helper functions */

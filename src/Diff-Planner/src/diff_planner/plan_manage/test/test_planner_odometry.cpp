@@ -390,6 +390,62 @@ TEST_F(PlannerEndpoint, EmergencyResumesAsSoonAsCurrentPositionIsFree)
   expectNoReplacement();
 }
 
+TEST_F(PlannerEndpoint, OccupiedHistoryRetreatPublishesAndReleasesNextRelayGoal)
+{
+  const Eigen::Vector3d start = planner.odom_pos_;
+  const Eigen::Vector3d retreat = start - Eigen::Vector3d(0.45, 0.0, 0.0);
+  publishPoint(start);
+  ASSERT_NE(planner.planner_manager_->grid_map_->getInflateOccupancy(start), 0);
+  ASSERT_EQ(planner.planner_manager_->grid_map_->getInflateOccupancy(retreat), 0);
+
+  // 同一条占据起点轨迹，普通发布检查仍必须拒绝。
+  Eigen::Matrix3d head, tail;
+  head << start, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero();
+  tail << retreat, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero();
+  poly_traj::MinJerkOpt polynomial;
+  polynomial.reset(head, tail, 1);
+  polynomial.generate(Eigen::MatrixXd(3, 0), Eigen::VectorXd::Constant(1, 8.5));
+  EXPECT_FALSE(planner.planner_manager_->setLocalTrajFromOpt(polynomial, false));
+  EXPECT_EQ(planner.planner_manager_->traj_.local_traj.traj_id, initial_id);
+
+  planner.free_odom_history_.clear();
+  planner.free_odom_history_.push_back(FSM::FreeOdomSample{
+      999.0, retreat.x(), retreat.y(), retreat.z()});
+  planner.exec_state_ = FSM::EMERGENCY_STOP;
+  planner.flag_escape_emergency_ = false;
+  planner.occupied_recovery_episode_ = true;
+  planner.wait_new_target_after_occupied_recovery_ = true;
+  planner.last_escape_target_search_time_ = 999.0;
+
+  exec();
+
+  ASSERT_EQ(planner.exec_state_, FSM::OCCUPIED_RECOVERY);
+  EXPECT_TRUE(planner.occupied_recovery_from_history_);
+  EXPECT_TRUE(planner.occupied_recovery_active_);
+  const auto &trajectory = planner.planner_manager_->traj_.local_traj.traj;
+  EXPECT_LT((trajectory.getPos(0.0) - start).norm(), 1e-9);
+  EXPECT_LT((trajectory.getPos(trajectory.getTotalDuration()) - retreat).norm(), 1e-9);
+  drain();
+  EXPECT_EQ(published, 1);
+
+  planner.odom_pos_ = retreat + Eigen::Vector3d(0.10, 0.0, 0.0);
+  ASSERT_EQ(planner.planner_manager_->grid_map_->getInflateOccupancy(planner.odom_pos_), 0);
+  exec();
+  EXPECT_EQ(planner.exec_state_, FSM::WAIT_TARGET);
+  EXPECT_FALSE(planner.occupied_recovery_active_);
+  EXPECT_FALSE(planner.have_target_);
+}
+
+TEST_F(PlannerEndpoint, RecoveryPublicationUsesConfiguredOccupiedPrefixLimit)
+{
+  publishPoint(planner.odom_pos_);
+  ASSERT_NE(planner.planner_manager_->grid_map_->getInflateOccupancy(planner.odom_pos_), 0);
+  const Eigen::Vector3d retreat = planner.odom_pos_ - Eigen::Vector3d(0.45, 0.0, 0.0);
+  planner.escape_max_occupied_prefix_ = 0.05;
+  EXPECT_FALSE(planner.callOccupiedRecovery(retreat));
+  expectNoReplacement();
+}
+
 TEST_F(PlannerEndpoint, RecoveryReleasesRelayTargetImmediatelyAfterLeavingInflation)
 {
   ASSERT_EQ(planner.planner_manager_->grid_map_->getInflateOccupancy(planner.odom_pos_), 0);
