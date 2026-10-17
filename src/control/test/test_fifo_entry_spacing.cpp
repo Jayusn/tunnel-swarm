@@ -111,6 +111,82 @@ class FifoEntrySpacing : public ::testing::Test {
   std::unique_ptr<LeaderSafePathFollower> follower;
 };
 
+TEST_F(FifoEntrySpacing, OrdinaryPointFilteringAlwaysUsesLastRetainedPoint) {
+  RoutePoint point;
+  point.position.x = 0.4;
+  ASSERT_TRUE(follower->appendRelayWaypoint(point, "SEGMENT_ENDPOINT"));
+  point.position.y = 0.4;
+  EXPECT_FALSE(follower->appendRelayWaypoint(point, "SEGMENT_ENDPOINT"));
+  point.position.x = 0.6;
+  EXPECT_FALSE(follower->appendRelayWaypoint(point, "SEGMENT_ENDPOINT"));
+  point.position.x = 0.8;
+  EXPECT_FALSE(follower->appendRelayWaypoint(point, "SEGMENT_ENDPOINT"));
+  point.position.x = 0.9;
+  ASSERT_TRUE(follower->appendRelayWaypoint(point, "SEGMENT_ENDPOINT"));
+  ASSERT_EQ(follower->relay_waypoints_.size(), 2U);
+  EXPECT_DOUBLE_EQ(follower->relay_waypoints_[0].position.x, 0.4);
+  EXPECT_DOUBLE_EQ(follower->relay_waypoints_[0].position.y, 0.0);
+  EXPECT_DOUBLE_EQ(follower->relay_waypoints_[1].position.x, 0.9);
+  EXPECT_DOUBLE_EQ(follower->relay_waypoints_[1].position.y, 0.4);
+}
+
+TEST_F(FifoEntrySpacing, OrdinaryPointSpacingSurvivesConsumptionAndIncludesBoundary) {
+  queuePoint(1.0);
+  follower->consumeSimpleRelayFront();
+  ASSERT_TRUE(follower->relay_waypoints_.empty());
+  RoutePoint point;
+  point.position.x = 1.499;
+  EXPECT_FALSE(follower->appendRelayWaypoint(point, "SEGMENT_ENDPOINT"));
+  point.position.x = 1.5;
+  ASSERT_TRUE(follower->appendRelayWaypoint(point, "SEGMENT_ENDPOINT"));
+  point.position.x = 1.6;
+  EXPECT_FALSE(follower->appendRelayWaypoint(point, "INTERNAL"));
+  ASSERT_EQ(follower->relay_waypoints_.size(), 1U);
+}
+
+TEST_F(FifoEntrySpacing, ConfirmedLeaderEndpointsApplyOrdinaryPointFilter) {
+  follower->door_waypoint_released_ = true;
+  trackSegment(1.0, 1);
+  reachSegment(1.0, 0.5);
+  trackSegment(1.3, 2);
+  reachSegment(1.3, 0.5);
+  ASSERT_EQ(follower->relay_waypoints_.size(), 1U);
+  EXPECT_FALSE(follower->pending_leader_segment_endpoint_valid_);
+  trackSegment(1.6, 3);
+  reachSegment(1.6, 0.5);
+  ASSERT_EQ(follower->relay_waypoints_.size(), 2U);
+  EXPECT_DOUBLE_EQ(follower->relay_waypoints_.back().position.x, 1.6);
+}
+
+TEST_F(FifoEntrySpacing, EitherAxisAtHalfMeterRetainsOrdinaryPoint) {
+  RoutePoint point;
+  ASSERT_TRUE(follower->appendRelayWaypoint(point, "SEGMENT_ENDPOINT"));
+  point.position.x = 0.4;
+  point.position.y = 0.4;
+  EXPECT_FALSE(follower->appendRelayWaypoint(point, "SEGMENT_ENDPOINT"));
+  point.position.x = 0.0;
+  point.position.y = -0.5;
+  ASSERT_TRUE(follower->appendRelayWaypoint(point, "SEGMENT_ENDPOINT"));
+  point.position.x = -0.5;
+  EXPECT_TRUE(follower->appendRelayWaypoint(point, "SEGMENT_ENDPOINT"));
+  EXPECT_EQ(follower->relay_waypoints_.size(), 3U);
+}
+
+TEST_F(FifoEntrySpacing, SpecialPointsDoNotParticipateInOrdinaryPointFiltering) {
+  RoutePoint point;
+  point.position.x = 1.0;
+  ASSERT_TRUE(follower->appendRelayWaypoint(point, "DOOR"));
+  ASSERT_TRUE(follower->appendRelayWaypoint(point, "SEGMENT_ENDPOINT"));
+  point.position.x = 1.1;
+  ASSERT_TRUE(follower->appendRelayWaypoint(point, "EXIT"));
+  ASSERT_TRUE(follower->appendRelayWaypoint(point, "OUTSIDE_WAIT"));
+  ASSERT_TRUE(follower->appendRelayWaypoint(point, "TERMINAL"));
+  EXPECT_FALSE(follower->appendRelayWaypoint(point, "SEGMENT_ENDPOINT"));
+  point.position.x = 1.5;
+  EXPECT_TRUE(follower->appendRelayWaypoint(point, "SEGMENT_ENDPOINT"));
+  EXPECT_EQ(follower->relay_waypoints_.size(), 6U);
+}
+
 TEST_F(FifoEntrySpacing, DoorReleasesAtPointSevenWithoutOneMeterSpacing) {
   follower->follower_odom_.pose.pose.position.x = -0.1;
   setLeader(0.69);

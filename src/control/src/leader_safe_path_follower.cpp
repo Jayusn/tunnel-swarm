@@ -740,14 +740,33 @@ class LeaderSafePathFollower {
     relay_path_pub_.publish(path);
   }
 
-  void appendRelayWaypoint(const RoutePoint& point, const char* label) {
+  bool appendRelayWaypoint(const RoutePoint& point, const char* label) {
     RoutePoint follower_point = point;
     follower_point.is_door = std::string(label) == "DOOR";
     // 2026-07-24: 对外Path中的普通门点/接力点也明确写成后机0.65m高度，
     // 不再把前机可能退化的z伪装成需要后机执行的三维坐标。
     if (std::string(label) != "TERMINAL")
       follower_point.position = followerCruisePointToWorld(point.position);
+    const bool ordinary_point = std::string(label) == "SEGMENT_ENDPOINT" ||
+                                std::string(label) == "INTERNAL";
+    if (ordinary_point && have_last_ordinary_relay_point_) {
+      const double dx = std::fabs(
+          follower_point.position.x - last_ordinary_relay_position_.x);
+      const double dy = std::fabs(
+          follower_point.position.y - last_ordinary_relay_position_.y);
+      if (dx < 0.5 && dy < 0.5) {
+        ROS_INFO("[safe_follower] FILTER ordinary waypoint at (%.2f, %.2f): "
+                 "dx=%.3fm and dy=%.3fm from last retained ordinary waypoint "
+                 "are both < 0.500m.",
+                 follower_point.position.x, follower_point.position.y, dx, dy);
+        return false;
+      }
+    }
     relay_waypoints_.push_back(follower_point);
+    if (ordinary_point) {
+      last_ordinary_relay_position_ = follower_point.position;
+      have_last_ordinary_relay_point_ = true;
+    }
     publishRelayPath();
     // 2026-07-28: RELEASE同时输出消费索引和Diff门控状态，现场可直接判断新点为何尚未SEND。
     const double active_distance =
@@ -769,6 +788,7 @@ class LeaderSafePathFollower {
                   (ros::Time::now() - diff_command_stamp_).toSec() <=
                       diff_command_stale_timeout_),
               active_distance, follower_horizontal_speed_, follower_vertical_speed_);
+    return true;
   }
 
   void leaderLandingTargetCallback(const geometry_msgs::PoseStamped::ConstPtr& msg) {
@@ -1152,8 +1172,7 @@ class LeaderSafePathFollower {
         const bool already_queued = !relay_waypoints_.empty() &&
             distance3d(relay_waypoints_.back().position, confirmed.position) <=
                 leader_segment_endpoint_radius_;
-        if (!already_queued) {
-          appendRelayWaypoint(confirmed, "SEGMENT_ENDPOINT");
+        if (!already_queued && appendRelayWaypoint(confirmed, "SEGMENT_ENDPOINT")) {
           ROS_ERROR("[safe_follower] FIFO cache UAV0 segment endpoint id=%ld; "
                     "UAV1 will consume it only after arrival.",
                     static_cast<long>(pending_leader_segment_trajectory_id_));
@@ -4086,6 +4105,9 @@ class LeaderSafePathFollower {
   std::deque<RoutePoint> turn_candidate_route_;
   // 2026-07-16: relay_waypoints_ 是实际下发给后机的门点、滚动内部点和真实终点。
   std::vector<RoutePoint> relay_waypoints_;
+  // 普通点出队后仍保留过滤基准；被过滤的点不会替换它。
+  geometry_msgs::Point last_ordinary_relay_position_;
+  bool have_last_ordinary_relay_point_{false};
   ros::Time leader_odom_stamp_, follower_odom_stamp_, follower_odom_sample_stamp_, cloud_stamp_;
   ros::Time dynamic_obstacle_receive_stamp_, retained_dynamic_obstacle_stamp_;
   std::string leader_odom_topic_, leader_history_path_topic_, leader_trajectory_topic_,

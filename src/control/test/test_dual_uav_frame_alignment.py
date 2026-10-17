@@ -286,7 +286,7 @@ def test_diff_clipped_endpoint_cannot_complete_original_relay():
 
 def test_relay_waypoints_are_cached_and_only_consumed_after_arrival():
     source = FOLLOWER.read_text(encoding="utf-8")
-    append = source.split("void appendRelayWaypoint", 1)[1].split(
+    append = source.split("bool appendRelayWaypoint", 1)[1].split(
         "void leaderLandingTargetCallback", 1
     )[0]
     assert "relay_waypoints_.push_back(follower_point)" in append
