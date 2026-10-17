@@ -58,7 +58,6 @@ public:
   bool currentPlanIsTurnInPlace() const { return turn_in_place_plan_; }
   bool currentPlanIsGroundAscent() const { return ground_ascent_plan_; }
   bool currentPlanIsVerticalDetour() const { return vertical_detour_plan_; }
-  bool currentPlanHasHoverClearance() const;
   // 发布门控可能等待多帧地图更新；竖直段在真正发布前必须重新锁定实时里程计 XY。
   bool reanchorVerticalDetourForRelease(const Vector3d& pos,
                                         const Vector3d& yaw);
@@ -99,8 +98,6 @@ private:
   bool mission_entered_search_region_{false};
   bool mission_workspace_lock_received_{false};
   bool entry_forward_complete_{false};
-  bool hover_clearance_required_{false};
-  bool trimPathToHoverPoint(vector<Vector3d>& path) const;
   bool external_selection_only_{false};
   bool manual_path_enabled_{false};
   double manual_path_arrive_distance_{0.25};

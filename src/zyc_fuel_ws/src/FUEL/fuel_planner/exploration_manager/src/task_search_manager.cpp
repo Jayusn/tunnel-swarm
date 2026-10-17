@@ -59,13 +59,6 @@ void TaskSearchManager::initialize(ros::NodeHandle& nh) {
   nh.param("mission/task_search/height_weight", height_weight_, 2.0);
   nh.param("mission/task_search/repeat_penalty", repeat_penalty_, 6.0);
   nh.param("mission/task_search/frontier_gain_weight", frontier_gain_weight_, 0.10);
-  double footprint_radius = 0.18, hover_margin = 0.20, long_path_hover_margin = 0.10;
-  nh.param("manager/footprint_check_radius", footprint_radius, 0.18);
-  nh.param("mission/hover_clearance_margin", hover_margin, 0.20);
-  nh.param("mission/long_path_hover_clearance_margin", long_path_hover_margin, 0.10);
-  hover_clearance_radius_ = std::max(0.0, footprint_radius) + std::max(0.0, hover_margin);
-  long_path_hover_clearance_radius_ =
-      std::max(0.0, footprint_radius) + std::max(0.0, long_path_hover_margin);
   nh.param("mission/task_search/clearance_reward_enabled",
            clearance_reward_enabled_, true);
   nh.param("mission/task_search/clearance_reward_start",
@@ -251,11 +244,6 @@ void TaskSearchManager::initialize(ros::NodeHandle& nh) {
            static_cast<int>(enabled_), static_cast<int>(require_stage2_detections_),
            min_search_height_, max_search_height_, revisit_radius_,
            hybrid_constraints_enabled_ ? "FUEL_DIFF" : "NATIVE_FUEL");
-  ROS_WARN("[hover_clearance] short path <=%.2fm: center radius=%.2fm (margin %.2fm); "
-           "long path: center radius=%.2fm (margin %.2fm), footprint=%.2fm.",
-           shortPathMaxLength(), hover_clearance_radius_, std::max(0.0, hover_margin),
-           long_path_hover_clearance_radius_, std::max(0.0, long_path_hover_margin),
-           std::max(0.0, footprint_radius));
   ROS_WARN("[exit_mission] open-space detector enabled=%d auto_crossing=%d ahead_width>%.2fm ratio>=%.2f "
            "confirm=%d period=%.2fs near=%.2fm; fresh map only, turn exclusion enabled.",
            static_cast<int>(exit_detection_enabled_), static_cast<int>(exit_auto_crossing_enabled_),
@@ -839,36 +827,6 @@ double TaskSearchManager::wrapYaw(double yaw) const {
   return yaw;
 }
 
-bool TaskSearchManager::isHoverPositionSafe(
-    const Eigen::Vector3d& point, double path_length) const {
-  if (!sdf_map_ || !point.allFinite() || !sdf_map_->isInMap(point)) return false;
-  const double radius = hoverClearanceRadius(path_length);
-  const double resolution = sdf_map_->getResolution();
-  const double half_voxel = 0.5 * resolution;
-  Eigen::Vector3i lower, upper;
-  const Eigen::Vector3d extent(radius, radius, 0);
-  sdf_map_->posToIndex(point - extent, lower);
-  sdf_map_->posToIndex(point + extent, upper);
-  // 枚举与停车圆盘相交的全部体素，避免少量径向射线漏掉细柱或圆盘内部障碍。
-  // 距离按体素边界计算，不把占据体素的中心距离当成外缘余量。
-  for (int x = lower.x(); x <= upper.x(); ++x) {
-    for (int y = lower.y(); y <= upper.y(); ++y) {
-      Eigen::Vector3d center;
-      sdf_map_->indexToPos(Eigen::Vector3i(x, y, lower.z()), center);
-      const double dx = std::max(0.0, std::fabs(center.x() - point.x()) - half_voxel);
-      const double dy = std::max(0.0, std::fabs(center.y() - point.y()) - half_voxel);
-      if (std::hypot(dx, dy) >= radius - 1e-9) continue;
-      for (double z_offset : {-0.06, 0.0, 0.06}) {
-        center.z() = point.z() + z_offset;
-        if (!sdf_map_->isInMap(center) ||
-            sdf_map_->getOccupancy(center) != SDFMap::FREE)
-          return false;
-      }
-    }
-  }
-  return sdf_map_->getOccupancy(point) == SDFMap::FREE;
-}
-
 double TaskSearchManager::knownHorizontalClearance(
     const Eigen::Vector3d& point) const {
   if (!sdf_map_ || !sdf_map_->isInMap(point) ||
@@ -920,7 +878,6 @@ int TaskSearchManager::selectSearchCandidate(
   int rejected_failed = 0;
   int rejected_door_return = 0;
   int rejected_exit_regression = 0;
-  int rejected_hover_clearance = 0;
   struct RankedCandidate {
     int index{-1};
     int direction_sector{0};
@@ -977,11 +934,7 @@ int TaskSearchManager::selectSearchCandidate(
         matched = static_cast<int>(i);
       }
     }
-    Eigen::Vector3d retained = matched >= 0 ? points[matched] : active_goal_;
-    retained.z() = projectSearchHeight(retained.z(), cur_pos.z());
-    // 此处还没有A*实际路径，只用长路径余量预筛；短步的额外余量在路线生成后检查。
-    if (matched >= 0 && isTaskMotionAllowed(points[matched]) &&
-        isHoverPositionSafe(retained, std::numeric_limits<double>::infinity())) {
+    if (matched >= 0 && isTaskMotionAllowed(points[matched])) {
       ROS_WARN("[task_search] keep active goal idx=%d for %.2fs, match=%.2fm.", matched,
                (ros::Time::now() - active_goal_stamp_).toSec(), matched_dist);
       return matched;
@@ -990,12 +943,6 @@ int TaskSearchManager::selectSearchCandidate(
 
   for (size_t i = 0; i < points.size(); ++i) {
     const Eigen::Vector3d& point = points[i];
-    Eigen::Vector3d hover_point = point;
-    hover_point.z() = projectSearchHeight(point.z(), cur_pos.z());
-    if (!isHoverPositionSafe(hover_point, std::numeric_limits<double>::infinity())) {
-      ++rejected_hover_clearance;
-      continue;
-    }
     // 与选中后的任务进度检查一致，提前剔除，空集合当轮进入前向恢复。
     if (!isTaskMotionAllowed(point)) {
       ++rejected_revisit;
@@ -1153,11 +1100,11 @@ int TaskSearchManager::selectSearchCandidate(
   }
 
   ROS_WARN("[task_search] candidates=%zu selected=%d rejected_revisit=%d rejected_failed=%d "
-           "rejected_door=%d rejected_exit_regression=%d rejected_hover=%d exit_guard=%d "
+           "rejected_door=%d rejected_exit_regression=%d exit_guard=%d "
            "current_exit_distance=%.2f entry_forward=%d sector=%d travel=%.2f score=%.2f "
            "clearance=%.2f reward=%.2f.",
            points.size(), best_idx, rejected_revisit, rejected_failed, rejected_door_return,
-           rejected_exit_regression, rejected_hover_clearance, static_cast<int>(final_exit_guard),
+           rejected_exit_regression, static_cast<int>(final_exit_guard),
            current_distance_to_exit, static_cast<int>(entry_forward_phase),
            selected_sector, best_travel, best_score, best_clearance, best_clearance_reward);
   return best_idx;

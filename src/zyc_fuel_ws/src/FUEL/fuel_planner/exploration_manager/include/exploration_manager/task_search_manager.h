@@ -68,13 +68,6 @@ public:
   bool isRecoveryCandidateUseful(const Eigen::Vector3d& candidate) const;
   bool isTaskMotionAllowed(const Eigen::Vector3d& candidate) const;
   bool isMissionBoundaryMotionAllowed(const Eigen::Vector3d& candidate) const;
-  // 按本次发布段的实际长度区分停车余量，通行路径仍使用原足迹半径。
-  static constexpr double shortPathMaxLength() { return 0.40; }
-  bool isHoverPositionSafe(const Eigen::Vector3d& point, double path_length = 0.0) const;
-  double hoverClearanceRadius(double path_length = 0.0) const {
-    return path_length <= shortPathMaxLength() + 1e-6
-        ? hover_clearance_radius_ : long_path_hover_clearance_radius_;
-  }
   double entryStartBackMargin() const { return inside_return_margin_; }
   bool isTaskPathAllowed(const std::vector<Eigen::Vector3d>& path) const;
   // 2026-07-28: 短回撤只豁免路径开头方向，门平面、旧通道和逐点障碍约束仍全部保留。
@@ -349,8 +342,6 @@ private:
   double height_weight_{2.0};
   double repeat_penalty_{6.0};
   double frontier_gain_weight_{0.10};
-  double hover_clearance_radius_{0.38};
-  double long_path_hover_clearance_radius_{0.28};
   bool clearance_reward_enabled_{true};
   double clearance_reward_start_{0.30};
   double clearance_reward_full_{0.60};
