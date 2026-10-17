@@ -206,7 +206,7 @@
         <param name="emergency_retreat_speed" value="0.30"/>
         <!-- 2026-07-16: 后机落点取前机安全轨迹末端后方约0.5m；终点模式关闭两机距离条件。 -->
         <param name="terminal_landing_spacing" value="0.50"/>
-        <param name="terminal_approach_height" value="2.00"/>
+        <param name="terminal_approach_height" value="1.70"/>
         <param name="terminal_arrive_radius" value="0.25"/>
         <param name="terminal_arrive_z_tolerance" value="0.15"/>
         <param name="terminal_arrive_dwell" value="1.0"/>
