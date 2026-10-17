@@ -63,6 +63,8 @@
         <!-- 2026-07-28: 禁止接力管理器直控后机，改向UAV1 Diff发布离散目标。 -->
         <param name="use_diff_planner" value="true"/>
         <param name="diff_goal_topic" value="/UAV1/planning/goal"/>
+        <!-- 后机执行出口及后续航段时，持续复用前机 final_exit 中锁存的航向。 -->
+        <param name="diff_yaw_topic" value="/UAV1/planning/yaw"/>
         <!-- 2026-07-28: 仅在3秒内连规划状态都未收到时重发，禁止飞行中1Hz覆盖Diff轨迹。 -->
         <param name="diff_goal_retry_period" value="3.0"/>
         <!-- 2026-07-28: Diff连续失败时沿前机实飞路线逐个短子目标推进，不再无限重发原远点。 -->

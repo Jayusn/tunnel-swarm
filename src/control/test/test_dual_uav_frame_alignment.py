@@ -55,6 +55,23 @@ def test_waypoint_conversion_uses_rigid_transform_and_inverse():
     assert "StaticTransformBroadcaster" in publisher
 
 
+def test_follower_exit_yaw_reaches_private_traj_server_subscription():
+    follower = next(
+        node for node in ET.parse(LAUNCH).getroot().findall("node")
+        if node.attrib.get("type") == "leader_safe_path_follower"
+    )
+    yaw_topic = next(
+        item.attrib["value"] for item in follower.findall("param")
+        if item.attrib["name"] == "diff_yaw_topic"
+    )
+    server = next(
+        node for node in ET.parse(RELAY_LAUNCH).getroot().findall("node")
+        if node.attrib.get("type") == "traj_server"
+    )
+    remaps = {item.attrib["from"]: item.attrib["to"] for item in server.findall("remap")}
+    assert remaps["~planning/yaw"] == yaw_topic == "/UAV1/planning/yaw"
+
+
 def test_relay_waypoints_require_one_meter_actual_separation():
     root = ET.parse(LAUNCH).getroot()
     follower = next(
