@@ -18,9 +18,11 @@ struct ManualWaypointPath {
       ++next;
   }
 
-  std::vector<Eigen::Vector3d> path(const Eigen::Vector3d& start,
-                                   const Eigen::Vector3d& goal) const {
-    const Eigen::Vector3d& target = next < points.size() ? points[next] : goal;
+  bool finished() const { return next >= points.size(); }
+
+  std::vector<Eigen::Vector3d> path(const Eigen::Vector3d& start) const {
+    if (finished()) return {};
+    const Eigen::Vector3d& target = points[next];
     std::vector<Eigen::Vector3d> result{start};
     if ((target - start).norm() >= 1e-3) result.push_back(target);
     return result;

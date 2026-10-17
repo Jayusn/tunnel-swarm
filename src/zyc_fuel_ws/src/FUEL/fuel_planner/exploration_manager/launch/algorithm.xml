@@ -33,7 +33,8 @@
   <!-- main node -->
   <!-- 2026-07-13: iris_0 回归阶段保留原节点名，先隔离全部数据话题；启用 iris_1 时再把 mission 参数与节点名一起实例化。 -->
   <node pkg="exploration_manager" name="exploration_node" type="exploration_node" output="screen">
-    <rosparam command="load" file="$(find exploration_manager)/config/manual_waypoints.yaml"/>
+    <!-- 原入口固定使用自动规划，避免继承上一次手填航点入口的开关。 -->
+    <param name="mission/manual_path/enabled" value="false"/>
     <remap from ="/odom_world" to="$(arg odometry_topic)"/>
     <remap from ="/map_ros/pose"   to = "$(arg sensor_pose_topic)"/> 
     <remap from ="/map_ros/depth" to = "$(arg depth_topic)"/>

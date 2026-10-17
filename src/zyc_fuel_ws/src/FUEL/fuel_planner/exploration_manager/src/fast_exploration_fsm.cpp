@@ -783,7 +783,8 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
         return;
       }
       // Replan if next frontier to be visited is covered
-      if (exploration_policy::shouldReplanForCoveredFrontier(
+      if (!expl_manager_->manualWaypointsEnabled() &&
+          exploration_policy::shouldReplanForCoveredFrontier(
               expl_manager_->frontier_finder_->isFrontierCovered(),
               narrow_corridor_stage_, t_cur, fp_->replan_thresh2_)) {
         transitState(PLAN_TRAJ, "FSM");
@@ -970,7 +971,8 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
     return;
 
   // 行进中提前确认悬挂障碍；已有轨迹先短制动，再由 PLAN_TRAJ 发布固定 XY 下降段。
-  if (state_ == EXPL_STATE::EXEC_TRAJ && !active_turn_in_place_ &&
+  if (!expl_manager_->manualWaypointsEnabled() &&
+      state_ == EXPL_STATE::EXEC_TRAJ && !active_turn_in_place_ &&
       !inflation_escape_active_ &&
       (last_suspended_underpass_check_.isZero() ||
        (ros::Time::now() - last_suspended_underpass_check_).toSec() >= 0.20)) {
@@ -985,7 +987,8 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
 
   // 正常平移执行期间同步累计地图转弯证据。配置的确认次数满足后立刻短制动并切换到
   // 原地yaw轨迹，不再等当前平移轨迹接近终点才发现拐角。
-  if (state_ == EXPL_STATE::EXEC_TRAJ && !active_turn_in_place_ &&
+  if (!expl_manager_->manualWaypointsEnabled() &&
+      state_ == EXPL_STATE::EXEC_TRAJ && !active_turn_in_place_ &&
       !inflation_escape_active_) {
     Eigen::Vector3d turn_direction;
     if (expl_manager_->detectMappedTurnDuringExecution(
@@ -1001,7 +1004,8 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
   }
 
   // 弧形通道的新墙体方向超出当前yaw参考时滚动接续；保留正在执行的平移，不刹停。
-  if (state_ == EXPL_STATE::EXEC_TRAJ && !active_turn_in_place_ &&
+  if (!expl_manager_->manualWaypointsEnabled() &&
+      state_ == EXPL_STATE::EXEC_TRAJ && !active_turn_in_place_ &&
       !active_vertical_detour_ && !active_ground_ascent_ && !inflation_escape_active_) {
     const double time=std::max(0.0,std::min(
         (ros::Time::now()-active_traj_.start_time_).toSec(),active_traj_.duration_));

@@ -58,6 +58,47 @@ class TurnEscapeTest {
     manager.task_search_manager_->initialize(nh);
   }
 public:
+  static void runManualWaypoints(bool blocked) {
+    ros::NodeHandle nh("~");
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    manager.manual_path_enabled_ = true;
+    manager.task_search_manager_.reset();
+    // 不初始化 FrontierFinder：手填路线必须完全独立于前沿生成和任务选点。
+    const Vector3d start(0, 0, 1), first(0.5, 0, 1), last(0.5, 0.5, 1);
+    const Vector3d zero = Vector3d::Zero();
+    check(manager.planExploreMotion(start, zero, zero, zero) == NO_FRONTIER,
+          "empty manual list selected an automatic target");
+    manager.manual_path_.points = {first, last};
+    if (blocked) {
+      manager.sdf_map_->setOccupied(Vector3d(0.25, 0, 1));
+      check(manager.planExploreMotion(start, zero, zero, zero) == FAIL &&
+            manager.manual_path_.next == 0,
+            "blocked manual segment changed the target or bypassed collision checks");
+      return;
+    }
+    auto& planner = *manager.planner_manager_;
+    const auto planTo = [&](const Vector3d& from, const Vector3d& to) {
+      check(manager.planExploreMotion(from, zero, zero, zero) == SUCCEED,
+            "manual route failed without frontiers");
+      const Vector3d end = planner.local_data_.position_traj_.evaluateDeBoorT(
+          planner.local_data_.duration_);
+      // 现有样条拟合的终点容差为 0.08m，实际到点仍由里程计的 0.25m 半径判定。
+      check((end - to).norm() < 0.08 && manager.ed_->next_goal_ == to,
+            "manual trajectory appended or substituted an automatic target");
+      check(planner.local_data_.yaw_traj_.getControlPoint().allFinite(),
+            "manual route generated invalid yaw for a constant or changing heading");
+    };
+    planTo(start, first);
+    check(manager.planExploreMotion(first, zero, zero, zero) == FAIL &&
+          manager.manual_path_.next == 0, "predicted start consumed a waypoint");
+    manager.updateMissionOdometry(first, 0.0);
+    planTo(first, last);
+    manager.updateMissionOdometry(last, 0.0);
+    check(manager.planExploreMotion(last, zero, zero, zero) == NO_FRONTIER,
+          "finished manual route resumed frontier exploration");
+  }
+
   static void run(double initial_yaw) {
     ros::NodeHandle nh("~");
     FastExplorationManager manager;
@@ -319,6 +360,14 @@ public:
   }
 };
 }
+TEST(ManualWaypoints, CompletesWithoutFrontierTargets) {
+  fast_planner::TurnEscapeTest::runManualWaypoints(false);
+}
+
+TEST(ManualWaypoints, BlockedSegmentKeepsSpecifiedTarget) {
+  fast_planner::TurnEscapeTest::runManualWaypoints(true);
+}
+
 TEST(TurnEscape, ClearsContactBeforeResumingLatchedYaw) {
   fast_planner::TurnEscapeTest::run(-M_PI/3);
 }

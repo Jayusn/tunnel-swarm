@@ -1,0 +1,15 @@
+<launch>
+  <!-- 前机完整手填航点路线；控制器仍沿用原有独立启动方式。 -->
+  <arg name="enable_rviz" default="true"/>
+  <arg name="enable_ldop_detection" default="true"/>
+  <arg name="enable_follower_ldop_detection" default="false"/>
+
+  <include file="$(find autotrans_reference_bridge)/launch/uav0_fuel_planner.launch">
+    <arg name="enable_rviz" value="$(arg enable_rviz)"/>
+    <arg name="enable_ldop_detection" value="$(arg enable_ldop_detection)"/>
+    <arg name="enable_follower_ldop_detection" value="$(arg enable_follower_ldop_detection)"/>
+  </include>
+  <rosparam command="load" ns="/exploration_node"
+            file="$(find exploration_manager)/config/manual_waypoints.yaml"/>
+  <param name="/exploration_node/mission/manual_path/enabled" value="true"/>
+</launch>

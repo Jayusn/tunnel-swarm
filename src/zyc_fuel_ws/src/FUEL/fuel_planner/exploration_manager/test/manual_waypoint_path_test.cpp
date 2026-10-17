@@ -10,15 +10,14 @@ void require(bool condition) {
 int main() {
   using Eigen::Vector3d;
   const Vector3d start(0, 0, 0.8), first(1, 0, 0.8), second(1, 1, 0.8);
-  const Vector3d goal(2, 1, 0.8), changed_goal(3, 1, 0.8);
   fast_planner::ManualWaypointPath route;
-  require(route.path(start, goal).size() == 2);
+  require(route.finished() && route.path(start).empty());
   route.points = {first, second};
-  auto path = route.path(start, goal);
+  auto path = route.path(start);
   require(path.size() == 2 && path.back() == first);
-  // 预测起点已到达、重试或前沿重选，都不能提前消耗手填点。
-  route.path(first, goal);
-  path = route.path(start, changed_goal);
+  // 预测起点已到达或重试，都不能提前消耗手填点。
+  route.path(first);
+  path = route.path(start);
   require(route.next == 0 && path.back() == first);
   route.updateOdometry(second, 0.25);
   require(route.next == 0);  // 必须按顺序到达。
@@ -26,21 +25,21 @@ int main() {
   require(route.next == 0);  // 高度也属于坐标。
   route.updateOdometry(first + Vector3d(0.1, 0, 0), 0.25);
   require(route.next == 1);
-  path = route.path(first, goal);
+  path = route.path(first);
   require(path.size() == 2 && path.back() == second);
   route.updateOdometry(second, 0.25);
   route.updateOdometry(start, 0.25);
-  path = route.path(second, goal);
-  require(route.next == 2 && path.size() == 2 && path.back() == goal);
-  // 重复点与末点等于前沿目标时，不生成零长度路径段。
-  route.points = {first, first, goal};
+  path = route.path(second);
+  require(route.next == 2 && route.finished() && path.empty());
+  // 重复点不生成零长度路径段；全部到达后不能追加其他目标。
+  route.points = {first, first, second};
   route.next = 0;
-  path = route.path(start, goal);
+  path = route.path(start);
   require(path.size() == 2 && path.back() == first);
   route.updateOdometry(first, 0.25);
   require(route.next == 2);
-  require(route.path(goal, goal).size() == 1);
-  route.updateOdometry(goal, 0.25);
-  require(route.next == 3 && route.path(goal, changed_goal).back() == changed_goal);
+  require(route.path(second).size() == 1);
+  route.updateOdometry(second, 0.25);
+  require(route.next == 3 && route.finished() && route.path(start).empty());
   return 0;
 }

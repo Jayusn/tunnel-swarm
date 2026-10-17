@@ -37,6 +37,7 @@ public:
 
   int planExploreMotion(const Vector3d& pos, const Vector3d& vel, const Vector3d& acc,
                         const Vector3d& yaw);
+  bool manualWaypointsEnabled() const { return manual_path_enabled_; }
   // 混合模式只执行FUEL的候选评分与完整观察视点选择，轨迹由DIFF负责。
   bool selectExplorationViewpoint(const Vector3d& pos, const Vector3d& vel,
                                   const Vector3d& acc, const Vector3d& yaw,
@@ -100,6 +101,8 @@ private:
   bool manual_path_enabled_{false};
   double manual_path_arrive_distance_{0.25};
   ManualWaypointPath manual_path_;
+  int planManualWaypointMotion(const Vector3d& pos, const Vector3d& vel,
+                               const Vector3d& acc, const Vector3d& yaw);
   Vector3d external_selected_viewpoint_{0.0, 0.0, 0.0};
   double external_selected_yaw_{0.0};
   // 2026-07-16: 预留相机观测航向接口；Mid360比赛模式默认按运动方向飞行，不执行原地转头观测。
