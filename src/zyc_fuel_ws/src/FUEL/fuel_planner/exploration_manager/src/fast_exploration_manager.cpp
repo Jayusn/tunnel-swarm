@@ -1267,7 +1267,7 @@ bool FastExplorationManager::buildCenterGatePassage(
   if (!pointInsideWorkspaceLock(candidate) ||
       !planner_manager_->isPositionSafe(candidate) ||
       (task_search_manager_ && task_search_manager_->enabled() &&
-       !task_search_manager_->isHoverPositionSafe(candidate)) ||
+       !task_search_manager_->isHoverPositionSafe(candidate, direct_delta.norm())) ||
       sdf_map_->getOccupancy(candidate) != SDFMap::FREE ||
       !isKnownSafeHorizontalCorridor(pos, direct_delta, direct_delta.head<2>().norm()) ||
       (task_search_manager_ &&
@@ -1445,7 +1445,8 @@ bool FastExplorationManager::buildWideSideBypass(
       if (!pointInsideWorkspaceLock(candidate) ||
           !planner_manager_->isPositionSafe(candidate) ||
           (task_search_manager_ && task_search_manager_->enabled() &&
-           !task_search_manager_->isHoverPositionSafe(candidate)) ||
+           !task_search_manager_->isHoverPositionSafe(
+               candidate, std::numeric_limits<double>::infinity())) ||
           sdf_map_->getOccupancy(candidate) == SDFMap::UNKNOWN ||
           (task_search_manager_ &&
            !task_search_manager_->isRecoveryCandidateUseful(candidate)))
@@ -1455,7 +1456,9 @@ bool FastExplorationManager::buildWideSideBypass(
       if (planner_manager_->path_finder_->search(pos, candidate) != Astar::REACH_END)
         continue;
       const auto path = planner_manager_->path_finder_->getPath();
-      if (!pathInsideWorkspaceLock(path) || !planner_manager_->isPathSafe(path) ||
+      if ((task_search_manager_ && task_search_manager_->enabled() &&
+           !task_search_manager_->isHoverPositionSafe(candidate, Astar::pathLength(path))) ||
+          !pathInsideWorkspaceLock(path) || !planner_manager_->isPathSafe(path) ||
           (task_search_manager_ &&
            !task_search_manager_->isRecoveryPathAllowed(path, false)))
         continue;
@@ -1505,13 +1508,16 @@ bool FastExplorationManager::buildWideSideBypass(
 bool FastExplorationManager::currentPlanHasHoverClearance() const {
   if (!hover_clearance_required_) return true;
   auto& trajectory = planner_manager_->local_data_.position_traj_;
+  const double duration = trajectory.getTimeSum();
+  const double sample_time = duration / std::max(1, static_cast<int>(std::ceil(duration / 0.02)));
   return task_search_manager_->isHoverPositionSafe(
-      trajectory.evaluateDeBoorT(trajectory.getTimeSum()));
+      trajectory.evaluateDeBoorT(duration), trajectory.getLength(sample_time));
 }
 
 bool FastExplorationManager::trimPathToHoverPoint(vector<Vector3d>& path) const {
   if (path.size() < 2) return false;
-  if (task_search_manager_->isHoverPositionSafe(path.back())) return true;
+  if (task_search_manager_->isHoverPositionSafe(path.back(), Astar::pathLength(path)))
+    return true;
   const double step = std::max(0.02, sdf_map_->getResolution());
   double progress = Astar::pathLength(path);
   for (size_t i = path.size() - 1; i > 0; --i) {
@@ -1523,13 +1529,13 @@ bool FastExplorationManager::trimPathToHoverPoint(vector<Vector3d>& path) const 
       const double retreat = length * static_cast<double>(sample) / samples;
       if (progress - retreat < 0.20 - 1e-6) break;
       const Vector3d candidate = path[i] - retreat * delta / length;
-      if (!task_search_manager_->isHoverPositionSafe(candidate)) continue;
+      if (!task_search_manager_->isHoverPositionSafe(candidate, progress - retreat)) continue;
       path.resize(i);
       if ((path.back() - candidate).norm() > 1e-3) path.push_back(candidate);
       ROS_WARN("[hover_clearance] move segment stop to earlier known-free point "
                "(%.2f,%.2f,%.2f), center radius=%.2fm.",
                candidate.x(), candidate.y(), candidate.z(),
-               task_search_manager_->hoverClearanceRadius());
+               task_search_manager_->hoverClearanceRadius(progress - retreat));
       return true;
     }
     progress -= length;
@@ -1555,7 +1561,7 @@ bool FastExplorationManager::selectEntryForwardGoal(
     if (!pointInsideWorkspaceLock(candidate) ||
         !isLowProbeCorridorSafe(pos, delta, delta.head<2>().norm()) ||
         !task_search_manager_->isTaskMotionAllowed(candidate) ||
-        !task_search_manager_->isHoverPositionSafe(candidate))
+        !task_search_manager_->isHoverPositionSafe(candidate, delta.norm()))
       return false;
     clearance = std::max(0.0, sdf_map_->getDistance(candidate));
     continuation = 0.0;
@@ -1684,7 +1690,7 @@ bool FastExplorationManager::buildSideRecoveryContinuation(
     const vector<Vector3d> path{pos, candidate};
     if (!pointInsideWorkspaceLock(candidate) ||
         !task_search_manager_->isRecoveryCandidateUseful(candidate) ||
-        !task_search_manager_->isHoverPositionSafe(candidate) ||
+        !task_search_manager_->isHoverPositionSafe(candidate, distance) ||
         !isLowProbeCorridorSafe(pos, direction, distance) ||
         !pathInsideWorkspaceLock(path) ||
         !task_search_manager_->isRecoveryPathAllowed(path, false))
@@ -1850,180 +1856,172 @@ bool FastExplorationManager::buildMissionForwardFallback(const Vector3d& pos, do
   bool split_obstacle_detected = false;
   bool obstacle_recovery_checked = false;
   auto tryObstacleRecovery = [&]() {
-    // 竖直障碍物把通道切成左右两路时，先直接去占据地图中净宽更大的一侧。
-    // 该场景不参与普通frontier总分，也不等待上下绕行接管。
-    // 先处理中心线上的悬空障碍候选：固定XY下降到低位补图，只有低位中心线
-    // 连续确认为FREE后才允许短步前进。UNKNOWN只能触发原地试探，不能授权下穿。
-    const bool suspended_forward_obstacle =
-        hasSuspendedForwardObstacle(pos, recovery_forward);
-    if (suspended_forward_obstacle &&
-        pos.z() > vertical_detour_low_height_ + vertical_detour_height_tolerance_) {
-      if (buildVerticalDetourFallback(pos, cur_yaw, recovery_forward, next_pos,
-                                      next_yaw, true)) {
-        ROS_WARN("[vertical_detour] suspended-obstacle candidate; descend in place "
-                 "to observe the low corridor before any forward release.");
-        return true;
-      }
-      ROS_WARN_THROTTLE(
-          0.5,
-          "[vertical_detour] suspended-obstacle candidate cannot start a safe vertical "
-          "probe; keep horizontal/updated-map fallback.");
-    }
-
-    if (buildWideSideBypass(pos, cur_yaw, recovery_forward, next_pos, next_yaw,
-                            split_obstacle_detected))
-      return true;
-    return false;
+    return buildWideSideBypass(pos, cur_yaw, recovery_forward, next_pos, next_yaw,
+                               split_obstacle_detected);
   };
 
-  for (const auto& direction : directions) {
-    // 远前沿不连通不代表近处前方受阻。先穷尽已知自由的直行段，
-    // 再进入原有的专用绕障和侧向/回撤恢复顺序。
-    const bool direction_is_straight =
-        direction.normalized().dot(recovery_forward.normalized()) >=
-        std::cos(10.0 * M_PI / 180.0);
-    if (!direction_is_straight && !obstacle_recovery_checked) {
-      obstacle_recovery_checked = true;
-      if (tryObstacleRecovery()) return true;
-    }
-    const bool short_backtrack = task_search_manager_ &&
-        task_search_manager_->isRecoveryDirectionBackward(direction, cur_yaw);
-    if (short_backtrack && !short_backtrack_enabled_) continue;
-    if (short_backtrack && short_backtrack_chain_count_ >= short_backtrack_max_chain_) continue;
-    if (short_backtrack && short_backtrack_latched_) {
-      if (!timed_direction_change_retry) continue;
-      const double min_change_rad = short_backtrack_min_direction_change_deg_ * M_PI / 180.0;
-      // 2026-07-28: 第二次回撤与上一次夹角不足阈值时拒绝，硬性防止沿一条线继续往后退。
-      if (short_backtrack_last_dir_.norm() > 1e-3 &&
-          direction.normalized().dot(short_backtrack_last_dir_.normalized()) >
-              std::cos(min_change_rad))
-        continue;
-    }
-    // 新通道确认后，大偏角方向只能用于局部横移。否则 ±60~90 度候选会沿旧通道
-    // 探测完整 1.8m，在转角外生成看似“旧方向前冲”的恢复目标。
-    const double direction_max_dist = short_backtrack
-        ? short_backtrack_max_distance_
-        : task_search::recoveryDirectionMaxDistance(
-              direction, recovery_forward, max_dist, 0.40);
-    const double direction_min_dist =
-        short_backtrack ? short_backtrack_min_distance_ : step;
-    // 正常恢复也按10cm采样，使0.20/0.30/0.40m微调都能成为候选。
-    const double direction_step = 0.10;
-    for (double dist = direction_max_dist; dist >= direction_min_dist - 1e-3;
-         dist -= direction_step) {
-      Vector3d candidate = pos + direction * dist;
-      candidate.z() = recovery_z;
-      if (!pointInsideWorkspaceLock(candidate)) {
-        ++rejected_workspace;
-        continue;
-      }
-      if (task_search_manager_ && !task_search_manager_->isRecoveryCandidateUseful(candidate)) {
-        ++rejected_progress;
-        continue;
-      }
-      // 2026-07-13: 恢复点不能只检查中心栅格，必须容纳 0.15m 膨胀外的完整 Iris 足迹。
-      if (!planner_manager_->isPositionSafe(candidate) ||
-          (task_search_manager_ && task_search_manager_->enabled() &&
-           !task_search_manager_->isHoverPositionSafe(candidate)) ||
-          sdf_map_->getOccupancy(candidate) == SDFMap::UNKNOWN) {
-        ++rejected_position;
-        continue;
-      }
-      // 短回撤终点不得比当前位置更靠近障碍物。
-      if (short_backtrack && sdf_map_->getDistance(candidate) + 0.005 <
-                                 sdf_map_->getDistance(pos)) {
-        ++rejected_position;
-        continue;
-      }
-
-      planner_manager_->path_finder_->reset();
-      if (planner_manager_->path_finder_->search(pos, candidate) != Astar::REACH_END) {
-        ++rejected_astar;
-        continue;
-      }
-      const auto candidate_path = planner_manager_->path_finder_->getPath();
-      // 2026-07-13: A* 中心线可达不代表旋翼包络可达，危险路径直接换下一个恢复方向。
-      bool backtrack_clearance_safe = true;
-      if (short_backtrack) {
-        double previous_clearance = sdf_map_->getDistance(pos);
-        for (const auto& point : candidate_path) {
-          const double clearance = sdf_map_->getDistance(point);
-          if (clearance + 0.005 < previous_clearance) {
-            backtrack_clearance_safe = false;
-            break;
-          }
-          previous_clearance = std::max(previous_clearance, clearance);
-        }
-      }
-      if (!backtrack_clearance_safe || !pathInsideWorkspaceLock(candidate_path) ||
-          !planner_manager_->isPathSafe(candidate_path) ||
-          (task_search_manager_ &&
-           !task_search_manager_->isRecoveryPathAllowed(candidate_path, short_backtrack))) {
-        ++rejected_path;
-        continue;
-      }
-
-      const bool straight_forward =
+  // 短步停车余量不足时继续搜索长路径，而不是被0.40m侧移上限直接交给下降探路。
+  for (bool long_path_pass : {false, true}) {
+    if (long_path_pass && max_dist <= micro_max_distance + 1e-6) break;
+    for (const auto& direction : directions) {
+      // 远前沿不连通不代表近处前方受阻。先穷尽已知自由的直行段，
+      // 再进入原有的专用绕障和侧向/回撤恢复顺序。
+      const bool direction_is_straight =
           direction.normalized().dot(recovery_forward.normalized()) >=
           std::cos(10.0 * M_PI / 180.0);
-      RecoveryChoice choice;
-      choice.valid = true;
-      choice.position = candidate;
-      choice.direction = direction;
-      choice.distance = dist;
-      choice.clearance = sdf_map_->getDistance(candidate);
-      choice.minimum_path_clearance = minimumPathClearance(candidate_path);
-      choice.short_backtrack = short_backtrack;
-
-      // 直行仍是最高优先级，并保持从远到近选择；短回撤维持原有一次性规则。
-      if (straight_forward || short_backtrack)
-        return commitRecoveryChoice(choice, false);
-
-      // 直行不可用后不再立刻取首个远距离斜向点。先比较20~40cm候选，选择净空增益最大者；
-      // 相同净空优先更短、更接近原前进方向的平移。
-      if (dist <= micro_max_distance + 1e-3 &&
-          choice.clearance >= current_clearance + micro_min_clearance_gain) {
-        const double alignment = direction.normalized().dot(recovery_forward.normalized());
-        const double best_alignment = best_micro_adjustment.valid
-                                          ? best_micro_adjustment.direction.normalized().dot(
-                                                recovery_forward.normalized())
-                                          : -2.0;
-        if (!best_micro_adjustment.valid ||
-            vertical_detour::preferPathByMinimumClearance(
-                choice.minimum_path_clearance, choice.clearance,
-                best_micro_adjustment.minimum_path_clearance,
-                best_micro_adjustment.clearance, choice.distance,
-                best_micro_adjustment.distance, alignment, best_alignment)) {
-          best_micro_adjustment = choice;
+      if (!direction_is_straight && !obstacle_recovery_checked) {
+        obstacle_recovery_checked = true;
+        if (tryObstacleRecovery()) return true;
+      }
+      const bool short_backtrack = task_search_manager_ &&
+          task_search_manager_->isRecoveryDirectionBackward(direction, cur_yaw);
+      if (short_backtrack && !short_backtrack_enabled_) continue;
+      if (short_backtrack && short_backtrack_chain_count_ >= short_backtrack_max_chain_) continue;
+      if (short_backtrack && short_backtrack_latched_) {
+        if (!timed_direction_change_retry) continue;
+        const double min_change_rad = short_backtrack_min_direction_change_deg_ * M_PI / 180.0;
+        // 2026-07-28: 第二次回撤与上一次夹角不足阈值时拒绝，硬性防止沿一条线继续往后退。
+        if (short_backtrack_last_dir_.norm() > 1e-3 &&
+            direction.normalized().dot(short_backtrack_last_dir_.normalized()) >
+                std::cos(min_change_rad))
+          continue;
+      }
+      // 第一轮只选短步；第二轮放开侧向距离到原有恢复上限，禁回头和回撤次数仍保留。
+      if (long_path_pass && short_backtrack) continue;
+      const double direction_max_dist = short_backtrack
+          ? short_backtrack_max_distance_
+          : (long_path_pass ? max_dist : std::min(max_dist, micro_max_distance));
+      const double direction_min_dist = short_backtrack
+          ? short_backtrack_min_distance_
+          : (long_path_pass ? std::max(step, micro_max_distance + 1e-3) : step);
+      const double direction_step = 0.10;
+      for (double dist = direction_max_dist; dist >= direction_min_dist - 1e-3;
+           dist -= direction_step) {
+        Vector3d candidate = pos + direction * dist;
+        candidate.z() = recovery_z;
+        if (!pointInsideWorkspaceLock(candidate)) {
+          ++rejected_workspace;
+          continue;
         }
-      } else {
-        // 较长侧绕同样按整条A*路径的最低净空排序。终点很空但中途贴墙的路线
-        // 不能再因为方向枚举靠前而直接获胜。
-        const double alignment = direction.normalized().dot(recovery_forward.normalized());
-        const double best_alignment = long_side_fallback.valid
-                                          ? long_side_fallback.direction.normalized().dot(
-                                                recovery_forward.normalized())
-                                          : -2.0;
-        if (!long_side_fallback.valid ||
-            vertical_detour::preferPathByMinimumClearance(
-                choice.minimum_path_clearance, choice.clearance,
-                long_side_fallback.minimum_path_clearance,
-                long_side_fallback.clearance, choice.distance,
-                long_side_fallback.distance, alignment, best_alignment))
-          long_side_fallback = choice;
+        if (task_search_manager_ && !task_search_manager_->isRecoveryCandidateUseful(candidate)) {
+          ++rejected_progress;
+          continue;
+        }
+        // 2026-07-13: 恢复点不能只检查中心栅格，必须容纳 0.15m 膨胀外的完整 Iris 足迹。
+        if (!planner_manager_->isPositionSafe(candidate) ||
+            (task_search_manager_ && task_search_manager_->enabled() &&
+             !task_search_manager_->isHoverPositionSafe(
+                 candidate, std::numeric_limits<double>::infinity())) ||
+            sdf_map_->getOccupancy(candidate) == SDFMap::UNKNOWN) {
+          ++rejected_position;
+          continue;
+        }
+        // 短回撤终点不得比当前位置更靠近障碍物。
+        if (short_backtrack && sdf_map_->getDistance(candidate) + 0.005 <
+                                   sdf_map_->getDistance(pos)) {
+          ++rejected_position;
+          continue;
+        }
+
+        planner_manager_->path_finder_->reset();
+        if (planner_manager_->path_finder_->search(pos, candidate) != Astar::REACH_END) {
+          ++rejected_astar;
+          continue;
+        }
+        const auto candidate_path = planner_manager_->path_finder_->getPath();
+        if (task_search_manager_ && task_search_manager_->enabled() &&
+            !task_search_manager_->isHoverPositionSafe(candidate, Astar::pathLength(candidate_path))) {
+          ++rejected_position;
+          continue;
+        }
+        // 2026-07-13: A* 中心线可达不代表旋翼包络可达，危险路径直接换下一个恢复方向。
+        bool backtrack_clearance_safe = true;
+        if (short_backtrack) {
+          double previous_clearance = sdf_map_->getDistance(pos);
+          for (const auto& point : candidate_path) {
+            const double clearance = sdf_map_->getDistance(point);
+            if (clearance + 0.005 < previous_clearance) {
+              backtrack_clearance_safe = false;
+              break;
+            }
+            previous_clearance = std::max(previous_clearance, clearance);
+          }
+        }
+        if (!backtrack_clearance_safe || !pathInsideWorkspaceLock(candidate_path) ||
+            !planner_manager_->isPathSafe(candidate_path) ||
+            (task_search_manager_ &&
+             !task_search_manager_->isRecoveryPathAllowed(candidate_path, short_backtrack))) {
+          ++rejected_path;
+          continue;
+        }
+
+        const bool straight_forward =
+            direction.normalized().dot(recovery_forward.normalized()) >=
+            std::cos(10.0 * M_PI / 180.0);
+        RecoveryChoice choice;
+        choice.valid = true;
+        choice.position = candidate;
+        choice.direction = direction;
+        choice.distance = dist;
+        choice.clearance = sdf_map_->getDistance(candidate);
+        choice.minimum_path_clearance = minimumPathClearance(candidate_path);
+        choice.short_backtrack = short_backtrack;
+
+        // 直行仍是最高优先级，并保持从远到近选择；短回撤维持原有一次性规则。
+        if (straight_forward || short_backtrack)
+          return commitRecoveryChoice(choice, false);
+
+        // 直行不可用后不再立刻取首个远距离斜向点。先比较20~40cm候选，选择净空增益最大者；
+        // 相同净空优先更短、更接近原前进方向的平移。
+        if (dist <= micro_max_distance + 1e-3 &&
+            choice.clearance >= current_clearance + micro_min_clearance_gain) {
+          const double alignment = direction.normalized().dot(recovery_forward.normalized());
+          const double best_alignment = best_micro_adjustment.valid
+                                            ? best_micro_adjustment.direction.normalized().dot(
+                                                  recovery_forward.normalized())
+                                            : -2.0;
+          if (!best_micro_adjustment.valid ||
+              vertical_detour::preferPathByMinimumClearance(
+                  choice.minimum_path_clearance, choice.clearance,
+                  best_micro_adjustment.minimum_path_clearance,
+                  best_micro_adjustment.clearance, choice.distance,
+                  best_micro_adjustment.distance, alignment, best_alignment)) {
+            best_micro_adjustment = choice;
+          }
+        } else {
+          // 较长侧绕同样按整条A*路径的最低净空排序。终点很空但中途贴墙的路线
+          // 不能再因为方向枚举靠前而直接获胜。
+          const double alignment = direction.normalized().dot(recovery_forward.normalized());
+          const double best_alignment = long_side_fallback.valid
+                                            ? long_side_fallback.direction.normalized().dot(
+                                                  recovery_forward.normalized())
+                                            : -2.0;
+          if (!long_side_fallback.valid ||
+              vertical_detour::preferPathByMinimumClearance(
+                  choice.minimum_path_clearance, choice.clearance,
+                  long_side_fallback.minimum_path_clearance,
+                  long_side_fallback.clearance, choice.distance,
+                  long_side_fallback.distance, alignment, best_alignment))
+            long_side_fallback = choice;
+        }
       }
     }
-  }
 
-  if (!obstacle_recovery_checked && tryObstacleRecovery()) return true;
-  // 专用分流检查已经确认左右均无安全落点时，通用微调不能再用一个局部净空
-  // 更高的小步冒充完整侧绕；此时应交给后面的上下绕行。
-  if (vertical_detour::acceptGenericHorizontalFallback(
-          split_obstacle_detected, best_micro_adjustment.valid))
-    return commitRecoveryChoice(best_micro_adjustment, true);
-  if (vertical_detour::acceptGenericHorizontalFallback(
-          split_obstacle_detected, long_side_fallback.valid))
-    return commitRecoveryChoice(long_side_fallback, false);
+    if (!obstacle_recovery_checked && tryObstacleRecovery()) return true;
+    // 短步仍保留原分流约束；无短步后允许完整机体路径可达的长路径继续绕行。
+    if (vertical_detour::acceptGenericHorizontalFallback(
+            split_obstacle_detected && !long_path_pass, best_micro_adjustment.valid))
+      return commitRecoveryChoice(best_micro_adjustment, true);
+    if (vertical_detour::acceptGenericHorizontalFallback(
+            split_obstacle_detected && !long_path_pass, long_side_fallback.valid))
+      return commitRecoveryChoice(long_side_fallback, false);
+    if (!long_path_pass && max_dist > micro_max_distance + 1e-6) {
+      ROS_WARN_THROTTLE(0.5,
+          "[hover_clearance] no usable short recovery; try long paths up to %.2fm "
+          "with center radius=%.2fm.", max_dist,
+          task_search_manager_ ? task_search_manager_->hoverClearanceRadius(max_dist) : 0.0);
+    }
+  }
   if (split_obstacle_detected) {
     ROS_WARN_THROTTLE(
         0.5,
@@ -2032,6 +2030,15 @@ bool FastExplorationManager::buildMissionForwardFallback(const Vector3d& pos, do
   }
   // 上下绕行严格保持最后尝试，并且必须有当前飞行高度的前方占据证据。
   // 远目标断连或未知地图本身不能触发下降，避免在空旷道路误判下穿。
+  const bool suspended_forward_obstacle =
+      hasSuspendedForwardObstacle(pos, recovery_forward);
+  if (suspended_forward_obstacle &&
+      pos.z() > vertical_detour_low_height_ + vertical_detour_height_tolerance_ &&
+      buildVerticalDetourFallback(pos, cur_yaw, recovery_forward, next_pos, next_yaw, true)) {
+    ROS_WARN("[vertical_detour] short and long horizontal recovery unavailable; "
+             "descend in place to observe the low corridor.");
+    return true;
+  }
   const bool current_height_obstacle =
       hasCurrentHeightForwardObstacle(pos, recovery_forward);
   if (vertical_detour::allowVerticalRecovery(current_height_obstacle) &&
@@ -3545,7 +3552,8 @@ int FastExplorationManager::planExploreMotion(
              ed_->path_next_goal_.back().z());
   }
   if (hover_clearance_required_ &&
-      !task_search_manager_->isHoverPositionSafe(ed_->path_next_goal_.back())) {
+      !task_search_manager_->isHoverPositionSafe(
+          ed_->path_next_goal_.back(), Astar::pathLength(ed_->path_next_goal_))) {
     if (!trimPathToHoverPoint(ed_->path_next_goal_)) {
       ROS_WARN_THROTTLE(0.5, "[hover_clearance] no usable stop point on the local route.");
       task_search_manager_->reportGoalFailure(next_pos);
