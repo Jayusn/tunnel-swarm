@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 #include <lkh_tsp_solver/lkh_interface.h>
 #include <active_perception/graph_node.h>
 #include <active_perception/graph_search.h>
@@ -2224,6 +2225,36 @@ void FastExplorationManager::completeTurnInPlace(const Vector3d&) {
 }
 
 void FastExplorationManager::initialize(ros::NodeHandle& nh) {
+  nh.param("mission/manual_path/enabled", manual_path_enabled_, false);
+  nh.param("mission/manual_path/arrive_distance", manual_path_arrive_distance_, 0.25);
+  if (manual_path_enabled_) {
+    XmlRpc::XmlRpcValue coordinates;
+    if (!nh.getParam("mission/manual_path/waypoints", coordinates) ||
+        coordinates.getType() != XmlRpc::XmlRpcValue::TypeArray ||
+        !std::isfinite(manual_path_arrive_distance_) || manual_path_arrive_distance_ <= 0.0)
+      throw std::runtime_error("manual_path requires a waypoint array and positive arrive_distance");
+    manual_path_.points.clear();
+    manual_path_.next = 0;
+    for (int i = 0; i < coordinates.size(); ++i) {
+      if (coordinates[i].getType() != XmlRpc::XmlRpcValue::TypeArray ||
+          coordinates[i].size() != 3)
+        throw std::runtime_error("manual_path waypoint must be [x, y, z]");
+      Vector3d point;
+      for (int axis = 0; axis < 3; ++axis) {
+        auto& value = coordinates[i][axis];
+        if (value.getType() == XmlRpc::XmlRpcValue::TypeInt)
+          point[axis] = static_cast<int>(value);
+        else if (value.getType() == XmlRpc::XmlRpcValue::TypeDouble)
+          point[axis] = static_cast<double>(value);
+        else
+          throw std::runtime_error("manual_path coordinates must be numbers");
+      }
+      if (!point.allFinite()) throw std::runtime_error("manual_path coordinates must be finite");
+      manual_path_.points.push_back(point);
+    }
+    ROS_WARN("[manual_path] enabled with %zu ordered waypoints in the odometry world frame.",
+             manual_path_.points.size());
+  }
   planner_manager_.reset(new FastPlannerManager);
   planner_manager_->initPlanModules(nh);
   edt_environment_ = planner_manager_->edt_environment_;
@@ -3048,8 +3079,14 @@ int FastExplorationManager::planExploreMotion(
   } else if (!use_forced_entry_target)
     ROS_ERROR("Empty destination.");
 
+  // 备用路线仅替换普通搜索路径，入口、出口和竖直绕障任务仍使用原有流程。
+  const bool use_manual_path = manual_path_enabled_ && !external_selection_only_ &&
+      !use_forced_entry_target && !use_stage3_target &&
+      !use_vertical_detour_target && !use_entry_forward_target;
+  const Vector3d motion_target = use_manual_path && manual_path_.next < manual_path_.points.size()
+      ? manual_path_.points[manual_path_.next] : next_pos;
   // 2026-07-16: 比赛使用360度Mid360时航向直接对准运动方向；相机模式保留原始viewpoint航向接口。
-  const Eigen::Vector2d motion_delta = next_pos.head<2>() - pos.head<2>();
+  const Eigen::Vector2d motion_delta = motion_target.head<2>() - pos.head<2>();
   // 出口候选观察、确认后的接近/穿越均保持出口朝向，横向修正不能带着机头转。
   const bool use_locked_exit_yaw = use_stage3_target && task_search_manager_ &&
       (task_search_manager_->exitTransitActive() ||
@@ -3248,14 +3285,16 @@ int FastExplorationManager::planExploreMotion(
     if (task_search_manager_) task_search_manager_->reportGoalFailure(next_pos);
     return FAIL;
   }
-  if (use_center_gate_target) {
+  if (use_manual_path) {
+    ed_->path_next_goal_ = manual_path_.path(pos, next_pos);
+  } else if (use_center_gate_target) {
     // buildCenterGatePassage() 已按当前高度验证整段机体包络。直接保留这条线段，
     // 避免通用3D A*为了净空评分重新从门上方绕到同一个终点。
     ed_->path_next_goal_ = {pos, next_pos};
   } else {
     planner_manager_->path_finder_->reset();
   }
-  if (!use_center_gate_target &&
+  if (!use_manual_path && !use_center_gate_target &&
       planner_manager_->path_finder_->search(pos, next_pos) != Astar::REACH_END) {
     // 2026-07-27: 远frontier跨越尚未建成的已知连通域时，先在当前前向扇区找安全短步；
     // 不再立即切换另一个远目标并触发长时间safety hold，让雷达随局部推进逐段补齐拐弯地图。
@@ -3287,9 +3326,10 @@ int FastExplorationManager::planExploreMotion(
       return FAIL;
     }
   }
-  if (!use_center_gate_target)
+  if (!use_manual_path && !use_center_gate_target)
     ed_->path_next_goal_ = planner_manager_->path_finder_->getPath();
   // 2026-07-14: 起点和目标落在同一 A* 栅格时 getPath() 可能只返回一个点；去重并显式保留真实目标。
+  const Vector3d path_goal = use_manual_path ? ed_->path_next_goal_.back() : next_pos;
   vector<Vector3d> normalized_path;
   normalized_path.reserve(ed_->path_next_goal_.size() + 1);
   for (const auto& point : ed_->path_next_goal_) {
@@ -3301,7 +3341,7 @@ int FastExplorationManager::planExploreMotion(
     normalized_path.push_back(pos);
   else if ((normalized_path.front() - pos).norm() >= 1e-3)
     normalized_path.insert(normalized_path.begin(), pos);
-  if ((next_pos - normalized_path.back()).norm() >= 1e-3) normalized_path.push_back(next_pos);
+  if ((path_goal - normalized_path.back()).norm() >= 1e-3) normalized_path.push_back(path_goal);
   ed_->path_next_goal_.swap(normalized_path);
 
   const bool stationary_vertical_path =
@@ -3336,7 +3376,7 @@ int FastExplorationManager::planExploreMotion(
   // 只有原始前沿点本身在前方超过该距离时才截断；近前沿即使因绕障导致A*路径变长，
   // 也必须保留其完整路径，不能把“路径长”误当成“前沿点远”。
   const bool far_frontier_goal =
-      !use_forced_entry_target && !use_stage3_target &&
+      !use_manual_path && !use_forced_entry_target && !use_stage3_target &&
       (next_pos - pos).norm() > route_horizon + 1e-6;
   if (far_frontier_goal && Astar::pathLength(ed_->path_next_goal_) > route_horizon) {
     vector<Vector3d> local_segment{ed_->path_next_goal_.front()};
@@ -3383,8 +3423,10 @@ int FastExplorationManager::planExploreMotion(
     if (task_search_manager_) task_search_manager_->reportGoalFailure(next_pos);
     return FAIL;
   }
-  shortenPath(ed_->path_next_goal_);
-  extendSafeStraightRuns(ed_->path_next_goal_);
+  if (!use_manual_path) {
+    shortenPath(ed_->path_next_goal_);
+    extendSafeStraightRuns(ed_->path_next_goal_);
+  }
   // 2026-07-14: shortenPath 会用中心射线删除 A* 转折点，删除后必须重新做完整机体足迹检查。
   if (!planner_manager_->isPathSafe(ed_->path_next_goal_)) {
     ROS_ERROR_THROTTLE(
@@ -3417,7 +3459,15 @@ int FastExplorationManager::planExploreMotion(
   const double radius_far = 5.0;
   const double radius_close = 1.5;
   const double len = Astar::pathLength(ed_->path_next_goal_);
-  if (use_entry_forward_target) {
+  if (use_manual_path) {
+    // 样条初始化需要至少两段；共线插值只用于生成连续轨迹，不重新搜索路线。
+    if (ed_->path_next_goal_.size() == 2)
+      ed_->path_next_goal_.insert(ed_->path_next_goal_.begin() + 1,
+          0.5 * (ed_->path_next_goal_.front() + ed_->path_next_goal_.back()));
+    if (!planner_manager_->planExploreTraj(ed_->path_next_goal_, vel, acc, time_lb))
+      return FAIL;
+    ed_->next_goal_ = ed_->path_next_goal_.back();
+  } else if (use_entry_forward_target) {
     if (!planner_manager_->planStraightTraj(pos, next_pos)) return FAIL;
     ed_->next_goal_ = next_pos;
   } else if (len < radius_close) {
@@ -3466,6 +3516,10 @@ int FastExplorationManager::planExploreMotion(
 
   // 2026-07-14: 优化后的 B-spline 可能切入柱体/墙面；发布前拒绝并切换任务目标，而不是交给控制器反复急停。
   if (!planner_manager_->isTrajectorySafe()) {
+    if (use_manual_path) {
+      ROS_ERROR_THROTTLE(1.0, "[manual_path] trajectory rejected; keep the specified waypoint.");
+      return FAIL;
+    }
     // 2026-07-16: 远目标平滑轨迹切弯失败时，沿已经通过足迹检查的A*路径先走0.8m安全前缀。
     // 比赛中宁可分段推进并重规划，也不能在宽通道对同一远目标永久FAIL/悬停。
     constexpr double conservative_advance = 0.80;
@@ -3673,6 +3727,8 @@ void FastExplorationManager::reportTrajectoryCollision() {
 }
 
 void FastExplorationManager::updateMissionOdometry(const Vector3d& pos, double yaw) {
+  if (manual_path_enabled_)
+    manual_path_.updateOdometry(pos, manual_path_arrive_distance_);
   if (!entry_forward_complete_ && mission_workspace_lock_received_ &&
       (pos - mission_workspace_origin_).dot(mission_workspace_dir_) >= 1.0 - 1e-6) {
     entry_forward_complete_ = true;

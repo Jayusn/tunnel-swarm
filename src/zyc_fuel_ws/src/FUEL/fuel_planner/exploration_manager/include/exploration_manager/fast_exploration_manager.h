@@ -11,6 +11,7 @@
 #include <geometry_msgs/PoseStamped.h>
 #include <quadrotor_msgs/ExplorationMotionConstraint.h>
 #include <exploration_manager/vertical_detour_policy.h>
+#include <exploration_manager/manual_waypoint_path.h>
 using Eigen::Vector3d;
 using std::shared_ptr;
 using std::unique_ptr;
@@ -96,6 +97,9 @@ private:
   bool mission_workspace_lock_received_{false};
   bool entry_forward_complete_{false};
   bool external_selection_only_{false};
+  bool manual_path_enabled_{false};
+  double manual_path_arrive_distance_{0.25};
+  ManualWaypointPath manual_path_;
   Vector3d external_selected_viewpoint_{0.0, 0.0, 0.0};
   double external_selected_yaw_{0.0};
   // 2026-07-16: 预留相机观测航向接口；Mid360比赛模式默认按运动方向飞行，不执行原地转头观测。
