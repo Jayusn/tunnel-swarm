@@ -41,12 +41,10 @@ namespace diff_planner
     nh.param("fsm/escape_history_time", escape_history_time_, 1.50);
     nh.param("fsm/escape_speed", escape_speed_, 0.10);
     nh.param("fsm/escape_reach_tolerance", escape_reach_tolerance_, 0.06);
-    nh.param("fsm/escape_stop_speed", escape_stop_speed_, 0.08);
     nh.param("fsm/escape_min_clearance", escape_min_clearance_, 0.20);
     nh.param("fsm/escape_clearance_search_radius", escape_clearance_search_radius_, 0.60);
     nh.param("fsm/escape_max_occupied_prefix", escape_max_occupied_prefix_, 0.20);
     nh.param("fsm/escape_recovery_height", escape_recovery_height_, 0.60);
-    nh.param("fsm/escape_free_cycles", escape_free_cycles_, 5);
     nh.param("fsm/escape_max_attempts", escape_max_attempts_, 2);
     nh.param("fsm/history_only_occupied_recovery",
              history_only_occupied_recovery_, false);
@@ -60,8 +58,6 @@ namespace diff_planner
       escape_speed_ = 0.10;
     if (!std::isfinite(escape_reach_tolerance_) || escape_reach_tolerance_ <= 0.0)
       escape_reach_tolerance_ = 0.06;
-    if (!std::isfinite(escape_stop_speed_) || escape_stop_speed_ <= 0.0)
-      escape_stop_speed_ = 0.08;
     if (!std::isfinite(escape_min_clearance_) || escape_min_clearance_ < 0.0)
       escape_min_clearance_ = 0.20;
     if (!std::isfinite(escape_clearance_search_radius_) || escape_clearance_search_radius_ <= 0.0)
@@ -70,7 +66,6 @@ namespace diff_planner
       escape_max_occupied_prefix_ = 0.20;
     if (!std::isfinite(escape_recovery_height_) || escape_recovery_height_ <= 0.0)
       escape_recovery_height_ = 0.60;
-    escape_free_cycles_ = std::max(1, escape_free_cycles_);
     escape_max_attempts_ = std::max(1, escape_max_attempts_);
     nh.param("fsm/realworld_experiment", flag_realworld_experiment_, false);
     nh.param("fsm/fail_safe", enable_fail_safe_, true);
@@ -171,7 +166,6 @@ namespace diff_planner
     last_free_history_record_time_ = 0.0;
     last_escape_path_check_time_ = 0.0;
     last_escape_target_search_time_ = 0.0;
-    occupied_recovery_free_count_ = 0;
     occupied_recovery_attempt_count_ = 0;
     occupied_recovery_active_ = false;
     occupied_recovery_episode_ = false;
@@ -287,7 +281,6 @@ namespace diff_planner
         flag_escape_emergency_ = true;
         occupied_recovery_active_ = false;
         occupied_recovery_episode_ = true;
-        occupied_recovery_free_count_ = 0;
         changeFSMExecState(EMERGENCY_STOP, "OCCUPIED_START");
       }
     }
@@ -585,11 +578,9 @@ namespace diff_planner
       if (flag_escape_emergency_) // Avoiding repeated calls
       {
         occupied_recovery_active_ = false;
-        occupied_recovery_free_count_ = 0;
         callEmergencyStop(odom_pos_);
       }
-      else if ((enable_fail_safe_ || depth_timeout_emergency_) &&
-               odom_vel_.norm() < escape_stop_speed_)
+      else if (enable_fail_safe_ || depth_timeout_emergency_)
       {
         if (depth_timeout_emergency_)
         {
@@ -678,26 +669,16 @@ namespace diff_planner
         if (enable_occupied_recovery_ && current_occ != 0)
         {
           occupied_recovery_episode_ = true;
-          occupied_recovery_free_count_ = 0;
         }
-        else if (enable_occupied_recovery_ && occupied_recovery_episode_ &&
-                 !history_only_occupied_recovery_)
+        else if (enable_occupied_recovery_ && occupied_recovery_episode_)
         {
-          ++occupied_recovery_free_count_;
-          if (occupied_recovery_free_count_ < escape_free_cycles_)
-            break;
-
-          ROS_INFO("[局部脱障] 急停位置已连续 %d 次确认自由，允许恢复正常规划。",
-                   occupied_recovery_free_count_);
+          ROS_INFO("[局部脱障] 当前位置已离开膨胀占据区，恢复正常规划。");
           occupied_recovery_episode_ = false;
           occupied_recovery_attempt_count_ = 0;
           occupied_recovery_failure_reported_ = false;
-          occupied_recovery_free_count_ = 0;
         }
 
-        if (enable_occupied_recovery_ &&
-            (current_occ != 0 || (history_only_occupied_recovery_ &&
-                                  occupied_recovery_episode_)) &&
+        if (enable_occupied_recovery_ && current_occ != 0 &&
             have_target_ && have_trigger_ && !mandatory_stop_)
         {
           if (occupied_recovery_attempt_count_ >= escape_max_attempts_)
@@ -759,51 +740,11 @@ namespace diff_planner
         break;
       }
 
-      if (now_sec >= occupied_recovery_deadline_)
-      {
-        abortOccupiedRecovery("低速脱障轨迹执行超时");
-        break;
-      }
-
-      if (!occupied_recovery_from_history_ &&
-          now_sec - last_escape_path_check_time_ >= 0.10)
-      {
-        last_escape_path_check_time_ = now_sec;
-        const bool allow_initial_occupied =
-            planner_manager_->grid_map_->getInflateOccupancy(odom_pos_) != 0;
-        if (!validateRecoverySegment(odom_pos_, occupied_recovery_target_,
-                                     allow_initial_occupied, nullptr))
-        {
-          abortOccupiedRecovery("实时地图更新后剩余脱障路径不再安全");
-          break;
-        }
-      }
-
       const int current_occ = planner_manager_->grid_map_->getInflateOccupancy(odom_pos_);
-      const double recovery_position_error = occupied_recovery_from_history_
-                                                 ? std::hypot(
-                                                       odom_pos_.x() - occupied_recovery_target_.x(),
-                                                       odom_pos_.y() - occupied_recovery_target_.y())
-                                                 : (odom_pos_ - occupied_recovery_target_).norm();
-      const double recovery_speed = occupied_recovery_from_history_
-                                        ? std::hypot(odom_vel_.x(), odom_vel_.y())
-                                        : odom_vel_.norm();
-      const bool reached = recovery_position_error <= escape_reach_tolerance_;
-      // A history target is a pose the vehicle already reached with real odometry.
-      // Do not let the same inflated-map false positive that triggered recovery
-      // veto that trusted retreat or prevent it from completing.
-      const bool recovery_pose_valid = occupied_recovery_from_history_ ||
-                                       current_occ == 0;
-      if (recovery_pose_valid && reached && recovery_speed < escape_stop_speed_)
-        ++occupied_recovery_free_count_;
-      else
-        occupied_recovery_free_count_ = 0;
-
-      if (occupied_recovery_free_count_ >= escape_free_cycles_)
+      if (current_occ == 0)
       {
-        ROS_INFO("[局部脱障] 已到达自由区域：target=(%.3f, %.3f, %.3f)，连续确认 %d 次。",
-                 occupied_recovery_target_.x(), occupied_recovery_target_.y(),
-                 occupied_recovery_target_.z(), occupied_recovery_free_count_);
+        ROS_INFO("[局部脱障] 当前位置已离开膨胀占据区：pos=(%.3f, %.3f, %.3f)。",
+                 odom_pos_.x(), odom_pos_.y(), odom_pos_.z());
         publishPlanningStatus("OCCUPIED_RECOVERY_SUCCEEDED");
         occupied_recovery_active_ = false;
         occupied_recovery_episode_ = false;
@@ -825,6 +766,25 @@ namespace diff_planner
         {
           need_hover_stop_ = false;
           changeFSMExecState(GEN_NEW_TRAJ, "OCCUPIED_RECOVERY_DONE");
+        }
+        break;
+      }
+
+      if (now_sec >= occupied_recovery_deadline_)
+      {
+        abortOccupiedRecovery("低速脱障轨迹执行超时");
+        break;
+      }
+
+      if (!occupied_recovery_from_history_ &&
+          now_sec - last_escape_path_check_time_ >= 0.10)
+      {
+        last_escape_path_check_time_ = now_sec;
+        if (!validateRecoverySegment(odom_pos_, occupied_recovery_target_,
+                                     true, nullptr))
+        {
+          abortOccupiedRecovery("实时地图更新后剩余脱障路径不再安全");
+          break;
         }
       }
       break;
@@ -981,7 +941,6 @@ namespace diff_planner
       flag_escape_emergency_ = true;
       occupied_recovery_active_ = false;
       occupied_recovery_episode_ = true;
-      occupied_recovery_free_count_ = 0;
       changeFSMExecState(EMERGENCY_STOP, "OCCUPIED_SAFETY_PREEMPT");
       return;
     }
@@ -1605,7 +1564,6 @@ namespace diff_planner
     occupied_recovery_from_history_ = from_history;
     occupied_recovery_active_ = true;
     occupied_recovery_episode_ = true;
-    occupied_recovery_free_count_ = 0;
     ++occupied_recovery_attempt_count_;
     replan_fail_count_ = 0;
     last_escape_path_check_time_ = now;
@@ -1639,7 +1597,6 @@ namespace diff_planner
     ROS_ERROR("[局部脱障] %s；在当前位置重新急停。", reason);
     publishPlanningStatus("OCCUPIED_RECOVERY_ABORTED");
     occupied_recovery_active_ = false;
-    occupied_recovery_free_count_ = 0;
     need_hover_stop_ = true;
     callEmergencyStop(odom_pos_);
     flag_escape_emergency_ = false;
@@ -2008,7 +1965,6 @@ namespace diff_planner
     replan_fail_count_ = 0;
     need_hover_stop_ = false;
     occupied_recovery_active_ = false;
-    occupied_recovery_free_count_ = 0;
     const double now = ros::Time::now().toSec();
     last_target_change_time_ = now;
     stuck_detect_ignore_until_ = now + stuck_detect_grace_time_;

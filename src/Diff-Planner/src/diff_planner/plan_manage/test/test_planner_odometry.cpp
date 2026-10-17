@@ -356,6 +356,85 @@ TEST_F(PlannerEndpoint, ActualOccupiedPositionRetainsEmergencyPriority)
   EXPECT_TRUE(planner.have_target_);
 }
 
+TEST_F(PlannerEndpoint, EmergencyResumesAsSoonAsCurrentPositionIsFree)
+{
+  ASSERT_EQ(planner.planner_manager_->grid_map_->getInflateOccupancy(planner.odom_pos_), 0);
+  planner.exec_state_ = FSM::EMERGENCY_STOP;
+  planner.flag_escape_emergency_ = false;
+  planner.need_hover_stop_ = true;
+  planner.occupied_recovery_episode_ = true;
+  planner.odom_vel_ = Eigen::Vector3d(0.30, 0.15, -0.20);
+
+  exec();
+
+  EXPECT_EQ(planner.exec_state_, FSM::GEN_NEW_TRAJ);
+  EXPECT_FALSE(planner.occupied_recovery_episode_);
+  EXPECT_TRUE(planner.have_target_);
+  EXPECT_TRUE(planner.have_trigger_);
+  expectNoReplacement();
+}
+
+TEST_F(PlannerEndpoint, RecoveryReleasesRelayTargetImmediatelyAfterLeavingInflation)
+{
+  ASSERT_EQ(planner.planner_manager_->grid_map_->getInflateOccupancy(planner.odom_pos_), 0);
+  planner.exec_state_ = FSM::OCCUPIED_RECOVERY;
+  planner.occupied_recovery_active_ = planner.occupied_recovery_episode_ = true;
+  planner.occupied_recovery_from_history_ = true;
+  planner.wait_new_target_after_occupied_recovery_ = true;
+  planner.occupied_recovery_target_ = planner.odom_pos_ - Eigen::Vector3d(0.45, 0.0, 0.0);
+  planner.occupied_recovery_deadline_ = ros::Time::now().toSec() + 10.0;
+  planner.odom_vel_ = Eigen::Vector3d(-0.20, 0.10, 0.12);
+
+  exec();
+
+  EXPECT_EQ(planner.exec_state_, FSM::WAIT_TARGET);
+  EXPECT_FALSE(planner.occupied_recovery_active_);
+  EXPECT_FALSE(planner.occupied_recovery_episode_);
+  EXPECT_FALSE(planner.have_target_);
+  EXPECT_FALSE(planner.have_trigger_);
+  expectNoReplacement();
+}
+
+TEST_F(PlannerEndpoint, MapRecoveryResumesPlanningWithoutWaitingForRetreatEndpoint)
+{
+  ASSERT_EQ(planner.planner_manager_->grid_map_->getInflateOccupancy(planner.odom_pos_), 0);
+  planner.exec_state_ = FSM::OCCUPIED_RECOVERY;
+  planner.occupied_recovery_active_ = planner.occupied_recovery_episode_ = true;
+  planner.occupied_recovery_from_history_ = false;
+  planner.wait_new_target_after_occupied_recovery_ = false;
+  planner.occupied_recovery_target_ = planner.odom_pos_ + Eigen::Vector3d(0.0, 0.45, 0.0);
+  planner.occupied_recovery_deadline_ = ros::Time::now().toSec() + 10.0;
+  planner.odom_vel_ = Eigen::Vector3d(0.15, 0.20, 0.10);
+
+  exec();
+
+  EXPECT_EQ(planner.exec_state_, FSM::GEN_NEW_TRAJ);
+  EXPECT_FALSE(planner.occupied_recovery_active_);
+  EXPECT_TRUE(planner.have_target_);
+  expectNoReplacement();
+}
+
+TEST_F(PlannerEndpoint, HistoryRecoveryCannotFinishWhileCurrentPositionIsOccupied)
+{
+  publishPoint(planner.odom_pos_);
+  ASSERT_NE(planner.planner_manager_->grid_map_->getInflateOccupancy(planner.odom_pos_), 0);
+  planner.exec_state_ = FSM::OCCUPIED_RECOVERY;
+  planner.occupied_recovery_active_ = planner.occupied_recovery_episode_ = true;
+  planner.occupied_recovery_from_history_ = true;
+  planner.wait_new_target_after_occupied_recovery_ = true;
+  planner.occupied_recovery_target_ = planner.odom_pos_;
+  planner.occupied_recovery_deadline_ = ros::Time::now().toSec() + 10.0;
+  planner.odom_vel_.setZero();
+
+  for (int i = 0; i < 6; ++i)
+    exec();
+
+  EXPECT_EQ(planner.exec_state_, FSM::OCCUPIED_RECOVERY);
+  EXPECT_TRUE(planner.occupied_recovery_active_);
+  EXPECT_TRUE(planner.have_target_);
+  expectNoReplacement();
+}
+
 TEST_F(PlannerEndpoint, NextGoalStartsNormallyAfterEndpointHover)
 {
   planner.checkCollisionCallback(ros::TimerEvent());

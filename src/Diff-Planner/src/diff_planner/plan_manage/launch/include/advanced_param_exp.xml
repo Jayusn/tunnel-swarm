@@ -62,12 +62,10 @@
     <arg name="escape_history_time" default="1.50"/>
     <arg name="escape_speed" default="0.10"/>
     <arg name="escape_reach_tolerance" default="0.06"/>
-    <arg name="escape_stop_speed" default="0.08"/>
     <arg name="escape_min_clearance" default="0.20"/>
     <arg name="escape_clearance_search_radius" default="0.60"/>
     <arg name="escape_max_occupied_prefix" default="0.20"/>
     <arg name="escape_recovery_height" default="0.60"/>
-    <arg name="escape_free_cycles" default="5"/>
     <arg name="escape_max_attempts" default="2"/>
     <arg name="history_only_occupied_recovery" default="false"/>
     <arg name="wait_new_target_after_occupied_recovery" default="false"/>
@@ -210,12 +208,10 @@
         <param name="fsm/escape_history_time" value="$(arg escape_history_time)" type="double"/>
         <param name="fsm/escape_speed" value="$(arg escape_speed)" type="double"/>
         <param name="fsm/escape_reach_tolerance" value="$(arg escape_reach_tolerance)" type="double"/>
-        <param name="fsm/escape_stop_speed" value="$(arg escape_stop_speed)" type="double"/>
         <param name="fsm/escape_min_clearance" value="$(arg escape_min_clearance)" type="double"/>
         <param name="fsm/escape_clearance_search_radius" value="$(arg escape_clearance_search_radius)" type="double"/>
         <param name="fsm/escape_max_occupied_prefix" value="$(arg escape_max_occupied_prefix)" type="double"/>
         <param name="fsm/escape_recovery_height" value="$(arg escape_recovery_height)" type="double"/>
-        <param name="fsm/escape_free_cycles" value="$(arg escape_free_cycles)" type="int"/>
         <param name="fsm/escape_max_attempts" value="$(arg escape_max_attempts)" type="int"/>
         <param name="fsm/history_only_occupied_recovery" value="$(arg history_only_occupied_recovery)" type="bool"/>
         <param name="fsm/wait_new_target_after_occupied_recovery" value="$(arg wait_new_target_after_occupied_recovery)" type="bool"/>

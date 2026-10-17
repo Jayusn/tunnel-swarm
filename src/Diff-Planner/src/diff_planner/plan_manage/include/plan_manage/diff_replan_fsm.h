@@ -98,12 +98,10 @@ namespace diff_planner
     double escape_history_time_;
     double escape_speed_;
     double escape_reach_tolerance_;
-    double escape_stop_speed_;
     double escape_min_clearance_;
     double escape_clearance_search_radius_;
     double escape_max_occupied_prefix_;
     double escape_recovery_height_;
-    int escape_free_cycles_;
     int escape_max_attempts_;
     bool history_only_occupied_recovery_;
     bool wait_new_target_after_occupied_recovery_;
@@ -166,7 +164,6 @@ namespace diff_planner
     double last_free_history_record_time_;
     double last_escape_path_check_time_;
     double last_escape_target_search_time_;
-    int occupied_recovery_free_count_;
     int occupied_recovery_attempt_count_;
     bool occupied_recovery_active_;
     bool occupied_recovery_episode_;

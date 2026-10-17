@@ -90,11 +90,9 @@
         <arg name="escape_history_time" value="1.50"/>
         <arg name="escape_speed" value="0.10"/>
         <arg name="escape_reach_tolerance" value="0.06"/>
-        <arg name="escape_stop_speed" value="0.08"/>
         <arg name="escape_min_clearance" value="0.20"/>
         <arg name="escape_clearance_search_radius" value="0.60"/>
         <arg name="escape_max_occupied_prefix" value="0.20"/>
-        <arg name="escape_free_cycles" value="5"/>
         <arg name="escape_max_attempts" value="2"/>
         <!-- camera pose: transform of camera frame in the world frame -->
         <!-- depth topic: depth image, 640x480 by default -->

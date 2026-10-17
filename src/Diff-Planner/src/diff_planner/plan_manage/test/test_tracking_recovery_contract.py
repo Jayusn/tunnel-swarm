@@ -201,10 +201,7 @@ def test_uav1_relay_prefers_history_but_allows_fallback_recovery():
     assert "occupied_recovery_attempt_count_ > 0" not in history
     occupied_recovery = source.split("case OCCUPIED_RECOVERY:", 1)[1]
     occupied_recovery = occupied_recovery.split("finishProcess();", 1)[0]
-    assert "recovery_position_error = occupied_recovery_from_history_" in occupied_recovery
-    assert "std::hypot(odom_vel_.x(), odom_vel_.y())" in occupied_recovery
     assert "!occupied_recovery_from_history_" in occupied_recovery
-    assert "occupied_recovery_from_history_ ||" in occupied_recovery
     assert 'changeFSMExecState(WAIT_TARGET, "OCCUPIED_RECOVERY_WAIT_NEXT_TARGET")' in source
     preempt = source.split("const bool normal_planning_state", 1)[1].split(
         "static int fsm_num", 1
