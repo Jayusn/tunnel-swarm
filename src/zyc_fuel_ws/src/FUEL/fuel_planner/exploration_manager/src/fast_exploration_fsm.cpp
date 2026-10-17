@@ -50,7 +50,7 @@ void FastExplorationFSM::init(ros::NodeHandle& nh) {
   nh.param("fsm/trajectory_release_max_start_error",
            fp_->trajectory_release_max_start_error_, 0.20);
   nh.param("fsm/trajectory_release_max_velocity_error",
-           fp_->trajectory_release_max_velocity_error_, 0.15);
+           fp_->trajectory_release_max_velocity_error_, 0.25);
   nh.param("fsm/trajectory_restart_max_velocity_error",
            fp_->trajectory_restart_max_velocity_error_, 0.25);
   nh.param("fsm/trajectory_release_max_acceleration_error",

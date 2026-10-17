@@ -113,7 +113,7 @@
     <param name="fsm/trajectory_release_confirm_time" value="0.12" type="double"/>
     <param name="fsm/trajectory_release_check_interval" value="0.04" type="double"/>
     <param name="fsm/trajectory_release_max_start_error" value="0.20" type="double"/>
-    <param name="fsm/trajectory_release_max_velocity_error" value="0.15" type="double"/>
+    <param name="fsm/trajectory_release_max_velocity_error" value="0.25" type="double"/>
     <param name="fsm/trajectory_restart_max_velocity_error" value="0.25" type="double"/>
     <param name="fsm/trajectory_release_max_acceleration_error" value="0.50" type="double"/>
     <param name="fsm/emergency_brake_horizon" value="0.12" type="double"/>
