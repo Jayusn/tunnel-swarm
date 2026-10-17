@@ -434,6 +434,58 @@ TEST_F(FifoEntrySpacing, OrdinaryArrivalContinuesToNextPointWithoutHold) {
   EXPECT_FALSE(follower->diff_wait_hold_active_);
 }
 
+TEST_F(FifoEntrySpacing, DistantTurnedEndpointIsRetainedAndSentForPlanning) {
+  follower->door_waypoint_released_ = true;
+  follower->relay_arrive_radius_ = 0.4;
+  follower->follower_alignment_x_ = -1.2;
+  follower->follower_odom_.pose.pose.position.x = 3.79;
+  follower->follower_odom_.pose.pose.position.y = 0.117;
+  setLeader(10.0);
+  RoutePoint point;
+  point.position.x = 5.80;
+  point.position.y = -3.13;
+  point.position.z = 0.6;
+  point.yaw = M_PI;
+  ASSERT_TRUE(follower->appendRelayWaypoint(point, "SEGMENT_ENDPOINT"));
+
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+
+  ASSERT_EQ(follower->relay_waypoints_.size(), 1U);
+  EXPECT_TRUE(follower->diff_goal_published_);
+  EXPECT_EQ(follower->diff_goal_index_, 0U);
+}
+
+TEST_F(FifoEntrySpacing, HeadingOvershootOutsideArrivalRadiusKeepsEndpoint) {
+  follower->door_waypoint_released_ = true;
+  follower->relay_arrive_radius_ = 0.4;
+  follower->follower_odom_.pose.pose.position.x = 2.0;
+  setLeader(4.0);
+  queuePoint(1.0);
+
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+
+  ASSERT_EQ(follower->relay_waypoints_.size(), 1U);
+  EXPECT_TRUE(follower->diff_goal_published_);
+}
+
+TEST_F(FifoEntrySpacing, OrdinaryPointRequiresHeightArrivalBeforeConsumption) {
+  follower->door_waypoint_released_ = true;
+  follower->relay_arrive_radius_ = 0.4;
+  follower->follower_odom_.pose.pose.position.x = 1.1;
+  follower->follower_odom_.pose.pose.position.z = 0.2;
+  setLeader(4.0);
+  queuePoint(1.0);
+
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(follower->relay_waypoints_.size(), 1U);
+  EXPECT_TRUE(follower->diff_goal_published_);
+
+  follower->follower_odom_.pose.pose.position.z = 0.6;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->relay_waypoints_.empty());
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+}
+
 TEST_F(FifoEntrySpacing, EmptyQueueLetsLastOrdinaryTrajectoryFinish) {
   follower->door_waypoint_released_ = true;
   follower->relay_arrive_radius_ = 0.4;

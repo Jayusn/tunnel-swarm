@@ -189,19 +189,14 @@ def test_simple_mode_gives_diff_only_the_fifo_front_and_consumes_on_arrival():
     assert "consumeSimpleRelayFront();" in execution
     assert "relay_waypoints_.erase" in consume
     assert "const bool waypoint_arrival = !terminal_relay" in execution
-    assert "const bool waypoint_passed = !terminal_relay" in execution
-    assert "pass_projection >= 0.0" in execution
-    assert "!waypoint_arrival && !waypoint_passed" in execution
-    assert "waypoint_arrival || waypoint_passed || terminal_arrival" in execution
+    assert "!terminal_relay && !waypoint_arrival &&" in execution
+    assert "waypoint_arrival || terminal_arrival" in execution
     assert 'name="relay_arrive_radius" value="0.40"' in LAUNCH
     ordinary_arrival = execution.split(
         "const bool waypoint_arrival", maxsplit=1
     )[1].split("const bool terminal_arrival", maxsplit=1)[0]
     assert "horizontal_error <= relay_arrive_radius_" in ordinary_arrival
-    waypoint_passed = ordinary_arrival.split(
-        "const bool waypoint_passed", maxsplit=1
-    )[1].split("// 已到达或越过", maxsplit=1)[0]
-    assert "vertical_error" not in waypoint_passed
+    assert "vertical_error <= relay_arrive_z_tolerance_" in ordinary_arrival
     assert "follower_horizontal_speed_" not in ordinary_arrival
     assert "diff_endpoint_capture_radius_" not in ordinary_arrival
     terminal_arrival = execution.split(

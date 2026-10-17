@@ -302,7 +302,7 @@ def test_relay_waypoints_are_cached_and_only_consumed_after_arrival():
     )[0]
     assert "consumeSimpleRelayFront();" in simple_execution
     assert "relay_waypoints_.erase" in consume
-    assert simple_execution.index("UAV1 FIFO %s") < simple_execution.index(
+    assert simple_execution.index("UAV1 FIFO ARRIVED") < simple_execution.index(
         "consumeSimpleRelayFront();"
     )
     assert "relay_waypoints_.pop_back" not in source

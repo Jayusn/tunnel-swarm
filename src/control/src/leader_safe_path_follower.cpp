@@ -1960,9 +1960,6 @@ class LeaderSafePathFollower {
         std::hypot(desired_local.x - current_local.x,
                    desired_local.y - current_local.y);
     const double vertical_error = std::fabs(desired_local.z - current_local.z);
-    const double pass_projection =
-        (current_world.x - desired_world.position.x) * std::cos(desired_world.yaw) +
-        (current_world.y - desired_world.position.y) * std::sin(desired_world.yaw);
     // 入口两段轨迹要完成末段减速，不能像普通FIFO点一样在40cm处截断。
     const bool entry_settled = !desired_world.is_door ||
         (horizontal_error <= diff_endpoint_capture_radius_ &&
@@ -1971,12 +1968,9 @@ class LeaderSafePathFollower {
     const bool waypoint_arrival = !terminal_relay &&
         horizontal_error <= relay_arrive_radius_ &&
         vertical_error <= relay_arrive_z_tolerance_ && entry_settled;
-    const bool waypoint_passed = !terminal_relay &&
-        !desired_world.is_door &&
-        std::isfinite(desired_world.yaw) && pass_projection >= 0.0;
 
-    // 已到达或越过当前普通点时直接消费，不能再被旧点的间距保护拉回。
-    if (!terminal_relay && !waypoint_arrival && !waypoint_passed &&
+    // 已到达当前普通点时直接消费，不能再被旧点的间距保护拉回。
+    if (!terminal_relay && !waypoint_arrival &&
         enable_diff_separation_safety_) {
       if (!leaderOdomFresh(now)) {
         simple_waypoint_clearance_hold_active_ = true;
@@ -2024,14 +2018,14 @@ class LeaderSafePathFollower {
       }
     }
 
-    // 普通FIFO航点与run_swarm的逐点切换一致：进入到达邻域即可消费，
-    // 或沿该点航向越过目标平面；最终降落点仍保留严格停稳判定。
+    // 普通FIFO航点只有进入水平和高度到达范围才消费，避免转弯时远处航点
+    // 被航向投影误判为已越过；最终降落点仍保留严格停稳判定。
     const bool terminal_arrival = terminal_relay &&
         horizontal_error <= terminal_arrive_radius_ &&
         vertical_error <= relay_arrive_z_tolerance_ &&
         follower_horizontal_speed_ <= relay_arrive_max_horizontal_speed_ &&
         follower_vertical_speed_ <= relay_arrive_max_vertical_speed_;
-    if (waypoint_arrival || waypoint_passed || terminal_arrival) {
+    if (waypoint_arrival || terminal_arrival) {
       if (terminal_relay) {
         if (relay_arrival_stamp_.isZero()) relay_arrival_stamp_ = now;
         if ((now - relay_arrival_stamp_).toSec() < relay_arrive_dwell_) return true;
@@ -2046,9 +2040,8 @@ class LeaderSafePathFollower {
         return true;
       }
 
-      ROS_ERROR("[safe_follower] UAV1 FIFO %s and consume endpoint 1/%zu "
+      ROS_ERROR("[safe_follower] UAV1 FIFO ARRIVED and consume endpoint 1/%zu "
                 "at (%.2f,%.2f,%.2f).",
-                waypoint_passed && !waypoint_arrival ? "PASSED" : "ARRIVED",
                 relay_waypoints_.size(), desired_local.x, desired_local.y,
                 desired_local.z);
       if (outside_wait_relay) {
