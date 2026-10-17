@@ -1,5 +1,6 @@
 <launch>
   <arg name="precision_landing_enabled" default="false"/>
+  <arg name="locked_yaw_topic" default=""/>
   <arg name="landing_target_topic" default="/landing/nmpc_target"/>
   <arg name="landing_state_topic" default="/landing/state"/>
   <arg name="rc_land_active_topic" default="/landing/rc_land_active"/>
@@ -61,6 +62,7 @@
     <rosparam command="load" file="$(find payload_mpc_controller)/config/model.yaml"/>
 
     <param name="precision_landing_enabled" value="$(arg precision_landing_enabled)"/>
+    <param name="locked_yaw_topic" value="$(arg locked_yaw_topic)"/>
     <remap from="~landing_target" to="$(arg landing_target_topic)"/>
     <remap from="~landing_state" to="$(arg landing_state_topic)"/>
     <remap from="~rc_land_active" to="$(arg rc_land_active_topic)"/>

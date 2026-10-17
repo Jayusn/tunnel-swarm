@@ -33,6 +33,11 @@ namespace PayloadMPC
 																							  controller_(controller),
 																							  odom_spike_guard_(makeOdomSpikeGuardConfig(params))
 	{
+        std::string locked_yaw_topic;
+        nh_.param<std::string>("locked_yaw_topic", locked_yaw_topic, "");
+        if (!locked_yaw_topic.empty())
+            locked_yaw_sub_ = nh_.subscribe(locked_yaw_topic, 1,
+                &MPCFSM::lockedYawCallback, this, ros::TransportHints().tcpNoDelay());
         nh_.param("precision_landing_enabled", precision_landing_enabled_, false);
         if (precision_landing_enabled_)
         {
@@ -228,6 +233,12 @@ namespace PayloadMPC
             landing_fixed_stage_ = true;
             landing_fixed_stage_time_ = ros::Time::now();
         }
+    }
+
+    void MPCFSM::lockedYawCallback(const quadrotor_msgs::PositionCommand::ConstPtr &msg)
+    {
+        if (controller_.lockYaw(msg->yaw))
+            ROS_WARN("[exit_yaw] NMPC已锁存出口航向 %.3f rad；轨迹、悬停和精降持续沿用。", msg->yaw);
     }
 
     void MPCFSM::landingTargetCallback(const mavros_msgs::PositionTarget::ConstPtr &msg)

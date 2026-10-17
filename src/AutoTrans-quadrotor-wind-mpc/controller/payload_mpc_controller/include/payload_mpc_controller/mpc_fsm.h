@@ -105,6 +105,8 @@ namespace PayloadMPC
         void landingTargetCallback(const mavros_msgs::PositionTarget::ConstPtr &msg);
         void landingStateCallback(const std_msgs::String::ConstPtr &msg);
         void processPrecisionLanding(const ros::Time &now);
+        void lockedYawCallback(const quadrotor_msgs::PositionCommand::ConstPtr &msg);
+        ros::Subscriber locked_yaw_sub_;
         ros::Subscriber landing_target_sub_, landing_state_sub_;
         ros::Publisher rc_land_active_pub_;
         bool precision_landing_enabled_{false}, precision_landing_active_{false};

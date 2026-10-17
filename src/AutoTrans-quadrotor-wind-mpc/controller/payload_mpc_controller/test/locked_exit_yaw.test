@@ -1,0 +1,9 @@
+<launch>
+  <!-- 独立master；只测试控制器参考和求解器，不连接MAVROS或飞控。 -->
+  <test test-name="locked_exit_yaw" pkg="payload_mpc_controller"
+        type="test_locked_exit_yaw" time-limit="90.0">
+    <rosparam command="load" file="$(find payload_mpc_controller)/config/mpc.yaml"/>
+    <rosparam command="load" file="$(find payload_mpc_controller)/config/model.yaml"/>
+    <param name="locked_yaw_topic" value="/test/locked_exit_yaw"/>
+  </test>
+</launch>

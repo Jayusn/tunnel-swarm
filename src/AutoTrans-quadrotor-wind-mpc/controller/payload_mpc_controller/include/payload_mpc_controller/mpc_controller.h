@@ -92,6 +92,8 @@ namespace PayloadMPC
       return last_valid_control_input_;
     }
     void clearLastValidControl();
+    // 出口消息开始发布后锁存一次；轨迹、等待和精降共用该航向。
+    bool lockYaw(double yaw);
     // 等待异步准备线程结束，再基于实测状态和固定悬停参考重建完整 ACADO 工作区。
     bool resetForHover(
       const Eigen::Ref<const Eigen::Matrix<real_t, kStateSize, 1>> estimated_state,
@@ -130,6 +132,8 @@ namespace PayloadMPC
     double last_yaw_{0.0};
     double last_yaw_dot_{0.0};
     bool yaw_reference_initialized_{false};
+    bool locked_yaw_active_{false};
+    double locked_yaw_{0.0};
     // Internal helper functions.
 
     // void offCallback(const std_msgs::Empty::ConstPtr& msg);

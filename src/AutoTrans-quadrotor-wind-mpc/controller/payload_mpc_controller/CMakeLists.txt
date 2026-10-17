@@ -102,6 +102,16 @@ target_link_libraries(mpc_controller_node
 )
 
 if(CATKIN_ENABLE_TESTING)
+  find_package(rostest REQUIRED)
+  get_target_property(locked_yaw_test_sources mpc_controller_node SOURCES)
+  list(REMOVE_ITEM locked_yaw_test_sources src/mpc_controller_node.cpp)
+  add_rostest_gtest(test_locked_exit_yaw test/locked_exit_yaw.test
+    test/test_locked_exit_yaw.cpp ${locked_yaw_test_sources})
+  if(TARGET test_locked_exit_yaw)
+    get_target_property(locked_yaw_test_includes mpc_controller_node INCLUDE_DIRECTORIES)
+    target_include_directories(test_locked_exit_yaw PRIVATE ${locked_yaw_test_includes})
+    target_link_libraries(test_locked_exit_yaw ${catkin_LIBRARIES})
+  endif()
   foreach(force_test force_observer_input_synchronizer disturbance_slew_limiter vertical_disturbance_low_pass)
     catkin_add_gtest(test_${force_test} test/test_${force_test}.cpp)
     if(TARGET test_${force_test})

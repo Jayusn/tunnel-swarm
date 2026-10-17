@@ -288,9 +288,18 @@ namespace PayloadMPC
     last_valid_control_time_ = ros::Time(0);
     last_valid_control_input_.setZero();
   }
-  // drone pos
-  void MpcController::setHoverReference(const Eigen::Ref<const Eigen::Vector3d> &quad_position, const double yaw)
+  bool MpcController::lockYaw(double yaw)
   {
+    if (locked_yaw_active_ || !std::isfinite(yaw)) return false;
+    locked_yaw_ = angle_limit(yaw);
+    locked_yaw_active_ = true;
+    return true;
+  }
+
+  // drone pos
+  void MpcController::setHoverReference(const Eigen::Ref<const Eigen::Vector3d> &quad_position, const double requested_yaw)
+  {
+    const double yaw = locked_yaw_active_ ? locked_yaw_ : requested_yaw;
     // HOVER、起飞和安全恢复都以锁存的实际航向重新建立偏航状态；
     // POLY_TRAJ 内的新轨迹不会调用这里，因此跨重规划保持连续。
     last_yaw_ = angle_limit(yaw);
@@ -336,6 +345,12 @@ namespace PayloadMPC
       return false;
     }
 
+    // 精降接管可能带入当时姿态；继续使用出口锁存值和零偏航角速度。
+    if (locked_yaw_active_)
+    {
+      yaw = locked_yaw_;
+      yaw_rate = 0.0;
+    }
     computeQuadrotorFlatness(acceleration, jerk, yaw, yaw_rate, quad_q, thrust, body_rate);
     if (!quad_q.coeffs().allFinite() || !std::isfinite(thrust) || !body_rate.allFinite())
     {
@@ -415,9 +430,9 @@ namespace PayloadMPC
       vel_quad = vel;
       acc_quad = acc;
       jerk_quad = jerk;
-      if (params_.use_fix_yaw_)
+      if (locked_yaw_active_ || params_.use_fix_yaw_)
       {
-        yaw = start_yaw;
+        yaw = locked_yaw_active_ ? locked_yaw_ : start_yaw;
         yaw_dot = 0.0; 
       }
       else

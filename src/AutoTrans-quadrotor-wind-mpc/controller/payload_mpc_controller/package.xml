@@ -24,4 +24,5 @@
 
   <export>
   </export>
+  <test_depend>rostest</test_depend>
 </package>
