@@ -294,9 +294,23 @@ class FrontArucoHintNode {
   bool validateDepth(const TargetObservation& observation,
                      const ros::Time& image_stamp, double* measured_depth) const {
     if (!require_depth_) return true;
-    if (latest_depth_m_.empty() || latest_depth_stamp_.isZero() ||
-        std::abs((latest_depth_stamp_ - image_stamp).toSec()) >
-            max_depth_time_delta_sec_) {
+    if (latest_depth_m_.empty() || latest_depth_stamp_.isZero()) {
+      ROS_WARN_THROTTLE(
+          1.0,
+          "front_aruco_hint: depth validation failed reason=missing_depth "
+          "id=%d image_stamp=%.6f depth_stamp=%.6f",
+          observation.id, image_stamp.toSec(), latest_depth_stamp_.toSec());
+      return false;
+    }
+    const double depth_time_delta_sec =
+        std::abs((latest_depth_stamp_ - image_stamp).toSec());
+    if (depth_time_delta_sec > max_depth_time_delta_sec_) {
+      ROS_WARN_THROTTLE(
+          1.0,
+          "front_aruco_hint: depth validation failed reason=depth_time_mismatch "
+          "id=%d image_stamp=%.6f depth_stamp=%.6f delta=%.3fs limit=%.3fs",
+          observation.id, image_stamp.toSec(), latest_depth_stamp_.toSec(),
+          depth_time_delta_sec, max_depth_time_delta_sec_);
       return false;
     }
     const int center_x = static_cast<int>(std::lround(observation.image_center_px.x()));
@@ -315,14 +329,36 @@ class FrontArucoHintNode {
         }
       }
     }
-    if (samples.empty()) return false;
+    if (samples.empty()) {
+      ROS_WARN_THROTTLE(
+          1.0,
+          "front_aruco_hint: depth validation failed reason=no_valid_depth "
+          "id=%d center=(%d,%d) radius=%d depth_size=%dx%d "
+          "range=[%.2f,%.2f]m delta=%.3fs",
+          observation.id, center_x, center_y, depth_search_radius_,
+          latest_depth_m_.cols, latest_depth_m_.rows, min_depth_m_, max_depth_m_,
+          depth_time_delta_sec);
+      return false;
+    }
     const std::size_t middle = samples.size() / 2U;
     std::nth_element(samples.begin(), samples.begin() + middle, samples.end());
     const double depth_m = samples[middle];
     if (measured_depth != nullptr) *measured_depth = depth_m;
     const double allowed_error =
         std::max(max_depth_absolute_error_m_, max_depth_relative_error_ * depth_m);
-    return std::abs(depth_m - observation.position_camera.z()) <= allowed_error;
+    const bool valid =
+        std::abs(depth_m - observation.position_camera.z()) <= allowed_error;
+    if (!valid) {
+      ROS_WARN_THROTTLE(
+          1.0,
+          "front_aruco_hint: depth validation failed reason=distance_mismatch "
+          "id=%d depth=%.3fm pnp_z=%.3fm error=%.3fm limit=%.3fm "
+          "samples=%zu delta=%.3fs",
+          observation.id, depth_m, observation.position_camera.z(),
+          std::abs(depth_m - observation.position_camera.z()), allowed_error,
+          samples.size(), depth_time_delta_sec);
+    }
+    return valid;
   }
 
   void publishCandidates(const std_msgs::Header& source_header) {
