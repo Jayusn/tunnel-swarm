@@ -105,6 +105,8 @@ class LeaderSafePathFollower {
     pnh_.param("simple_diff_retry_delay", simple_diff_retry_delay_, 0.20);
     pnh_.param<std::string>("diff_goal_topic", diff_goal_topic_,
                             "/UAV1/planning/goal");
+    pnh_.param<std::string>("diff_yaw_topic", diff_yaw_topic_,
+                            "/UAV1/planning/yaw");
     pnh_.param<std::string>("traj_started_topic", traj_started_topic_,
                             "/UAV1/planning/traj_started");
     // 2026-07-28: Diff若因瞬时占据把目标改到当前位置，周期重发原接力点，不能一次发送后永久锁死。
@@ -434,6 +436,7 @@ class LeaderSafePathFollower {
       traj_started_pub_ = nh_.advertise<std_msgs::Empty>(traj_started_topic_, 1, true);
     }
     diff_goal_pub_ = nh_.advertise<geometry_msgs::PoseStamped>(diff_goal_topic_, 1, true);
+    diff_yaw_pub_ = nh_.advertise<quadrotor_msgs::PositionCommand>(diff_yaw_topic_, 1);
     diff_entry_goal_pub_ =
         nh_.advertise<geometry_msgs::PoseStamped>(diff_goal_topic_ + "/entry", 1, true);
     follower_landing_target_pub_ =
@@ -506,6 +509,24 @@ class LeaderSafePathFollower {
   double worldYawToFollower(double world_yaw) const {
     return std::atan2(std::sin(world_yaw - follower_alignment_yaw_),
                       std::cos(world_yaw - follower_alignment_yaw_));
+  }
+
+  bool useLockedExitYaw() const {
+    // FIFO会删除已到达的出口点；删点后仍保持同一个出口航向。
+    return exit_yaw_locked_ ||
+           (have_final_exit_ && exit_waypoint_released_ &&
+            exit_waypoint_index_ != std::numeric_limits<std::size_t>::max() &&
+            active_relay_index_ >= exit_waypoint_index_);
+  }
+
+  void publishLockedExitYaw() {
+    if (!use_diff_planner_ || !useLockedExitYaw()) return;
+    quadrotor_msgs::PositionCommand yaw;
+    yaw.header.stamp = ros::Time::now();
+    yaw.header.frame_id = follower_odom_.header.frame_id;
+    yaw.yaw = worldYawToFollower(confirmed_exit_.yaw);
+    // 外部航向0.5s超时；出口及后续航段持续刷新，直到精降接管。
+    diff_yaw_pub_.publish(yaw);
   }
 
   bool relayWaypointSeparationReady(const char* label) const {
@@ -1867,6 +1888,7 @@ class LeaderSafePathFollower {
 
   void consumeSimpleRelayFront() {
     if (active_relay_index_ >= relay_waypoints_.size()) return;
+    if (useLockedExitYaw()) exit_yaw_locked_ = true;
     const std::size_t consumed = active_relay_index_;
     relay_waypoints_.erase(relay_waypoints_.begin() + consumed);
     const std::size_t invalid = std::numeric_limits<std::size_t>::max();
@@ -2069,10 +2091,12 @@ class LeaderSafePathFollower {
       goal.header.frame_id = follower_odom_.header.frame_id.empty()
                                  ? world_frame_ : follower_odom_.header.frame_id;
       goal.pose.position = desired_local;
-      const double local_yaw = worldYawToFollower(desired_world.yaw);
+      const double local_yaw = worldYawToFollower(
+          useLockedExitYaw() ? confirmed_exit_.yaw : desired_world.yaw);
       goal.pose.orientation.w = std::cos(local_yaw * 0.5);
       goal.pose.orientation.z = std::sin(local_yaw * 0.5);
       stampDiffGoalId(&goal);
+      publishLockedExitYaw();
       goal_pub.publish(goal);
       if (!desired_world.is_door) simple_door_hover_active_ = false;
       diff_goal_index_ = active_relay_index_;
@@ -2858,7 +2882,7 @@ class LeaderSafePathFollower {
     last_command_moving_ = moving && std::hypot(cmd.velocity.x, cmd.velocity.y) > 0.05;
     last_command_dx_ = cmd.velocity.x;
     last_command_dy_ = cmd.velocity.y;
-    cmd.yaw = target_yaw;
+    cmd.yaw = useLockedExitYaw() ? worldYawToFollower(confirmed_exit_.yaw) : target_yaw;
     cmd.trajectory_id = ++trajectory_id_;
     cmd.trajectory_flag = quadrotor_msgs::PositionCommand::TRAJECTORY_STATUS_READY;
     command_pub_.publish(cmd);
@@ -3208,10 +3232,12 @@ class LeaderSafePathFollower {
     goal.header.frame_id = follower_odom_.header.frame_id.empty()
                                ? world_frame_ : follower_odom_.header.frame_id;
     goal.pose.position = separation_recovery_goal_local_;
-    const double local_yaw = worldYawToFollower(retreat_world.yaw);
+    const double local_yaw = worldYawToFollower(
+        useLockedExitYaw() ? confirmed_exit_.yaw : retreat_world.yaw);
     goal.pose.orientation.w = std::cos(local_yaw * 0.5);
     goal.pose.orientation.z = std::sin(local_yaw * 0.5);
     stampDiffGoalId(&goal);
+    publishLockedExitYaw();
     diff_goal_pub_.publish(goal);
     diff_goal_index_ = active_relay_index_;
     diff_goal_published_ = true;
@@ -3706,13 +3732,15 @@ class LeaderSafePathFollower {
                                  ? world_frame_ : follower_odom_.header.frame_id;
       // 恢复期间只给Diff一个位于前机已验证折线后的退让目标，避免在障碍边原地重算。
       goal.pose.position = command_local;
-      const double local_yaw = worldYawToFollower(desired_world.yaw);
+      const double local_yaw = worldYawToFollower(
+          useLockedExitYaw() ? confirmed_exit_.yaw : desired_world.yaw);
       goal.pose.orientation.w = std::cos(local_yaw * 0.5);
       goal.pose.orientation.z = std::sin(local_yaw * 0.5);
       const bool starts_new_response_window =
           !diff_goal_published_ || diff_goal_index_ != active_relay_index_ ||
           diff_goal_first_publish_stamp_.isZero();
       stampDiffGoalId(&goal);
+      publishLockedExitYaw();
       diff_goal_pub_.publish(goal);
       diff_goal_index_ = active_relay_index_;
       diff_goal_published_ = true;
@@ -3739,6 +3767,7 @@ class LeaderSafePathFollower {
       publishState("UAV1_PRECISION_LANDING_OWNS_CONTROL", 0.2, 1.0, 0.2);
       return;
     }
+    publishLockedExitYaw();
     if (!follower_started_) return;
     // FAST-LIO异常期间不生成目标；连续可信样本恢复后回调会自动解除并请求新轨迹。
     if (follower_odom_fault_latched_) {
@@ -4035,6 +4064,7 @@ class LeaderSafePathFollower {
       front_scan_anchor_sub_;
   ros::Subscriber diff_status_sub_;  // 2026-07-28: UAV1 Diff轨迹成功/失败反馈。
   ros::Publisher command_pub_, traj_started_pub_, diff_goal_pub_, diff_entry_goal_pub_, route_pub_, relay_path_pub_, target_pub_, state_pub_;
+  ros::Publisher diff_yaw_pub_;
   ros::Publisher follower_landing_target_pub_, follower_landing_request_pub_;
   ros::Publisher follower_detection_enable_pub_;  // UAV1独立LDOP阶段状态。
   ros::Publisher follower_safety_hold_pub_;  // 2026-07-28: LIO跳变时请求控制器按MAVROS坐标锁点。
@@ -4060,7 +4090,7 @@ class LeaderSafePathFollower {
   ros::Time dynamic_obstacle_receive_stamp_, retained_dynamic_obstacle_stamp_;
   std::string leader_odom_topic_, leader_history_path_topic_, leader_trajectory_topic_,
       follower_odom_topic_, follower_cloud_topic_;
-  std::string command_topic_, diff_goal_topic_;
+  std::string command_topic_, diff_goal_topic_, diff_yaw_topic_;
   std::string diff_status_topic_;  // 2026-07-28: 默认/drone_1_planning/status。
   std::string traj_started_topic_, world_frame_;
   std::string leader_landing_target_topic_, leader_landing_request_topic_;
@@ -4096,6 +4126,7 @@ class LeaderSafePathFollower {
   bool diff_command_seen_for_goal_{false};  // 2026-07-28: 当前Diff目标是否真正产生过PositionCommand。
   bool follower_odom_fault_latched_{false};  // 异常期间锁点，连续可信样本恢复后自动解除。
   bool have_confirmed_door_{false}, door_waypoint_released_{false};
+  bool exit_yaw_locked_{false};
   bool have_final_exit_{false}, exit_waypoint_released_{false};  // 2026-07-28: 最终出口接收/排队锁存。
   bool have_front_scan_anchor_{false};
   bool down_search_wait_requested_{false};

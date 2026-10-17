@@ -464,6 +464,92 @@ TEST_F(FifoEntrySpacing, TerminalArrivalKeepsOriginalStrictSpeedLimits) {
   EXPECT_TRUE(follower->follower_landing_requested_);
 }
 
+TEST_F(FifoEntrySpacing, ExitYawStartsAfterEarlierPointsAndSurvivesFifoConsumption) {
+  queuePoint(1.0);
+  queuePoint(3.0);
+  queuePoint(4.0);
+  follower->have_final_exit_ = true;
+  follower->confirmed_exit_.yaw = 1.2;
+  follower->exit_waypoint_released_ = true;
+  follower->exit_waypoint_index_ = 1;
+  follower->outside_wait_waypoint_index_ = 2;
+  EXPECT_FALSE(follower->useLockedExitYaw());
+  follower->consumeSimpleRelayFront();
+  EXPECT_FALSE(follower->exit_yaw_locked_);
+  EXPECT_TRUE(follower->useLockedExitYaw());
+  follower->consumeSimpleRelayFront();
+  EXPECT_EQ(follower->exit_waypoint_index_, std::numeric_limits<std::size_t>::max());
+  EXPECT_TRUE(follower->exit_yaw_locked_);
+  EXPECT_TRUE(follower->useLockedExitYaw());
+  follower->consumeSimpleRelayFront();
+  EXPECT_TRUE(follower->relay_waypoints_.empty());
+  EXPECT_TRUE(follower->useLockedExitYaw());
+}
+
+TEST_F(FifoEntrySpacing, ExitYawTransformsAndIgnoresLaterLeaderHeading) {
+  follower->enable_search_landing_ = true;
+  geometry_msgs::PoseStamped::Ptr exit(new geometry_msgs::PoseStamped);
+  exit->pose.orientation.z = std::sin(-3.0 / 2.0);
+  exit->pose.orientation.w = std::cos(-3.0 / 2.0);
+  follower->finalExitPoseCallback(exit);
+  follower->follower_alignment_yaw_ = 3.0;
+  follower->exit_waypoint_released_ = true;
+  follower->exit_waypoint_index_ = 0;
+  double yaw = -100.0;
+  int received = 0;
+  ros::Subscriber yaw_sink = nh.subscribe<quadrotor_msgs::PositionCommand>(
+      "/UAV1/planning/yaw", 10,
+      [&](const quadrotor_msgs::PositionCommand::ConstPtr& msg) {
+        yaw = msg->yaw;
+        EXPECT_DOUBLE_EQ(msg->yaw_dot, 0.0);
+        ++received;
+      });
+  const ros::WallTime deadline = ros::WallTime::now() + ros::WallDuration(2.0);
+  while (follower->diff_yaw_pub_.getNumSubscribers() == 0 &&
+         ros::WallTime::now() < deadline) {
+    ros::spinOnce();
+    ros::WallDuration(0.01).sleep();
+  }
+  ASSERT_GT(follower->diff_yaw_pub_.getNumSubscribers(), 0U);
+  follower->publishLockedExitYaw();
+  ros::WallDuration(0.05).sleep();
+  ros::spinOnce();
+  ASSERT_GT(received, 0);
+  EXPECT_NEAR(yaw, std::atan2(std::sin(-6.0), std::cos(-6.0)), 1e-9);
+  exit->pose.orientation.z = std::sin(0.8);
+  exit->pose.orientation.w = std::cos(0.8);
+  follower->finalExitPoseCallback(exit);
+  follower->leader_odom_.pose.pose.orientation = exit->pose.orientation;
+  const int before = received;
+  follower->publishLockedExitYaw();
+  ros::WallDuration(0.05).sleep();
+  ros::spinOnce();
+  EXPECT_GT(received, before);
+  EXPECT_NEAR(yaw, std::atan2(std::sin(-6.0), std::cos(-6.0)), 1e-9);
+}
+
+TEST_F(FifoEntrySpacing, ExitFifoGoalUsesLeaderLockedYaw) {
+  queuePoint(1.0);
+  follower->relay_waypoints_[0].yaw = -0.5;
+  follower->have_final_exit_ = true;
+  follower->confirmed_exit_.yaw = 1.2;
+  follower->exit_waypoint_released_ = true;
+  follower->exit_waypoint_index_ = 0;
+  double goal_yaw = -100.0;
+  ros::Subscriber goal_sink = nh.subscribe<geometry_msgs::PoseStamped>(
+      "/UAV1/planning/goal", 10,
+      [&](const geometry_msgs::PoseStamped::ConstPtr& msg) {
+        goal_yaw = yawFromQuaternion(msg->pose.orientation);
+      });
+  ros::WallDuration(0.1).sleep();
+  ros::spinOnce();
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ros::WallDuration(0.1).sleep();
+  ros::spinOnce();
+  EXPECT_TRUE(follower->diff_goal_published_);
+  EXPECT_NEAR(goal_yaw, 1.2, 1e-9);
+}
+
 int main(int argc, char** argv) {
   ros::init(argc, argv, "test_fifo_entry_spacing",
             ros::init_options::AnonymousName | ros::init_options::NoSigintHandler);

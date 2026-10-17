@@ -135,6 +135,8 @@
         <param name="simple_segment_endpoint_following" value="true"/>
         <param name="simple_diff_retry_delay" value="0.20"/>
         <param name="diff_goal_topic" value="/UAV1/planning/goal"/>
+        <!-- 出口及后续航段沿用前机 final_exit 锁存航向。 -->
+        <param name="diff_yaw_topic" value="/UAV1/planning/yaw"/>
         <!-- 2026-07-28: 仅在3秒内连规划状态都未收到时重发，禁止飞行中1Hz覆盖Diff轨迹。 -->
         <param name="diff_goal_retry_period" value="3.0"/>
         <!-- 看门狗正常在1.2s重启假死规划器；2.0s总应答上限是独立的第二道保险。 -->

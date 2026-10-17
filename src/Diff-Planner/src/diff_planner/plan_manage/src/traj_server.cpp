@@ -171,7 +171,6 @@ std::pair<double, double> calculate_yaw(double t_cur, Eigen::Vector3d &pos, doub
   last_yaw_ = yaw_yawdot.first;
   last_yawdot_ = yaw_yawdot.second;
 
-  yaw_yawdot.second = yaw_temp;
 
   return yaw_yawdot;
 }
