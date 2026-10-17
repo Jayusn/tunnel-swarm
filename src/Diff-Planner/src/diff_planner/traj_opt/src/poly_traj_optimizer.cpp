@@ -752,22 +752,23 @@ namespace diff_planner
     if (!std::isfinite(resolution) || resolution <= 0.0)
       return false;
 
+    const double search_clearance = std::max(obs_clearance_, obs_clearance_soft_);
     const int max_step = static_cast<int>(std::ceil(
-        (obs_clearance_ + std::sqrt(3.0) * resolution * 0.5) / resolution));
+        (search_clearance + std::sqrt(3.0) * resolution * 0.5) / resolution));
     const int last_id = std::min(id_end, cps_.cp_size - 1);
     bool constraint_added = false;
 
     for (int i = 1; i <= last_id; ++i)
     {
-      if (!cps_.direction[i].empty())
-        continue;
-
       const Eigen::Vector3d point = cps_.points.col(i);
+      // 碰撞内的点仍沿A*给出的脱障方向移动；自由点补充各侧近障约束。
+      if (staticPositionOccupied(point))
+        continue;
       const Eigen::Vector3i center_idx =
           (point / resolution).array().floor().cast<int>();
-      double nearest_clearance = std::numeric_limits<double>::infinity();
-      Eigen::Vector3d nearest_base;
-      Eigen::Vector3d nearest_direction;
+      std::array<double, 6> nearest_clearance;
+      nearest_clearance.fill(search_clearance);
+      std::array<Eigen::Vector3d, 6> nearest_base, nearest_direction;
 
       for (int dx = -max_step; dx <= max_step; ++dx)
         for (int dy = -max_step; dy <= max_step; ++dy)
@@ -787,18 +788,36 @@ namespace diff_planner
             const Eigen::Vector3d direction = delta / center_distance;
             const double voxel_support = 0.5 * resolution * direction.cwiseAbs().sum();
             const double clearance = center_distance - voxel_support;
-            if (clearance < nearest_clearance)
+            Eigen::Index axis;
+            direction.cwiseAbs().maxCoeff(&axis);
+            const int side = 2 * static_cast<int>(axis) + (direction(axis) < 0.0);
+            if (clearance < nearest_clearance[side])
             {
-              nearest_clearance = clearance;
-              nearest_direction = direction;
-              nearest_base = occupied_center + direction * voxel_support;
+              nearest_clearance[side] = clearance;
+              nearest_direction[side] = direction;
+              nearest_base[side] = occupied_center + direction * voxel_support;
             }
           }
 
-      if (nearest_clearance < obs_clearance_)
+      // 先加入最近侧；同一面墙的斜向采样不重复计费，另一侧墙仍可独立加入。
+      std::array<int, 6> sides{{0, 1, 2, 3, 4, 5}};
+      std::sort(sides.begin(), sides.end(), [&](int lhs, int rhs) {
+        return nearest_clearance[lhs] < nearest_clearance[rhs];
+      });
+      for (const int side : sides)
       {
-        cps_.base_point[i].push_back(nearest_base);
-        cps_.direction[i].push_back(nearest_direction);
+        if (nearest_clearance[side] >= search_clearance)
+          continue;
+        const auto &direction = nearest_direction[side];
+        const bool already_constrained = std::any_of(
+            cps_.direction[i].begin(), cps_.direction[i].end(),
+            [&](const Eigen::Vector3d &existing) {
+              return existing.dot(direction) > 0.5;
+            });
+        if (already_constrained)
+          continue;
+        cps_.base_point[i].push_back(nearest_base[side]);
+        cps_.direction[i].push_back(direction);
         constraint_added = true;
       }
     }

@@ -345,7 +345,7 @@
         <param name="optimization/enable_vertical_obstacle_side_lock" value="$(arg enable_vertical_obstacle_side_lock)" type="bool"/>
         <param name="optimization/side_lock_corridor_half_width" value="$(arg side_lock_corridor_half_width)" type="double"/>
         <param name="optimization/side_lock_width_similarity_tolerance" value="$(arg side_lock_width_similarity_tolerance)" type="double"/>
-        <param name="optimization/obstacle_clearance_soft" value="0.46" type="double"/>
+        <param name="optimization/obstacle_clearance_soft" value="0.30" type="double"/>
         <param name="optimization/swarm_clearance" value="0.15000000000000002" type="double"/> <!-- heterogeneous support: my required clearance -->
         <param name="optimization/max_vel" value="$(arg max_vel)" type="double"/>
         <param name="optimization/vel_tolerance" value="$(arg vel_tolerance)" type="double"/>

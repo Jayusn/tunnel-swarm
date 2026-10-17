@@ -1024,18 +1024,25 @@ void GridMap::publishMap()
   double lbz = mp_.enable_virtual_wall_ ? max(md_.ringbuffer_lowbound3d_(2), mp_.virtual_ground_) : md_.ringbuffer_lowbound3d_(2);
   double ubz = mp_.enable_virtual_wall_ ? min(md_.ringbuffer_upbound3d_(2), mp_.virtual_ceil_) : md_.ringbuffer_upbound3d_(2);
   if (md_.ringbuffer_upbound3d_(0) - md_.ringbuffer_lowbound3d_(0) > mp_.resolution_ && (md_.ringbuffer_upbound3d_(1) - md_.ringbuffer_lowbound3d_(1)) > mp_.resolution_ && (ubz - lbz) > mp_.resolution_)
-    for (double xd = md_.ringbuffer_lowbound3d_(0) + mp_.resolution_ / 2; xd <= md_.ringbuffer_upbound3d_(0); xd += mp_.resolution_)
-      for (double yd = md_.ringbuffer_lowbound3d_(1) + mp_.resolution_ / 2; yd <= md_.ringbuffer_upbound3d_(1); yd += mp_.resolution_)
-        for (double zd = lbz + mp_.resolution_ / 2; zd <= ubz; zd += mp_.resolution_)
-        {
-          Eigen::Vector3d relative_dir = (Eigen::Vector3d(xd, yd, zd) - md_.camera_pos_);
-          // 2026-07-07: 固定世界窗口保留模式下取消“只显示机头前方”裁剪，避免 RViz 误以为历史建图被清空。
-          if (mp_.preserve_global_map_ || heading.dot(relative_dir.normalized()) > 0.5)
-          {
-            if (md_.occupancy_buffer_[globalIdx2BufIdx(pos2GlobalIdx(Eigen::Vector3d(xd, yd, zd)))] >= mp_.min_occupancy_log_)
-              cloud.push_back(pcl::PointXYZ(xd, yd, zd));
-          }
-        }
+  {
+    // 连续读取缓冲区，只为占据格计算坐标和视角，避免空格遍历阻塞规划回调。
+    const size_t layer_size = md_.ringbuffer_size3i_.x() * md_.ringbuffer_size3i_.y();
+    for (size_t layer = 0; layer < md_.occupancy_buffer_.size(); layer += layer_size)
+    {
+      const double z = globalIdx2Pos(BufIdx2GlobalIdx(layer)).z();
+      if (z < lbz + mp_.resolution_ / 2 - 1.0e-6 || z > ubz)
+        continue;
+      for (size_t address = layer; address < layer + layer_size; ++address)
+      {
+        if (md_.occupancy_buffer_[address] < mp_.min_occupancy_log_)
+          continue;
+        const Eigen::Vector3d point = globalIdx2Pos(BufIdx2GlobalIdx(address));
+        const Eigen::Vector3d relative_dir = point - md_.camera_pos_;
+        if (mp_.preserve_global_map_ || heading.dot(relative_dir.normalized()) > 0.5)
+          cloud.push_back(pcl::PointXYZ(point.x(), point.y(), point.z()));
+      }
+    }
+  }
 
   cloud.width = cloud.points.size();
   cloud.height = 1;
@@ -1059,18 +1066,24 @@ void GridMap::publishMapInflate()
   double ubz = mp_.enable_virtual_wall_ ? min(md_.ringbuffer_inf_upbound3d_(2), mp_.virtual_ceil_) : md_.ringbuffer_inf_upbound3d_(2);
   if (md_.ringbuffer_inf_upbound3d_(0) - md_.ringbuffer_inf_lowbound3d_(0) > mp_.resolution_ &&
       (md_.ringbuffer_inf_upbound3d_(1) - md_.ringbuffer_inf_lowbound3d_(1)) > mp_.resolution_ && (ubz - lbz) > mp_.resolution_)
-    for (double xd = md_.ringbuffer_inf_lowbound3d_(0) + mp_.resolution_ / 2; xd < md_.ringbuffer_inf_upbound3d_(0); xd += mp_.resolution_)
-      for (double yd = md_.ringbuffer_inf_lowbound3d_(1) + mp_.resolution_ / 2; yd < md_.ringbuffer_inf_upbound3d_(1); yd += mp_.resolution_)
-        for (double zd = lbz + mp_.resolution_ / 2; zd < ubz; zd += mp_.resolution_)
-        {
-          Eigen::Vector3d relative_dir = (Eigen::Vector3d(xd, yd, zd) - md_.camera_pos_);
-          // 2026-07-07: 固定世界窗口保留模式下完整发布膨胀占据图，便于直接观察历史障碍是否持续参与规划。
-          if (mp_.preserve_global_map_ || heading.dot(relative_dir.normalized()) > 0.0)
-          {
-            if (md_.occupancy_buffer_inflate_[globalIdx2InfBufIdx(pos2GlobalIdx(Eigen::Vector3d(xd, yd, zd)))])
-              cloud.push_back(pcl::PointXYZ(xd, yd, zd));
-          }
-        }
+  {
+    const size_t layer_size = md_.ringbuffer_inf_size3i_.x() * md_.ringbuffer_inf_size3i_.y();
+    for (size_t layer = 0; layer < md_.occupancy_buffer_inflate_.size(); layer += layer_size)
+    {
+      const double z = globalIdx2Pos(infBufIdx2GlobalIdx(layer)).z();
+      if (z < lbz + mp_.resolution_ / 2 - 1.0e-6 || z >= ubz)
+        continue;
+      for (size_t address = layer; address < layer + layer_size; ++address)
+      {
+        if (md_.occupancy_buffer_inflate_[address] == 0)
+          continue;
+        const Eigen::Vector3d point = globalIdx2Pos(infBufIdx2GlobalIdx(address));
+        const Eigen::Vector3d relative_dir = point - md_.camera_pos_;
+        if (mp_.preserve_global_map_ || heading.dot(relative_dir.normalized()) > 0.0)
+          cloud.push_back(pcl::PointXYZ(point.x(), point.y(), point.z()));
+      }
+    }
+  }
 
   cloud.width = cloud.points.size();
   cloud.height = 1;

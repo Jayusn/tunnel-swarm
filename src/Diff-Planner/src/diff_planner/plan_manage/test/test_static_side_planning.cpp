@@ -15,6 +15,7 @@
 #include <map>
 #include <array>
 #include <functional>
+#include <set>
 #include <optimizer/poly_traj_utils.hpp>
 #include <optimizer/lbfgs.hpp>
 
@@ -137,6 +138,158 @@ TEST_F(StaticSidePlanning, RecoveryValidationAllowsOnlyAShortInitialOccupiedSegm
   const auto long_prefix = recoveryLine(Vector3d(-0.20, 0.025, 0.625),
                                        Vector3d(0.8, 0.025, 0.625));
   EXPECT_FALSE(optimizer.trajectoryCollisionFree(long_prefix, now, now, 0.20));
+}
+
+TEST_F(StaticSidePlanning, NearObstacleAddsOppositeWallWithExistingConstraint)
+{
+  PolyTrajOptimizer optimizer;
+  configure(optimizer, false);
+  optimizer.obs_clearance_ = 0.18;
+  optimizer.obs_clearance_soft_ = 0.30;
+  optimizer.cps_.resize_cp(3);
+  const Vector3d point(0.025, 0.675, 0.625);
+  optimizer.cps_.points.colwise() = point;
+  optimizer.cps_.base_point[1].push_back(Vector3d(0.025, 0.25, 0.625));
+  optimizer.cps_.direction[1].push_back(Vector3d::UnitY());
+  ASSERT_EQ(map->getInflateOccupancy(point), 0);
+  ASSERT_TRUE(optimizer.addNearObstacleConstraints(1));
+  ASSERT_TRUE(std::any_of(optimizer.cps_.direction[1].begin(),
+                          optimizer.cps_.direction[1].end(),
+                          [](const Vector3d &normal) { return normal.y() < -0.9; }));
+  Vector3d gradient;
+  double cost;
+  ASSERT_TRUE(optimizer.obstacleGradCostP(1, point, gradient, cost));
+  EXPECT_GT(gradient.y(), 0.0); // 梯度下降使轨迹远离上侧墙。
+  const size_t count = optimizer.cps_.direction[1].size();
+  EXPECT_FALSE(optimizer.addNearObstacleConstraints(1));
+  EXPECT_EQ(optimizer.cps_.direction[1].size(), count);
+}
+
+TEST_F(StaticSidePlanning, NearObstacleUsesSoftClearanceBeforeHardPenaltyRange)
+{
+  PolyTrajOptimizer optimizer;
+  configure(optimizer, false);
+  optimizer.obs_clearance_ = 0.18;
+  optimizer.obs_clearance_soft_ = 0.30;
+  optimizer.cps_.resize_cp(3);
+  const Vector3d point(0.625, 0.575, 0.625);
+  optimizer.cps_.points.colwise() = point;
+  ASSERT_EQ(map->getInflateOccupancy(point), 0);
+  ASSERT_TRUE(optimizer.addNearObstacleConstraints(1));
+  Vector3d gradient;
+  double cost;
+  ASSERT_TRUE(optimizer.obstacleGradCostP(1, point, gradient, cost));
+  EXPECT_GT(cost, 0.0);
+  EXPECT_GT(gradient.y(), 0.0);
+}
+
+TEST_F(StaticSidePlanning, NearObstacleKeepsBothSidesOfNarrowCorridor)
+{
+  for (int z = 0; z < 30; ++z)
+    for (int y = -40; y < 40; ++y)
+      for (int x = -30; x < 30; ++x)
+      {
+        const Eigen::Vector3i cell(x, y, z);
+        const double wall_y = map->globalIdx2Pos(cell).y();
+        map->md_.occupancy_buffer_inflate_[map->globalIdx2InfBufIdx(cell)] =
+            wall_y >= 0.25 || wall_y <= -0.20;
+      }
+  PolyTrajOptimizer optimizer;
+  configure(optimizer, false);
+  optimizer.obs_clearance_ = 0.18;
+  optimizer.obs_clearance_soft_ = 0.30;
+  optimizer.cps_.resize_cp(3);
+  optimizer.cps_.points.colwise() = Vector3d(0.025, 0.025, 0.625);
+  ASSERT_TRUE(optimizer.addNearObstacleConstraints(1));
+  bool positive_y = false, negative_y = false;
+  for (const auto &normal : optimizer.cps_.direction[1])
+  {
+    positive_y |= normal.y() > 0.9;
+    negative_y |= normal.y() < -0.9;
+  }
+  EXPECT_TRUE(positive_y);
+  EXPECT_TRUE(negative_y);
+  EXPECT_FALSE(optimizer.addNearObstacleConstraints(1));
+}
+
+TEST_F(StaticSidePlanning, MapVisualizationPreservesWrappedVoxelsAndClipping)
+{
+  auto &data = map->md_;
+  data.ringbuffer_size3i_ = data.ringbuffer_inf_size3i_;
+  data.ringbuffer_origin3i_ = data.ringbuffer_inf_origin3i_ = Eigen::Vector3i(7, 9, 5);
+  data.ringbuffer_lowbound3i_ = data.ringbuffer_inf_lowbound3i_ = Eigen::Vector3i(-30, -40, 0);
+  data.ringbuffer_upbound3i_ = data.ringbuffer_inf_upbound3i_ = Eigen::Vector3i(29, 39, 29);
+  data.ringbuffer_lowbound3d_ = data.ringbuffer_inf_lowbound3d_;
+  data.ringbuffer_upbound3d_ = data.ringbuffer_inf_upbound3d_;
+  data.occupancy_buffer_.assign(60 * 80 * 30, -2.0);
+  data.occupancy_buffer_inflate_.assign(60 * 80 * 30, 0);
+  data.camera_pos_.setZero();
+  data.camera_r_m_.setIdentity();
+  data.cam2body_.setIdentity();
+  map->mp_.virtual_ground_ = 0.10;
+  map->mp_.virtual_ceil_ = 1.40;
+  map->mp_.min_occupancy_log_ = 1.0;
+  map->mp_.frame_id_ = "visualization_test";
+  const std::vector<Eigen::Vector3i> occupied{
+      {10, 0, 12}, {-10, 0, 12}, {0, 10, 12}, {10, 0, 1},
+      {10, 0, 28}, {-30, -40, 12}};
+  for (const auto &cell : occupied)
+  {
+    data.occupancy_buffer_[map->globalIdx2BufIdx(cell)] = 2.0;
+    data.occupancy_buffer_inflate_[map->globalIdx2InfBufIdx(cell)] = 1;
+  }
+  ros::NodeHandle nh;
+  map->map_pub_ = nh.advertise<sensor_msgs::PointCloud2>("visualization_raw_test", 1);
+  map->map_inf_pub_ = nh.advertise<sensor_msgs::PointCloud2>("visualization_inflated_test", 1);
+  sensor_msgs::PointCloud2ConstPtr raw, inflated;
+  const boost::function<void(const sensor_msgs::PointCloud2ConstPtr &)> raw_cb =
+      [&](const sensor_msgs::PointCloud2ConstPtr &msg) { raw = msg; };
+  const boost::function<void(const sensor_msgs::PointCloud2ConstPtr &)> inflated_cb =
+      [&](const sensor_msgs::PointCloud2ConstPtr &msg) { inflated = msg; };
+  auto raw_sub = nh.subscribe("visualization_raw_test", 1, raw_cb);
+  auto inflated_sub = nh.subscribe("visualization_inflated_test", 1, inflated_cb);
+  auto deadline = ros::WallTime::now() + ros::WallDuration(2.0);
+  while ((!map->map_pub_.getNumSubscribers() || !map->map_inf_pub_.getNumSubscribers()) &&
+         ros::WallTime::now() < deadline)
+  {
+    ros::spinOnce();
+    ros::WallDuration(0.01).sleep();
+  }
+  const auto voxels = [&](const sensor_msgs::PointCloud2ConstPtr &msg) {
+    pcl::PointCloud<pcl::PointXYZ> cloud;
+    pcl::fromROSMsg(*msg, cloud);
+    std::set<std::array<int, 3>> cells;
+    for (const auto &point : cloud)
+    {
+      const auto cell = map->pos2GlobalIdx(Vector3d(point.x, point.y, point.z));
+      cells.insert({{cell.x(), cell.y(), cell.z()}});
+    }
+    return cells;
+  };
+  for (bool preserve_global : {false, true})
+  {
+    raw.reset();
+    inflated.reset();
+    map->mp_.preserve_global_map_ = preserve_global;
+    map->publishMap();
+    map->publishMapInflate();
+    deadline = ros::WallTime::now() + ros::WallDuration(2.0);
+    while ((!raw || !inflated) && ros::WallTime::now() < deadline)
+    {
+      ros::spinOnce();
+      ros::WallDuration(0.01).sleep();
+    }
+    ASSERT_TRUE(raw);
+    ASSERT_TRUE(inflated);
+    std::set<std::array<int, 3>> expected_raw{{{10, 0, 12}}};
+    std::set<std::array<int, 3>> expected_inflated{{{10, 0, 12}}, {{0, 10, 12}}};
+    if (preserve_global)
+      expected_raw = expected_inflated = {
+          {{10, 0, 12}}, {{-10, 0, 12}}, {{0, 10, 12}}, {{-30, -40, 12}}};
+    EXPECT_EQ(voxels(raw), expected_raw);
+    EXPECT_EQ(voxels(inflated), expected_inflated);
+    EXPECT_EQ(raw->header.frame_id, "visualization_test");
+  }
 }
 
 TEST_F(StaticSidePlanning, RecoveryValidationRequiresLeavingOccupiedSpace)
@@ -463,7 +616,7 @@ TEST_F(UnderpassEndpointPlanning, FloorGradientMatchesPositionAndTimeDifferences
   }
 }
 
-TEST_F(UnderpassEndpointPlanning, FloorCostResolvesUnderpassHeightRejection)
+TEST_F(UnderpassEndpointPlanning, BilateralConstraintsKeepUnderpassAboveFloor)
 {
   for (bool enable_cost : {false, true})
   {
@@ -494,21 +647,11 @@ TEST_F(UnderpassEndpointPlanning, FloorCostResolvesUnderpassHeightRejection)
     {
       const auto p = trajectory.getPos(trajectory.getTotalDuration() * i / 2000.0);
       minimum_z = std::min(minimum_z, p.z());
-      if (enable_cost)
-      {
-        EXPECT_EQ(map->getInflateOccupancy(p), 0);
-      }
+      EXPECT_EQ(map->getInflateOccupancy(p), 0);
     }
-    if (enable_cost)
-    {
-      EXPECT_TRUE(success);
-      EXPECT_GE(minimum_z, 0.15 - 1e-6);
-    }
-    else
-    {
-      EXPECT_FALSE(success);
-      EXPECT_LT(minimum_z, 0.15);
-    }
+    // 双侧约束也能消除旧例中的下探；不再要求关闭独立高度代价必然失败。
+    EXPECT_TRUE(success);
+    EXPECT_GE(minimum_z, 0.15 - 1e-6);
     RecordProperty(enable_cost ? "minimum_z_with_floor_cost" : "minimum_z_without_floor_cost",
                    std::to_string(minimum_z));
     optimizer.endPlanningCycle();
