@@ -163,35 +163,46 @@ stop_terminator_window() {
   rm -f -- "${TERMINATOR_PID_FILE}"
 }
 
+# 每次查询最多 5 秒，另留 1 秒退出时间；总等待按实际经过时间计算。
 wait_for_ros_master() {
-  local timeout_s="${1:-90}" elapsed=0
-  while (( elapsed < timeout_s )); do
-    if rosnode list >/dev/null 2>&1; then
+  local timeout_s="${1:-90}" started=${SECONDS}
+  local deadline=$((SECONDS + timeout_s)) elapsed next_log=0 check_timeout
+  while (( SECONDS < deadline )); do
+    elapsed=$((SECONDS - started))
+    if (( elapsed >= next_log )); then
+      printf '[等待] ROS master 尚未就绪（%ss/%ss）\n' "${elapsed}" "${timeout_s}"
+      next_log=$((elapsed + 5))
+    fi
+    check_timeout=$((deadline - SECONDS))
+    if (( check_timeout <= 0 )); then break; fi
+    if (( check_timeout > 5 )); then check_timeout=5; fi
+    if timeout --kill-after=1s "${check_timeout}s" rosnode list >/dev/null 2>&1; then
       return 0
     fi
-    if (( elapsed == 0 || elapsed % 5 == 0 )); then
-      printf '[等待] ROS master 尚未就绪（%ss/%ss）\n' "${elapsed}" "${timeout_s}"
-    fi
-    sleep 1
-    elapsed=$((elapsed + 1))
+    if (( SECONDS < deadline )); then sleep 1; fi
   done
   printf '[错误] 等待 ROS master 超时：%ss\n' "${timeout_s}"
   return 1
 }
 
 wait_for_topic() {
-  local topic="$1" timeout_s="${2:-120}" elapsed=0
-  while (( elapsed < timeout_s )); do
+  local topic="$1" timeout_s="${2:-120}" started=${SECONDS}
+  local deadline=$((SECONDS + timeout_s)) elapsed next_log=0 check_timeout
+  while (( SECONDS < deadline )); do
+    elapsed=$((SECONDS - started))
+    if (( elapsed >= next_log )); then
+      printf '[等待] 话题 %s 尚未出现（%ss/%ss）\n' "${topic}" "${elapsed}" "${timeout_s}"
+      next_log=$((elapsed + 10))
+    fi
+    check_timeout=$((deadline - SECONDS))
+    if (( check_timeout <= 0 )); then break; fi
+    if (( check_timeout > 5 )); then check_timeout=5; fi
     # 不使用 grep -q，避免 pipefail 下 grep 提前退出导致 rostopic 被 SIGPIPE。
-    if rostopic list 2>/dev/null | grep -Fx "${topic}" >/dev/null 2>&1; then
+    if timeout --kill-after=1s "${check_timeout}s" rostopic list 2>/dev/null | grep -Fx "${topic}" >/dev/null 2>&1; then
       printf '[就绪] 已发现话题 %s\n' "${topic}"
       return 0
     fi
-    if (( elapsed == 0 || elapsed % 10 == 0 )); then
-      printf '[等待] 话题 %s 尚未出现（%ss/%ss）\n' "${topic}" "${elapsed}" "${timeout_s}"
-    fi
-    sleep 1
-    elapsed=$((elapsed + 1))
+    if (( SECONDS < deadline )); then sleep 1; fi
   done
   printf '[错误] 等待话题超时：%s\n' "${topic}"
   return 1
@@ -303,7 +314,7 @@ run_planner_pane() {
   wait_for_topic "${ODOM_TOPIC}" 180 || keep_pane_open
   wait_for_topic /UAV0/fast_lio/cloud_registered 180 || keep_pane_open
   local planner_launch
-  planner_launch="$(rospack find diff_planner 2>/dev/null)/launch/exp/run_swarm_indoor1_fuel_exploration.launch"
+  planner_launch="$(timeout --kill-after=1s 5s rospack find diff_planner 2>/dev/null)/launch/exp/run_swarm_indoor1_fuel_exploration.launch"
   if [[ ! -f "${planner_launch}" ]]; then
     log "找不到 FUEL 规划器 launch：${planner_launch}"
     keep_pane_open

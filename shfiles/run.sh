@@ -20,14 +20,23 @@ roslaunch cxr_ego_ctrl mavros_uav.launch vehicle_ns:=UAV0 &
 
 # 等待 UAV0 MAVROS 的 command service 和 FCU 连接可用，避免串口尚未连接时频率请求失败。
 wait_for_mavros_command() {
-    i=1
-    while [ "$i" -le 60 ]; do
-        if rosservice list 2>/dev/null | grep -qx "/UAV0/mavros/cmd/command" && \
-           timeout 2 rostopic echo -n 1 /UAV0/mavros/state 2>/dev/null | grep -q "connected: True"; then
-            return 0
+    # 总计等待 60 秒；服务查询和状态读取共用这个期限。
+    deadline=$(($(date +%s) + 60))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        check_timeout=$((deadline - $(date +%s)))
+        [ "$check_timeout" -gt 0 ] || break
+        if [ "$check_timeout" -gt 5 ]; then check_timeout=5; fi
+        if timeout --kill-after=1s "${check_timeout}s" rosservice list 2>/dev/null |
+            grep -Fx "/UAV0/mavros/cmd/command" >/dev/null; then
+            check_timeout=$((deadline - $(date +%s)))
+            [ "$check_timeout" -gt 0 ] || break
+            if [ "$check_timeout" -gt 5 ]; then check_timeout=5; fi
+            if timeout --kill-after=1s "${check_timeout}s" rostopic echo -n 1 /UAV0/mavros/state 2>/dev/null |
+                grep -F "connected: True" >/dev/null; then
+                return 0
+            fi
         fi
-        sleep 1
-        i=$((i + 1))
+        if [ "$(date +%s)" -lt "$deadline" ]; then sleep 1; fi
     done
     return 1
 }
@@ -42,7 +51,7 @@ set_message_interval() {
 
     while [ "$attempt" -le 3 ]; do
         echo "[UAV0 MAVROS] 设置 ${message_name} 目标频率: ${period_us} us（第 ${attempt} 次）"
-        if rosrun mavros mavcmd -n /UAV0/mavros long 511 "$message_id" "$period_us" 0 0 0 0 0; then
+        if timeout --kill-after=1s 5s rosrun mavros mavcmd -n /UAV0/mavros long 511 "$message_id" "$period_us" 0 0 0 0 0; then
             return 0
         fi
         sleep 1

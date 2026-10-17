@@ -35,6 +35,7 @@ usage() {
 FUEL/RViz、FUEL bridge + AutoTrans NMPC + logger + rosbag。
 
 脚本不自动解锁、不切换 OFFBOARD、不发送目标点。
+前级等待按实际时间计时，UAV0_SIX_WAIT_TIMEOUT 默认 180 秒。
 FAPP 开关（默认 swing-only，开启动态避障）：
   --dynamic-mode swing-only|general
   --dynamic-avoidance
@@ -60,36 +61,47 @@ keep_open() {
   exec "${SHELL:-/bin/bash}" -i
 }
 
+# 每次查询最多 5 秒，另留 1 秒退出时间；总等待按实际经过时间计算。
 wait_for_topic() {
-  local topic="$1" elapsed=0
-  while (( elapsed < WAIT_TIMEOUT )); do
-    if timeout 2 rostopic echo -n 1 "${topic}" >/dev/null 2>&1; then
+  local topic="$1" started=${SECONDS} deadline=$((SECONDS + WAIT_TIMEOUT))
+  local elapsed next_log=0 check_timeout
+  while (( SECONDS < deadline )); do
+    elapsed=$((SECONDS - started))
+    if (( elapsed >= next_log )); then
+      printf '[等待] 尚未收到 %s（%ss/%ss）\n' "${topic}" "${elapsed}" "${WAIT_TIMEOUT}"
+      next_log=$((elapsed + 10))
+    fi
+    check_timeout=$((deadline - SECONDS))
+    if (( check_timeout <= 0 )); then break; fi
+    if (( check_timeout > 5 )); then check_timeout=5; fi
+    if timeout --kill-after=1s "${check_timeout}s" rostopic echo -n 1 "${topic}" >/dev/null 2>&1; then
       printf '[就绪] 已收到话题数据：%s\n' "${topic}"
       return 0
     fi
-    if (( elapsed == 0 || elapsed % 10 == 0 )); then
-      printf '[等待] 尚未收到 %s（%ss/%ss）\n' "${topic}" "${elapsed}" "${WAIT_TIMEOUT}"
-    fi
-    sleep 1
-    elapsed=$((elapsed + 1))
+    if (( SECONDS < deadline )); then sleep 1; fi
   done
   printf '[错误] 等待话题数据超时：%s\n' "${topic}"
   return 1
 }
 
 wait_for_mavros() {
-  local elapsed=0
-  while (( elapsed < WAIT_TIMEOUT )); do
-    if timeout 2 rostopic echo -n 1 /UAV0/mavros/state 2>/dev/null |
+  local started=${SECONDS} deadline=$((SECONDS + WAIT_TIMEOUT))
+  local elapsed next_log=0 check_timeout
+  while (( SECONDS < deadline )); do
+    elapsed=$((SECONDS - started))
+    if (( elapsed >= next_log )); then
+      printf '[等待] UAV0 MAVROS 尚未连接（%ss/%ss）\n' "${elapsed}" "${WAIT_TIMEOUT}"
+      next_log=$((elapsed + 10))
+    fi
+    check_timeout=$((deadline - SECONDS))
+    if (( check_timeout <= 0 )); then break; fi
+    if (( check_timeout > 5 )); then check_timeout=5; fi
+    if timeout --kill-after=1s "${check_timeout}s" rostopic echo -n 1 /UAV0/mavros/state 2>/dev/null |
         grep -F 'connected: True' >/dev/null 2>&1; then
       printf '[就绪] UAV0 MAVROS 已连接飞控\n'
       return 0
     fi
-    if (( elapsed == 0 || elapsed % 10 == 0 )); then
-      printf '[等待] UAV0 MAVROS 尚未连接（%ss/%ss）\n' "${elapsed}" "${WAIT_TIMEOUT}"
-    fi
-    sleep 1
-    elapsed=$((elapsed + 1))
+    if (( SECONDS < deadline )); then sleep 1; fi
   done
   printf '[错误] 等待 UAV0 MAVROS 连接超时\n'
   return 1
