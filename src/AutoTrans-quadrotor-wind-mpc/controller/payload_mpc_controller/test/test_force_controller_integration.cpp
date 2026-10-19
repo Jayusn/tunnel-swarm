@@ -28,16 +28,19 @@ TEST(ForceControllerIntegration, ProductionCallSiteMatchesReplayEventsAndDownstr
   ros::NodeHandle nh("~");
   for(const std::string method:{"window_opt","aerothrow_ndob"}) {
     MpcParams p;p.config_from_ros_handle(nh);p.force_estimator_param_.method=method;
+    // Exercise retained unequal axis gains and norm clipping as well as direct application.
+    p.force_estimator_param_.force_axis_gain_x=.5;
+    p.force_estimator_param_.force_axis_gain_y=.8;
+    p.force_estimator_param_.force_axis_gain_z=.7;
+    p.force_estimator_param_.max_applied_force=.45;
     MpcController controller(p);MPCFSM fsm(nh,p,controller);controller.waitForPreparation();
     SelectedForceEstimator offline;offline.init(p);
-    VerticalDisturbanceLowPass z;z.configure(100,p.force_estimator_param_.cutoff_freq_applied_force_z);
-    DisturbanceSlewLimiter slew;
     const Eigen::Vector4d rpm=Eigen::Vector4d::Constant(16000);
     bool input=false;
     for(int k=0;k<350;++k) {
       const ros::Time now=ros::Time(1000)+ros::Duration(.01*k);ros::Time::setNow(now);
       ForceEstimatorTestAccess::prepare(fsm,now);
-      if(k==160) {ForceEstimatorTestAccess::reset(fsm);offline.reset();z.reset();slew.reset();input=false;}
+      if(k==160) {ForceEstimatorTestAccess::reset(fsm);offline.reset();input=false;}
       if(k%2==0) {
         const Eigen::Vector3d force(.6*std::sin(.07*k),-.4,.8);
         Eigen::Vector3d a=force/p.dyn_params_.mass_q;
@@ -51,15 +54,15 @@ TEST(ForceControllerIntegration, ProductionCallSiteMatchesReplayEventsAndDownstr
       Eigen::Vector3d fl,out=Eigen::Vector3d::Zero(),applied=Eigen::Vector3d::Zero();
       bool valid=input && offline.caculate_force(fl,out);
       if(valid && offline.windowFull() && !blocked) {
-        Eigen::Vector3d target=out;target.z()=z.update(target.z()).value;
+        Eigen::Vector3d target=out;
         target.x()*=precision?0:p.force_estimator_param_.force_axis_gain_x;
         target.y()*=precision?0:p.force_estimator_param_.force_axis_gain_y;
         target.z()*=p.force_estimator_param_.force_axis_gain_z;
         double cap=p.force_estimator_param_.max_applied_force;if(target.norm()>cap)target*=cap/target.norm();
-        applied=slew.update(target,.01,p.force_estimator_param_.max_applied_force_rate_xy,
-          p.force_estimator_param_.max_applied_force_rate_z,cap).value;
-        if(precision)applied.head<2>().setZero();
-      } else {z.reset();slew.reset();}
+        applied=target;
+      }
+      // The first ready sample is applied immediately, with no 0.03 N Z ramp.
+      if(k==38) { EXPECT_GT(ForceEstimatorTestAccess::applied(fsm).z(),.03); }
       EXPECT_LT((out-ForceEstimatorTestAccess::estimate(fsm)).norm(),1e-12)<<method<<" tick="<<k;
       EXPECT_LT((applied-ForceEstimatorTestAccess::applied(fsm)).norm(),1e-8)<<method<<" tick="<<k;
       if(k<38 || blocked) { EXPECT_TRUE(ForceEstimatorTestAccess::applied(fsm).isZero()); }

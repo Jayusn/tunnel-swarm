@@ -15,8 +15,6 @@
 #include "odom_spike_guard.h"
 #include "recovery_control.h"
 #include "force_observer_input_synchronizer.h"
-#include "disturbance_slew_limiter.h"
-#include "vertical_disturbance_low_pass.h"
 #include "polynomial_trajectory.h"
 #include <mavros_msgs/SetMode.h>
 #include <mavros_msgs/CommandLong.h>
@@ -143,8 +141,6 @@ namespace PayloadMPC
 		ros::Publisher force_timing_pub_, force_config_pub_;
 		ros::Time last_force_calculation_{0};
 		ForceObserverInputSynchronizer force_input_synchronizer_;
-		DisturbanceSlewLimiter disturbance_slew_limiter_;
-		VerticalDisturbanceLowPass vertical_disturbance_low_pass_;
 		OdomSpikeGuard odom_spike_guard_;
 		ros::Time land_start_time_;
 		bool auto_land_lockout_{false};
@@ -198,7 +194,6 @@ namespace PayloadMPC
 		bool fq_estimate_valid_{false};
 		bool was_in_air_{false};
 		ros::Time airborne_since_{0};
-		ros::Time last_disturbance_slew_update_time_{0};
 		ros::Time last_force_sync_report_time_{0};
 		std::size_t force_sync_accepted_since_report_{0};
 		std::size_t force_sync_rejected_since_report_{0};

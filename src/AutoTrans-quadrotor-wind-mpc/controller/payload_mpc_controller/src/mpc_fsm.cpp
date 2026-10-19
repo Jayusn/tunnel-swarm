@@ -95,7 +95,7 @@ namespace PayloadMPC
 		    "\nimu: " + nh_.resolveName("drone_imu/data") +
 		    "\nattitude: " + nh_.resolveName("force_attitude_odom") +
 		    "\nrpm: " + nh_.resolveName("/mavros/esc_status") +
-		    "\nparameters_xml:\n" + parameter_snapshot.toXml();
+		    "\ncompensation_processing: axis_gains_and_norm_limit_only\nparameters_xml:\n" + parameter_snapshot.toXml();
 		force_config_pub_.publish(config);
 		ROS_INFO("[外力] method=%s, rate=%.3f s^-1, cutoff=%.3f Hz, control=%.1f Hz; build=%s",
 		    params_.force_estimator_param_.method.c_str(), params_.force_estimator_param_.ndob_rate,
@@ -104,8 +104,6 @@ namespace PayloadMPC
 		force_input_synchronizer_.configure(
 			force_params.force_sync_history_duration, force_params.force_sync_max_interp_gap,
 			force_params.force_sync_max_age, force_params.force_sync_reset_backjump);
-		vertical_disturbance_low_pass_.configure(
-			params_.ctrl_freq_max_, force_params.cutoff_freq_applied_force_z);
 		rc_data.set_mode_params(params_.rc_mode_.mode_channel,
 								params_.rc_mode_.land_channel,
 								params_.rc_mode_.low_threshold,
@@ -1286,9 +1284,6 @@ namespace PayloadMPC
 
 	void MPCFSM::clearAppliedDisturbance()
 	{
-		disturbance_slew_limiter_.reset();
-		vertical_disturbance_low_pass_.reset();
-		last_disturbance_slew_update_time_ = ros::Time(0);
 		fq_applied_.setZero();
 		controller_.setExternalForce(fq_applied_);
 	}
@@ -1557,14 +1552,6 @@ namespace PayloadMPC
 		if (gate_reason == DisturbanceGateReason::ACTIVE)
 		{
 			Eigen::Vector3d target_force = fq_estimated_;
-			const auto filtered_z = vertical_disturbance_low_pass_.update(target_force.z());
-			if (!filtered_z.valid)
-			{
-				clearAppliedDisturbance();
-				target_force.setZero();
-			}
-			else
-				target_force.z() = filtered_z.value;
 			const auto &axis_gain = params_.force_estimator_param_;
 			target_force(0) *= precision_landing_active_ ? 0.0 : axis_gain.force_axis_gain_x;
 			target_force(1) *= precision_landing_active_ ? 0.0 : axis_gain.force_axis_gain_y;
@@ -1580,27 +1567,8 @@ namespace PayloadMPC
 					scaled_norm,
 					max_applied_force);
 			}
-			const double nominal_dt = 1.0 / params_.ctrl_freq_max_;
-			double dt = nominal_dt;
-			if (!last_disturbance_slew_update_time_.isZero())
-			{
-				const double elapsed = (now - last_disturbance_slew_update_time_).toSec();
-				if (std::isfinite(elapsed) && elapsed > 0.0)
-					dt = std::min(elapsed, 2.0 * nominal_dt);
-			}
-			const auto limited = disturbance_slew_limiter_.update(target_force, dt,
-				axis_gain.max_applied_force_rate_xy, axis_gain.max_applied_force_rate_z,
-				max_applied_force);
-			if (!limited.valid)
-				clearAppliedDisturbance();
-			else
-			{
-				fq_applied_ = limited.value;
-				// 保留后机精降期间立即关闭 XY 补偿的既有行为。
-				if (precision_landing_active_)
-					fq_applied_.head<2>().setZero();
-				last_disturbance_slew_update_time_ = now;
-			}
+			// 补偿直接使用分轴增益、合力限幅后的估计力，不再额外低通或限速。
+			fq_applied_ = target_force;
 		}
 		else
 		{

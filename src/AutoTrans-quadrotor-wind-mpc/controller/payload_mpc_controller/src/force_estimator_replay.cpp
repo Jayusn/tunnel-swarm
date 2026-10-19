@@ -23,8 +23,6 @@
 #include <random>
 #include "selected_force_estimator.h"
 #include "force_observer_input_synchronizer.h"
-#include "vertical_disturbance_low_pass.h"
-#include "disturbance_slew_limiter.h"
 #include "force_build_info.h"
 using namespace PayloadMPC;
 using Vec = Eigen::Vector3d;
@@ -45,8 +43,7 @@ MpcParams parameters(const std::string& config, const std::string& model) {
   FORCE_FIELD(force_sync_history_duration); FORCE_FIELD(force_sync_max_interp_gap);
   FORCE_FIELD(force_sync_max_age); FORCE_FIELD(force_sync_reset_backjump);
   FORCE_FIELD(force_axis_gain_x); FORCE_FIELD(force_axis_gain_y); FORCE_FIELD(force_axis_gain_z);
-  FORCE_FIELD(max_applied_force_rate_xy); FORCE_FIELD(max_applied_force_rate_z);
-  FORCE_FIELD(cutoff_freq_applied_force_z); FORCE_FIELD(compensation_airborne_delay);
+  FORCE_FIELD(compensation_airborne_delay);
   FORCE_FIELD(min_valid_rpm);
 #undef FORCE_FIELD
   p.force_estimator_param_.sqrt_kf = std::sqrt(p.force_estimator_param_.kf);
@@ -63,18 +60,15 @@ struct Method {
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
   std::string name;
   SelectedForceEstimator estimator;
-  VerticalDisturbanceLowPass z_filter;
-  DisturbanceSlewLimiter slew;
   Vec estimate{Vec::Zero()}, applied{Vec::Zero()};
   double duration_us{0};
   bool valid{false}, active{false};
   Method(MpcParams p, std::string label) : name(std::move(label)) {
     estimator.init(p);
-    z_filter.configure(p.ctrl_freq_max_, p.force_estimator_param_.cutoff_freq_applied_force_z);
   }
-  void clearApplied() { z_filter.reset(); slew.reset(); applied.setZero(); }
+  void clearApplied() { applied.setZero(); }
   void reset() { estimator.reset(); estimate.setZero(); valid=false; active=false; clearApplied(); }
-  void tick(bool input_valid, bool gate, bool precision, const MpcParams& p, double dt) {
+  void tick(bool input_valid, bool gate, bool precision, const MpcParams& p) {
     const auto start = std::chrono::steady_clock::now();
     Vec fl;
     estimate.setZero();
@@ -84,18 +78,11 @@ struct Method {
     if (!active) { clearApplied(); return; }
     const auto& f=p.force_estimator_param_;
     Vec target=estimate;
-    const auto z=z_filter.update(target.z());
-    if (!z.valid) { clearApplied(); return; }
-    target.z()=z.value;
     target.x()*=precision ? 0.0 : f.force_axis_gain_x;
     target.y()*=precision ? 0.0 : f.force_axis_gain_y;
     target.z()*=f.force_axis_gain_z;
     if (target.norm()>f.max_applied_force) target*=f.max_applied_force/target.norm();
-    const auto limited=slew.update(target, dt, f.max_applied_force_rate_xy,
-                                  f.max_applied_force_rate_z, f.max_applied_force);
-    if (!limited.valid) { clearApplied(); return; }
-    applied=limited.value;
-    if (precision) applied.head<2>().setZero();
+    applied=target;
   }
 };
 std::vector<std::unique_ptr<Method>> methods(MpcParams p) {
@@ -153,7 +140,7 @@ void synthetic(const MpcParams& p, const std::string& output) {
         // An isolated measurement outlier is NOT a real external force.
         if(scenario=="outlier" && k==static_cast<int>(2.0/dt)) observed[axis]+=3.0;
         const Vec a=q.conjugate()*((observed+thrust*(q*Vec::UnitZ()))/p.dyn_params_.mass_q);
-        for(auto& m:ms) { m->estimator.setSystemState(a,q,rpm); m->tick(true,true,false,p,dt); }
+        for(auto& m:ms) { m->estimator.setSystemState(a,q,rpm); m->tick(true,true,false,p); }
         out<<scenario<<','<<axis<<','<<t;vectorOut(out,truth);vectorOut(out,observed);methodOut(out,ms);
       }
     }
@@ -206,6 +193,7 @@ int main(int argc,char** argv) {
   meta<<"build: "<<YAML::Dump(YAML::Node(FORCE_BUILD_INFO))<<"\nbag: "<<args.at("--bag")
       <<"\nconfig: "<<args.at("--config")<<"\nmodel: "<<args.at("--model")
       <<"\nimu: "<<imu_topic<<"\nattitude: "<<att_topic<<"\nrpm: "<<rpm_topic
+      <<"\ncompensation_processing: axis_gains_and_norm_limit_only"
       <<"\ncontrol_dt: "<<dt<<"\nobserver_phase: "<<(next_observer-next_tick)
       <<"\nreconstruction: bag arrival time, nominal timers, ROS log mode events; not exact historical execution\n";
   ForceObserverInputSynchronizer sync;
@@ -261,7 +249,7 @@ int main(int argc,char** argv) {
       rpm.allFinite() && rpm.minCoeff()>=f.min_valid_rpm && input_valid && !recovery && !direct_land;
     for(auto& m:ms) {
       if(recovery || direct_land) {m->estimate.setZero();m->valid=false;m->active=false;m->clearApplied();}
-      else m->tick(input_valid,gate,precision,p,dt);
+      else m->tick(input_valid,gate,precision,p);
     }
     out<<now<<','<<source_stamp<<','<<(source_stamp>0?now-source_stamp:0)<<','<<new_sample<<','<<ms[0]->estimator.sampleCount()
        <<','<<input_valid<<','<<gate<<','<<mode<<','<<precision<<','<<trajectory<<','<<recovery<<','<<direct_land;

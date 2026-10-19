@@ -253,7 +253,7 @@ def report(root,synth,real,baseline):
     fig.tight_layout();fig.savefig(root/'parameter_tradeoff.png',dpi=150);plt.close(fig)
     text='''# AeroThrow NDOB 与当前窗口 Huber 估计器：离线比较\n\n此报告由生产 C++ 估计器生成。默认在线方法仍为 window_opt。比较限定为当前窗口参数（20 样本、var_weight=80、3 Hz 输出低通）及快照参数，不能推断换用 NDOB 后的位置误差或飞行稳定性。\n\n## 先验证原方法回放\n\n历史数据缺少完整运行参数、观察器/控制器定时器相位和精确回调顺序。本工具按录包接收时间、源时间戳、100 Hz 标称控制/观察器事件及 UAV1 ROS 日志重建；传输延迟、丢包、模式日志延迟、恢复流程细节会形成偏差。未调整质量、kf、窗口或截止频率来拟合历史曲线。以下偏差用于衡量重建质量，不是算法精度。\n\n'''
     text+=markdown_table(baseline[baseline.scope=='reconstructed_active'],['bag','kind','count','vector_rmse_N','bias_x','bias_y','bias_z'])
-    text+='\n\n历史波形不满足逐点一致，因此以下实测比较仅表示“同一重建输入下的算法差异”，不能宣称精确复现历史控制执行。所有基线误差（含全时段）、时间匹配偏差见 *_baseline_validation.csv。\n\n## 完整参数扫描\n\n阶跃为充分准备后的 1 N 已知输入，每轴分别施加；10%—90% 上升时间不包含 20 个有效样本的补偿接入等待，也不包含输入预滤波。实测回放包含输入预滤波、同步、门控、输出限幅、Z 轴 0.7 Hz 低通和变化率限制。\n\n'
+    text+='\n\n历史波形不满足逐点一致，因此以下实测比较仅表示“同一重建输入下的算法差异”，不能宣称精确复现历史控制执行。所有基线误差（含全时段）、时间匹配偏差见 *_baseline_validation.csv。\n\n## 完整参数扫描\n\n阶跃为充分准备后的 1 N 已知输入，每轴分别施加；10%—90% 上升时间不包含 20 个有效样本的补偿接入等待，也不包含输入预滤波。当前回放包含输入预滤波、同步、门控、分轴增益及合力限幅；已取消补偿端额外 Z 轴低通和变化率限制。旧录包中这两项曾启用，当前回放不重现旧补偿链路。\n\n'
     text+=markdown_table(grid,['method','rise_10_90_s','onset_to_90_s','outlier_peak_N','pulse_rmse_N','compute_p95_us',DATES[0]+'_fluct_N'])
     text+='\n\n![响应与波动](parameter_tradeoff.png)\n\n![合成响应](synthetic_response.png)\n\n合成数据含三轴零外力、倾斜姿态、阶跃、0.2 s 脉冲、0.5/1/2/5 Hz 正弦、孤立 3 N 异常、0.4 N 固定偏置及 σ=0.12 N 高斯噪声。完整稳态误差、过冲、幅相、异常影响、RMS、计算 P50/P95/P99 在 synthetic_metrics.csv。固定偏置对两者均无法与真实外力区分。\n\n## 各录包独立复核\n\n'
     for date in DATES:
