@@ -54,7 +54,7 @@ class FifoEntrySpacing : public ::testing::Test {
     setLeader(2.0);
     sink = nh.subscribe<geometry_msgs::PoseStamped>(
         "/UAV1/planning/goal", 10,
-        +[](const geometry_msgs::PoseStamped::ConstPtr&) {});
+        [this](const geometry_msgs::PoseStamped::ConstPtr& msg) { goals.push_back(*msg); });
     entry_sink = nh.subscribe<geometry_msgs::PoseStamped>(
         "/UAV1/planning/goal/entry", 10,
         [this](const geometry_msgs::PoseStamped::ConstPtr&) { ++entry_goals; });
@@ -135,6 +135,7 @@ class FifoEntrySpacing : public ::testing::Test {
   }
 
   ros::NodeHandle nh;
+  std::vector<geometry_msgs::PoseStamped> goals;
   ros::Subscriber sink, entry_sink;
   int entry_goals{0};
   std::unique_ptr<LeaderSafePathFollower> follower;
@@ -1030,6 +1031,252 @@ TEST_F(FifoEntrySpacing, FreshNormalTrajectoryAlsoEndsRecoveryWait) {
   follower->follower_odom_.pose.pose.position.x = 1.0;
   follower->handleSimpleDiffPlannerExecution(ros::Time::now());
   EXPECT_TRUE(follower->relay_waypoints_.empty());
+}
+
+class FifoGoalAdjustment : public FifoEntrySpacing {
+ protected:
+  using CloudPoints = std::vector<std::array<float, 3>>;
+
+  void setCloud(const CloudPoints& points) {
+    sensor_msgs::PointCloud2::Ptr cloud(new sensor_msgs::PointCloud2);
+    cloud->header.frame_id = "test_local";
+    sensor_msgs::PointCloud2Modifier modifier(*cloud);
+    modifier.setPointCloud2FieldsByString(1, "xyz");
+    modifier.resize(points.size());
+    sensor_msgs::PointCloud2Iterator<float> x(*cloud, "x"), y(*cloud, "y"), z(*cloud, "z");
+    for (const auto& point : points) {
+      *x = point[0]; *y = point[1]; *z = point[2];
+      ++x; ++y; ++z;
+    }
+    follower->cloudCallback(cloud);
+  }
+
+  void addWall(CloudPoints* points, bool constant_x, float coordinate) {
+    for (int i = -40; i <= 40; ++i) {
+      const float along = i * 0.025f;
+      points->push_back(constant_x ? std::array<float, 3>{{coordinate, along, 0.6f}}
+                                  : std::array<float, 3>{{2.0f + along, coordinate, 0.6f}});
+    }
+  }
+
+  RoutePoint ordinaryPoint() {
+    RoutePoint point;
+    point.is_ordinary = true;
+    point.position.x = 2.0;
+    point.position.z = 0.6;
+    point.yaw = 0.7;
+    return point;
+  }
+
+  void select(RoutePoint* point) {
+    follower->selectSimpleExecutionPosition(point, ros::Time::now());
+  }
+
+  void drainMessages() {
+    const ros::WallTime until = ros::WallTime::now() + ros::WallDuration(0.05);
+    while (ros::WallTime::now() < until) {
+      ros::spinOnce();
+      ros::WallDuration(0.001).sleep();
+    }
+  }
+};
+
+TEST_F(FifoGoalAdjustment, WallMovesToDesiredClearanceWithSmallestOffset) {
+  CloudPoints points;
+  addWall(&points, true, 1.75f);
+  setCloud(points);
+  RoutePoint point = ordinaryPoint();
+  select(&point);
+  EXPECT_NEAR(point.execution_position.x, 2.25, 1e-8);
+  EXPECT_NEAR(point.execution_position.y, 0.0, 1e-8);
+  EXPECT_DOUBLE_EQ(point.execution_position.z, point.position.z);
+  EXPECT_DOUBLE_EQ(point.position.x, 2.0);
+  EXPECT_DOUBLE_EQ(point.yaw, 0.7);
+}
+
+TEST_F(FifoGoalAdjustment, CornerImprovesWithinMaximumOffsetEvenBelowDesiredClearance) {
+  CloudPoints points;
+  addWall(&points, true, 1.75f);
+  addWall(&points, false, -0.25f);
+  setCloud(points);
+  RoutePoint point = ordinaryPoint();
+  select(&point);
+  EXPECT_NEAR(point.execution_position.x, 2.0 + 0.30 / std::sqrt(2.0), 1e-8);
+  EXPECT_NEAR(point.execution_position.y, 0.30 / std::sqrt(2.0), 1e-8);
+  EXPECT_LE(std::hypot(point.execution_position.x - 2.0,
+                       point.execution_position.y), 0.30 + 1e-9);
+}
+
+TEST_F(FifoGoalAdjustment, NarrowCorridorMovesTowardCenterWithoutRequiringHalfMeter) {
+  CloudPoints points;
+  addWall(&points, false, -0.20f);
+  addWall(&points, false, 0.40f);
+  setCloud(points);
+  RoutePoint point = ordinaryPoint();
+  select(&point);
+  EXPECT_NEAR(point.execution_position.x, 2.0, 1e-8);
+  EXPECT_NEAR(point.execution_position.y, 0.10, 1e-8);
+}
+
+TEST_F(FifoGoalAdjustment, WallBetweenOriginalAndCandidateIsNotIgnoredNearOriginal) {
+  CloudPoints points;
+  addWall(&points, true, 2.10f);
+  setCloud(points);
+  auto point = ordinaryPoint();
+  geometry_msgs::Point across = point.position;
+  across.x += 0.30;
+  int hits = 0;
+  EXPECT_TRUE(follower->segmentBlocked(point.position, across, &hits, 0.0));
+  select(&point);
+  EXPECT_NEAR(point.execution_position.x, 1.70, 1e-8);
+  EXPECT_NEAR(point.execution_position.y, 0.0, 1e-8);
+}
+
+TEST_F(FifoGoalAdjustment, NoUsableCandidateKeepsOriginalAndStillPublishesGoal) {
+  CloudPoints points;
+  addWall(&points, true, 1.90f);
+  addWall(&points, true, 2.10f);
+  addWall(&points, false, -0.10f);
+  addWall(&points, false, 0.10f);
+  setCloud(points);
+  queuePoint(2.0);
+  setLeader(4.0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_TRUE(follower->diff_goal_published_);
+  EXPECT_DOUBLE_EQ(follower->relay_waypoints_.front().execution_position.x, 2.0);
+  EXPECT_DOUBLE_EQ(follower->relay_waypoints_.front().execution_position.y, 0.0);
+}
+
+TEST_F(FifoGoalAdjustment, AlreadyClearAndOutOfHeightObstaclesDoNotMoveGoal) {
+  CloudPoints points;
+  addWall(&points, true, 1.0f);
+  points.push_back({{2.0f, 0.0f, 1.0f}});
+  points.push_back({{std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.6f}});
+  setCloud(points);
+  auto point = ordinaryPoint();
+  select(&point);
+  EXPECT_DOUBLE_EQ(point.execution_position.x, 2.0);
+  EXPECT_DOUBLE_EQ(point.execution_position.y, 0.0);
+}
+
+TEST_F(FifoGoalAdjustment, MissingEmptyStaleAndInvalidCloudKeepOriginal) {
+  auto check = [&]() {
+    auto point = ordinaryPoint();
+    select(&point);
+    EXPECT_TRUE(point.execution_position_selected);
+    EXPECT_DOUBLE_EQ(point.execution_position.x, 2.0);
+    EXPECT_DOUBLE_EQ(point.execution_position.y, 0.0);
+  };
+  check();
+  setCloud({});
+  check();
+  CloudPoints points;
+  addWall(&points, true, 1.75f);
+  setCloud(points);
+  follower->cloud_stamp_ = ros::Time::now() - ros::Duration(follower->cloud_timeout_ + 1.0);
+  check();
+  setCloud(points);
+  sensor_msgs::PointCloud2::Ptr invalid(new sensor_msgs::PointCloud2(*follower->follower_cloud_));
+  invalid->fields[0].name = "invalid_x";
+  follower->cloudCallback(invalid);
+  check();
+  setCloud(points);
+  invalid.reset(new sensor_msgs::PointCloud2(*follower->follower_cloud_));
+  invalid->fields[0].datatype = sensor_msgs::PointField::FLOAT64;
+  follower->cloudCallback(invalid);
+  check();
+}
+
+TEST_F(FifoGoalAdjustment, DisabledAdjustmentAndSpecialWaypointsKeepOriginal) {
+  CloudPoints points;
+  addWall(&points, true, 1.75f);
+  setCloud(points);
+  follower->enable_fifo_goal_adjustment_ = false;
+  auto point = ordinaryPoint();
+  select(&point);
+  EXPECT_DOUBLE_EQ(point.execution_position.x, 2.0);
+  follower->enable_fifo_goal_adjustment_ = true;
+  for (const char* label : {"DOOR", "EXIT", "OUTSIDE_WAIT", "TERMINAL"}) {
+    ASSERT_TRUE(follower->appendRelayWaypoint(ordinaryPoint(), label));
+    auto& special = follower->relay_waypoints_.back();
+    select(&special);
+    EXPECT_FALSE(special.is_ordinary);
+    EXPECT_FALSE(special.execution_position_selected);
+    EXPECT_DOUBLE_EQ(special.position.x, 2.0);
+  }
+  ASSERT_TRUE(follower->appendRelayWaypoint(ordinaryPoint(), "INTERNAL"));
+  auto& ordinary = follower->relay_waypoints_.back();
+  select(&ordinary);
+  EXPECT_NEAR(ordinary.execution_position.x, 2.25, 1e-8);
+}
+
+TEST_F(FifoGoalAdjustment, PublishedGoalRetryArrivalAndDedupUseCorrectPositions) {
+  CloudPoints points;
+  addWall(&points, true, 1.75f);
+  setCloud(points);
+  follower->door_waypoint_released_ = true;
+  setLeader(4.0);
+  queuePoint(2.0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  const auto owner = follower->relay_waypoints_.front().diff_goal_owner_stamp_ns;
+  drainMessages();
+  ASSERT_FALSE(goals.empty());
+  EXPECT_NEAR(goals.back().pose.position.x, 2.25, 1e-8);
+  queuePoint(2.60);  // 与原点相距0.60m，应保留；与调整后位置仅相距0.35m。
+  ASSERT_EQ(follower->relay_waypoints_.size(), 2U);
+  EXPECT_FALSE(follower->relay_waypoints_.back().execution_position_selected);
+
+  points.clear();
+  addWall(&points, true, 2.50f);  // 点云改变，同点重试仍使用已选目标。
+  setCloud(points);
+  reportDiffStatus("PLANNING_FAILED", follower->diff_active_goal_stamp_ns_);
+  follower->simple_diff_retry_not_before_ = ros::Time(0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  drainMessages();
+  ASSERT_GE(goals.size(), 2U);
+  EXPECT_NEAR(goals.back().pose.position.x, 2.25, 1e-8);
+  EXPECT_EQ(follower->relay_waypoints_.front().diff_goal_owner_stamp_ns, owner);
+  follower->follower_odom_.pose.pose.position.x = 2.0;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_EQ(follower->relay_waypoints_.size(), 2U);
+  follower->follower_odom_.pose.pose.position.x = 2.25;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(follower->relay_waypoints_.size(), 1U);
+  EXPECT_DOUBLE_EQ(follower->relay_waypoints_.front().position.x, 2.60);
+}
+
+TEST_F(FifoGoalAdjustment, ReleaseSeparationUsesAdjustedGoal) {
+  CloudPoints points;
+  addWall(&points, true, 1.75f);
+  setCloud(points);
+  queuePoint(2.0);
+  setLeader(3.10);  // 离原点1.10m，但离调整后目标只有0.85m。
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_FALSE(follower->diff_goal_published_);
+  EXPECT_TRUE(follower->simple_waypoint_clearance_hold_active_);
+  setLeader(3.30);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->diff_goal_published_);
+}
+
+TEST_F(FifoGoalAdjustment, SelectionUsesFollowerLocalFrameWithWorldAlignment) {
+  follower->follower_alignment_x_ = 5.0;
+  follower->follower_alignment_y_ = -2.0;
+  follower->follower_alignment_yaw_ = M_PI_2;
+  follower->follower_alignment_cos_ = std::cos(M_PI_2);
+  follower->follower_alignment_sin_ = std::sin(M_PI_2);
+  CloudPoints points;
+  addWall(&points, true, 1.75f);
+  setCloud(points);
+  auto point = ordinaryPoint();
+  point.position = follower->followerToWorld(point.position);
+  const auto original = point.position;
+  select(&point);
+  const auto selected_local = follower->worldToFollower(point.execution_position);
+  EXPECT_NEAR(selected_local.x, 2.25, 1e-8);
+  EXPECT_NEAR(selected_local.y, 0.0, 1e-8);
+  EXPECT_NEAR(point.execution_position.x, original.x, 1e-8);
+  EXPECT_NEAR(point.execution_position.y, original.y + 0.25, 1e-8);
 }
 
 int main(int argc, char** argv) {

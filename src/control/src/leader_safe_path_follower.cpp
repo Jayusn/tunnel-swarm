@@ -34,6 +34,10 @@ namespace {
 
 struct RoutePoint {
   geometry_msgs::Point position;
+  // 原位置保留用于FIFO去重和历史语义，执行位置只在成为队首时选择一次。
+  bool is_ordinary{false};
+  bool execution_position_selected{false};
+  geometry_msgs::Point execution_position;
   double yaw{0.0};
   // 2026-07-15: 记录前机从起飞后的累计路程，用于“离开候选点1m后再释放”的离散接力逻辑。
   double progress{0.0};
@@ -106,6 +110,12 @@ class LeaderSafePathFollower {
     pnh_.param("simple_segment_endpoint_following",
                simple_segment_endpoint_following_, false);
     pnh_.param("simple_diff_retry_delay", simple_diff_retry_delay_, 0.20);
+    pnh_.param("enable_fifo_goal_adjustment", enable_fifo_goal_adjustment_, true);
+    pnh_.param("fifo_goal_max_offset", fifo_goal_max_offset_, 0.30);
+    pnh_.param("fifo_goal_desired_clearance", fifo_goal_desired_clearance_, 0.50);
+    if (!std::isfinite(fifo_goal_max_offset_) || fifo_goal_max_offset_ < 0.0 ||
+        !std::isfinite(fifo_goal_desired_clearance_) || fifo_goal_desired_clearance_ <= 0.0)
+      throw std::runtime_error("leader_safe_path_follower: invalid FIFO goal adjustment parameters");
     pnh_.param<std::string>("diff_goal_topic", diff_goal_topic_,
                             "/UAV1/planning/goal");
     pnh_.param<std::string>("diff_yaw_topic", diff_yaw_topic_,
@@ -736,7 +746,8 @@ class LeaderSafePathFollower {
     for (const RoutePoint& point : relay_waypoints_) {
       geometry_msgs::PoseStamped pose;
       pose.header = path.header;
-      pose.pose.position = point.position;
+      pose.pose.position = point.execution_position_selected
+          ? point.execution_position : point.position;
       pose.pose.orientation.w = std::cos(point.yaw * 0.5);
       pose.pose.orientation.z = std::sin(point.yaw * 0.5);
       path.poses.push_back(pose);
@@ -753,6 +764,8 @@ class LeaderSafePathFollower {
       follower_point.position = followerCruisePointToWorld(point.position);
     const bool ordinary_point = std::string(label) == "SEGMENT_ENDPOINT" ||
                                 std::string(label) == "INTERNAL";
+    follower_point.is_ordinary = ordinary_point;
+    follower_point.execution_position_selected = false;
     if (ordinary_point && have_last_ordinary_relay_point_) {
       const double dx = std::fabs(
           follower_point.position.x - last_ordinary_relay_position_.x);
@@ -2046,6 +2059,95 @@ class LeaderSafePathFollower {
     publishRelayPath();
   }
 
+  void selectSimpleExecutionPosition(RoutePoint* point, const ros::Time& now) {
+    if (!point->is_ordinary || point->execution_position_selected) return;
+    point->execution_position_selected = true;
+    point->execution_position = point->position;
+    if (!enable_fifo_goal_adjustment_ || !obstacle_check_enabled_ ||
+        !follower_cloud_ || (now - cloud_stamp_).toSec() > cloud_timeout_)
+      return;
+
+    // 仅接受现有检查函数使用的float XYZ布局；坏字段不参与微调。
+    for (const char* name : {"x", "y", "z"}) {
+      const auto field = std::find_if(follower_cloud_->fields.begin(),
+          follower_cloud_->fields.end(), [name](const sensor_msgs::PointField& f) {
+            return f.name == name;
+          });
+      if (field == follower_cloud_->fields.end() ||
+          field->datatype != sensor_msgs::PointField::FLOAT32 || field->count != 1 ||
+          static_cast<size_t>(field->offset) + sizeof(float) > follower_cloud_->point_step)
+        return;
+    }
+    if (follower_cloud_->data.empty() ||
+        follower_cloud_->row_step != follower_cloud_->width * follower_cloud_->point_step ||
+        follower_cloud_->data.size() !=
+            static_cast<size_t>(follower_cloud_->row_step) * follower_cloud_->height)
+      return;
+
+    const geometry_msgs::Point original =
+        useFollowerCruiseHeight(worldToFollower(point->position));
+    std::vector<geometry_msgs::Point> obstacles;
+    try {
+      sensor_msgs::PointCloud2ConstIterator<float> x(*follower_cloud_, "x");
+      sensor_msgs::PointCloud2ConstIterator<float> y(*follower_cloud_, "y");
+      sensor_msgs::PointCloud2ConstIterator<float> z(*follower_cloud_, "z");
+      for (; x != x.end(); ++x, ++y, ++z) {
+        if (!std::isfinite(*x) || !std::isfinite(*y) || !std::isfinite(*z) ||
+            std::fabs(*z - original.z) > 0.30)
+          continue;
+        if (std::hypot(*x - original.x, *y - original.y) >
+            fifo_goal_max_offset_ + fifo_goal_desired_clearance_)
+          continue;
+        geometry_msgs::Point obstacle;
+        obstacle.x = *x;
+        obstacle.y = *y;
+        obstacles.push_back(obstacle);
+      }
+    } catch (const std::runtime_error&) {
+      return;
+    }
+    auto clearance = [&](const geometry_msgs::Point& candidate) {
+      double result = fifo_goal_desired_clearance_;
+      for (const auto& obstacle : obstacles)
+        result = std::min(result, std::hypot(obstacle.x - candidate.x,
+                                           obstacle.y - candidate.y));
+      return result;
+    };
+    const double original_clearance = clearance(original);
+    if (original_clearance >= fifo_goal_desired_clearance_) return;
+    double best_clearance = original_clearance;
+    geometry_msgs::Point best = original;
+    // 半径从小到大，同分保留先选者；方向固定，不引入随机或持续追点。
+    for (int ring = 1; ring * 0.05 <= fifo_goal_max_offset_ + 1e-9; ++ring) {
+      const double radius = std::min(ring * 0.05, fifo_goal_max_offset_);
+      for (int direction = 0; direction < 16; ++direction) {
+        const double angle = direction * (2.0 * M_PI / 16.0);
+        geometry_msgs::Point candidate = original;
+        candidate.x += radius * std::cos(angle);
+        candidate.y += radius * std::sin(angle);
+        const double candidate_clearance = clearance(candidate);
+        if (candidate_clearance <= best_clearance + 1e-9) continue;
+        int hits = 0;
+        // 起点是航点而非后机机身，不能套用忽略机身附近点云的距离。
+        if (relayPointOccupied(candidate, &hits) ||
+            segmentBlocked(original, candidate, &hits, 0.0))
+          continue;
+        best = candidate;
+        best_clearance = candidate_clearance;
+      }
+    }
+    if (best_clearance <= original_clearance + 1e-9) return;
+    point->execution_position = followerToWorld(best);
+    // 微调只改变XY，不改变原航点的高度语义。
+    point->execution_position.z = point->position.z;
+    publishRelayPath();
+    ROS_INFO("[safe_follower] FIFO goal adjusted local=(%.2f,%.2f)->(%.2f,%.2f) "
+             "offset=%.3fm clearance=%.3f->%.3fm (capped at %.2fm).",
+             original.x, original.y, best.x, best.y,
+             std::hypot(best.x - original.x, best.y - original.y),
+             original_clearance, best_clearance, fifo_goal_desired_clearance_);
+  }
+
   bool handleSimpleDiffPlannerExecution(const ros::Time& now) {
     if (simple_occupied_recovery_active_) {
       publishState("DIFF_FIFO_OCCUPIED_HISTORY_RETREAT", 1.0, 0.25, 0.0);
@@ -2066,7 +2168,11 @@ class LeaderSafePathFollower {
       return true;
     }
 
-    const RoutePoint desired_world = relay_waypoints_[active_relay_index_];
+    RoutePoint& active_point = relay_waypoints_[active_relay_index_];
+    selectSimpleExecutionPosition(&active_point, now);
+    RoutePoint desired_world = active_point;
+    if (active_point.execution_position_selected)
+      desired_world.position = active_point.execution_position;
     const double release_distance = desired_world.is_door
         ? door_release_inside_distance_ : waypoint_release_min_separation_;
     const bool terminal_relay = terminal_mode_active_ &&
@@ -2651,7 +2757,8 @@ class LeaderSafePathFollower {
   }
 
   bool segmentBlocked(const geometry_msgs::Point& current_local,
-                      const geometry_msgs::Point& target_local, int* hit_count) const {
+                      const geometry_msgs::Point& target_local, int* hit_count,
+                      double near_ignore = -1.0) const {
     *hit_count = 0;
     if (!obstacle_check_enabled_ || !follower_cloud_) return false;
     const double dx = target_local.x - current_local.x;
@@ -2666,7 +2773,7 @@ class LeaderSafePathFollower {
       for (; iter_x != iter_x.end(); ++iter_x, ++iter_y, ++iter_z) {
         if (!std::isfinite(*iter_x) || !std::isfinite(*iter_y) || !std::isfinite(*iter_z)) continue;
         const double from_current = std::hypot(*iter_x - current_local.x, *iter_y - current_local.y);
-        if (from_current < obstacle_ignore_near_) continue;
+        if (from_current < (near_ignore < 0.0 ? obstacle_ignore_near_ : near_ignore)) continue;
         double projection = ((*iter_x - current_local.x) * dx +
                              (*iter_y - current_local.y) * dy) / length_sq;
         if (projection < 0.0 || projection > 1.0) continue;
@@ -4253,6 +4360,8 @@ class LeaderSafePathFollower {
   bool have_leader_odom_{false}, have_follower_odom_{false};
   bool use_diff_planner_{true};  // 2026-07-28: 默认启用UAV1独立Diff规划，旧直控仅作显式回退。
   bool simple_segment_endpoint_following_{false};
+  bool enable_fifo_goal_adjustment_{true};
+  double fifo_goal_max_offset_{0.30}, fifo_goal_desired_clearance_{0.50};
   bool simple_occupied_recovery_active_{false};
   // 保存本进程发出的目标及其FIFO归属，允许迟到的退让接管，拒绝上次任务的锁存消息。
   std::map<uint64_t, uint64_t> simple_diff_goal_owners_;
