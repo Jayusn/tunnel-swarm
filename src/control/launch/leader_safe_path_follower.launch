@@ -132,7 +132,7 @@
         <!-- 2026-07-28: 禁止接力管理器直控后机，改向UAV1 Diff发布离散目标。 -->
         <param name="use_diff_planner" value="true"/>
         <!-- 前机每段实际停稳终点按FIFO缓存；后机一次只把队首原坐标交给Diff。
-             自身位置占据时沿历史后退，删除危险队首，再等前机离下一缓存点1.0m后放行。 -->
+             自身位置占据时沿历史后退，删除危险队首，再等前机离下一普通缓存点1.5m后放行。 -->
         <!-- 当前队首未到达时不切换候选点；仅两机距离小于0.60m时允许间距退让。 -->
         <param name="simple_segment_endpoint_following" value="true"/>
         <param name="simple_diff_retry_delay" value="0.20"/>
@@ -192,18 +192,18 @@
         <param name="follower_detection_enable_topic" value="/UAV1/corridor_search/dynamic_detection_enable"/>
         <param name="follow_distance" value="1.50"/>
         <param name="release_path_length" value="0.70"/>
-        <!-- 普通点1.00m内锁点；入口不受1m门槛影响，只有0.60m内才允许间距退让。 -->
+        <!-- 普通点1.50m内锁点；入口不受普通点门槛影响，只有0.60m内才允许间距退让。 -->
         <param name="enable_diff_separation_safety" value="true"/>
-        <param name="min_separation" value="1.00"/>
-        <!-- UAV0当前位置离当前FIFO目标的XY距离达到1.00m后，才向UAV1释放该点。 -->
-        <param name="waypoint_release_min_separation" value="1.00"/>
+        <param name="min_separation" value="1.50"/>
+        <!-- UAV0当前位置离当前普通FIFO目标的XY距离达到1.50m后，才向UAV1释放该点。 -->
+        <param name="waypoint_release_min_separation" value="1.50"/>
         <!-- 不接收前机z；名义0.60m，只有自身点云线段受阻才允许上探到0.70m。 -->
         <param name="fixed_follow_height" value="0.60"/>
         <param name="follow_height_min" value="0.60"/>
         <param name="follow_height_max" value="0.70"/>
         <!-- 前机轨迹只提供XY；不按前机实测高度拦截停稳终点，后机统一在自身0.60m高度交给Diff规划。 -->
         <param name="separation_recovery_distance" value="0.60"/>
-        <param name="separation_release_distance" value="1.00"/>
+        <param name="separation_release_distance" value="1.50"/>
         <param name="emergency_retreat_step" value="0.35"/>
         <param name="emergency_retreat_speed" value="0.30"/>
         <!-- 2026-07-16: 后机落点取前机安全轨迹末端后方约0.5m；终点模式关闭两机距离条件。 -->
@@ -228,7 +228,7 @@
         <param name="route_resume_radius" value="0.45"/>
         <!-- 2026-07-21: U形转弯负投影轨迹离开旧路线0.5m后确认为新分支，恢复接力且保留完整弯曲路径。 -->
         <param name="turn_branch_confirm_distance" value="0.50"/>
-        <!-- 入口点在前机沿门朝向进入0.70m后放行；普通FIFO点仍按1.00m门槛。 -->
+        <!-- 入口点在前机沿门朝向进入0.70m后放行；普通FIFO点按1.50m门槛。 -->
         <param name="door_release_inside_distance" value="0.70"/>
         <param name="relay_release_distance" value="0.70"/>
         <param name="relay_waypoint_spacing" value="2.50"/>
