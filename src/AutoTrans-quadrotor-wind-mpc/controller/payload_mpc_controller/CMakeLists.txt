@@ -134,6 +134,7 @@ install(TARGETS mpc_controller_node force_estimator_replay
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 
 if(CATKIN_ENABLE_TESTING)
+  catkin_add_nosetests(test/test_input_callback_priority.py)
   find_package(rostest REQUIRED)
   catkin_add_gtest(test_selected_force_estimator test/test_selected_force_estimator.cpp)
   if(TARGET test_selected_force_estimator)

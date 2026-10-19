@@ -21,7 +21,7 @@ def main():
     required_source = (
         "void updateLatestStates()",
         "void fastPredictIMU(double t, V3D acc, V3D gyr)",
-        "acc = acc * G_m_s2 / p_imu->GetMeanAccNorm();",
+        "latest_acceleration_scale = G_m_s2 / p_imu->GetMeanAccNorm();",
         "fastPredictIMU(\n",
         "nh.param<string>(\"publish/high_freq_odom_topic\"",
         "nh.param<bool>(\"publish/odometry_enable\", odometry_pub_en, true);",

@@ -2,11 +2,15 @@
 #include "mpc_fsm.h"
 #include "mpc_controller.h"
 #include <ros/ros.h>
+#include <ros/callback_queue.h>
 #include <clocale>
 
+// 输入与控制计算保持单线程访问，求解前优先处理已到达输入。
+ros::CallbackQueue input_callback_queue;
 std::unique_ptr<PayloadMPC::MPCFSM> fsm_ptr;
 void MPC_controller_main(const ros::TimerEvent &)
 {
+    input_callback_queue.callAvailable(ros::WallDuration(0.0));
     fsm_ptr->process();
 }
 
@@ -21,6 +25,9 @@ int main(int argc, char **argv)
     std::setlocale(LC_ALL, "");
     ros::init(argc, argv, "MPCctrl");
     ros::NodeHandle nh("~");
+    nh.setCallbackQueue(&input_callback_queue);
+    ros::NodeHandle timer_nh(nh);
+    timer_nh.setCallbackQueue(ros::getGlobalCallbackQueue());
 
     PayloadMPC::MpcParams param;
     param.config_from_ros_handle(nh);
@@ -140,7 +147,7 @@ int main(int argc, char **argv)
         ROS_INFO("[启动] 等待遥控器数据。");
         while (ros::ok())
         {
-            ros::spinOnce();
+            input_callback_queue.callAvailable(ros::WallDuration(0.0));
             if (fsm.rc_is_received(ros::Time::now()))
             {
                 ROS_INFO("[启动] 已收到遥控器数据。");
@@ -151,7 +158,7 @@ int main(int argc, char **argv)
         int trials = 0;
         while (ros::ok() && !fsm.state_data.current_state.connected)
         {
-            ros::spinOnce();
+            input_callback_queue.callAvailable(ros::WallDuration(0.0));
             ros::Duration(1.0).sleep();
             if (trials++ > 5)
                 ROS_ERROR_THROTTLE(5.0, "[启动] 无法连接 PX4，请检查 MAVROS 链路。");
@@ -163,12 +170,16 @@ int main(int argc, char **argv)
     }
 
     // 创建外力观察器 ROS 定时器。
-    ros::Timer force_state_timer = nh.createTimer(ros::Duration(1.0 / param.force_estimator_param_.force_observer_freq), system_state_update_main);
+    ros::Timer force_state_timer = timer_nh.createTimer(ros::Duration(1.0 / param.force_estimator_param_.force_observer_freq), system_state_update_main);
     // 创建控制器 ROS 定时器。
-    ros::Timer MPC_controller_main_timer = nh.createTimer(ros::Duration(1.0 / param.ctrl_freq_max_), MPC_controller_main);
+    ros::Timer MPC_controller_main_timer = timer_nh.createTimer(ros::Duration(1.0 / param.ctrl_freq_max_), MPC_controller_main);
     // 不使用反馈作为触发器；实测表明两种触发方式的性能没有明显差异。
 
-    ros::spin();
+    while (ros::ok())
+    {
+        input_callback_queue.callAvailable(ros::WallDuration(0.0));
+        ros::getGlobalCallbackQueue()->callOne(ros::WallDuration(0.001));
+    }
 
     return 0;
 }

@@ -35,6 +35,7 @@
 #include <omp.h>
 #include "performance_trace.h"
 #include <algorithm>
+#include <atomic>
 #include <mutex>
 #include <math.h>
 #include <thread>
@@ -44,6 +45,7 @@
 #include <Python.h>
 #include <so3_math.h>
 #include <ros/ros.h>
+#include <ros/callback_queue.h>
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 #include "IMU_Processing.hpp"
@@ -96,7 +98,8 @@ double last_timestamp_lidar = 0, last_timestamp_imu = -1.0;
 double gyr_cov = 0.1, acc_cov = 0.1, b_gyr_cov = 0.0001, b_acc_cov = 0.0001;
 double filter_size_corner_min = 0, filter_size_surf_min = 0, filter_size_map_min = 0, fov_deg = 0;
 double cube_len = 0, HALF_FOV_COS = 0, FOV_DEG = 0, total_distance = 0, lidar_end_time = 0, first_lidar_time = 0.0;
-int    effct_feat_num = 0, time_log_counter = 0, scan_count = 0, publish_count = 0;
+int    effct_feat_num = 0, time_log_counter = 0, scan_count = 0;
+std::atomic<int> publish_count{0};
 int    iterCount = 0, feats_down_size = 0, NUM_MAX_ITERATIONS = 0, laserCloudValidNum = 0, pcd_save_interval = -1, pcd_index = 0;
 bool   point_selected_surf[100000] = {0};
 bool   lidar_pushed, flg_first_scan = true, flg_exit = false, flg_EKF_inited;
@@ -154,22 +157,23 @@ double latest_time;
 V3D latest_P, latest_V, latest_Ba, latest_Bg, latest_acc_0, latest_gyr_0, acc_0, gyr_0;
 M3D latest_Q;
 bool init = false;
+// 校正交接时更新预测快照，IMU线程不读取点云线程正在修改的EKF状态。
+double latest_acceleration_scale = 1.0;
+V3D latest_gravity = V3D::Zero();
 
 // 只传播状态，不发布；点云校正后重放缓存 IMU 时不能重复发送旧时间戳。
 void predictIMUState(double t, V3D acc, V3D gyr)
 {
     // MID360 驱动发布的线加速度单位为 g。使用 FAST-LIO 初始化得到的静止模长，
     // 与普通 IMU 传播保持相同归一化，将其转换为 m/s^2 后再扣除零偏并积分。
-    acc = acc * G_m_s2 / p_imu->GetMeanAccNorm();
+    acc *= latest_acceleration_scale;
     const double dt = t - latest_time;
     if (dt <= 0.0) return;
     latest_time = t;
-    V3D un_acc_0 = latest_Q * (latest_acc_0 - latest_Ba) +
-                   V3D(state_point.grav[0], state_point.grav[1], state_point.grav[2]);
+    V3D un_acc_0 = latest_Q * (latest_acc_0 - latest_Ba) + latest_gravity;
     V3D un_gyr = 0.5 * (latest_gyr_0 + gyr) - latest_Bg;
     latest_Q = latest_Q * Exp(un_gyr, dt);
-    V3D un_acc_1 = latest_Q * (acc - latest_Ba) +
-                   V3D(state_point.grav[0], state_point.grav[1], state_point.grav[2]);
+    V3D un_acc_1 = latest_Q * (acc - latest_Ba) + latest_gravity;
     V3D un_acc = 0.5 * (un_acc_0 + un_acc_1);
     latest_P = latest_P + dt * latest_V + 0.5 * dt * dt * un_acc;
     latest_V = latest_V + dt * un_acc;
@@ -180,6 +184,10 @@ void predictIMUState(double t, V3D acc, V3D gyr)
 
 void updateLatestStates()
 {
+    // 只在校正状态交接/历史重放期间锁住 IMU；点云匹配、建图和发布均不持有该锁。
+    std::lock_guard<std::mutex> lock(mtx_buffer);
+    latest_acceleration_scale = G_m_s2 / p_imu->GetMeanAccNorm();
+    latest_gravity = V3D(state_point.grav[0], state_point.grav[1], state_point.grav[2]);
     latest_time = lidar_end_time;
     latest_P = state_point.pos;
     latest_Q = state_point.rot;
@@ -207,10 +215,10 @@ void updateLatestStates()
                                after->angular_velocity.z) - gyr);
         }
     }
-    latest_acc_0 = acc * G_m_s2 / p_imu->GetMeanAccNorm();
+    latest_acc_0 = acc * latest_acceleration_scale;
     latest_gyr_0 = gyr;
 
-    // 回调和校正在同一 spinOnce 主线程运行；缓存已包含此前收到的未来 IMU。
+    // IMU 回调独立运行；持锁重放校正计算期间收到的 IMU，追上最后发布的采样时刻。
     // 逐帧重放到最新采样时刻，避免用最新两帧一步跨过整个校正延迟。
     for (const auto &imu : imu_buffer)
     {
@@ -218,6 +226,7 @@ void updateLatestStates()
             V3D(imu->linear_acceleration.x, imu->linear_acceleration.y, imu->linear_acceleration.z),
             V3D(imu->angular_velocity.x, imu->angular_velocity.y, imu->angular_velocity.z));
     }
+    init = true;
 }
 
 void fastPredictIMU(double t, V3D acc, V3D gyr)
@@ -241,9 +250,9 @@ void fastPredictIMU(double t, V3D acc, V3D gyr)
     odomHigh.twist.twist.linear.y = latest_V.y();
     odomHigh.twist.twist.linear.z = latest_V.z();
     // angular 为机体系角速度，单位 rad/s；来源为当前 IMU 角速度减去 FAST-LIO 估计的陀螺零偏。
-    odomHigh.twist.twist.angular.x = gyr.x() - state_point.bg.x();
-    odomHigh.twist.twist.angular.y = gyr.y() - state_point.bg.y();
-    odomHigh.twist.twist.angular.z = gyr.z() - state_point.bg.z();
+    odomHigh.twist.twist.angular.x = gyr.x() - latest_Bg.x();
+    odomHigh.twist.twist.angular.y = gyr.y() - latest_Bg.y();
+    odomHigh.twist.twist.angular.z = gyr.z() - latest_Bg.z();
 
     odomHigh_speed.publish(odomHigh);
 }
@@ -386,22 +395,21 @@ void lasermap_fov_segment()
 
 void standard_pcl_cbk(const sensor_msgs::PointCloud2::ConstPtr &msg) 
 {
-    mtx_buffer.lock();
     scan_count ++;
     double preprocess_start_time = omp_get_wtime();
+    PointCloudXYZI::Ptr ptr(new PointCloudXYZI());
+    p_pre->process(msg, ptr);
+    std::lock_guard<std::mutex> lock(mtx_buffer);
     if (msg->header.stamp.toSec() < last_timestamp_lidar)
     {
         ROS_ERROR("lidar loop back, clear buffer");
         lidar_buffer.clear();
     }
 
-    PointCloudXYZI::Ptr  ptr(new PointCloudXYZI());
-    p_pre->process(msg, ptr);
     lidar_buffer.push_back(ptr);
     time_buffer.push_back(msg->header.stamp.toSec());
     last_timestamp_lidar = msg->header.stamp.toSec();
     s_plot11[scan_count] = omp_get_wtime() - preprocess_start_time;
-    mtx_buffer.unlock();
     sig_buffer.notify_all();
 }
 
@@ -409,9 +417,11 @@ double timediff_lidar_wrt_imu = 0.0;
 bool   timediff_set_flg = false;
 void livox_pcl_cbk(const livox_ros_driver2::CustomMsg::ConstPtr &msg) 
 {
-    mtx_buffer.lock();
     double preprocess_start_time = omp_get_wtime();
     scan_count ++;
+    PointCloudXYZI::Ptr ptr(new PointCloudXYZI());
+    p_pre->process(msg, ptr);
+    std::lock_guard<std::mutex> lock(mtx_buffer);
     if (msg->header.stamp.toSec() < last_timestamp_lidar)
     {
         ROS_ERROR("lidar loop back, clear buffer");
@@ -431,13 +441,10 @@ void livox_pcl_cbk(const livox_ros_driver2::CustomMsg::ConstPtr &msg)
         printf("Self sync IMU and LiDAR, time diff is %.10lf \n", timediff_lidar_wrt_imu);
     }
 
-    PointCloudXYZI::Ptr  ptr(new PointCloudXYZI());
-    p_pre->process(msg, ptr);
     lidar_buffer.push_back(ptr);
     time_buffer.push_back(last_timestamp_lidar);
     
     s_plot11[scan_count] = omp_get_wtime() - preprocess_start_time;
-    mtx_buffer.unlock();
     sig_buffer.notify_all();
 }
 
@@ -446,6 +453,7 @@ void imu_cbk(const sensor_msgs::Imu::ConstPtr &msg_in)
     publish_count ++;
     // cout<<"IMU got at: "<<msg_in->header.stamp.toSec()<<endl;
     sensor_msgs::Imu::Ptr msg(new sensor_msgs::Imu(*msg_in));
+    std::lock_guard<std::mutex> lock(mtx_buffer);
 
     // 高频预测使用与当前 FAST-LIO 缓冲一致的校正后时间戳；MID360 原始加速度单位为 g，
     // 在 fastPredictIMU() 内转换为 m/s^2；角速度单位为 rad/s。
@@ -460,7 +468,7 @@ void imu_cbk(const sensor_msgs::Imu::ConstPtr &msg_in)
     {
         // 保留 /livox/imu 的原始 g 单位供 FAST-LIO 使用，并并行发布符合 ROS 语义的 m/s^2 数据。
         // 角速度仍为 MID360 IMU 机体系数据，单位 rad/s；orientation 仍保持驱动给出的无效值。
-        const double acceleration_scale = G_m_s2 / p_imu->GetMeanAccNorm();
+        const double acceleration_scale = latest_acceleration_scale;
         sensor_msgs::Imu imu_mps2(*msg);
         imu_mps2.linear_acceleration.x *= acceleration_scale;
         imu_mps2.linear_acceleration.y *= acceleration_scale;
@@ -480,7 +488,6 @@ void imu_cbk(const sensor_msgs::Imu::ConstPtr &msg_in)
 
     double timestamp = msg->header.stamp.toSec();
 
-    mtx_buffer.lock();
 
     if (timestamp < last_timestamp_imu)
     {
@@ -491,7 +498,6 @@ void imu_cbk(const sensor_msgs::Imu::ConstPtr &msg_in)
     last_timestamp_imu = timestamp;
 
     imu_buffer.push_back(msg);
-    mtx_buffer.unlock();
     sig_buffer.notify_all();
 }
 
@@ -499,6 +505,7 @@ double lidar_mean_scantime = 0.0;
 int    scan_num = 0;
 bool sync_packages(MeasureGroup &meas)
 {
+    std::lock_guard<std::mutex> lock(mtx_buffer);
     if (lidar_buffer.empty() || imu_buffer.empty()) {
         return false;
     }
@@ -1064,7 +1071,13 @@ int main(int argc, char** argv)
     ros::Subscriber sub_pcl = p_pre->lidar_type == AVIA ? \
         nh.subscribe(lid_topic, 200000, livox_pcl_cbk) : \
         nh.subscribe(lid_topic, 200000, standard_pcl_cbk);
-    ros::Subscriber sub_imu = nh.subscribe(imu_topic, 200000, imu_cbk);
+    // IMU 使用独立队列，点云预处理/匹配/地图发布不再阻塞高频预测输出。
+    ros::CallbackQueue imu_callback_queue;
+    ros::NodeHandle imu_nh(nh);
+    imu_nh.setCallbackQueue(&imu_callback_queue);
+    ros::Subscriber sub_imu = imu_nh.subscribe<sensor_msgs::Imu>(
+        imu_topic, 200000, imu_cbk, ros::TransportHints().tcpNoDelay());
+    ros::AsyncSpinner imu_spinner(1, &imu_callback_queue);
     ros::Publisher pubLaserCloudFull = nh.advertise<sensor_msgs::PointCloud2>
             (cloud_registered_topic, 100000);
     ros::Publisher pubLaserCloudFull_body = nh.advertise<sensor_msgs::PointCloud2>
@@ -1086,6 +1099,7 @@ int main(int argc, char** argv)
             (high_freq_odom_topic, 10000);
     // 单位转换后的 MID360 IMU，仅供需要 m/s^2 的下游节点使用；不替换 FAST-LIO 原始 IMU 输入。
     imu_mps2_pub = nh.advertise<sensor_msgs::Imu>(imu_mps2_topic, 10000);
+    imu_spinner.start();
 //------------------------------------------------------------------------------------------------------
     signal(SIGINT, SigHandle);
     bool performance_trace_enabled = false;
@@ -1215,7 +1229,6 @@ int main(int argc, char** argv)
             perf_loop.mark(7);
 
             // 每次点云 EKF 校正完成后刷新 IMU 前向预测初值；普通校正里程计仍按原逻辑发布。
-            init = true;
             updateLatestStates();
 
             /******* Publish odometry *******/
@@ -1271,6 +1284,7 @@ int main(int argc, char** argv)
         rate.sleep();
     }
 
+    imu_spinner.stop();
     /**************** save map ****************/
     /* 1. make sure you have enough memories
     /* 2. pcd save will largely influence the real-time performences **/
