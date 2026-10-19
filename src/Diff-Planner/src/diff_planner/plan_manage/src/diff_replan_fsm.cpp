@@ -747,7 +747,13 @@ namespace diff_planner
       const bool reached_target = occupied_recovery_vertical_
                                       ? std::abs(remaining.z()) <= escape_reach_tolerance_
                                       : remaining.head<2>().norm() <= escape_reach_tolerance_;
-      if (current_occ == 0 && reached_target)
+      const auto &local = planner_manager_->traj_.local_traj;
+      // 回环/近邻折线可能提前经过终点附近，至少执行到最后一段再判到达。
+      const int piece_count = local.traj.getPieceNum();
+      const bool final_history_piece = !occupied_recovery_from_history_ || piece_count <= 1 ||
+          now_sec >= local.start_time + local.duration -
+                     local.traj[piece_count - 1].getDuration();
+      if (current_occ == 0 && reached_target && final_history_piece)
       {
         ROS_INFO("[局部脱障] 已到达退让点并离开膨胀占据区：pos=(%.3f, %.3f, %.3f)。",
                  odom_pos_.x(), odom_pos_.y(), odom_pos_.z());
@@ -1375,7 +1381,8 @@ namespace diff_planner
   }
 
   bool DiffReplanFSM::selectHistoryRecoveryTarget(Eigen::Vector3d &target,
-                                                  double &clearance)
+                                                  double &clearance,
+                                                  std::vector<Eigen::Vector3d> *history_path)
   {
     const double resolution = planner_manager_->grid_map_->getResolution();
     const double min_distance = std::max(resolution, 2.0 * escape_reach_tolerance_);
@@ -1385,6 +1392,8 @@ namespace diff_planner
     double selected_direct_distance = 0.0;
     bool found = false;
     Eigen::Vector3d previous = odom_pos_;
+    std::vector<Eigen::Vector3d> reverse_path{odom_pos_};
+    std::size_t selected_path_size = 0;
     for (auto it = free_odom_history_.rbegin(); it != free_odom_history_.rend(); ++it)
     {
       const Eigen::Vector3d candidate(it->x, it->y, escape_recovery_height_);
@@ -1393,6 +1402,7 @@ namespace diff_planner
       history_distance += std::hypot(candidate.x() - previous.x(),
                                      candidate.y() - previous.y());
       previous = candidate;
+      reverse_path.push_back(candidate);
       const double direct_distance = std::hypot(candidate.x() - odom_pos_.x(),
                                                 candidate.y() - odom_pos_.y());
       const double distance_error = std::abs(history_distance - escape_max_distance_);
@@ -1405,11 +1415,17 @@ namespace diff_planner
         best_distance_error = distance_error;
         selected_history_distance = history_distance;
         selected_direct_distance = direct_distance;
+        selected_path_size = reverse_path.size();
         found = true;
       }
 
       if (history_distance >= escape_max_distance_)
         break;
+    }
+    if (history_path != nullptr)
+    {
+      reverse_path.resize(selected_path_size);
+      *history_path = std::move(reverse_path);
     }
     if (found)
     {
@@ -1521,11 +1537,14 @@ namespace diff_planner
 
   bool DiffReplanFSM::selectOccupiedRecoveryTarget(Eigen::Vector3d &target,
                                                    bool &from_history,
-                                                   double &clearance)
+                                                   double &clearance,
+                                                   std::vector<Eigen::Vector3d> *history_path)
   {
+    if (history_path != nullptr)
+      history_path->clear();
     occupied_recovery_vertical_ = false;
     if (!occupied_recovery_history_failed_ &&
-        selectHistoryRecoveryTarget(target, clearance))
+        selectHistoryRecoveryTarget(target, clearance, history_path))
     {
       from_history = true;
       return true;
@@ -1546,17 +1565,26 @@ namespace diff_planner
     return false;
   }
 
-  bool DiffReplanFSM::callOccupiedRecovery(const Eigen::Vector3d &target)
+  bool DiffReplanFSM::callOccupiedRecovery(
+      const Eigen::Vector3d &target,
+      const std::vector<Eigen::Vector3d> &history_path)
   {
-    if (!planner_manager_->OccupiedStartRecovery(
-            odom_pos_, target, escape_speed_, escape_max_occupied_prefix_))
+    const bool success = history_path.empty()
+        ? planner_manager_->OccupiedStartRecovery(
+              odom_pos_, target, escape_speed_, escape_max_occupied_prefix_)
+        : planner_manager_->OccupiedHistoryRecovery(
+              history_path, escape_speed_, escape_max_occupied_prefix_);
+    if (!success)
       return false;
 
     traj_utils::PolyTraj poly_msg;
     traj_utils::MINCOTraj minco_msg;
     polyTraj2ROSMsg(poly_msg, minco_msg);
     poly_traj_pub_.publish(poly_msg);
-    broadcast_ploytraj_pub_.publish(minco_msg);
+    // MINCO只包含端点PVA和中间位置，接收端会重新求解，无法表达拐点停转。
+    // 异构接力由完整PolyTraj驱动；不能把多段退让广播成一条重新切角的MINCO。
+    if (history_path.empty() || planner_manager_->traj_.local_traj.traj.getPieceNum() == 1)
+      broadcast_ploytraj_pub_.publish(minco_msg);
     return true;
   }
 
@@ -1566,16 +1594,17 @@ namespace diff_planner
     Eigen::Vector3d target;
     double clearance = 0.0;
     bool from_history = false;
-    if (!selectOccupiedRecoveryTarget(target, from_history, clearance))
+    std::vector<Eigen::Vector3d> history_path;
+    if (!selectOccupiedRecoveryTarget(target, from_history, clearance, &history_path))
       return false;
-    if (!callOccupiedRecovery(target))
+    if (!callOccupiedRecovery(target, history_path))
     {
       if (!from_history)
         return false;
       // 历史点能选中但轨迹生成失败，也必须给现有垂直/侧向备选一次机会。
       occupied_recovery_history_failed_ = true;
-      if (!selectOccupiedRecoveryTarget(target, from_history, clearance) ||
-          !callOccupiedRecovery(target))
+      if (!selectOccupiedRecoveryTarget(target, from_history, clearance, &history_path) ||
+          !callOccupiedRecovery(target, history_path))
         return false;
     }
 

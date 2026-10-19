@@ -811,8 +811,17 @@ namespace diff_planner
   {
     poly_traj::Trajectory traj = opt.getTraj();
     Eigen::MatrixXd cps = opt.getInitConstraintPoints(getCpsNumPrePiece());
+    return setLocalTrajFromTrajectory(std::move(traj),
+        ConstraintPoints::two_thirds_id(cps, touch_goal), check_dynamic_obstacles,
+        max_initial_occupied_prefix);
+  }
+
+  bool DiffPlannerManager::setLocalTrajFromTrajectory(
+      poly_traj::Trajectory traj, int constraint_end,
+      bool check_dynamic_obstacles, double max_initial_occupied_prefix)
+  {
     PtsChk_t pts_to_check;
-    bool ret = ploy_traj_opt_->computePointsToCheck(traj, ConstraintPoints::two_thirds_id(cps, touch_goal), pts_to_check);
+    bool ret = ploy_traj_opt_->computePointsToCheck(traj, constraint_end, pts_to_check);
     if (ret && pts_to_check.size() >= 1 && pts_to_check.back().size() >= 1)
     {
       const double start_time = ros::Time::now().toSec();
@@ -884,6 +893,72 @@ namespace diff_planner
 
     ROS_WARN("Generated occupied-start recovery trajectory: distance=%.3f m, duration=%.3f s, peak_speed<=%.3f m/s.",
              distance, duration, max_speed);
+    return true;
+  }
+
+  bool DiffPlannerManager::OccupiedHistoryRecovery(
+      const std::vector<Eigen::Vector3d> &reverse_path, double max_speed,
+      double max_initial_occupied_prefix)
+  {
+    if (!std::isfinite(max_speed) || max_speed <= 0.0 ||
+        !std::isfinite(pp_.max_acc_) || pp_.max_acc_ <= 0.0)
+      return false;
+
+    std::vector<Eigen::Vector3d> path;
+    for (const auto &point : reverse_path)
+    {
+      if (!point.allFinite())
+        return false;
+      // 只删除数值上重复的点，不能按大距离抽稀而丢掉历史拐点。
+      if (!path.empty() && (point - path.back()).norm() <= 1.0e-6)
+        continue;
+      path.push_back(point);
+      while (path.size() >= 3)
+      {
+        const std::size_t n = path.size();
+        const Eigen::Vector3d before = path[n - 2] - path[n - 3];
+        const Eigen::Vector3d after = path[n - 1] - path[n - 2];
+        // 同向共线才合并；掉头和拐角均保留，不做跨拐点平滑。
+        if (before.dot(after) <= 0.0 ||
+            before.cross(after).norm() > 1.0e-6 * before.norm() * after.norm())
+          break;
+        path.erase(path.end() - 2);
+      }
+    }
+    if (path.size() < 2)
+      return false;
+
+    poly_traj::Trajectory recovery;
+    const Eigen::Vector3d zero = Eigen::Vector3d::Zero();
+    double path_length = 0.0;
+    for (std::size_t i = 1; i < path.size(); ++i)
+    {
+      const double distance = (path[i] - path[i - 1]).norm();
+      // 零端速五次曲线的峰速为1.875*d/T，峰加速度为(10/sqrt(3))*d/T^2。
+      // 复用配置的速度/加速度上限分配时长，不对每个细历史点强加1s停转时长。
+      const double duration = std::max(1.875 * distance / max_speed,
+          std::sqrt((10.0 / std::sqrt(3.0)) * distance / pp_.max_acc_));
+      Eigen::Matrix3d head, tail;
+      head << path[i - 1], zero, zero;
+      tail << path[i], zero, zero;
+      poly_traj::MinJerkOpt segment;
+      segment.reset(head, tail, 1);
+      segment.generate(Eigen::MatrixXd(3, 0), Eigen::VectorXd::Constant(1, duration));
+      recovery.append(segment.getTraj());
+      path_length += distance;
+    }
+
+    // 与普通发布共用采样/占据起点规则；整条折线只登记一次轨迹编号和起始时间。
+    const int constraint_count = recovery.getPieceNum() * getCpsNumPrePiece();
+    if (!setLocalTrajFromTrajectory(std::move(recovery),
+            constraint_count - (constraint_count - 1) / 3,
+            true, max_initial_occupied_prefix))
+      return false;
+
+    ROS_WARN("Generated history-polyline recovery: pieces=%d, path_length=%.3f m, "
+             "duration=%.3f s, peak_speed<=%.3f m/s.",
+             traj_.local_traj.traj.getPieceNum(), path_length,
+             traj_.local_traj.duration, max_speed);
     return true;
   }
 

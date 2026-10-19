@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <limits>
 #include <ros/ros.h>
 #include <ros/callback_queue.h>
 #include <plan_manage/planner_manager.h>
@@ -144,7 +145,10 @@ protected:
     auto odom_pub = nh.advertise<nav_msgs::Odometry>("grid_map/odom", 1);
     cloud_pub = nh.advertise<sensor_msgs::PointCloud2>("grid_map/cloud", 1);
     trajectory_sub = nh.subscribe<traj_utils::PolyTraj>("planning/trajectory", 10,
-        [this](const traj_utils::PolyTraj::ConstPtr &) { ++published; });
+        [this](const traj_utils::PolyTraj::ConstPtr &message) {
+          ++published;
+          last_trajectory = *message;
+        });
     status_sub = nh.subscribe<std_msgs::String>("planning/status", 20,
         [this](const std_msgs::String::ConstPtr &message) {
           statuses.push_back(message->data);
@@ -230,6 +234,7 @@ protected:
   ros::Publisher cloud_pub;
   ros::Subscriber trajectory_sub, status_sub;
   std::vector<std::string> statuses;
+  traj_utils::PolyTraj last_trajectory;
   int published{0}, initial_id{0};
 };
 
@@ -812,6 +817,195 @@ TEST_F(PlannerEndpoint, ClosedHistoryLoopCannotBlockAllAvailableRecovery) {
   EXPECT_TRUE(planner.occupied_recovery_active_);
   EXPECT_GT((planner.occupied_recovery_target_ - start).head<2>().norm(),
             planner.escape_reach_tolerance_);
+}
+
+TEST_F(PlannerEndpoint, HistoryPolylinePreservesCornerInsteadOfCrossingObstacle) {
+  const Eigen::Vector3d start = planner.odom_pos_;
+  const Eigen::Vector3d corner = start + Eigen::Vector3d(0, 0.35, 0);
+  const Eigen::Vector3d end = corner + Eigen::Vector3d(0.35, 0, 0);
+  // 对角线穿过占据，原来的两条历史线段均自由。
+  publishPoint(0.5 * (start + end));
+  ASSERT_EQ(planner.planner_manager_->grid_map_->getInflateOccupancy(start), 0);
+  ASSERT_EQ(planner.planner_manager_->grid_map_->getInflateOccupancy(corner), 0);
+  ASSERT_FALSE(planner.callOccupiedRecovery(end));
+  planner.escape_max_distance_ = 0.70;
+  planner.free_odom_history_.clear();
+  planner.free_odom_history_.push_back(FSM::FreeOdomSample{998, end.x(), end.y(), end.z()});
+  planner.free_odom_history_.push_back(FSM::FreeOdomSample{999, corner.x(), corner.y(), corner.z()});
+  int broadcasts = 0;
+  auto broadcast_sub = nh.subscribe<traj_utils::MINCOTraj>("planning/broadcast_traj_send", 10,
+      [&broadcasts](const traj_utils::MINCOTraj::ConstPtr &) { ++broadcasts; });
+  const auto deadline = ros::WallTime::now() + ros::WallDuration(2.0);
+  while (planner.broadcast_ploytraj_pub_.getNumSubscribers() == 0 &&
+         ros::WallTime::now() < deadline)
+    ros::WallDuration(0.01).sleep();
+  ASSERT_GT(planner.broadcast_ploytraj_pub_.getNumSubscribers(), 0U);
+
+  ASSERT_TRUE(planner.startOccupiedRecovery(1000.0));
+
+  const auto &local = planner.planner_manager_->traj_.local_traj;
+  const auto &traj = local.traj;
+  ASSERT_EQ(traj.getPieceNum(), 2);
+  EXPECT_EQ(local.traj_id, initial_id + 1);
+  EXPECT_LT((traj.getJuncPos(1) - corner).norm(), 1e-8);
+  EXPECT_LT((traj.getPos(local.duration) - end).norm(), 1e-8);
+  EXPECT_NEAR(local.duration, 1.875 * 0.70 / planner.escape_speed_, 1e-7);
+  for (int piece = 0; piece < 2; ++piece) {
+    const double duration = traj[piece].getDuration();
+    EXPECT_LT(traj[piece].getVel(0).norm(), 1e-8);
+    EXPECT_LT(traj[piece].getVel(duration).norm(), 1e-8);
+    EXPECT_LT(traj[piece].getAcc(0).norm(), 1e-8);
+    EXPECT_LT(traj[piece].getAcc(duration).norm(), 1e-8);
+    for (int i = 0; i <= 200; ++i) {
+      const double t = duration * i / 200.0;
+      const auto p = traj[piece].getPos(t);
+      EXPECT_EQ(planner.planner_manager_->grid_map_->getInflateOccupancy(p), 0);
+      EXPECT_LE(traj[piece].getVel(t).norm(), planner.escape_speed_ + 1e-8);
+      if (piece == 0) EXPECT_NEAR(p.x(), start.x(), 1e-8);
+      else EXPECT_NEAR(p.y(), corner.y(), 1e-8);
+    }
+  }
+  EXPECT_NEAR(local.start_time + local.duration + 1.0,
+              planner.occupied_recovery_deadline_, 1e-8);
+  drain();
+  EXPECT_EQ(published, 1);
+  EXPECT_EQ(broadcasts, 0); // MINCO不能表达中间停转，不能广播一条不同的重建轨迹。
+  ASSERT_EQ(last_trajectory.duration.size(), 2U);
+  EXPECT_EQ(last_trajectory.traj_id, local.traj_id);
+  // 从实际发布的系数重建，确认两个piece没有在序列化时被重新平滑。
+  for (int piece = 0; piece < 2; ++piece) {
+    poly_traj::CoefficientMat coefficients;
+    for (int c = 0; c < 6; ++c)
+      coefficients.col(c) << last_trajectory.coef_x[6 * piece + c],
+          last_trajectory.coef_y[6 * piece + c], last_trajectory.coef_z[6 * piece + c];
+    poly_traj::Piece wire_piece(last_trajectory.duration[piece], coefficients);
+    EXPECT_LT((wire_piece.getPos(0.5 * wire_piece.getDuration()) -
+               traj[piece].getPos(0.5 * wire_piece.getDuration())).norm(), 1e-6);
+  }
+}
+
+TEST_F(PlannerEndpoint, HistorySelectionRetainsOnlyPointsUpToChosenEndpoint) {
+  const Eigen::Vector3d start = planner.odom_pos_;
+  const Eigen::Vector3d latest = start + Eigen::Vector3d(0, 0.21, 0);
+  const Eigen::Vector3d end = latest + Eigen::Vector3d(0.21, 0, 0);
+  const Eigen::Vector3d older = end + Eigen::Vector3d(0.18, 0, 0);
+  planner.escape_max_distance_ = 0.45;
+  planner.free_odom_history_.clear();
+  for (const auto &p : {older, end, latest})
+    planner.free_odom_history_.push_back(FSM::FreeOdomSample{999, p.x(), p.y(), p.z()});
+  planner.odom_pos_.z() = 0.52;
+  std::vector<Eigen::Vector3d> path;
+  Eigen::Vector3d selected;
+  double clearance = 0;
+
+  ASSERT_TRUE(planner.selectHistoryRecoveryTarget(selected, clearance, &path));
+
+  ASSERT_EQ(path.size(), 3U);
+  EXPECT_LT((path[0] - planner.odom_pos_).norm(), 1e-9);
+  EXPECT_LT((path[1] - latest).norm(), 1e-9);
+  EXPECT_LT((path[2] - end).norm(), 1e-9);
+  EXPECT_LT((selected - end).norm(), 1e-9);
+  planner.occupied_recovery_history_failed_ = true;
+  bool from_history = true;
+  ASSERT_TRUE(planner.selectOccupiedRecoveryTarget(selected, from_history, clearance, &path));
+  EXPECT_FALSE(from_history);
+  EXPECT_TRUE(path.empty());
+}
+
+TEST_F(PlannerEndpoint, CollinearHistoryMergesWithoutChangingStraightRecovery) {
+  const Eigen::Vector3d start = planner.odom_pos_;
+  const Eigen::Vector3d end = start + Eigen::Vector3d(-0.45, 0, 0);
+  auto &manager = *planner.planner_manager_;
+  ASSERT_TRUE(manager.OccupiedStartRecovery(start, end, 0.10));
+  const auto original = manager.traj_.local_traj.traj;
+
+  ASSERT_TRUE(manager.OccupiedHistoryRecovery({start, start,
+      start + Eigen::Vector3d(-0.10, 0, 0),
+      start + Eigen::Vector3d(-0.30, 0, 0), end, end}, 0.10));
+
+  const auto &traj = manager.traj_.local_traj.traj;
+  ASSERT_EQ(traj.getPieceNum(), 1);
+  EXPECT_NEAR(traj.getTotalDuration(), original.getTotalDuration(), 1e-9);
+  for (int i = 0; i <= 200; ++i) {
+    const double t = traj.getTotalDuration() * i / 200.0;
+    EXPECT_LT((traj.getPos(t) - original.getPos(t)).norm(), 1e-8);
+  }
+}
+
+TEST_F(PlannerEndpoint, ShortTurnsAndDirectionReversalAreNotMerged) {
+  const Eigen::Vector3d start = planner.odom_pos_;
+  const Eigen::Vector3d first = start + Eigen::Vector3d(0.02, 0, 0);
+  const Eigen::Vector3d turn = first + Eigen::Vector3d(0, 0.02, 0);
+  const Eigen::Vector3d back = turn + Eigen::Vector3d(0, -0.10, 0);
+  auto &manager = *planner.planner_manager_;
+
+  ASSERT_TRUE(manager.OccupiedHistoryRecovery({start, first, turn, back}, 0.10));
+
+  const auto &traj = manager.traj_.local_traj.traj;
+  ASSERT_EQ(traj.getPieceNum(), 3);
+  EXPECT_LT((traj.getJuncPos(1) - first).norm(), 1e-9);
+  EXPECT_LT((traj.getJuncPos(2) - turn).norm(), 1e-9);
+  for (int i = 0; i < 3; ++i) {
+    const double duration = traj[i].getDuration();
+    if (i < 2) {
+      EXPECT_LT(duration, 1.0);
+    }
+    for (int j = 0; j <= 100; ++j) {
+      EXPECT_LE(traj[i].getVel(duration * j / 100.0).norm(), 0.10 + 1e-8);
+      EXPECT_LE(traj[i].getAcc(duration * j / 100.0).norm(), manager.pp_.max_acc_ + 1e-8);
+    }
+  }
+}
+
+TEST_F(PlannerEndpoint, PolylineRecoveryRetainsConfiguredInitialOccupiedLimit) {
+  const Eigen::Vector3d start = planner.odom_pos_;
+  const Eigen::Vector3d corner = start - Eigen::Vector3d(0.30, 0, 0);
+  const Eigen::Vector3d end = corner + Eigen::Vector3d(0, 0.15, 0);
+  publishPoint(start);
+  auto &manager = *planner.planner_manager_;
+
+  EXPECT_FALSE(manager.OccupiedHistoryRecovery({start, corner, end}, 0.10, 0.05));
+  EXPECT_EQ(manager.traj_.local_traj.traj_id, initial_id);
+  ASSERT_TRUE(manager.OccupiedHistoryRecovery({start, corner, end}, 0.10, 0.20));
+  EXPECT_EQ(manager.traj_.local_traj.traj.getPieceNum(), 2);
+  EXPECT_EQ(manager.traj_.local_traj.traj_id, initial_id + 1);
+}
+
+TEST_F(PlannerEndpoint, InvalidHistoryPolylineCannotReplaceCurrentTrajectory) {
+  auto &manager = *planner.planner_manager_;
+  const Eigen::Vector3d start = planner.odom_pos_;
+  Eigen::Vector3d invalid = start;
+  invalid.x() = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_FALSE(manager.OccupiedHistoryRecovery({}, 0.10));
+  EXPECT_FALSE(manager.OccupiedHistoryRecovery({start, start}, 0.10));
+  EXPECT_FALSE(manager.OccupiedHistoryRecovery({start, invalid}, 0.10));
+  EXPECT_FALSE(manager.OccupiedHistoryRecovery({start, start + Eigen::Vector3d(0.2, 0, 0)}, 0));
+  EXPECT_EQ(manager.traj_.local_traj.traj_id, initial_id);
+}
+
+TEST_F(PlannerEndpoint, HistoryPolylineCannotFinishBeforeReachingItsLastPiece) {
+  const Eigen::Vector3d start = planner.odom_pos_;
+  const Eigen::Vector3d first = start + Eigen::Vector3d(0.15, 0, 0);
+  const Eigen::Vector3d second = first + Eigen::Vector3d(0, 0.15, 0);
+  const Eigen::Vector3d end = second - Eigen::Vector3d(0.15, 0, 0);
+  ASSERT_TRUE(planner.planner_manager_->OccupiedHistoryRecovery({start, first, second, end}, 0.10));
+  const auto &local = planner.planner_manager_->traj_.local_traj;
+  planner.exec_state_ = FSM::OCCUPIED_RECOVERY;
+  planner.occupied_recovery_active_ = planner.occupied_recovery_episode_ = true;
+  planner.occupied_recovery_from_history_ = true;
+  planner.wait_new_target_after_occupied_recovery_ = true;
+  planner.occupied_recovery_target_ = end;
+  planner.occupied_recovery_deadline_ = local.start_time + local.duration + 1.0;
+  planner.odom_pos_ = end;
+
+  exec();
+
+  EXPECT_EQ(planner.exec_state_, FSM::OCCUPIED_RECOVERY);
+  EXPECT_TRUE(planner.occupied_recovery_active_);
+  ros::Time::setNow(ros::Time(local.start_time + local.duration));
+  exec();
+  EXPECT_EQ(planner.exec_state_, FSM::WAIT_TARGET);
+  EXPECT_FALSE(planner.occupied_recovery_active_);
 }
 } // namespace
 

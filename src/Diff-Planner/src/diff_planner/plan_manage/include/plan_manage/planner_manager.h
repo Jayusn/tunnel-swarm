@@ -58,6 +58,9 @@ namespace diff_planner
                                const Eigen::Vector3d &target_pos,
                                double max_speed,
                                double max_initial_occupied_prefix = 0.20);
+    bool OccupiedHistoryRecovery(const std::vector<Eigen::Vector3d> &reverse_path,
+                                 double max_speed,
+                                 double max_initial_occupied_prefix = 0.20);
     bool checkCollision(int drone_id);
     void updateDynamicObjects(const obj_state_msgs::ObjectsStates &msg);
     bool dynamicTrajectoryBlocked(
@@ -84,6 +87,9 @@ namespace diff_planner
     TrajContainer traj_;
 
   private:
+    bool setLocalTrajFromTrajectory(poly_traj::Trajectory traj, int constraint_end,
+                                    bool check_dynamic_obstacles,
+                                    double max_initial_occupied_prefix);
     bool optimizeDynamicCandidates(const poly_traj::MinJerkOpt &initial,
                                    const DynamicObstacleState &obstacle,
                                    double collision_time,

@@ -206,15 +206,18 @@ namespace diff_planner
                                 SwingCollisionResult *result) const;
     void startSwingWait(const SwingCollisionResult &collision,
                         bool from_fapp = false);
-    bool callOccupiedRecovery(const Eigen::Vector3d &target);
+    bool callOccupiedRecovery(const Eigen::Vector3d &target,
+                              const std::vector<Eigen::Vector3d> &history_path = {});
     void updateFreeOdomHistory(double now);
     void beginOccupiedRecoveryEpisode();
     bool startOccupiedRecovery(double now);
     bool selectOccupiedRecoveryTarget(Eigen::Vector3d &target,
                                       bool &from_history,
-                                      double &clearance);
+                                      double &clearance,
+                                      std::vector<Eigen::Vector3d> *history_path = nullptr);
     bool selectHistoryRecoveryTarget(Eigen::Vector3d &target,
-                                     double &clearance);
+                                     double &clearance,
+                                     std::vector<Eigen::Vector3d> *history_path = nullptr);
     bool selectVerticalRecoveryTarget(Eigen::Vector3d &target,
                                       double &clearance);
     bool selectLateralRecoveryTarget(Eigen::Vector3d &target,
