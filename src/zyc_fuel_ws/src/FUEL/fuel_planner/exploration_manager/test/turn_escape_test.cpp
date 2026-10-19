@@ -58,6 +58,72 @@ class TurnEscapeTest {
     manager.task_search_manager_->initialize(nh);
   }
 public:
+  static void runUnderpassClassification(bool pillar, bool known_low_space,
+                                         bool missing_low_layer = false) {
+    ros::NodeHandle nh("~");
+    nh.setParam("mission/task_search/min_height", 0.10);
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    nh.deleteParam("mission/task_search/min_height");
+    manager.mission_entered_search_region_ = true;
+    const Vector3d pos(0.025, 0.025, 0.625);
+    const Vector3d forward(1, 0, 0);
+    auto& map = *manager.sdf_map_;
+
+    // 用实际点云射线建立低位自由层，避免直接篡改地图占据缓存。
+    if (known_low_space) {
+      for (int layer = 4; layer <= 9; ++layer) {
+        if (missing_low_layer && layer == 6) continue;
+        const double z = (layer + 0.5) * 0.05;
+        pcl::PointCloud<pcl::PointXYZ> background;
+        for (double y = -1.0; y <= 1.0; y += 0.025)
+          background.push_back(pcl::PointXYZ(1.525, y, z));
+        for (int repeat = 0; repeat < 5; ++repeat)
+          map.inputPointCloud(background, background.size(), Vector3d(pos.x(), pos.y(), z));
+      }
+    }
+    pcl::PointCloud<pcl::PointXYZ> obstacle;
+    for (double x = 0.375; x <= 0.525; x += 0.025)
+      for (double y = -0.15; y <= 0.20; y += 0.025)
+        for (double z = pillar ? 0.225 : 0.525; z <= 1.425; z += 0.025)
+          obstacle.push_back(pcl::PointXYZ(x, y, z));
+    for (int repeat = 0; repeat < 8; ++repeat)
+      map.inputPointCloud(obstacle, obstacle.size(), pos);
+
+    const bool expected_suspended = !pillar && known_low_space && !missing_low_layer;
+    check(manager.hasCurrentHeightForwardObstacle(pos, forward),
+          "underpass fixture has no obstacle at flight height");
+    double bottom, exit_progress, distance;
+    check(manager.detectSuspendedObstacle(pos, forward, bottom, exit_progress, distance) ==
+              expected_suspended,
+          "pillar, unknown low space or suspended obstacle was misclassified");
+    check(manager.hasSuspendedForwardObstacle(pos, forward) == expected_suspended,
+          "fallback obstacle classification differs from primary detector");
+    check(manager.beginSuspendedUnderpass(pos, 0.0) == expected_suspended,
+          "primary underpass trigger ignored obstacle classification");
+    if (expected_suspended) {
+      check(manager.suspended_underpass_active_ &&
+            manager.low_probe_phase_ == vertical_detour::LowProbePhase::DESCENDING,
+            "confirmed suspended obstacle did not start descent");
+      check(manager.low_probe_target_.z() < pos.z(),
+            "confirmed suspended obstacle lost its downward target");
+      manager.cancelActiveLowProbe("test fallback independently");
+    }
+    Vector3d next;
+    double yaw;
+    const bool fallback = manager.buildVerticalDetourFallback(
+        pos, 0.0, forward, next, yaw, true);
+    check(fallback == expected_suspended,
+          "forced fallback descent bypassed confirmed free space below obstacle");
+    if (!expected_suspended) {
+      check(manager.low_probe_phase_ == vertical_detour::LowProbePhase::IDLE,
+            "non-suspended obstacle latched a low probe");
+      manager.buildVerticalDetourFallback(pos, 0.0, forward, next, yaw);
+      check(manager.low_probe_phase_ == vertical_detour::LowProbePhase::IDLE,
+            "generic vertical fallback descended beneath an unconfirmed obstacle");
+    }
+  }
+
   static void runManualWaypoints(bool blocked) {
     ros::NodeHandle nh("~");
     FastExplorationManager manager;
@@ -542,6 +608,22 @@ public:
   }
 };
 }
+TEST(UnderpassClassification, FloorToCeilingPillarDoesNotDescend) {
+  fast_planner::TurnEscapeTest::runUnderpassClassification(true, false);
+}
+
+TEST(UnderpassClassification, UnknownLowerPillarDoesNotDescend) {
+  fast_planner::TurnEscapeTest::runUnderpassClassification(false, false);
+}
+
+TEST(UnderpassClassification, ConfirmedSuspendedObstacleDescends) {
+  fast_planner::TurnEscapeTest::runUnderpassClassification(false, true);
+}
+
+TEST(UnderpassClassification, GapInLowObservationsDoesNotDescend) {
+  fast_planner::TurnEscapeTest::runUnderpassClassification(false, true, true);
+}
+
 TEST(ManualWaypoints, CompletesWithoutFrontierTargets) {
   fast_planner::TurnEscapeTest::runManualWaypoints(false);
 }

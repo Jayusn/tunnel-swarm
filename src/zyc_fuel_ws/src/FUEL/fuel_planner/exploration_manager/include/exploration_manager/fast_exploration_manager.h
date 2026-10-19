@@ -330,6 +330,8 @@ private:
                                    const Vector3d& forward) const;
   bool hasLowVerticalSupport(const Vector3d& point,
                              double current_height) const;
+  bool hasKnownFreeSpaceBelowObstacle(const Vector3d& point,
+                                      double bottom_z) const;
   bool planInflationHistoryEscape(const Vector3d& pos, const Vector3d& vel,
                                   const Vector3d& acc, const Vector3d& yaw);
   bool shouldStartGroundAscent(const Vector3d& pos) const;

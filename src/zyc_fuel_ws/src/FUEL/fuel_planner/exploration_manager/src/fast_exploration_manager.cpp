@@ -571,6 +571,8 @@ bool FastExplorationManager::buildVerticalDetourFallback(
                            forward.head<2>().normalized().y(), 0.0);
 
   auto startLowProbe = [&]() {
+    // 通用绕障也必须确认悬空，不能因侧绕失败或低位 UNKNOWN 直接下降补图。
+    if (!hasSuspendedForwardObstacle(pos, direction)) return false;
     const double low_z = vertical_detour_low_height_;
     low_probe_height_ = low_z;
     if (pos.z() <= low_z + vertical_detour_height_tolerance_ ||
@@ -994,12 +996,18 @@ bool FastExplorationManager::detectSuspendedObstacle(
            z <= pos.z() + underpass_clearance_ + 0.15 + 1e-6; z += step) {
         Vector3d probe(xy.x(), xy.y(), z);
         if (!sdf_map_->isInMap(probe) ||
-            sdf_map_->getOccupancy(probe) != SDFMap::OCCUPIED ||
-            cameraWallSupported(probe, travel.head<2>()) ||
-            hasLowVerticalSupport(probe, pos.z()))
+            sdf_map_->getOccupancy(probe) != SDFMap::OCCUPIED)
           continue;
-        column_hit = true;
-        bottom_z = std::min(bottom_z, z - 0.5 * step);
+        // 只用该列最低占据层判断底部；下方已知自由才是悬空。
+        // UNKNOWN/地图外不能作为没有落地支撑的证据，柱子低位缺图也不下穿。
+        const double column_bottom = z - 0.5 * step;
+        if (!cameraWallSupported(probe, travel.head<2>()) &&
+            !hasLowVerticalSupport(probe, pos.z()) &&
+            hasKnownFreeSpaceBelowObstacle(probe, column_bottom)) {
+          column_hit = true;
+          bottom_z = std::min(bottom_z, column_bottom);
+        }
+        break;
       }
     }
     if (column_hit) {
@@ -1046,7 +1054,7 @@ bool FastExplorationManager::beginSuspendedUnderpass(const Vector3d& pos,
                       first_hit_distance, kUnderpassStartDistance);
     return false;
   }
-  // 仅排除悬挂物前方已确认的墙/低位支撑；低位 UNKNOWN 留给下降后的短步探测。
+  // 悬挂物下方已由检测确认自由；这里另外排除接近段的墙和低位支撑。
   const Vector3d travel(direction.head<2>().normalized().x(),
                         direction.head<2>().normalized().y(), 0.0);
   const Vector3d lateral(-travel.y(), travel.x(), 0.0);
@@ -1101,24 +1109,28 @@ bool FastExplorationManager::beginSuspendedUnderpass(const Vector3d& pos,
 
 bool FastExplorationManager::hasSuspendedForwardObstacle(
     const Vector3d& pos, const Vector3d& forward) const {
-  if (!sdf_map_ || forward.head<2>().norm() < 1e-3) return false;
-  const Vector3d travel(forward.head<2>().normalized().x(),
-                        forward.head<2>().normalized().y(), 0.0);
+  double bottom_z, exit_progress, first_hit_distance;
+  return detectSuspendedObstacle(pos, forward, bottom_z, exit_progress,
+                                  first_hit_distance) &&
+         first_hit_distance <= kUnderpassStartDistance;
+}
+
+bool FastExplorationManager::hasKnownFreeSpaceBelowObstacle(
+    const Vector3d& point, double bottom_z) const {
+  if (!sdf_map_) return false;
   const double step = std::max(0.05, sdf_map_->getResolution());
-  const double max_distance = std::min(
-      kUnderpassStartDistance,
-      std::max(vertical_detour_forward_check_distance_,
-               wide_side_bypass_max_lookahead_));
-  for (double ahead = std::max(step, wide_side_bypass_min_lookahead_);
-       ahead <= max_distance + 1e-6; ahead += step) {
-    // 只有悬空障碍真正压在当前通道中心线，才抢先下穿；偏在左右的悬空体
-    // 仍交给水平通道选择，避免在宽敞通道中无谓下降。
-    const Vector3d center_probe = pos + ahead * travel;
-    if (cameraOccupancyColumn(center_probe, pos.z()) &&
-        !hasLowVerticalSupport(center_probe, pos.z()))
-      return true;
+  const double low_height = std::max(vertical_detour_low_height_ + 0.05,
+                                     wide_side_bypass_low_support_height_);
+  int free_layers = 0;
+  for (double height = low_height; height < bottom_z - 1e-6; height += step) {
+    const Vector3d probe(point.x(), point.y(), height);
+    if (!sdf_map_->isInMap(probe) ||
+        sdf_map_->getOccupancy(probe) != SDFMap::FREE ||
+        occupiedNearHeight(point, height))
+      return false;
+    ++free_layers;
   }
-  return false;
+  return free_layers >= 2;
 }
 
 bool FastExplorationManager::hasLowVerticalSupport(
@@ -1142,7 +1154,7 @@ bool FastExplorationManager::hasLowVerticalSupport(
     if (consecutive_low_support >= wide_side_bypass_min_vertical_support_layers_)
       return true;
   }
-  // 低位地图尚未扫到时不武断认成竖直障碍：先让原有低位探测下降补图。
+  // 没有连续支撑也可能只是低位缺图；调用方不能把 false 直接当成悬空。
   // 必须从最低检查层开始连续占据，不能把悬空球底部的两层占据算成落地支撑。
   return false;
 }
@@ -1382,8 +1394,8 @@ bool FastExplorationManager::buildWideSideBypass(
   if (!split.valid && split.suspended_obstacle_seen) {
     ROS_INFO_THROTTLE(
         0.5,
-        "[wide_side_bypass] current-height obstacle has no continuous low support; "
-        "classify as suspended/undetermined and leave it to low-height probing.");
+        "[wide_side_bypass] low support is unconfirmed; keep horizontal lane selection "
+        "unless free space below the obstacle confirms an underpass.");
   }
   const double widest_lane = std::max(split.left_width, split.right_width);
   // 立柱前即使还没有完整的0.25m侧向通道，也先允许一个0.20m的安全拉出，
@@ -1827,16 +1839,16 @@ bool FastExplorationManager::buildMissionForwardFallback(const Vector3d& pos, do
   auto tryObstacleRecovery = [&]() {
     // 竖直障碍物把通道切成左右两路时，先直接去占据地图中净宽更大的一侧。
     // 该场景不参与普通frontier总分，也不等待上下绕行接管。
-    // 先处理中心线上的悬空障碍候选：固定XY下降到低位补图，只有低位中心线
-    // 连续确认为FREE后才允许短步前进。UNKNOWN只能触发原地试探，不能授权下穿。
+    // 只有底部以下已知自由的悬空障碍才触发固定 XY 下降。
+    // 贯穿障碍或低位 UNKNOWN 继续由左右分流处理，不下降试探。
     const bool suspended_forward_obstacle =
         hasSuspendedForwardObstacle(pos, recovery_forward);
     if (suspended_forward_obstacle &&
         pos.z() > vertical_detour_low_height_ + vertical_detour_height_tolerance_) {
       if (buildVerticalDetourFallback(pos, cur_yaw, recovery_forward, next_pos,
                                       next_yaw, true)) {
-        ROS_WARN("[vertical_detour] suspended-obstacle candidate; descend in place "
-                 "to observe the low corridor before any forward release.");
+        ROS_WARN("[vertical_detour] suspended obstacle confirmed with free space below; "
+                 "descend in place before any forward release.");
         return true;
       }
       ROS_WARN_THROTTLE(
