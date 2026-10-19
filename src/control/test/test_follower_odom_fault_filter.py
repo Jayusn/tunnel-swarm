@@ -181,9 +181,7 @@ def test_simple_mode_gives_diff_only_the_fifo_front_and_consumes_on_arrival():
         "bool handleSimpleDiffPlannerExecution", maxsplit=1
     )[0]
 
-    assert "RoutePoint& active_point = relay_waypoints_[active_relay_index_]" in execution
-    assert "selectSimpleExecutionPosition(&active_point, now);" in execution
-    assert "desired_world.position = active_point.execution_position;" in execution
+    assert "const RoutePoint desired_world = relay_waypoints_[active_relay_index_]" in execution
     assert "goal.pose.position = desired_local;" in execution
     assert "selectForwardRouteCandidate" not in execution
     assert "diff_recovery_goal_local_" not in execution
