@@ -5,11 +5,11 @@ use_fix_yaw: false   # 是否固定偏航角。
 
 # 状态代价
 # 室内低速首轮保守权重：降低位置/速度追赶强度，提高横滚俯仰动作代价。
-Q_pos_xy:   180.0    # 增强水平位置跟踪，同时仍低于原 250 的激进配置。
+Q_pos_xy:   200.0    # 增强水平位置跟踪，同时仍低于原 250 的激进配置。
 Q_pos_z:  200.0    # 垂直位置误差代价。
 Q_attitude_rp:  120.0   # 横滚和俯仰姿态误差代价。
 Q_attitude_yaw:  120.0    # 偏航姿态误差代价。
-Q_velocity:  35.0   # 降低速度参考变化引起的姿态冲击。
+Q_velocity:  55   # 降低速度参考变化引起的姿态冲击。
 
 # 以下 payload/cable 权重仅为兼容旧参数读取保留；普通四旋翼 NMPC 的 10 维状态不使用这些项。
 Q_payload_xy:  20.0
@@ -41,7 +41,7 @@ max_bodyrate_z:     0.5         # 连续轨迹偏航的最大角速度 [rad/s]
 min_thrust:         1.0
 max_thrust:         29.5
 # NMPC 世界系正常速度软约束，单位 m/s；x/y 分量使用同一上限，z 单独限制。
-max_velocity_xy: 0.5
+max_velocity_xy: 0.4
 max_velocity_z: 1.0
 # 松弛量硬上限形成紧急速度边界：|vx/vy| <= 2.0 m/s，|vz| <= 2.0 m/s。
 max_velocity_slack_xy: 1.5
@@ -67,7 +67,7 @@ enable_rc_hover_adjust: false
 # x/y/z 是 /mavros/local_position/odom 对应的 ENU 世界坐标，单位 m；yaw 仍取切入时当前航向。
 # 关闭后恢复为“切换瞬间当前位置悬停”。固定模式下会忽略 enable_rc_hover_adjust。
 fixed_hover:
-    enabled: false
+    enabled: true
     x: 0.0
     y: 0.0
     z: 0.6
