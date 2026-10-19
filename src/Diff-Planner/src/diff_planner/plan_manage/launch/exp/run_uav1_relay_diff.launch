@@ -90,6 +90,10 @@
         <arg name="inflation_size" value="0.099"/>
         <!-- 2026-07-28: UAV1门洞点云偶发假占据时用更强FREE射线及时清除，避免目标被改回当前位置。 -->
         <arg name="lidar_p_miss" value="0.35"/>
+        <!-- 机体周围1m内的点需有至少3个5cm内邻点，否则不参与HIT/FREE建图。 -->
+        <arg name="near_point_filter_range" value="1.0"/>
+        <arg name="near_point_filter_radius" value="0.05"/>
+        <arg name="near_point_filter_min_neighbors" value="3"/>
         <!-- 2026-07-28: 后机最新日志在第4个点出现start_occ=3并持续50s；3s衰减移动球/前机鬼影，
              360度雷达持续命中的真实墙体仍会保持占据。 -->
         <arg name="fading_time" value="3"/>

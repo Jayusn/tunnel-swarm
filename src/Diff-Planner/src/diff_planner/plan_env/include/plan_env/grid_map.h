@@ -73,6 +73,9 @@ struct MappingParameters
       lidar_clamp_max_log_, lidar_min_occupancy_log_; // logit of occupancy probability (cloud)
   bool cloud_enable_raycast_;
   bool lidar_hit_dominates_miss_;
+  double near_point_filter_range_{0.0};
+  double near_point_filter_radius_{0.05};
+  int near_point_filter_min_neighbors_{3};
   double min_ray_length_;                                                                   // range of doing raycasting
   double fading_time_;
 

@@ -1,5 +1,6 @@
 #include "plan_env/grid_map.h"
 #include "plan_env/vehicle_geometry.h"
+#include <pcl/search/kdtree.h>
 
 bool GridMap::isVehicleOccupied(const Eigen::Vector3d &pos, const double radius,
                                const double half_height, const double margin)
@@ -99,6 +100,9 @@ void GridMap::initMap(ros::NodeHandle &nh)
   node_.param("grid_map/lidar_p_occ", mp_.lidar_p_occ_, 0.85);
   node_.param("grid_map/cloud_enable_raycast", mp_.cloud_enable_raycast_, true);
   node_.param("grid_map/lidar_hit_dominates_miss", mp_.lidar_hit_dominates_miss_, true);
+  node_.param("grid_map/near_point_filter_range", mp_.near_point_filter_range_, 0.0);
+  node_.param("grid_map/near_point_filter_radius", mp_.near_point_filter_radius_, 0.05);
+  node_.param("grid_map/near_point_filter_min_neighbors", mp_.near_point_filter_min_neighbors_, 3);
   node_.param("grid_map/fading_time", mp_.fading_time_, 1000.0);
   node_.param("grid_map/min_ray_length", mp_.min_ray_length_, 0.1);
 
@@ -454,6 +458,34 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &msg)
       md_.proj_points_[md_.proj_points_cnt_++] = Eigen::Vector3d(pt.x + mp_.init_x_, pt.y + mp_.init_y_, pt.z + mp_.init_z_);
     else
       md_.proj_points_[md_.proj_points_cnt_++] = Eigen::Vector3d(pt.x, pt.y, pt.z);
+  }
+  if (mp_.near_point_filter_range_ > 0.0 && md_.proj_points_cnt_ > 0)
+  {
+    // 用同一帧的全部有效点检查邻域，保留检查范围边缘外的邻点支持。
+    pcl::PointCloud<pcl::PointXYZ>::Ptr finite_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+    finite_cloud->reserve(md_.proj_points_cnt_);
+    for (int i = 0; i < md_.proj_points_cnt_; ++i)
+    {
+      const auto &point = md_.proj_points_[i];
+      finite_cloud->push_back(pcl::PointXYZ(point.x(), point.y(), point.z()));
+    }
+    pcl::search::KdTree<pcl::PointXYZ> tree;
+    tree.setInputCloud(finite_cloud);
+    std::vector<int> neighbors;
+    std::vector<float> squared_distances;
+    const int required_points = mp_.near_point_filter_min_neighbors_ + 1;
+    const double range_squared = mp_.near_point_filter_range_ * mp_.near_point_filter_range_;
+    int retained = 0;
+    for (int i = 0; i < md_.proj_points_cnt_; ++i)
+    {
+      const auto &point = md_.proj_points_[i];
+      if ((point - md_.camera_pos_).squaredNorm() > range_squared ||
+          tree.radiusSearch(i, mp_.near_point_filter_radius_, neighbors,
+                            squared_distances, required_points) >= required_points)
+        md_.proj_points_[retained++] = point;
+    }
+    // 被拒绝的点既不生成 HIT，也不生成沿途的 FREE 证据。
+    md_.proj_points_cnt_ = retained;
   }
   moveRingBuffer();          
   md_.use_lidar_prob_for_update_ = true;

@@ -85,6 +85,7 @@ if(CATKIN_ENABLE_TESTING)
   add_rostest_gtest(test_planner_odometry test/planner_odometry.test
     test/test_planner_odometry.cpp
     test/test_static_side_planning.cpp
+    test/test_grid_cloud_filter.cpp
     src/diff_replan_fsm.cpp src/planner_manager.cpp
     src/swing_obstacle_guard.cpp src/replan_quality_gate.cpp)
   if(TARGET test_planner_odometry)
