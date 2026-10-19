@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <string>
 #include <ros/ros.h>
 #include <mpc_wrapper.h>
 
@@ -37,6 +38,9 @@ namespace PayloadMPC
 
 		struct ForceEstimator
 		{
+			std::string method{"window_opt"};
+			double ndob_rate{20.0};
+			double ndob_cutoff_freq{20.0};
 			double sample_freq_fq{100.0};
 			double sample_freq_fl{100.0};
 			double cutoff_freq_fq{10.0};
@@ -515,6 +519,26 @@ namespace PayloadMPC
 			read_essential_param(nh, "filter/cutoff_freq_cable", filter_param_.cutoff_freq_cable);
 			read_essential_param(nh, "filter/sample_freq_dcable", filter_param_.sample_freq_dcable);
 			read_essential_param(nh, "filter/cutoff_freq_dcable", filter_param_.cutoff_freq_dcable);
+
+			nh.param<std::string>("force_estimator/method", force_estimator_param_.method, "window_opt");
+			nh.param("force_estimator/ndob_rate", force_estimator_param_.ndob_rate, 20.0);
+			nh.param("force_estimator/ndob_cutoff_freq", force_estimator_param_.ndob_cutoff_freq, 20.0);
+			if (force_estimator_param_.method != "window_opt" &&
+				force_estimator_param_.method != "aerothrow_ndob") {
+				ROS_ERROR("[参数] force_estimator/method 必须为 window_opt 或 aerothrow_ndob。");
+				ROS_BREAK();
+			}
+			if (force_estimator_param_.method == "aerothrow_ndob" &&
+				(!std::isfinite(ctrl_freq_max_) || ctrl_freq_max_ <= 0.0 ||
+				 !std::isfinite(force_estimator_param_.ndob_rate) ||
+				 force_estimator_param_.ndob_rate <= 0.0 ||
+				 force_estimator_param_.ndob_rate / ctrl_freq_max_ >= 2.0 ||
+				 !std::isfinite(force_estimator_param_.ndob_cutoff_freq) ||
+				 force_estimator_param_.ndob_cutoff_freq <= 0.0 ||
+				 force_estimator_param_.ndob_cutoff_freq >= ctrl_freq_max_ / 2.0)) {
+				ROS_ERROR("[参数] NDOB 要求 0 < rate/frequency < 2，0 < cutoff < frequency/2。");
+				ROS_BREAK();
+			}
 
 			read_essential_param(nh, "force_estimator/kf", force_estimator_param_.kf);
 			if (!std::isfinite(force_estimator_param_.kf) || force_estimator_param_.kf <= 0.0)

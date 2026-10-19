@@ -17,8 +17,10 @@ set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g")
 set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -fopenmp -O3 -march=native")
 
 find_package(Eigen3 REQUIRED)
+find_package(yaml-cpp REQUIRED)
 find_package(catkin REQUIRED COMPONENTS
   roscpp
+  rosbag
   rospy
   std_msgs
   geometry_msgs
@@ -32,6 +34,27 @@ find_package(catkin REQUIRED COMPONENTS
 )
 
 catkin_package()
+
+# Record the configured source revision and content fingerprint, including local edits.
+execute_process(COMMAND git describe --always --dirty WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+  OUTPUT_VARIABLE FORCE_GIT_REV OUTPUT_STRIP_TRAILING_WHITESPACE)
+set(FORCE_SOURCE_HASHES "")
+foreach(source include/payload_mpc_controller/aerothrow_ndob.h
+    include/payload_mpc_controller/selected_force_estimator.h
+    include/payload_mpc_controller/multi_optimization_based_force_estimator.hpp
+    include/payload_mpc_controller/mpc_params.h include/payload_mpc_controller/mpc_fsm.h
+    include/payload_mpc_controller/lowpassfilter2p.h
+    include/payload_mpc_controller/force_observer_input_synchronizer.h
+    include/payload_mpc_controller/vertical_disturbance_low_pass.h
+    include/payload_mpc_controller/disturbance_slew_limiter.h
+    src/mpc_input.cpp src/mpc_fsm.cpp src/force_estimator_replay.cpp)
+  file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/${source}" hash)
+  string(APPEND FORCE_SOURCE_HASHES "${hash}")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${source}")
+endforeach()
+string(SHA256 FORCE_SOURCE_HASH "${FORCE_SOURCE_HASHES}")
+configure_file(include/force_build_info.h.in ${CMAKE_CURRENT_BINARY_DIR}/force_build_info.h @ONLY)
+include_directories(${CMAKE_CURRENT_BINARY_DIR})
 
 #include dir
 # include_directories(
@@ -101,12 +124,26 @@ target_link_libraries(mpc_controller_node
   ${catkin_LIBRARIES}
 )
 
+get_target_property(force_estimator_includes mpc_controller_node INCLUDE_DIRECTORIES)
+add_executable(force_estimator_replay src/force_estimator_replay.cpp)
+# ROS Noetic / Boost 1.71 rosbag headers require the pre-C++20 allocator API.
+set_target_properties(force_estimator_replay PROPERTIES CXX_STANDARD 14 CXX_STANDARD_REQUIRED YES)
+target_include_directories(force_estimator_replay PRIVATE ${force_estimator_includes})
+target_link_libraries(force_estimator_replay ${catkin_LIBRARIES} yaml-cpp)
+install(TARGETS mpc_controller_node force_estimator_replay
+  RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
+
 if(CATKIN_ENABLE_TESTING)
   find_package(rostest REQUIRED)
+  catkin_add_gtest(test_selected_force_estimator test/test_selected_force_estimator.cpp)
+  if(TARGET test_selected_force_estimator)
+    target_include_directories(test_selected_force_estimator PRIVATE ${force_estimator_includes})
+    target_link_libraries(test_selected_force_estimator ${catkin_LIBRARIES})
+  endif()
   get_target_property(locked_yaw_test_sources mpc_controller_node SOURCES)
   list(REMOVE_ITEM locked_yaw_test_sources src/mpc_controller_node.cpp)
   add_rostest_gtest(test_locked_exit_yaw test/locked_exit_yaw.test
-    test/test_locked_exit_yaw.cpp test/test_waypoint_yaw.cpp ${locked_yaw_test_sources})
+    test/test_locked_exit_yaw.cpp test/test_waypoint_yaw.cpp test/test_force_controller_integration.cpp ${locked_yaw_test_sources})
   if(TARGET test_locked_exit_yaw)
     get_target_property(locked_yaw_test_includes mpc_controller_node INCLUDE_DIRECTORIES)
     target_include_directories(test_locked_exit_yaw PRIVATE ${locked_yaw_test_includes})
@@ -157,6 +194,7 @@ endif()
 catkin_install_python(PROGRAMS
   scripts/autotrans_mpc_logger.py
   scripts/generate_evo_report.py
+  scripts/compare_force_estimators.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

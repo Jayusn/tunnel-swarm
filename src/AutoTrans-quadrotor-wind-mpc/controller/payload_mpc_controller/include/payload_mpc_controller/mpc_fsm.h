@@ -23,7 +23,8 @@
 #include <mavros_msgs/AttitudeTarget.h>
 #include <mavros_msgs/PositionTarget.h>
 #include <mavros_msgs/ESCStatus.h>
-#include "multi_optimization_based_force_estimator.hpp"
+#include "selected_force_estimator.h"
+#include <geometry_msgs/Vector3Stamped.h>
 
 namespace PayloadMPC
 {
@@ -102,6 +103,7 @@ namespace PayloadMPC
 		void safetyHoldCallback(const std_msgs::Bool::ConstPtr &msg);
 
 	private:
+        friend class ForceEstimatorTestAccess;
         void landingTargetCallback(const mavros_msgs::PositionTarget::ConstPtr &msg);
         void landingStateCallback(const std_msgs::String::ConstPtr &msg);
         void processPrecisionLanding(const ros::Time &now);
@@ -137,7 +139,9 @@ namespace PayloadMPC
 
 		MpcParams &params_;
 		MpcController &controller_;
-		MultiOptForceEstimator force_estimator_;
+		SelectedForceEstimator force_estimator_;
+		ros::Publisher force_timing_pub_, force_config_pub_;
+		ros::Time last_force_calculation_{0};
 		ForceObserverInputSynchronizer force_input_synchronizer_;
 		DisturbanceSlewLimiter disturbance_slew_limiter_;
 		VerticalDisturbanceLowPass vertical_disturbance_low_pass_;

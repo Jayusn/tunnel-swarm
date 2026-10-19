@@ -1,4 +1,7 @@
 <launch>
+  <arg name="force_estimator_method" default="window_opt"/>
+  <arg name="ndob_rate" default="20.0"/>
+  <arg name="ndob_cutoff_freq" default="20.0"/>
   <arg name="precision_landing_enabled" default="false"/>
   <arg name="locked_yaw_topic" default=""/>
   <arg name="waypoint_goal_topic" default=""/>
@@ -61,6 +64,9 @@
   <node pkg="payload_mpc_controller" type="mpc_controller_node" name="mpc_controller_node" output="screen">
     <rosparam command="load" file="$(find payload_mpc_controller)/config/mpc.yaml"/>
     <rosparam command="load" file="$(find payload_mpc_controller)/config/model.yaml"/>
+    <param name="force_estimator/method" value="$(arg force_estimator_method)"/>
+    <param name="force_estimator/ndob_rate" value="$(arg ndob_rate)"/>
+    <param name="force_estimator/ndob_cutoff_freq" value="$(arg ndob_cutoff_freq)"/>
 
     <param name="precision_landing_enabled" value="$(arg precision_landing_enabled)"/>
     <param name="locked_yaw_topic" value="$(arg locked_yaw_topic)"/>

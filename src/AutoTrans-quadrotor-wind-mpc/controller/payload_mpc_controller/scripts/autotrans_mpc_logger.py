@@ -20,6 +20,7 @@ from quadrotor_msgs.msg import PolynomialTraj
 from rosgraph_msgs.msg import Log
 from sensor_msgs.msg import BatteryState
 import rostopic
+from std_msgs.msg import String
 
 
 MAX_EXPERIMENT_TAG_LENGTH = 96
@@ -262,6 +263,12 @@ class AutoTransMpcLogger:
         rospy.Subscriber(state_topic, State, self.state_cb, queue_size=20)
         rospy.Subscriber(extended_state_topic, ExtendedState, self.extended_state_cb, queue_size=20)
         rospy.Subscriber(rc_topic, RCIn, self.rc_cb, queue_size=20)
+        # Derive auxiliary topics from the selected controller namespace.
+        self.force_controller_ns = force_topic.rsplit("/mpc/", 1)[0]
+        config_topic = self.force_controller_ns + "/mpc/force_config"
+        timing_topic = self.force_controller_ns + "/mpc/force_timing"
+        self.rosbag_topics = normalize_rosbag_topics(self.rosbag_topics + [config_topic, timing_topic])
+        rospy.Subscriber(config_topic, String, self.force_config_cb, queue_size=1)
         rospy.Subscriber(force_topic, Accel, self.force_cb, queue_size=20)
         rospy.Subscriber(applied_force_topic, Accel, self.applied_force_cb, queue_size=20)
         rospy.Subscriber(esc_status_topic, ESCStatus, self.esc_status_cb, queue_size=20)
@@ -277,6 +284,17 @@ class AutoTransMpcLogger:
 
         rospy.loginfo("[autotrans_mpc_logger] CSV: %s", self.csv_path)
         rospy.loginfo("[autotrans_mpc_logger] LOG: %s", self.text_log_path)
+
+    def force_config_cb(self, msg):
+        """Record the latched build/input snapshot and the resolved controller parameters."""
+        with self.file_lock:
+            if self.closed:
+                return
+            with open(os.path.join(self.run_dir, "force_estimator_snapshot.txt"), "w") as stream:
+                stream.write(msg.data)
+            with open(os.path.join(self.run_dir, "controller_params.json"), "w") as stream:
+                json.dump(rospy.get_param(self.force_controller_ns, {}), stream,
+                          ensure_ascii=False, indent=2, sort_keys=True)
 
     def start_rosbag_recording(self):
         """在本次 CSV 日志目录中启动一个同名 rosbag。"""

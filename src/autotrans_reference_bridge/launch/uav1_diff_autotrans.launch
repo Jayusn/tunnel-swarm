@@ -1,4 +1,7 @@
 <launch>
+  <arg name="force_estimator_method" default="window_opt"/>
+  <arg name="ndob_rate" default="20.0"/>
+  <arg name="ndob_cutoff_freq" default="20.0"/>
   <arg name="precision_landing_enabled" default="false"/>
   <!-- 跟随器只在后机执行出口及后续航段时发布，NMPC锁存到精降结束。 -->
   <arg name="locked_yaw_topic" default="/UAV1/planning/yaw"/>
@@ -63,6 +66,9 @@
   <group ns="UAV1">
   <!-- AutoTrans 的位置、速度和姿态统一来自 FAST-LIO 高频里程计，只发布唯一的 attitude setpoint。 -->
   <include if="$(arg enable_controller)" file="$(find payload_mpc_controller)/launch/quad_wind_mpc_controller.launch">
+    <arg name="force_estimator_method" value="$(arg force_estimator_method)"/>
+    <arg name="ndob_rate" value="$(arg ndob_rate)"/>
+    <arg name="ndob_cutoff_freq" value="$(arg ndob_cutoff_freq)"/>
     <arg name="precision_landing_enabled" value="$(arg precision_landing_enabled)"/>
     <arg name="locked_yaw_topic" value="$(arg locked_yaw_topic)"/>
     <arg name="waypoint_goal_topic" value="$(arg goal_topic)"/>

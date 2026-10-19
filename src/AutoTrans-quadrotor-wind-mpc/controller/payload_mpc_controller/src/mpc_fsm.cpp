@@ -1,3 +1,5 @@
+#include "force_build_info.h"
+#include <chrono>
 #include "mpc_fsm.h"
 #include <uav_utils/converters.h>
 #include "geometry_msgs/Accel.h"
@@ -80,6 +82,24 @@ namespace PayloadMPC
 		pub_rmse_info_ = nh_.advertise<std_msgs::Float64MultiArray>("mpc/rmse_info", 1);
 
 		force_estimator_.init(params_);
+		force_timing_pub_ = nh_.advertise<geometry_msgs::Vector3Stamped>("mpc/force_timing", 10);
+		force_config_pub_ = nh_.advertise<std_msgs::String>("mpc/force_config", 1, true);
+		XmlRpc::XmlRpcValue parameter_snapshot;
+		nh_.getParam("", parameter_snapshot);
+		std_msgs::String config;
+		config.data = std::string("build: ") + FORCE_BUILD_INFO +
+		    "\nmethod: " + params_.force_estimator_param_.method +
+		    "\nndob_rate: " + std::to_string(params_.force_estimator_param_.ndob_rate) +
+		    "\nndob_cutoff_freq: " + std::to_string(params_.force_estimator_param_.ndob_cutoff_freq) +
+		    "\ncontrol_frequency: " + std::to_string(params_.ctrl_freq_max_) +
+		    "\nimu: " + nh_.resolveName("drone_imu/data") +
+		    "\nattitude: " + nh_.resolveName("force_attitude_odom") +
+		    "\nrpm: " + nh_.resolveName("/mavros/esc_status") +
+		    "\nparameters_xml:\n" + parameter_snapshot.toXml();
+		force_config_pub_.publish(config);
+		ROS_INFO("[外力] method=%s, rate=%.3f s^-1, cutoff=%.3f Hz, control=%.1f Hz; build=%s",
+		    params_.force_estimator_param_.method.c_str(), params_.force_estimator_param_.ndob_rate,
+		    params_.force_estimator_param_.ndob_cutoff_freq, params_.ctrl_freq_max_, FORCE_BUILD_INFO);
 		const auto &force_params = params_.force_estimator_param_;
 		force_input_synchronizer_.configure(
 			force_params.force_sync_history_duration, force_params.force_sync_max_interp_gap,
@@ -1518,11 +1538,20 @@ namespace PayloadMPC
 	void MPCFSM::setForceEstimation()
 	{
 
+		const auto calculation_start = std::chrono::steady_clock::now();
 		fq_estimated_.setZero();
 		fq_estimate_valid_ = force_observer_input_valid_ &&
 			force_estimator_.caculate_force(fl_, fq_estimated_);
 
 		const ros::Time now = ros::Time::now();
+		geometry_msgs::Vector3Stamped timing;
+		timing.header.stamp = now;
+		timing.vector.x = last_force_calculation_.isZero() ? 0.0 : (now - last_force_calculation_).toSec();
+		timing.vector.y = std::chrono::duration<double, std::micro>(
+		    std::chrono::steady_clock::now() - calculation_start).count();
+		timing.vector.z = force_estimator_.sampleCount();
+		last_force_calculation_ = now;
+		if (force_timing_pub_.getNumSubscribers()) force_timing_pub_.publish(timing);
 		const DisturbanceGateReason gate_reason = disturbanceCompensationGate(now);
 		reportDisturbanceGate(gate_reason);
 		if (gate_reason == DisturbanceGateReason::ACTIVE)
