@@ -776,6 +776,55 @@ TEST_F(FifoEntrySpacing, ExitFifoGoalUsesLeaderLockedYaw) {
   EXPECT_NEAR(goal_yaw, 1.2, 1e-9);
 }
 
+TEST_F(FifoEntrySpacing, WaypointHeadingWaitsForPositionAndYawBeforeNextPoint) {
+  follower->require_waypoint_yaw_ = true;
+  follower->relay_arrive_radius_ = 0.4;
+  follower->door_waypoint_released_ = true;
+  queuePoint(1.0);
+  queuePoint(2.0);
+  follower->relay_waypoints_[0].yaw = M_PI/2.0;
+  follower->relay_waypoints_[1].yaw = -M_PI/2.0;
+  setLeader(4.0);
+  follower->follower_odom_.pose.pose.position.x = 0.65;
+  auto& attitude = follower->follower_odom_.pose.pose.orientation;
+  attitude.w = std::cos(M_PI/4.0);
+  attitude.z = std::sin(M_PI/4.0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(follower->relay_waypoints_.size(), 2U);
+
+  follower->follower_odom_.pose.pose.position.x = 0.9;
+  attitude.w = 1.0;
+  attitude.z = 0.0;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(follower->relay_waypoints_.size(), 2U);
+  attitude.w = std::cos(M_PI/4.0);
+  attitude.z = std::sin(M_PI/4.0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(follower->relay_waypoints_.size(), 1U);
+  EXPECT_NEAR(follower->relay_waypoints_.front().yaw, -M_PI/2.0, 1e-9);
+  EXPECT_FALSE(follower->diff_goal_published_);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->diff_goal_published_);
+}
+
+TEST_F(FifoEntrySpacing, WaypointHeadingToleranceWrapsAtPi) {
+  follower->require_waypoint_yaw_ = true;
+  follower->door_waypoint_released_ = true;
+  queuePoint(1.0);
+  follower->relay_waypoints_[0].yaw = 179.0*M_PI/180.0;
+  setLeader(4.0);
+  follower->follower_odom_.pose.pose.position.x = 1.0;
+  auto& attitude = follower->follower_odom_.pose.pose.orientation;
+  attitude.w = std::cos(165.0*M_PI/360.0);
+  attitude.z = std::sin(165.0*M_PI/360.0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(follower->relay_waypoints_.size(), 1U);
+  attitude.w = std::cos(-179.0*M_PI/360.0);
+  attitude.z = std::sin(-179.0*M_PI/360.0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->relay_waypoints_.empty());
+}
+
 int main(int argc, char** argv) {
   ros::init(argc, argv, "test_fifo_entry_spacing",
             ros::init_options::AnonymousName | ros::init_options::NoSigintHandler);

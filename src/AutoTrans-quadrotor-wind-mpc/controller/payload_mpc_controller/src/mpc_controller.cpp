@@ -375,7 +375,8 @@ namespace PayloadMPC
     return true;
   }
 
-  void MpcController::setTrajectoyReference(Trajectory &traj, double tstart, double start_yaw)
+  void MpcController::setTrajectoyReference(Trajectory &traj, double tstart, double start_yaw,
+                                           const double *end_yaw)
   {
     const double t_step = mpc_time_step_;
     const ros::Time now = ros::Time::now();
@@ -404,6 +405,17 @@ namespace PayloadMPC
     // 不能把窗口末端的预测偏航写回当前控制周期。
     double predicted_yaw = last_yaw_;
     double predicted_yaw_dot = last_yaw_dot_;
+    double end_yaw_window = 0.0;
+    if (end_yaw != nullptr)
+    {
+      const Eigen::Vector3d approach = traj.getPos(t_all) -
+          traj.getPos(std::max(0.0, t_all - 0.2));
+      const double approach_yaw = approach.head<2>().norm() > 1.0e-6
+                                      ? std::atan2(approach.y(), approach.x()) : last_yaw_;
+      // 三次平滑插值的最大斜率为1.5；沿用已有偏航限速确定末段转向时间。
+      end_yaw_window = std::min(t_all, std::max(1.0,
+          1.5 * std::abs(angle_diff(*end_yaw, approach_yaw)) / params_.max_bodyrate_z_));
+    }
 
     for (int i = 0; i < (kSamples + 1); i++)
     {
@@ -443,16 +455,27 @@ namespace PayloadMPC
       }
       else
       {
+        Eigen::Vector3d heading_velocity = vel_quad;
+        if (end_yaw_window > 0.0 && t > t_all - end_yaw_window)
+        {
+          const double progress = std::min(1.0, std::max(0.0,
+              1.0 - (t_all - t) / end_yaw_window));
+          const double weight = progress * progress * (3.0 - 2.0 * progress);
+          const double tangent_yaw = vel_quad.head<2>().norm() >= 0.12
+                                        ? std::atan2(vel_quad.y(), vel_quad.x()) : predicted_yaw;
+          const double target_yaw = tangent_yaw + weight * angle_diff(*end_yaw, tangent_yaw);
+          heading_velocity = Eigen::Vector3d(std::cos(target_yaw), std::sin(target_yaw), 0.0);
+        }
         if (i == 0)
         {
           // 当前参考按真实控制周期推进；预测窗口才使用模型步长。
-          calculate_yaw(vel_quad, yaw_update_dt, last_yaw_, last_yaw_dot_);
+          calculate_yaw(heading_velocity, yaw_update_dt, last_yaw_, last_yaw_dot_);
           predicted_yaw = last_yaw_;
           predicted_yaw_dot = last_yaw_dot_;
         }
         else
         {
-          calculate_yaw(vel_quad, t_step, predicted_yaw, predicted_yaw_dot);
+          calculate_yaw(heading_velocity, t_step, predicted_yaw, predicted_yaw_dot);
         }
         yaw = predicted_yaw;
         yaw_dot = predicted_yaw_dot;

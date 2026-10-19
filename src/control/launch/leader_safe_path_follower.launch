@@ -258,6 +258,8 @@
         <param name="relay_arrive_dwell" value="0.50"/>
         <!-- 2026-07-28: 普通接力点进入15cm后先锁点0.45s，避免轨迹结束与速度门槛之间形成到点死锁。 -->
         <param name="diff_endpoint_capture_radius" value="0.15"/>
+        <!-- 航点末段对准传入航向，进入15cm且航向误差不超过5度后再消费。 -->
+        <param name="require_waypoint_yaw" value="true"/>
         <param name="diff_endpoint_capture_dwell" value="0.45"/>
         <!-- Diff裁短终点超过0.20m时只算中间步，禁止误报原接力点到达。 -->
         <param name="diff_accepted_goal_tolerance" value="0.20"/>

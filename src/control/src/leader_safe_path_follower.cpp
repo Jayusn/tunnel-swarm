@@ -362,6 +362,7 @@ class LeaderSafePathFollower {
     pnh_.param("relay_arrive_dwell", relay_arrive_dwell_, 0.50);
     // 2026-07-28: Diff末端速度差分可能尚未降到严格门槛；小半径内先锁点，再用停驻时间完成接力点。
     pnh_.param("diff_endpoint_capture_radius", diff_endpoint_capture_radius_, 0.15);
+    pnh_.param("require_waypoint_yaw", require_waypoint_yaw_, false);
     pnh_.param("diff_endpoint_capture_dwell", diff_endpoint_capture_dwell_, 0.45);
     // Diff可能因局部占据裁短轨迹终点；裁短量超过该值时只能视作中间步，不能消费接力点。
     pnh_.param("diff_accepted_goal_tolerance", diff_accepted_goal_tolerance_, 0.20);
@@ -1983,6 +1984,12 @@ class LeaderSafePathFollower {
         std::hypot(desired_local.x - current_local.x,
                    desired_local.y - current_local.y);
     const double vertical_error = std::fabs(desired_local.z - current_local.z);
+    const double target_yaw = worldYawToFollower(
+        useLockedExitYaw() ? confirmed_exit_.yaw : desired_world.yaw);
+    const double yaw_error = target_yaw - yawFromQuaternion(follower_odom_.pose.pose.orientation);
+    const bool heading_arrived = !require_waypoint_yaw_ ||
+        (horizontal_error <= diff_endpoint_capture_radius_ &&
+         std::abs(std::atan2(std::sin(yaw_error), std::cos(yaw_error))) <= 5.0 * M_PI / 180.0);
     // 入口两段轨迹要完成末段减速，不能像普通FIFO点一样在40cm处截断。
     const bool entry_settled = !desired_world.is_door ||
         (horizontal_error <= diff_endpoint_capture_radius_ &&
@@ -1990,7 +1997,7 @@ class LeaderSafePathFollower {
          follower_vertical_speed_ <= entry_arrive_max_vertical_speed_);
     const bool waypoint_arrival = !terminal_relay &&
         horizontal_error <= relay_arrive_radius_ &&
-        vertical_error <= relay_arrive_z_tolerance_ && entry_settled;
+        vertical_error <= relay_arrive_z_tolerance_ && entry_settled && heading_arrived;
 
     // 已到达当前普通点时直接消费，不能再被旧点的间距保护拉回。
     if (!terminal_relay && !waypoint_arrival &&
@@ -2046,6 +2053,7 @@ class LeaderSafePathFollower {
     const bool terminal_arrival = terminal_relay &&
         horizontal_error <= terminal_arrive_radius_ &&
         vertical_error <= relay_arrive_z_tolerance_ &&
+        heading_arrived &&
         follower_horizontal_speed_ <= relay_arrive_max_horizontal_speed_ &&
         follower_vertical_speed_ <= relay_arrive_max_vertical_speed_;
     if (waypoint_arrival || terminal_arrival) {
@@ -4236,6 +4244,7 @@ class LeaderSafePathFollower {
   double follower_history_max_length_{30.0};
   double follower_history_length_{0.0};
   double diff_endpoint_capture_radius_{0.15}, diff_endpoint_capture_dwell_{0.45};
+  bool require_waypoint_yaw_{false};
   double diff_accepted_goal_tolerance_{0.20};
   double diff_command_stale_timeout_{0.80};  // 2026-07-28: 与控制器0.60s轨迹超时错开0.20s。
   double follower_odom_jump_speed_{2.0}, follower_odom_jump_vertical_speed_{1.2};

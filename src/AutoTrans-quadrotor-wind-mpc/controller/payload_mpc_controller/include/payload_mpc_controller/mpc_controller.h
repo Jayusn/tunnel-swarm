@@ -80,7 +80,8 @@ namespace PayloadMPC
         const Eigen::Ref<const Eigen::Vector3d> &acceleration,
         const Eigen::Ref<const Eigen::Vector3d> &jerk, double yaw, double yaw_rate);
     void setHoverReference(const Eigen::Ref<const Eigen::Vector3d> &quad_position, const double yaw);
-    void setTrajectoyReference(Trajectory &traj, double tstart,double start_yaw);
+    void setTrajectoyReference(Trajectory &traj, double tstart, double start_yaw,
+                              const double *end_yaw = nullptr);
     double getTimeStep(){return mpc_time_step_;}
     void setDynamicParams(const real_t mass_q)
       {mpc_wrapper_.setDynamicParams(mass_q);}

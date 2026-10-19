@@ -38,6 +38,15 @@ namespace PayloadMPC
         if (!locked_yaw_topic.empty())
             locked_yaw_sub_ = nh_.subscribe(locked_yaw_topic, 1,
                 &MPCFSM::lockedYawCallback, this, ros::TransportHints().tcpNoDelay());
+        std::string waypoint_goal_topic;
+        nh_.param<std::string>("waypoint_goal_topic", waypoint_goal_topic, "");
+        if (!waypoint_goal_topic.empty())
+        {
+            waypoint_goal_sub_ = nh_.subscribe(waypoint_goal_topic, 1,
+                &MPCFSM::waypointGoalCallback, this, ros::TransportHints().tcpNoDelay());
+            waypoint_entry_goal_sub_ = nh_.subscribe(waypoint_goal_topic + "/entry", 1,
+                &MPCFSM::waypointGoalCallback, this, ros::TransportHints().tcpNoDelay());
+        }
         nh_.param("precision_landing_enabled", precision_landing_enabled_, false);
         if (precision_landing_enabled_)
         {
@@ -239,6 +248,30 @@ namespace PayloadMPC
     {
         if (controller_.lockYaw(msg->yaw))
             ROS_WARN("[exit_yaw] NMPC已锁存出口航向 %.3f rad；轨迹、悬停和精降持续沿用。", msg->yaw);
+    }
+
+    void MPCFSM::waypointGoalCallback(const geometry_msgs::PoseStamped::ConstPtr &msg)
+    {
+        waypoint_yaw_valid_ = false;
+        const auto &q = msg->pose.orientation;
+        Eigen::Quaterniond attitude(q.w, q.x, q.y, q.z);
+        waypoint_position_ = Eigen::Vector3d(msg->pose.position.x,
+            msg->pose.position.y, msg->pose.position.z);
+        if (!waypoint_position_.allFinite() || !attitude.coeffs().allFinite() ||
+            attitude.norm() <= 1.0e-6 || msg->header.stamp.isZero()) return;
+        waypoint_yaw_ = get_yaw_from_quaternion(attitude.normalized());
+        waypoint_stamp_ = msg->header.stamp;
+        waypoint_yaw_valid_ = true;
+    }
+
+    const double *MPCFSM::trajectoryEndYaw(const oneTraj_Data_t &trajectory) const
+    {
+        // 仅绑定该航点的完整终段；中间步、旧轨迹和不同退让终点不使用此航向。
+        if (!waypoint_yaw_valid_ || trajectory.traj_start_time < waypoint_stamp_ ||
+            trajectory.traj.getPieceNum() == 0 ||
+            (trajectory.traj.getJuncPos(trajectory.traj.getPieceNum()) -
+             waypoint_position_).norm() > 1.0e-3) return nullptr;
+        return &waypoint_yaw_;
     }
 
     void MPCFSM::landingTargetCallback(const mavros_msgs::PositionTarget::ConstPtr &msg)
@@ -837,7 +870,8 @@ namespace PayloadMPC
 				trajectory_data.total_traj_start_time = traj_info->traj_start_time;
 
 				double traj_time = (now_time - traj_info->traj_start_time).toSec();
-				controller_.setTrajectoyReference(traj_info->traj, traj_time, hover_yaw_);
+				controller_.setTrajectoyReference(traj_info->traj, traj_time, hover_yaw_,
+					trajectoryEndYaw(*traj_info));
 				controller_.execMPC(est_state_, mpc_predicted_states_, mpc_predicted_inputs_);
 
 				exec_traj_state_ = POLY_TRAJ;
@@ -870,6 +904,8 @@ namespace PayloadMPC
 					// 只有完整轨迹正常结束时才使用缓存的轨迹终点；中止、空队列和异常均停在当前位置。
 					hover_pose_ = trajectory_data.last_end_position;
 					hover_yaw_ = get_yaw_from_quaternion(force_attitude_odom_data.q);
+					const double *end_yaw = trajectoryEndYaw(trajectory_data.traj_queue.back());
+					if (end_yaw != nullptr) hover_yaw_ = *end_yaw;
 				}
 				else
 				{
@@ -924,7 +960,8 @@ namespace PayloadMPC
 
 					double traj_time = (now_time - traj_info->traj_start_time).toSec();
 					addRMSE();
-					controller_.setTrajectoyReference(traj_info->traj, traj_time, hover_yaw_);
+					controller_.setTrajectoyReference(traj_info->traj, traj_time, hover_yaw_,
+						trajectoryEndYaw(*traj_info));
 					controller_.execMPC(est_state_, mpc_predicted_states_, mpc_predicted_inputs_);
 				}
 			}
