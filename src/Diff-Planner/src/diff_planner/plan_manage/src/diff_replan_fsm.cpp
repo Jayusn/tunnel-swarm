@@ -670,15 +670,8 @@ namespace diff_planner
         {
           occupied_recovery_episode_ = true;
         }
-        else if (enable_occupied_recovery_ && occupied_recovery_episode_)
-        {
-          ROS_INFO("[局部脱障] 当前位置已离开膨胀占据区，恢复正常规划。");
-          occupied_recovery_episode_ = false;
-          occupied_recovery_attempt_count_ = 0;
-          occupied_recovery_failure_reported_ = false;
-        }
-
-        if (enable_occupied_recovery_ && current_occ != 0 &&
+        // 占据事件持续到退让完成；单帧清空不能恢复原目标、再按漂移位置急停。
+        if (enable_occupied_recovery_ && occupied_recovery_episode_ &&
             have_target_ && have_trigger_ && !mandatory_stop_)
         {
           if (occupied_recovery_attempt_count_ >= escape_max_attempts_)
@@ -741,9 +734,13 @@ namespace diff_planner
       }
 
       const int current_occ = planner_manager_->grid_map_->getInflateOccupancy(odom_pos_);
-      if (current_occ == 0)
+      const Eigen::Vector3d remaining = occupied_recovery_target_ - odom_pos_;
+      const bool reached_target = occupied_recovery_vertical_
+                                      ? std::abs(remaining.z()) <= escape_reach_tolerance_
+                                      : remaining.head<2>().norm() <= escape_reach_tolerance_;
+      if (current_occ == 0 && reached_target)
       {
-        ROS_INFO("[局部脱障] 当前位置已离开膨胀占据区：pos=(%.3f, %.3f, %.3f)。",
+        ROS_INFO("[局部脱障] 已到达退让点并离开膨胀占据区：pos=(%.3f, %.3f, %.3f)。",
                  odom_pos_.x(), odom_pos_.y(), odom_pos_.z());
         publishPlanningStatus("OCCUPIED_RECOVERY_SUCCEEDED");
         occupied_recovery_active_ = false;

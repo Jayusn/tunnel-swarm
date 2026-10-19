@@ -1724,6 +1724,29 @@ class LeaderSafePathFollower {
         status == "TRAJECTORY_PUBLISHED" &&
         static_cast<bool>(stream >> accepted.x >> accepted.y >> accepted.z);
 
+    const bool recovery_started = status == "OCCUPIED_RECOVERY_VERTICAL" ||
+        status == "OCCUPIED_RECOVERY_HISTORY" ||
+        status == "OCCUPIED_RECOVERY_LATERAL";
+    const bool recovery_finished = status == "OCCUPIED_RECOVERY_ABORTED" ||
+        status == "OCCUPIED_RECOVERY_SUCCEEDED";
+    // 普通航点可能已出队，但其末段轨迹仍在执行。只接续最后一次下发目标的
+    // 脱障状态，结束时保持下一队首，不能将它当作旧故障航点再次消费。
+    if (simple_segment_endpoint_following_ && response_goal_stamp_valid &&
+        diff_active_goal_stamp_ns_ != 0ULL &&
+        response_goal_stamp_ns == diff_active_goal_stamp_ns_ &&
+        !diff_goal_published_ &&
+        diff_goal_index_ == std::numeric_limits<std::size_t>::max() &&
+        (recovery_started || recovery_finished)) {
+      simple_occupied_recovery_active_ = recovery_started;
+      setDiffWaitPositionHold(!recovery_started,
+          recovery_started ? "consumed FIFO endpoint still executing occupied recovery"
+                           : "consumed FIFO endpoint occupied recovery finished");
+      if (recovery_finished)
+        simple_diff_retry_not_before_ = ros::Time::now() + ros::Duration(
+            status == "OCCUPIED_RECOVERY_ABORTED" ? simple_diff_retry_delay_ : 0.0);
+      return;
+    }
+
     // planning/status为锁存话题且规划线程可能延迟完成。目标时间戳、接力索引和逻辑
     // 候选必须仍然有效；已经因失败拉黑的候选即使晚到成功，也不能重新放行旧轨迹。
     const bool response_matches_active_goal =
