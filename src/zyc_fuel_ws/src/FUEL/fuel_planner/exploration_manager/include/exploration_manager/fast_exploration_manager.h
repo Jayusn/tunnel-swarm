@@ -58,6 +58,7 @@ public:
   bool currentPlanIsTurnInPlace() const { return turn_in_place_plan_; }
   bool currentPlanIsGroundAscent() const { return ground_ascent_plan_; }
   bool currentPlanIsVerticalDetour() const { return vertical_detour_plan_; }
+  void completeVerticalDetourReference();
   // 发布门控可能等待多帧地图更新；竖直段在真正发布前必须重新锁定实时里程计 XY。
   bool reanchorVerticalDetourForRelease(const Vector3d& pos,
                                         const Vector3d& yaw);
@@ -239,6 +240,7 @@ private:
   double vertical_detour_height_tolerance_{0.06};
   double vertical_detour_xy_tolerance_{0.08};
   double vertical_detour_verification_timeout_{2.0};
+  double vertical_detour_descent_tracking_timeout_{2.0};
   double vertical_detour_ascent_timeout_{4.0};
   double vertical_detour_footprint_radius_{0.17};
   int vertical_detour_required_confirmations_{1};
@@ -263,6 +265,7 @@ private:
 
   double low_probe_yaw_{0.0};
   ros::Time low_probe_verify_start_;
+  ros::Time low_probe_descent_end_time_;
   ros::Time low_probe_ascent_start_;
   Vector3d low_probe_ascent_origin_{0.0, 0.0, 0.0};
 

@@ -594,6 +594,7 @@ bool FastExplorationManager::buildVerticalDetourFallback(
     low_probe_target_ = pos;
     low_probe_target_.z() = low_z;
     low_probe_verify_start_ = ros::Time();
+    low_probe_descent_end_time_ = ros::Time();
     next_pos = low_probe_target_;
     next_yaw = cur_yaw;
     ROS_WARN("[vertical_detour] start vertical-only low probe z=%.2f -> %.2f at fixed "
@@ -683,6 +684,29 @@ bool FastExplorationManager::handleActiveLowProbe(
   if (low_probe_phase_ == vertical_detour::LowProbePhase::IDLE) return false;
 
   const auto previous_phase = low_probe_phase_;
+  if (sdf_map_ &&
+      (previous_phase == vertical_detour::LowProbePhase::DESCENDING ||
+      previous_phase == vertical_detour::LowProbePhase::VERIFYING ||
+       previous_phase == vertical_detour::LowProbePhase::ADVANCING)) {
+    // 下降补图后，若发现前方障碍有落地支撑，就退出整个下穿会话。
+    // UNKNOWN 不代表非悬空；这里只使用明确的占据和连续低位支撑证据。
+    const Vector3d travel = low_probe_direction_.normalized();
+    const Vector3d lateral(-travel.y(), travel.x(), 0.0);
+    const double step = std::max(0.05, sdf_map_->getResolution());
+    const double reference_height =
+        std::max(low_probe_origin_.z(), low_probe_return_height_);
+    for (double ahead = step; ahead <= kUnderpassStartDistance + 1e-6; ahead += step) {
+      for (double side = -vertical_detour_footprint_radius_;
+           side <= vertical_detour_footprint_radius_ + 1e-6; side += step) {
+        const Vector3d probe = pos + ahead * travel + side * lateral;
+        if (cameraOccupancyColumn(probe, reference_height) &&
+            hasLowVerticalSupport(probe, reference_height)) {
+          cancelActiveLowProbe("updated map confirms supported obstacle; resume normal planning");
+          return false;
+        }
+      }
+    }
+  }
   if (previous_phase == vertical_detour::LowProbePhase::ASCENDING) {
     const double xy_error =
         (pos - low_probe_ascent_origin_).head<2>().norm();
@@ -705,6 +729,18 @@ bool FastExplorationManager::handleActiveLowProbe(
       vertical_detour_height_tolerance_;
   observation.xy_stable =
       (pos - low_probe_origin_).head<2>().norm() <= vertical_detour_xy_tolerance_;
+  if (previous_phase == vertical_detour::LowProbePhase::DESCENDING &&
+      !low_probe_descent_end_time_.isZero() &&
+      (!observation.at_probe_height || !observation.xy_stable) &&
+      (ros::Time::now() - low_probe_descent_end_time_).toSec() >=
+          vertical_detour_descent_tracking_timeout_) {
+    ROS_WARN("[vertical_detour] descent tracking timed out: xy_error=%.3fm "
+             "z_error=%.3fm; abandon old target and replan from live position.",
+             (pos - low_probe_origin_).head<2>().norm(),
+             std::fabs(pos.z() - low_probe_height_));
+    cancelActiveLowProbe("descent endpoint tracking timeout");
+    return false;
+  }
   observation.low_corridor_safe =
       previous_phase == vertical_detour::LowProbePhase::VERIFYING &&
       isLowProbeCorridorSafe(pos, low_probe_direction_,
@@ -925,6 +961,13 @@ bool FastExplorationManager::reanchorVerticalDetourForRelease(
   return buildStationaryVerticalDetourPlan(pos, yaw);
 }
 
+void FastExplorationManager::completeVerticalDetourReference() {
+  // 重试生成竖直段不能刷新首次终点后的跟踪宽限，避免旧会话无限续期。
+  if (low_probe_phase_ == vertical_detour::LowProbePhase::DESCENDING &&
+      low_probe_descent_end_time_.isZero())
+    low_probe_descent_end_time_ = ros::Time::now();
+}
+
 void FastExplorationManager::cancelActiveLowProbe(const char* reason) {
   if (low_probe_phase_ == vertical_detour::LowProbePhase::IDLE) return;
   low_probe_phase_ = vertical_detour::LowProbePhase::IDLE;
@@ -935,6 +978,9 @@ void FastExplorationManager::cancelActiveLowProbe(const char* reason) {
   suspended_underpass_blocked_ = false;
   low_probe_verify_start_ = ros::Time();
   low_probe_ascent_start_ = ros::Time();
+  low_probe_descent_end_time_ = ros::Time();
+  vertical_detour_plan_ = false;
+  has_last_requested_goal_ = false;
   ROS_WARN("[vertical_detour] active low-probe target cancelled: %s.", reason);
 }
 
@@ -1100,6 +1146,7 @@ bool FastExplorationManager::beginSuspendedUnderpass(const Vector3d& pos,
   low_probe_return_height_ = task_search_manager_->preferredSearchHeight();
   low_probe_yaw_ = yaw;
   low_probe_verify_start_ = already_low ? ros::Time::now() : ros::Time();
+  low_probe_descent_end_time_ = ros::Time();
   ROS_WARN("[suspended_underpass] ACTIVE bottom=%.2f target_z=%.2f exit_progress=%.2f "
            "lidar_clearance=%.2f; %s before ordinary frontier planning.",
            bottom_z, low_probe_height_, exit_progress, underpass_clearance_,
@@ -2523,6 +2570,8 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
   nh.param("mission/vertical_detour/xy_tolerance", vertical_detour_xy_tolerance_, 0.08);
   nh.param("mission/vertical_detour/verification_timeout",
            vertical_detour_verification_timeout_, 2.0);
+  nh.param("mission/vertical_detour/descent_tracking_timeout",
+           vertical_detour_descent_tracking_timeout_, 2.0);
   nh.param("mission/vertical_detour/ascent_timeout",
            vertical_detour_ascent_timeout_, 4.0);
   nh.param("mission/vertical_detour/required_confirmations",
@@ -2558,6 +2607,8 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
   underpass_lookahead_ = std::max(0.80, underpass_lookahead_);
   vertical_detour_ascent_timeout_ =
       std::max(1.0, vertical_detour_ascent_timeout_);
+  vertical_detour_descent_tracking_timeout_ =
+      std::max(0.1, vertical_detour_descent_tracking_timeout_);
   vertical_detour_required_confirmations_ =
       std::max(1, vertical_detour_required_confirmations_);
   vertical_detour_release_confirmations_ =
@@ -2839,29 +2890,29 @@ int FastExplorationManager::planExploreMotion(
   // 必须先拥有解释权，不能在A*尚未选路时被独立占据射线提前改写通道方向。
   // 低空探测状态具有XY所有权。状态结束或被显式取消前，膨胀层历史逃逸不得
   // 沿旧航迹横移，从而避免原地上升目标被带到数米之外仍继续生效。
-  const bool low_probe_was_active =
-      low_probe_phase_ != vertical_detour::LowProbePhase::IDLE;
   bool wait_for_low_confirmation = false;
   use_vertical_detour_target = handleActiveLowProbe(
       pos, next_pos, next_yaw, wait_for_low_confirmation);
+  const bool low_probe_active =
+      low_probe_phase_ != vertical_detour::LowProbePhase::IDLE;
   if (wait_for_low_confirmation) return FAIL;
   if (suspended_underpass_active_ && use_vertical_detour_target &&
       low_probe_phase_ == vertical_detour::LowProbePhase::ADVANCING)
     use_center_gate_target = true;
   // 低位下方足迹已有受支撑障碍时，先完成固定 XY/yaw 的巡航高度恢复。
   // 该会话拥有位置目标，优先级高于任何历史切线/水平膨胀层逃逸。
-  if (!use_vertical_detour_target && !low_probe_was_active &&
+  if (!use_vertical_detour_target && !low_probe_active &&
       (ground_ascent_active_ || shouldStartGroundAscent(pos))) {
     if (buildGroundAscentPlan(pos, vel, yaw)) return SUCCEED;
     if (ground_ascent_active_) return FAIL;
   }
-  if (!external_selection_only_ && !use_vertical_detour_target && !low_probe_was_active &&
+  if (!external_selection_only_ && !use_vertical_detour_target && !low_probe_active &&
       vertical_detour::inflationEscapeAllowed(low_probe_phase_) &&
       planInflationHistoryEscape(pos, vel, acc, yaw))
     return SUCCEED;
   // 刚穿入口时按门法向累计至少 1m 的前进位移；1.05m仅是选点余量，已知自由段可分多次
   // 发布，但不能把 A* 弯折弧长或优化器的往返路程当成向前推进距离。
-  if (!use_vertical_detour_target && !low_probe_was_active &&
+  if (!use_vertical_detour_target && !low_probe_active &&
       mission_workspace_lock_received_ && !entry_forward_complete_ &&
       !mission_entered_search_region_ &&
       task_search_manager_ && task_search_manager_->enabled() &&

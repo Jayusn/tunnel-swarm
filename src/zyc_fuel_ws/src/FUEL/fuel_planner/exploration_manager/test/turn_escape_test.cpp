@@ -59,7 +59,9 @@ class TurnEscapeTest {
   }
 public:
   static void runUnderpassClassification(bool pillar, bool known_low_space,
-                                         bool missing_low_layer = false) {
+                                         bool missing_low_layer = false,
+                                         bool discover_support = false,
+                                         bool advancing = false) {
     ros::NodeHandle nh("~");
     nh.setParam("mission/task_search/min_height", 0.10);
     FastExplorationManager manager;
@@ -107,6 +109,28 @@ public:
             "confirmed suspended obstacle did not start descent");
       check(manager.low_probe_target_.z() < pos.z(),
             "confirmed suspended obstacle lost its downward target");
+      if (discover_support) {
+        const Vector3d lowered(pos.x(), pos.y(), manager.low_probe_height_);
+        pcl::PointCloud<pcl::PointXYZ> support;
+        for (double x = 0.375; x <= 0.525; x += 0.025)
+          for (double y = -0.15; y <= 0.20; y += 0.025)
+            for (double z = 0.225; z <= 0.525; z += 0.025)
+              support.push_back(pcl::PointXYZ(x, y, z));
+        for (int repeat = 0; repeat < 15; ++repeat)
+          map.inputPointCloud(support, support.size(), lowered);
+        manager.low_probe_phase_ = advancing ? vertical_detour::LowProbePhase::ADVANCING
+                                             : vertical_detour::LowProbePhase::VERIFYING;
+        Vector3d next = Vector3d::Constant(99.0);
+        double yaw;
+        bool wait = true;
+        check(!manager.handleActiveLowProbe(lowered, next, yaw, wait) && !wait &&
+              manager.low_probe_phase_ == vertical_detour::LowProbePhase::IDLE &&
+              !manager.suspended_underpass_active_ && !manager.currentPlanIsVerticalDetour(),
+              "newly observed pillar kept the underpass session active");
+        check(next == Vector3d::Constant(99.0),
+              "supported obstacle released an underpass or side target instead of normal planning");
+        return;
+      }
       manager.cancelActiveLowProbe("test fallback independently");
     }
     Vector3d next;
@@ -121,6 +145,51 @@ public:
       manager.buildVerticalDetourFallback(pos, 0.0, forward, next, yaw);
       check(manager.low_probe_phase_ == vertical_detour::LowProbePhase::IDLE,
             "generic vertical fallback descended beneath an unconfirmed obstacle");
+    }
+  }
+
+  static void runDescentEndpointTracking(bool height_error, bool reaches_target) {
+    ros::NodeHandle nh("~");
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    const Vector3d anchor(0.0, 0.0, 0.56);
+    manager.low_probe_phase_ = vertical_detour::LowProbePhase::DESCENDING;
+    manager.low_probe_origin_ = anchor;
+    manager.low_probe_target_ = Vector3d(0.0, 0.0, 0.27);
+    manager.low_probe_height_ = 0.27;
+    manager.low_probe_return_height_ = 0.60;
+    manager.low_probe_direction_ = Vector3d::UnitX();
+    manager.suspended_underpass_active_ = true;
+    manager.vertical_detour_plan_ = true;
+    manager.has_last_requested_goal_ = true;
+    const Vector3d displaced = height_error ? Vector3d(0.0, 0.0, 0.19)
+                                           : Vector3d(-0.082, 0.0, 0.27);
+    Vector3d next;
+    double yaw;
+    bool wait = true;
+    // 正在下降不能按总飞行时间判超时；参考到终点后才开始跟踪宽限。
+    check(manager.handleActiveLowProbe(displaced, next, yaw, wait) && !wait,
+          "descent was abandoned before its reference endpoint");
+    manager.completeVerticalDetourReference();
+    const ros::Time first_endpoint = manager.low_probe_descent_end_time_;
+    manager.completeVerticalDetourReference();
+    check(!first_endpoint.isZero() && manager.low_probe_descent_end_time_ == first_endpoint,
+          "repeated endpoint notification renewed tracking grace");
+    manager.low_probe_descent_end_time_ = ros::Time::now() - ros::Duration(1.9);
+    check(manager.handleActiveLowProbe(displaced, next, yaw, wait) &&
+          manager.low_probe_phase_ == vertical_detour::LowProbePhase::DESCENDING,
+          "short endpoint tracking error cancelled descent prematurely");
+    manager.low_probe_descent_end_time_ = ros::Time::now() - ros::Duration(2.1);
+    if (reaches_target) {
+      check(!manager.handleActiveLowProbe(manager.low_probe_target_, next, yaw, wait) && wait &&
+            manager.low_probe_phase_ == vertical_detour::LowProbePhase::VERIFYING,
+            "actual arrival at the timeout boundary did not take priority over cancellation");
+    } else {
+      check(!manager.handleActiveLowProbe(displaced, next, yaw, wait) && !wait &&
+            manager.low_probe_phase_ == vertical_detour::LowProbePhase::IDLE &&
+            !manager.suspended_underpass_active_ && !manager.currentPlanIsVerticalDetour() &&
+            !manager.has_last_requested_goal_ && manager.low_probe_descent_end_time_.isZero(),
+            "persistent descent error retained the stale target or blocked normal planning");
     }
   }
 
@@ -383,7 +452,8 @@ public:
   }
 
   static void runWiderSideRecovery(double wide_side, bool fallback_only,
-                                   bool remember_side = true, bool entry = false) {
+                                   bool remember_side = true, bool entry = false,
+                                   bool expired_descent = false) {
     ros::NodeHandle nh("~");
     nh.setParam("manager/use_geometric_path", true);
     nh.setParam("astar/resolution_astar", 0.05);
@@ -468,6 +538,14 @@ public:
     }
     Vector3d next;
     double yaw = 0.10;
+    if (expired_descent) {
+      manager.low_probe_phase_ = vertical_detour::LowProbePhase::DESCENDING;
+      manager.low_probe_origin_ = start + Vector3d(0.082, 0.0, 0.30);
+      manager.low_probe_target_ = start + Vector3d(0.082, 0.0, 0.0);
+      manager.low_probe_height_ = start.z();
+      manager.suspended_underpass_active_ = true;
+      manager.low_probe_descent_end_time_ = ros::Time::now() - ros::Duration(2.1);
+    }
     if (fallback_only) {
       check(manager.buildMissionForwardFallback(start, yaw, next, yaw),
             "disconnected-frontier recovery failed to find the wider side");
@@ -477,6 +555,10 @@ public:
             "wider-side priority failed to generate a trajectory");
       next = planner.local_data_.position_traj_.evaluateDeBoorT(planner.local_data_.duration_);
       check(planner.isTrajectorySafe(), "wider-side trajectory bypassed footprint checks");
+      if (expired_descent)
+        check(manager.low_probe_phase_ == vertical_detour::LowProbePhase::IDLE &&
+              !manager.suspended_underpass_active_ && !manager.currentPlanIsVerticalDetour(),
+              "expired descent did not release ownership to a new horizontal trajectory");
     }
     std::cout << "wider-side fixture side=" << wide_side << " fallback=" << fallback_only
               << " widths=" << split.left_width << "," << split.right_width
@@ -622,6 +704,30 @@ TEST(UnderpassClassification, ConfirmedSuspendedObstacleDescends) {
 
 TEST(UnderpassClassification, GapInLowObservationsDoesNotDescend) {
   fast_planner::TurnEscapeTest::runUnderpassClassification(false, true, true);
+}
+
+TEST(UnderpassExit, NewlyObservedSupportRestoresNormalPlanning) {
+  fast_planner::TurnEscapeTest::runUnderpassClassification(false, true, false, true);
+}
+
+TEST(UnderpassExit, SupportFoundDuringAdvanceStopsUnderpass) {
+  fast_planner::TurnEscapeTest::runUnderpassClassification(false, true, false, true, true);
+}
+
+TEST(UnderpassExit, PersistentEightCentimeterDriftReleasesOldTarget) {
+  fast_planner::TurnEscapeTest::runDescentEndpointTracking(false, false);
+}
+
+TEST(UnderpassExit, PersistentHeightErrorReleasesOldTarget) {
+  fast_planner::TurnEscapeTest::runDescentEndpointTracking(true, false);
+}
+
+TEST(UnderpassExit, ReachingTargetAtTimeoutStillStartsVerification) {
+  fast_planner::TurnEscapeTest::runDescentEndpointTracking(false, true);
+}
+
+TEST(UnderpassExit, TimeoutGeneratesFreshHorizontalTrajectoryInSamePlan) {
+  fast_planner::TurnEscapeTest::runWiderSideRecovery(1.0, false, true, false, true);
 }
 
 TEST(ManualWaypoints, CompletesWithoutFrontierTargets) {

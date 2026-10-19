@@ -722,6 +722,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
         // 普通 frontier 的临近终点或周期重规划截断。
         if (time_to_end <= 0.05) {
           active_vertical_detour_ = false;
+          expl_manager_->completeVerticalDetourReference();
           fd_->static_state_ = true;
           transitState(PLAN_TRAJ, "vertical-detour-endpoint");
           ROS_ERROR("[vertical_detour] fixed-xy vertical reference reached endpoint; "
