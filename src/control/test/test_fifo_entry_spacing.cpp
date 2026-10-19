@@ -825,6 +825,52 @@ TEST_F(FifoEntrySpacing, WaypointHeadingToleranceWrapsAtPi) {
   EXPECT_TRUE(follower->relay_waypoints_.empty());
 }
 
+TEST_F(FifoEntrySpacing, RecoveryAfterPlanningFailureReleasesHoldAndStopsRetry) {
+  follower->door_waypoint_released_ = true;
+  queuePoint(1.0);
+  queuePoint(2.0);
+  setLeader(4.0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  const auto stamp = follower->diff_active_goal_stamp_ns_;
+
+  reportDiffStatus("PLANNING_FAILED", stamp);
+  ASSERT_FALSE(follower->diff_goal_published_);
+  ASSERT_TRUE(follower->diff_wait_hold_active_);
+  reportDiffStatus("OCCUPIED_RECOVERY_HISTORY", stamp);
+  ASSERT_TRUE(follower->simple_occupied_recovery_active_);
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+  follower->simple_diff_retry_not_before_ = ros::Time(0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_FALSE(follower->diff_goal_published_);
+  EXPECT_EQ(follower->diff_active_goal_stamp_ns_, stamp);
+
+  reportDiffStatus("OCCUPIED_RECOVERY_SUCCEEDED", stamp);
+  EXPECT_FALSE(follower->simple_occupied_recovery_active_);
+  EXPECT_TRUE(follower->diff_wait_hold_active_);
+  ASSERT_EQ(follower->relay_waypoints_.size(), 1U);
+  EXPECT_DOUBLE_EQ(follower->relay_waypoints_.front().position.x, 2.0);
+}
+
+TEST_F(FifoEntrySpacing, RecoveryRetryAfterAbortCanReleaseHoldBeforeFifoResend) {
+  follower->door_waypoint_released_ = true;
+  queuePoint(1.0);
+  setLeader(4.0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  const auto stamp = follower->diff_active_goal_stamp_ns_;
+  reportDiffStatus("OCCUPIED_RECOVERY_HISTORY", stamp);
+  reportDiffStatus("OCCUPIED_RECOVERY_ABORTED", stamp);
+  ASSERT_FALSE(follower->diff_goal_published_);
+  ASSERT_TRUE(follower->diff_wait_hold_active_);
+
+  reportDiffStatus("OCCUPIED_RECOVERY_HISTORY", stamp);
+  EXPECT_TRUE(follower->simple_occupied_recovery_active_);
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+  follower->simple_diff_retry_not_before_ = ros::Time(0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_FALSE(follower->diff_goal_published_);
+  EXPECT_EQ(follower->diff_active_goal_stamp_ns_, stamp);
+}
+
 int main(int argc, char** argv) {
   ros::init(argc, argv, "test_fifo_entry_spacing",
             ros::init_options::AnonymousName | ros::init_options::NoSigintHandler);

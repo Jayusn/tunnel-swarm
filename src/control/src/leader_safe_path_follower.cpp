@@ -1758,8 +1758,11 @@ class LeaderSafePathFollower {
         status == "TRAJECTORY_PUBLISHED" && accepted_valid &&
         !diff_separation_hold_active_ && !diff_recovery_requested_ &&
         (diff_route_subgoal_valid_ || diff_recovery_goal_valid_);
+    // 普通规划失败会清除published，但同一队首的Diff脱障仍需接管控制。
+    const bool current_goal_recovery = simple_segment_endpoint_following_ &&
+        response_matches_active_goal && (recovery_started || recovery_finished);
     if (!response_matches_active_goal ||
-        (!diff_goal_published_ && !late_success_for_active_goal)) {
+        (!diff_goal_published_ && !late_success_for_active_goal && !current_goal_recovery)) {
       const std::string response_stamp_label =
           response_goal_stamp_valid ? std::to_string(response_goal_stamp_ns) : "invalid";
       ROS_WARN("[safe_follower] ignore stale UAV1 Diff status=%s goal_stamp_ns=%s; "
