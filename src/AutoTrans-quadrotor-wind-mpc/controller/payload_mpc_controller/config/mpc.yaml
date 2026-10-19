@@ -37,7 +37,7 @@ max_bodyrate_xy:    1.5       # ~ pi [rad/s]
 # body_rate.z 是机体系偏航角速度命令，单位 rad/s。
 max_bodyrate_z:    2.0     # planned yaw rate 30 deg/s, with control margin [rad/s]
 # NMPC 世界系正常速度软约束；v_x/v_y/v_z 使用 ENU 世界系，单位 m/s。
-max_velocity_xy:    1.5
+max_velocity_xy:    0.5
 max_velocity_z:     1.0
 # 松弛量硬上限形成正常模式下的紧急速度边界：|vx/vy| <= 3.0 m/s，|vz| <= 2.0 m/s。
 max_velocity_slack_xy: 1.5
