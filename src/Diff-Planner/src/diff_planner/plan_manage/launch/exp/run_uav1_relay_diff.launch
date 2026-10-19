@@ -14,6 +14,7 @@
     <arg name="enable_ldop" default="true"/>
     <arg name="detector_backend" default="legacy"/>
     <arg name="fapp_verified_preset" default="false"/>
+    <arg name="object_motion_evidence_enabled" default="false"/>
     <arg name="enable_fapp_dynamic_avoidance" default="false"/>
     <arg name="fapp_planner_priority" default="false"/>
     <arg name="start_ldop" default="$(eval arg('detector_backend') == 'ldop' or (arg('detector_backend') == 'legacy' and arg('enable_ldop')))"/>
@@ -165,6 +166,7 @@
 
     <include if="$(eval arg('detector_backend') == 'fapp' and arg('fapp_verified_preset'))"
              file="$(find mot_mapping)/launch/uav1_frame_event_verified.launch">
+        <arg name="object_motion_evidence_enabled" value="$(arg object_motion_evidence_enabled)"/>
         <arg name="cloud_topic" value="$(arg cloud_topic)"/>
         <arg name="odom_topic" value="$(arg odom_topic)"/>
     </include>

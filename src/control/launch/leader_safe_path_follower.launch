@@ -11,6 +11,7 @@
     <arg name="enable_diff_rviz" default="true"/>
     <arg name="detector_backend" default="legacy"/>
     <arg name="fapp_verified_preset" default="false"/>
+    <arg name="object_motion_evidence_enabled" default="false"/>
     <arg name="enable_fapp_dynamic_avoidance" default="false"/>
     <arg name="fapp_planner_priority" default="false"/>
     <!-- six 第6屏独立录制检测复盘数据，不使用 AutoTrans 录包。 -->
@@ -22,6 +23,7 @@
         <arg name="publish_world_to_follower_tf" value="false"/>
         <arg name="detector_backend" value="$(arg detector_backend)"/>
         <arg name="fapp_verified_preset" value="$(arg fapp_verified_preset)"/>
+        <arg name="object_motion_evidence_enabled" value="$(arg object_motion_evidence_enabled)"/>
         <arg name="enable_fapp_dynamic_avoidance" value="$(arg enable_fapp_dynamic_avoidance)"/>
         <arg name="fapp_planner_priority" value="$(arg fapp_planner_priority)"/>
         <arg name="record_dynamic_debug" value="$(arg record_dynamic_debug)"/>

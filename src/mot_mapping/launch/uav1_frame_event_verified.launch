@@ -13,8 +13,8 @@
   <group ns="UAV1/fapp">
     <node pkg="mot_mapping" type="mapping_node" name="mapping_node" output="screen">
       <rosparam command="load" file="$(find mot_mapping)/config/uav1_frame_event_verified.yaml"/>
-      <!-- Swing confirmation supplies its own local continuity test. -->
-      <param if="$(eval arg('dynamic_mode') == 'swing-only')" name="detection/motion_confirmation_duration" value="0.0"/>
+      <!-- Swing and measured-motion confirmation supply their own observation checks. -->
+      <param if="$(eval arg('dynamic_mode') == 'swing-only' or arg('object_motion_evidence_enabled'))" name="detection/motion_confirmation_duration" value="0.0"/>
       <param name="detection/object_motion_evidence_enabled" value="$(arg object_motion_evidence_enabled)"/>
       <param name="detection/object_motion_local_bidirectional_enabled" value="$(arg object_motion_local_bidirectional_enabled)"/>
       <param name="detection/object_motion_local_match_fraction" value="$(arg object_motion_local_match_fraction)"/>
