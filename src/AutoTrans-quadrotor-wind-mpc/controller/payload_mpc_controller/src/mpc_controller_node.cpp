@@ -3,10 +3,14 @@
 #include "mpc_controller.h"
 #include <clocale>
 #include <ros/ros.h>
+#include <ros/callback_queue.h>
 
+// 输入回调和控制计算仍在同一线程执行；单独排队使每次求解优先消费最新输入。
+ros::CallbackQueue input_callback_queue;
 std::unique_ptr<PayloadMPC::MPCFSM> fsm_ptr;
 void MPC_controller_main(const ros::TimerEvent &)
 {
+    input_callback_queue.callAvailable(ros::WallDuration(0.0));
     fsm_ptr->process();
 }
 
@@ -21,6 +25,9 @@ int main(int argc, char **argv)
     std::setlocale(LC_ALL, "");
     ros::init(argc, argv, "MPCctrl");
     ros::NodeHandle nh("~");
+    nh.setCallbackQueue(&input_callback_queue);
+    ros::NodeHandle timer_nh(nh);
+    timer_nh.setCallbackQueue(ros::getGlobalCallbackQueue());
 
     PayloadMPC::MpcParams param;
     param.config_from_ros_handle(nh);
@@ -146,7 +153,7 @@ int main(int argc, char **argv)
         ROS_INFO("[启动] 等待遥控器数据。");
         while (ros::ok())
         {
-            ros::spinOnce();
+            input_callback_queue.callAvailable(ros::WallDuration(0.0));
             if (fsm.rc_is_received(ros::Time::now()))
             {
                 ROS_INFO("[启动] 已收到遥控器数据。");
@@ -157,7 +164,7 @@ int main(int argc, char **argv)
         int trials = 0;
         while (ros::ok() && !fsm.state_data.current_state.connected)
         {
-            ros::spinOnce();
+            input_callback_queue.callAvailable(ros::WallDuration(0.0));
             ros::Duration(1.0).sleep();
             if (trials++ > 5)
                 ROS_ERROR("[启动] 无法连接 PX4。");
@@ -171,12 +178,16 @@ int main(int argc, char **argv)
     }
 
     // Create a ROS timer for force observer
-    ros::Timer force_state_timer = nh.createTimer(ros::Duration(1.0 / param.force_estimator_param_.force_observer_freq), system_state_update_main);
+    ros::Timer force_state_timer = timer_nh.createTimer(ros::Duration(1.0 / param.force_estimator_param_.force_observer_freq), system_state_update_main);
     // Create a ROS timer for controller
-    ros::Timer MPC_controller_main_timer = nh.createTimer(ros::Duration(1.0 / param.ctrl_freq_max_), MPC_controller_main);
+    ros::Timer MPC_controller_main_timer = timer_nh.createTimer(ros::Duration(1.0 / param.ctrl_freq_max_), MPC_controller_main);
     // We DO NOT rely on feedback as trigger, since there is no significant performance difference through our test.
 
-    ros::spin();
+    while (ros::ok())
+    {
+        input_callback_queue.callAvailable(ros::WallDuration(0.0));
+        ros::getGlobalCallbackQueue()->callOne(ros::WallDuration(0.001));
+    }
 
     return 0;
 }
