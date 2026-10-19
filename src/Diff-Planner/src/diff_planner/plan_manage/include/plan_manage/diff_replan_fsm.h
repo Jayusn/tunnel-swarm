@@ -170,6 +170,10 @@ namespace diff_planner
     bool occupied_recovery_from_history_;
     bool occupied_recovery_vertical_;
     bool occupied_recovery_failure_reported_;
+    // 脱障的归属不随途中收到的重试/下一航点改变；执行编号区分同一航点的多次退让。
+    uint64_t occupied_recovery_goal_stamp_ns_{0ULL};
+    uint64_t occupied_recovery_stamp_ns_{0ULL};
+    bool occupied_recovery_history_failed_{false};
 
     /* ROS utils */
     ros::CallbackQueue odom_callback_queue_;
@@ -204,6 +208,7 @@ namespace diff_planner
                         bool from_fapp = false);
     bool callOccupiedRecovery(const Eigen::Vector3d &target);
     void updateFreeOdomHistory(double now);
+    void beginOccupiedRecoveryEpisode();
     bool startOccupiedRecovery(double now);
     bool selectOccupiedRecoveryTarget(Eigen::Vector3d &target,
                                       bool &from_history,
@@ -220,6 +225,7 @@ namespace diff_planner
                                  double *occupied_prefix = nullptr);
     double estimateInflatedClearance(const Eigen::Vector3d &pos);
     void abortOccupiedRecovery(const char *reason);
+    void cancelOccupiedRecovery(const std::string &status);
     void planningRestartCallback(const std_msgs::Empty &msg);
 
     /* local planning */

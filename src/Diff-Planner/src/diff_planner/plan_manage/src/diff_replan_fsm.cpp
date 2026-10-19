@@ -268,7 +268,14 @@ namespace diff_planner
     const bool normal_planning_state =
         exec_state_ == SEQUENTIAL_START || exec_state_ == GEN_NEW_TRAJ ||
         exec_state_ == REPLAN_TRAJ || exec_state_ == EXEC_TRAJ;
-    if (enable_occupied_recovery_ && have_odom_ && normal_planning_state)
+    // 接力任务的末点悬停仍受地图更新影响；首次外部任务前及强停期间不从等待态启动。
+    const bool waiting_after_manual_goal = exec_state_ == WAIT_TARGET &&
+        wait_new_target_after_occupied_recovery_ &&
+        target_type_ == TARGET_TYPE::MANUAL_TARGET &&
+        active_external_goal_stamp_ns_ != 0ULL &&
+        planner_manager_->traj_.local_traj.traj_id > 0 && !mandatory_stop_;
+    if (enable_occupied_recovery_ && have_odom_ &&
+        (normal_planning_state || waiting_after_manual_goal))
     {
       const int current_occ =
           planner_manager_->grid_map_->getInflateOccupancy(odom_pos_);
@@ -280,7 +287,7 @@ namespace diff_planner
         need_hover_stop_ = true;
         flag_escape_emergency_ = true;
         occupied_recovery_active_ = false;
-        occupied_recovery_episode_ = true;
+        beginOccupiedRecoveryEpisode();
         changeFSMExecState(EMERGENCY_STOP, "OCCUPIED_START");
       }
     }
@@ -668,11 +675,13 @@ namespace diff_planner
         const int current_occ = planner_manager_->grid_map_->getInflateOccupancy(odom_pos_);
         if (enable_occupied_recovery_ && current_occ != 0)
         {
-          occupied_recovery_episode_ = true;
+          beginOccupiedRecoveryEpisode();
         }
         // 占据事件持续到退让完成；单帧清空不能恢复原目标、再按漂移位置急停。
         if (enable_occupied_recovery_ && occupied_recovery_episode_ &&
-            have_target_ && have_trigger_ && !mandatory_stop_)
+            ((have_target_ && have_trigger_) ||
+             (wait_new_target_after_occupied_recovery_ &&
+              active_external_goal_stamp_ns_ != 0ULL)) && !mandatory_stop_)
         {
           if (occupied_recovery_attempt_count_ >= escape_max_attempts_)
           {
@@ -808,6 +817,9 @@ namespace diff_planner
 
   void DiffReplanFSM::changeFSMExecState(FSM_EXEC_STATE new_state, string pos_call)
   {
+    // 正常完成/超时会先结束脱障；其余离开路径也必须通知跟随器交还控制。
+    if (exec_state_ == OCCUPIED_RECOVERY && new_state != OCCUPIED_RECOVERY)
+      cancelOccupiedRecovery("OCCUPIED_RECOVERY_ABORTED");
 
     if (new_state == exec_state_)
       continously_called_times_++;
@@ -937,7 +949,7 @@ namespace diff_planner
       need_hover_stop_ = true;
       flag_escape_emergency_ = true;
       occupied_recovery_active_ = false;
-      occupied_recovery_episode_ = true;
+      beginOccupiedRecoveryEpisode();
       changeFSMExecState(EMERGENCY_STOP, "OCCUPIED_SAFETY_PREEMPT");
       return;
     }
@@ -1211,7 +1223,7 @@ namespace diff_planner
     swing_wait_obstacle_id_ = collision.obstacle_id;
     need_hover_stop_ = true;
     flag_escape_emergency_ = true;
-    occupied_recovery_active_ = false;
+    cancelOccupiedRecovery("OCCUPIED_RECOVERY_ABORTED");
     publishPlanningStatus("SWING_OBSTACLE_WAIT");
     ROS_ERROR(
         "[摆球避障] 轨迹将在 %.2fs 后与 id=%u 相交，停车等待；球预测=(%.2f, %.2f, %.2f)，轨迹点=(%.2f, %.2f, %.2f)。",
@@ -1383,11 +1395,10 @@ namespace diff_planner
       previous = candidate;
       const double direct_distance = std::hypot(candidate.x() - odom_pos_.x(),
                                                 candidate.y() - odom_pos_.y());
-      if (history_distance < min_distance)
-        continue;
-
       const double distance_error = std::abs(history_distance - escape_max_distance_);
-      if (distance_error < best_distance_error)
+      // 悬停摆动/回环的累计路程不等于实际退让量，不能选择几乎仍在原地的点。
+      if (history_distance >= min_distance && direct_distance >= min_distance &&
+          distance_error < best_distance_error)
       {
         target = candidate;
         clearance = 0.0;
@@ -1513,7 +1524,8 @@ namespace diff_planner
                                                    double &clearance)
   {
     occupied_recovery_vertical_ = false;
-    if (selectHistoryRecoveryTarget(target, clearance))
+    if (!occupied_recovery_history_failed_ &&
+        selectHistoryRecoveryTarget(target, clearance))
     {
       from_history = true;
       return true;
@@ -1550,18 +1562,30 @@ namespace diff_planner
 
   bool DiffReplanFSM::startOccupiedRecovery(double now)
   {
+    beginOccupiedRecoveryEpisode();
     Eigen::Vector3d target;
     double clearance = 0.0;
     bool from_history = false;
     if (!selectOccupiedRecoveryTarget(target, from_history, clearance))
       return false;
     if (!callOccupiedRecovery(target))
-      return false;
+    {
+      if (!from_history)
+        return false;
+      // 历史点能选中但轨迹生成失败，也必须给现有垂直/侧向备选一次机会。
+      occupied_recovery_history_failed_ = true;
+      if (!selectOccupiedRecoveryTarget(target, from_history, clearance) ||
+          !callOccupiedRecovery(target))
+        return false;
+    }
 
     occupied_recovery_target_ = target;
     occupied_recovery_from_history_ = from_history;
     occupied_recovery_active_ = true;
     occupied_recovery_episode_ = true;
+    occupied_recovery_stamp_ns_ = std::max<uint64_t>(
+        occupied_recovery_stamp_ns_ + 1ULL,
+        static_cast<uint64_t>(ros::Time::now().toNSec()));
     ++occupied_recovery_attempt_count_;
     replan_fail_count_ = 0;
     last_escape_path_check_time_ = now;
@@ -1593,6 +1617,8 @@ namespace diff_planner
   void DiffReplanFSM::abortOccupiedRecovery(const char *reason)
   {
     ROS_ERROR("[局部脱障] %s；在当前位置重新急停。", reason);
+    if (occupied_recovery_from_history_)
+      occupied_recovery_history_failed_ = true;
     publishPlanningStatus("OCCUPIED_RECOVERY_ABORTED");
     occupied_recovery_active_ = false;
     need_hover_stop_ = true;
@@ -1600,6 +1626,24 @@ namespace diff_planner
     flag_escape_emergency_ = false;
     last_escape_target_search_time_ = ros::Time::now().toSec();
     changeFSMExecState(EMERGENCY_STOP, "OCCUPIED_RECOVERY_ABORT");
+  }
+
+  void DiffReplanFSM::beginOccupiedRecoveryEpisode()
+  {
+    if (!occupied_recovery_episode_)
+    {
+      occupied_recovery_goal_stamp_ns_ = active_external_goal_stamp_ns_;
+      occupied_recovery_history_failed_ = false;
+    }
+    occupied_recovery_episode_ = true;
+  }
+
+  void DiffReplanFSM::cancelOccupiedRecovery(const std::string &status)
+  {
+    if (!occupied_recovery_active_)
+      return;
+    publishPlanningStatus(status);
+    occupied_recovery_active_ = false;
   }
 
   bool DiffReplanFSM::callReboundReplan(bool flag_use_poly_init,
@@ -1886,7 +1930,11 @@ namespace diff_planner
     // 附带Diff实际接受的final_goal，避免延迟/锁存回执污染刚重发的新目标。
     std_msgs::String msg;
     std::ostringstream stream;
-    stream << status << " goal_stamp_ns=" << active_external_goal_stamp_ns_;
+    if (status.find("OCCUPIED_RECOVERY_") == 0)
+      stream << status << " goal_stamp_ns=" << occupied_recovery_goal_stamp_ns_
+             << " recovery_stamp_ns=" << occupied_recovery_stamp_ns_;
+    else
+      stream << status << " goal_stamp_ns=" << active_external_goal_stamp_ns_;
     if (status == "TRAJECTORY_PUBLISHED")
     {
       stream << " " << final_goal_.x() << " " << final_goal_.y() << " "
@@ -1929,7 +1977,8 @@ namespace diff_planner
     (void)msg;
     mandatory_stop_ = true;
     controller_restart_pending_ = false;
-    occupied_recovery_active_ = false;
+    cancelOccupiedRecovery("OCCUPIED_RECOVERY_ABORTED");
+    occupied_recovery_episode_ = false;
     flag_escape_emergency_ = true;
     ROS_ERROR("Received controller safety stop; pause planning until restart signal.");
     changeFSMExecState(EMERGENCY_STOP, "Mandatory Stop");
@@ -1945,7 +1994,8 @@ namespace diff_planner
       need_hover_stop_ = false;
       ROS_WARN("[控制器恢复] 解除控制器临时停止，基于最新里程计恢复当前任务。");
     }
-    if (!have_odom_ || !have_target_ || !have_trigger_)
+    if (!have_odom_ ||
+        ((!have_target_ || !have_trigger_) && !occupied_recovery_episode_))
     {
       ROS_WARN("[控制器恢复] 暂不能重新规划：odom=%d, target=%d, trigger=%d。",
                have_odom_, have_target_, have_trigger_);
@@ -1962,7 +2012,7 @@ namespace diff_planner
     }
     replan_fail_count_ = 0;
     need_hover_stop_ = false;
-    occupied_recovery_active_ = false;
+    cancelOccupiedRecovery("OCCUPIED_RECOVERY_CANCELLED");
     const double now = ros::Time::now().toSec();
     last_target_change_time_ = now;
     stuck_detect_ignore_until_ = now + stuck_detect_grace_time_;
@@ -1971,12 +2021,18 @@ namespace diff_planner
     {
       need_hover_stop_ = true;
       flag_escape_emergency_ = true;
-      occupied_recovery_episode_ = true;
+      beginOccupiedRecoveryEpisode();
       changeFSMExecState(EMERGENCY_STOP, "CONTROLLER_RESTART_OCCUPIED");
       ROS_WARN("[控制器恢复] 最新里程计仍在膨胀障碍内，先进入现有局部脱障流程。");
       return;
     }
 
+    occupied_recovery_episode_ = false;
+    if (!have_target_ || !have_trigger_)
+    {
+      changeFSMExecState(WAIT_TARGET, "CONTROLLER_RESTART_WAIT_TARGET");
+      return;
+    }
     changeFSMExecState(GEN_NEW_TRAJ, "CONTROLLER_RESTART");
     ROS_WARN("[控制器恢复] 保留当前目标和航点，从最新里程计位置、速度强制生成新轨迹。");
   }

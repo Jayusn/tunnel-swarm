@@ -111,6 +111,14 @@ class FifoEntrySpacing : public ::testing::Test {
     follower->diffStatusCallback(status);
   }
 
+  void reportRecoveryStatus(const std::string& state, uint64_t goal_stamp,
+                            uint64_t recovery_stamp) {
+    std_msgs::String::Ptr status(new std_msgs::String);
+    status->data = state + " goal_stamp_ns=" + std::to_string(goal_stamp) +
+                   " recovery_stamp_ns=" + std::to_string(recovery_stamp);
+    follower->diffStatusCallback(status);
+  }
+
   uint64_t sendAndConsumeOrdinaryGoal() {
     follower->door_waypoint_released_ = true;
     queuePoint(1.0);
@@ -869,6 +877,159 @@ TEST_F(FifoEntrySpacing, RecoveryRetryAfterAbortCanReleaseHoldBeforeFifoResend) 
   follower->handleSimpleDiffPlannerExecution(ros::Time::now());
   EXPECT_FALSE(follower->diff_goal_published_);
   EXPECT_EQ(follower->diff_active_goal_stamp_ns_, stamp);
+}
+
+TEST_F(FifoEntrySpacing, SamePointRetryAcceptsRecoveryFromPreviousAttempt) {
+  follower->door_waypoint_released_ = true;
+  queuePoint(1.0);
+  queuePoint(2.0);
+  setLeader(4.0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  const auto old_stamp = follower->diff_active_goal_stamp_ns_;
+  reportDiffStatus("PLANNING_FAILED", old_stamp);
+  follower->simple_diff_retry_not_before_ = ros::Time(0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_GT(follower->diff_active_goal_stamp_ns_, old_stamp);
+  ASSERT_TRUE(follower->diff_wait_hold_active_);
+
+  reportRecoveryStatus("OCCUPIED_RECOVERY_HISTORY", old_stamp, 100);
+
+  EXPECT_TRUE(follower->simple_occupied_recovery_active_);
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+  const auto retry_stamp = follower->diff_active_goal_stamp_ns_;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now() + ros::Duration(10));
+  EXPECT_EQ(follower->diff_active_goal_stamp_ns_, retry_stamp);
+  reportRecoveryStatus("OCCUPIED_RECOVERY_SUCCEEDED", old_stamp, 100);
+  ASSERT_EQ(follower->relay_waypoints_.size(), 1U);
+  EXPECT_DOUBLE_EQ(follower->relay_waypoints_.front().position.x, 2.0);
+}
+
+TEST_F(FifoEntrySpacing, PreviousEndpointRecoveryPreservesAlreadySentNextEndpoint) {
+  const auto old_stamp = sendAndConsumeOrdinaryGoal();
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  const auto next_stamp = follower->diff_active_goal_stamp_ns_;
+  ASSERT_GT(next_stamp, old_stamp);
+  setLeader(2.8);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_TRUE(follower->diff_wait_hold_active_);
+
+  reportRecoveryStatus("OCCUPIED_RECOVERY_HISTORY", old_stamp, 100);
+  EXPECT_TRUE(follower->simple_occupied_recovery_active_);
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+  reportRecoveryStatus("OCCUPIED_RECOVERY_SUCCEEDED", old_stamp, 100);
+
+  EXPECT_FALSE(follower->simple_occupied_recovery_active_);
+  ASSERT_EQ(follower->relay_waypoints_.size(), 1U);
+  EXPECT_DOUBLE_EQ(follower->relay_waypoints_.front().position.x, 2.0);
+  EXPECT_FALSE(follower->diff_goal_published_);
+  setLeader(4.0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->diff_goal_published_);
+  EXPECT_GT(follower->diff_active_goal_stamp_ns_, next_stamp);
+}
+
+TEST_F(FifoEntrySpacing, CompletedRecoveryCannotBeReactivatedByDelayedStart) {
+  const auto stamp = sendAndConsumeOrdinaryGoal();
+  reportRecoveryStatus("OCCUPIED_RECOVERY_HISTORY", stamp, 100);
+  reportRecoveryStatus("OCCUPIED_RECOVERY_SUCCEEDED", stamp, 100);
+
+  reportRecoveryStatus("OCCUPIED_RECOVERY_HISTORY", stamp, 100);
+  reportRecoveryStatus("OCCUPIED_RECOVERY_SUCCEEDED", stamp, 100);
+
+  EXPECT_FALSE(follower->simple_occupied_recovery_active_);
+  EXPECT_TRUE(follower->diff_wait_hold_active_);
+  ASSERT_EQ(follower->relay_waypoints_.size(), 1U);
+}
+
+TEST_F(FifoEntrySpacing, UnknownPreviousSessionRecoveryCannotTakeOver) {
+  const auto stamp = sendAndConsumeOrdinaryGoal();
+  reportRecoveryStatus("OCCUPIED_RECOVERY_HISTORY", stamp - 1, 100);
+  EXPECT_FALSE(follower->simple_occupied_recovery_active_);
+  reportRecoveryStatus("OCCUPIED_RECOVERY_HISTORY", stamp, 100);
+  EXPECT_TRUE(follower->simple_occupied_recovery_active_);
+}
+
+TEST_F(FifoEntrySpacing, OldRecoveryFinishCannotInterruptNewRecoveryAttempt) {
+  follower->door_waypoint_released_ = true;
+  queuePoint(1.0);
+  queuePoint(2.0);
+  setLeader(4.0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  const auto stamp = follower->diff_active_goal_stamp_ns_;
+  reportRecoveryStatus("OCCUPIED_RECOVERY_HISTORY", stamp, 100);
+  reportRecoveryStatus("OCCUPIED_RECOVERY_ABORTED", stamp, 100);
+  reportRecoveryStatus("OCCUPIED_RECOVERY_LATERAL", stamp, 101);
+
+  reportRecoveryStatus("OCCUPIED_RECOVERY_SUCCEEDED", stamp, 100);
+
+  EXPECT_TRUE(follower->simple_occupied_recovery_active_);
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+  EXPECT_EQ(follower->relay_waypoints_.size(), 2U);
+  reportRecoveryStatus("OCCUPIED_RECOVERY_SUCCEEDED", stamp, 101);
+  EXPECT_EQ(follower->relay_waypoints_.size(), 1U);
+}
+
+TEST_F(FifoEntrySpacing, SeparationRecoveryDoesNotConsumeOrdinaryFifoEndpoint) {
+  queuePoint(1.0);
+  geometry_msgs::PoseStamped separation_goal;
+  separation_goal.header.stamp = ros::Time::now();
+  follower->stampDiffGoalId(&separation_goal);
+  const auto stamp = separation_goal.header.stamp.toNSec();
+
+  reportRecoveryStatus("OCCUPIED_RECOVERY_HISTORY", stamp, 100);
+  EXPECT_TRUE(follower->simple_occupied_recovery_active_);
+  reportRecoveryStatus("OCCUPIED_RECOVERY_SUCCEEDED", stamp, 100);
+
+  ASSERT_EQ(follower->relay_waypoints_.size(), 1U);
+  EXPECT_DOUBLE_EQ(follower->relay_waypoints_.front().position.x, 1.0);
+}
+
+TEST_F(FifoEntrySpacing, ControllerCancellationPreservesGoalAndAcceptsFreshNormalPlan) {
+  follower->door_waypoint_released_ = true;
+  queuePoint(1.0);
+  queuePoint(2.0);
+  setLeader(4.0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  const auto stamp = follower->diff_active_goal_stamp_ns_;
+  reportDiffStatus("PLANNING_FAILED", stamp);
+  reportRecoveryStatus("OCCUPIED_RECOVERY_HISTORY", stamp, 100);
+
+  reportRecoveryStatus("OCCUPIED_RECOVERY_CANCELLED", stamp, 100);
+
+  EXPECT_FALSE(follower->simple_occupied_recovery_active_);
+  EXPECT_TRUE(follower->diff_goal_published_);
+  EXPECT_EQ(follower->relay_waypoints_.size(), 2U);
+  std_msgs::String::Ptr success(new std_msgs::String);
+  success->data = "TRAJECTORY_PUBLISHED goal_stamp_ns=" + std::to_string(stamp) + " 1 0 0.6";
+  follower->diffStatusCallback(success);
+  EXPECT_TRUE(follower->diff_plan_response_received_);
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+  follower->follower_odom_.pose.pose.position.x = 1.0;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(follower->relay_waypoints_.size(), 1U);
+  EXPECT_DOUBLE_EQ(follower->relay_waypoints_.front().position.x, 2.0);
+}
+
+TEST_F(FifoEntrySpacing, FreshNormalTrajectoryAlsoEndsRecoveryWait) {
+  follower->door_waypoint_released_ = true;
+  queuePoint(1.0);
+  setLeader(4.0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  const auto stamp = follower->diff_active_goal_stamp_ns_;
+  reportDiffStatus("PLANNING_FAILED", stamp);
+  reportRecoveryStatus("OCCUPIED_RECOVERY_HISTORY", stamp, 100);
+  std_msgs::String::Ptr success(new std_msgs::String);
+  success->data = "TRAJECTORY_PUBLISHED goal_stamp_ns=" + std::to_string(stamp) + " 1 0 0.6";
+
+  follower->diffStatusCallback(success);
+
+  EXPECT_FALSE(follower->simple_occupied_recovery_active_);
+  EXPECT_TRUE(follower->diff_goal_published_);
+  reportRecoveryStatus("OCCUPIED_RECOVERY_HISTORY", stamp, 100);
+  EXPECT_FALSE(follower->simple_occupied_recovery_active_);
+  follower->follower_odom_.pose.pose.position.x = 1.0;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->relay_waypoints_.empty());
 }
 
 int main(int argc, char** argv) {

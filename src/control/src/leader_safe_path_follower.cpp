@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <deque>
 #include <limits>
+#include <map>
 #include <sstream>  // 2026-07-28: 解析Diff返回的实际安全目标坐标。
 #include <stdexcept>
 #include <string>
@@ -37,6 +38,8 @@ struct RoutePoint {
   // 2026-07-15: 记录前机从起飞后的累计路程，用于“离开候选点1m后再释放”的离散接力逻辑。
   double progress{0.0};
   bool is_door{false};
+  // 第一次下发的时间戳标识这个FIFO点；同点重试仍属于同一航点。
+  uint64_t diff_goal_owner_stamp_ns{0ULL};
 };
 
 struct DynamicObstacleSample {
@@ -764,6 +767,7 @@ class LeaderSafePathFollower {
       }
     }
     relay_waypoints_.push_back(follower_point);
+    relay_waypoints_.back().diff_goal_owner_stamp_ns = 0ULL;
     if (ordinary_point) {
       last_ordinary_relay_position_ = follower_point.position;
       have_last_ordinary_relay_point_ = true;
@@ -1634,6 +1638,8 @@ class LeaderSafePathFollower {
       goal_stamp_ns = diff_active_goal_stamp_ns_ + 1ULL;
     goal->header.stamp.fromNSec(goal_stamp_ns);
     diff_active_goal_stamp_ns_ = goal_stamp_ns;
+    if (simple_segment_endpoint_following_)
+      simple_diff_goal_owners_[goal_stamp_ns] = 0ULL; // 间距退让不属于普通FIFO点。
   }
 
   void handleDiffPlanningFailure(const std::string& status,
@@ -1702,6 +1708,68 @@ class LeaderSafePathFollower {
     // 门只是通道终点。UAV0出门后，UAV1仍按已缓存历史轨迹依次到门心和门外等待点。
   }
 
+  void handleSimpleOccupiedRecovery(const std::string& status,
+                                    uint64_t goal_stamp_ns,
+                                    uint64_t recovery_stamp_ns) {
+    const auto owner = simple_diff_goal_owners_.find(goal_stamp_ns);
+    if (owner == simple_diff_goal_owners_.end() ||
+        recovery_stamp_ns <= simple_finished_recovery_stamp_ns_ ||
+        recovery_stamp_ns < simple_active_recovery_stamp_ns_ ||
+        follower_precision_landing_active_) {
+      ROS_WARN("[safe_follower] ignore obsolete occupied recovery status=%s "
+               "goal_stamp_ns=%llu recovery_stamp_ns=%llu.", status.c_str(),
+               static_cast<unsigned long long>(goal_stamp_ns),
+               static_cast<unsigned long long>(recovery_stamp_ns));
+      return;
+    }
+    const bool started = status == "OCCUPIED_RECOVERY_VERTICAL" ||
+        status == "OCCUPIED_RECOVERY_HISTORY" ||
+        status == "OCCUPIED_RECOVERY_LATERAL";
+    if (started) {
+      simple_active_recovery_stamp_ns_ = recovery_stamp_ns;
+      simple_occupied_recovery_active_ = true;
+      setDiffWaitPositionHold(false, "Diff occupied recovery owns current execution");
+      return;
+    }
+
+    simple_finished_recovery_stamp_ns_ = recovery_stamp_ns;
+    simple_active_recovery_stamp_ns_ = 0ULL;
+    simple_occupied_recovery_active_ = false;
+    if (status == "OCCUPIED_RECOVERY_CANCELLED") {
+      // 控制器已恢复，Diff将从实际位置重规划；不消费航点，也不再插入一次锁点。
+      // 保留当前目标接收后续普通成功/失败回执，避免重发抢在新轨迹之前。
+      diff_goal_published_ = diff_goal_index_ == active_relay_index_ &&
+          active_relay_index_ < relay_waypoints_.size();
+      diff_plan_response_received_ = false;
+      diff_command_seen_for_goal_ = false;
+      diff_trajectory_response_stamp_ = ros::Time(0);
+      diff_goal_first_publish_stamp_ =
+          diff_goal_published_ ? ros::Time::now() : ros::Time(0);
+      return;
+    }
+
+    setDiffWaitPositionHold(true, status);
+    const bool owns_current_endpoint = owner->second != 0ULL &&
+        active_relay_index_ < relay_waypoints_.size() &&
+        relay_waypoints_[active_relay_index_].diff_goal_owner_stamp_ns == owner->second;
+    const bool terminal_relay = terminal_mode_active_ &&
+        active_relay_index_ == terminal_waypoint_index_;
+    if (status == "OCCUPIED_RECOVERY_SUCCEEDED" &&
+        owns_current_endpoint && !terminal_relay)
+      consumeSimpleRelayFront();
+    // 旧点已经出队时，保留下一队首；同点重试的不同时间戳仍归属原FIFO点。
+    diff_goal_published_ = false;
+    diff_plan_response_received_ = false;
+    diff_accepted_goal_valid_ = false;
+    diff_command_seen_for_goal_ = false;
+    diff_goal_first_publish_stamp_ = ros::Time(0);
+    diff_trajectory_response_stamp_ = ros::Time(0);
+    diff_goal_index_ = std::numeric_limits<std::size_t>::max();
+    simple_waypoint_clearance_hold_active_ = false;
+    simple_diff_retry_not_before_ = ros::Time::now() + ros::Duration(
+        status == "OCCUPIED_RECOVERY_ABORTED" ? simple_diff_retry_delay_ : 0.0);
+  }
+
   void diffStatusCallback(const std_msgs::String::ConstPtr& msg) {
     std::istringstream stream(msg->data);
     std::string status;
@@ -1729,7 +1797,26 @@ class LeaderSafePathFollower {
         status == "OCCUPIED_RECOVERY_HISTORY" ||
         status == "OCCUPIED_RECOVERY_LATERAL";
     const bool recovery_finished = status == "OCCUPIED_RECOVERY_ABORTED" ||
-        status == "OCCUPIED_RECOVERY_SUCCEEDED";
+        status == "OCCUPIED_RECOVERY_SUCCEEDED" ||
+        status == "OCCUPIED_RECOVERY_CANCELLED";
+    if (simple_segment_endpoint_following_ && response_goal_stamp_valid &&
+        (recovery_started || recovery_finished)) {
+      std::string recovery_token;
+      stream >> recovery_token;
+      const std::string prefix = "recovery_stamp_ns=";
+      if (recovery_token.compare(0, prefix.size(), prefix) == 0) {
+        std::istringstream recovery_stream(recovery_token.substr(prefix.size()));
+        uint64_t recovery_stamp_ns = 0ULL;
+        char trailing = '\0';
+        if ((recovery_stream >> recovery_stamp_ns) && !(recovery_stream >> trailing) &&
+            recovery_stamp_ns != 0ULL) {
+          handleSimpleOccupiedRecovery(status, response_goal_stamp_ns, recovery_stamp_ns);
+          return;
+        }
+        ROS_WARN("[safe_follower] reject invalid occupied recovery execution stamp.");
+        return;
+      }
+    }
     // 普通航点可能已出队，但其末段轨迹仍在执行。只接续最后一次下发目标的
     // 脱障状态，结束时保持下一队首，不能将它当作旧故障航点再次消费。
     if (simple_segment_endpoint_following_ && response_goal_stamp_valid &&
@@ -1757,7 +1844,8 @@ class LeaderSafePathFollower {
         response_matches_active_goal && !diff_goal_published_ &&
         status == "TRAJECTORY_PUBLISHED" && accepted_valid &&
         !diff_separation_hold_active_ && !diff_recovery_requested_ &&
-        (diff_route_subgoal_valid_ || diff_recovery_goal_valid_);
+        (diff_route_subgoal_valid_ || diff_recovery_goal_valid_ ||
+         (simple_segment_endpoint_following_ && simple_occupied_recovery_active_));
     // 普通规划失败会清除published，但同一队首的Diff脱障仍需接管控制。
     const bool current_goal_recovery = simple_segment_endpoint_following_ &&
         response_matches_active_goal && (recovery_started || recovery_finished);
@@ -1853,6 +1941,11 @@ class LeaderSafePathFollower {
                   "retry the same coordinates (no alternate/recovery point).",
                   status.c_str(), active_relay_index_ + 1);
       } else if (status == "TRAJECTORY_PUBLISHED") {
+        // 普通轨迹也表明Diff已退出脱障，覆盖控制器恢复后的正常轨迹接管。
+        simple_finished_recovery_stamp_ns_ = std::max(
+            simple_finished_recovery_stamp_ns_, simple_active_recovery_stamp_ns_);
+        simple_active_recovery_stamp_ns_ = 0ULL;
+        simple_occupied_recovery_active_ = false;
         diff_trajectory_response_stamp_ = ros::Time::now();
         setDiffWaitPositionHold(false, "current FIFO endpoint trajectory published");
         diff_planning_failure_events_ = 0;
@@ -1880,6 +1973,8 @@ class LeaderSafePathFollower {
         ROS_ERROR("[safe_follower] UAV1 Diff occupied recovery aborted; keep FIFO endpoint "
                   "%zu and retry the same coordinates after %.2fs.",
                   active_relay_index_ + 1, simple_diff_retry_delay_);
+      } else if (status == "OCCUPIED_RECOVERY_CANCELLED") {
+        simple_occupied_recovery_active_ = false;
       } else if (status == "OCCUPIED_RECOVERY_SUCCEEDED") {
         simple_occupied_recovery_active_ = false;
         setDiffWaitPositionHold(true, "occupied recovery finished; skip unsafe FIFO endpoint");
@@ -2142,6 +2237,10 @@ class LeaderSafePathFollower {
       goal.pose.orientation.w = std::cos(local_yaw * 0.5);
       goal.pose.orientation.z = std::sin(local_yaw * 0.5);
       stampDiffGoalId(&goal);
+      RoutePoint& owner = relay_waypoints_[active_relay_index_];
+      if (owner.diff_goal_owner_stamp_ns == 0ULL)
+        owner.diff_goal_owner_stamp_ns = diff_active_goal_stamp_ns_;
+      simple_diff_goal_owners_[diff_active_goal_stamp_ns_] = owner.diff_goal_owner_stamp_ns;
       publishLockedExitYaw();
       goal_pub.publish(goal);
       if (!desired_world.is_door) simple_door_hover_active_ = false;
@@ -4155,6 +4254,10 @@ class LeaderSafePathFollower {
   bool use_diff_planner_{true};  // 2026-07-28: 默认启用UAV1独立Diff规划，旧直控仅作显式回退。
   bool simple_segment_endpoint_following_{false};
   bool simple_occupied_recovery_active_{false};
+  // 保存本进程发出的目标及其FIFO归属，允许迟到的退让接管，拒绝上次任务的锁存消息。
+  std::map<uint64_t, uint64_t> simple_diff_goal_owners_;
+  uint64_t simple_active_recovery_stamp_ns_{0ULL};
+  uint64_t simple_finished_recovery_stamp_ns_{0ULL};
   bool simple_waypoint_clearance_hold_active_{false};
   bool simple_door_hover_active_{false};
   bool leader_started_{false}, follower_started_{false}, traj_started_sent_{false};

@@ -145,14 +145,20 @@ protected:
     cloud_pub = nh.advertise<sensor_msgs::PointCloud2>("grid_map/cloud", 1);
     trajectory_sub = nh.subscribe<traj_utils::PolyTraj>("planning/trajectory", 10,
         [this](const traj_utils::PolyTraj::ConstPtr &) { ++published; });
+    status_sub = nh.subscribe<std_msgs::String>("planning/status", 20,
+        [this](const std_msgs::String::ConstPtr &message) {
+          statuses.push_back(message->data);
+        });
     const auto deadline = ros::WallTime::now() + ros::WallDuration(2.0);
     while ((odom_pub.getNumSubscribers() == 0 || cloud_pub.getNumSubscribers() == 0 ||
-            planner.poly_traj_pub_.getNumSubscribers() == 0) &&
+            planner.poly_traj_pub_.getNumSubscribers() == 0 ||
+            planner.planning_status_pub_.getNumSubscribers() == 0) &&
            ros::WallTime::now() < deadline)
       ros::WallDuration(0.01).sleep();
     ASSERT_GT(odom_pub.getNumSubscribers(), 0U);
     ASSERT_GT(cloud_pub.getNumSubscribers(), 0U);
     ASSERT_GT(planner.poly_traj_pub_.getNumSubscribers(), 0U);
+    ASSERT_GT(planner.planning_status_pub_.getNumSubscribers(), 0U);
     nav_msgs::Odometry odom;
     odom.header.stamp = ros::Time::now();
     odom.pose.pose.position.x = goal.x() - 0.08;
@@ -222,7 +228,8 @@ protected:
   FSM planner;
   Eigen::Vector3d goal{3.32939, 0.385744, 0.6};
   ros::Publisher cloud_pub;
-  ros::Subscriber trajectory_sub;
+  ros::Subscriber trajectory_sub, status_sub;
+  std::vector<std::string> statuses;
   int published{0}, initial_id{0};
 };
 
@@ -613,6 +620,198 @@ TEST_F(PlannerEndpoint, NextGoalStartsNormallyAfterEndpointHover)
   EXPECT_TRUE(planner.have_target_);
   drain();
   EXPECT_GT(published, 0);
+}
+
+TEST_F(PlannerEndpoint, OccupiedEndpointHoverRetreatsWithoutAnotherGoal) {
+  planner.wait_new_target_after_occupied_recovery_ = true;
+  planner.active_external_goal_stamp_ns_ = 999000000000ULL;
+  ASSERT_TRUE(planner.handleManualTrajectoryEnd(1000.0));
+  ASSERT_EQ(planner.exec_state_, FSM::WAIT_TARGET);
+  ASSERT_FALSE(planner.have_target_);
+  ASSERT_FALSE(planner.have_trigger_);
+  const Eigen::Vector3d retreat = planner.odom_pos_ - Eigen::Vector3d(0.45, 0, 0);
+  planner.free_odom_history_.clear();
+  planner.free_odom_history_.push_back(FSM::FreeOdomSample{
+      999.0, retreat.x(), retreat.y(), retreat.z()});
+  publishPoint(planner.odom_pos_);
+
+  exec();
+  exec();
+
+  ASSERT_EQ(planner.exec_state_, FSM::OCCUPIED_RECOVERY);
+  EXPECT_TRUE(planner.occupied_recovery_active_);
+  EXPECT_FALSE(planner.have_target_);
+  EXPECT_FALSE(planner.have_trigger_);
+  EXPECT_EQ(planner.occupied_recovery_goal_stamp_ns_, 999000000000ULL);
+  planner.odom_pos_ = retreat;
+  exec();
+  EXPECT_EQ(planner.exec_state_, FSM::WAIT_TARGET);
+  EXPECT_FALSE(planner.occupied_recovery_active_);
+}
+
+TEST_F(PlannerEndpoint, WaitingBeforeFirstExternalGoalDoesNotStartRecovery) {
+  planner.wait_new_target_after_occupied_recovery_ = true;
+  planner.exec_state_ = FSM::WAIT_TARGET;
+  planner.have_target_ = planner.have_trigger_ = false;
+  planner.active_external_goal_stamp_ns_ = 0ULL;
+  publishPoint(planner.odom_pos_);
+
+  exec();
+  exec();
+
+  EXPECT_EQ(planner.exec_state_, FSM::WAIT_TARGET);
+  EXPECT_FALSE(planner.occupied_recovery_episode_);
+  expectNoReplacement();
+}
+
+TEST_F(PlannerEndpoint, MandatoryStopAlsoPreventsWaitingRecovery) {
+  planner.wait_new_target_after_occupied_recovery_ = true;
+  planner.exec_state_ = FSM::WAIT_TARGET;
+  planner.have_target_ = planner.have_trigger_ = false;
+  planner.active_external_goal_stamp_ns_ = 999000000000ULL;
+  planner.mandatory_stop_ = true;
+  publishPoint(planner.odom_pos_);
+
+  exec();
+
+  EXPECT_EQ(planner.exec_state_, FSM::WAIT_TARGET);
+  EXPECT_FALSE(planner.occupied_recovery_active_);
+  expectNoReplacement();
+}
+
+TEST_F(PlannerEndpoint, NewGoalCannotRetagCurrentOccupiedRecovery) {
+  const Eigen::Vector3d retreat = planner.odom_pos_ - Eigen::Vector3d(0.45, 0, 0);
+  planner.free_odom_history_.clear();
+  planner.free_odom_history_.push_back(FSM::FreeOdomSample{
+      999.0, retreat.x(), retreat.y(), retreat.z()});
+  planner.active_external_goal_stamp_ns_ = 999000000000ULL;
+  ASSERT_TRUE(planner.startOccupiedRecovery(1000.0));
+  planner.exec_state_ = FSM::OCCUPIED_RECOVERY;
+  drain();
+  ASSERT_EQ(statuses.size(), 1U);
+  const auto execution_stamp = planner.occupied_recovery_stamp_ns_;
+  const auto trajectory_id = planner.planner_manager_->traj_.local_traj.traj_id;
+  auto next = boost::make_shared<geometry_msgs::PoseStamped>();
+  next->header.stamp = ros::Time(1000, 10000000);
+  next->pose.position.x = goal.x() + 1.0;
+  next->pose.position.y = goal.y();
+  next->pose.position.z = goal.z();
+
+  planner.waypointCallback(next);
+
+  EXPECT_EQ(planner.exec_state_, FSM::OCCUPIED_RECOVERY);
+  EXPECT_EQ(planner.active_external_goal_stamp_ns_, next->header.stamp.toNSec());
+  EXPECT_EQ(planner.planner_manager_->traj_.local_traj.traj_id, trajectory_id);
+  planner.odom_pos_ = retreat;
+  exec();
+  drain();
+  ASSERT_EQ(statuses.size(), 2U);
+  EXPECT_NE(statuses.back().find("OCCUPIED_RECOVERY_SUCCEEDED goal_stamp_ns=999000000000"),
+            std::string::npos);
+  EXPECT_NE(statuses.back().find("recovery_stamp_ns=" + std::to_string(execution_stamp)),
+            std::string::npos);
+}
+
+TEST_F(PlannerEndpoint, ControllerRestartNotifiesRecoveryCancellation) {
+  const Eigen::Vector3d retreat = planner.odom_pos_ - Eigen::Vector3d(0.4, 0, 0);
+  planner.free_odom_history_.clear();
+  planner.free_odom_history_.push_back(FSM::FreeOdomSample{
+      999.0, retreat.x(), retreat.y(), retreat.z()});
+  planner.active_external_goal_stamp_ns_ = 999000000000ULL;
+  ASSERT_TRUE(planner.startOccupiedRecovery(1000.0));
+  planner.exec_state_ = FSM::OCCUPIED_RECOVERY;
+  drain();
+  const auto execution_stamp = planner.occupied_recovery_stamp_ns_;
+
+  planner.planningRestartCallback(std_msgs::Empty());
+  drain();
+
+  EXPECT_EQ(planner.exec_state_, FSM::GEN_NEW_TRAJ);
+  EXPECT_FALSE(planner.occupied_recovery_active_);
+  EXPECT_FALSE(planner.occupied_recovery_episode_);
+  ASSERT_EQ(statuses.size(), 2U);
+  EXPECT_NE(statuses.back().find("OCCUPIED_RECOVERY_CANCELLED goal_stamp_ns=999000000000"),
+            std::string::npos);
+  EXPECT_NE(statuses.back().find("recovery_stamp_ns=" + std::to_string(execution_stamp)),
+            std::string::npos);
+}
+
+TEST_F(PlannerEndpoint, MandatoryStopNotifiesActiveRecoveryOnlyOnce) {
+  const Eigen::Vector3d retreat = planner.odom_pos_ - Eigen::Vector3d(0.4, 0, 0);
+  planner.free_odom_history_.clear();
+  planner.free_odom_history_.push_back(FSM::FreeOdomSample{
+      999.0, retreat.x(), retreat.y(), retreat.z()});
+  ASSERT_TRUE(planner.startOccupiedRecovery(1000.0));
+  planner.exec_state_ = FSM::OCCUPIED_RECOVERY;
+  drain();
+
+  planner.mandatoryStopCallback(std_msgs::Empty());
+  planner.mandatoryStopCallback(std_msgs::Empty());
+  drain();
+
+  EXPECT_FALSE(planner.occupied_recovery_active_);
+  EXPECT_FALSE(planner.occupied_recovery_episode_);
+  ASSERT_EQ(statuses.size(), 2U);
+  EXPECT_EQ(statuses.back().find("OCCUPIED_RECOVERY_ABORTED"), 0U);
+}
+
+TEST_F(PlannerEndpoint, HistoryGenerationFailureUsesExistingLateralAlternative) {
+  const Eigen::Vector3d retreat = planner.odom_pos_ - Eigen::Vector3d(0.4, 0, 0);
+  planner.escape_history_time_ = 0.0;
+  planner.free_odom_history_.clear();
+  planner.free_odom_history_.push_back(FSM::FreeOdomSample{
+      999.0, retreat.x(), retreat.y(), retreat.z()});
+  publishPoint(retreat);
+  ASSERT_FALSE(planner.callOccupiedRecovery(retreat));
+  Eigen::Vector3d alternative;
+  double clearance = 0.0;
+  ASSERT_TRUE(planner.selectLateralRecoveryTarget(alternative, clearance));
+
+  ASSERT_TRUE(planner.startOccupiedRecovery(1000.0));
+
+  EXPECT_TRUE(planner.occupied_recovery_history_failed_);
+  EXPECT_FALSE(planner.occupied_recovery_from_history_);
+  EXPECT_GT((planner.occupied_recovery_target_ - retreat).norm(), 0.1);
+}
+
+TEST_F(PlannerEndpoint, HistoryTimeoutDoesNotSelectTheSameHistoryAgain) {
+  const Eigen::Vector3d retreat = planner.odom_pos_ - Eigen::Vector3d(0.4, 0, 0);
+  planner.escape_history_time_ = 0.0;
+  planner.free_odom_history_.clear();
+  planner.free_odom_history_.push_back(FSM::FreeOdomSample{
+      999.0, retreat.x(), retreat.y(), retreat.z()});
+  ASSERT_TRUE(planner.startOccupiedRecovery(1000.0));
+  ASSERT_TRUE(planner.occupied_recovery_from_history_);
+  planner.exec_state_ = FSM::OCCUPIED_RECOVERY;
+  planner.occupied_recovery_deadline_ = 999.9;
+
+  exec();
+  ASSERT_EQ(planner.exec_state_, FSM::EMERGENCY_STOP);
+  ros::Time::setNow(ros::Time(1000, 300000000));
+  exec();
+
+  EXPECT_EQ(planner.exec_state_, FSM::OCCUPIED_RECOVERY);
+  EXPECT_FALSE(planner.occupied_recovery_from_history_);
+  EXPECT_GT((planner.occupied_recovery_target_ - retreat).norm(), 0.1);
+}
+
+TEST_F(PlannerEndpoint, ClosedHistoryLoopCannotBlockAllAvailableRecovery) {
+  planner.escape_max_distance_ = 0.45;
+  planner.escape_history_time_ = 0.0;
+  const Eigen::Vector3d start = planner.odom_pos_;
+  publishPoint(start);
+  const Eigen::Vector3d a = start + Eigen::Vector3d(0.15, 0, 0);
+  const Eigen::Vector3d b = start + Eigen::Vector3d(0.075, std::sqrt(3.0) * 0.075, 0);
+  planner.free_odom_history_.clear();
+  planner.free_odom_history_.push_back(FSM::FreeOdomSample{997, start.x(), start.y(), start.z()});
+  planner.free_odom_history_.push_back(FSM::FreeOdomSample{998, b.x(), b.y(), b.z()});
+  planner.free_odom_history_.push_back(FSM::FreeOdomSample{999, a.x(), a.y(), a.z()});
+
+  ASSERT_TRUE(planner.startOccupiedRecovery(1000.0));
+
+  EXPECT_TRUE(planner.occupied_recovery_active_);
+  EXPECT_GT((planner.occupied_recovery_target_ - start).head<2>().norm(),
+            planner.escape_reach_tolerance_);
 }
 } // namespace
 
