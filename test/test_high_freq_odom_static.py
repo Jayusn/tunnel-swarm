@@ -14,7 +14,7 @@ def test_uav1_compatible_high_frequency_odom_source():
     required_source = (
         "void updateLatestStates()",
         "void fastPredictIMU(double t, V3D acc, V3D gyr)",
-        "acc = acc * G_m_s2 / p_imu->GetMeanAccNorm();",
+        "latest_acceleration_scale = G_m_s2 / p_imu->GetMeanAccNorm();",
         "fastPredictIMU(\n",
         'nh.param<string>("publish/high_freq_odom_topic"',
         "odomHigh_speed = nh.advertise<nav_msgs::Odometry>",

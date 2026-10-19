@@ -20,6 +20,7 @@ class ImuRepropagationTest(unittest.TestCase):
 #include <memory>
 #include <cassert>
 #include <cmath>
+#include <mutex>
 using V3D = Eigen::Vector3d;
 using M3D = Eigen::Matrix3d;
 constexpr double G_m_s2 = 9.81;
@@ -30,8 +31,15 @@ using ImuPtr = std::shared_ptr<Imu>;
 struct { std::deque<ImuPtr> imu; } Measures;
 std::deque<ImuPtr> imu_buffer;
 struct { V3D pos, vel, ba, bg, grav; M3D rot; } state_point;
-struct ImuProcess { double GetMeanAccNorm() const { return 1.1; } } process;
+struct ImuProcess {
+    double mean_acc_norm=1.1;
+    double GetMeanAccNorm() const { return mean_acc_norm; }
+} process;
 ImuProcess *p_imu = &process;
+std::mutex mtx_buffer;
+double latest_acceleration_scale = 1.0;
+V3D latest_gravity = V3D::Zero();
+bool init = false;
 double latest_time, lidar_end_time;
 V3D latest_P, latest_V, latest_Ba, latest_Bg, latest_acc_0, latest_gyr_0;
 M3D latest_Q;
@@ -72,10 +80,19 @@ int main() {
     assert(std::abs(latest_V.z()-vz)<1e-12);
     assert(std::abs(latest_P.z()-pz)<3e-6);
     assert(imu_buffer.size()==31); // the mapping EKF still needs its IMU history
+    // Mapping may change its working state while the IMU thread propagates.
+    // Only the last completed correction snapshot may influence this prediction.
+    state_point.grav=V3D(50,50,50); state_point.bg=V3D(10,10,10);
+    process.mean_acc_norm=8.0;
     auto next=sample(.160);
     predictIMUState(.160,V3D(0,0,next->linear_acceleration.z),V3D(0,0,next->angular_velocity.z));
     yaw+=.5*(std::sin(45*.155)+std::sin(45*.160))*.005;
     assert((latest_Q-Eigen::AngleAxisd(yaw,V3D::UnitZ()).toRotationMatrix()).norm()<1e-12);
+    const double expected_vz=.4+2*(.160-start)+1.5*(.160*.160-start*start);
+    assert(std::abs(latest_V.z()-expected_vz)<1e-12);
+    assert(std::abs(latest_V.x())<1e-12 && std::abs(latest_V.y())<1e-12);
+    state_point.grav=V3D(0,0,-G_m_s2); state_point.bg=V3D(0,0,.07);
+    process.mean_acc_norm=1.1;
     const M3D saved=latest_Q; const V3D saved_p=latest_P;
     predictIMUState(.155,V3D(99,99,99),V3D(99,99,99));
     assert((latest_Q-saved).norm()==0 && (latest_P-saved_p).norm()==0);
