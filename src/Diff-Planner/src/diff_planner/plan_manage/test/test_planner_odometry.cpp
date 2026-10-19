@@ -932,6 +932,80 @@ TEST_F(PlannerEndpoint, CollinearHistoryMergesWithoutChangingStraightRecovery) {
   }
 }
 
+TEST_F(PlannerEndpoint, DenseNearlyStraightHistoryAvoidsRepeatedStops) {
+  auto &manager = *planner.planner_manager_;
+  manager.pp_.max_acc_ = 0.50;
+  const Eigen::Vector3d start = planner.odom_pos_;
+  std::vector<Eigen::Vector3d> path{start};
+  for (int i = 1; i <= 60; ++i)
+    path.push_back(start + Eigen::Vector3d(-0.45 * i / 60.0,
+        i == 60 ? 0.0 : (i % 2 ? 0.002 : -0.002), 0.0));
+
+  ASSERT_TRUE(manager.OccupiedHistoryRecovery(path, 0.20));
+
+  const auto &traj = manager.traj_.local_traj.traj;
+  ASSERT_EQ(traj.getPieceNum(), 1);
+  EXPECT_LT(traj.getTotalDuration(), 5.0);
+  EXPECT_LT((traj.getPos(0) - start).norm(), 1e-9);
+  EXPECT_LT((traj.getPos(traj.getTotalDuration()) - path.back()).norm(), 1e-9);
+  EXPECT_LE(traj.getMaxVelRate(), 0.20 + 1e-8);
+  EXPECT_LE(traj.getMaxAccRate(), 0.50 + 1e-8);
+}
+
+TEST_F(PlannerEndpoint, CurvedHistorySimplificationBoundsDeviationInBothDirections) {
+  auto &manager = *planner.planner_manager_;
+  const Eigen::Vector3d start = planner.odom_pos_;
+  std::vector<Eigen::Vector3d> path;
+  for (int i = 0; i <= 60; ++i) {
+    const double angle = std::acos(-1.0) * i / 120.0;
+    path.push_back(start + Eigen::Vector3d(-0.30 * std::sin(angle),
+        0.30 * (1.0 - std::cos(angle)), 0.0));
+  }
+  auto distanceToPath = [](const Eigen::Vector3d &p,
+                           const std::vector<Eigen::Vector3d> &vertices) {
+    double nearest = std::numeric_limits<double>::infinity();
+    for (std::size_t i = 1; i < vertices.size(); ++i) {
+      const Eigen::Vector3d segment = vertices[i] - vertices[i - 1];
+      const double ratio = std::max(0.0, std::min(1.0,
+          (p - vertices[i - 1]).dot(segment) / segment.squaredNorm()));
+      nearest = std::min(nearest, (p - vertices[i - 1] - ratio * segment).norm());
+    }
+    return nearest;
+  };
+
+  ASSERT_TRUE(manager.OccupiedHistoryRecovery(path, 0.20));
+
+  const auto &traj = manager.traj_.local_traj.traj;
+  EXPECT_GT(traj.getPieceNum(), 1); // 不能把弧形通道直接连成起终点直线。
+  EXPECT_LT(traj.getPieceNum(), 60);
+  std::vector<Eigen::Vector3d> simplified;
+  for (int i = 0; i <= traj.getPieceNum(); ++i)
+    simplified.push_back(traj.getJuncPos(i));
+  for (const auto &p : path)
+    EXPECT_LE(distanceToPath(p, simplified), 0.01 + 1e-8);
+  for (int i = 0; i <= 1000; ++i)
+    EXPECT_LE(distanceToPath(traj.getPos(traj.getTotalDuration() * i / 1000.0), path),
+              0.01 + 1e-8);
+  EXPECT_LT((simplified.front() - path.front()).norm(), 1e-9);
+  EXPECT_LT((simplified.back() - path.back()).norm(), 1e-9);
+}
+
+TEST_F(PlannerEndpoint, CollinearBacktrackingInsideEndpointsRetainsTravelOrder) {
+  auto &manager = *planner.planner_manager_;
+  const Eigen::Vector3d start = planner.odom_pos_;
+  const Eigen::Vector3d first = start + Eigen::Vector3d(-0.30, 0, 0);
+  const Eigen::Vector3d back = start + Eigen::Vector3d(-0.10, 0, 0);
+  const Eigen::Vector3d end = start + Eigen::Vector3d(-0.45, 0, 0);
+
+  ASSERT_TRUE(manager.OccupiedHistoryRecovery({start, first, back, end}, 0.20));
+
+  const auto &traj = manager.traj_.local_traj.traj;
+  ASSERT_EQ(traj.getPieceNum(), 3);
+  EXPECT_LT((traj.getJuncPos(1) - first).norm(), 1e-9);
+  EXPECT_LT((traj.getJuncPos(2) - back).norm(), 1e-9);
+  EXPECT_LT((traj.getJuncPos(3) - end).norm(), 1e-9);
+}
+
 TEST_F(PlannerEndpoint, ShortTurnsAndDirectionReversalAreNotMerged) {
   const Eigen::Vector3d start = planner.odom_pos_;
   const Eigen::Vector3d first = start + Eigen::Vector3d(0.02, 0, 0);
@@ -978,6 +1052,8 @@ TEST_F(PlannerEndpoint, InvalidHistoryPolylineCannotReplaceCurrentTrajectory) {
   invalid.x() = std::numeric_limits<double>::quiet_NaN();
   EXPECT_FALSE(manager.OccupiedHistoryRecovery({}, 0.10));
   EXPECT_FALSE(manager.OccupiedHistoryRecovery({start, start}, 0.10));
+  EXPECT_FALSE(manager.OccupiedHistoryRecovery(
+      {start, start + Eigen::Vector3d(0.002, 0, 0), start}, 0.20));
   EXPECT_FALSE(manager.OccupiedHistoryRecovery({start, invalid}, 0.10));
   EXPECT_FALSE(manager.OccupiedHistoryRecovery({start, start + Eigen::Vector3d(0.2, 0, 0)}, 0));
   EXPECT_EQ(manager.traj_.local_traj.traj_id, initial_id);

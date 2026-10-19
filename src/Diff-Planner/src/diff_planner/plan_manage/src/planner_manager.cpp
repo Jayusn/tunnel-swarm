@@ -909,7 +909,7 @@ namespace diff_planner
     {
       if (!point.allFinite())
         return false;
-      // 只删除数值上重复的点，不能按大距离抽稀而丢掉历史拐点。
+      // 先删除数值上重复的点和同向共线点。
       if (!path.empty() && (point - path.back()).norm() <= 1.0e-6)
         continue;
       path.push_back(point);
@@ -918,13 +918,75 @@ namespace diff_planner
         const std::size_t n = path.size();
         const Eigen::Vector3d before = path[n - 2] - path[n - 3];
         const Eigen::Vector3d after = path[n - 1] - path[n - 2];
-        // 同向共线才合并；掉头和拐角均保留，不做跨拐点平滑。
+        // 此处仅合并同向共线点，后续按整段偏差简化细碎转折。
         if (before.dot(after) <= 0.0 ||
             before.cross(after).norm() > 1.0e-6 * before.norm() * after.norm())
           break;
         path.erase(path.end() - 2);
       }
     }
+    if (path.size() < 2)
+      return false;
+
+    // 合并厘米以内的细碎转折，避免每个历史采样点都起停一次。
+    // 对整段中所有原始顶点检查偏差，防止逐点合并后累计切向拐角。
+    const double tolerance = std::min(0.01, 0.2 * grid_map_->getResolution());
+    std::vector<bool> keep(path.size(), false);
+    keep.front() = keep.back() = true;
+    std::vector<std::pair<std::size_t, std::size_t>> ranges{{0, path.size() - 1}};
+    while (!ranges.empty())
+    {
+      const auto range = ranges.back();
+      ranges.pop_back();
+      const Eigen::Vector3d chord = path[range.second] - path[range.first];
+      const double squared_length = chord.squaredNorm();
+      double max_deviation = tolerance;
+      std::size_t split = range.first;
+      for (std::size_t i = range.first + 1; i < range.second; ++i)
+      {
+        // 投影限制在线段内，保留超出起终点的转折。
+        const double ratio = squared_length > 1.0e-12 ? std::max(0.0, std::min(1.0,
+            (path[i] - path[range.first]).dot(chord) / squared_length)) : 0.0;
+        const double deviation = (path[i] - path[range.first] - ratio * chord).norm();
+        if (deviation > max_deviation)
+        {
+          max_deviation = deviation;
+          split = i;
+        }
+      }
+      if (split == range.first && squared_length > 1.0e-12)
+      {
+        // 共线段内部也可能先退后进，保留超过容差的回折顺序。
+        const double length = std::sqrt(squared_length);
+        double furthest = 0.0;
+        std::size_t furthest_index = range.first;
+        for (std::size_t i = range.first + 1; i < range.second; ++i)
+        {
+          const double progress = (path[i] - path[range.first]).dot(chord) / length;
+          if (furthest - progress > tolerance)
+          {
+            split = furthest_index;
+            break;
+          }
+          if (progress > furthest)
+          {
+            furthest = progress;
+            furthest_index = i;
+          }
+        }
+      }
+      if (split != range.first)
+      {
+        keep[split] = true;
+        ranges.emplace_back(range.first, split);
+        ranges.emplace_back(split, range.second);
+      }
+    }
+    std::vector<Eigen::Vector3d> simplified;
+    for (std::size_t i = 0; i < path.size(); ++i)
+      if (keep[i] && (simplified.empty() || (path[i] - simplified.back()).norm() > 1.0e-6))
+        simplified.push_back(path[i]);
+    path.swap(simplified);
     if (path.size() < 2)
       return false;
 
