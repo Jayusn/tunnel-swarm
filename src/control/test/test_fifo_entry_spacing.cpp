@@ -860,8 +860,8 @@ TEST_F(FifoEntrySpacing, WaypointHeadingToleranceWrapsAtPi) {
   setLeader(4.0);
   follower->follower_odom_.pose.pose.position.x = 1.0;
   auto& attitude = follower->follower_odom_.pose.pose.orientation;
-  attitude.w = std::cos(148.0*M_PI/360.0);
-  attitude.z = std::sin(148.0*M_PI/360.0);
+  attitude.w = std::cos(158.0*M_PI/360.0);
+  attitude.z = std::sin(158.0*M_PI/360.0);
   follower->handleSimpleDiffPlannerExecution(ros::Time::now());
   ASSERT_EQ(follower->relay_waypoints_.size(), 1U);
   attitude.w = std::cos(-179.0*M_PI/360.0);
@@ -870,7 +870,7 @@ TEST_F(FifoEntrySpacing, WaypointHeadingToleranceWrapsAtPi) {
   EXPECT_TRUE(follower->relay_waypoints_.empty());
 }
 
-TEST_F(FifoEntrySpacing, OrdinaryYawAllowsBothThirtyDegreeBoundaries) {
+TEST_F(FifoEntrySpacing, OrdinaryYawAllowsBothTwentyDegreeBoundaries) {
   follower->require_waypoint_yaw_ = true;
   follower->door_waypoint_released_ = true;
   queuePoint(1.0);
@@ -880,12 +880,12 @@ TEST_F(FifoEntrySpacing, OrdinaryYawAllowsBothThirtyDegreeBoundaries) {
     follower->follower_odom_.pose.pose.position.x = sign > 0 ? 1.0 : 2.0;
     const auto size = follower->relay_waypoints_.size();
     auto& attitude = follower->follower_odom_.pose.pose.orientation;
-    attitude.w = std::cos(30.01*M_PI/360.0);
-    attitude.z = sign * std::sin(30.01*M_PI/360.0);
+    attitude.w = std::cos(20.01*M_PI/360.0);
+    attitude.z = sign * std::sin(20.01*M_PI/360.0);
     follower->handleSimpleDiffPlannerExecution(ros::Time::now());
     EXPECT_EQ(size, follower->relay_waypoints_.size());
-    attitude.w = std::cos(30.0*M_PI/360.0);
-    attitude.z = sign * std::sin(30.0*M_PI/360.0);
+    attitude.w = std::cos(20.0*M_PI/360.0);
+    attitude.z = sign * std::sin(20.0*M_PI/360.0);
     follower->handleSimpleDiffPlannerExecution(ros::Time::now());
     EXPECT_EQ(size - 1, follower->relay_waypoints_.size());
   }

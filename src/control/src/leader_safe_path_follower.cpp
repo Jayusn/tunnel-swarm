@@ -374,7 +374,7 @@ class LeaderSafePathFollower {
     pnh_.param("diff_endpoint_capture_radius", diff_endpoint_capture_radius_, 0.15);
     pnh_.param("require_waypoint_yaw", require_waypoint_yaw_, false);
     pnh_.param("ordinary_waypoint_yaw_tolerance_deg",
-               ordinary_waypoint_yaw_tolerance_deg_, 30.0);
+               ordinary_waypoint_yaw_tolerance_deg_, 20.0);
     pnh_.param("diff_endpoint_capture_dwell", diff_endpoint_capture_dwell_, 0.45);
     // Diff可能因局部占据裁短轨迹终点；裁短量超过该值时只能视作中间步，不能消费接力点。
     pnh_.param("diff_accepted_goal_tolerance", diff_accepted_goal_tolerance_, 0.20);
@@ -4569,7 +4569,7 @@ class LeaderSafePathFollower {
   double follower_history_length_{0.0};
   double diff_endpoint_capture_radius_{0.15}, diff_endpoint_capture_dwell_{0.45};
   bool require_waypoint_yaw_{false};
-  double ordinary_waypoint_yaw_tolerance_deg_{30.0};
+  double ordinary_waypoint_yaw_tolerance_deg_{20.0};
   double diff_accepted_goal_tolerance_{0.20};
   double diff_command_stale_timeout_{0.80};  // 2026-07-28: 与控制器0.60s轨迹超时错开0.20s。
   double follower_odom_jump_speed_{2.0}, follower_odom_jump_vertical_speed_{1.2};

@@ -268,8 +268,8 @@
         <!-- 普通点仍向原目标收敛，进入15cm且航向达标后即消费，不要求停稳驻留。
              入口、出口、门外等待及最终降落保留原有规则。 -->
         <param name="require_waypoint_yaw" value="true"/>
-        <!-- 普通点允许左右30度朝向误差；入口、出口及降落仍沿用原容差。 -->
-        <param name="ordinary_waypoint_yaw_tolerance_deg" value="30.0"/>
+        <!-- 普通点允许左右20度朝向误差；入口、出口及降落仍沿用原容差。 -->
+        <param name="ordinary_waypoint_yaw_tolerance_deg" value="20.0"/>
         <!-- 已尝试原目标后，新鲜点云确认队首占据且前机已清空1.20m时，
              才可换下一有效普通点；进入40cm邻域本身不能提前消费航点。 -->
         <param name="diff_endpoint_capture_dwell" value="0.45"/>
