@@ -1,6 +1,7 @@
 #include <cstdlib>
 #include <gtest/gtest.h>
 #include <iostream>
+#include <fstream>
 #include <exploration_manager/fast_exploration_manager.h>
 #include <exploration_manager/task_search_manager.h>
 #include <string>
@@ -677,9 +678,20 @@ public:
           manager.buildSideRecoveryContinuation(end, 0.0, next, yaw) &&
           next.x() > end.x()+0.15 && std::fabs(next.y()-end.y()) < 1e-6,
           "clear same-side lane did not resume forward motion");
-    check(!manager.buildSideRecoveryContinuation(end+Vector3d(0.25, 0, 0),
-                                                 0.0, next, yaw) &&
-          !manager.recovery_side_latched_, "clear forward progress did not release the side");
+    Vector3d passed = end;
+    passed.x() = manager.recovery_side_origin_.x() +
+                 manager.wide_side_bypass_release_distance_ + 0.05;
+    // 模拟通过柱子后从当前位置补扫前方，不能用尚未观测的远端 FREE 作断言。
+    cloud.clear();
+    for (double y=-1.3; y<=1.3; y+=0.025)
+      for (double z=0.25; z<=1.75; z+=0.025)
+        cloud.push_back(pcl::PointXYZ(1.5, y, z));
+    for (int i=0; i<5; ++i)
+      manager.sdf_map_->inputPointCloud(cloud, cloud.size(), passed);
+    manager.sdf_map_->updateESDF3d();
+    task.updateRobotPose(passed, 0.0);
+    check(!manager.buildSideRecoveryContinuation(passed, 0.0, next, yaw) &&
+          !manager.recovery_side_latched_, "passing the obstacle did not release the side");
     manager.recovery_side_latched_ = true;
     manager.low_probe_phase_ = vertical_detour::LowProbePhase::VERIFYING;
     check(!manager.buildSideRecoveryContinuation(displaced, 0.0, next, yaw) &&
@@ -688,8 +700,201 @@ public:
     manager.completeTurnInPlace(displaced);
     check(!manager.recovery_side_latched_, "confirmed turn kept the old obstacle side");
   }
+
+  static void runBypassContinuation(double side, bool change_width, bool block_side) {
+    ros::NodeHandle nh("~");
+    nh.setParam("manager/use_geometric_path", true);
+    nh.setParam("astar/resolution_astar", 0.05);
+    nh.setParam("astar/allocate_num", 100000);
+    nh.setParam("astar/lambda_heu", 1.0);
+    nh.setParam("astar/max_search_time", 1.0);
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    manager.ep_->mission_use_forward_fallback_ = true;
+    auto& task = *manager.task_search_manager_;
+    task.setMap(manager.sdf_map_);
+    task.global_no_return_ = false;
+    task.stable_progress_direction_ = Eigen::Vector2d::UnitX();
+    task.stable_progress_direction_valid_ = true;
+    const Vector3d origin(0.013, 0.017, 1.013);
+    task.updateRobotPose(origin, 0.0);
+    auto& map = *manager.sdf_map_;
+    pcl::PointCloud<pcl::PointXYZ> cloud;
+    const auto observe = [&](const Vector3d& camera, int repeats) {
+      for (int i = 0; i < repeats; ++i) map.inputPointCloud(cloud, cloud.size(), camera);
+    };
+    for (double x : {-1.5, 1.5}) {
+      cloud.clear();
+      for (double y=-1.3; y<=1.3; y+=0.025)
+        for (double z=0.25; z<=1.75; z+=0.025)
+          cloud.push_back(pcl::PointXYZ(x, y, z));
+      observe(Vector3d(-0.85*x, 0, 1), 5);
+    }
+    cloud.clear();
+    for (double x=-1.4; x<=1.4; x+=0.025)
+      for (double z=0.25; z<=1.75; z+=0.025)
+        for (double y : {-0.45, 1.0})
+          cloud.push_back(pcl::PointXYZ(x, side*y, z));
+    observe(origin, 6);
+    cloud.clear();
+    for (double y=-0.10; y<=0.10; y+=0.025)
+      for (double z=0.25; z<=1.75; z+=0.025)
+        cloud.push_back(pcl::PointXYZ(0.55, y, z));
+    observe(origin, 6);
+    map.updateESDF3d();
+    Vector3d map_origin, map_size;
+    map.getRegion(map_origin, map_size);
+    ViewNode::caster_ = std::make_shared<RayCaster>();
+    ViewNode::caster_->setParams(map.getResolution(), map_origin);
+
+    Vector3d next;
+    double yaw;
+    bool split;
+    check(manager.buildWideSideBypass(origin, 0.0, Vector3d::UnitX(), next, yaw, split) &&
+          manager.wide_side_bypass_active_ && (next-origin).y()*side > 0.15 &&
+          next.x() >= origin.x()+0.19,
+          "initial bypass did not choose the wider lane with available forward progress");
+    const Vector3d initial_origin = manager.recovery_side_origin_;
+    const double release_distance = manager.wide_side_bypass_release_distance_;
+    if (change_width) {
+      // 新观测改变截面宽度，但原侧仍有已知安全短路，不应立即掉头换边。
+      cloud.clear();
+      for (double y=0.70; y<=0.725; y+=0.025)
+        for (double z=0.25; z<=1.75; z+=0.025)
+          cloud.push_back(pcl::PointXYZ(0.55, side*y, z));
+      observe(origin, 8);
+      map.updateESDF3d();
+      const auto changed = manager.findWideSideSplit(origin, Vector3d::UnitX());
+      std::cout << "changed bypass widths left=" << changed.left_width
+                << " right=" << changed.right_width << std::endl;
+      check(changed.valid && (side > 0.0 ? changed.right_width > changed.left_width
+                                        : changed.left_width > changed.right_width),
+            "fixture did not reverse the measured lane widths");
+      check(manager.buildWideSideBypass(origin, 0.0, Vector3d::UnitX(), next, yaw, split) &&
+            (next-origin).y()*side > 0.15 && manager.recovery_side_origin_ == initial_origin &&
+            manager.wide_side_bypass_release_distance_ == release_distance,
+            "a width change reversed a safe active bypass or renewed its progress origin");
+    }
+    if (block_side) {
+      cloud.clear();
+      for (double x=-0.35; x<=0.35; x+=0.025)
+        for (double z=0.25; z<=1.75; z+=0.025)
+          cloud.push_back(pcl::PointXYZ(x, side*0.25, z));
+      observe(origin, 8);
+      map.updateESDF3d();
+      check(manager.buildWideSideBypass(origin, 0.0, Vector3d::UnitX(), next, yaw, split) &&
+            (next-origin).y()*side < -0.15,
+            "a newly blocked committed side prevented switching to the safe opposite lane");
+      return;
+    }
+    if (change_width) return;
+    // 以部分短步执行模拟反复临近终点重规划，必须累计前进至障碍后方。
+    Vector3d pos = origin;
+    for (int step = 0; step < 12 &&
+         (pos-origin).x() < release_distance+0.02; ++step) {
+      task.updateRobotPose(pos, 0.0);
+      check(manager.buildWideSideBypass(pos, 0.0, Vector3d::UnitX(), next, yaw, split),
+            "bypass could not continue toward the far side of the pillar");
+      check(next.y()*side >= -1e-6 && next.x() >= pos.x()-1e-6,
+            "partial-step replanning reversed the side or moved backward");
+      pos += 0.75*(next-pos);
+    }
+    check((pos-origin).x() > release_distance,
+          "repeated bypass replans produced no forward progress past the obstacle");
+    task.updateRobotPose(pos, 0.0);
+    check(!manager.buildSideRecoveryContinuation(pos, 0.0, next, yaw) &&
+          !manager.wide_side_bypass_active_ && !manager.recovery_side_latched_,
+          "completed bypass constrained the next obstacle's lane selection");
+  }
+
+  static void runRecordedBypass(const char* fixture) {
+    ros::NodeHandle nh("~");
+    nh.setParam("manager/use_geometric_path", true);
+    nh.setParam("astar/resolution_astar", 0.05);
+    nh.setParam("astar/allocate_num", 100000);
+    nh.setParam("astar/lambda_heu", 1.0);
+    nh.setParam("astar/max_search_time", 1.0);
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    manager.ep_->mission_use_forward_fallback_ = true;
+    manager.task_search_manager_->global_no_return_ = false;
+    manager.task_search_manager_->setMap(manager.sdf_map_);
+    std::ifstream input(fixture);
+    int frames;
+    Vector3d pos;
+    double yaw;
+    check(bool(input >> frames >> pos.x() >> pos.y() >> pos.z() >> yaw),
+          "recorded bypass fixture header is invalid");
+    const Vector3d origin = pos;
+    const Vector3d forward(std::cos(yaw), std::sin(yaw), 0.0);
+    manager.task_search_manager_->stable_progress_direction_ = forward.head<2>();
+    manager.task_search_manager_->stable_progress_direction_valid_ = true;
+    for (int frame=0; frame<frames; ++frame) {
+      int count;
+      Vector3d camera;
+      check(bool(input >> count >> camera.x() >> camera.y() >> camera.z()),
+            "recorded cloud header is invalid");
+      pcl::PointCloud<pcl::PointXYZ> cloud;
+      cloud.resize(count);
+      for (auto& point : cloud)
+        check(bool(input >> point.x >> point.y >> point.z), "recorded cloud is incomplete");
+      manager.sdf_map_->inputPointCloud(cloud, cloud.size(), camera);
+    }
+    manager.sdf_map_->updateESDF3d();
+    Vector3d map_origin, map_size;
+    manager.sdf_map_->getRegion(map_origin, map_size);
+    ViewNode::caster_ = std::make_shared<RayCaster>();
+    ViewNode::caster_->setParams(manager.sdf_map_->getResolution(), map_origin);
+    const auto obstacle = manager.findWideSideSplit(pos, forward);
+    check(obstacle.valid, "recorded map did not reproduce the blocking obstacle");
+    const double required_progress = obstacle.forward_distance +
+        manager.vertical_detour_footprint_radius_ + manager.sdf_map_->getResolution();
+    for (int step=0; step<24 && (pos-origin).dot(forward)<required_progress; ++step) {
+      manager.task_search_manager_->updateRobotPose(pos, yaw);
+      Vector3d next;
+      double next_yaw;
+      bool split;
+      const bool selected = manager.buildWideSideBypass(pos, yaw, forward, next, next_yaw, split);
+      std::cout << "recorded bypass step=" << step << " pos=" << pos.transpose()
+                << " selected=" << selected;
+      if (!selected) { std::cout << std::endl; break; }
+      std::cout << " target=" << next.transpose() << " advance=" << (next-pos).dot(forward)
+                << std::endl;
+      check(manager.planner_manager_->isPositionSafe(next),
+            "recorded-map bypass selected an unsafe endpoint");
+      pos += 0.65*(next-pos);
+    }
+    std::cout << "recorded bypass progress=" << (pos-origin).dot(forward)
+              << " required=" << required_progress << std::endl;
+    check((pos-origin).dot(forward)>=required_progress,
+          "recorded pillar map still trapped bypass in lateral oscillation");
+  }
 };
 }
+TEST(SideBypassProgress, PartialStepsPassPillarOnLeft) {
+  fast_planner::TurnEscapeTest::runBypassContinuation(1.0, false, false);
+}
+
+TEST(SideBypassProgress, PartialStepsPassPillarOnRight) {
+  fast_planner::TurnEscapeTest::runBypassContinuation(-1.0, false, false);
+}
+
+TEST(SideBypassProgress, WidthChangesKeepSafeCurrentLane) {
+  fast_planner::TurnEscapeTest::runBypassContinuation(1.0, true, false);
+  fast_planner::TurnEscapeTest::runBypassContinuation(-1.0, true, false);
+}
+
+TEST(SideBypassProgress, BlockedCommittedLaneAllowsSwitch) {
+  fast_planner::TurnEscapeTest::runBypassContinuation(1.0, false, true);
+  fast_planner::TurnEscapeTest::runBypassContinuation(-1.0, false, true);
+}
+
+TEST(SideBypassProgress, RecordedPillarMapMakesForwardProgress) {
+  const char* fixture = std::getenv("UAV0_BYPASS_REPLAY_FIXTURE");
+  if (!fixture) GTEST_SKIP() << "Set UAV0_BYPASS_REPLAY_FIXTURE to an extracted flight map.";
+  fast_planner::TurnEscapeTest::runRecordedBypass(fixture);
+}
+
 TEST(UnderpassClassification, FloorToCeilingPillarDoesNotDescend) {
   fast_planner::TurnEscapeTest::runUnderpassClassification(true, false);
 }

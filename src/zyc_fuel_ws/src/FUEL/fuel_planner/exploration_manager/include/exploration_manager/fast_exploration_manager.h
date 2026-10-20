@@ -144,6 +144,8 @@ private:
   bool has_last_requested_goal_{false};
   // 绕障侧只作可让出的连续性偏好；横移不解除，前方短路可通并前进后解除。
   bool recovery_side_latched_{false};
+  bool wide_side_bypass_active_{false};
+  double wide_side_bypass_release_distance_{0.0};
   bool recovery_side_continuation_pending_{false};
   Vector3d recovery_side_origin_{0.0, 0.0, 0.0};
   Vector3d recovery_side_dir_{1.0, 0.0, 0.0};

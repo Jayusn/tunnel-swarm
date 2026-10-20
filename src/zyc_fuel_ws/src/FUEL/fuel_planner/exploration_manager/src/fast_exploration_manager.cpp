@@ -1433,6 +1433,14 @@ bool FastExplorationManager::buildWideSideBypass(
   if (!wide_side_bypass_enabled_ || !sdf_map_ || !planner_manager_ ||
       forward.head<2>().norm() < 1e-3)
     return false;
+  // 只延续本次按宽度选定的绕障；旧路线留下的侧向偏好仍要重新比较宽度。
+  // 原侧短路不再安全时，continuation 会释放它，本轮即可重新选侧。
+  if (wide_side_bypass_active_ && recovery_side_latched_ &&
+      buildSideRecoveryContinuation(pos, cur_yaw, next_pos, next_yaw)) {
+    split_obstacle_detected = true;
+    return true;
+  }
+  wide_side_bypass_active_ = false;
   const Vector3d travel(forward.head<2>().normalized().x(),
                         forward.head<2>().normalized().y(), 0.0);
   const Vector3d lateral(-travel.y(), travel.x(), 0.0);
@@ -1483,8 +1491,8 @@ bool FastExplorationManager::buildWideSideBypass(
                std::max(0.0, split.forward_distance - 0.10)),
       0.10, 0.0};
   const double minimum_shift = narrow_pullout ? 0.20 : 0.15;
-  // 两侧均按真实路径检查筛选，先比较通路间距，同宽时才比较路径和终点净空。
-  // 旧方向仅用于宽度及净空均相同的候选，不能覆盖当前障碍的几何证据。
+  // 首次选侧先比较通路间距；同侧优先采用可行的前进量，再比较净空。
+  // 纯横移只在前进候选不可用时采用，避免净空评分持续选中零前进量。
   const double remembered_sign = recovery_side_latched_ &&
       recovery_side_dir_.dot(lateral) < -0.5 ? -1.0 : 1.0;
   const double first_sign = split.right_width > split.left_width + 1e-6 ? -1.0 :
@@ -1526,9 +1534,11 @@ bool FastExplorationManager::buildWideSideBypass(
         const double endpoint_clearance = sdf_map_->getDistance(candidate);
         if (!best.valid || lane_width > best.lane_width + 1e-6 ||
             (std::fabs(lane_width - best.lane_width) <= 1e-6 &&
-             (path_clearance > best.path_clearance + 0.01 ||
-              (std::fabs(path_clearance - best.path_clearance) <= 0.01 &&
-               endpoint_clearance > best.endpoint_clearance + 0.01)))) {
+             (forward_step > best.forward_step + 1e-6 ||
+              (std::fabs(forward_step - best.forward_step) <= 1e-6 &&
+               (path_clearance > best.path_clearance + 0.01 ||
+                (std::fabs(path_clearance - best.path_clearance) <= 0.01 &&
+                 endpoint_clearance > best.endpoint_clearance + 0.01)))))) {
           best.valid = true;
           best.target = candidate;
           best.endpoint_clearance = endpoint_clearance;
@@ -1554,6 +1564,10 @@ bool FastExplorationManager::buildWideSideBypass(
   next_yaw = cur_yaw;
   recovery_side_latched_ = true;
   recovery_side_origin_ = pos;
+  wide_side_bypass_active_ = true;
+  // 从首次选侧的位置累计通过障碍截面及机体半径，不能每次重规划重置进度。
+  wide_side_bypass_release_distance_ = split.forward_distance +
+      vertical_detour_footprint_radius_ + sdf_map_->getResolution();
   const bool choose_right = best.lateral_offset < 0.0;
   recovery_side_dir_ = (choose_right ? -1.0 : 1.0) * lateral;
   if (task_search_manager_) task_search_manager_->recordSelectedGoal(next_pos);
@@ -1634,6 +1648,7 @@ bool FastExplorationManager::selectEntryForwardGoal(
   if (!entry_forward::selectGoal(pos, forward, remaining, evaluate, selected))
     return false;
   if (selected.passage_priority > 0) {
+    wide_side_bypass_active_ = false;
     if (!recovery_side_latched_ || recovery_side_dir_.dot(lateral) * selected.passage_side < 0.5)
       recovery_side_origin_ = pos;
     recovery_side_latched_ = true;
@@ -1669,6 +1684,7 @@ void FastExplorationManager::rememberSideRecovery(
                               : point;
     const double side = (probe - pos).dot(lateral);
     if (std::fabs(side) >= 0.10) {
+      wide_side_bypass_active_ = false;
       recovery_side_latched_ = true;
       recovery_side_origin_ = pos;
       recovery_side_dir_ = (side > 0.0 ? 1.0 : -1.0) * lateral;
@@ -1695,14 +1711,18 @@ bool FastExplorationManager::buildSideRecoveryContinuation(
   // 确认新通道后旧侧向不再有效，不让旧绕柱偏好约束正常转弯。
   if (std::fabs(side) < 0.5) {
     recovery_side_latched_ = false;
+    wide_side_bypass_active_ = false;
     return false;
   }
   const bool forward_clear = isLowProbeCorridorSafe(pos, forward, 0.40);
+  const double release_distance = wide_side_bypass_active_
+      ? wide_side_bypass_release_distance_ : recovery_side_release_distance_;
   if (forward_clear && (pos - recovery_side_origin_).dot(forward) >=
-                           recovery_side_release_distance_) {
+                           release_distance) {
     recovery_side_latched_ = false;
+    wide_side_bypass_active_ = false;
     ROS_WARN("[side_recovery] forward passage clear after %.2fm advance; "
-             "resume normal selection.", recovery_side_release_distance_);
+             "resume normal selection.", release_distance);
     return false;
   }
   const Vector3d direction = forward_clear
@@ -1728,6 +1748,7 @@ bool FastExplorationManager::buildSideRecoveryContinuation(
   }
   // 只是先尝试原侧；同侧短路不可行时本轮直接交还原有换边/上下绕行。
   recovery_side_latched_ = false;
+  wide_side_bypass_active_ = false;
   ROS_WARN("[side_recovery] continuation unavailable; yield to existing recovery.");
   return false;
 }
@@ -2377,6 +2398,7 @@ void FastExplorationManager::completeTurnInPlace(const Vector3d&) {
   // 转向完成后直接恢复平移规划；爬升和上绕由正常避障选路决定。
   turn_in_place_session_active_ = false;
   recovery_side_latched_ = false;
+  wide_side_bypass_active_ = false;
   turn_in_place_still_since_ = ros::Time(0);
 }
 
@@ -2841,7 +2863,10 @@ int FastExplorationManager::planManualWaypointMotion(
 int FastExplorationManager::planExploreMotion(
     const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, const Vector3d& yaw) {
   // 上轮同侧短步若未生成成功，不在下一轮反复强选同一点。
-  if (recovery_side_continuation_pending_) recovery_side_latched_ = false;
+  if (recovery_side_continuation_pending_) {
+    recovery_side_latched_ = false;
+    wide_side_bypass_active_ = false;
+  }
   recovery_side_continuation_pending_ = false;
   turn_in_place_plan_ = false;
   ground_ascent_plan_ = false;
