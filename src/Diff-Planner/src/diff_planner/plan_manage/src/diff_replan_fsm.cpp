@@ -176,7 +176,7 @@ namespace diff_planner
     nh.param("fsm/enable_ordinary_route", enable_ordinary_route_, false);
     nh.param("fsm/ordinary_separation", ordinary_separation_, 1.2);
     nh.param("fsm/ordinary_tracking_margin", ordinary_tracking_margin_, 0.1);
-    nh.param("fsm/ordinary_stop_margin", ordinary_stop_margin_, 0.1);
+    nh.param("fsm/ordinary_stop_margin", ordinary_stop_margin_, 0.038);
     nh.param("fsm/ordinary_leader_timeout", ordinary_leader_timeout_, 0.5);
     nh.param("optimization/fapp_vehicle_radius", ordinary_vehicle_radius_, 0.262);
     nh.param("optimization/fapp_vehicle_half_height", ordinary_vehicle_half_height_, 0.125);
@@ -2092,7 +2092,7 @@ namespace diff_planner
     status.data = text.str();
     planning_status_pub_.publish(status);
     changeFSMExecState(EXEC_TRAJ, "ORDINARY_ROUTE");
-    ROS_INFO("[ordinary_route] stop=%zu/%zu (%.3f,%.3f,%.3f), margin=%.2f, "
+    ROS_INFO("[ordinary_route] stop=%zu/%zu (%.3f,%.3f,%.3f), margin=%.3f, "
              "minimum leader separation=%.3f, duration=%.3f.",
              result.count, points.size(), final_goal_.x(), final_goal_.y(), final_goal_.z(),
              ordinary_stop_margin_, result.min_separation, planner_manager_->traj_.local_traj.duration);

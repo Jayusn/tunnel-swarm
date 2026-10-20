@@ -55,7 +55,7 @@ namespace diff_planner
     std::string ordinary_odom_frame_;
     ros::Subscriber ordinary_route_sub_, ordinary_leader_sub_;
     double ordinary_separation_{1.2}, ordinary_tracking_margin_{0.1};
-    double ordinary_stop_margin_{0.1}, ordinary_leader_timeout_{0.5};
+    double ordinary_stop_margin_{0.038}, ordinary_leader_timeout_{0.5};
     double ordinary_vehicle_radius_{0.262}, ordinary_vehicle_half_height_{0.125};
     std::size_t ordinary_stop_count_{0};
     void ordinaryRouteCallback(const nav_msgs::Path::ConstPtr& msg);

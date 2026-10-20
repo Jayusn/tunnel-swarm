@@ -1092,6 +1092,25 @@ TEST_F(PlannerEndpoint, HistoryPolylineCannotFinishBeforeReachingItsLastPiece) {
   EXPECT_EQ(planner.exec_state_, FSM::WAIT_TARGET);
   EXPECT_FALSE(planner.occupied_recovery_active_);
 }
+TEST_F(PlannerEndpoint, OrdinaryStopUsesSixtyCentimeterEnvelopeWithoutDoubleInflation) {
+  auto map = planner.planner_manager_->grid_map_;
+  const double radius = planner.ordinary_vehicle_radius_;
+  const double half_height = planner.ordinary_vehicle_half_height_;
+  const double margin = planner.ordinary_stop_margin_;
+  ASSERT_NEAR(2 * (radius + margin), .60, 1e-12);
+  ASSERT_NEAR(2 * (half_height + margin), .326, 1e-12);
+  // At 5 cm resolution the obstacle's lower Y face is 0.700 m.
+  publishPoint(Eigen::Vector3d(goal.x(), .725, goal.z()));
+  Eigen::Vector3d stop(goal.x(), .399, goal.z());
+  EXPECT_EQ(map->getInflateOccupancy(stop), 0);
+  EXPECT_FALSE(map->isVehicleOccupied(stop, radius, half_height, margin));
+  EXPECT_TRUE(map->isVehicleOccupied(stop, radius, half_height, .10));
+  // Moving 2 mm toward the same voxel crosses the 0.300 m centre clearance.
+  stop.y() = .401;
+  EXPECT_EQ(map->getInflateOccupancy(stop), 0);
+  EXPECT_TRUE(map->isVehicleOccupied(stop, radius, half_height, margin));
+}
+
 TEST_F(PlannerEndpoint, OrdinaryRouteSelectsClearStopAndRetainsWaypointOrder) {
   planner.enable_ordinary_route_ = true;
   planner.ordinary_odom_frame_ = "test_local";
@@ -1103,7 +1122,9 @@ TEST_F(PlannerEndpoint, OrdinaryRouteSelectsClearStopAndRetainsWaypointOrder) {
   // Free centre voxel, but not enough room for the complete parked vehicle.
   publishPoint(first + Eigen::Vector3d(0,.30,0));
   EXPECT_EQ(planner.planner_manager_->grid_map_->getInflateOccupancy(first), 0);
-  EXPECT_TRUE(planner.planner_manager_->grid_map_->isVehicleOccupied(first, .262,.125,.1));
+  EXPECT_TRUE(planner.planner_manager_->grid_map_->isVehicleOccupied(
+      first, planner.ordinary_vehicle_radius_, planner.ordinary_vehicle_half_height_,
+      planner.ordinary_stop_margin_));
   geometry_msgs::PointStamped::Ptr leader(new geometry_msgs::PointStamped);
   leader->header.frame_id = "test_local";
   leader->header.stamp = ros::Time::now();
