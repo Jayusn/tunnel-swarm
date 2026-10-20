@@ -147,9 +147,9 @@ def test_relay_waypoints_release_after_xy_clearance():
         item.attrib["name"]: item.attrib["value"]
         for item in follower.findall("param")
     }
-    assert params["follow_distance"] == "1.50"
+    assert params["follow_distance"] == "1.20"
     assert params["release_path_length"] == "0.70"
-    assert params["waypoint_release_min_separation"] == "1.00"
+    assert params["waypoint_release_min_separation"] == "1.20"
     assert params["door_release_inside_distance"] == "0.70"
     assert params["relay_release_distance"] == "0.70"
 
@@ -180,9 +180,9 @@ def test_diff_execution_continuously_holds_and_retreats_for_uav_spacing():
         for item in follower.findall("param")
     }
     assert params["enable_diff_separation_safety"] == "true"
-    assert params["min_separation"] == "1.00"
+    assert params["min_separation"] == "1.20"
     assert params["separation_recovery_distance"] == "0.60"
-    assert params["separation_release_distance"] == "1.00"
+    assert params["separation_release_distance"] == "1.20"
 
     source = FOLLOWER.read_text(encoding="utf-8")
     fifo_spacing = source.split(

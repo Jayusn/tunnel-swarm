@@ -173,6 +173,20 @@ namespace diff_planner
     occupied_recovery_vertical_ = false;
     occupied_recovery_failure_reported_ = false;
 
+    nh.param("fsm/enable_ordinary_route", enable_ordinary_route_, false);
+    nh.param("fsm/ordinary_separation", ordinary_separation_, 1.2);
+    nh.param("fsm/ordinary_tracking_margin", ordinary_tracking_margin_, 0.1);
+    nh.param("fsm/ordinary_stop_margin", ordinary_stop_margin_, 0.1);
+    nh.param("fsm/ordinary_leader_timeout", ordinary_leader_timeout_, 0.5);
+    nh.param("optimization/fapp_vehicle_radius", ordinary_vehicle_radius_, 0.262);
+    nh.param("optimization/fapp_vehicle_half_height", ordinary_vehicle_half_height_, 0.125);
+    if (enable_ordinary_route_) {
+      ordinary_route_sub_ = nh.subscribe(manual_goal_topic_ + "/ordinary_route", 1,
+          &DiffReplanFSM::ordinaryRouteCallback, this);
+      ordinary_leader_sub_ = nh.subscribe(manual_goal_topic_ + "/leader_position", 1,
+          &DiffReplanFSM::ordinaryLeaderCallback, this, ros::TransportHints().tcpNoDelay());
+    }
+
     /* callback */
     exec_timer_ = nh.createTimer(ros::Duration(0.01), &DiffReplanFSM::execFSMCallback, this);
     safety_timer_ = nh.createTimer(ros::Duration(0.05), &DiffReplanFSM::checkCollisionCallback, this);
@@ -290,6 +304,14 @@ namespace diff_planner
         beginOccupiedRecoveryEpisode();
         changeFSMExecState(EMERGENCY_STOP, "OCCUPIED_START");
       }
+    }
+
+    if (ordinary_route_pending_ && have_odom_ && !mandatory_stop_ &&
+        !occupied_recovery_episode_ && exec_state_ != EMERGENCY_STOP &&
+        exec_state_ != OCCUPIED_RECOVERY) {
+      planOrdinaryRoute();
+      finishProcess();
+      return;
     }
 
     static int fsm_num = 0;
@@ -497,7 +519,7 @@ namespace diff_planner
         /* The navigation task completed */
         changeFSMExecState(WAIT_TARGET, "FSM");
       }
-      else if (enable_periodic_replan_ && t_cur > replan_thresh_ &&
+      else if (!ordinary_route_active_ && enable_periodic_replan_ && t_cur > replan_thresh_ &&
                now_sec - last_periodic_replan_attempt_time_ > replan_thresh_)
       {
         periodic_replan_pending_ = true;
@@ -1679,6 +1701,10 @@ namespace diff_planner
                                         bool flag_randomPolyTraj,
                                         bool require_improvement)
   {
+    // Never replace an accepted multi-point route by a direct-to-endpoint
+    // replan. Collision handling retains its existing stop/recovery behavior.
+    if (ordinary_route_active_)
+      return false;
     if (mondify_final_goal_ && mondifyInCollisionFinalGoal()) 
     {
       ROS_WARN("Successfully modified final_goal in callReboundReplan !!!");
@@ -1934,6 +1960,7 @@ namespace diff_planner
   void DiffReplanFSM::handleWaypoint(const geometry_msgs::PoseStampedPtr &msg,
                                     const bool two_piece_entry)
   {
+    ordinary_route_pending_ = ordinary_route_active_ = false;
     refreshOdometry();
     active_external_goal_stamp_ns_ = msg->header.stamp.toNSec();
     external_goal_modified_ = false;
@@ -1972,6 +1999,103 @@ namespace diff_planner
     }
     msg.data = stream.str();
     planning_status_pub_.publish(msg);
+  }
+
+  void DiffReplanFSM::ordinaryLeaderCallback(
+      const geometry_msgs::PointStamped::ConstPtr& msg) {
+    ordinary_leader_ = *msg; // Keep the original odometry stamp, not receipt time.
+  }
+
+  void DiffReplanFSM::ordinaryRouteCallback(const nav_msgs::Path::ConstPtr& msg) {
+    if (!enable_ordinary_route_ || msg->header.stamp.isZero()) return;
+    if (msg->poses.empty()) {
+      if (msg->header.stamp == ordinary_route_.header.stamp &&
+          msg->header.stamp.toNSec() == active_external_goal_stamp_ns_) {
+        ordinary_route_pending_ = ordinary_route_active_ = false;
+        if (!occupied_recovery_episode_ && exec_state_ != OCCUPIED_RECOVERY) {
+          have_target_ = have_trigger_ = false;
+          if (exec_state_ != EMERGENCY_STOP)
+            changeFSMExecState(WAIT_TARGET, "ORDINARY_CANCEL");
+        }
+      }
+      return;
+    }
+    if (msg->header.stamp.toNSec() <= active_external_goal_stamp_ns_) return;
+    ordinary_route_ = *msg;
+    ordinary_route_pending_ = true;
+    ordinary_route_active_ = false;
+    active_external_goal_stamp_ns_ = msg->header.stamp.toNSec();
+  }
+
+  void DiffReplanFSM::planOrdinaryRoute() {
+    ordinary_route_pending_ = false; // The follower resends on route/leader updates.
+    const double age = (ros::Time::now() - ordinary_leader_.header.stamp).toSec();
+    const auto wait = [this](const std::string& reason, bool failed = false) {
+      publishPlanningStatus(failed ? "ORDINARY_ROUTE_FAILED" : "ORDINARY_ROUTE_WAIT");
+      ROS_WARN_THROTTLE(1.0, "[ordinary_route] wait: %s; keep previous stop.", reason.c_str());
+      have_target_ = have_trigger_ = false;
+      changeFSMExecState(WAIT_TARGET, "ORDINARY_WAIT");
+    };
+    if (ordinary_leader_.header.stamp.isZero() || age < 0.0 ||
+        age > ordinary_leader_timeout_ ||
+        ordinary_route_.header.frame_id.empty() ||
+        ordinary_route_.header.frame_id != ordinary_odom_frame_ ||
+        ordinary_leader_.header.frame_id != ordinary_route_.header.frame_id) {
+      wait("leader odometry stale or frame mismatch");
+      return;
+    }
+    std::vector<Eigen::Vector3d> points;
+    for (const auto& pose : ordinary_route_.poses)
+      points.emplace_back(pose.pose.position.x, pose.pose.position.y, pose.pose.position.z);
+    const auto& p = ordinary_leader_.point;
+    OrdinaryRouteResult result;
+    auto map = planner_manager_->grid_map_;
+    planner_manager_->setEntryMode(false);
+    const bool ready = buildOrdinaryRoute(odom_pos_, odom_vel_, points,
+        Eigen::Vector3d(p.x, p.y, p.z), ordinary_separation_ + ordinary_tracking_margin_,
+        planner_manager_->pp_.max_vel_, planner_manager_->pp_.max_acc_, map->getResolution(),
+        [this, map](const Eigen::Vector3d& stop) {
+          return !map->isVehicleOccupied(stop, ordinary_vehicle_radius_,
+                                         ordinary_vehicle_half_height_, ordinary_stop_margin_);
+        },
+        [map](const Eigen::Vector3d& point) { return map->getInflateOccupancy(point) == 0; },
+        result);
+    if (!ready) { wait(result.reason); return; }
+    // A long candidate search must not publish against expired leader data.
+    if ((ros::Time::now() - ordinary_leader_.header.stamp).toSec() > ordinary_leader_timeout_) {
+      wait("leader expired during planning"); return;
+    }
+    if (!planner_manager_->setLocalTrajFromOpt(result.polynomial, true)) {
+      wait("trajectory collision/commit failed", true); return;
+    }
+    ordinary_stop_count_ = result.count;
+    ordinary_route_active_ = true;
+    final_goal_ = local_target_pt_ = points[result.count - 1];
+    local_target_vel_.setZero();
+    have_target_ = have_trigger_ = true;
+    have_new_target_ = false;
+    external_goal_modified_ = false;
+    need_hover_stop_ = false;
+    periodic_replan_pending_ = false;
+    replan_fail_count_ = 0;
+    last_target_change_time_ = ros::Time::now().toSec();
+    stuck_detect_ignore_until_ = last_target_change_time_ + stuck_detect_grace_time_;
+    traj_utils::PolyTraj poly;
+    traj_utils::MINCOTraj minco;
+    polyTraj2ROSMsg(poly, minco);
+    poly_traj_pub_.publish(poly);
+    std_msgs::String status;
+    std::ostringstream text;
+    text << "ORDINARY_ROUTE_PUBLISHED goal_stamp_ns=" << active_external_goal_stamp_ns_
+         << " " << result.count << " " << final_goal_.x() << " " << final_goal_.y()
+         << " " << final_goal_.z() << " " << planner_manager_->traj_.local_traj.duration;
+    status.data = text.str();
+    planning_status_pub_.publish(status);
+    changeFSMExecState(EXEC_TRAJ, "ORDINARY_ROUTE");
+    ROS_INFO("[ordinary_route] stop=%zu/%zu (%.3f,%.3f,%.3f), margin=%.2f, "
+             "minimum leader separation=%.3f, duration=%.3f.",
+             result.count, points.size(), final_goal_.x(), final_goal_.y(), final_goal_.z(),
+             ordinary_stop_margin_, result.min_separation, planner_manager_->traj_.local_traj.duration);
   }
 
   void DiffReplanFSM::readGivenWpsAndPlan()
@@ -2082,6 +2206,7 @@ namespace diff_planner
 
   void DiffReplanFSM::odometryCallback(const nav_msgs::OdometryConstPtr &msg)
   {
+    ordinary_odom_frame_ = msg->header.frame_id;
     odom_stamp_ = msg->header.stamp;
     odom_pos_(0) = msg->pose.pose.position.x;
     odom_pos_(1) = msg->pose.pose.position.y;

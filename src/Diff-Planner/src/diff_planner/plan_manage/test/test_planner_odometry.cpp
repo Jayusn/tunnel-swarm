@@ -1092,6 +1092,88 @@ TEST_F(PlannerEndpoint, HistoryPolylineCannotFinishBeforeReachingItsLastPiece) {
   EXPECT_EQ(planner.exec_state_, FSM::WAIT_TARGET);
   EXPECT_FALSE(planner.occupied_recovery_active_);
 }
+TEST_F(PlannerEndpoint, OrdinaryRouteSelectsClearStopAndRetainsWaypointOrder) {
+  planner.enable_ordinary_route_ = true;
+  planner.ordinary_odom_frame_ = "test_local";
+  planner.odom_pos_ = goal - Eigen::Vector3d(1,0,0);
+  planner.odom_vel_.setZero();
+  planner.planner_manager_->pp_.max_vel_ = .4;
+  planner.planner_manager_->pp_.max_acc_ = .5;
+  const Eigen::Vector3d first = goal - Eigen::Vector3d(.5,0,0);
+  // Free centre voxel, but not enough room for the complete parked vehicle.
+  publishPoint(first + Eigen::Vector3d(0,.30,0));
+  EXPECT_EQ(planner.planner_manager_->grid_map_->getInflateOccupancy(first), 0);
+  EXPECT_TRUE(planner.planner_manager_->grid_map_->isVehicleOccupied(first, .262,.125,.1));
+  geometry_msgs::PointStamped::Ptr leader(new geometry_msgs::PointStamped);
+  leader->header.frame_id = "test_local";
+  leader->header.stamp = ros::Time::now();
+  leader->point.x = goal.x()+3;
+  leader->point.y = goal.y();
+  planner.ordinaryLeaderCallback(leader);
+  nav_msgs::Path::Ptr route(new nav_msgs::Path);
+  route->header = leader->header;
+  for (const auto& p : {first, goal}) {
+    geometry_msgs::PoseStamped pose;
+    pose.pose.position.x = p.x();
+    pose.pose.position.y = p.y();
+    pose.pose.position.z = p.z();
+    route->poses.push_back(pose);
+  }
+  planner.ordinaryRouteCallback(route);
+  planner.planOrdinaryRoute();
+  drain();
+  EXPECT_TRUE(planner.ordinary_route_active_);
+  EXPECT_EQ(planner.ordinary_stop_count_, 2U);
+  EXPECT_GT(published, 0);
+  EXPECT_EQ(planner.exec_state_, FSM::EXEC_TRAJ);
+  ASSERT_FALSE(statuses.empty());
+  EXPECT_EQ(statuses.back().find("ORDINARY_ROUTE_PUBLISHED"), 0U);
+  // A direct-to-final-goal replan must never bypass intermediate points.
+  EXPECT_FALSE(planner.callReboundReplan(true, false));
+}
+
+TEST_F(PlannerEndpoint, OrdinaryRouteStaleLeaderWaitsWithoutReplacingTrajectory) {
+  planner.enable_ordinary_route_ = true;
+  planner.ordinary_odom_frame_ = "test_local";
+  nav_msgs::Path::Ptr route(new nav_msgs::Path);
+  route->header.frame_id = "test_local";
+  route->header.stamp = ros::Time::now();
+  route->poses.resize(1);
+  route->poses[0].pose.position.x = goal.x();
+  route->poses[0].pose.position.y = goal.y();
+  route->poses[0].pose.position.z = goal.z();
+  planner.ordinary_leader_.header = route->header;
+  planner.ordinary_leader_.header.stamp -= ros::Duration(.51);
+  planner.ordinaryRouteCallback(route);
+  planner.planOrdinaryRoute();
+  expectNoReplacement();
+  EXPECT_EQ(planner.exec_state_, FSM::WAIT_TARGET);
+  ASSERT_FALSE(statuses.empty());
+  EXPECT_EQ(statuses.back().find("ORDINARY_ROUTE_WAIT"), 0U);
+  nav_msgs::Path::Ptr cancel(new nav_msgs::Path);
+  cancel->header = route->header;
+  planner.ordinaryRouteCallback(cancel);
+  EXPECT_FALSE(planner.ordinary_route_active_);
+  EXPECT_FALSE(planner.ordinary_route_pending_);
+}
+
+TEST_F(PlannerEndpoint, OrdinaryCancelCannotEraseNewTaskOrResumeDirectChord) {
+  planner.enable_ordinary_route_ = true;
+  nav_msgs::Path::Ptr cancel(new nav_msgs::Path);
+  cancel->header.stamp = ros::Time(999);
+  planner.ordinary_route_.header = cancel->header;
+  planner.active_external_goal_stamp_ns_ = ros::Time(1000).toNSec();
+  planner.ordinaryRouteCallback(cancel);
+  EXPECT_TRUE(planner.have_target_); // New entry/exit task owns control.
+  planner.active_external_goal_stamp_ns_ = cancel->header.stamp.toNSec();
+  planner.ordinary_route_active_ = true;
+  planner.exec_state_ = FSM::EMERGENCY_STOP;
+  planner.occupied_recovery_episode_ = false;
+  planner.ordinaryRouteCallback(cancel);
+  EXPECT_FALSE(planner.have_target_);
+  EXPECT_FALSE(planner.have_trigger_);
+  EXPECT_EQ(planner.exec_state_, FSM::EMERGENCY_STOP);
+}
 } // namespace
 
 int main(int argc, char **argv)

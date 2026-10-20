@@ -17,6 +17,7 @@
 #include <vector>  // 2026-07-16: 保存按任务进度持续生成并顺序执行的离散接力点。
 
 #include <geometry_msgs/Point.h>
+#include <geometry_msgs/PointStamped.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <ldop/DynamicObjectArray.h>  // LDOP稳定目标状态；跟随器按自身规划时域进行短期预测。
 #include <nav_msgs/Odometry.h>
@@ -222,6 +223,7 @@ class LeaderSafePathFollower {
     pnh_.param("follow_distance", follow_distance_, 1.50);
     pnh_.param("release_path_length", release_path_length_, 0.70);
     pnh_.param("min_separation", min_separation_, 0.70);
+    pnh_.param("task_separation", task_separation_, min_separation_);
     // 航点路径进度只证明前机走过该段；发布前还必须用两机对齐后的实时XY验证水平净距。
     pnh_.param("waypoint_release_min_separation",
                waypoint_release_min_separation_, 0.70);
@@ -440,6 +442,10 @@ class LeaderSafePathFollower {
       traj_started_pub_ = nh_.advertise<std_msgs::Empty>(traj_started_topic_, 1, true);
     }
     diff_goal_pub_ = nh_.advertise<geometry_msgs::PoseStamped>(diff_goal_topic_, 1, true);
+    pnh_.param("enable_ordinary_route", enable_ordinary_route_, false);
+    ordinary_route_pub_ = nh_.advertise<nav_msgs::Path>(diff_goal_topic_ + "/ordinary_route", 1, true);
+    ordinary_leader_pub_ = nh_.advertise<geometry_msgs::PointStamped>(
+        diff_goal_topic_ + "/leader_position", 1);
     diff_yaw_pub_ = nh_.advertise<quadrotor_msgs::PositionCommand>(diff_yaw_topic_, 1);
     diff_entry_goal_pub_ =
         nh_.advertise<geometry_msgs::PoseStamped>(diff_goal_topic_ + "/entry", 1, true);
@@ -552,12 +558,16 @@ class LeaderSafePathFollower {
         followerToWorld(follower_odom_.pose.pose.position);
     const double separation = std::hypot(leader_world.x - follower_world.x,
                                          leader_world.y - follower_world.y);
-    if (separation + 1e-6 < waypoint_release_min_separation_) {
+    const bool task_point = std::string(label) == "EXIT" ||
+        std::string(label) == "OUTSIDE_WAIT" || std::string(label) == "DOOR";
+    const double required = enable_ordinary_route_ && task_point
+        ? task_separation_ : waypoint_release_min_separation_;
+    if (separation + 1e-6 < required) {
       ROS_WARN_THROTTLE(
           0.5,
           "[safe_follower] HOLD %s waypoint release: actual UAV0-UAV1 XY separation "
           "%.2fm < %.2fm.",
-          label, separation, waypoint_release_min_separation_);
+          label, separation, required);
       return false;
     }
     return true;
@@ -1618,6 +1628,7 @@ class LeaderSafePathFollower {
 
   // 2026-07-28: Diff无轨迹等待不能只发零速度；通过控制器安全话题锁存MAVROS本地位置，直到新轨迹真正发布。
   void setDiffWaitPositionHold(bool active, const std::string& reason) {
+    if (active) cancelOrdinaryRoute();
     if (diff_wait_hold_active_ == active) return;
     diff_wait_hold_active_ = active;
     if (!active && diff_dynamic_hold_active_) return;
@@ -1788,6 +1799,41 @@ class LeaderSafePathFollower {
       }
     }
 
+    if (status.find("ORDINARY_ROUTE_") == 0) {
+      if (!ordinary_route_requested_ || !response_goal_stamp_valid ||
+          response_goal_stamp_ns != diff_active_goal_stamp_ns_ ||
+          diff_separation_hold_active_ || simple_occupied_recovery_active_)
+        return;
+      if (status == "ORDINARY_ROUTE_WAIT" || status == "ORDINARY_ROUTE_FAILED") {
+        ordinary_route_requested_ = false;
+        diff_goal_published_ = false;
+        diff_plan_response_received_ = true;
+        simple_diff_retry_not_before_ = ros::Time::now() + ros::Duration(simple_diff_retry_delay_);
+        return; // Already waiting at the previous stop; do not move the hold point.
+      }
+      if (status == "ORDINARY_ROUTE_PUBLISHED") {
+        if (ordinary_route_executing_) return; // A replay must not reset consumed points.
+        std::size_t count = 0;
+        geometry_msgs::Point endpoint;
+        double duration = 0.0;
+        if (!(stream >> count >> endpoint.x >> endpoint.y >> endpoint.z >> duration) ||
+            count == 0 || count > ordinary_request_.poses.size() ||
+            !std::isfinite(duration) || duration <= 0.0 ||
+            distance3d(endpoint, ordinary_request_.poses[count - 1].pose.position) > 0.01)
+          return;
+        ordinary_route_executing_ = true;
+        ordinary_remaining_ = count;
+        ordinary_route_end_ = ros::Time::now() + ros::Duration(duration);
+        diff_plan_response_received_ = true;
+        diff_trajectory_response_stamp_ = ros::Time::now();
+        diff_accepted_goal_local_ = endpoint;
+        diff_accepted_goal_valid_ = true;
+        simple_door_hover_active_ = false;
+        setDiffWaitPositionHold(false, "ordinary route to clear stop published");
+      }
+      return;
+    }
+
     geometry_msgs::Point accepted;
     const bool accepted_valid =
         status == "TRAJECTORY_PUBLISHED" &&
@@ -1799,6 +1845,9 @@ class LeaderSafePathFollower {
     const bool recovery_finished = status == "OCCUPIED_RECOVERY_ABORTED" ||
         status == "OCCUPIED_RECOVERY_SUCCEEDED" ||
         status == "OCCUPIED_RECOVERY_CANCELLED";
+    if (response_goal_stamp_valid && response_goal_stamp_ns == diff_active_goal_stamp_ns_ &&
+        (recovery_started || recovery_finished))
+      cancelOrdinaryRoute();
     if (simple_segment_endpoint_following_ && response_goal_stamp_valid &&
         (recovery_started || recovery_finished)) {
       std::string recovery_token;
@@ -2046,6 +2095,117 @@ class LeaderSafePathFollower {
     publishRelayPath();
   }
 
+  bool ordinaryWaypoint(std::size_t i) const {
+    return i < relay_waypoints_.size() && !relay_waypoints_[i].is_door &&
+        i != exit_waypoint_index_ && i != outside_wait_waypoint_index_ &&
+        i != terminal_waypoint_index_;
+  }
+
+  void cancelOrdinaryRoute() {
+    if (!ordinary_route_requested_) return;
+    nav_msgs::Path cancel;
+    cancel.header = ordinary_request_.header;
+    ordinary_route_pub_.publish(cancel);
+    ordinary_route_requested_ = ordinary_route_executing_ = false;
+    ordinary_remaining_ = 0;
+  }
+
+  bool handleOrdinaryRoute(const ros::Time& now) {
+    if (!enable_ordinary_route_ || !ordinaryWaypoint(active_relay_index_)) return false;
+    const auto& point = relay_waypoints_[active_relay_index_];
+    const geometry_msgs::Point target = useFollowerCruiseHeight(worldToFollower(point.position));
+    const auto& current = follower_odom_.pose.pose.position;
+    const double xy = std::hypot(target.x - current.x, target.y - current.y);
+    const double yaw_error = worldYawToFollower(point.yaw) -
+        yawFromQuaternion(follower_odom_.pose.pose.orientation);
+    const bool arrived = xy <= relay_arrive_radius_ &&
+        std::fabs(target.z - current.z) <= relay_arrive_z_tolerance_ &&
+        (!require_waypoint_yaw_ || (xy <= diff_endpoint_capture_radius_ &&
+         std::abs(std::atan2(std::sin(yaw_error), std::cos(yaw_error))) <= 5.0 * M_PI / 180.0));
+    // Preserve each ordinary point's heading/actual arrival rule while letting
+    // one continuous trajectory finish beyond intermediate FIFO points.
+    quadrotor_msgs::PositionCommand yaw;
+    yaw.header.stamp = now;
+    yaw.header.frame_id = follower_odom_.header.frame_id;
+    yaw.yaw = worldYawToFollower(point.yaw);
+    diff_yaw_pub_.publish(yaw);
+
+    if (!leaderOdomFresh(now)) {
+      setDiffWaitPositionHold(true, "ordinary route leader odometry stale");
+      diff_goal_published_ = false;
+      return true;
+    }
+    if (ordinary_route_executing_) {
+      const bool final = ordinary_remaining_ == 1;
+      const bool stopped = now >= ordinary_route_end_ &&
+          follower_horizontal_speed_ <= relay_arrive_max_horizontal_speed_ &&
+          follower_vertical_speed_ <= relay_arrive_max_vertical_speed_;
+      if (arrived && (!final || stopped)) {
+        if (final) {
+          if (relay_arrival_stamp_.isZero()) relay_arrival_stamp_ = now;
+          if ((now - relay_arrival_stamp_).toSec() < relay_arrive_dwell_) return true;
+        }
+        consumeSimpleRelayFront();
+        --ordinary_remaining_;
+        diff_goal_index_ = active_relay_index_;
+        if (final) {
+          setDiffWaitPositionHold(true, "ordinary clear stop reached");
+          diff_goal_published_ = false;
+          diff_accepted_goal_valid_ = false;
+          diff_command_seen_for_goal_ = false;
+          simple_diff_retry_not_before_ = now;
+          relay_arrival_stamp_ = ros::Time(0);
+        }
+        return true;
+      }
+      relay_arrival_stamp_ = ros::Time(0);
+      const ros::Time last_command = std::max(diff_command_stamp_, diff_trajectory_response_stamp_);
+      if ((now - last_command).toSec() >= diff_command_stale_timeout_) {
+        setDiffWaitPositionHold(true, "ordinary route command stale");
+        diff_goal_published_ = false;
+      }
+      return true;
+    }
+    if (ordinary_route_requested_) {
+      if ((now - diff_goal_first_publish_stamp_).toSec() >= diff_goal_response_timeout_) {
+        setDiffWaitPositionHold(true, "ordinary route response timeout");
+        diff_goal_published_ = false;
+        simple_diff_retry_not_before_ = now + ros::Duration(simple_diff_retry_delay_);
+      }
+      return true;
+    }
+    if (now < simple_diff_retry_not_before_) return true;
+    setDiffWaitPositionHold(true, "waiting for clear ordinary stop");
+    if (ordinary_route_pub_.getNumSubscribers() == 0) return true;
+    geometry_msgs::PoseStamped id;
+    id.header.stamp = now;
+    id.header.frame_id = follower_odom_.header.frame_id;
+    stampDiffGoalId(&id);
+    ordinary_request_ = nav_msgs::Path();
+    ordinary_request_.header = id.header;
+    for (std::size_t i = active_relay_index_; ordinaryWaypoint(i); ++i) {
+      geometry_msgs::PoseStamped pose;
+      pose.header = id.header;
+      pose.pose.position = useFollowerCruiseHeight(worldToFollower(relay_waypoints_[i].position));
+      const double local_yaw = worldYawToFollower(relay_waypoints_[i].yaw);
+      pose.pose.orientation.w = std::cos(local_yaw * 0.5);
+      pose.pose.orientation.z = std::sin(local_yaw * 0.5);
+      ordinary_request_.poses.push_back(pose);
+    }
+    RoutePoint& owner = relay_waypoints_[active_relay_index_];
+    if (!owner.diff_goal_owner_stamp_ns) owner.diff_goal_owner_stamp_ns = diff_active_goal_stamp_ns_;
+    simple_diff_goal_owners_[diff_active_goal_stamp_ns_] = owner.diff_goal_owner_stamp_ns;
+    ordinary_route_requested_ = true;
+    diff_goal_index_ = active_relay_index_;
+    diff_goal_published_ = true;
+    diff_plan_response_received_ = false;
+    diff_command_seen_for_goal_ = false;
+    diff_accepted_goal_valid_ = false;
+    diff_goal_first_publish_stamp_ = now;
+    ordinary_route_pub_.publish(ordinary_request_);
+    return true;
+  }
+
   bool handleSimpleDiffPlannerExecution(const ros::Time& now) {
     if (simple_occupied_recovery_active_) {
       publishState("DIFF_FIFO_OCCUPIED_HISTORY_RETREAT", 1.0, 0.25, 0.0);
@@ -2054,6 +2214,8 @@ class LeaderSafePathFollower {
 
     // 入口及入口等待只在0.60m内退让；普通点继续保持1m间距。
     if (handleDiffSeparationSafety(now)) return true;
+
+    if (handleOrdinaryRoute(now)) return true;
 
     if (active_relay_index_ >= relay_waypoints_.size()) {
       // Ordinary segments finish at their actual endpoint in the controller.
@@ -2069,6 +2231,9 @@ class LeaderSafePathFollower {
     const RoutePoint desired_world = relay_waypoints_[active_relay_index_];
     const double release_distance = desired_world.is_door
         ? door_release_inside_distance_ : waypoint_release_min_separation_;
+    const double effective_release_distance = enable_ordinary_route_ &&
+        !desired_world.is_door && !ordinaryWaypoint(active_relay_index_)
+        ? task_separation_ : release_distance;
     const bool terminal_relay = terminal_mode_active_ &&
         active_relay_index_ == terminal_waypoint_index_;
     const bool outside_wait_relay = outside_wait_waypoint_released_ &&
@@ -2112,7 +2277,7 @@ class LeaderSafePathFollower {
       const double leader_to_waypoint =
           std::hypot(leader_world.x - desired_world.position.x,
                      leader_world.y - desired_world.position.y);
-      if (leader_to_waypoint + 1.0e-6 < release_distance) {
+      if (leader_to_waypoint + 1.0e-6 < effective_release_distance) {
         if (!simple_waypoint_clearance_hold_active_) {
           simple_waypoint_clearance_hold_active_ = true;
           if (diff_goal_published_)
@@ -2122,7 +2287,7 @@ class LeaderSafePathFollower {
           diff_command_seen_for_goal_ = false;
           ROS_WARN("[safe_follower] FIFO endpoint HOLD: UAV0 is only %.2fm beyond/from "
                    "the cached point, require %.2fm before UAV1 plans to it.",
-                   leader_to_waypoint, release_distance);
+                   leader_to_waypoint, effective_release_distance);
         }
         publishState("DIFF_FIFO_WAIT_LEADER_CLEAR_NEXT_POINT", 1.0, 0.3, 0.0);
         return true;
@@ -2133,12 +2298,14 @@ class LeaderSafePathFollower {
         simple_diff_retry_not_before_ = now;
         ROS_WARN("[safe_follower] UAV0 is %.2fm from the cached FIFO point; release UAV1 "
                  "planning after %.2fm clearance.",
-                 leader_to_waypoint, release_distance);
+                 leader_to_waypoint, effective_release_distance);
       }
       // 入口悬停可以小于1m，但放行后续点前仍必须恢复普通跟随间距。
       if (!desired_world.is_door &&
           std::hypot(leader_world.x - current_world.x,
-                     leader_world.y - current_world.y) < min_separation_) {
+                     leader_world.y - current_world.y) <
+              (enable_ordinary_route_ && !ordinaryWaypoint(active_relay_index_)
+                   ? task_separation_ : min_separation_)) {
         setDiffWaitPositionHold(true, "waiting at door for normal FIFO spacing");
         diff_goal_published_ = false;
         publishState("DIFF_FIFO_SPACING_HOLD", 1.0, 0.3, 0.0);
@@ -3207,10 +3374,12 @@ class LeaderSafePathFollower {
         (simple_door_hover_active_ ||
          (active_relay_index_ < relay_waypoints_.size() &&
           relay_waypoints_[active_relay_index_].is_door));
+    const bool task_stage = enable_ordinary_route_ &&
+        !ordinaryWaypoint(active_relay_index_);
     const double hold_distance = simple_door_stage
-        ? separation_recovery_distance_ : min_separation_;
+        ? separation_recovery_distance_ : (task_stage ? task_separation_ : min_separation_);
     const double release_distance = simple_door_stage
-        ? door_release_inside_distance_ : separation_release_distance_;
+        ? door_release_inside_distance_ : (task_stage ? task_separation_ : separation_release_distance_);
     const bool terminal_relay_active = terminal_mode_active_ &&
         active_relay_index_ == terminal_waypoint_index_;
     const bool leader_fresh = leaderOdomFresh(now);
@@ -3908,6 +4077,13 @@ class LeaderSafePathFollower {
   }
 
   void timerCallback(const ros::TimerEvent&) {
+    if (enable_ordinary_route_ && have_leader_odom_ && have_follower_odom_) {
+      geometry_msgs::PointStamped leader;
+      leader.header.frame_id = follower_odom_.header.frame_id;
+      leader.header.stamp = leader_odom_.header.stamp;
+      leader.point = worldToFollower(leaderToWorld(leader_odom_.pose.pose.position));
+      ordinary_leader_pub_.publish(leader);
+    }
     if (follower_precision_landing_active_) {
       publishState("UAV1_PRECISION_LANDING_OWNS_CONTROL", 0.2, 1.0, 0.2);
       return;
@@ -4234,6 +4410,13 @@ class LeaderSafePathFollower {
   // 普通点出队后仍保留过滤基准；被过滤的点不会替换它。
   geometry_msgs::Point last_ordinary_relay_position_;
   bool have_last_ordinary_relay_point_{false};
+  bool enable_ordinary_route_{false}, ordinary_route_requested_{false};
+  double task_separation_{1.5};
+  bool ordinary_route_executing_{false};
+  std::size_t ordinary_remaining_{0};
+  nav_msgs::Path ordinary_request_;
+  ros::Publisher ordinary_route_pub_, ordinary_leader_pub_;
+  ros::Time ordinary_route_end_;
   ros::Time leader_odom_stamp_, follower_odom_stamp_, follower_odom_sample_stamp_, cloud_stamp_;
   ros::Time dynamic_obstacle_receive_stamp_, retained_dynamic_obstacle_stamp_;
   std::string leader_odom_topic_, leader_history_path_topic_, leader_trajectory_topic_,
