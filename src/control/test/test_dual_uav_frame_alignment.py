@@ -150,7 +150,7 @@ def test_relay_waypoints_release_after_xy_clearance():
     assert params["follow_distance"] == "1.20"
     assert params["release_path_length"] == "0.70"
     assert params["waypoint_release_min_separation"] == "1.20"
-    assert params["door_release_inside_distance"] == "0.70"
+    assert params["door_release_inside_distance"] == "0.60"
     assert params["relay_release_distance"] == "0.70"
 
     source = FOLLOWER.read_text(encoding="utf-8")

@@ -10,6 +10,6 @@
     <param name="waypoint_release_min_separation" value="1.00"/>
     <param name="separation_recovery_distance" value="0.60"/>
     <param name="separation_release_distance" value="1.00"/>
-    <param name="door_release_inside_distance" value="0.70"/>
+    <param name="door_release_inside_distance" value="0.60"/>
   </test>
 </launch>

@@ -216,12 +216,12 @@ TEST_F(FifoEntrySpacing, SpecialPointsDoNotParticipateInOrdinaryPointFiltering) 
   EXPECT_EQ(follower->relay_waypoints_.size(), 6U);
 }
 
-TEST_F(FifoEntrySpacing, DoorReleasesAtPointSevenWithoutOneMeterSpacing) {
+TEST_F(FifoEntrySpacing, DoorReleasesAtPointSixWithoutOneMeterSpacing) {
   follower->follower_odom_.pose.pose.position.x = -0.1;
-  setLeader(0.69);
+  setLeader(0.59);
   EXPECT_FALSE(follower->tryReleaseDoorWaypointFromLeaderPosition(
       follower->leader_odom_.pose.pose.position));
-  setLeader(0.7);
+  setLeader(0.6);
   ASSERT_TRUE(follower->tryReleaseDoorWaypointFromLeaderPosition(
       follower->leader_odom_.pose.pose.position));
   ASSERT_EQ(follower->relay_waypoints_.size(), 1U);
@@ -371,14 +371,14 @@ TEST_F(FifoEntrySpacing, DoorHoverDoesNotRetreatAtPointSix) {
   EXPECT_FALSE(follower->separation_recovery_active_);
 }
 
-TEST_F(FifoEntrySpacing, DoorHoverRetreatsBelowPointSixAndStopsAtPointSeven) {
+TEST_F(FifoEntrySpacing, DoorHoverRetreatsBelowPointSixAndStopsAtPointSix) {
   follower->simple_door_hover_active_ = true;
   setLeader(0.59);
   EXPECT_TRUE(follower->handleSimpleDiffPlannerExecution(ros::Time::now()));
   EXPECT_TRUE(follower->separation_recovery_active_);
   EXPECT_TRUE(follower->diff_goal_published_);
   EXPECT_LT(follower->separation_recovery_goal_local_.x, 0.0);
-  setLeader(0.7);
+  setLeader(0.6);
   follower->handleSimpleDiffPlannerExecution(ros::Time::now());
   EXPECT_FALSE(follower->separation_recovery_active_);
   EXPECT_FALSE(follower->diff_goal_published_);

@@ -231,8 +231,8 @@
         <param name="route_resume_radius" value="0.45"/>
         <!-- 2026-07-21: U形转弯负投影轨迹离开旧路线0.5m后确认为新分支，恢复接力且保留完整弯曲路径。 -->
         <param name="turn_branch_confirm_distance" value="0.50"/>
-        <!-- 入口点在前机沿门朝向进入0.70m后放行；普通FIFO点按1.50m门槛。 -->
-        <param name="door_release_inside_distance" value="0.70"/>
+        <!-- 入口点在前机沿门朝向进入0.60m后放行；普通FIFO点按1.20m间距规划。 -->
+        <param name="door_release_inside_distance" value="0.60"/>
         <param name="relay_release_distance" value="0.70"/>
         <param name="relay_waypoint_spacing" value="2.50"/>
         <!-- 普通FIFO点进入40cm邻域就切换下一个，避免已经通过困难区域后为补点回拉；不要求零误差或停稳。 -->

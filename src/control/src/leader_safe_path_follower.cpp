@@ -336,8 +336,8 @@ class LeaderSafePathFollower {
     pnh_.param("blocked_recovery_timeout", blocked_recovery_timeout_, 1.00);
     // 2026-07-16: 后机采用门点+滚动内部点+真实终点的任务接力；0表示内部点数量不限。
     pnh_.param("relay_release_distance", relay_release_distance_, 0.70);
-    // 门点和内部点都等前机沿路线清空0.70m，再叠加实时双机0.70m净距门槛。
-    pnh_.param("door_release_inside_distance", door_release_inside_distance_, 0.70);
+    // 入口按前机沿门朝向的门内进度放行；普通点使用独立的间距配置。
+    pnh_.param("door_release_inside_distance", door_release_inside_distance_, 0.60);
     pnh_.param("relay_waypoint_spacing", relay_waypoint_spacing_, 2.50);
     pnh_.param("relay_arrive_radius", relay_arrive_radius_, 0.25);
     pnh_.param("relay_arrive_z_tolerance", relay_arrive_z_tolerance_, 0.20);
@@ -604,7 +604,7 @@ class LeaderSafePathFollower {
               "follower remains parked until leader is %.2fm inside.",
               confirmed_door_.position.x, confirmed_door_.position.y,
               confirmed_door_.position.z, confirmed_door_.yaw * 180.0 / M_PI,
-              relay_release_distance_);
+              door_release_inside_distance_);
   }
 
   bool tryReleaseDoorWaypointFromLeaderPosition(
@@ -4546,7 +4546,7 @@ class LeaderSafePathFollower {
   double blocked_recovery_timeout_{1.00};
   double last_command_dx_{0.0}, last_command_dy_{0.0}, recovery_yaw_{0.0};
   int obstacle_min_points_{3};
-  double relay_release_distance_{0.70}, door_release_inside_distance_{0.70};
+  double relay_release_distance_{0.70}, door_release_inside_distance_{0.60};
   double relay_waypoint_spacing_{2.50};
   double relay_arrive_radius_{0.25}, relay_arrive_z_tolerance_{0.20};
   // 终点仍使用较大停驻净空；普通接力点只查落点小体素并允许安全附件到达。
