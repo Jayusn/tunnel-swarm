@@ -115,6 +115,39 @@ class FifoEntrySpacing : public ::testing::Test {
     follower->diffStatusCallback(status);
   }
 
+  void prepareQualifiedPoints() {
+    follower->door_waypoint_released_ = true;
+    follower->require_waypoint_yaw_ = true;
+    follower->relay_arrive_radius_ = 0.4;
+    follower->min_separation_ = 1.2;
+    follower->waypoint_release_min_separation_ = 1.2;
+    follower->separation_release_distance_ = 1.2;
+    queuePoint(1.0);
+    queuePoint(2.0);
+    follower->relay_waypoints_[0].safe_relay_id = 1;
+    follower->relay_waypoints_[1].safe_relay_id = 2;
+    follower->safe_relay_valid_ids_ = {1, 2};
+    follower->safe_relay_live_messages_ = 2;
+    follower->safe_relay_received_ = ros::Time::now();
+    follower->follower_odom_.pose.pose.orientation.w = 1.0;
+    setLeader(4.0);
+  }
+
+  void occupyFirstPoint() {
+    sensor_msgs::PointCloud2::Ptr cloud(new sensor_msgs::PointCloud2);
+    cloud->header.frame_id = "test_local";
+    sensor_msgs::PointCloud2Modifier modifier(*cloud);
+    modifier.setPointCloud2FieldsByString(1, "xyz");
+    modifier.resize(2);
+    sensor_msgs::PointCloud2Iterator<float> x(*cloud, "x"), y(*cloud, "y"), z(*cloud, "z");
+    for (int i = 0; i < 2; ++i, ++x, ++y, ++z) {
+      *x = 1.0f; *y = i * 0.01f; *z = 0.6f;
+    }
+    follower->obstacle_check_enabled_ = true;
+    follower->follower_cloud_ = cloud;
+    follower->cloud_stamp_ = ros::Time::now();
+  }
+
   void reportRecoveryStatus(const std::string& state, uint64_t goal_stamp,
                             uint64_t recovery_stamp) {
     std_msgs::String::Ptr status(new std_msgs::String);
@@ -827,14 +860,186 @@ TEST_F(FifoEntrySpacing, WaypointHeadingToleranceWrapsAtPi) {
   setLeader(4.0);
   follower->follower_odom_.pose.pose.position.x = 1.0;
   auto& attitude = follower->follower_odom_.pose.pose.orientation;
-  attitude.w = std::cos(165.0*M_PI/360.0);
-  attitude.z = std::sin(165.0*M_PI/360.0);
+  attitude.w = std::cos(148.0*M_PI/360.0);
+  attitude.z = std::sin(148.0*M_PI/360.0);
   follower->handleSimpleDiffPlannerExecution(ros::Time::now());
   ASSERT_EQ(follower->relay_waypoints_.size(), 1U);
   attitude.w = std::cos(-179.0*M_PI/360.0);
   attitude.z = std::sin(-179.0*M_PI/360.0);
   follower->handleSimpleDiffPlannerExecution(ros::Time::now());
   EXPECT_TRUE(follower->relay_waypoints_.empty());
+}
+
+TEST_F(FifoEntrySpacing, OrdinaryYawAllowsBothThirtyDegreeBoundaries) {
+  follower->require_waypoint_yaw_ = true;
+  follower->door_waypoint_released_ = true;
+  queuePoint(1.0);
+  queuePoint(2.0);
+  setLeader(5.0);
+  for (double sign : {1.0, -1.0}) {
+    follower->follower_odom_.pose.pose.position.x = sign > 0 ? 1.0 : 2.0;
+    const auto size = follower->relay_waypoints_.size();
+    auto& attitude = follower->follower_odom_.pose.pose.orientation;
+    attitude.w = std::cos(30.01*M_PI/360.0);
+    attitude.z = sign * std::sin(30.01*M_PI/360.0);
+    follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+    EXPECT_EQ(size, follower->relay_waypoints_.size());
+    attitude.w = std::cos(30.0*M_PI/360.0);
+    attitude.z = sign * std::sin(30.0*M_PI/360.0);
+    follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+    EXPECT_EQ(size - 1, follower->relay_waypoints_.size());
+  }
+}
+
+TEST_F(FifoEntrySpacing, QualifiedPointKeepsOriginalPositionSpeedAndDwellRequirements) {
+  prepareQualifiedPoints();
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  follower->follower_odom_.pose.pose.position.x = 0.65;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_EQ(2U, follower->relay_waypoints_.size()); // 35cm is not arrival.
+  EXPECT_TRUE(follower->relay_arrival_stamp_.isZero());
+  follower->follower_odom_.pose.pose.position.x = 0.9;
+  follower->follower_horizontal_speed_ = 0.5;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->relay_arrival_stamp_.isZero()); // Passing through is not arrival.
+  follower->follower_horizontal_speed_ = 0.0;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_FALSE(follower->relay_arrival_stamp_.isZero());
+  EXPECT_EQ(2U, follower->relay_waypoints_.size());
+  follower->relay_arrival_stamp_ = ros::Time::now() - ros::Duration(follower->relay_arrive_dwell_ + 0.01);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_EQ(1U, follower->relay_waypoints_.size());
+}
+
+TEST_F(FifoEntrySpacing, AcceptedEndpointKeepsConvergingInsteadOfFreezingPositionAndYaw) {
+  prepareQualifiedPoints();
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  reportDiffStatus("TRAJECTORY_PUBLISHED", follower->diff_active_goal_stamp_ns_); // Invalid endpoint rejected.
+  follower->simple_diff_retry_not_before_ = ros::Time(0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  std_msgs::String::Ptr accepted(new std_msgs::String);
+  accepted->data = "TRAJECTORY_PUBLISHED goal_stamp_ns=" +
+      std::to_string(follower->diff_active_goal_stamp_ns_) + " 1 0 0.6";
+  follower->diffStatusCallback(accepted);
+  ASSERT_TRUE(follower->diff_accepted_goal_valid_);
+  quadrotor_msgs::PositionCommand::Ptr command(new quadrotor_msgs::PositionCommand);
+  follower->diffCommandCallback(command);
+  const auto goal_stamp = follower->diff_active_goal_stamp_ns_;
+  follower->diff_trajectory_response_stamp_ = ros::Time::now() - ros::Duration(5.0);
+  follower->diff_command_stamp_ = follower->diff_trajectory_response_stamp_;
+  auto& attitude = follower->follower_odom_.pose.pose.orientation;
+  attitude.w = std::cos(M_PI/6.0);
+  attitude.z = std::sin(M_PI/6.0); // Still 60 degrees away.
+  for (double x : {0.65, 0.9}) {
+    follower->follower_odom_.pose.pose.position.x = x;
+    follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+    EXPECT_EQ(2U, follower->relay_waypoints_.size());
+    EXPECT_FALSE(follower->diff_wait_hold_active_);
+    EXPECT_TRUE(follower->diff_goal_published_);
+    EXPECT_EQ(goal_stamp, follower->diff_active_goal_stamp_ns_);
+  }
+  setLeader(1.9); // Sudden approach still triggers existing actual-distance handling.
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->diff_wait_hold_active_);
+  EXPECT_EQ(2U, follower->relay_waypoints_.size());
+}
+
+TEST_F(FifoEntrySpacing, OccupiedPointIsAttemptedFirstThenSkippedAndOldReplyCannotUnlock) {
+  prepareQualifiedPoints();
+  occupyFirstPoint();
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(2U, follower->relay_waypoints_.size());
+  ASSERT_TRUE(follower->diff_goal_published_);
+  const auto old_stamp = follower->diff_active_goal_stamp_ns_;
+  // The timer must allow checking local occupancy even if the leader withdraws this point.
+  follower->safe_relay_valid_ids_.erase(1);
+  follower->leader_started_ = follower->follower_started_ = true;
+  follower->follower_odom_stamp_ = ros::Time::now();
+  follower->timerCallback(ros::TimerEvent());
+  ASSERT_EQ(1U, follower->relay_waypoints_.size());
+  EXPECT_EQ(2U, follower->relay_waypoints_.front().safe_relay_id);
+  EXPECT_TRUE(follower->diff_wait_hold_active_);
+  std_msgs::String::Ptr accepted(new std_msgs::String);
+  accepted->data = "TRAJECTORY_PUBLISHED goal_stamp_ns=" + std::to_string(old_stamp) + " 1 0 0.6";
+  follower->diffStatusCallback(accepted);
+  EXPECT_TRUE(follower->diff_wait_hold_active_);
+  EXPECT_FALSE(follower->diff_accepted_goal_valid_);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->diff_goal_published_);
+  EXPECT_NE(old_stamp, follower->diff_active_goal_stamp_ns_);
+}
+
+TEST_F(FifoEntrySpacing, OccupiedPointWaitsForLeaderClearanceFreshDataAndValidSuccessor) {
+  prepareQualifiedPoints();
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  occupyFirstPoint();
+  setLeader(2.19); // Actual separation is sufficient, but leader is <1.2m from point.
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_EQ(2U, follower->relay_waypoints_.size());
+  setLeader(2.2);
+  follower->leader_odom_stamp_ = ros::Time::now() - ros::Duration(10.0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_EQ(2U, follower->relay_waypoints_.size());
+  setLeader(2.2);
+  follower->cloud_stamp_ = ros::Time::now() - ros::Duration(10.0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_EQ(2U, follower->relay_waypoints_.size());
+  follower->cloud_stamp_ = ros::Time::now();
+  follower->safe_relay_valid_ids_.erase(2);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_EQ(2U, follower->relay_waypoints_.size());
+  follower->safe_relay_valid_ids_.insert(2);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(1U, follower->relay_waypoints_.size()); // Exact 1.2m boundary allows skipping.
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_FALSE(follower->diff_goal_published_); // Leader is still near next point.
+  setLeader(4.0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->diff_goal_published_);
+}
+
+TEST_F(FifoEntrySpacing, FailureAndWithdrawalAloneDoNotSkipAndSpecialPointsAreNotSkipped) {
+  prepareQualifiedPoints();
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  reportDiffStatus("PLANNING_FAILED", follower->diff_active_goal_stamp_ns_);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_EQ(2U, follower->relay_waypoints_.size());
+  follower->safe_relay_valid_ids_.erase(1);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_EQ(2U, follower->relay_waypoints_.size());
+  EXPECT_TRUE(follower->diff_wait_hold_active_);
+  occupyFirstPoint();
+  follower->exit_waypoint_index_ = 0;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_EQ(2U, follower->relay_waypoints_.size());
+  follower->exit_waypoint_index_ = 1;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_EQ(2U, follower->relay_waypoints_.size()); // Cannot skip directly into exit task.
+  follower->relay_waypoints_.pop_back();
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_EQ(1U, follower->relay_waypoints_.size()); // No successor: retain point.
+}
+
+TEST_F(FifoEntrySpacing, DoorAndExitKeepFiveDegreeHeadingTolerance) {
+  follower->door_waypoint_released_ = true;
+  follower->require_waypoint_yaw_ = true;
+  queuePoint(1.0, true);
+  queuePoint(2.0);
+  follower->exit_waypoint_index_ = 1;
+  setLeader(5.0);
+  for (double x : {1.0, 2.0}) {
+    const auto size = follower->relay_waypoints_.size();
+    follower->follower_odom_.pose.pose.position.x = x;
+    auto& attitude = follower->follower_odom_.pose.pose.orientation;
+    attitude.w = std::cos(10.0*M_PI/360.0);
+    attitude.z = std::sin(10.0*M_PI/360.0);
+    follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+    EXPECT_EQ(size, follower->relay_waypoints_.size());
+    attitude.w = std::cos(4.0*M_PI/360.0);
+    attitude.z = std::sin(4.0*M_PI/360.0);
+    follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+    EXPECT_EQ(size - 1, follower->relay_waypoints_.size());
+  }
 }
 
 TEST_F(FifoEntrySpacing, RecoveryAfterPlanningFailureReleasesHoldAndStopsRetry) {

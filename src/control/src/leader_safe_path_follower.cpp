@@ -372,6 +372,8 @@ class LeaderSafePathFollower {
     // 2026-07-28: Diff末端速度差分可能尚未降到严格门槛；小半径内先锁点，再用停驻时间完成接力点。
     pnh_.param("diff_endpoint_capture_radius", diff_endpoint_capture_radius_, 0.15);
     pnh_.param("require_waypoint_yaw", require_waypoint_yaw_, false);
+    pnh_.param("ordinary_waypoint_yaw_tolerance_deg",
+               ordinary_waypoint_yaw_tolerance_deg_, 30.0);
     pnh_.param("diff_endpoint_capture_dwell", diff_endpoint_capture_dwell_, 0.45);
     // Diff可能因局部占据裁短轨迹终点；裁短量超过该值时只能视作中间步，不能消费接力点。
     pnh_.param("diff_accepted_goal_tolerance", diff_accepted_goal_tolerance_, 0.20);
@@ -2153,7 +2155,7 @@ class LeaderSafePathFollower {
   }
 
   bool handleSimpleDiffPlannerExecution(const ros::Time& now) {
-    if (activeSafeRelay() && (!use_diff_planner_ || !activeSafeRelayValid())) {
+    if (activeSafeRelay() && !use_diff_planner_) {
       setDiffWaitPositionHold(true, "qualified relay stale/invalid or Diff disabled");
       diff_goal_published_ = diff_accepted_goal_valid_ = false;
       relay_arrival_stamp_ = diff_endpoint_capture_stamp_ = ros::Time(0);
@@ -2200,10 +2202,15 @@ class LeaderSafePathFollower {
     const double vertical_error = std::fabs(desired_local.z - current_local.z);
     const double target_yaw = worldYawToFollower(
         useLockedExitYaw() ? confirmed_exit_.yaw : desired_world.yaw);
+    const bool ordinary_relay = isOrdinaryRelayPoint(active_relay_index_);
     const double yaw_error = target_yaw - yawFromQuaternion(follower_odom_.pose.pose.orientation);
+    const double yaw_error_abs =
+        std::abs(std::atan2(std::sin(yaw_error), std::cos(yaw_error)));
+    const double yaw_tolerance = (ordinary_relay
+        ? ordinary_waypoint_yaw_tolerance_deg_ : 5.0) * M_PI / 180.0;
     const bool heading_arrived = !require_waypoint_yaw_ ||
         (horizontal_error <= diff_endpoint_capture_radius_ &&
-         std::abs(std::atan2(std::sin(yaw_error), std::cos(yaw_error))) <= 5.0 * M_PI / 180.0);
+         yaw_error_abs <= yaw_tolerance + 1e-9);
     // 入口两段轨迹要完成末段减速，不能像普通FIFO点一样在40cm处截断。
     const bool entry_settled = !desired_world.is_door ||
         (horizontal_error <= diff_endpoint_capture_radius_ &&
@@ -2215,6 +2222,40 @@ class LeaderSafePathFollower {
         (!activeSafeRelay() ||
          (follower_horizontal_speed_ <= relay_arrive_max_horizontal_speed_ &&
           follower_vertical_speed_ <= relay_arrive_max_vertical_speed_));
+
+    // 只用新鲜点云确认点本身占据；规划失败、快照超时或字段错误不等于障碍。
+    // 前机未离开当前点时不能跳点；下一普通点仍由原放行门槛和Diff检查。
+    bool skip_occupied_point = false;
+    int occupied_hits = 0;
+    const std::size_t next = active_relay_index_ + 1;
+    if (ordinary_relay && !waypoint_arrival &&
+        desired_world.diff_goal_owner_stamp_ns != 0ULL &&
+        isOrdinaryRelayPoint(next) &&
+        leaderOdomFresh(now) && follower_cloud_ && !cloud_stamp_.isZero() &&
+        (now - cloud_stamp_).toSec() >= 0.0 &&
+        (now - cloud_stamp_).toSec() <= cloud_timeout_ &&
+        (relay_waypoints_[next].safe_relay_id == 0U ||
+         (safeRelayFresh() &&
+          safe_relay_valid_ids_.count(relay_waypoints_[next].safe_relay_id) != 0U))) {
+      const auto leader_world = leaderToWorld(leader_odom_.pose.pose.position);
+      const double leader_to_point = std::hypot(
+          leader_world.x - desired_world.position.x,
+          leader_world.y - desired_world.position.y);
+      skip_occupied_point =
+          leader_to_point + 1e-6 >= waypoint_release_min_separation_ &&
+          relayPointOccupied(desired_local, &occupied_hits) &&
+          occupied_hits >= relay_point_occupied_min_points_;
+    }
+
+    // 撤点或快照超时本身不能证明有障碍，仍沿用原有效性等待。
+    if (activeSafeRelay() && !activeSafeRelayValid() &&
+        !skip_occupied_point) {
+      setDiffWaitPositionHold(true, "qualified relay stale/invalid or Diff disabled");
+      diff_goal_published_ = diff_accepted_goal_valid_ = false;
+      relay_arrival_stamp_ = diff_endpoint_capture_stamp_ = ros::Time(0);
+      publishState("WAIT_VALID_LEADER_RELAY", 1.0, 0.3, 0.0);
+      return true;
+    }
 
     // 已到达当前普通点时直接消费，不能再被旧点的间距保护拉回。
     if (!terminal_relay && !waypoint_arrival &&
@@ -2275,8 +2316,8 @@ class LeaderSafePathFollower {
         heading_arrived &&
         follower_horizontal_speed_ <= relay_arrive_max_horizontal_speed_ &&
         follower_vertical_speed_ <= relay_arrive_max_vertical_speed_;
-    if (waypoint_arrival || terminal_arrival) {
-      if (activeSafeRelay()) {
+    if (waypoint_arrival || terminal_arrival || skip_occupied_point) {
+      if (activeSafeRelay() && !skip_occupied_point) {
         if (relay_arrival_stamp_.isZero()) relay_arrival_stamp_ = now;
         if ((now - relay_arrival_stamp_).toSec() < relay_arrive_dwell_) return true;
       }
@@ -2294,17 +2335,24 @@ class LeaderSafePathFollower {
         return true;
       }
 
-      ROS_ERROR("[safe_follower] UAV1 FIFO ARRIVED and consume endpoint 1/%zu "
-                "at (%.2f,%.2f,%.2f).",
-                relay_waypoints_.size(), desired_local.x, desired_local.y,
-                desired_local.z);
+      if (skip_occupied_point)
+        ROS_WARN("[safe_follower] FIFO SKIP OCCUPIED endpoint (%.2f,%.2f,%.2f), "
+                 "hits=%d; leader cleared current point, plan next queued point.",
+                 desired_local.x, desired_local.y, desired_local.z, occupied_hits);
+      else
+        ROS_ERROR("[safe_follower] UAV1 FIFO ARRIVED and consume endpoint 1/%zu "
+                  "at (%.2f,%.2f,%.2f).",
+                  relay_waypoints_.size(), desired_local.x, desired_local.y,
+                  desired_local.z);
       if (outside_wait_relay) {
         outside_wait_arrived_ = true;
         setFollowerDetectionEnable(false, "follower reached outside-door hover point");
         tryQueueFollowerTerminalTarget();
       }
-      if (desired_world.is_door || outside_wait_relay || activeSafeRelay())
-        setDiffWaitPositionHold(true, "FIFO endpoint arrived");
+      if (desired_world.is_door || outside_wait_relay || activeSafeRelay() ||
+          skip_occupied_point)
+        setDiffWaitPositionHold(true, skip_occupied_point
+            ? "FIFO endpoint occupied; switch to next" : "FIFO endpoint arrived");
       simple_door_hover_active_ = desired_world.is_door;
       consumeSimpleRelayFront();
       relay_arrival_stamp_ = ros::Time(0);
@@ -2319,6 +2367,26 @@ class LeaderSafePathFollower {
       return true;
     }
     relay_arrival_stamp_ = ros::Time(0);
+
+    // 当前普通目标已获确认且实际接近终点时，继续让MPC保持原终点、
+    // 调整航向并减速。正常轨迹结束后指令停止更新，不应再锁存当前航向、
+    // 反复重发同一点。这不是到达判定：仍需15cm、航向及原停稳驻留条件。
+    // 离开邻域后仍走原来的指令超时处理。
+    if (ordinary_relay &&
+        diff_goal_published_ && diff_accepted_goal_valid_ &&
+        diff_command_seen_for_goal_ &&
+        diff_goal_index_ == active_relay_index_ && !diff_wait_hold_active_ &&
+        horizontal_error <= relay_arrive_radius_ &&
+        vertical_error <= relay_arrive_z_tolerance_) {
+      ROS_INFO_THROTTLE(
+          1.0,
+          "[safe_follower] FIFO endpoint settling: XY=%.3fm Z=%.3fm "
+          "yaw=%.1f/%.1fdeg speed=%.3f/%.3fm/s; retain endpoint/yaw reference.",
+          horizontal_error, vertical_error, yaw_error_abs * 180.0 / M_PI,
+          yaw_tolerance * 180.0 / M_PI,
+          follower_horizontal_speed_, follower_vertical_speed_);
+      return true;
+    }
 
     const bool response_timeout = diff_goal_published_ &&
         !diff_plan_response_received_ && !diff_goal_first_publish_stamp_.isZero() &&
@@ -4062,7 +4130,8 @@ class LeaderSafePathFollower {
     }
     // 2026-07-27: 卡死恢复优先于正常连续/离散跟随，避免正常目标每50ms覆盖脱困指令。
     enqueueSafeRelay();
-    if (activeSafeRelay() && (!use_diff_planner_ || !activeSafeRelayValid())) {
+    // 执行分支统一检查有效性及尝试后确认占据的跳点条件。
+    if (activeSafeRelay() && !use_diff_planner_) {
       setDiffWaitPositionHold(true, "qualified relay stale/invalid or Diff disabled");
       diff_goal_published_ = diff_accepted_goal_valid_ = false;
       relay_arrival_stamp_ = diff_endpoint_capture_stamp_ = ros::Time(0);
@@ -4495,6 +4564,7 @@ class LeaderSafePathFollower {
   double follower_history_length_{0.0};
   double diff_endpoint_capture_radius_{0.15}, diff_endpoint_capture_dwell_{0.45};
   bool require_waypoint_yaw_{false};
+  double ordinary_waypoint_yaw_tolerance_deg_{30.0};
   double diff_accepted_goal_tolerance_{0.20};
   double diff_command_stale_timeout_{0.80};  // 2026-07-28: 与控制器0.60s轨迹超时错开0.20s。
   double follower_odom_jump_speed_{2.0}, follower_odom_jump_vertical_speed_{1.2};
