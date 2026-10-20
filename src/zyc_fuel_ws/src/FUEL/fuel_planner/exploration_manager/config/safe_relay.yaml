@@ -4,7 +4,7 @@ mission:
     enabled: false  # 双机 UAV0 入口显式开启，其他入口保持原任务行为。
     frame_id: world
     normal_spacing: 1.00
-    minimum_progress: 0.50
+    minimum_progress: 0.70
     release_distance: 1.00
     selection_window: 0.50
     sample_spacing: 0.08
