@@ -281,9 +281,9 @@
     <!-- 2026-07-28: 任务目标和A*中间节点共用高度带，禁止路径截断后掉到z=0附近撞地。 -->
     <rosparam param="/exploration_node/astar/min_search_height">0.10</rosparam>
     <rosparam param="/exploration_node/astar/max_search_height">1.90</rosparam>
-    <!-- 水平恢复全部失败后才启用上下绕行；下绕固定XY/Yaw降到0.10m，确认前方0.20m后立即推进。 -->
+    <!-- 水平恢复全部失败后才启用上下绕行；普通下探固定XY/Yaw降到0.40m，确认前方0.20m后推进。 -->
     <rosparam param="/exploration_node/mission/vertical_detour/enabled">true</rosparam>
-    <rosparam param="/exploration_node/mission/vertical_detour/low_height">0.10</rosparam>
+    <rosparam param="/exploration_node/mission/vertical_detour/low_height">0.40</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/forward_check_distance">0.20</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/upper_step">0.20</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/upper_max_rise">0.60</rosparam>

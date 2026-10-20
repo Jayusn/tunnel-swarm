@@ -14,6 +14,9 @@ class GlobalRetentionLaunchTest(unittest.TestCase):
         cls.launch_file = (
             package_path + "/launch/exp/run_swarm_indoor1_fuel_exploration.launch"
         )
+        cls.hybrid_launch_file = (
+            package_path + "/launch/exp/run_swarm_indoor1_fuel_diff_exploration.launch"
+        )
 
     def dump_params(self, *launch_args):
         output = subprocess.check_output(
@@ -40,7 +43,7 @@ class GlobalRetentionLaunchTest(unittest.TestCase):
             params["/exploration_node/sdf_map/static_retention_enabled"], False
         )
 
-    def test_vertical_detour_uses_short_ten_centimeter_low_probe(self):
+    def test_vertical_detour_uses_forty_centimeter_low_probe(self):
         params = self.dump_params()
         self.assertAlmostEqual(
             params["/exploration_node/mission/task_search/min_height"], 0.10
@@ -49,7 +52,7 @@ class GlobalRetentionLaunchTest(unittest.TestCase):
             params["/exploration_node/astar/min_search_height"], 0.10
         )
         self.assertAlmostEqual(
-            params["/exploration_node/mission/vertical_detour/low_height"], 0.10
+            params["/exploration_node/mission/vertical_detour/low_height"], 0.40
         )
         self.assertAlmostEqual(
             params["/exploration_node/mission/vertical_detour/forward_check_distance"], 0.20
@@ -71,6 +74,14 @@ class GlobalRetentionLaunchTest(unittest.TestCase):
         self.assertAlmostEqual(
             params["/exploration_node/mission/vertical_detour/down_first_height"],
             0.75,
+        )
+
+    def test_hybrid_vertical_detour_also_uses_forty_centimeters(self):
+        params = yaml.safe_load(subprocess.check_output(
+            ["roslaunch", "--dump-params", self.hybrid_launch_file], text=True
+        ))
+        self.assertAlmostEqual(
+            params["/exploration_node/mission/vertical_detour/low_height"], 0.40
         )
 
     def test_core_footprint_ignores_single_occupied_voxel(self):
