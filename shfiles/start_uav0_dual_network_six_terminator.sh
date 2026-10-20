@@ -35,5 +35,7 @@ export UAV0_FIRST_SEVEN_ENABLE_TARGET_REPORTING=false
 # 复用第六屏的规划诊断记录器，补齐建图输入，供通道转弯和绕障离线回放。
 export UAV0_PLANNER_ROSBAG_PREFIX="${UAV0_PLANNER_ROSBAG_PREFIX:-${HOME}/.ros/corridor_replay/uav0_corridor}"
 export UAV0_PLANNER_ROSBAG_EXTRA_TOPICS="${UAV0_PLANNER_ROSBAG_EXTRA_TOPICS:-/UAV0/fast_lio/cloud_registered /UAV1/fast_lio/cloud_registered /UAV1/fast_lio/Odom_high_freq /UAV0/move_base_simple/goal /UAV0/mavros/state /UAV0/mavros/rc/in /UAV0/mavros/local_position/odom /UAV1/mavros/state /UAV1/mavros/rc/in /mission/rc_land_active}"
+# 同时记录接力点快照、有效性状态和实飞参考路线；保留外部自定义的附加话题。
+export UAV0_PLANNER_ROSBAG_EXTRA_TOPICS="${UAV0_PLANNER_ROSBAG_EXTRA_TOPICS} /UAV0/mission/relay_waypoints /UAV0/mission/relay_status /UAV0/mission/reference_route"
 
 exec "${UAV0_LAUNCHER}" "$@"
