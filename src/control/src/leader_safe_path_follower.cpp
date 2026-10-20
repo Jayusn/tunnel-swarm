@@ -2354,7 +2354,10 @@ class LeaderSafePathFollower {
         setFollowerDetectionEnable(false, "follower reached outside-door hover point");
         tryQueueFollowerTerminalTarget();
       }
-      if (desired_world.is_door || outside_wait_relay || activeSafeRelay() ||
+      // 普通点达到放行容差后准备下一段，原轨迹仍向完整终点收敛；
+      // 不能在容差边缘锁存当前位置和朝向。新轨迹就绪后由控制器接续。
+      if (desired_world.is_door || outside_wait_relay ||
+          (activeSafeRelay() && !ordinary_relay) ||
           skip_occupied_point)
         setDiffWaitPositionHold(true, skip_occupied_point
             ? "FIFO endpoint occupied; switch to next" : "FIFO endpoint arrived");

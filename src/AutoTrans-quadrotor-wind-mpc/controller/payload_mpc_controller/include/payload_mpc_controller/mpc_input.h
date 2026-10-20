@@ -158,6 +158,9 @@ public:
   ros::Time traj_start_time{0};
   ros::Time traj_end_time{0};
   PayloadMPC::Trajectory traj;
+  // 下一航点开始规划后，已接收轨迹仍使用自己的终点航向。
+  bool endpoint_yaw_valid{false};
+  double endpoint_yaw{0.0};
 };
 
 class Trajectory_Data_t

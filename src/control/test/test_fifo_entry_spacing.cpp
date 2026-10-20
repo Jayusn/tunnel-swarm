@@ -911,8 +911,65 @@ TEST_F(FifoEntrySpacing, QualifiedOrdinaryPointKeepsFifteenCmButDoesNotWaitForSp
   follower->handleSimpleDiffPlannerExecution(ros::Time::now());
   EXPECT_EQ(1U, follower->relay_waypoints_.size());
   EXPECT_TRUE(follower->relay_arrival_stamp_.isZero()); // No stop or dwell before releasing next.
+  EXPECT_FALSE(follower->diff_wait_hold_active_); // Retain original endpoint reference.
   follower->handleSimpleDiffPlannerExecution(ros::Time::now());
   EXPECT_TRUE(follower->diff_goal_published_);
+  EXPECT_FALSE(follower->diff_wait_hold_active_); // Planning the next leg must not freeze it.
+}
+
+TEST_F(FifoEntrySpacing, QualifiedArrivalKeepsConvergingWhileNextPointWaitsForLeader) {
+  prepareQualifiedPoints();
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  follower->follower_odom_.pose.pose.position.x = 0.9;
+  setLeader(2.8); // Actual spacing is sufficient, next endpoint is not yet cleared.
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(1U, follower->relay_waypoints_.size());
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_FALSE(follower->diff_goal_published_);
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+  setLeader(4.0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->diff_goal_published_);
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+  setLeader(1.9); // Emergency actual-distance hold still overrides convergence.
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->diff_wait_hold_active_);
+}
+
+TEST_F(FifoEntrySpacing, QualifiedLastPointDoesNotFreezeAtArrivalTolerance) {
+  prepareQualifiedPoints();
+  follower->relay_waypoints_.pop_back();
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  follower->follower_odom_.pose.pose.position.x = 0.9;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_TRUE(follower->relay_waypoints_.empty());
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+}
+
+TEST_F(FifoEntrySpacing, QualifiedHandoffIgnoresOldRepliesAndStillHoldsOnCurrentFailure) {
+  prepareQualifiedPoints();
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  const auto old_stamp = follower->diff_active_goal_stamp_ns_;
+  follower->follower_odom_.pose.pose.position.x = 0.9;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_TRUE(follower->diff_goal_published_);
+  const auto new_stamp = follower->diff_active_goal_stamp_ns_;
+  ASSERT_NE(new_stamp, old_stamp);
+  reportDiffStatus("PLANNING_FAILED", old_stamp);
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+  EXPECT_TRUE(follower->diff_goal_published_);
+  reportDiffStatus("PLANNING_FAILED", new_stamp);
+  EXPECT_TRUE(follower->diff_wait_hold_active_);
+  std_msgs::String::Ptr accepted(new std_msgs::String);
+  accepted->data = "TRAJECTORY_PUBLISHED goal_stamp_ns=" +
+      std::to_string(old_stamp) + " 1 0 0.6";
+  follower->diffStatusCallback(accepted);
+  EXPECT_TRUE(follower->diff_wait_hold_active_);
+  EXPECT_FALSE(follower->diff_accepted_goal_valid_);
 }
 
 TEST_F(FifoEntrySpacing, QualifiedExitStillRequiresSpeedAndDwell) {

@@ -113,6 +113,7 @@ namespace PayloadMPC
         double normal_velocity_xy_{0.0}, entry_velocity_xy_{0.0};
         double normal_velocity_z_{0.0}, safety_hold_vertical_speed_{0.20};
         const double *trajectoryEndYaw(const oneTraj_Data_t &trajectory) const;
+        bool currentWaypointMatchesTrajectory(const oneTraj_Data_t &trajectory) const;
         ros::Subscriber locked_yaw_sub_;
         ros::Subscriber waypoint_goal_sub_, waypoint_entry_goal_sub_;
         Eigen::Vector3d waypoint_position_{Eigen::Vector3d::Zero()};

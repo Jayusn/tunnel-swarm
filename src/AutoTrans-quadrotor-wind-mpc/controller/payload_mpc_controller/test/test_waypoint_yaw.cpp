@@ -203,6 +203,95 @@ TEST_F(WaypointYaw, NormalFinishKeepsEndpointYawWhileAbortKeepsActualYaw) {
   EXPECT_TRUE(controller->lastMpcSolveSuccessful());
 }
 
+TEST_F(WaypointYaw, PendingNextGoalRetainsOldEndpointAndYawUntilNewTrajectoryArrives) {
+  const auto info = trajectoryInfo();
+  const Eigen::Vector3d endpoint = info.traj.getJuncPos(info.traj.getPieceNum());
+  fsm->waypointGoalCallback(goal(endpoint, 0.3));
+  prepareStop(info);
+  fsm->odom_data.p = endpoint - Eigen::Vector3d(0.10, 0.05, 0.14);
+  fsm->est_state_.head<3>() = fsm->odom_data.p.cast<real_t>();
+  const Eigen::Vector3d next_endpoint = endpoint + Eigen::Vector3d(0.2, 0.1, 0.1);
+
+  ros::Time::setNow(ros::Time(1008));
+  fsm->waypointGoalCallback(goal(next_endpoint, -0.4, 1008));
+  ASSERT_EQ(fsm->trajectory_data.traj_queue.size(), 1U);
+  const auto& old = fsm->trajectory_data.traj_queue.front();
+  ASSERT_NE(fsm->trajectoryEndYaw(old), nullptr);
+  EXPECT_NEAR(*fsm->trajectoryEndYaw(old), 0.3, 1e-9);
+  // Repeated requests must not replace the executing trajectory's bound heading.
+  fsm->waypointGoalCallback(goal(next_endpoint, -0.4, 1009));
+  ASSERT_NE(fsm->trajectoryEndYaw(old), nullptr);
+  EXPECT_NEAR(*fsm->trajectoryEndYaw(old), 0.3, 1e-9);
+  fsm->CMD_CTRL_process();
+  EXPECT_EQ(fsm->exec_traj_state_, MPCFSM::POLY_TRAJ);
+  EXPECT_NEAR(controller->reference_states_(kPosX, 0), 2.1, 1e-5);
+
+  // The old trajectory ends while planning is pending; hold its full endpoint,
+  // not the actual pose with the remaining arrival errors.
+  ros::Time::setNow(ros::Time(1010));
+  fsm->CMD_CTRL_process();
+  EXPECT_EQ(fsm->exec_traj_state_, MPCFSM::HOVER);
+  EXPECT_TRUE(fsm->hover_pose_.isApprox(endpoint));
+  EXPECT_NEAR(fsm->hover_yaw_, 0.3, 1e-9);
+  fsm->waypointGoalCallback(goal(next_endpoint, -0.4, 1011));
+  ros::Time::setNow(ros::Time(1011));
+  fsm->CMD_CTRL_process();
+  EXPECT_TRUE(fsm->hover_pose_.isApprox(endpoint));
+  EXPECT_NEAR(controller->reference_states_(kPosZ, 0), endpoint.z(), 1e-6);
+  EXPECT_NEAR(yaw(), 0.3, 1e-5);
+
+  // Deliver a valid new trajectory through the real trajectory input.
+  ros::Time::setNow(ros::Time(1012));
+  quadrotor_msgs::PolynomialTraj::Ptr next(new quadrotor_msgs::PolynomialTraj);
+  next->header.stamp = ros::Time::now();
+  next->action = quadrotor_msgs::PolynomialTraj::ACTION_ADD;
+  next->trajectory_id = 2;
+  next->trajectory.resize(1);
+  auto& piece = next->trajectory.front();
+  piece.num_dim = 3;
+  piece.num_order = 5;
+  piece.duration = 2.0;
+  piece.data.assign(18, 0.0);
+  for (int axis = 0; axis < 3; ++axis) piece.data[15 + axis] = next_endpoint(axis);
+  fsm->trajectory_data.feed(next);
+  ASSERT_EQ(fsm->trajectory_data.traj_queue.size(), 1U);
+  const auto& ready = fsm->trajectory_data.traj_queue.front();
+  ASSERT_NE(fsm->trajectoryEndYaw(ready), nullptr);
+  EXPECT_NEAR(*fsm->trajectoryEndYaw(ready), -0.4, 1e-9);
+  fsm->CMD_CTRL_process();
+  EXPECT_EQ(fsm->exec_traj_state_, MPCFSM::POLY_TRAJ);
+  for (int axis = 0; axis < 3; ++axis)
+    EXPECT_NEAR(controller->reference_states_(kPosX + axis, 0), next_endpoint(axis), 1e-6);
+}
+
+TEST_F(WaypointYaw, PendingGoalDoesNotBindYawToPartialTrajectoryOrOverrideSafetyHold) {
+  const auto info = trajectoryInfo();
+  const Eigen::Vector3d endpoint = info.traj.getJuncPos(info.traj.getPieceNum());
+  fsm->waypointGoalCallback(goal(endpoint, 0.3));
+  prepareStop(info);
+  auto partial = info;
+  partial.traj = line(Eigen::Vector3d(0.15, 0.0, 0.0));
+  fsm->trajectory_data.traj_queue.push_back(partial);
+  fsm->waypointGoalCallback(goal(endpoint + Eigen::Vector3d(0.2, 0.0, 0.2), -0.4, 1008));
+  ASSERT_TRUE(fsm->trajectory_data.traj_queue.front().endpoint_yaw_valid);
+  EXPECT_EQ(fsm->trajectoryEndYaw(fsm->trajectory_data.traj_queue.back()), nullptr);
+  fsm->trajectory_data.traj_queue.pop_back();
+
+  ros::Time::setNow(ros::Time(1008));
+  fsm->fsm_state = MPCFSM::CMD_CTRL;
+  fsm->odom_data.rcv_stamp = ros::Time::now();
+  fsm->odom_data.p = endpoint - Eigen::Vector3d(0.1, 0.05, 0.1);
+  std_msgs::Bool::Ptr hold(new std_msgs::Bool);
+  hold->data = true;
+  fsm->safetyHoldCallback(hold);
+  EXPECT_TRUE(fsm->safety_hold_active_);
+  EXPECT_TRUE(fsm->trajectory_data.traj_queue.empty());
+  EXPECT_TRUE(fsm->hover_pose_.isApprox(fsm->odom_data.p));
+  EXPECT_NEAR(fsm->hover_yaw_, 0.0, 1e-9);
+  // The bound old yaw cannot certify the pending goal's different height.
+  EXPECT_FALSE(fsm->safety_hold_keep_waypoint_height_);
+}
+
 TEST_F(WaypointYaw, RepeatedSafetyHoldsKeepApprovedHeightWhileActualHeightFalls) {
   const auto info = trajectoryInfo();
   const Eigen::Vector3d endpoint = info.traj.getJuncPos(info.traj.getPieceNum());

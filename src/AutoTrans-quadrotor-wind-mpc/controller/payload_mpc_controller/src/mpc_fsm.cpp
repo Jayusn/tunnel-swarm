@@ -212,7 +212,7 @@ namespace PayloadMPC
         // 重新锁存为目标。不同终点的脱障轨迹、入口和降落仍使用各自原规则。
         const bool matching_trajectory = !trajectory_data.traj_queue.empty() &&
             trajectory_data.exec_traj >= 0 &&
-            trajectoryEndYaw(trajectory_data.traj_queue.back()) != nullptr;
+            currentWaypointMatchesTrajectory(trajectory_data.traj_queue.back());
         const bool waiting_at_same_height = trajectory_data.traj_queue.empty() &&
             exec_traj_state_ == HOVER &&
             std::abs(hover_pose_.z() - waypoint_position_.z()) < 1.0e-6;
@@ -315,6 +315,16 @@ namespace PayloadMPC
 
     void MPCFSM::handleWaypointGoal(const geometry_msgs::PoseStamped::ConstPtr &msg, bool entry)
     {
+        // 规划请求不等于新轨迹已就绪。覆盖请求目标前，将原航向绑定到
+        // 队列中匹配的完整终段，继续执行/收敛时不能使用下一点的航向。
+        for (auto &trajectory : trajectory_data.traj_queue)
+        {
+            if (!trajectory.endpoint_yaw_valid && currentWaypointMatchesTrajectory(trajectory))
+            {
+                trajectory.endpoint_yaw = waypoint_yaw_;
+                trajectory.endpoint_yaw_valid = true;
+            }
+        }
         waypoint_yaw_valid_ = false;
         waypoint_is_entry_ = entry;
         const auto &q = msg->pose.orientation;
@@ -332,14 +342,19 @@ namespace PayloadMPC
                      entry ? "entry" : "ordinary", velocity);
     }
 
-    const double *MPCFSM::trajectoryEndYaw(const oneTraj_Data_t &trajectory) const
+    bool MPCFSM::currentWaypointMatchesTrajectory(const oneTraj_Data_t &trajectory) const
     {
         // 仅绑定该航点的完整终段；中间步、旧轨迹和不同退让终点不使用此航向。
-        if (!waypoint_yaw_valid_ || trajectory.traj_start_time < waypoint_stamp_ ||
-            trajectory.traj.getPieceNum() == 0 ||
+        return waypoint_yaw_valid_ && trajectory.traj_start_time >= waypoint_stamp_ &&
+            trajectory.traj.getPieceNum() > 0 &&
             (trajectory.traj.getJuncPos(trajectory.traj.getPieceNum()) -
-             waypoint_position_).norm() > 1.0e-3) return nullptr;
-        return &waypoint_yaw_;
+             waypoint_position_).norm() <= 1.0e-3;
+    }
+
+    const double *MPCFSM::trajectoryEndYaw(const oneTraj_Data_t &trajectory) const
+    {
+        if (trajectory.endpoint_yaw_valid) return &trajectory.endpoint_yaw;
+        return currentWaypointMatchesTrajectory(trajectory) ? &waypoint_yaw_ : nullptr;
     }
 
     void MPCFSM::landingTargetCallback(const mavros_msgs::PositionTarget::ConstPtr &msg)
