@@ -1,6 +1,9 @@
 #include <exploration_manager/safe_relay_publisher.h>
 #include <plan_env/sdf_map.h>
 #include <plan_manage/planner_manager.h>
+#include <path_searching/astar2.h>
+#include <map>
+#include <set>
 #include <stdexcept>
 
 namespace fast_planner {
@@ -27,13 +30,14 @@ void SafeRelayPublisher::initialize(ros::NodeHandle& nh, std::shared_ptr<SDFMap>
   params.param("odom_timeout", odom_timeout_, 0.5);
   params.param("maximum_sample_gap", maximum_sample_gap_, 0.50);
   params.param("dynamic_wait_horizon", dynamic_wait_horizon_, 2.0);
+  params.param("replan_time_budget", replan_time_budget_, 0.05);
   params.param("map_confirmations", confirmations_required_, 2);
   params.param("maximum_samples", maximum_samples_, 10000);
   for (double value : {config_.normal_spacing, config_.minimum_progress,
        config_.release_distance, config_.selection_window,
        sample_spacing_, hold_radius_, hold_half_height_, transit_radius_,
        transit_half_height_, map_timeout_, odom_timeout_, maximum_sample_gap_,
-       dynamic_wait_horizon_}) {
+       dynamic_wait_horizon_, replan_time_budget_}) {
     if (!std::isfinite(value) || value <= 0.0)
       throw std::runtime_error("safe_relay: all distances and timeouts must be finite and positive");
   }
@@ -41,6 +45,13 @@ void SafeRelayPublisher::initialize(ros::NodeHandle& nh, std::shared_ptr<SDFMap>
       confirmations_required_ < 1 || maximum_samples_ < 3 ||
       maximum_sample_gap_ < sample_spacing_ || config_.normal_spacing < config_.minimum_progress)
     throw std::runtime_error("safe_relay: inconsistent hold/transit/history settings");
+  // Separate search state keeps relay qualification out of the front vehicle's
+  // own A* route, progress constraints and trajectory execution.
+  auto environment = std::make_shared<EDTEnvironment>();
+  environment->setMap(map_);
+  connection_search_ = std::make_shared<Astar>();
+  connection_search_->init(nh, environment, 50000);
+  connection_search_->setResolution(std::max(map_->getResolution(), 0.10));
   const auto wall = ros::WallTime::now();
   session_ = ros::Time(wall.sec, wall.nsec);
   goals_pub_ = nh.advertise<nav_msgs::Path>(prefix + "/relay_waypoints", 1, true);
@@ -118,34 +129,77 @@ bool SafeRelayPublisher::volumeFree(const Eigen::Vector3d& point, double radius,
   return true;
 }
 
-bool SafeRelayPublisher::connectionFree(std::size_t from, std::size_t to) const {
-  if (from > to || to >= history_.size()) return false;
+bool SafeRelayPublisher::segmentFree(const Eigen::Vector3d& from,
+                                      const Eigen::Vector3d& to) const {
+  if (!volumeFree(from, transit_radius_, transit_half_height_)) return false;
   const double step = std::min(0.05, 0.5 * map_->getResolution());
-  if (!volumeFree(history_[from].sample.position, transit_radius_, transit_half_height_))
+  const Eigen::Vector3d delta = to - from;
+  const int count = std::max(1, static_cast<int>(std::ceil(delta.norm() / step)));
+  for (int j = 1; j <= count; ++j)
+    if (!volumeFree(Eigen::Vector3d(from + delta * (double(j) / count)),
+                    transit_radius_, transit_half_height_)) return false;
+  return true;
+}
+
+bool SafeRelayPublisher::pathFree(const std::vector<Eigen::Vector3d>& path) const {
+  if (path.empty() || !volumeFree(path.front(), transit_radius_, transit_half_height_))
+    return false;
+  for (std::size_t i = 1; i < path.size(); ++i)
+    if (!segmentFree(path[i - 1], path[i])) return false;
+  return true;
+}
+
+bool SafeRelayPublisher::connectionFree(std::size_t from, std::size_t to) const {
+  if (from > to || to >= history_.size() ||
+      !volumeFree(history_[from].sample.position, transit_radius_, transit_half_height_))
     return false;
   for (std::size_t i = from + 1; i <= to; ++i) {
     if (!history_[i].connected) return false;
-    const Eigen::Vector3d& a = history_[i - 1].sample.position;
-    const Eigen::Vector3d delta = history_[i].sample.position - a;
-    const int count = std::max(1, static_cast<int>(std::ceil(delta.norm() / step)));
-    for (int j = 1; j <= count; ++j) {
-      if (!volumeFree(Eigen::Vector3d(a + delta * (double(j) / count)),
-                      transit_radius_, transit_half_height_)) return false;
-    }
+    if (!segmentFree(history_[i - 1].sample.position, history_[i].sample.position))
+      return false;
+  }
+  return true;
+}
+
+bool SafeRelayPublisher::replanConnection(std::size_t from, std::size_t to,
+                                          double time_limit,
+                                          std::vector<Eigen::Vector3d>& path) {
+  path.clear();
+  if (from >= to || to >= history_.size() || time_limit <= 0.0) return false;
+  // Replanning an occupied path does not repair missing flight observations.
+  for (std::size_t i = from + 1; i <= to; ++i)
+    if (!history_[i].connected) return false;
+  const auto& start = history_[from].sample.position;
+  const auto& end = history_[to].sample.position;
+  connection_search_->reset();
+  connection_search_->max_search_time_ = time_limit;
+  const auto deadline = ros::WallTime::now() + ros::WallDuration(time_limit);
+  const auto edge_free = [&](const Eigen::Vector3d& a, const Eigen::Vector3d& b) {
+    return ros::WallTime::now() < deadline && segmentFree(a, b);
+  };
+  if (connection_search_->search(start, end, edge_free) != Astar::REACH_END) return false;
+  path = connection_search_->getPath();
+  if (path.size() < 2 || (path.front() - start).norm() > 1e-6 ||
+      (path.back() - end).norm() > 1e-6 || !pathFree(path)) {
+    path.clear();
+    return false;
   }
   return true;
 }
 
 std::vector<SafeRelayPublisher::Goal> SafeRelayPublisher::validGoals() const {
   std::vector<Goal> valid;
-  std::size_t previous = 0;
+  std::set<std::size_t> reachable{0};
   for (const auto& goal : goals_) {
-    // Check every intervening segment, including those ending at omitted
-    // transit-only goals. A blocked prefix also blocks all later goals.
-    if (!connectionFree(previous, goal.route_index)) break;
+    // A new detour can start at an older valid A and bypass a withdrawn goal.
+    // Recheck the exact certified connection instead of the blocked old route.
+    if (!reachable.count(goal.connection_from)) continue;
+    if (goal.connection.empty()) {
+      if (!connectionFree(goal.connection_from, goal.route_index)) continue;
+    } else if (!pathFree(goal.connection)) continue;
+    reachable.insert(goal.route_index);
     const auto& sample = history_[goal.route_index].sample;
     if (sample.hold_free && sample.confirmed) valid.push_back(goal);
-    previous = goal.route_index;
   }
   return valid;
 }
@@ -192,20 +246,39 @@ void SafeRelayPublisher::timerCallback(const ros::TimerEvent&) {
   std::vector<std::size_t> blocked_prefix(history_.size(), 0);
   for (std::size_t i = anchor_ + 1; i < history_.size(); ++i)
     blocked_prefix[i] = blocked_prefix[i - 1] + (connectionFree(i - 1, i) ? 0 : 1);
+  if (replan_anchor_ != anchor_) {
+    replan_tried_.clear();
+    replan_anchor_ = anchor_;
+  }
+  std::map<std::size_t, std::vector<Eigen::Vector3d>> detours;
+  bool deferred = false;
+  const auto deadline = ros::WallTime::now() + ros::WallDuration(replan_time_budget_);
   const auto selected = safe_relay::select(samples, anchor_, leader_, config_,
       [&](std::size_t a, std::size_t b) {
         // Retain issued IDs/positions and advance beyond the latest issued
         // sample even when the checking origin has moved back to an older A.
-        return (goals_.empty() || b > goals_.back().route_index) &&
-               blocked_prefix[a] == blocked_prefix[b];
+        if (!goals_.empty() && b <= goals_.back().route_index) return false;
+        if (blocked_prefix[a] == blocked_prefix[b]) return true;
+        const auto old = detours.find(b);
+        if (old != detours.end()) return !old->second.empty();
+        if (replan_tried_.count(b)) return false;
+        if (ros::WallTime::now() >= deadline) { deferred = true; return false; }
+        replan_tried_.insert(b);
+        return replanConnection(a, b, (deadline - ros::WallTime::now()).toSec(), detours[b]);
       });
+  // Without this continuation an unreachable B could consume every tick's
+  // entire budget, permanently starving a reachable later C.
+  if (!deferred || selected.kind != safe_relay::Kind::WAIT) replan_tried_.clear();
   if (selected.kind != safe_relay::Kind::WAIT) {
+    const auto from = anchor_;
     anchor_ = selected.index;
-    goals_.push_back({anchor_, next_id_++});
+    goals_.push_back({anchor_, next_id_++, from, std::move(detours[anchor_])});
     const auto& p = history_[anchor_].sample.position;
-    ROS_WARN("[safe_relay] RELEASE id=%u type=%s actual=(%.2f,%.2f,%.2f) s=%.2f",
+    ROS_WARN("[safe_relay] RELEASE id=%u type=%s actual=(%.2f,%.2f,%.2f) s=%.2f connection=%s path_points=%zu",
              goals_.back().id, safe_relay::name(selected.kind), p.x(), p.y(), p.z(),
-             history_[anchor_].sample.progress);
+             history_[anchor_].sample.progress,
+             goals_.back().connection.empty() ? "MEASURED" : "REPLANNED",
+             goals_.back().connection.size());
   }
   publish(safe_relay::name(selected.kind), true);
 }

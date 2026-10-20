@@ -15,6 +15,14 @@ class SafeRelayPublisherTest {
     nh.setParam("sdf_map/ground_height", 0.0);
     nh.setParam("sdf_map/max_ray_length", 20.0);
     nh.setParam("sdf_map/obstacles_inflation", 0.1);
+    nh.setParam("astar/resolution_astar", 0.1);
+    nh.setParam("astar/allocate_num", 50000);
+    // Match the deployed front vehicle's search costs.
+    nh.setParam("astar/lambda_heu", 10000.0);
+    nh.setParam("astar/vertical_weight", 4.0);
+    nh.setParam("astar/preferred_clearance", 0.60);
+    nh.setParam("astar/clearance_weight", 12.0);
+    nh.setParam("astar/max_search_time", 0.05);
     nh.setParam("mission/safe_relay/enabled", true);
     nh.setParam("mission/safe_relay/topic_prefix", std::string("/safe_relay_test"));
     auto map = std::make_shared<SDFMap>();
@@ -92,6 +100,7 @@ class SafeRelayPublisherTest {
       publisher.history_ = initial_history;
       publisher.anchor_ = last_index;
       publisher.next_id_ = 3;
+      publisher.replan_tried_.clear();
     };
 
     // A currently occupied earlier segment invalidates its destination; a clear
@@ -104,16 +113,20 @@ class SafeRelayPublisherTest {
     map->setOccupied(Eigen::Vector3d(1.0, 0.0, 1.0), 0);
     map->setOccupied(publisher.history_[last_index].sample.position);
     publisher.timerCallback(ros::TimerEvent());
-    EXPECT_EQ("WAIT_NO_VALID_TARGET", publisher.last_status_);
-    EXPECT_EQ(first_index, publisher.anchor_);
-    EXPECT_EQ(2U, publisher.goals_.size());  // Recovery cannot bypass a blocked transit path.
+    EXPECT_EQ("NORMAL", publisher.last_status_);
+    ASSERT_EQ(3U, publisher.goals_.size());
+    EXPECT_EQ(first_index, publisher.goals_.back().connection_from);
+    EXPECT_GT(publisher.anchor_, last_index);
+    ASSERT_FALSE(publisher.goals_.back().connection.empty());
+    EXPECT_TRUE(publisher.pathFree(publisher.goals_.back().connection));
     spin();
-    ASSERT_EQ(1U, received_goals.poses.size());
+    ASSERT_EQ(2U, received_goals.poses.size());
     EXPECT_EQ(1U, received_goals.poses.front().header.seq);
+    EXPECT_EQ(3U, received_goals.poses.back().header.seq);
     map->setOccupied(publisher.history_[first_index].sample.position);
     publisher.timerCallback(ros::TimerEvent());
     EXPECT_EQ("LAST_TARGET_INVALID", publisher.last_status_);
-    EXPECT_EQ(2U, publisher.goals_.size());
+    EXPECT_EQ(3U, publisher.goals_.size());
     spin();
     EXPECT_TRUE(received_goals.poses.empty());  // No prior valid A: do not invent a new origin.
     map->setOccupied(publisher.history_[first_index].sample.position, 0);
@@ -125,13 +138,69 @@ class SafeRelayPublisherTest {
     map->setOccupied(Eigen::Vector3d(1.5, 0, 1));
     publisher.timerCallback(ros::TimerEvent());
     EXPECT_TRUE(publisher.history_[last_index].sample.confirmed);
-    EXPECT_EQ(first_index, publisher.anchor_);
+    EXPECT_GT(publisher.anchor_, last_index);
+    EXPECT_EQ("NORMAL", publisher.last_status_);
+    ASSERT_EQ(3U, publisher.goals_.size());
+    EXPECT_EQ(first_index, publisher.goals_.back().connection_from);
+    EXPECT_FALSE(publisher.goals_.back().connection.empty());
+    spin();
+    ASSERT_EQ(2U, received_goals.poses.size());
+    EXPECT_EQ(1U, received_goals.poses.front().header.seq);
+    EXPECT_EQ(3U, received_goals.poses.back().header.seq);
+    // Publishing again must retain the checked detour, not withdraw the new
+    // endpoint merely because the old measured connection is still blocked.
+    publisher.publish("TEST_DETOUR_RECHECK", true);
+    spin();
+    ASSERT_EQ(2U, received_goals.poses.size());
+    EXPECT_EQ(3U, received_goals.poses.back().header.seq);
+    const auto blocked_detour = publisher.goals_.back().connection;
+    ASSERT_GT(blocked_detour.size(), 2U);
+    const auto middle = blocked_detour[blocked_detour.size() / 2];
+    map->setOccupied(middle);
+    publisher.publish("TEST_DETOUR_INVALIDATION", true);
+    spin();
+    for (const auto& pose : received_goals.poses) EXPECT_NE(3U, pose.header.seq);
+    map->setOccupied(middle, 0);
+    map->setOccupied(Eigen::Vector3d(1.5, 0, 1), 0);
+    restore_issued();
+
+    // A complete separating wall has no known-free alternative: keep A and
+    // do not turn failed replanning into an unchecked new endpoint.
+    for (int y = -20; y < 20; ++y)
+      for (int z = 0; z < 30; ++z)
+        map->setOccupied(Eigen::Vector3d(1.55, 0.1 * y + 0.05, 0.1 * z + 0.05));
+    publisher.timerCallback(ros::TimerEvent());
     EXPECT_EQ("WAIT_NO_VALID_TARGET", publisher.last_status_);
+    EXPECT_EQ(first_index, publisher.anchor_);
     EXPECT_EQ(2U, publisher.goals_.size());
     spin();
     ASSERT_EQ(1U, received_goals.poses.size());
     EXPECT_EQ(1U, received_goals.poses.front().header.seq);
-    map->setOccupied(Eigen::Vector3d(1.5, 0, 1), 0);
+    for (int y = -20; y < 20; ++y)
+      for (int z = 0; z < 30; ++z)
+        map->setOccupied(Eigen::Vector3d(1.55, 0.1 * y + 0.05, 0.1 * z + 0.05), 0);
+    restore_issued();
+
+    // An enclosed B can consume the whole search budget while a later C is
+    // reachable around the enclosure. Subsequent ticks must actually try C.
+    auto cage = [&](int occupied) {
+      for (int x = 16; x <= 26; ++x)
+        for (int y = -5; y <= 5; ++y)
+          for (int z = 5; z <= 15; ++z) {
+            if (x != 16 && x != 26 && y != -5 && y != 5 && z != 5 && z != 15) continue;
+            map->setOccupied(Eigen::Vector3d(0.1 * x + 0.05, 0.1 * y + 0.05,
+                                             0.1 * z + 0.05), occupied);
+          }
+    };
+    cage(1);
+    ASSERT_FALSE(publisher.connectionFree(first_index, last_index));
+    for (int i = 0; i < 20 && publisher.goals_.size() == 2U; ++i)
+      publisher.timerCallback(ros::TimerEvent());
+    ASSERT_EQ(3U, publisher.goals_.size());
+    EXPECT_GT(publisher.goals_.back().route_index, 26U);
+    EXPECT_FALSE(publisher.goals_.back().connection.empty());
+    EXPECT_TRUE(publisher.pathFree(publisher.goals_.back().connection));
+    cage(0);
     restore_issued();
 
     // Real occupied voxels at the edge of the holding envelope leave the
@@ -210,6 +279,9 @@ class SafeRelayPublisherTest {
     // Missing odometry is not replaced by a straight connection across the gap.
     publisher.observe(Eigen::Vector3d(6.8, 0, 1), 0, ros::Time(102.1));
     EXPECT_FALSE(publisher.connectionFree(60, 61));
+    std::vector<Eigen::Vector3d> gap_path;
+    EXPECT_FALSE(publisher.replanConnection(60, 61, 0.05, gap_path));
+    EXPECT_TRUE(gap_path.empty());
     const auto count = publisher.history_.size();
     publisher.observe(Eigen::Vector3d(6.9, 0, 1), 0, ros::Time(101));
     EXPECT_EQ(count, publisher.history_.size());
@@ -224,6 +296,26 @@ class SafeRelayPublisherTest {
     map->setOccupied(Eigen::Vector3d(1, 0.5, 1));
     EXPECT_FALSE(publisher.volumeFree(Eigen::Vector3d(1, 0.5, 1), 0.18, 0.10));
     EXPECT_TRUE(publisher.connectionFree(0, publisher.history_.size() - 1));
+
+    // Replan around real raw occupancy (setOccupied only changes inflation).
+    // The search itself must avoid the full cylinder, not only obstacle centres.
+    pcl::PointCloud<pcl::PointXYZ> obstacle;
+    pcl::PointXYZ hit;
+    hit.x = 1.05; hit.y = 0.05; hit.z = 1.05;
+    obstacle.push_back(hit);
+    for (int i = 0; i < 12; ++i)
+      map->inputPointCloud(obstacle, 1, Eigen::Vector3d(1.05, 1.0, 1.05));
+    ASSERT_EQ(SDFMap::OCCUPIED, map->getOccupancy(Eigen::Vector3d(1.05, 0.05, 1.05)));
+    EXPECT_FALSE(publisher.connectionFree(0, 20));
+    std::vector<Eigen::Vector3d> detour;
+    ASSERT_TRUE(publisher.replanConnection(0, 20, 0.05, detour));
+    ASSERT_GT(detour.size(), 2U);
+    EXPECT_TRUE(publisher.pathFree(detour));
+    EXPECT_LT((detour.front() - publisher.history_[0].sample.position).norm(), 1e-6);
+    EXPECT_LT((detour.back() - publisher.history_[20].sample.position).norm(), 1e-6);
+    EXPECT_EQ(31U, publisher.history_.size());  // No synthetic flight samples.
+    std::vector<Eigen::Vector3d> no_budget;
+    EXPECT_FALSE(publisher.replanConnection(0, 20, 0.0, no_budget));
   }
 };
 TEST(SafeRelayPublisher, ActualFlightCurrentMapAndInvalidation) { SafeRelayPublisherTest::run(); }

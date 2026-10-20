@@ -2,6 +2,7 @@
 #define _ASTAR2_H
 
 #include <Eigen/Eigen>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <ros/console.h>
@@ -43,8 +44,12 @@ public:
   enum { REACH_END = 1, NO_PATH = 2 };
 
   void init(ros::NodeHandle& nh, const EDTEnvironment::Ptr& env);
+  void init(ros::NodeHandle& nh, const EDTEnvironment::Ptr& env, int node_limit);
   void reset();
+  using EdgeChecker = std::function<bool(const Eigen::Vector3d&, const Eigen::Vector3d&)>;
   int search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt);
+  int search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt,
+             const EdgeChecker& edge_free);
   void setResolution(const double& res);
   void setProgressConstraint(const Eigen::Vector3d& forward_direction,
                              double maximum_regression = 0.0);
