@@ -651,8 +651,9 @@
         <param name="search_manager/door_width_max" value="2.00"/>
         <param name="search_manager/door_prefer_width" value="1.40"/>
         <param name="search_manager/door_pass_dist" value="0.90"/>
-        <!-- 机体一越过已锁定的门平面就交给 FUEL，不再要求额外深入门后。 -->
-        <param name="search_manager/door_cross_trigger_dist" value="0.0"/>
+        <!-- 入口参考停在门平面；允许门前8cm的位置跟踪余差，避免等偶然过冲才交给FUEL。
+             小于FUEL既有10cm门外起步余量；仍须完成入口参考并满足原横向判定。 -->
+        <param name="search_manager/door_cross_trigger_dist" value="-0.08"/>
         <param name="search_manager/door_x_offset" value="0.0"/>
         <param name="search_manager/max_entry_door_distance" value="2.5"/>
         <param name="search_manager/entry_yaw_hold_radius" value="0.25"/>
