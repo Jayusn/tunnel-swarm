@@ -8,8 +8,8 @@ mission:
     release_distance: 1.00
     selection_window: 0.50
     sample_spacing: 0.08
-    # 沿用现有静态通行包络 0.18/0.10m，并覆盖后机到点容差 0.25/0.20m 和 0.02m 余量。
-    hold_radius: 0.45
+    # 水平停留半径调整为 0.30m；垂直半高保持 0.32m，通行包络仍为 0.18/0.10m。
+    hold_radius: 0.30
     hold_half_height: 0.32
     transit_radius: 0.18
     transit_half_height: 0.10
