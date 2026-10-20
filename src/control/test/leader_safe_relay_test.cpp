@@ -133,15 +133,9 @@ class LeaderSafeRelayTest {
     EXPECT_EQ(1U, follower.relay_waypoints_.size()); // Missing #2 is not silently skipped.
     follower.follower_odom_.pose.pose.position = expected;
     follower.follower_horizontal_speed_ = 0.5;
+    follower.follower_vertical_speed_ = 0.12;
     follower.handleDiffPlannerExecution(ros::Time::now());
-    EXPECT_EQ(1U, follower.relay_waypoints_.size()); // Passing through is not stopped arrival.
-    follower.follower_horizontal_speed_ = follower.follower_vertical_speed_ = 0.0;
-    follower.handleDiffPlannerExecution(ros::Time::now());
-    EXPECT_EQ(1U, follower.relay_waypoints_.size()); // Dwell has just begun.
-    ros::Time::setNow(ros::Time(102) + ros::Duration(follower.relay_arrive_dwell_));
-    follower.leader_odom_stamp_ = follower.follower_odom_stamp_ = ros::Time::now();
-    follower.handleDiffPlannerExecution(ros::Time::now());
-    EXPECT_TRUE(follower.relay_waypoints_.empty());
+    EXPECT_TRUE(follower.relay_waypoints_.empty()); // Ordinary point releases without stopping/dwell.
     EXPECT_TRUE(follower.diff_wait_hold_active_);
     path->header.seq = 8;
     path->poses[0].pose.position.x += 0.2;

@@ -203,6 +203,96 @@ TEST_F(WaypointYaw, NormalFinishKeepsEndpointYawWhileAbortKeepsActualYaw) {
   EXPECT_TRUE(controller->lastMpcSolveSuccessful());
 }
 
+TEST_F(WaypointYaw, RepeatedSafetyHoldsKeepApprovedHeightWhileActualHeightFalls) {
+  const auto info = trajectoryInfo();
+  const Eigen::Vector3d endpoint = info.traj.getJuncPos(info.traj.getPieceNum());
+  fsm->waypointGoalCallback(goal(endpoint, 1.2));
+  ros::Time::setNow(ros::Time(1010));
+  prepareStop(info);
+  fsm->fsm_state = MPCFSM::CMD_CTRL;
+  fsm->CMD_CTRL_process(); // Normal completion retains the full endpoint.
+  const double normal_z_speed = params.max_velocity_z_;
+  std_msgs::Bool::Ptr hold(new std_msgs::Bool);
+  for (double actual_z : {0.398, 0.235, 0.119}) {
+    fsm->odom_data.rcv_stamp = ros::Time::now();
+    fsm->odom_data.p = Eigen::Vector3d(2.2, 0.1, actual_z);
+    fsm->est_state_.head<3>() = fsm->odom_data.p.cast<real_t>();
+    hold->data = true;
+    fsm->safetyHoldCallback(hold);
+    ASSERT_TRUE(fsm->safety_hold_keep_waypoint_height_);
+    EXPECT_NEAR(fsm->hover_pose_.z(), endpoint.z(), 1e-9);
+    EXPECT_NEAR(fsm->hover_pose_.x(), 2.2, 1e-9);
+    EXPECT_NEAR(fsm->hover_pose_.y(), 0.1, 1e-9);
+    fsm->CMD_CTRL_process();
+    EXPECT_NEAR(controller->reference_states_(kPosZ, 0), endpoint.z(), 1e-6);
+    EXPECT_NEAR(params.max_velocity_z_, 0.2, 1e-6);
+    EXPECT_TRUE(controller->lastMpcSolveSuccessful());
+    // Repeated true messages and a later false/true cycle must not relatch the lower Z.
+    fsm->odom_data.p.z() -= 0.05;
+    fsm->safetyHoldCallback(hold);
+    EXPECT_NEAR(fsm->hover_pose_.z(), endpoint.z(), 1e-9);
+    hold->data = false;
+    fsm->safetyHoldCallback(hold);
+    EXPECT_NEAR(params.max_velocity_z_, normal_z_speed, 1e-6);
+  }
+}
+
+TEST_F(WaypointYaw, RetryKeepsHeightButAValidatedNewHeightCanReplaceIt) {
+  auto info = trajectoryInfo();
+  auto endpoint = info.traj.getJuncPos(info.traj.getPieceNum());
+  ros::Time::setNow(ros::Time(1004));
+  std_msgs::Bool::Ptr hold(new std_msgs::Bool);
+  for (double new_height : {0.6, 0.6, 0.8}) {
+    const unsigned stamp = ros::Time::now().sec;
+    info.traj = line(Eigen::Vector3d(0.3, 0.0, (new_height - 0.6)/8.0));
+    info.traj_start_time = ros::Time(stamp + 1);
+    info.traj_end_time = ros::Time(stamp + 9);
+    endpoint = info.traj.getJuncPos(info.traj.getPieceNum());
+    fsm->waypointGoalCallback(goal(endpoint, 1.2, stamp));
+    prepareStop(info);
+    fsm->fsm_state = MPCFSM::CMD_CTRL;
+    fsm->odom_data.rcv_stamp = ros::Time::now();
+    fsm->odom_data.p.z() = 0.2;
+    hold->data = true;
+    fsm->safetyHoldCallback(hold);
+    EXPECT_TRUE(fsm->safety_hold_keep_waypoint_height_);
+    EXPECT_NEAR(fsm->hover_pose_.z(), new_height, 1e-9);
+    hold->data = false;
+    fsm->safetyHoldCallback(hold);
+    ros::Time::setNow(ros::Time(stamp + 10));
+  }
+}
+
+TEST_F(WaypointYaw, EntryRecoveryAbortAndLandingDoNotReuseOrdinaryWaypointHeight) {
+  auto info = trajectoryInfo();
+  const auto endpoint = info.traj.getJuncPos(info.traj.getPieceNum());
+  ros::Time::setNow(ros::Time(1005));
+  std_msgs::Bool::Ptr hold(new std_msgs::Bool);
+  for (int scenario = 0; scenario < 5; ++scenario) {
+    fsm->waypointGoalCallback(goal(endpoint, 1.2));
+    fsm->trajectory_data.traj_queue.clear();
+    prepareStop(info);
+    fsm->fsm_state = MPCFSM::CMD_CTRL;
+    fsm->precision_landing_active_ = false;
+    fsm->rc_land_active_ = false;
+    if (scenario == 0) fsm->entryWaypointGoalCallback(goal(endpoint, 1.2));
+    if (scenario == 1) {
+      fsm->trajectory_data.traj_queue.back().traj = line(Eigen::Vector3d(0.0, 0.0, 0.05));
+    }
+    if (scenario == 2) fsm->trajectory_data.exec_traj = -1;
+    if (scenario == 3) fsm->precision_landing_active_ = true;
+    if (scenario == 4) fsm->rc_land_active_ = true;
+    fsm->odom_data.rcv_stamp = ros::Time::now();
+    fsm->odom_data.p.z() = 0.2;
+    hold->data = true;
+    fsm->safetyHoldCallback(hold);
+    EXPECT_FALSE(fsm->safety_hold_keep_waypoint_height_);
+    EXPECT_NEAR(fsm->hover_pose_.z(), 0.2, 1e-9);
+    hold->data = false;
+    fsm->safetyHoldCallback(hold);
+  }
+}
+
 TEST_F(WaypointYaw, GoalAndEntryTopicsBothBindWaypointYaw) {
   const auto info = trajectoryInfo();
   const Eigen::Vector3d endpoint = info.traj.getJuncPos(info.traj.getPieceNum());

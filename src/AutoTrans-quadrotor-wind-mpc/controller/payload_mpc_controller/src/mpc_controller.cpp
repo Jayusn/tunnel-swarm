@@ -261,6 +261,27 @@ namespace PayloadMPC
     return success;
   }
 
+  bool MpcController::setVerticalVelocityLimit(real_t velocity)
+  {
+    if (!std::isfinite(velocity) || velocity <= 0.0) return false;
+    if (std::abs(velocity - params_.max_velocity_z_) < 1.0e-6) return true;
+    if (recovery_velocity_limits_relaxed_)
+    {
+      params_.max_velocity_z_ = velocity;
+      return true;
+    }
+    waitForPreparation();
+    const bool success = mpc_wrapper_.setLimits(
+        params_.min_thrust_, params_.max_thrust_,
+        params_.max_bodyrate_xy_, params_.max_bodyrate_z_,
+        params_.max_velocity_xy_, velocity,
+        params_.max_velocity_slack_xy_, params_.max_velocity_slack_z_);
+    if (success) params_.max_velocity_z_ = velocity;
+    last_mpc_solve_success_ = false;
+    preparation_thread_ = std::thread(&MpcController::preparationThread, this);
+    return success;
+  }
+
   bool MpcController::restoreNominalVelocityLimits()
   {
     if (!recovery_velocity_limits_relaxed_)

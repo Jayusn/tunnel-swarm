@@ -102,6 +102,7 @@ namespace PayloadMPC
       double hover_yaw);
     bool restoreNominalVelocityLimits();
     bool setHorizontalVelocityLimit(real_t velocity);
+    bool setVerticalVelocityLimit(real_t velocity);
     bool recoveryVelocityLimitsRelaxed() const
       { return recovery_velocity_limits_relaxed_; }
     void waitForPreparation();

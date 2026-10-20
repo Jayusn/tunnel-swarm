@@ -238,6 +238,8 @@
         <!-- 普通FIFO点进入40cm邻域就切换下一个，避免已经通过困难区域后为补点回拉；不要求零误差或停稳。 -->
         <param name="relay_arrive_radius" value="0.40"/>
         <param name="relay_arrive_z_tolerance" value="0.20"/>
+        <!-- 普通点高度误差15cm内即可放行；任务点保留原高度容差。 -->
+        <param name="ordinary_waypoint_z_tolerance" value="0.15"/>
         <!-- 较大圆柱净空仅用于最终降落点；普通接力点只检查精确落点小体素。 -->
         <param name="relay_endpoint_clearance_radius" value="0.38"/>
         <param name="relay_endpoint_z_margin" value="0.28"/>
@@ -261,9 +263,10 @@
         <param name="entry_arrive_max_horizontal_speed" value="0.15"/>
         <param name="entry_arrive_max_vertical_speed" value="0.12"/>
         <param name="relay_arrive_dwell" value="0.50"/>
-        <!-- 2026-07-28: 普通接力点进入15cm后先锁点0.45s，避免轨迹结束与速度门槛之间形成到点死锁。 -->
+        <!-- 保留入口及旧执行分支的近点捕获参数；普通FIFO不使用停稳驻留条件。 -->
         <param name="diff_endpoint_capture_radius" value="0.15"/>
-        <!-- 航点仍向原目标收敛，进入15cm并满足航向及原停稳驻留要求后再消费。 -->
+        <!-- 普通点仍向原目标收敛，进入15cm且航向达标后即消费，不要求停稳驻留。
+             入口、出口、门外等待及最终降落保留原有规则。 -->
         <param name="require_waypoint_yaw" value="true"/>
         <!-- 普通点允许左右30度朝向误差；入口、出口及降落仍沿用原容差。 -->
         <param name="ordinary_waypoint_yaw_tolerance_deg" value="30.0"/>

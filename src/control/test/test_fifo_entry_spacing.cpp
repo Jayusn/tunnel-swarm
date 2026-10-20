@@ -891,22 +891,44 @@ TEST_F(FifoEntrySpacing, OrdinaryYawAllowsBothThirtyDegreeBoundaries) {
   }
 }
 
-TEST_F(FifoEntrySpacing, QualifiedPointKeepsOriginalPositionSpeedAndDwellRequirements) {
+TEST_F(FifoEntrySpacing, QualifiedOrdinaryPointKeepsFifteenCmButDoesNotWaitForSpeedOrDwell) {
   prepareQualifiedPoints();
   follower->handleSimpleDiffPlannerExecution(ros::Time::now());
   follower->follower_odom_.pose.pose.position.x = 0.65;
   follower->handleSimpleDiffPlannerExecution(ros::Time::now());
   EXPECT_EQ(2U, follower->relay_waypoints_.size()); // 35cm is not arrival.
   EXPECT_TRUE(follower->relay_arrival_stamp_.isZero());
+  follower->follower_odom_.pose.pose.position.x = 0.84;
+  follower->follower_horizontal_speed_ = 0.5;
+  follower->follower_vertical_speed_ = 0.12;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_EQ(2U, follower->relay_waypoints_.size());
+  follower->follower_odom_.pose.pose.position.x = 0.9;
+  follower->follower_odom_.pose.pose.position.z = 0.44; // XY reached, height still 16cm low.
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_EQ(2U, follower->relay_waypoints_.size());
+  follower->follower_odom_.pose.pose.position.z = 0.451; // Within 15cm, no dwell required.
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_EQ(1U, follower->relay_waypoints_.size());
+  EXPECT_TRUE(follower->relay_arrival_stamp_.isZero()); // No stop or dwell before releasing next.
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->diff_goal_published_);
+}
+
+TEST_F(FifoEntrySpacing, QualifiedExitStillRequiresSpeedAndDwell) {
+  prepareQualifiedPoints();
+  follower->exit_waypoint_index_ = 0;
   follower->follower_odom_.pose.pose.position.x = 0.9;
   follower->follower_horizontal_speed_ = 0.5;
   follower->handleSimpleDiffPlannerExecution(ros::Time::now());
-  EXPECT_TRUE(follower->relay_arrival_stamp_.isZero()); // Passing through is not arrival.
+  EXPECT_EQ(2U, follower->relay_waypoints_.size());
+  EXPECT_TRUE(follower->relay_arrival_stamp_.isZero());
   follower->follower_horizontal_speed_ = 0.0;
   follower->handleSimpleDiffPlannerExecution(ros::Time::now());
-  ASSERT_FALSE(follower->relay_arrival_stamp_.isZero());
   EXPECT_EQ(2U, follower->relay_waypoints_.size());
-  follower->relay_arrival_stamp_ = ros::Time::now() - ros::Duration(follower->relay_arrive_dwell_ + 0.01);
+  ASSERT_FALSE(follower->relay_arrival_stamp_.isZero());
+  follower->relay_arrival_stamp_ = ros::Time::now() -
+      ros::Duration(follower->relay_arrive_dwell_ + 0.01);
   follower->handleSimpleDiffPlannerExecution(ros::Time::now());
   EXPECT_EQ(1U, follower->relay_waypoints_.size());
 }

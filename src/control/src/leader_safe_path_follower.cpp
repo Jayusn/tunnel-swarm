@@ -345,6 +345,7 @@ class LeaderSafePathFollower {
     pnh_.param("relay_waypoint_spacing", relay_waypoint_spacing_, 2.50);
     pnh_.param("relay_arrive_radius", relay_arrive_radius_, 0.25);
     pnh_.param("relay_arrive_z_tolerance", relay_arrive_z_tolerance_, 0.20);
+    pnh_.param("ordinary_waypoint_z_tolerance", ordinary_waypoint_z_tolerance_, 0.15);
     // 最终降落点保留停驻净空；普通接力点另用小体素检查，不能让侧墙否决狭窄通道。
     pnh_.param("relay_endpoint_clearance_radius", relay_endpoint_clearance_radius_, 0.38);
     pnh_.param("relay_endpoint_z_margin", relay_endpoint_z_margin_, 0.28);
@@ -369,7 +370,7 @@ class LeaderSafePathFollower {
     pnh_.param("entry_arrive_max_horizontal_speed", entry_arrive_max_horizontal_speed_, 0.15);
     pnh_.param("entry_arrive_max_vertical_speed", entry_arrive_max_vertical_speed_, 0.12);
     pnh_.param("relay_arrive_dwell", relay_arrive_dwell_, 0.50);
-    // 2026-07-28: Diff末端速度差分可能尚未降到严格门槛；小半径内先锁点，再用停驻时间完成接力点。
+    // 保留入口及旧执行分支的近点捕获参数；普通FIFO不使用停稳驻留条件。
     pnh_.param("diff_endpoint_capture_radius", diff_endpoint_capture_radius_, 0.15);
     pnh_.param("require_waypoint_yaw", require_waypoint_yaw_, false);
     pnh_.param("ordinary_waypoint_yaw_tolerance_deg",
@@ -2218,8 +2219,10 @@ class LeaderSafePathFollower {
          follower_vertical_speed_ <= entry_arrive_max_vertical_speed_);
     const bool waypoint_arrival = !terminal_relay &&
         horizontal_error <= relay_arrive_radius_ &&
-        vertical_error <= relay_arrive_z_tolerance_ && entry_settled && heading_arrived &&
-        (!activeSafeRelay() ||
+        vertical_error <= (ordinary_relay ? ordinary_waypoint_z_tolerance_
+                                          : relay_arrive_z_tolerance_) &&
+        entry_settled && heading_arrived &&
+        (!activeSafeRelay() || ordinary_relay ||
          (follower_horizontal_speed_ <= relay_arrive_max_horizontal_speed_ &&
           follower_vertical_speed_ <= relay_arrive_max_vertical_speed_));
 
@@ -2317,7 +2320,9 @@ class LeaderSafePathFollower {
         follower_horizontal_speed_ <= relay_arrive_max_horizontal_speed_ &&
         follower_vertical_speed_ <= relay_arrive_max_vertical_speed_;
     if (waypoint_arrival || terminal_arrival || skip_occupied_point) {
-      if (activeSafeRelay() && !skip_occupied_point) {
+      // 普通接力点按位置和航向连续放行；不等待速度降到门槛或驻留。
+      // 入口、出口、门外等待及最终降落保留各自原有到达规则。
+      if (activeSafeRelay() && !ordinary_relay && !skip_occupied_point) {
         if (relay_arrival_stamp_.isZero()) relay_arrival_stamp_ = now;
         if ((now - relay_arrival_stamp_).toSec() < relay_arrive_dwell_) return true;
       }
@@ -2370,7 +2375,7 @@ class LeaderSafePathFollower {
 
     // 当前普通目标已获确认且实际接近终点时，继续让MPC保持原终点、
     // 调整航向并减速。正常轨迹结束后指令停止更新，不应再锁存当前航向、
-    // 反复重发同一点。这不是到达判定：仍需15cm、航向及原停稳驻留条件。
+    // 反复重发同一点。这不是到达判定：普通点仍需15cm和航向达标。
     // 离开邻域后仍走原来的指令超时处理。
     if (ordinary_relay &&
         diff_goal_published_ && diff_accepted_goal_valid_ &&
@@ -4580,6 +4585,7 @@ class LeaderSafePathFollower {
   double relay_release_distance_{0.70}, door_release_inside_distance_{0.60};
   double relay_waypoint_spacing_{2.50};
   double relay_arrive_radius_{0.25}, relay_arrive_z_tolerance_{0.20};
+  double ordinary_waypoint_z_tolerance_{0.15};
   // 终点仍使用较大停驻净空；普通接力点只查落点小体素并允许安全附件到达。
   double relay_endpoint_clearance_radius_{0.38}, relay_endpoint_z_margin_{0.28};
   double relay_point_occupied_radius_{0.12}, relay_point_occupied_z_margin_{0.18};
