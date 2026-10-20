@@ -70,7 +70,7 @@ class SafeRelayPublisherTest {
     publisher.timerCallback(ros::TimerEvent());
     ASSERT_EQ(1U, publisher.goals_.size());
     const auto first_index = publisher.goals_.front().route_index;
-    EXPECT_GE(first_index, 25U);
+    EXPECT_EQ(10U, first_index);
     spin();
     EXPECT_EQ(61U, received_route.poses.size());
     ASSERT_EQ(1U, received_goals.poses.size());
@@ -79,6 +79,8 @@ class SafeRelayPublisherTest {
     EXPECT_EQ(publisher.session_, received_goals.header.stamp);
     publisher.timerCallback(ros::TimerEvent());
     ASSERT_EQ(2U, publisher.goals_.size());  // Ordinary open route keeps releasing.
+    EXPECT_DOUBLE_EQ(1.0, publisher.history_[publisher.goals_.back().route_index].sample.progress -
+                              publisher.history_[first_index].sample.progress);
 
     // A currently occupied earlier segment invalidates its destination; a clear
     // endpoint alone cannot certify A -> B, including unknown intervening space.

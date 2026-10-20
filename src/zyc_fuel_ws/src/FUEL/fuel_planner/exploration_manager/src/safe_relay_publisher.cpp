@@ -14,10 +14,9 @@ void SafeRelayPublisher::initialize(ros::NodeHandle& nh, std::shared_ptr<SDFMap>
   std::string prefix;
   params.param<std::string>("topic_prefix", prefix, "/UAV0/mission");
   params.param<std::string>("frame_id", frame_, "world");
-  params.param("normal_spacing", config_.normal_spacing, 2.50);
+  params.param("normal_spacing", config_.normal_spacing, 1.00);
   params.param("minimum_progress", config_.minimum_progress, 0.50);
   params.param("release_distance", config_.release_distance, 1.00);
-  params.param("safe_span", config_.safe_span, 0.40);
   params.param("selection_window", config_.selection_window, 0.50);
   params.param("sample_spacing", sample_spacing_, 0.08);
   params.param("hold_radius", hold_radius_, 0.45);
@@ -31,7 +30,7 @@ void SafeRelayPublisher::initialize(ros::NodeHandle& nh, std::shared_ptr<SDFMap>
   params.param("map_confirmations", confirmations_required_, 2);
   params.param("maximum_samples", maximum_samples_, 10000);
   for (double value : {config_.normal_spacing, config_.minimum_progress,
-       config_.release_distance, config_.safe_span, config_.selection_window,
+       config_.release_distance, config_.selection_window,
        sample_spacing_, hold_radius_, hold_half_height_, transit_radius_,
        transit_half_height_, map_timeout_, odom_timeout_, maximum_sample_gap_,
        dynamic_wait_horizon_}) {

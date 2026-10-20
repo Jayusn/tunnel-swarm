@@ -22,10 +22,9 @@ struct Sample {
 };
 
 struct Config {
-  double normal_spacing{2.50};
+  double normal_spacing{1.00};
   double minimum_progress{0.50};
   double release_distance{1.00};
-  double safe_span{0.40};
   double selection_window{0.50};
 };
 
@@ -56,9 +55,9 @@ inline Selection select(const std::vector<Sample>& route, std::size_t anchor,
            route[end + 1].confirmed) ++end;
     for (std::size_t i = begin; i <= end; ++i) {
       const auto& point = route[i];
+      // Only the candidate needs stopping clearance; neighbouring samples
+      // need transit clearance through path_ok, not their own stopping space.
       if (point.progress - start + 1e-6 < cfg.minimum_progress ||
-          point.progress - route[begin].progress + 1e-6 < 0.5 * cfg.safe_span ||
-          route[end].progress - point.progress + 1e-6 < 0.5 * cfg.safe_span ||
           route.back().progress - point.progress + 1e-6 < cfg.release_distance ||
           (leader.head<2>() - point.position.head<2>()).norm() + 1e-6 <
               cfg.release_distance)
@@ -78,7 +77,7 @@ inline Selection select(const std::vector<Sample>& route, std::size_t anchor,
       pool.push_back(i);
     }
     if (pool.empty()) return false;
-    // Prefer an interior, clear sample near the first available post-obstacle
+    // Prefer a clear measured sample near the first available post-obstacle
     // region / ordinary spacing. Waiting points advance as far as safely possible.
     const double preferred = kind == Kind::BEFORE_OBSTACLE
                                  ? route[pool.back()].progress

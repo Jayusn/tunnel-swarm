@@ -20,22 +20,22 @@ int main() {
   auto pass = [](std::size_t, std::size_t) { return true; };
   auto route = straight(100);
   auto pick = select(route, 0, route.back().position, cfg, pass);
-  require(pick.kind == Kind::NORMAL && pick.index == 25, "normal route must release without obstacle");
+  require(pick.kind == Kind::NORMAL && pick.index == 10, "normal route must release at 1m progress");
   auto next = select(route, pick.index, route.back().position, cfg, pass);
-  require(next.kind == Kind::NORMAL && next.index == 50, "normal route must continue releasing");
+  require(next.kind == Kind::NORMAL && next.index == 20, "normal route must continue at 1m spacing");
   require(route[pick.index].position.z() == 0.8, "keep measured height");
 
   route = straight();
   for (int i = 20; i <= 30; ++i) route[i].hold_free = route[i].confirmed = false;
   pick = select(route, 0, route.back().position, cfg, pass);
-  require(pick.kind == Kind::AFTER_OBSTACLE && pick.index >= 33, "choose interior of post-obstacle space");
+  require(pick.kind == Kind::AFTER_OBSTACLE && pick.index == 31, "first qualified post-obstacle sample is eligible");
   const auto rejected_b = pick.index;
   pick = select(route, 0, route.back().position, cfg,
                 [&](std::size_t, std::size_t b) { return b != rejected_b; });
   require(pick.kind == Kind::AFTER_OBSTACLE && pick.index != rejected_b, "B fails: try qualified C");
   pick = select(route, 0, route.back().position, cfg,
                 [](std::size_t, std::size_t b) { return b < 20; });
-  require(pick.kind == Kind::BEFORE_OBSTACLE && pick.index <= 17 && pick.index >= 5,
+  require(pick.kind == Kind::BEFORE_OBSTACLE && pick.index == 19,
           "B/C fail: release forward pre-obstacle waiting point");
   pick = select(route, 0, route.back().position, cfg,
                 [](std::size_t, std::size_t) { return false; });
@@ -44,9 +44,32 @@ int main() {
                 [](std::size_t, std::size_t b) { return b < 20; });
   require(pick.kind == Kind::WAIT, "waiting fallback must not command rollback or duplicate anchor");
 
-  route = straight(34);
+  route = straight(19);
   require(select(route, 0, route.back().position, cfg, pass).kind == Kind::WAIT,
           "do not publish a point the leader has not cleared by 1m");
+  route = straight(20);
+  pick = select(route, 0, route.back().position, cfg, pass);
+  require(pick.kind == Kind::NORMAL && pick.index == 10,
+          "1m normal progress plus 1m leader clearance is sufficient");
+
+  // B itself can be a confirmed stopping point even when both neighbours
+  // are transit-only. Removing the safe-span gate must not relax B or A -> B.
+  route = straight();
+  for (auto& s : route) s.hold_free = s.confirmed = false;
+  route[30].hold_free = route[30].confirmed = true;
+  pick = select(route, 0, route.back().position, cfg, pass);
+  require(pick.kind == Kind::AFTER_OBSTACLE && pick.index == 30,
+          "isolated qualified B must not require neighbouring stopping space");
+  require(select(route, 0, route.back().position, cfg,
+                 [](std::size_t, std::size_t) { return false; }).kind == Kind::WAIT,
+          "isolated B still requires a passable connection");
+  route[30].confirmed = false;
+  require(select(route, 0, route.back().position, cfg, pass).kind == Kind::WAIT,
+          "isolated B still requires map confirmation");
+  route[30].confirmed = true;
+  route[30].hold_free = false;
+  require(select(route, 0, route.back().position, cfg, pass).kind == Kind::WAIT,
+          "isolated B itself must have safe stopping space");
   route = straight();
   for (auto& s : route) s.confirmed = false;
   require(select(route, 0, route.back().position, cfg, pass).kind == Kind::WAIT,
