@@ -1,0 +1,4 @@
+<launch>
+  <test test-name="leader_safe_relay" pkg="exploration_control"
+        type="leader_safe_relay_test" time-limit="60"/>
+</launch>

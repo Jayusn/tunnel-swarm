@@ -90,6 +90,7 @@
         <param name="down_search_min_vertical_separation" value="1.00"/>
         <!-- 2026-07-16: 前机公开发布滚动任务接力点，后续双计算机只需桥接这个低带宽Path话题。 -->
         <param name="relay_path_topic" value="/UAV0/mission/relay_waypoints"/>
+        <param name="safe_relay_timeout" value="1.0"/>
         <!-- 出口前沿前机实飞XY折线保持1.00m滞后；后机名义高度与起飞悬停统一为0.60m。 -->
         <!-- 2026-07-28: Diff按释放后的目标独立搜索避障轨迹，不再用50Hz移动目标追逐前机。 -->
         <param name="continuous_follow_before_exit" value="false"/>
@@ -136,7 +137,6 @@
         <!-- 门点及内部接力点都等前机沿路线清空1m，并通过上方实时双机距离检查。 -->
         <param name="door_release_inside_distance" value="1.00"/>
         <param name="relay_release_distance" value="1.00"/>
-        <param name="relay_waypoint_spacing" value="2.50"/>
         <param name="relay_arrive_radius" value="0.25"/>
         <param name="relay_arrive_z_tolerance" value="0.20"/>
         <!-- 较大圆柱净空仅用于最终降落点；普通接力点只检查精确落点小体素。 -->

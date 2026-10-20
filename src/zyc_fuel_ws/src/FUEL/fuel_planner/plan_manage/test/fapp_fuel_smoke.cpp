@@ -64,6 +64,8 @@ int main(int argc,char** argv){
  priority.local_data_=baseline_data;
  send();
  require(priority.isTrajectorySafe(),"priority mode vetoed release on FAPP overlap");
+ require(!priority.isRelayHoldDynamicallySafe(Eigen::Vector3d(0,0,1),.45,.32,2.0),
+     "relay stopping space must reject dynamic overlap even in planner-priority mode");
  priority.local_data_.start_time_=ros::Time::now();
  require(priority.checkTrajCollision(distance),"priority mode vetoed execution on FAPP overlap");
  // A fully overlapping prediction must not prevent the native optimizer from running.
@@ -75,6 +77,8 @@ int main(int argc,char** argv){
      Eigen::Vector3d::Zero(),Eigen::Vector3d::Zero()),"priority optimization failed");
  const auto with_dynamic=priority.local_data_.position_traj_.getControlPoint();
  msg.states.clear();send();
+ require(priority.isRelayHoldDynamicallySafe(Eigen::Vector3d(0,0,1),.45,.32,2.0),
+     "cleared dynamic observations must release stopping space");
  require(priority.planExploreTraj({a,Eigen::Vector3d(0,0,1),b},
      Eigen::Vector3d::Zero(),Eigen::Vector3d::Zero()),"priority empty optimization failed");
  require(!with_dynamic.isApprox(priority.local_data_.position_traj_.getControlPoint(),1e-6),

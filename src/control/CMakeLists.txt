@@ -73,6 +73,11 @@ install(DIRECTORY config/
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/config)
 
 if(CATKIN_ENABLE_TESTING)
+  find_package(rostest REQUIRED)
+  add_rostest_gtest(leader_safe_relay_test test/leader_safe_relay.test
+    test/leader_safe_relay_test.cpp)
+  target_link_libraries(leader_safe_relay_test ${catkin_LIBRARIES})
+  add_dependencies(leader_safe_relay_test ${catkin_EXPORTED_TARGETS} ${ldop_EXPORTED_TARGETS})
   catkin_add_nosetests(test/test_landing_search_speed_limit.py)
   catkin_add_nosetests(test/test_dual_uav_frame_alignment.py)
   catkin_add_nosetests(test/test_follower_odom_fault_filter.py)

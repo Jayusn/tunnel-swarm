@@ -1,5 +1,6 @@
 // #include <fstream>
 #include <exploration_manager/fast_exploration_manager.h>
+#include <exploration_manager/safe_relay_publisher.h>
 #include <exploration_manager/inflation_history_escape_policy.h>
 #include <exploration_manager/entry_forward_policy.h>
 #include <thread>
@@ -2543,6 +2544,8 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
   planner_manager_->initPlanModules(nh);
   edt_environment_ = planner_manager_->edt_environment_;
   sdf_map_ = edt_environment_->sdf_map_;
+  safe_relay_ = std::make_shared<SafeRelayPublisher>();
+  safe_relay_->initialize(nh, sdf_map_, planner_manager_);
   frontier_finder_.reset(new FrontierFinder(edt_environment_, nh));
   // 2026-07-13: 初始化比赛第二阶段任务搜索层，颜色/二维码/温度接口与 frontier 生命周期解耦。
   task_search_manager_.reset(new TaskSearchManager);
@@ -4040,7 +4043,13 @@ void FastExplorationManager::reportTrajectoryCollision() {
     task_search_manager_->reportGoalFailure(last_requested_goal_);
 }
 
-void FastExplorationManager::updateMissionOdometry(const Vector3d& pos, double yaw) {
+void FastExplorationManager::updateMissionOdometry(const Vector3d& pos, double yaw,
+                                                   const ros::Time& stamp) {
+  if (safe_relay_) {
+    if (mission_workspace_lock_received_)
+      safe_relay_->setEntrance(mission_workspace_origin_, mission_workspace_dir_);
+    safe_relay_->observe(pos, yaw, stamp);
+  }
   if (manual_path_enabled_)
     manual_path_.updateOdometry(pos, manual_path_arrive_distance_);
   if (!entry_forward_complete_ && mission_workspace_lock_received_ &&

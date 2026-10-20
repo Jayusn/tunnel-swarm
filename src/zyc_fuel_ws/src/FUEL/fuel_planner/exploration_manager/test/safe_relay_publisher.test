@@ -1,0 +1,4 @@
+<launch>
+  <test test-name="safe_relay_publisher" pkg="exploration_manager"
+        type="safe_relay_publisher_test" time-limit="90"/>
+</launch>

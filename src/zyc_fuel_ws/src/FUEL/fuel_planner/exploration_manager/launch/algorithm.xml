@@ -35,6 +35,9 @@
   <node pkg="exploration_manager" name="exploration_node" type="exploration_node" output="screen">
     <!-- 原入口固定使用自动规划，避免继承上一次手填航点入口的开关。 -->
     <param name="mission/manual_path/enabled" value="false"/>
+    <rosparam command="load" file="$(find exploration_manager)/config/safe_relay.yaml"/>
+    <param name="mission/safe_relay/enabled" value="$(optenv UAV0_SAFE_RELAY_ENABLED false)"/>
+    <param name="mission/safe_relay/topic_prefix" value="$(arg topic_prefix)/mission"/>
     <remap from ="/odom_world" to="$(arg odometry_topic)"/>
     <remap from ="/map_ros/pose"   to = "$(arg sensor_pose_topic)"/> 
     <remap from ="/map_ros/depth" to = "$(arg depth_topic)"/>

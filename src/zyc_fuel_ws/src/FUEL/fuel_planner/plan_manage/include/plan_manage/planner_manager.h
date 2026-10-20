@@ -71,6 +71,9 @@ public:
   bool isRawPositionSafe(const Eigen::Vector3d& position) const;
   // 巡航爬升要求整个采样圆盘已知自由，不能把未知上方空间当成可通过。
   bool isKnownFreePosition(const Eigen::Vector3d& position) const;
+  // Relay stopping space is checked even when FUEL uses soft dynamic costs.
+  bool isRelayHoldDynamicallySafe(const Eigen::Vector3d& position, double radius,
+                                 double half_height, double horizon) const;
   // 局部脱困专用：允许少量受支撑占据采样，但只能沿采样数和ESDF净空持续改善的方向退出。
   int rawFootprintCollisionCount(const Eigen::Vector3d& position) const;
   // 统计机体下方圆盘内的受支撑占据，用于区分贴地障碍与侧墙接触。

@@ -1136,7 +1136,8 @@ void FastExplorationFSM::odometryCallback(const nav_msgs::OdometryConstPtr& msg)
   fd_->odom_yaw_ = atan2(rot_x(1), rot_x(0));
 
   // 2026-07-22: 按真实里程计连续建立任务航迹，规划失败/低频重规划时旧路过滤仍立即有效。
-  if (expl_manager_) expl_manager_->updateMissionOdometry(fd_->odom_pos_, fd_->odom_yaw_);
+  if (expl_manager_)
+    expl_manager_->updateMissionOdometry(fd_->odom_pos_, fd_->odom_yaw_, msg->header.stamp);
 
   fd_->have_odom_ = true;
 }

@@ -57,6 +57,8 @@
   <exec_depend>mavros_msgs</exec_depend>
   <exec_depend>ldop</exec_depend>
 
+  <test_depend>rostest</test_depend>
+
   <export>
   </export>
 </package>

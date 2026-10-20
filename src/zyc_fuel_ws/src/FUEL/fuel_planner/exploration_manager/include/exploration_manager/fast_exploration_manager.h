@@ -24,6 +24,7 @@ class SDFMap;
 class FastPlannerManager;
 class FrontierFinder;
 class TaskSearchManager;
+class SafeRelayPublisher;
 struct ExplorationParam;
 struct ExplorationData;
 
@@ -49,7 +50,8 @@ public:
   // 2026-07-13: 执行轨迹预测碰撞时把当前任务目标加入失败冷却，防止下一周期再次选择同一危险点。
   void reportTrajectoryCollision();
   // 2026-07-22: 由FSM里程计回调连续更新任务航迹，旧路判断不再只依赖稀疏重规划时刻。
-  void updateMissionOdometry(const Vector3d& pos, double yaw);
+  void updateMissionOdometry(const Vector3d& pos, double yaw,
+                             const ros::Time& stamp = ros::Time(0));
   bool consumeRcSearchLandingStartRequest();
   bool shouldStartInflationHistoryEscape(const Vector3d& odom_pos) const;
   bool detectMappedTurnDuringExecution(double yaw, Vector3d& direction);
@@ -94,6 +96,7 @@ private:
   friend class TurnEscapeTest;
   shared_ptr<EDTEnvironment> edt_environment_;
   shared_ptr<SDFMap> sdf_map_;
+  shared_ptr<SafeRelayPublisher> safe_relay_;
   // 2026-07-13: 门后第二阶段由任务搜索模块维护覆盖、重复站点和三类作业目标，FUEL 降级为地图与轨迹后端。
   shared_ptr<TaskSearchManager> task_search_manager_;
   bool mission_entered_search_region_{false};

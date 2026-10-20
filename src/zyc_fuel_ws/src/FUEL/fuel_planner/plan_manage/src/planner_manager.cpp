@@ -153,6 +153,32 @@ bool FastPlannerManager::fappPositionSafe(const Eigen::Vector3d& point,
   return true;
 }
 
+bool FastPlannerManager::isRelayHoldDynamicallySafe(
+    const Eigen::Vector3d& point, double radius, double half_height, double horizon) const {
+  if (!point.allFinite() || !std::isfinite(horizon) || horizon <= 0.0 ||
+      !std::isfinite(radius) || radius <= 0.0 ||
+      !std::isfinite(half_height) || half_height <= 0.0) return false;
+  if (!fapp_config_.enabled) return true;
+  auto config = fapp_config_;
+  config.vehicle_radius = std::max(config.vehicle_radius, radius);
+  config.vehicle_half_height = std::max(config.vehicle_half_height, half_height);
+  const double reference = ros::Time::now().toSec();
+  const int steps = std::max(1, static_cast<int>(std::ceil(horizon / 0.1)));
+  const double dt = horizon / steps;
+  for (const auto& obstacle : fapp_states_) {
+    auto swept_config = config;
+    // Cover motion between time samples as well as the sampled obstacle centres.
+    swept_config.margin += obstacle.velocity.norm() * dt * 0.5;
+    for (int i = 0; i <= steps; ++i) {
+      double clearance;
+      if (fuel_fapp::evaluateDynamicObstacle(point, obstacle, reference + i * dt,
+                                             reference, swept_config, &clearance) &&
+          clearance <= 0.0) return false;
+    }
+  }
+  return true;
+}
+
 bool FastPlannerManager::fappGuidePath(std::vector<Eigen::Vector3d>& path) const {
   // Planner priority retains the B-spline dynamic cost without requiring a clear guide.
   if (fapp_planner_priority_ || !fapp_config_.enabled || fapp_states_.empty() || path.size()<2) return true;

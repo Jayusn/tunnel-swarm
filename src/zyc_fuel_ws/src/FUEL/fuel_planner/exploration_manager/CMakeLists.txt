@@ -53,6 +53,7 @@ add_executable(exploration_node
   src/exploration_node.cpp 
   src/fast_exploration_fsm.cpp
   src/fast_exploration_manager.cpp
+  src/safe_relay_publisher.cpp
   # 2026-07-13: 编译比赛第二阶段任务搜索模块，frontier 仅作为辅助候选。
   src/task_search_manager.cpp
   )
@@ -89,8 +90,15 @@ target_link_libraries(load_obj
 
 if(CATKIN_ENABLE_TESTING)
   find_package(rostest REQUIRED)
+  add_executable(safe_relay_policy_test test/safe_relay_policy_test.cpp)
+  add_test(NAME safe_relay_policy_test COMMAND safe_relay_policy_test)
+  add_rostest_gtest(safe_relay_publisher_test test/safe_relay_publisher.test
+    test/safe_relay_publisher_test.cpp src/safe_relay_publisher.cpp)
+  target_link_libraries(safe_relay_publisher_test ${catkin_LIBRARIES})
+  add_dependencies(safe_relay_publisher_test ${catkin_EXPORTED_TARGETS})
   add_rostest_gtest(turn_escape_test test/turn_escape.test test/turn_escape_test.cpp
-    src/fast_exploration_manager.cpp src/task_search_manager.cpp src/fast_exploration_fsm.cpp)
+    src/fast_exploration_manager.cpp src/task_search_manager.cpp src/fast_exploration_fsm.cpp
+    src/safe_relay_publisher.cpp)
   target_link_libraries(turn_escape_test ${catkin_LIBRARIES})
   add_dependencies(turn_escape_test ${catkin_EXPORTED_TARGETS})
   add_executable(corridor_curve_heading_test test/corridor_curve_heading_test.cpp)

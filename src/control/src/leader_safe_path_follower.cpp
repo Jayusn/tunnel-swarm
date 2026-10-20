@@ -1,12 +1,14 @@
-// 2026-07-16: 后机改为任务接力模式：门前原位等待，发布门点、滚动内部点和终点；
-// 2026-07-16: 稀疏任务点只负责通信和阶段同步，点间运动沿前机实飞稠密折线执行，禁止直连跨墙。
-// 2026-07-16: 取消固定5点上限；内部点可持续释放，只有真实降落请求才结束内部点生成并追加终点。
+// 普通接力点由前机根据实飞轨迹和当前地图发布；本节点消费、排序并交给后机 Diff。
+// 已检查的接力点保留 XYZ，不再后移/改高或降级成未经检查的短停点。
+// 入门、出口和降落阶段继续使用已有任务交接。
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <deque>
 #include <limits>
+#include <map>
+#include <set>
 #include <sstream>  // 2026-07-28: 解析Diff返回的实际安全目标坐标。
 #include <stdexcept>
 #include <string>
@@ -33,6 +35,7 @@ struct RoutePoint {
   double yaw{0.0};
   // 2026-07-15: 记录前机从起飞后的累计路程，用于“离开候选点1m后再释放”的离散接力逻辑。
   double progress{0.0};
+  uint32_t safe_relay_id{0U};  // Nonzero only for a map-qualified leader goal.
 };
 
 struct DynamicObstacleSample {
@@ -123,6 +126,9 @@ class LeaderSafePathFollower {
     // 2026-07-16: 接力点使用前机任务命名空间公开，后续实机可直接将该Path桥接给第二架无人机。
     pnh_.param<std::string>("relay_path_topic", relay_path_topic_,
                             "/UAV0/mission/relay_waypoints");
+    pnh_.param("safe_relay_timeout", safe_relay_timeout_, 1.0);
+    if (!std::isfinite(safe_relay_timeout_) || safe_relay_timeout_ <= 0.0)
+      throw std::runtime_error("safe_relay_timeout must be finite and positive");
     const std::string alignment_prefix = "/dual_uav_frame_alignment";
     if (!nh_.getParam(alignment_prefix + "/mission_frame", world_frame_) ||
         !nh_.getParam(alignment_prefix + "/follower/x", follower_alignment_x_) ||
@@ -235,7 +241,6 @@ class LeaderSafePathFollower {
     pnh_.param("relay_release_distance", relay_release_distance_, 1.00);
     // 门点和内部点都等前机沿路线清空1.00m，再叠加实时双机1m净距门槛。
     pnh_.param("door_release_inside_distance", door_release_inside_distance_, 1.00);
-    pnh_.param("relay_waypoint_spacing", relay_waypoint_spacing_, 2.50);
     pnh_.param("relay_arrive_radius", relay_arrive_radius_, 0.25);
     pnh_.param("relay_arrive_z_tolerance", relay_arrive_z_tolerance_, 0.20);
     // 最终降落点保留停驻净空；普通接力点另用小体素检查，不能让侧墙否决狭窄通道。
@@ -322,7 +327,10 @@ class LeaderSafePathFollower {
     follower_safety_hold_pub_ =
         nh_.advertise<std_msgs::Bool>("/UAV1/planning/safety_hold", 1, true);
     route_pub_ = pnh_.advertise<nav_msgs::Path>("leader_safe_route", 1, true);
-    relay_path_pub_ = nh_.advertise<nav_msgs::Path>(relay_path_topic_, 1, true);
+    // The leader is the sole publisher of qualified points; this is only our execution queue.
+    relay_path_pub_ = nh_.advertise<nav_msgs::Path>("/UAV1/mission/relay_execution_queue", 1, true);
+    safe_relay_sub_ = nh_.subscribe(relay_path_topic_, 1,
+                                    &LeaderSafePathFollower::safeRelayCallback, this);
     target_pub_ = pnh_.advertise<visualization_msgs::Marker>("target_marker", 1);
     state_pub_ = pnh_.advertise<visualization_msgs::Marker>("state_marker", 1);
     timer_ = nh_.createTimer(ros::Duration(0.05), &LeaderSafePathFollower::timerCallback, this);
@@ -331,17 +339,18 @@ class LeaderSafePathFollower {
     ROS_INFO("[safe_follower] relay ready: executor=%s continuous_before_exit=%d follow=%.2fm, "
              "door + rolling internal + terminal, "
              "internal_limit=%d (0=unlimited), "
-             "release=%.2fm actual_separation_gate=%.2fm spacing=%.2fm "
+             "door_release=%.2fm actual_separation_gate=%.2fm ordinary_source=leader_map "
              "alignment=(%.2f,%.2f,%.2f, yaw=%.3f)",
              use_diff_planner_ ? "UAV1_DIFF" : "LEGACY_POSITION_COMMAND",
              static_cast<int>(continuous_follow_before_exit_), follow_distance_,
              max_internal_relay_points_, relay_release_distance_,
-             waypoint_release_min_separation_, relay_waypoint_spacing_,
+             waypoint_release_min_separation_,
              follower_alignment_x_, follower_alignment_y_, follower_alignment_z_,
              follower_alignment_yaw_);
   }
 
  private:
+  friend class LeaderSafeRelayTest;
   // UAV1检测阶段状态锁存发布，供运行监控和后续LDOP门控扩展。
   void setFollowerDetectionEnable(bool active, const char* reason, bool force = false) {
     if (!force && follower_detection_enabled_ == active) return;
@@ -470,7 +479,6 @@ class LeaderSafePathFollower {
         terminal_mode_active_)
       return;
     if (!relayWaypointSeparationReady("EXIT")) return;
-    pending_relay_valid_ = false;
     confirmed_exit_.progress = nearestRouteProgress(confirmed_exit_.position);
     exit_waypoint_index_ = relay_waypoints_.size();
     appendRelayWaypoint(confirmed_exit_, "EXIT");
@@ -547,7 +555,6 @@ class LeaderSafePathFollower {
     }
     if (!relayWaypointSeparationReady("OUTSIDE_WAIT")) return;
 
-    pending_relay_valid_ = false;
     front_scan_anchor_.progress = nearestRouteProgress(front_scan_anchor_.position);
     exit_waypoint_index_ = relay_waypoints_.size();
     appendRelayWaypoint(front_scan_anchor_, "OUTSIDE_WAIT");
@@ -577,9 +584,8 @@ class LeaderSafePathFollower {
 
   void appendRelayWaypoint(const RoutePoint& point, const char* label) {
     RoutePoint follower_point = point;
-    // 2026-07-24: 对外Path中的普通门点/接力点也明确写成后机0.65m高度，
-    // 不再把前机可能退化的z伪装成需要后机执行的三维坐标。
-    if (std::string(label) != "TERMINAL")
+    // 任务交接点沿用原高度约定；前机地图检查过的接力点必须保留实测 XYZ。
+    if (std::string(label) != "TERMINAL" && point.safe_relay_id == 0U)
       follower_point.position = followerCruisePointToWorld(point.position);
     relay_waypoints_.push_back(follower_point);
     publishRelayPath();
@@ -660,7 +666,6 @@ class LeaderSafePathFollower {
     terminal_arrival_stamp_ = ros::Time(0);
 
     // 2026-07-16: 终点只由真实降落请求触发，并排在全部已发布接力点之后，不能越过队列直冲终点。
-    pending_relay_valid_ = false;
     terminal_waypoint_index_ = relay_waypoints_.size();
     appendRelayWaypoint(terminal_target_world_, "TERMINAL");
 
@@ -831,7 +836,6 @@ class LeaderSafePathFollower {
             consecutive_backward_distance_ = 0.0;
           if (consecutive_backward_distance_ >= backtrack_pause_distance_) {
             relay_route_paused_ = true;
-            pending_relay_valid_ = false;
           }
           ROS_WARN_THROTTLE(
               1.0,
@@ -857,7 +861,6 @@ class LeaderSafePathFollower {
                            : std::hypot(point.position.x - route_.back().position.x,
                                         point.position.y - route_.back().position.y);
         if (!route_.empty() && distance_to_route_end > route_resume_radius_) {
-          pending_relay_valid_ = false;
           ROS_WARN_THROTTLE(
               1.0,
               "[safe_follower] IGNORE leader backtrack/rejoin distance_to_route_end=%.2fm; "
@@ -886,7 +889,6 @@ class LeaderSafePathFollower {
         // 2026-07-20: 即使机头已经转过来“正着飞”，只要正在重走历史路线仍属于回头路；
         // 暂停接力记录，避免后机再次执行前机走过的旧分支。
         relay_route_paused_ = true;
-        pending_relay_valid_ = false;
         ROS_ERROR_THROTTLE(
             1.0,
             "[safe_follower] IGNORE revisited leader route near old path; no relay waypoint released.");
@@ -917,32 +919,89 @@ class LeaderSafePathFollower {
       door_waypoint_released_ = true;
       // 2026-07-27: 与“发布入门目标后开始检测”一致；门外预扫描不会写入UAV1背景。
       setFollowerDetectionEnable(true, "door waypoint released");
-      last_relay_selection_progress_ = confirmed_door_.progress;
       return;
     }
 
     // 2026-07-28: 最终出口门心已排队后不再生成门外内部点；稠密实飞路线仍继续记录供终点接力使用。
     if (exit_waypoint_released_) return;
 
-    // 2026-07-16: 0或负数表示任务全程滚动发点；正数仅保留为调试时的可选安全上限。
-    if (max_internal_relay_points_ > 0 &&
-        internal_relay_count_ >= max_internal_relay_points_) {
+    // Ordinary points are selected by UAV0 using its current map and measured XYZ.
+    enqueueSafeRelay();
+  }
+
+  bool activeSafeRelay() const {
+    return active_relay_index_ < relay_waypoints_.size() &&
+           relay_waypoints_[active_relay_index_].safe_relay_id != 0U;
+  }
+
+  bool safeRelayFresh() const {
+    return !safe_relay_fault_ && safe_relay_live_messages_ >= 2 &&
+           !safe_relay_received_.isZero() &&
+           (ros::Time::now() - safe_relay_received_).toSec() <= safe_relay_timeout_;
+  }
+
+  bool activeSafeRelayValid() const {
+    return !activeSafeRelay() ||
+        (safeRelayFresh() && safe_relay_valid_ids_.count(
+            relay_waypoints_[active_relay_index_].safe_relay_id) != 0U);
+  }
+
+  void safeRelayCallback(const nav_msgs::Path::ConstPtr& msg) {
+    // Header stamp identifies one producer run. Require two advancing heartbeat
+    // sequences so a single old latched message cannot start a new follower.
+    if (msg->header.frame_id != world_frame_ || msg->header.stamp.isZero()) return;
+    if (!safe_relay_session_.isZero() && msg->header.stamp != safe_relay_session_) {
+      safe_relay_fault_ = true;
+      ROS_ERROR_THROTTLE(1.0, "[safe_follower] safe relay producer restarted; reinitialize mission before resuming.");
       return;
     }
-    if (!pending_relay_valid_ &&
-        point.progress - last_relay_selection_progress_ >= relay_waypoint_spacing_) {
-      // 2026-07-15: 先锁定候选A，但此时不发布；继续观察前机真实走过1m后才确认这段可通行。
-      pending_relay_ = point;
-      pending_relay_valid_ = true;
-      ROS_WARN("[safe_follower] pending internal waypoint at progress %.2fm; wait leader clear %.2fm.",
-               pending_relay_.progress, relay_release_distance_);
+    if (!safe_relay_session_.isZero() && msg->header.seq <= safe_relay_sequence_) return;
+    if (safe_relay_received_.isZero() ||
+        (ros::Time::now() - safe_relay_received_).toSec() > safe_relay_timeout_)
+      safe_relay_live_messages_ = 0;
+    safe_relay_session_ = msg->header.stamp;
+    safe_relay_sequence_ = msg->header.seq;
+    safe_relay_received_ = ros::Time::now();
+    ++safe_relay_live_messages_;
+    std::set<uint32_t> valid;
+    uint32_t previous = 0;
+    for (const auto& pose : msg->poses) {
+      const auto& p = pose.pose.position;
+      const uint32_t id = pose.header.seq;
+      if (id <= previous || pose.header.frame_id != world_frame_ ||
+          !std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) ||
+          !std::isfinite(yawFromQuaternion(pose.pose.orientation))) {
+        safe_relay_fault_ = true;
+        return;
+      }
+      previous = id;
+      auto existing = safe_relay_points_.find(id);
+      if (existing != safe_relay_points_.end() &&
+          distance3d(existing->second.pose.position, p) > 1e-6) {
+        safe_relay_fault_ = true;
+        return;
+      }
+      safe_relay_points_[id] = pose;
+      valid.insert(id);
     }
-    if (pending_relay_valid_ &&
-        point.progress - pending_relay_.progress >= relay_release_distance_) {
-      if (!relayWaypointSeparationReady("INTERNAL")) return;
-      appendRelayWaypoint(pending_relay_, "INTERNAL");
-      last_relay_selection_progress_ = pending_relay_.progress;
-      pending_relay_valid_ = false;
+    safe_relay_valid_ids_ = std::move(valid);  // Missing IDs are invalid, including an empty snapshot.
+    enqueueSafeRelay();
+  }
+
+  void enqueueSafeRelay() {
+    if (!safeRelayFresh() || !door_waypoint_released_ || terminal_mode_active_ ||
+        exit_waypoint_released_) return;
+    if (!relayWaypointSeparationReady("INTERNAL")) return;
+    while (safe_relay_valid_ids_.count(safe_relay_next_id_) != 0U) {
+      if (max_internal_relay_points_ > 0 && internal_relay_count_ >= max_internal_relay_points_)
+        return;
+      const auto& pose = safe_relay_points_.at(safe_relay_next_id_);
+      RoutePoint point;
+      point.position = pose.pose.position;
+      point.yaw = yawFromQuaternion(pose.pose.orientation);
+      point.progress = nearestRouteProgress(point.position);
+      point.safe_relay_id = safe_relay_next_id_++;
+      appendRelayWaypoint(point, "SAFE_RELAY");
       ++internal_relay_count_;
     }
   }
@@ -1150,6 +1209,39 @@ class LeaderSafePathFollower {
     std::istringstream stream(msg->data);
     std::string status;
     stream >> status;
+    if (activeSafeRelay()) {
+      if (!activeSafeRelayValid() || !diff_goal_published_ ||
+          diff_goal_index_ != active_relay_index_) {
+        setDiffWaitPositionHold(true, "safe relay invalid or no matching goal");
+        return;
+      }
+      if (status == "PLANNING_FAILED" || status == "GOAL_REJECTED_OUTSIDE_MAP") {
+        // No short unqualified stopping subgoal and no automatic FIFO skip.
+        setDiffWaitPositionHold(true, status);
+        diff_goal_published_ = false;
+        diff_plan_response_received_ = false;
+        diff_accepted_goal_valid_ = false;
+        diff_recovery_requested_ = diff_recovery_goal_valid_ = false;
+        return;
+      }
+      if (status == "TRAJECTORY_PUBLISHED") {
+        geometry_msgs::Point accepted;
+        const auto expected = worldToFollower(relay_waypoints_[active_relay_index_].position);
+        if (!(stream >> accepted.x >> accepted.y >> accepted.z) ||
+            !std::isfinite(accepted.x) || !std::isfinite(accepted.y) ||
+            !std::isfinite(accepted.z) || distance3d(accepted, expected) > 0.03) {
+          setDiffWaitPositionHold(true, "Diff changed qualified relay endpoint");
+          diff_goal_published_ = false;
+          diff_plan_response_received_ = false;
+          diff_accepted_goal_valid_ = false;
+          return;
+        }
+        diff_accepted_goal_local_ = expected;
+        diff_accepted_goal_valid_ = true;
+        setDiffWaitPositionHold(false, "qualified relay trajectory published");
+      }
+      return;
+    }
     // 2026-07-28: 连续规划失败或目标越界时请求短子目标；成功记住Diff修正后的落点。
     if (status == "PLANNING_FAILED" || status == "GOAL_REJECTED_OUTSIDE_MAP") {
       // 2026-07-28: 原轨迹规划失败后立刻丢弃残余速度并锁点，恢复子目标被接受前不允许漂移。
@@ -1951,14 +2043,21 @@ class LeaderSafePathFollower {
     const bool terminal_relay = terminal_mode_active_ &&
                                 active_relay_index_ == terminal_waypoint_index_;
     RoutePoint follower_target_world = desired_world;
-    if (!terminal_relay) {
+    if (!terminal_relay && !activeSafeRelay()) {
       follower_target_world.position =
           followerTargetWorld(desired_world.position, desired_world.yaw);
     }
     const geometry_msgs::Point desired_local =
-        terminal_relay ? worldToFollower(follower_target_world.position)
+        (terminal_relay || activeSafeRelay()) ? worldToFollower(follower_target_world.position)
                        : useFollowerCruiseHeight(worldToFollower(follower_target_world.position));
     const geometry_msgs::Point& current_local = follower_odom_.pose.pose.position;
+
+    if (activeSafeRelay()) {
+      diff_recovery_requested_ = diff_recovery_goal_valid_ = false;
+      if (!diff_goal_published_ && diff_goal_index_ == active_relay_index_ &&
+          !diff_goal_publish_stamp_.isZero() &&
+          (now - diff_goal_publish_stamp_).toSec() < diff_goal_retry_period_) return true;
+    }
 
     // 2026-07-28: 原接力点连续失败后，从前机已经实飞的稠密路线取短前视点；
     // 到达一个短点后再向前取下一个，最终仍以原接力点作为完成判据。
@@ -2180,6 +2279,17 @@ class LeaderSafePathFollower {
       return;
     }
     // 2026-07-27: 卡死恢复优先于正常连续/离散跟随，避免正常目标每50ms覆盖脱困指令。
+    enqueueSafeRelay();
+    if (activeSafeRelay()) {
+      if (!use_diff_planner_ || !activeSafeRelayValid()) {
+        setDiffWaitPositionHold(true, "qualified relay stale/invalid or Diff disabled");
+        diff_goal_published_ = false;
+        diff_accepted_goal_valid_ = false;
+        relay_arrival_stamp_ = diff_endpoint_capture_stamp_ = ros::Time(0);
+        publishState("WAIT_VALID_LEADER_RELAY", 1.0, 0.3, 0.0);
+        return;
+      }
+    }
     if (handleStuckRecovery(now)) return;
     if (!leader_started_) {
       hold("leader mission not started");
@@ -2456,6 +2566,7 @@ class LeaderSafePathFollower {
   ros::NodeHandle nh_;
   ros::NodeHandle pnh_;
   ros::Subscriber leader_odom_sub_, follower_odom_sub_, follower_cloud_sub_;
+  ros::Subscriber safe_relay_sub_;
   ros::Subscriber diff_command_sub_;  // 2026-07-28: UAV1实际轨迹输出存活监测，不参与发布。
   ros::Subscriber dynamic_obstacle_sub_;  // UAV1 LDOP结构化目标状态。
   ros::Subscriber leader_landing_target_sub_, leader_landing_request_sub_, door_pose_sub_;
@@ -2475,7 +2586,7 @@ class LeaderSafePathFollower {
   nav_msgs::Odometry leader_odom_, follower_odom_;
   geometry_msgs::PoseStamped leader_landing_target_;
   RoutePoint terminal_target_world_, confirmed_door_, confirmed_exit_,
-      front_scan_anchor_, pending_relay_;
+      front_scan_anchor_;
   RoutePoint assigned_follower_target_;
   sensor_msgs::PointCloud2::ConstPtr follower_cloud_;
   std::vector<DynamicObstacleSample> retained_dynamic_obstacles_;
@@ -2484,6 +2595,13 @@ class LeaderSafePathFollower {
   std::deque<RoutePoint> turn_candidate_route_;
   // 2026-07-16: relay_waypoints_ 是实际下发给后机的门点、滚动内部点和真实终点。
   std::vector<RoutePoint> relay_waypoints_;
+  std::map<uint32_t, geometry_msgs::PoseStamped> safe_relay_points_;
+  std::set<uint32_t> safe_relay_valid_ids_;
+  ros::Time safe_relay_session_, safe_relay_received_;
+  uint32_t safe_relay_sequence_{0}, safe_relay_next_id_{1};
+  int safe_relay_live_messages_{0};
+  bool safe_relay_fault_{false};
+  double safe_relay_timeout_{1.0};
   ros::Time leader_odom_stamp_, follower_odom_stamp_, follower_odom_sample_stamp_, cloud_stamp_;
   ros::Time dynamic_obstacle_receive_stamp_, retained_dynamic_obstacle_stamp_;
   std::string leader_odom_topic_, follower_odom_topic_, follower_cloud_topic_;
@@ -2524,7 +2642,6 @@ class LeaderSafePathFollower {
   bool have_front_scan_anchor_{false};
   bool down_search_wait_requested_{false};
   bool outside_wait_waypoint_released_{false}, outside_wait_arrived_{false};
-  bool pending_relay_valid_{false};
   bool continuous_follow_before_exit_{true}, leader_outside_exit_{false};
   bool enable_search_landing_{false};
   // 2026-07-20: 接力路线判向、回头暂停和恢复状态独立于前机原始Odometry保存。
@@ -2584,7 +2701,6 @@ class LeaderSafePathFollower {
   double last_command_dx_{0.0}, last_command_dy_{0.0}, recovery_yaw_{0.0};
   int obstacle_min_points_{3};
   double relay_release_distance_{1.00}, door_release_inside_distance_{1.00};
-  double relay_waypoint_spacing_{2.50};
   double relay_arrive_radius_{0.25}, relay_arrive_z_tolerance_{0.20};
   // 终点仍使用较大停驻净空；普通接力点只查落点小体素并允许安全附件到达。
   double relay_endpoint_clearance_radius_{0.38}, relay_endpoint_z_margin_{0.28};
@@ -2596,7 +2712,7 @@ class LeaderSafePathFollower {
   double follower_horizontal_speed_{0.0}, follower_vertical_speed_{0.0};
   int relay_endpoint_min_points_{2};
   int relay_point_occupied_min_points_{2};
-  double leader_route_progress_{0.0}, last_relay_selection_progress_{0.0};
+  double leader_route_progress_{0.0};
   int max_internal_relay_points_{0}, internal_relay_count_{0};
   std::size_t active_relay_index_{0}, terminal_waypoint_index_{std::numeric_limits<std::size_t>::max()};
   std::size_t exit_waypoint_index_{std::numeric_limits<std::size_t>::max()};  // 2026-07-28: 到达后关闭通道动态检测。
