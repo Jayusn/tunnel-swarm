@@ -3,6 +3,7 @@
 #include <iostream>
 #include <fstream>
 #include <exploration_manager/fast_exploration_manager.h>
+#include <exploration_manager/fast_exploration_fsm.h>
 #include <exploration_manager/task_search_manager.h>
 #include <string>
 #include <utility>
@@ -59,6 +60,78 @@ class TurnEscapeTest {
     manager.task_search_manager_->initialize(nh);
   }
 public:
+  static void checkPublishedCorridorExecution(FastExplorationManager& manager) {
+    // 使用真正已生成的轨迹，分别经过执行 FSM 和独立安全回调。
+    FastExplorationFSM fsm;
+    fsm.expl_manager_ = std::shared_ptr<FastExplorationManager>(
+        &manager, [](FastExplorationManager*) {});
+    fsm.planner_manager_ = manager.planner_manager_;
+    fsm.fd_ = std::make_shared<FSMData>();
+    fsm.fp_ = std::make_shared<FSMParam>();
+    fsm.fd_->state_str_ = {"INIT", "WAIT", "PLAN", "PUB", "EXEC", "FINISH"};
+    fsm.fp_->replan_thresh1_ = 1.0;
+    fsm.fp_->replan_thresh2_ = 0.0;
+    fsm.fp_->replan_thresh3_ = 0.0;
+    fsm.fp_->tracking_error_grace_time_ = 1000.0;
+    fsm.fp_->max_tracking_error_xy_ = 1.0;
+    fsm.fp_->max_tracking_error_z_ = 1.0;
+    fsm.fp_->emergency_brake_horizon_ = 0.12;
+    fsm.classic_ = false;
+    fsm.narrow_corridor_stage_ = true;
+    fsm.active_traj_valid_ = true;
+    fsm.active_traj_ = manager.planner_manager_->local_data_;
+    fsm.active_traj_.start_time_ = ros::Time::now() -
+        ros::Duration(fsm.active_traj_.duration_ - 0.5);
+    fsm.state_ = EXEC_TRAJ;
+    fsm.FSMCallback(ros::TimerEvent());
+    check(fsm.state_ == EXEC_TRAJ,
+          "near-end or periodic replan replaced an unfinished corridor route");
+
+    fsm.fd_->odom_pos_ = fsm.active_traj_.position_traj_.evaluateDeBoorT(
+        fsm.active_traj_.duration_ - 0.5);
+    fsm.fd_->odom_yaw_ = 0.0;
+    auto& task = *manager.task_search_manager_;
+    task.curve_heading_active_ = true;
+    task.curve_origin_ = fsm.fd_->odom_pos_;
+    const double reference_yaw = fsm.active_traj_.yaw_traj_.evaluateDeBoorT(
+        fsm.active_traj_.duration_ - 0.5)[0];
+    task.curve_forward_ = Eigen::Vector2d(std::cos(reference_yaw + 0.8),
+                                        std::sin(reference_yaw + 0.8));
+    task.curve_geometry_.center.setZero();
+    check(manager.shouldReplanCurveHeading(fsm.fd_->odom_pos_, reference_yaw),
+          "fixture did not request a new corridor heading");
+    fsm.last_suspended_underpass_check_ = ros::Time::now() + ros::Duration(30.0);
+    fsm.safetyCallback(ros::TimerEvent());
+    check(fsm.state_ == EXEC_TRAJ && !fsm.active_traj_braked_,
+          "heading update replaced a collision-free published corridor route");
+
+    fsm.active_traj_.start_time_ = ros::Time::now() -
+        ros::Duration(fsm.active_traj_.duration_ - 0.02);
+    fsm.FSMCallback(ros::TimerEvent());
+    check(fsm.state_ == PLAN_TRAJ, "completed corridor route never resumed planning");
+
+    // 路线保持不能屏蔽新出现的占据：安全回调必须立刻刹停并交回规划。
+    fsm.state_ = EXEC_TRAJ;
+    fsm.active_traj_.start_time_ = ros::Time::now();
+    fsm.fd_->odom_pos_ = fsm.active_traj_.position_traj_.evaluateDeBoorT(0.0);
+    const Vector3d blocked = fsm.active_traj_.position_traj_.evaluateDeBoorT(
+        fsm.active_traj_.duration_);
+    pcl::PointCloud<pcl::PointXYZ> cloud;
+    for (double x=-0.075; x<=0.075; x+=0.025)
+      for (double y=-0.075; y<=0.075; y+=0.025)
+        for (double z=-0.075; z<=0.075; z+=0.025)
+          cloud.push_back(pcl::PointXYZ(blocked.x()+x, blocked.y()+y, blocked.z()+z));
+    for (int i=0; i<8; ++i)
+      manager.sdf_map_->inputPointCloud(cloud, cloud.size(), fsm.fd_->odom_pos_);
+    manager.sdf_map_->updateESDF3d();
+    ros::NodeHandle nh("~");
+    fsm.emergency_brake_pub_ = nh.advertise<std_msgs::Int32>("test_route_brake", 1);
+    fsm.safetyCallback(ros::TimerEvent());
+    check(fsm.active_traj_braked_ && fsm.state_ == PLAN_TRAJ &&
+          !fsm.keepExecutingCorridorTrajectory(),
+          "committed route ignored a newly observed collision");
+  }
+
   static void runUnderpassClassification(bool pillar, bool known_low_space,
                                          bool missing_low_layer = false,
                                          bool discover_support = false,
@@ -497,7 +570,7 @@ public:
     ViewNode::caster_->setParams(manager.sdf_map_->getResolution(), map_origin);
     nh.setParam("frontier/cluster_min", 1000000);
     manager.frontier_finder_ = std::make_shared<FrontierFinder>(manager.edt_environment_, nh);
-    // 动态入口飞行已完成一米推进，可能还未进入静态搜索框；同样必须先比较宽度。
+    // 动态入口已完成推进：有原绕行侧时先续接，无原侧时才比较宽度。
     manager.mission_entered_search_region_ = fallback_only;
     manager.entry_forward_complete_ = !fallback_only;
     manager.ep_->mission_use_forward_fallback_ = true;
@@ -565,10 +638,12 @@ public:
               << " widths=" << split.left_width << "," << split.right_width
               << " next=" << next.transpose()
               << " remembered=" << manager.recovery_side_dir_.transpose() << std::endl;
-    check((next-start).y()*wide_side >= 0.10 &&
+    const double expected_side = remember_side ? -wide_side : wide_side;
+    check((next-start).y()*expected_side >= 0.10 &&
           std::fabs(next.z()-start.z()) < 0.05 &&
-          manager.recovery_side_dir_.y()*wide_side > 0.9,
-          "old narrow-side preference overrode the current pillar's feasible wider lane");
+          manager.recovery_side_dir_.y()*expected_side > 0.9,
+          "width comparison replaced a feasible remembered side or initial choice ignored width");
+    if (!fallback_only && !remember_side) checkPublishedCorridorExecution(manager);
   }
 
   static void runSideRecovery(double side, bool block_side) {
@@ -680,7 +755,8 @@ public:
           "clear same-side lane did not resume forward motion");
     Vector3d passed = end;
     passed.x() = manager.recovery_side_origin_.x() +
-                 manager.wide_side_bypass_release_distance_ + 0.05;
+                 (manager.wide_side_bypass_active_ ? manager.wide_side_bypass_release_distance_
+                                                   : manager.recovery_side_release_distance_) + 0.05;
     // 模拟通过柱子后从当前位置补扫前方，不能用尚未观测的远端 FREE 作断言。
     cloud.clear();
     for (double y=-1.3; y<=1.3; y+=0.025)
@@ -972,15 +1048,15 @@ TEST(SideRecovery, BlockedSameSideYieldsToExistingRecovery) {
   fast_planner::TurnEscapeTest::runSideRecovery(1.0, true);
 }
 
-TEST(SideRecovery, CurrentWiderRightLaneOverridesOldLeftBeforeFrontier) {
+TEST(SideRecovery, FeasibleOrdinaryLeftRouteSurvivesWiderRightLane) {
   fast_planner::TurnEscapeTest::runWiderSideRecovery(-1.0, false);
 }
 
-TEST(SideRecovery, CurrentWiderLeftLaneOverridesOldRightBeforeFrontier) {
+TEST(SideRecovery, FeasibleOrdinaryRightRouteSurvivesWiderLeftLane) {
   fast_planner::TurnEscapeTest::runWiderSideRecovery(1.0, false);
 }
 
-TEST(SideRecovery, DisconnectedFrontierUsesWiderLaneBeforeOldSide) {
+TEST(SideRecovery, DisconnectedFrontierKeepsFeasibleRememberedSide) {
   fast_planner::TurnEscapeTest::runWiderSideRecovery(-1.0, true);
   fast_planner::TurnEscapeTest::runWiderSideRecovery(1.0, true);
 }

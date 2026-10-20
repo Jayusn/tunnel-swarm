@@ -1433,9 +1433,9 @@ bool FastExplorationManager::buildWideSideBypass(
   if (!wide_side_bypass_enabled_ || !sdf_map_ || !planner_manager_ ||
       forward.head<2>().norm() < 1e-3)
     return false;
-  // 只延续本次按宽度选定的绕障；旧路线留下的侧向偏好仍要重新比较宽度。
-  // 原侧短路不再安全时，continuation 会释放它，本轮即可重新选侧。
-  if (wide_side_bypass_active_ && recovery_side_latched_ &&
+  // 普通规划与宽侧模块选出的绕行都先续接原侧，不能因另一侧测得更宽就换边。
+  // 通过障碍或原侧短路不可行时，continuation 释放侧向，本轮才重新比较宽度。
+  if (recovery_side_latched_ &&
       buildSideRecoveryContinuation(pos, cur_yaw, next_pos, next_yaw)) {
     split_obstacle_detected = true;
     return true;
@@ -2987,7 +2987,7 @@ int FastExplorationManager::planExploreMotion(
         task_search_manager_->buildStage3Goal(pos, yaw[0], false, next_pos, next_yaw);
   }
 
-  // 每个当前高度障碍均先按通路间距选侧，再比较该侧路径净空；不依赖旧侧向记忆。
+  // 优先延续当前可行绕行侧；原侧不可行或已通过后，才按当前通路间距重新选侧。
   // 不抢占入口、出口和已启动的垂直避障。
   if (!use_vertical_detour_target && !use_forced_entry_target &&
       !use_stage3_target && !use_mission_forward_fallback &&
@@ -3001,6 +3001,8 @@ int FastExplorationManager::planExploreMotion(
         buildWideSideBypass(pos, yaw[0], forward, next_pos, next_yaw,
                             current_split_detected)) {
       use_mission_forward_fallback = true;
+      // buildWideSideBypass 内部也可能返回已检查的同侧直线续接。
+      use_center_gate_target = recovery_side_continuation_pending_;
     } else if (buildSideRecoveryContinuation(pos, yaw[0], next_pos, next_yaw)) {
       use_mission_forward_fallback = true;
       use_center_gate_target = true;  // 仅同侧直线短步复用中门路径入口。

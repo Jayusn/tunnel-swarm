@@ -325,7 +325,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
   ROS_INFO_STREAM_THROTTLE(1.0, "[FSM]: state: " << fd_->state_str_[int(state_)]);
 
   // 已开始准备下一条轨迹但旧轨迹先到终点时，明确结束旧轨迹并让控制器锁住实时XY。
-  // 仅在PLAN/PUB等待阶段触发；正常EXEC阶段仍提前1秒开始规划，不会提前刹停。
+  // 仅在PLAN/PUB等待阶段触发；通道内普通轨迹执行到终点附近后才重新选路。
   if ((state_ == PLAN_TRAJ || state_ == PUB_TRAJ) && active_traj_valid_) {
     const double elapsed =
         std::max(0.0, (ros::Time::now() - active_traj_.start_time_).toSec());
@@ -777,6 +777,9 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
         }
         return;
       }
+      // 已发布的通道路线先执行完。覆盖、周期和临近终点评分均不能提前换边；
+      // 碰撞与跟踪异常仍由独立 safetyCallback 随时触发重规划。
+      if (keepExecutingCorridorTrajectory()) return;
       if (exploration_policy::shouldReplanNearTrajectoryEnd(
               time_to_end, fp_->replan_thresh1_)) {
         transitState(PLAN_TRAJ, "FSM");
@@ -801,6 +804,16 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
       break;
     }
   }
+}
+
+bool FastExplorationFSM::keepExecutingCorridorTrajectory() const {
+  if (!narrow_corridor_stage_ || !active_traj_valid_ || active_traj_braked_ ||
+      active_turn_in_place_ || active_vertical_detour_ || active_ground_ascent_ ||
+      inflation_escape_active_ || expl_manager_->manualWaypointsEnabled())
+    return false;
+  const double elapsed = std::max(0.0,
+      (ros::Time::now() - active_traj_.start_time_).toSec());
+  return active_traj_.duration_ - elapsed > 0.05;
 }
 
 int FastExplorationFSM::callExplorationPlanner() {
@@ -1004,14 +1017,15 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
     }
   }
 
-  // 弧形通道的新墙体方向超出当前yaw参考时滚动接续；保留正在执行的平移，不刹停。
+  // 通道内有效路线不因墙体航向变化而重新选位置目标；待该段完成后更新航向。
   if (!expl_manager_->manualWaypointsEnabled() &&
       state_ == EXPL_STATE::EXEC_TRAJ && !active_turn_in_place_ &&
       !active_vertical_detour_ && !active_ground_ascent_ && !inflation_escape_active_) {
     const double time=std::max(0.0,std::min(
         (ros::Time::now()-active_traj_.start_time_).toSec(),active_traj_.duration_));
     const double reference_yaw=active_traj_.yaw_traj_.evaluateDeBoorT(time)[0];
-    if (expl_manager_->shouldReplanCurveHeading(fd_->odom_pos_,reference_yaw)) {
+    if (!keepExecutingCorridorTrajectory() &&
+        expl_manager_->shouldReplanCurveHeading(fd_->odom_pos_,reference_yaw)) {
       fd_->static_state_=false;
       transitState(PLAN_TRAJ,"corridor-curve-follow");
       ROS_INFO("[corridor_curve] roll translation/yaw plan from moving state.");

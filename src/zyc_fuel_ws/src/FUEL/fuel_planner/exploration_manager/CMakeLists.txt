@@ -90,7 +90,7 @@ target_link_libraries(load_obj
 if(CATKIN_ENABLE_TESTING)
   find_package(rostest REQUIRED)
   add_rostest_gtest(turn_escape_test test/turn_escape.test test/turn_escape_test.cpp
-    src/fast_exploration_manager.cpp src/task_search_manager.cpp)
+    src/fast_exploration_manager.cpp src/task_search_manager.cpp src/fast_exploration_fsm.cpp)
   target_link_libraries(turn_escape_test ${catkin_LIBRARIES})
   add_dependencies(turn_escape_test ${catkin_EXPORTED_TARGETS})
   add_executable(corridor_curve_heading_test test/corridor_curve_heading_test.cpp)

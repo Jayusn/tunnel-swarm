@@ -46,6 +46,7 @@ enum EXPL_STATE { INIT, WAIT_TRIGGER, PLAN_TRAJ, PUB_TRAJ, EXEC_TRAJ, FINISH };
 
 class FastExplorationFSM {
 private:
+  friend class TurnEscapeTest;
   /* planning utils */
   shared_ptr<FastPlannerManager> planner_manager_;
   shared_ptr<FastExplorationManager> expl_manager_;
@@ -125,6 +126,7 @@ private:
 
   /* helper functions */
   int callExplorationPlanner();
+  bool keepExecutingCorridorTrajectory() const;
   bool getReviewedOdometry(Vector3d& position, Vector3d& velocity) const;
   void updatePendingTrajectoryMessage(const ros::Time& start_time);
   void transitState(EXPL_STATE new_state, string pos_call);
