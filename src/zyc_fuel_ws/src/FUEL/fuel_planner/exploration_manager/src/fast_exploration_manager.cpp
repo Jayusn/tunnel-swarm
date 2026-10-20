@@ -1243,7 +1243,10 @@ bool FastExplorationManager::beginSuspendedUnderpass(const Vector3d& pos,
       bottom_z, underpass_lidar_above_odom_, underpass_clearance_,
       underpass_height_tracking_margin_,
       task_search_manager_->preferredSearchHeight());
-  if (target_z < task_search_manager_->clampSearchHeight(-1e3) ||
+  // 专用悬空障碍下穿最低为0.25m，与普通固定高度下探目标分开。
+  const double minimum_height =
+      std::max(0.25, task_search_manager_->clampSearchHeight(-1e3));
+  if (target_z < minimum_height ||
       (pos.z() > target_z + vertical_detour_height_tolerance_ &&
        !isKnownSafeVerticalPath(pos, target_z))) {
     suspended_underpass_blocked_ = true;

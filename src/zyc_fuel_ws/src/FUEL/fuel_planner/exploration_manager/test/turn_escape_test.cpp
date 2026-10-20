@@ -266,13 +266,16 @@ public:
   static void runUnderpassClassification(bool pillar, bool known_low_space,
                                          bool missing_low_layer = false,
                                          bool discover_support = false,
-                                         bool advancing = false) {
+                                         bool advancing = false,
+                                         int height_limit_case = 0) {
     ros::NodeHandle nh("~");
     nh.setParam("mission/task_search/min_height", 0.10);
     FastExplorationManager manager;
     initialize(nh, manager);
     nh.deleteParam("mission/task_search/min_height");
     manager.mission_entered_search_region_ = true;
+    const bool ordinary_probe = height_limit_case == 4;
+    if (ordinary_probe) manager.vertical_detour_low_height_ = 0.40;
     const Vector3d pos(0.025, 0.025, 0.625);
     const Vector3d forward(1, 0, 0);
     auto& map = *manager.sdf_map_;
@@ -297,7 +300,9 @@ public:
     for (int repeat = 0; repeat < 8; ++repeat)
       map.inputPointCloud(obstacle, obstacle.size(), pos);
 
-    const bool expected_suspended = !pillar && known_low_space && !missing_low_layer;
+    // 原地图的低障碍不满足0.40m普通下探所需的空间，不能退回旧的低位目标。
+    const bool expected_suspended = !pillar && known_low_space && !missing_low_layer &&
+                                    !ordinary_probe;
     check(manager.hasCurrentHeightForwardObstacle(pos, forward),
           "underpass fixture has no obstacle at flight height");
     double bottom, exit_progress, distance;
@@ -306,8 +311,28 @@ public:
           "pillar, unknown low space or suspended obstacle was misclassified");
     check(manager.hasSuspendedForwardObstacle(pos, forward) == expected_suspended,
           "fallback obstacle classification differs from primary detector");
+    if (height_limit_case > 0 && !ordinary_probe) {
+      const double requested_height = height_limit_case == 1 ? 0.24
+                                      : height_limit_case == 2 ? 0.25 : 0.30;
+      manager.underpass_height_tracking_margin_ = bottom -
+          manager.underpass_lidar_above_odom_ - manager.underpass_clearance_ -
+          requested_height;
+      if (height_limit_case == 3) manager.task_search_manager_->min_search_height_ = 0.35;
+    }
     check(manager.beginSuspendedUnderpass(pos, 0.0) == expected_suspended,
           "primary underpass trigger ignored obstacle classification");
+    if (height_limit_case > 0 && !ordinary_probe) {
+      if (height_limit_case == 2) {
+        check(manager.suspended_underpass_active_ &&
+              std::fabs(manager.low_probe_target_.z() - 0.25) < 1e-9,
+              "valid suspended underpass at the 0.25m boundary was rejected");
+      } else {
+        check(manager.suspended_underpass_blocked_ && !manager.suspended_underpass_active_ &&
+              manager.low_probe_phase_ == vertical_detour::LowProbePhase::IDLE,
+              "suspended underpass bypassed the 0.25m floor or higher task minimum");
+      }
+      return;
+    }
     if (expected_suspended) {
       check(manager.suspended_underpass_active_ &&
             manager.low_probe_phase_ == vertical_detour::LowProbePhase::DESCENDING,
@@ -1227,6 +1252,22 @@ TEST(UnderpassClassification, ConfirmedSuspendedObstacleDescends) {
 
 TEST(UnderpassClassification, GapInLowObservationsDoesNotDescend) {
   fast_planner::TurnEscapeTest::runUnderpassClassification(false, true, true);
+}
+
+TEST(UnderpassHeight, RejectsTargetBelowQuarterMeter) {
+  fast_planner::TurnEscapeTest::runUnderpassClassification(false, true, false, false, false, 1);
+}
+
+TEST(UnderpassHeight, AcceptsQuarterMeterBoundary) {
+  fast_planner::TurnEscapeTest::runUnderpassClassification(false, true, false, false, false, 2);
+}
+
+TEST(UnderpassHeight, PreservesHigherTaskMinimum) {
+  fast_planner::TurnEscapeTest::runUnderpassClassification(false, true, false, false, false, 3);
+}
+
+TEST(UnderpassHeight, OrdinaryProbeRejectsInsufficientVerticalSpace) {
+  fast_planner::TurnEscapeTest::runUnderpassClassification(false, true, false, false, false, 4);
 }
 
 TEST(UnderpassExit, NewlyObservedSupportRestoresNormalPlanning) {
