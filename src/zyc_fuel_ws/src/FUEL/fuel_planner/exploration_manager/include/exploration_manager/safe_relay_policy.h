@@ -99,11 +99,12 @@ inline Selection select(const std::vector<Sample>& route, std::size_t anchor,
     return false;
   };
 
+  // Qualify an ordinary endpoint and its A -> B connection independently of
+  // stopping space elsewhere on the route. Transit-only samples do not veto B.
+  if (choose(Kind::NORMAL)) return result;
   if (first_narrow != route.size()) {
     if (choose(Kind::AFTER_OBSTACLE)) return result;
     choose(Kind::BEFORE_OBSTACLE);
-  } else {
-    choose(Kind::NORMAL);
   }
   return result;
 }

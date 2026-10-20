@@ -36,6 +36,7 @@ class SafeRelayPublisher {
   void missionCallback(const std_msgs::String::ConstPtr& message);
   bool volumeFree(const Eigen::Vector3d& point, double radius, double height) const;
   bool connectionFree(std::size_t from, std::size_t to) const;
+  std::vector<Goal> validGoals() const;
   void publish(const std::string& status, bool evidence_fresh);
 
   std::shared_ptr<SDFMap> map_;

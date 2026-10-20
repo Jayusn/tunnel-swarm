@@ -28,12 +28,21 @@ int main() {
   route = straight();
   for (int i = 20; i <= 30; ++i) route[i].hold_free = route[i].confirmed = false;
   pick = select(route, 0, route.back().position, cfg, pass);
+  require(pick.kind == Kind::NORMAL && pick.index == 10,
+          "a distant transit-only segment must not suppress the ordinary 1m point");
+  pick = select(route, 10, route.back().position, cfg, pass);
+  require(pick.kind == Kind::NORMAL && pick.index == 31,
+          "normal endpoints may follow transit-only samples when the connection passes");
+  // When ordinary spacing is not yet available, retain the existing B/C/W fallback.
+  Config fallback_cfg = cfg;
+  fallback_cfg.normal_spacing = 6.0;
+  pick = select(route, 0, route.back().position, fallback_cfg, pass);
   require(pick.kind == Kind::AFTER_OBSTACLE && pick.index == 31, "first qualified post-obstacle sample is eligible");
   const auto rejected_b = pick.index;
-  pick = select(route, 0, route.back().position, cfg,
+  pick = select(route, 0, route.back().position, fallback_cfg,
                 [&](std::size_t, std::size_t b) { return b != rejected_b; });
   require(pick.kind == Kind::AFTER_OBSTACLE && pick.index != rejected_b, "B fails: try qualified C");
-  pick = select(route, 0, route.back().position, cfg,
+  pick = select(route, 0, route.back().position, fallback_cfg,
                 [](std::size_t, std::size_t b) { return b < 20; });
   require(pick.kind == Kind::BEFORE_OBSTACLE && pick.index == 19,
           "B/C fail: release forward pre-obstacle waiting point");
@@ -52,13 +61,46 @@ int main() {
   require(pick.kind == Kind::NORMAL && pick.index == 10,
           "1m normal progress plus 1m leader clearance is sufficient");
 
+  route = straight();
+  route[9].hold_free = route[9].confirmed = false;
+  route[11].hold_free = route[11].confirmed = false;
+  pick = select(route, 0, route.back().position, cfg, pass);
+  require(pick.kind == Kind::NORMAL && pick.index == 10,
+          "ordinary B needs its own stopping space, not its neighbours' stopping space");
+  pick = select(route, 0, route.back().position, cfg,
+                [](std::size_t, std::size_t b) { return b != 10; });
+  require(pick.kind == Kind::NORMAL && pick.index == 12,
+          "ordinary B with a failed connection must be skipped for a checked C");
+  route[10].confirmed = false;
+  pick = select(route, 0, route.back().position, cfg, pass);
+  require(pick.kind == Kind::NORMAL && pick.index == 12,
+          "independent ordinary selection must retain map confirmation");
+
+  route = straight(19);
+  for (auto& s : route) s.hold_free = s.confirmed = false;
+  route[0].hold_free = route[0].confirmed = true;
+  route[6].hold_free = route[6].confirmed = true;
+  route[7].hold_free = route[7].confirmed = true;
+  pick = select(route, 0, route.back().position, cfg, pass);
+  require(pick.kind == Kind::AFTER_OBSTACLE && pick.index == 6,
+          "default 1m policy retains post-obstacle fallback below normal spacing");
+  pick = select(route, 0, route.back().position, cfg,
+                [](std::size_t, std::size_t b) { return b != 6; });
+  require(pick.kind == Kind::AFTER_OBSTACLE && pick.index == 7,
+          "default fallback still tries C after B fails");
+  route = straight(19);
+  for (int i = 15; i <= 19; ++i) route[i].hold_free = route[i].confirmed = false;
+  pick = select(route, 0, route.back().position, cfg, pass);
+  require(pick.kind == Kind::BEFORE_OBSTACLE && pick.index == 9,
+          "default 1m policy retains a checked pre-obstacle waiting fallback");
+
   // B itself can be a confirmed stopping point even when both neighbours
   // are transit-only. Removing the safe-span gate must not relax B or A -> B.
   route = straight();
   for (auto& s : route) s.hold_free = s.confirmed = false;
   route[30].hold_free = route[30].confirmed = true;
   pick = select(route, 0, route.back().position, cfg, pass);
-  require(pick.kind == Kind::AFTER_OBSTACLE && pick.index == 30,
+  require(pick.kind == Kind::NORMAL && pick.index == 30,
           "isolated qualified B must not require neighbouring stopping space");
   require(select(route, 0, route.back().position, cfg,
                  [](std::size_t, std::size_t) { return false; }).kind == Kind::WAIT,
@@ -80,12 +122,15 @@ int main() {
   route = straight();
   for (int i = 12; i <= 40; ++i) route[i].hold_free = route[i].confirmed = false;
   pick = select(route, 0, route.back().position, cfg, pass);
-  require(pick.kind == Kind::AFTER_OBSTACLE && pick.index > 40,
+  require(pick.kind == Kind::NORMAL && pick.index == 10,
+          "a safe ordinary point before the 1.2m endpoint remains eligible");
+  pick = select(route, 10, route.back().position, cfg, pass);
+  require(pick.kind == Kind::NORMAL && pick.index > 40,
           "unsafe 1.2m planning endpoint must never become stopping goal");
   // A bend uses route order, not world X or vehicle yaw.
   for (auto& s : route) s.position = Eigen::Vector3d(0.0, -s.progress, 1.1);
-  pick = select(route, 0, route.back().position, cfg, pass);
-  require(pick.kind == Kind::AFTER_OBSTACLE && pick.index > 40,
+  pick = select(route, 10, route.back().position, cfg, pass);
+  require(pick.kind == Kind::NORMAL && pick.index > 40,
           "post-obstacle means along actual route, not world X");
   auto leader_near = route[pick.index].position;
   auto released = select(route, 0, leader_near, cfg, pass);

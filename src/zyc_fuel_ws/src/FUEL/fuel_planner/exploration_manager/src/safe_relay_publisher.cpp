@@ -136,6 +136,20 @@ bool SafeRelayPublisher::connectionFree(std::size_t from, std::size_t to) const 
   return true;
 }
 
+std::vector<SafeRelayPublisher::Goal> SafeRelayPublisher::validGoals() const {
+  std::vector<Goal> valid;
+  std::size_t previous = 0;
+  for (const auto& goal : goals_) {
+    // Check every intervening segment, including those ending at omitted
+    // transit-only goals. A blocked prefix also blocks all later goals.
+    if (!connectionFree(previous, goal.route_index)) break;
+    const auto& sample = history_[goal.route_index].sample;
+    if (sample.hold_free && sample.confirmed) valid.push_back(goal);
+    previous = goal.route_index;
+  }
+  return valid;
+}
+
 void SafeRelayPublisher::timerCallback(const ros::TimerEvent&) {
   const ros::Time now = ros::Time::now();
   const uint64_t sequence = map_->getUpdateSequence();
@@ -163,8 +177,12 @@ void SafeRelayPublisher::timerCallback(const ros::TimerEvent&) {
   }
   if (history_.empty()) { publish("WAIT_ENTRANCE_CROSSING", true); return; }
   if (exited_) { publish("EXIT_HANDOFF", true); return; }
-  if (!goals_.empty() && !history_[anchor_].sample.confirmed) {
-    publish("LAST_TARGET_INVALID", true); return;
+  if (!goals_.empty()) {
+    const auto valid = validGoals();
+    if (valid.empty()) { publish("LAST_TARGET_INVALID", true); return; }
+    // Recover the checking origin, not the commanded destination. All new
+    // candidates still need a checked connection from this currently valid A.
+    anchor_ = valid.back().route_index;
   }
   if (history_.size() >= static_cast<std::size_t>(maximum_samples_)) {
     publish("HISTORY_CAPACITY_REACHED", true); return;
@@ -175,7 +193,12 @@ void SafeRelayPublisher::timerCallback(const ros::TimerEvent&) {
   for (std::size_t i = anchor_ + 1; i < history_.size(); ++i)
     blocked_prefix[i] = blocked_prefix[i - 1] + (connectionFree(i - 1, i) ? 0 : 1);
   const auto selected = safe_relay::select(samples, anchor_, leader_, config_,
-      [&](std::size_t a, std::size_t b) { return blocked_prefix[a] == blocked_prefix[b]; });
+      [&](std::size_t a, std::size_t b) {
+        // Retain issued IDs/positions and advance beyond the latest issued
+        // sample even when the checking origin has moved back to an older A.
+        return (goals_.empty() || b > goals_.back().route_index) &&
+               blocked_prefix[a] == blocked_prefix[b];
+      });
   if (selected.kind != safe_relay::Kind::WAIT) {
     anchor_ = selected.index;
     goals_.push_back({anchor_, next_id_++});
@@ -208,16 +231,12 @@ void SafeRelayPublisher::publish(const std::string& status, bool evidence_fresh)
   nav_msgs::Path goals;
   goals.header.frame_id = frame_;
   goals.header.stamp = session_;
-  std::size_t previous = 0;
-  for (const auto& goal : goals_) {
-    const auto& sample = history_[goal.route_index].sample;
-    if (evidence_fresh && sample.hold_free && sample.confirmed &&
-        connectionFree(previous, goal.route_index)) {
+  if (evidence_fresh) {
+    for (const auto& goal : validGoals()) {
       auto pose = route.poses[goal.route_index];
       pose.header.seq = goal.id;
       goals.poses.push_back(pose);
     }
-    previous = goal.route_index;
   }
   goals_pub_.publish(goals);  // An omitted previously issued ID is explicitly invalid now.
   std_msgs::String message;
