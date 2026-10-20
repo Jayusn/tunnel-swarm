@@ -157,20 +157,24 @@ def test_legacy_diff_prefers_confirmed_leader_segment_endpoints_within_7m():
     assert "remaining_relay_progress <= path_sample_spacing_" in execution
 
 
-def test_simple_mode_queues_each_confirmed_segment_endpoint_as_fifo():
-    endpoint_confirmation = SOURCE.split(
-        "void confirmPendingLeaderSegmentEndpoint", maxsplit=1
-    )[1].split("void leaderOdomCallback", maxsplit=1)[0]
+def test_normal_points_come_from_leader_safe_snapshot():
     odom_callback = SOURCE.split("void leaderOdomCallback", maxsplit=1)[1].split(
+        "bool activeSafeRelay", maxsplit=1
+    )[0]
+    enqueue = SOURCE.split("void enqueueSafeRelay", maxsplit=1)[1].split(
         "void appendFollowerExecutedPoint", maxsplit=1
     )[0]
 
     assert 'name="simple_segment_endpoint_following" value="true"' in LAUNCH
     assert 'name="simple_diff_retry_delay" value="0.20"' in LAUNCH
-    assert 'appendRelayWaypoint(confirmed, "SEGMENT_ENDPOINT")' in endpoint_confirmation
-    assert "door_waypoint_released_" in endpoint_confirmation
-    assert "!exit_waypoint_released_" in endpoint_confirmation
-    assert "if (simple_segment_endpoint_following_) return;" in odom_callback
+    assert "leader_trajectory_sub_ = nh_.subscribe" not in SOURCE
+    assert "confirmPendingLeaderSegmentEndpoint(" not in odom_callback
+    assert "enqueueSafeRelay();" in odom_callback
+    assert "!safeRelayFresh()" in enqueue
+    assert "!door_waypoint_released_" in enqueue
+    assert "exit_waypoint_released_" in enqueue
+    assert 'appendRelayWaypoint(point, "SAFE_RELAY")' in enqueue
+    assert "point.position = pose.pose.position;" in enqueue
 
 
 def test_simple_mode_gives_diff_only_the_fifo_front_and_consumes_on_arrival():
@@ -197,7 +201,9 @@ def test_simple_mode_gives_diff_only_the_fifo_front_and_consumes_on_arrival():
     )[1].split("const bool terminal_arrival", maxsplit=1)[0]
     assert "horizontal_error <= relay_arrive_radius_" in ordinary_arrival
     assert "vertical_error <= relay_arrive_z_tolerance_" in ordinary_arrival
-    assert "follower_horizontal_speed_" not in ordinary_arrival
+    assert "!activeSafeRelay() ||" in ordinary_arrival
+    assert "follower_horizontal_speed_ <= relay_arrive_max_horizontal_speed_" in ordinary_arrival
+    assert "follower_vertical_speed_ <= relay_arrive_max_vertical_speed_" in ordinary_arrival
     assert "diff_endpoint_capture_radius_" not in ordinary_arrival
     terminal_arrival = execution.split(
         "const bool terminal_arrival", maxsplit=1
@@ -264,7 +270,7 @@ def test_simple_mode_retries_same_endpoint_without_wrapper_recovery():
     assert "handleDiffPlanningFailure" not in simple_failure
     assert "blacklistRouteCandidate" not in simple_failure
     assert "diff_recovery_requested_" not in simple_failure
-    assert "!simple_segment_endpoint_following_ && handleStuckRecovery(now)" in timer
+    assert "!simple_segment_endpoint_following_ && !activeSafeRelay() && handleStuckRecovery(now)" in timer
 
 
 def test_candidate_blacklist_and_clipped_retry_are_bounded():

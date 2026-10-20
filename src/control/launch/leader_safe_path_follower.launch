@@ -131,8 +131,8 @@
         <param name="command_topic" value="/UAV1/planning/pos_cmd"/>
         <!-- 2026-07-28: 禁止接力管理器直控后机，改向UAV1 Diff发布离散目标。 -->
         <param name="use_diff_planner" value="true"/>
-        <!-- 前机每段实际到达终点按FIFO缓存；后机一次只把队首原坐标交给Diff。
-             自身位置占据时沿历史后退，按原流程处理队首；下一普通点按1.20m门槛放行。 -->
+        <!-- 普通点按前机安全点快照入队，保留原XYZ；队首有效时才交给Diff。
+             入口/出口沿用本机任务适配，普通点保留现有1.20m放行门槛。 -->
         <!-- 当前队首未到达时不切换候选点；仅两机距离小于0.60m时允许间距退让。 -->
         <param name="simple_segment_endpoint_following" value="true"/>
         <param name="simple_diff_retry_delay" value="0.20"/>
@@ -181,6 +181,8 @@
         <param name="down_search_min_vertical_separation" value="1.00"/>
         <!-- 2026-07-16: 前机公开发布滚动任务接力点，后续双计算机只需桥接这个低带宽Path话题。 -->
         <param name="relay_path_topic" value="/UAV0/mission/relay_waypoints"/>
+        <!-- 普通点由UAV0确认并发布；后机检查快照新鲜度后按原XYZ交给Diff。 -->
+        <param name="safe_relay_timeout" value="1.0"/>
         <!-- 出口前沿前机实飞XY折线保持0.70m滞后；后机名义高度与起飞悬停统一为0.60m。 -->
         <!-- 2026-07-28: Diff按释放后的目标独立搜索避障轨迹，不再用50Hz移动目标追逐前机。 -->
         <param name="continuous_follow_before_exit" value="false"/>
@@ -199,11 +201,10 @@
         <param name="task_separation" value="1.50"/>
         <!-- UAV0当前位置离当前普通FIFO目标的XY距离达到1.20m后，才向UAV1释放该点。 -->
         <param name="waypoint_release_min_separation" value="1.20"/>
-        <!-- 不接收前机z；名义0.60m，只有自身点云线段受阻才允许上探到0.70m。 -->
+        <!-- 门点等任务交接仍用本机巡航高度；前机安全接力点保留原XYZ。 -->
         <param name="fixed_follow_height" value="0.60"/>
         <param name="follow_height_min" value="0.60"/>
         <param name="follow_height_max" value="0.70"/>
-        <!-- 前机轨迹只提供XY；不按前机实测高度拦截停稳终点，后机统一在自身0.60m高度交给Diff规划。 -->
         <param name="separation_recovery_distance" value="0.60"/>
         <param name="separation_release_distance" value="1.20"/>
         <param name="emergency_retreat_step" value="0.35"/>

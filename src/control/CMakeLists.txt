@@ -74,6 +74,12 @@ install(DIRECTORY config/
 
 if(CATKIN_ENABLE_TESTING)
   find_package(rostest REQUIRED)
+  add_rostest_gtest(leader_safe_relay_test test/leader_safe_relay.test
+    test/leader_safe_relay_test.cpp)
+  if(TARGET leader_safe_relay_test)
+    target_link_libraries(leader_safe_relay_test ${catkin_LIBRARIES})
+    add_dependencies(leader_safe_relay_test ${catkin_EXPORTED_TARGETS} ${ldop_EXPORTED_TARGETS})
+  endif()
   add_rostest_gtest(test_fifo_entry_spacing test/fifo_entry_spacing.test
                    test/test_fifo_entry_spacing.cpp)
   if(TARGET test_fifo_entry_spacing)
