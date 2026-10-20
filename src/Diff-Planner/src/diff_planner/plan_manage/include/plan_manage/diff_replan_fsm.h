@@ -22,8 +22,6 @@
 #include <optimizer/poly_traj_optimizer.h>
 #include <plan_env/grid_map.h>
 #include <geometry_msgs/PoseStamped.h>
-#include <geometry_msgs/PointStamped.h>
-#include <plan_manage/ordinary_route.h>
 #include <quadrotor_msgs/GoalSet.h>
 #include <traj_utils/DataDisp.h>
 #include <plan_manage/planner_manager.h>
@@ -48,19 +46,6 @@ namespace diff_planner
     EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
   private:
-    bool enable_ordinary_route_{false}, ordinary_route_pending_{false};
-    bool ordinary_route_active_{false};
-    nav_msgs::Path ordinary_route_;
-    geometry_msgs::PointStamped ordinary_leader_;
-    std::string ordinary_odom_frame_;
-    ros::Subscriber ordinary_route_sub_, ordinary_leader_sub_;
-    double ordinary_separation_{1.2}, ordinary_tracking_margin_{0.1};
-    double ordinary_stop_margin_{0.038}, ordinary_leader_timeout_{0.5};
-    double ordinary_vehicle_radius_{0.262}, ordinary_vehicle_half_height_{0.125};
-    std::size_t ordinary_stop_count_{0};
-    void ordinaryRouteCallback(const nav_msgs::Path::ConstPtr& msg);
-    void ordinaryLeaderCallback(const geometry_msgs::PointStamped::ConstPtr& msg);
-    void planOrdinaryRoute();
     /* ---------- flag ---------- */
     enum FSM_EXEC_STATE
     {

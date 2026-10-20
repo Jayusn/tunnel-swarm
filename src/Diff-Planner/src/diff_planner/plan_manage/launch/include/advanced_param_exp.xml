@@ -129,11 +129,6 @@
     <arg name="flight_type"/>
     <!-- 2026-07-28: 双机接力允许每套Diff使用独立外部目标话题，默认仍兼容原/global /goal。 -->
     <arg name="manual_goal_topic" default="/goal"/>
-    <arg name="enable_ordinary_route" default="false"/>
-    <arg name="ordinary_separation" default="1.20"/>
-    <arg name="ordinary_tracking_margin" default="0.10"/>
-    <arg name="ordinary_stop_margin" default="0.038"/>
-    <arg name="ordinary_leader_timeout" default="0.50"/>
     <!-- 2026-07-28: 原生Diff编队默认等待前序轨迹；FUEL->Diff异构接力可单独关闭。 -->
     <arg name="require_pre_agent_trajectory" default="true"/>
     <!-- 2026-07-28: 允许接力实例关闭可能长时间阻塞的随机全局轨迹初始化，默认兼容原Diff。 -->
@@ -181,11 +176,6 @@
         <param name="fsm/flight_type" value="$(arg flight_type)" type="int"/>
         <!-- 2026-07-28: 将UAV1接力目标直接交给自身Diff规划器，避免目标和UAV0串线。 -->
         <param name="fsm/manual_goal_topic" value="$(arg manual_goal_topic)"/>
-        <param name="fsm/enable_ordinary_route" value="$(arg enable_ordinary_route)"/>
-        <param name="fsm/ordinary_separation" value="$(arg ordinary_separation)"/>
-        <param name="fsm/ordinary_tracking_margin" value="$(arg ordinary_tracking_margin)"/>
-        <param name="fsm/ordinary_stop_margin" value="$(arg ordinary_stop_margin)"/>
-        <param name="fsm/ordinary_leader_timeout" value="$(arg ordinary_leader_timeout)"/>
         <!-- 2026-07-28: 将前序轨迹门槛传入FSM，避免把drone_id误等同于必须参加Diff顺序编队。 -->
         <param name="fsm/require_pre_agent_trajectory" value="$(arg require_pre_agent_trajectory)" type="bool"/>
         <!-- 2026-07-28: 将随机初始化策略按无人机实例传入FSM。 -->

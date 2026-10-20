@@ -36,6 +36,8 @@
 
 class FifoEntrySpacing : public ::testing::Test {
  protected:
+  std::vector<geometry_msgs::PoseStamped> goals;
+
   void SetUp() override {
     follower.reset(new LeaderSafePathFollower);
     follower->timer_.stop();
@@ -54,7 +56,9 @@ class FifoEntrySpacing : public ::testing::Test {
     setLeader(2.0);
     sink = nh.subscribe<geometry_msgs::PoseStamped>(
         "/UAV1/planning/goal", 10,
-        +[](const geometry_msgs::PoseStamped::ConstPtr&) {});
+        [this](const geometry_msgs::PoseStamped::ConstPtr& msg) {
+          goals.push_back(*msg);
+        });
     entry_sink = nh.subscribe<geometry_msgs::PoseStamped>(
         "/UAV1/planning/goal/entry", 10,
         [this](const geometry_msgs::PoseStamped::ConstPtr&) { ++entry_goals; });
@@ -1032,90 +1036,41 @@ TEST_F(FifoEntrySpacing, FreshNormalTrajectoryAlsoEndsRecoveryWait) {
   EXPECT_TRUE(follower->relay_waypoints_.empty());
 }
 
-TEST_F(FifoEntrySpacing, OrdinaryRouteConsumesIntermediateWithoutHoldOrReplan) {
-  follower->enable_ordinary_route_ = true;
-  follower->require_waypoint_yaw_ = false;
+TEST_F(FifoEntrySpacing, SinglePointFollowingReleasesAtOnePointTwoAndConsumesInOrder) {
+  follower->min_separation_ = follower->separation_release_distance_ = 1.2;
+  follower->waypoint_release_min_separation_ = 1.2;
   queuePoint(1.0);
   queuePoint(2.0);
-  setLeader(5.0);
-  follower->ordinary_route_requested_ = true;
-  follower->ordinary_route_executing_ = true;
-  follower->ordinary_remaining_ = 2;
-  follower->diff_goal_published_ = true;
-  follower->diff_wait_hold_active_ = false;
-  follower->ordinary_route_end_ = ros::Time::now() + ros::Duration(10.0);
-  follower->diff_trajectory_response_stamp_ = ros::Time::now();
+  setLeader(2.19);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_FALSE(follower->diff_goal_published_);
+  EXPECT_EQ(follower->relay_waypoints_.size(), 2U);
+  setLeader(2.2);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_TRUE(follower->diff_goal_published_);
+  ros::WallDuration(.05).sleep();
+  ros::spinOnce();
+  ASSERT_EQ(goals.size(), 1U);
+  EXPECT_DOUBLE_EQ(goals.back().pose.position.x, 1.0);
+  EXPECT_EQ(follower->relay_waypoints_.size(), 2U);
+
   follower->follower_odom_.pose.pose.position.x = 1.0;
   follower->handleSimpleDiffPlannerExecution(ros::Time::now());
   ASSERT_EQ(follower->relay_waypoints_.size(), 1U);
-  EXPECT_DOUBLE_EQ(follower->relay_waypoints_[0].position.x, 2.0);
-  EXPECT_EQ(follower->ordinary_remaining_, 1U);
-  EXPECT_TRUE(follower->ordinary_route_executing_);
+  EXPECT_DOUBLE_EQ(follower->relay_waypoints_.front().position.x, 2.0);
+  EXPECT_FALSE(follower->diff_goal_published_);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_FALSE(follower->diff_goal_published_);
+  setLeader(3.2);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
   EXPECT_TRUE(follower->diff_goal_published_);
-  EXPECT_FALSE(follower->diff_wait_hold_active_);
-  // Merely planning the further stop never consumes it.
-  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
-  EXPECT_EQ(follower->relay_waypoints_.size(), 1U);
-  follower->follower_odom_.pose.pose.position.x = 2.0;
-  follower->ordinary_route_end_ = ros::Time::now() - ros::Duration(1);
-  follower->relay_arrive_dwell_ = 0.0;
-  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
-  EXPECT_TRUE(follower->relay_waypoints_.empty());
-  EXPECT_FALSE(follower->ordinary_route_executing_);
-  EXPECT_TRUE(follower->diff_wait_hold_active_);
-}
-
-TEST_F(FifoEntrySpacing, OrdinaryRouteIgnoresOldStatusAndEmergencyCancelsRequest) {
-  follower->enable_ordinary_route_ = true;
-  queuePoint(1.0);
-  follower->ordinary_route_requested_ = true;
-  follower->diff_active_goal_stamp_ns_ = 100;
-  follower->ordinary_request_.header.stamp.fromNSec(100);
-  follower->ordinary_request_.poses.resize(1);
-  follower->ordinary_request_.poses[0].pose.position.x = 1.0;
-  follower->ordinary_request_.poses[0].pose.position.z = .6;
-  follower->diff_wait_hold_active_ = true;
-  std_msgs::String::Ptr status(new std_msgs::String);
-  status->data = "ORDINARY_ROUTE_PUBLISHED goal_stamp_ns=99 1 1 0 0.6 5";
-  follower->diffStatusCallback(status);
-  EXPECT_FALSE(follower->ordinary_route_executing_);
-  EXPECT_TRUE(follower->diff_wait_hold_active_);
-  status->data = "ORDINARY_ROUTE_PUBLISHED goal_stamp_ns=100 1 1 0 0.6 5";
-  follower->diffStatusCallback(status);
-  EXPECT_TRUE(follower->ordinary_route_executing_);
-  EXPECT_FALSE(follower->diff_wait_hold_active_);
-  follower->min_separation_ = follower->separation_release_distance_ = 1.2;
-  setLeader(1.19);
-  EXPECT_TRUE(follower->handleDiffSeparationSafety(ros::Time::now()));
-  EXPECT_FALSE(follower->ordinary_route_requested_);
-  EXPECT_TRUE(follower->diff_wait_hold_active_);
-  follower->diffStatusCallback(status);
-  EXPECT_FALSE(follower->ordinary_route_executing_);
-  EXPECT_TRUE(follower->diff_wait_hold_active_);
-}
-
-TEST_F(FifoEntrySpacing, OrdinaryRouteExcludesTaskPointsAndWaitsOnStaleLeader) {
-  follower->enable_ordinary_route_ = true;
-  queuePoint(1.0, true);
-  queuePoint(2.0);
-  queuePoint(3.0);
-  follower->exit_waypoint_index_ = 2;
-  EXPECT_FALSE(follower->ordinaryWaypoint(0));
-  EXPECT_TRUE(follower->ordinaryWaypoint(1));
-  EXPECT_FALSE(follower->ordinaryWaypoint(2));
-  follower->active_relay_index_ = 1;
-  follower->ordinary_route_requested_ = true;
-  follower->ordinary_route_executing_ = true;
-  follower->diff_wait_hold_active_ = false;
-  follower->leader_odom_stamp_ = ros::Time::now() - ros::Duration(2);
-  EXPECT_TRUE(follower->handleOrdinaryRoute(ros::Time::now()));
-  EXPECT_TRUE(follower->diff_wait_hold_active_);
-  EXPECT_FALSE(follower->ordinary_route_executing_);
-  EXPECT_EQ(follower->relay_waypoints_.size(), 3U);
+  ros::WallDuration(.05).sleep();
+  ros::spinOnce();
+  ASSERT_EQ(goals.size(), 2U);
+  EXPECT_DOUBLE_EQ(goals.back().pose.position.x, 2.0);
 }
 
 TEST_F(FifoEntrySpacing, OrdinarySpacingChangePreservesExitAndEntryThresholds) {
-  follower->enable_ordinary_route_ = true;
   follower->min_separation_ = follower->separation_release_distance_ = 1.2;
   follower->waypoint_release_min_separation_ = 1.2;
   follower->task_separation_ = 1.5;
@@ -1125,12 +1080,16 @@ TEST_F(FifoEntrySpacing, OrdinarySpacingChangePreservesExitAndEntryThresholds) {
   EXPECT_TRUE(follower->relayWaypointSeparationReady("INTERNAL"));
   EXPECT_FALSE(follower->relayWaypointSeparationReady("EXIT"));
   EXPECT_FALSE(follower->relayWaypointSeparationReady("OUTSIDE_WAIT"));
+  setLeader(1.19);
+  EXPECT_TRUE(follower->handleDiffSeparationSafety(ros::Time::now()));
+  setLeader(1.2);
+  EXPECT_FALSE(follower->handleDiffSeparationSafety(ros::Time::now()));
   follower->exit_waypoint_index_ = 0;
   EXPECT_TRUE(follower->handleDiffSeparationSafety(ros::Time::now()));
   setLeader(1.5);
   EXPECT_FALSE(follower->handleDiffSeparationSafety(ros::Time::now()));
   follower->relay_waypoints_[0].is_door = true;
-  setLeader(.7);
+  setLeader(.6);
   EXPECT_FALSE(follower->handleDiffSeparationSafety(ros::Time::now()));
 }
 

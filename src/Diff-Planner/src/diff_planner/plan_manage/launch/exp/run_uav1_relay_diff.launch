@@ -46,11 +46,6 @@
     <!-- 2026-07-28: flight_type=1启用运行时外部目标；占位航点不会在该模式执行。 -->
     <include file="$(find diff_planner)/launch/include/advanced_param_exp.xml">
         <arg name="drone_id" value="1"/>
-        <arg name="enable_ordinary_route" value="true"/>
-        <arg name="ordinary_separation" value="1.20"/>
-        <arg name="ordinary_tracking_margin" value="0.10"/>
-        <!-- 原始占据体素上的停车包络：2 * (0.262 + 0.038) = 0.60m；轨迹另查膨胀地图。 -->
-        <arg name="ordinary_stop_margin" value="0.038"/>
         <arg name="enable_fapp_dynamic_avoidance" value="$(arg enable_fapp_dynamic_avoidance)"/>
         <arg name="fapp_planner_priority" value="$(arg fapp_planner_priority)"/>
         <arg name="planner_heartbeat_topic" value="/drone_1_planning/heartbeat"/>
