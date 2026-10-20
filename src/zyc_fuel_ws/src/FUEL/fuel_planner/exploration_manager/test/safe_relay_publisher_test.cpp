@@ -16,6 +16,7 @@ class SafeRelayPublisherTest {
     nh.setParam("sdf_map/max_ray_length", 20.0);
     nh.setParam("sdf_map/obstacles_inflation", 0.1);
     nh.setParam("mission/safe_relay/enabled", true);
+    nh.setParam("mission/safe_relay/minimum_progress", 0.70);
     nh.setParam("mission/safe_relay/topic_prefix", std::string("/safe_relay_test"));
     auto map = std::make_shared<SDFMap>();
     map->initMap(nh);
@@ -225,8 +226,79 @@ class SafeRelayPublisherTest {
     EXPECT_FALSE(publisher.volumeFree(Eigen::Vector3d(1, 0.5, 1), 0.18, 0.10));
     EXPECT_TRUE(publisher.connectionFree(0, publisher.history_.size() - 1));
   }
+
+  static void entranceSpacing() {
+    ros::NodeHandle nh("~entrance_spacing");
+    nh.setParam("sdf_map/resolution", 0.1);
+    nh.setParam("sdf_map/map_size_x", 14.0);
+    nh.setParam("sdf_map/map_size_y", 4.0);
+    nh.setParam("sdf_map/map_size_z", 3.0);
+    nh.setParam("sdf_map/ground_height", 0.0);
+    nh.setParam("sdf_map/max_ray_length", 20.0);
+    nh.setParam("sdf_map/obstacles_inflation", 0.1);
+    nh.setParam("mission/safe_relay/enabled", true);
+    nh.setParam("mission/safe_relay/topic_prefix", std::string("/safe_relay_entrance_test"));
+    nh.setParam("mission/safe_relay/minimum_progress", 0.70);
+    nh.setParam("mission/safe_relay/entrance_minimum_progress", 0.50);
+    nh.setParam("mission/safe_relay/hold_radius", 0.30);
+    nh.setParam("mission/safe_relay/hold_half_height", 0.10);
+    auto map = std::make_shared<SDFMap>();
+    map->initMap(nh);
+    SafeRelayPublisher publisher;
+    publisher.initialize(nh, map, std::make_shared<FastPlannerManager>());
+    publisher.timer_.stop();
+    EXPECT_DOUBLE_EQ(0.50, publisher.entrance_minimum_progress_);
+    EXPECT_DOUBLE_EQ(0.70, publisher.config_.minimum_progress);
+    EXPECT_DOUBLE_EQ(1.00, publisher.config_.normal_spacing);
+    ros::Time::setNow(ros::Time(200));
+    publisher.setEntrance(Eigen::Vector3d(0, 0, 1), Eigen::Vector3d::UnitX());
+    auto observe = [&](int i) {
+      publisher.observe(Eigen::Vector3d(i * 0.1, 0, 1), 0,
+                        ros::Time(199.8 + i * 0.01));
+    };
+    auto refresh = [&](double obstacle_x) {
+      for (int frame = 0; frame < 2; ++frame) {
+        for (int y = -12; y <= 12; ++y)
+          for (int z = 3; z <= 20; ++z) {
+            pcl::PointCloud<pcl::PointXYZ> cloud;
+            pcl::PointXYZ endpoint;
+            endpoint.x = 20.0; endpoint.y = y * 0.1 + 0.05;
+            endpoint.z = z * 0.1 + 0.05;
+            cloud.push_back(endpoint);
+            map->inputPointCloud(cloud, 1, Eigen::Vector3d(-6.8, endpoint.y, endpoint.z));
+          }
+        map->setOccupied(Eigen::Vector3d(obstacle_x, 0, 1));
+        publisher.timerCallback(ros::TimerEvent());
+      }
+    };
+    for (int i = 0; i <= 14; ++i) observe(i);
+    refresh(1.5);
+    EXPECT_TRUE(publisher.goals_.empty()); // Only 0.4m is clear of the leader: below entry minimum.
+    observe(15);
+    publisher.timerCallback(ros::TimerEvent());
+    ASSERT_EQ(1U, publisher.goals_.size());
+    EXPECT_EQ(5U, publisher.goals_.front().route_index); // Entrance -> first fallback: exactly 0.5m.
+    EXPECT_EQ("BEFORE_OBSTACLE_WAIT", publisher.last_status_);
+    EXPECT_DOUBLE_EQ(0.70, publisher.config_.minimum_progress); // The first-release override is local.
+
+    map->setOccupied(Eigen::Vector3d(1.5, 0, 1), 0);
+    for (int i = 16; i <= 21; ++i) observe(i);
+    refresh(2.1);
+    EXPECT_EQ(1U, publisher.goals_.size()); // At most 0.6m after first goal: below later minimum.
+    EXPECT_EQ("WAIT_NO_VALID_TARGET", publisher.last_status_);
+    observe(22);
+    publisher.timerCallback(ros::TimerEvent());
+    ASSERT_EQ(2U, publisher.goals_.size());
+    EXPECT_EQ(12U, publisher.goals_.back().route_index); // First -> second fallback: exactly 0.7m.
+    EXPECT_EQ("BEFORE_OBSTACLE_WAIT", publisher.last_status_);
+    EXPECT_NEAR(0.7, publisher.history_[12].sample.progress -
+                         publisher.history_[5].sample.progress, 1e-9);
+  }
 };
 TEST(SafeRelayPublisher, ActualFlightCurrentMapAndInvalidation) { SafeRelayPublisherTest::run(); }
+TEST(SafeRelayPublisher, EntranceFallbackUsesHalfMeterThenConfiguredSpacing) {
+  SafeRelayPublisherTest::entranceSpacing();
+}
 }  // namespace fast_planner
 int main(int argc, char** argv) {
   ros::init(argc, argv, "safe_relay_publisher_test");

@@ -16,6 +16,7 @@ void SafeRelayPublisher::initialize(ros::NodeHandle& nh, std::shared_ptr<SDFMap>
   params.param<std::string>("frame_id", frame_, "world");
   params.param("normal_spacing", config_.normal_spacing, 1.00);
   params.param("minimum_progress", config_.minimum_progress, 0.50);
+  params.param("entrance_minimum_progress", entrance_minimum_progress_, 0.50);
   params.param("release_distance", config_.release_distance, 1.00);
   params.param("selection_window", config_.selection_window, 0.50);
   params.param("sample_spacing", sample_spacing_, 0.08);
@@ -29,7 +30,7 @@ void SafeRelayPublisher::initialize(ros::NodeHandle& nh, std::shared_ptr<SDFMap>
   params.param("dynamic_wait_horizon", dynamic_wait_horizon_, 2.0);
   params.param("map_confirmations", confirmations_required_, 2);
   params.param("maximum_samples", maximum_samples_, 10000);
-  for (double value : {config_.normal_spacing, config_.minimum_progress,
+  for (double value : {config_.normal_spacing, config_.minimum_progress, entrance_minimum_progress_,
        config_.release_distance, config_.selection_window,
        sample_spacing_, hold_radius_, hold_half_height_, transit_radius_,
        transit_half_height_, map_timeout_, odom_timeout_, maximum_sample_gap_,
@@ -39,7 +40,8 @@ void SafeRelayPublisher::initialize(ros::NodeHandle& nh, std::shared_ptr<SDFMap>
   }
   if (hold_radius_ < transit_radius_ || hold_half_height_ < transit_half_height_ ||
       confirmations_required_ < 1 || maximum_samples_ < 3 ||
-      maximum_sample_gap_ < sample_spacing_ || config_.normal_spacing < config_.minimum_progress)
+      maximum_sample_gap_ < sample_spacing_ || config_.normal_spacing < config_.minimum_progress ||
+      config_.normal_spacing < entrance_minimum_progress_)
     throw std::runtime_error("safe_relay: inconsistent hold/transit/history settings");
   const auto wall = ros::WallTime::now();
   session_ = ros::Time(wall.sec, wall.nsec);
@@ -192,7 +194,11 @@ void SafeRelayPublisher::timerCallback(const ros::TimerEvent&) {
   std::vector<std::size_t> blocked_prefix(history_.size(), 0);
   for (std::size_t i = anchor_ + 1; i < history_.size(); ++i)
     blocked_prefix[i] = blocked_prefix[i - 1] + (connectionFree(i - 1, i) ? 0 : 1);
-  const auto selected = safe_relay::select(samples, anchor_, leader_, config_,
+  // Only the first release measures from the entrance. Recovering an older
+  // issued anchor must not re-enable the entrance's shorter fallback spacing.
+  auto selection_config = config_;
+  if (goals_.empty()) selection_config.minimum_progress = entrance_minimum_progress_;
+  const auto selected = safe_relay::select(samples, anchor_, leader_, selection_config,
       [&](std::size_t a, std::size_t b) {
         // Retain issued IDs/positions and advance beyond the latest issued
         // sample even when the checking origin has moved back to an older A.

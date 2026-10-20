@@ -5,6 +5,7 @@ mission:
     frame_id: world
     normal_spacing: 1.00
     minimum_progress: 0.70
+    entrance_minimum_progress: 0.50  # 尚未发布任何点时，相对实测入口样本的最低累计前进量。
     release_distance: 1.00
     selection_window: 0.50
     sample_spacing: 0.08

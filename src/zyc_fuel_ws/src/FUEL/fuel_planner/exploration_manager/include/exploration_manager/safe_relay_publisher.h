@@ -45,6 +45,7 @@ class SafeRelayPublisher {
   ros::Subscriber mission_sub_;
   ros::Timer timer_;
   safe_relay::Config config_;
+  double entrance_minimum_progress_{0.50};
   std::vector<Record> history_;
   std::vector<Goal> goals_;
   Eigen::Vector3d leader_{Eigen::Vector3d::Zero()};
