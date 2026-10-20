@@ -124,6 +124,7 @@ protected:
         {"grid_map/local_update_range_y", 3.0},
         {"grid_map/local_update_range_z", 1.5}, {"grid_map/fading_time", 0.0},
         {"manager/max_vel", 0.5}, {"manager/max_acc", 1.0},
+        {"manager/entry_max_vel", 0.7},
         {"manager/planning_horizon", 8.0}, {"manager/polyTraj_piece_length", 1.5},
         {"optimization/weight_obstacle", 10000.0},
         {"optimization/weight_obstacle_soft", 1000.0},
@@ -264,9 +265,14 @@ TEST_F(PlannerEndpoint, EntryGoalUsesTwoPiecesAndNormalGoalRestoresDefault)
   message->pose.position.z = goal.z();
   planner.entryWaypointCallback(message);
   ASSERT_TRUE(planner.planner_manager_->two_piece_entry_);
+  EXPECT_DOUBLE_EQ(planner.planner_manager_->pp_.max_vel_, 0.7);
   EXPECT_EQ(planner.planner_manager_->traj_.global_traj.traj.getPieceNum(), 2);
+  // 门点重复下发时保持独立速度，普通点恢复原有配置。
+  planner.entryWaypointCallback(message);
+  EXPECT_DOUBLE_EQ(planner.planner_manager_->pp_.max_vel_, 0.7);
   planner.waypointCallback(message);
   EXPECT_FALSE(planner.planner_manager_->two_piece_entry_);
+  EXPECT_DOUBLE_EQ(planner.planner_manager_->pp_.max_vel_, 0.5);
   EXPECT_EQ(planner.planner_manager_->traj_.global_traj.traj.getPieceNum(), 1);
 }
 
@@ -283,6 +289,9 @@ TEST_F(PlannerEndpoint, EntryPublishesTwoContinuousOptimizedPieces)
   ASSERT_EQ(planner.exec_state_, FSM::EXEC_TRAJ);
   const auto& trajectory = planner.planner_manager_->traj_.local_traj.traj;
   ASSERT_EQ(trajectory.getPieceNum(), 2);
+  EXPECT_DOUBLE_EQ(planner.planner_manager_->pp_.max_vel_, 0.7);
+  // 保留测试配置的0.2m/s可行性容差，门点优化也必须使用独立速度。
+  EXPECT_LE(trajectory.getMaxVelRate(), 0.7 + 0.2 + 1e-6);
   const double half = trajectory.getDurations()(0);
   EXPECT_LT((trajectory[0].getPos(half) - trajectory[1].getPos(0.0)).norm(), 1e-8);
   EXPECT_LT((trajectory[0].getVel(half) - trajectory[1].getVel(0.0)).norm(), 1e-8);

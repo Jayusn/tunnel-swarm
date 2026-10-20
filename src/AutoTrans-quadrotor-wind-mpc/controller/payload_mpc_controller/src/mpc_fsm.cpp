@@ -41,13 +41,17 @@ namespace PayloadMPC
             locked_yaw_sub_ = nh_.subscribe(locked_yaw_topic, 1,
                 &MPCFSM::lockedYawCallback, this, ros::TransportHints().tcpNoDelay());
         std::string waypoint_goal_topic;
+        normal_velocity_xy_ = params_.max_velocity_xy_;
+        nh_.param("entry_max_velocity_xy", entry_velocity_xy_, normal_velocity_xy_);
+        if (!std::isfinite(entry_velocity_xy_) || entry_velocity_xy_ <= 0.0)
+            entry_velocity_xy_ = normal_velocity_xy_;
         nh_.param<std::string>("waypoint_goal_topic", waypoint_goal_topic, "");
         if (!waypoint_goal_topic.empty())
         {
             waypoint_goal_sub_ = nh_.subscribe(waypoint_goal_topic, 1,
                 &MPCFSM::waypointGoalCallback, this, ros::TransportHints().tcpNoDelay());
             waypoint_entry_goal_sub_ = nh_.subscribe(waypoint_goal_topic + "/entry", 1,
-                &MPCFSM::waypointGoalCallback, this, ros::TransportHints().tcpNoDelay());
+                &MPCFSM::entryWaypointGoalCallback, this, ros::TransportHints().tcpNoDelay());
         }
         nh_.param("precision_landing_enabled", precision_landing_enabled_, false);
         if (precision_landing_enabled_)
@@ -270,6 +274,16 @@ namespace PayloadMPC
 
     void MPCFSM::waypointGoalCallback(const geometry_msgs::PoseStamped::ConstPtr &msg)
     {
+        handleWaypointGoal(msg, false);
+    }
+
+    void MPCFSM::entryWaypointGoalCallback(const geometry_msgs::PoseStamped::ConstPtr &msg)
+    {
+        handleWaypointGoal(msg, true);
+    }
+
+    void MPCFSM::handleWaypointGoal(const geometry_msgs::PoseStamped::ConstPtr &msg, bool entry)
+    {
         waypoint_yaw_valid_ = false;
         const auto &q = msg->pose.orientation;
         Eigen::Quaterniond attitude(q.w, q.x, q.y, q.z);
@@ -280,6 +294,10 @@ namespace PayloadMPC
         waypoint_yaw_ = get_yaw_from_quaternion(attitude.normalized());
         waypoint_stamp_ = msg->header.stamp;
         waypoint_yaw_valid_ = true;
+        const double velocity = entry ? entry_velocity_xy_ : normal_velocity_xy_;
+        if (controller_.setHorizontalVelocityLimit(velocity))
+            ROS_INFO("[waypoint_speed] %s goal: NMPC XY velocity threshold %.2f m/s.",
+                     entry ? "entry" : "ordinary", velocity);
     }
 
     const double *MPCFSM::trajectoryEndYaw(const oneTraj_Data_t &trajectory) const

@@ -145,6 +145,8 @@ namespace diff_planner
 
     /* set variables */
     void setParam(ros::NodeHandle &nh);
+    double getMaxVelocity() const { return max_vel_; }
+    void setMaxVelocity(double velocity) { max_vel_ = velocity; }
     void setEnvironment(const GridMap::Ptr &map);
     void setControlPoints(const Eigen::MatrixXd &points);
     void setSwarmTrajs(SwarmTrajData *swarm_trajs_ptr);

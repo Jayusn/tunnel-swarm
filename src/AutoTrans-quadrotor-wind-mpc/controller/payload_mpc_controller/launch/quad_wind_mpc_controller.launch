@@ -5,6 +5,8 @@
   <arg name="precision_landing_enabled" default="false"/>
   <arg name="locked_yaw_topic" default=""/>
   <arg name="waypoint_goal_topic" default=""/>
+  <!-- 0沿用配置的普通速度；由UAV1入口显式指定门点速度。 -->
+  <arg name="entry_max_velocity_xy" default="0.0"/>
   <arg name="landing_target_topic" default="/landing/nmpc_target"/>
   <arg name="landing_state_topic" default="/landing/state"/>
   <arg name="rc_land_active_topic" default="/landing/rc_land_active"/>
@@ -71,6 +73,7 @@
     <param name="precision_landing_enabled" value="$(arg precision_landing_enabled)"/>
     <param name="locked_yaw_topic" value="$(arg locked_yaw_topic)"/>
     <param name="waypoint_goal_topic" value="$(arg waypoint_goal_topic)"/>
+    <param name="entry_max_velocity_xy" value="$(arg entry_max_velocity_xy)"/>
     <remap from="~landing_target" to="$(arg landing_target_topic)"/>
     <remap from="~landing_state" to="$(arg landing_state_topic)"/>
     <remap from="~rc_land_active" to="$(arg rc_land_active_topic)"/>

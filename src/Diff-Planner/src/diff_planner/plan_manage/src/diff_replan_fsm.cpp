@@ -1945,7 +1945,7 @@ namespace diff_planner
       return;
     }
     ROS_INFO("Received goal: %f, %f, %f", end_wp(0), end_wp(1), end_wp(2));
-    planner_manager_->two_piece_entry_ = two_piece_entry;
+    planner_manager_->setEntryMode(two_piece_entry);
     if (planNextWaypoint(end_wp, true))
     {
       last_target_change_time_ = ros::Time::now().toSec();

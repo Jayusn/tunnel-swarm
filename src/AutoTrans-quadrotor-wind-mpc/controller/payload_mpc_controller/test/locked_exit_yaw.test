@@ -6,5 +6,6 @@
     <rosparam command="load" file="$(find payload_mpc_controller)/config/model.yaml"/>
     <param name="locked_yaw_topic" value="/test/locked_exit_yaw"/>
     <param name="waypoint_goal_topic" value="/test/waypoint_goal"/>
+    <param name="entry_max_velocity_xy" value="0.70"/>
   </test>
 </launch>

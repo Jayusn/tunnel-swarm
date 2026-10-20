@@ -20,6 +20,10 @@ namespace diff_planner
     /* read algorithm parameters */
 
     nh.param("manager/max_vel", pp_.max_vel_, -1.0);
+    normal_max_vel_ = pp_.max_vel_;
+    nh.param("manager/entry_max_vel", entry_max_vel_, normal_max_vel_);
+    if (!std::isfinite(entry_max_vel_) || entry_max_vel_ <= 0.0)
+      entry_max_vel_ = normal_max_vel_;
     nh.param("manager/max_acc", pp_.max_acc_, -1.0);
     nh.param("manager/feasibility_tolerance", pp_.feasibility_tolerance_, 0.0);
     nh.param("manager/polyTraj_piece_length", pp_.polyTraj_piece_length, -1.0);
@@ -57,12 +61,20 @@ namespace diff_planner
 
     ploy_traj_opt_.reset(new PolyTrajOptimizer);
     ploy_traj_opt_->setParam(nh);
+    normal_optimizer_max_vel_ = ploy_traj_opt_->getMaxVelocity();
     ploy_traj_opt_->setEnvironment(grid_map_);
 
     visualization_ = vis;
 
     ploy_traj_opt_->setSwarmTrajs(&traj_.swarm_traj);
     ploy_traj_opt_->setDroneId(pp_.drone_id);
+  }
+
+  void DiffPlannerManager::setEntryMode(bool enabled)
+  {
+    two_piece_entry_ = enabled;
+    pp_.max_vel_ = enabled ? entry_max_vel_ : normal_max_vel_;
+    ploy_traj_opt_->setMaxVelocity(enabled ? entry_max_vel_ : normal_optimizer_max_vel_);
   }
 
   void DiffPlannerManager::updateDynamicObjects(const obj_state_msgs::ObjectsStates &msg)

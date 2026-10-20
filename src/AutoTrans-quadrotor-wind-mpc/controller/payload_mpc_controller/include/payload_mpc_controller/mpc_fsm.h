@@ -107,6 +107,9 @@ namespace PayloadMPC
         void processPrecisionLanding(const ros::Time &now);
         void lockedYawCallback(const quadrotor_msgs::PositionCommand::ConstPtr &msg);
         void waypointGoalCallback(const geometry_msgs::PoseStamped::ConstPtr &msg);
+        void entryWaypointGoalCallback(const geometry_msgs::PoseStamped::ConstPtr &msg);
+        void handleWaypointGoal(const geometry_msgs::PoseStamped::ConstPtr &msg, bool entry);
+        double normal_velocity_xy_{0.0}, entry_velocity_xy_{0.0};
         const double *trajectoryEndYaw(const oneTraj_Data_t &trajectory) const;
         ros::Subscriber locked_yaw_sub_;
         ros::Subscriber waypoint_goal_sub_, waypoint_entry_goal_sub_;

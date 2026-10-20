@@ -32,6 +32,7 @@ namespace diff_planner
 
     /* main planning interface */
     void initPlanModules(ros::NodeHandle &nh, PlanningVisualization::Ptr vis = NULL);
+    void setEntryMode(bool enabled);
     bool computeInitState(
         const Eigen::Vector3d &start_pt, const Eigen::Vector3d &start_vel,
         const Eigen::Vector3d &start_acc, const Eigen::Vector3d &local_target_pt,
@@ -87,6 +88,7 @@ namespace diff_planner
     TrajContainer traj_;
 
   private:
+    double normal_max_vel_{0.0}, normal_optimizer_max_vel_{0.0}, entry_max_vel_{0.0};
     bool setLocalTrajFromTrajectory(poly_traj::Trajectory traj, int constraint_end,
                                     bool check_dynamic_obstacles,
                                     double max_initial_occupied_prefix);

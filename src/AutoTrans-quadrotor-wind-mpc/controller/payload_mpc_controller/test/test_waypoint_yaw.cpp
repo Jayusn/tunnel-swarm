@@ -206,7 +206,9 @@ TEST_F(WaypointYaw, NormalFinishKeepsEndpointYawWhileAbortKeepsActualYaw) {
 TEST_F(WaypointYaw, GoalAndEntryTopicsBothBindWaypointYaw) {
   const auto info = trajectoryInfo();
   const Eigen::Vector3d endpoint = info.traj.getJuncPos(info.traj.getPieceNum());
-  for (const std::string topic : {"/test/waypoint_goal", "/test/waypoint_goal/entry"}) {
+  const double normal_velocity = params.max_velocity_xy_;
+  for (const std::string topic : {"/test/waypoint_goal", "/test/waypoint_goal/entry",
+                                "/test/waypoint_goal"}) {
     ros::Publisher pub = nh.advertise<geometry_msgs::PoseStamped>(topic, 1);
     const auto deadline = ros::WallTime::now() + ros::WallDuration(2.0);
     while (pub.getNumSubscribers() == 0 && ros::WallTime::now() < deadline) {
@@ -222,7 +224,47 @@ TEST_F(WaypointYaw, GoalAndEntryTopicsBothBindWaypointYaw) {
     }
     ASSERT_NE(fsm->trajectoryEndYaw(info), nullptr);
     EXPECT_NEAR(*fsm->trajectoryEndYaw(info), -1.0, 1e-9);
+    controller->waitForPreparation();
+    const double expected_velocity = topic == "/test/waypoint_goal/entry"
+        ? 0.7 : normal_velocity;
+    EXPECT_NEAR(params.max_velocity_xy_, expected_velocity, 1e-6);
+    for (int stage = 0; stage < kSamples; ++stage) {
+      for (int axis = 0; axis < 4; ++axis)
+        EXPECT_NEAR(acadoVariables.ubAValues[stage * kVelocitySoftConstraintSize + axis],
+                    expected_velocity, 1e-6);
+      EXPECT_NEAR(acadoVariables.ubAValues[stage * kVelocitySoftConstraintSize + 4],
+                  params.max_velocity_z_, 1e-6);
+    }
   }
+}
+
+TEST_F(WaypointYaw, InvalidEntryGoalDoesNotChangeControllerVelocityLimit) {
+  const double normal_velocity = params.max_velocity_xy_;
+  auto message = goal(Eigen::Vector3d(0.0, 0.0, 0.6), 0.0, 0);
+  fsm->entryWaypointGoalCallback(message);
+  controller->waitForPreparation();
+  EXPECT_NEAR(params.max_velocity_xy_, normal_velocity, 1e-6);
+  EXPECT_NEAR(acadoVariables.ubAValues[0], normal_velocity, 1e-6);
+}
+
+TEST_F(WaypointYaw, RecoveryRestoresVelocityLimitForLatestWaypointType) {
+  Eigen::Matrix<real_t, kStateSize, 1> state;
+  state.setZero();
+  state(kPosZ) = 0.6;
+  state(kOriW) = 1.0;
+  state(kVelX) = 1.0;
+  ASSERT_TRUE(controller->resetForHover(state, Eigen::Vector3d(0.0, 0.0, 0.6), 0.0));
+  controller->waitForPreparation();
+  ASSERT_TRUE(controller->recoveryVelocityLimitsRelaxed());
+  const double relaxed_velocity = acadoVariables.ubAValues[0];
+  fsm->entryWaypointGoalCallback(goal(Eigen::Vector3d(1.0, 0.0, 0.6), 0.0));
+  EXPECT_NEAR(acadoVariables.ubAValues[0], relaxed_velocity, 1e-6);
+  ASSERT_TRUE(controller->restoreNominalVelocityLimits());
+  controller->waitForPreparation();
+  EXPECT_NEAR(acadoVariables.ubAValues[0], 0.7, 1e-6);
+  fsm->waypointGoalCallback(goal(Eigen::Vector3d(2.0, 0.0, 0.6), 0.0));
+  controller->waitForPreparation();
+  EXPECT_NEAR(acadoVariables.ubAValues[0], fsm->normal_velocity_xy_, 1e-6);
 }
 
 TEST_F(WaypointYaw, ExistingExitLockStillHasPriority) {
