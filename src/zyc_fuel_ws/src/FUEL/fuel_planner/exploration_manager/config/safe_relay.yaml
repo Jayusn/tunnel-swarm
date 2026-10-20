@@ -8,9 +8,9 @@ mission:
     release_distance: 1.00
     selection_window: 0.50
     sample_spacing: 0.08
-    # 停留包络：水平半径 0.30m、垂直上下各 0.20m；通行包络仍为 0.18/0.10m。
+    # 停留包络：水平半径 0.30m、垂直上下各 0.10m；通行包络仍为 0.18/0.10m。
     hold_radius: 0.30
-    hold_half_height: 0.20
+    hold_half_height: 0.10
     transit_radius: 0.18
     transit_half_height: 0.10
     map_confirmations: 2
