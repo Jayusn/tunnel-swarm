@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
-#include <functional>
 #include <limits>
 #include <vector>
 
@@ -34,11 +33,10 @@ struct Selection {
   Kind kind{Kind::WAIT};
 };
 
-// The caller checks a connected path from the last released anchor. The
-// reference route is retained in full; selecting endpoints never shortcuts it.
+// Qualify new measured endpoints relative to the latest released sample.
+// The follower owns connection planning; old route occupancy does not veto B.
 inline Selection select(const std::vector<Sample>& route, std::size_t anchor,
-                        const Eigen::Vector3d& leader, const Config& cfg,
-                        const std::function<bool(std::size_t, std::size_t)>& path_ok) {
+                        const Eigen::Vector3d& leader, const Config& cfg) {
   Selection result;
   if (route.size() < 2 || anchor >= route.size() || !leader.allFinite()) return result;
   const double start = route[anchor].progress;
@@ -55,8 +53,8 @@ inline Selection select(const std::vector<Sample>& route, std::size_t anchor,
            route[end + 1].confirmed) ++end;
     for (std::size_t i = begin; i <= end; ++i) {
       const auto& point = route[i];
-      // Only the candidate needs stopping clearance; neighbouring samples
-      // need transit clearance through path_ok, not their own stopping space.
+      // Only the candidate needs stopping clearance. Other historical samples
+      // do not certify or veto the follower's future connection to this point.
       if (point.progress - start + 1e-6 < cfg.minimum_progress ||
           route.back().progress - point.progress + 1e-6 < cfg.release_distance ||
           (leader.head<2>() - point.position.head<2>()).norm() + 1e-6 <
@@ -90,17 +88,12 @@ inline Selection select(const std::vector<Sample>& route, std::size_t anchor,
       };
       return score(a) > score(b);
     });
-    for (const auto i : pool) {
-      if (!path_ok(anchor, i)) continue;  // B failed: try C, without relaxing checks.
-      result.index = i;
-      result.kind = kind;
-      return true;
-    }
-    return false;
+    result.index = pool.front();
+    result.kind = kind;
+    return true;
   };
 
-  // Qualify an ordinary endpoint and its A -> B connection independently of
-  // stopping space elsewhere on the route. Transit-only samples do not veto B.
+  // Ordinary endpoints have priority; only B itself must qualify.
   if (choose(Kind::NORMAL)) return result;
   if (first_narrow != route.size()) {
     if (choose(Kind::AFTER_OBSTACLE)) return result;

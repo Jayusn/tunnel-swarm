@@ -9,14 +9,11 @@ mission:
     release_distance: 1.00
     selection_window: 0.50
     sample_spacing: 0.08
-    # 停留包络：水平半径 0.30m、垂直上下各 0.10m；通行包络仍为 0.18/0.10m。
+    # 只检查新点自身的停留包络；已发点不撤回，连接路径由后机规划。
     hold_radius: 0.30
     hold_half_height: 0.10
-    transit_radius: 0.18
-    transit_half_height: 0.10
     map_confirmations: 2
     map_timeout: 1.00
     odom_timeout: 0.50
-    maximum_sample_gap: 0.50
     dynamic_wait_horizon: 2.00
     maximum_samples: 10000

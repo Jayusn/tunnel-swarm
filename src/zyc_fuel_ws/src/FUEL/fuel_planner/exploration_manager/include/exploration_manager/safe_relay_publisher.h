@@ -13,7 +13,8 @@ class SDFMap;
 class FastPlannerManager;
 
 // Front vehicle owns waypoint qualification; the follower owns execution.
-// Path snapshots contain only currently valid, immutable released goals.
+// Path snapshots retain immutable goals qualified when first released.
+// Later obstacle changes and route planning belong to the follower.
 // header.stamp identifies the producer session; pose.header.seq is the goal ID.
 class SafeRelayPublisher {
  public:
@@ -29,15 +30,12 @@ class SafeRelayPublisher {
     ros::Time stamp;
     double yaw{0.0};
     int confirmations{0};
-    bool connected{true};
   };
   struct Goal { std::size_t route_index; uint32_t id; };
   void timerCallback(const ros::TimerEvent&);
   void missionCallback(const std_msgs::String::ConstPtr& message);
   bool volumeFree(const Eigen::Vector3d& point, double radius, double height) const;
-  bool connectionFree(std::size_t from, std::size_t to) const;
-  std::vector<Goal> validGoals() const;
-  void publish(const std::string& status, bool evidence_fresh);
+  void publish(const std::string& status);
 
   std::shared_ptr<SDFMap> map_;
   std::shared_ptr<FastPlannerManager> planner_;
@@ -58,8 +56,7 @@ class SafeRelayPublisher {
   std::size_t anchor_{0};
   bool enabled_{false}, entrance_received_{false}, exited_{false};
   double sample_spacing_{0.08}, hold_radius_{0.45}, hold_half_height_{0.32};
-  double transit_radius_{0.18}, transit_half_height_{0.10};
-  double map_timeout_{1.0}, odom_timeout_{0.5}, maximum_sample_gap_{0.50};
+  double map_timeout_{1.0}, odom_timeout_{0.5};
   double dynamic_wait_horizon_{2.0};
   int confirmations_required_{2}, maximum_samples_{10000};
 };

@@ -95,136 +95,81 @@ class SafeRelayPublisherTest {
       publisher.next_id_ = 3;
     };
 
-    // A currently occupied earlier segment invalidates its destination; a clear
-    // endpoint alone cannot certify A -> B, including unknown intervening space.
-    map->setOccupied(Eigen::Vector3d(1.0, 0.0, 1.0));
-    EXPECT_FALSE(publisher.connectionFree(0, first_index));
-    publisher.publish("TEST_BLOCKED_CONNECTION", true);
-    spin();
-    for (const auto& pose : received_goals.poses) EXPECT_NE(1U, pose.header.seq);
-    map->setOccupied(Eigen::Vector3d(1.0, 0.0, 1.0), 0);
-    map->setOccupied(publisher.history_[last_index].sample.position);
-    publisher.timerCallback(ros::TimerEvent());
-    EXPECT_EQ("WAIT_NO_VALID_TARGET", publisher.last_status_);
-    EXPECT_EQ(first_index, publisher.anchor_);
-    EXPECT_EQ(2U, publisher.goals_.size());  // Recovery cannot bypass a blocked transit path.
-    spin();
-    ASSERT_EQ(1U, received_goals.poses.size());
-    EXPECT_EQ(1U, received_goals.poses.front().header.seq);
-    map->setOccupied(publisher.history_[first_index].sample.position);
-    publisher.timerCallback(ros::TimerEvent());
-    EXPECT_EQ("LAST_TARGET_INVALID", publisher.last_status_);
-    EXPECT_EQ(2U, publisher.goals_.size());
-    spin();
-    EXPECT_TRUE(received_goals.poses.empty());  // No prior valid A: do not invent a new origin.
-    map->setOccupied(publisher.history_[first_index].sample.position, 0);
-    map->setOccupied(publisher.history_[last_index].sample.position, 0);
-    restore_issued();
+    // Occupied issued endpoints and old connections do not withdraw IDs or
+    // move the origin backwards. Even an occupied latest A cannot veto new B.
+    for (double obstacle_x : {1.0, 1.5, 2.0}) {
+      restore_issued();
+      map->setOccupied(Eigen::Vector3d(obstacle_x, 0, 1));
+      ASSERT_FALSE(publisher.volumeFree(Eigen::Vector3d(obstacle_x, 0, 1), 0.3, 0.1));
+      publisher.timerCallback(ros::TimerEvent());
+      ASSERT_EQ(3U, publisher.goals_.size());
+      EXPECT_EQ("NORMAL", publisher.last_status_);
+      EXPECT_EQ(30U, publisher.goals_.back().route_index);
+      spin();
+      ASSERT_EQ(3U, received_goals.poses.size());
+      for (std::size_t i = 0; i < 2; ++i) {
+        EXPECT_EQ(i + 1, received_goals.poses[i].header.seq);
+        EXPECT_EQ(initial_history[initial_goals[i].route_index].stamp,
+                  received_goals.poses[i].header.stamp);
+        EXPECT_DOUBLE_EQ(initial_history[initial_goals[i].route_index].sample.position.x(),
+                         received_goals.poses[i].pose.position.x);
+      }
+      EXPECT_EQ(publisher.session_, received_goals.header.stamp);
+      map->setOccupied(Eigen::Vector3d(obstacle_x, 0, 1), 0);
+    }
 
-    // A clear goal can also be invalid because its incoming connection changed.
-    // Recheck from the last valid A, including the entire omitted interval.
-    map->setOccupied(Eigen::Vector3d(1.5, 0, 1));
-    publisher.timerCallback(ros::TimerEvent());
-    EXPECT_TRUE(publisher.history_[last_index].sample.confirmed);
-    EXPECT_EQ(first_index, publisher.anchor_);
-    EXPECT_EQ("WAIT_NO_VALID_TARGET", publisher.last_status_);
-    EXPECT_EQ(2U, publisher.goals_.size());
-    spin();
-    ASSERT_EQ(1U, received_goals.poses.size());
-    EXPECT_EQ(1U, received_goals.poses.front().header.seq);
-    map->setOccupied(Eigen::Vector3d(1.5, 0, 1), 0);
+    // A newly occupied candidate itself is still rejected; choose a different
+    // confirmed endpoint without requiring an old route around the obstacle.
     restore_issued();
-
-    // Real occupied voxels at the edge of the holding envelope leave the
-    // smaller transit envelope clear, matching the observed flight failure.
-    auto occupy_hold_edge = [&](double x) {
-      pcl::PointCloud<pcl::PointXYZ> cloud;
-      pcl::PointXYZ endpoint;
-      endpoint.x = x + 0.05; endpoint.y = 0.35; endpoint.z = 1.05;
-      cloud.push_back(endpoint);
-      for (int i = 0; i < 12; ++i)
-        map->inputPointCloud(cloud, 1, Eigen::Vector3d(x + 0.05, 1.0, 1.05));
-    };
-    occupy_hold_edge(2.0);
-    ASSERT_FALSE(publisher.volumeFree(Eigen::Vector3d(2, 0, 1), 0.45, 0.32));
-    ASSERT_TRUE(publisher.connectionFree(first_index, 50));
+    map->setOccupied(Eigen::Vector3d(3.0, 0, 1));
     publisher.timerCallback(ros::TimerEvent());
     ASSERT_EQ(3U, publisher.goals_.size());
-    EXPECT_EQ(3U, publisher.goals_.back().id);
-    EXPECT_GT(publisher.goals_.back().route_index, last_index);
-    EXPECT_EQ("NORMAL", publisher.last_status_);
-    spin();
-    ASSERT_EQ(2U, received_goals.poses.size());
-    EXPECT_EQ(1U, received_goals.poses.front().header.seq);
-    EXPECT_EQ(3U, received_goals.poses.back().header.seq);
-    EXPECT_DOUBLE_EQ(1.0, received_goals.poses.front().pose.position.x);
-    const auto recovered_index = publisher.goals_.back().route_index;
-    EXPECT_EQ(publisher.history_[recovered_index].stamp, received_goals.poses.back().header.stamp);
-    EXPECT_DOUBLE_EQ(publisher.history_[recovered_index].sample.position.x(),
-                     received_goals.poses.back().pose.position.x);
-    publisher.timerCallback(ros::TimerEvent());
-    ASSERT_EQ(4U, publisher.goals_.size());
-    EXPECT_EQ(4U, publisher.goals_.back().id);
-    EXPECT_GT(publisher.goals_.back().route_index, recovered_index);
-
-    // Several latest goals may be invalid. A recovery must not reissue a
-    // previously passed sample between A and the furthest issued destination.
+    EXPECT_GT(publisher.goals_.back().route_index, 30U);
+    EXPECT_TRUE(publisher.history_[publisher.goals_.back().route_index].sample.confirmed);
+    map->setOccupied(Eigen::Vector3d(3.0, 0, 1), 0);
     restore_issued();
-    publisher.goals_.push_back({40, 3});
-    publisher.next_id_ = 4;
-    publisher.anchor_ = 40;
-    occupy_hold_edge(4.0);
-    ASSERT_FALSE(publisher.volumeFree(Eigen::Vector3d(4, 0, 1), 0.45, 0.32));
-    ASSERT_TRUE(publisher.connectionFree(first_index, 50));
-    publisher.timerCallback(ros::TimerEvent());
-    ASSERT_EQ(4U, publisher.goals_.size());
-    EXPECT_EQ(4U, publisher.goals_.back().id);
-    EXPECT_GT(publisher.goals_.back().route_index, 40U);
-    spin();
-    ASSERT_EQ(2U, received_goals.poses.size());
-    EXPECT_EQ(1U, received_goals.poses.front().header.seq);
-    EXPECT_EQ(4U, received_goals.poses.back().header.seq);
 
-    // Losing known-free evidence must not turn recovery into unconditional release.
+    // No known-free evidence for new candidates means no new point, but old
+    // IDs remain available. The producer does not certify their current state.
     auto unknown_map = std::make_shared<SDFMap>();
     unknown_map->initMap(nh);
     publisher.map_ = unknown_map;
     publisher.timerCallback(ros::TimerEvent());
-    EXPECT_EQ("LAST_TARGET_INVALID", publisher.last_status_);
-    EXPECT_EQ(4U, publisher.goals_.size());
+    EXPECT_EQ("WAIT_NO_VALID_TARGET", publisher.last_status_);
+    EXPECT_EQ(last_index, publisher.anchor_);
+    EXPECT_EQ(2U, publisher.goals_.size());
     spin();
-    EXPECT_TRUE(received_goals.poses.empty());
+    ASSERT_EQ(2U, received_goals.poses.size());
+    EXPECT_EQ(1U, received_goals.poses.front().header.seq);
+    EXPECT_EQ(2U, received_goals.poses.back().header.seq);
     publisher.map_ = map;
-    for (int i = 0; i < 10; ++i) map_frame();
-    restore_issued();
+    // Observe the restored map at t=100 before advancing the test clock;
+    // otherwise its first observation at t=102 legitimately refreshes its age.
     publisher.timerCallback(ros::TimerEvent());
+    restore_issued();
 
+    // Stale input blocks new releases, not the already issued point catalogue.
     ros::Time::setNow(ros::Time(102));
     publisher.timerCallback(ros::TimerEvent());
     spin();
     EXPECT_EQ("STALE_ODOMETRY", publisher.last_status_);
-    EXPECT_TRUE(received_goals.poses.empty());
-    EXPECT_EQ(61U, received_route.poses.size()); // Still publish ordinary reference route.
+    EXPECT_EQ(2U, publisher.goals_.size());
+    ASSERT_EQ(2U, received_goals.poses.size());
+    EXPECT_EQ(61U, received_route.poses.size());
     publisher.observe(Eigen::Vector3d(6, 0, 1), 0, ros::Time(102));
     publisher.timerCallback(ros::TimerEvent());
+    spin();
     EXPECT_EQ("STALE_MAP", publisher.last_status_);
-    // Missing odometry is not replaced by a straight connection across the gap.
+    EXPECT_EQ(2U, publisher.goals_.size());
+    ASSERT_EQ(2U, received_goals.poses.size());
+    EXPECT_EQ(publisher.session_, received_goals.header.stamp);
+
+    // Continue to retain only real, time-ordered odometry observations.
     publisher.observe(Eigen::Vector3d(6.8, 0, 1), 0, ros::Time(102.1));
-    EXPECT_FALSE(publisher.connectionFree(60, 61));
     const auto count = publisher.history_.size();
+    EXPECT_EQ(62U, count);
     publisher.observe(Eigen::Vector3d(6.9, 0, 1), 0, ros::Time(101));
     EXPECT_EQ(count, publisher.history_.size());
-
-    // A checked bent route remains usable even when the endpoint chord hits a wall.
-    publisher.history_.clear();
-    publisher.odom_stamp_ = ros::Time(0);
-    for (int i = 0; i <= 20; ++i)
-      publisher.observe(Eigen::Vector3d(0.1 * i, 0, 1), 0, ros::Time(103 + 0.01 * i));
-    for (int i = 1; i <= 10; ++i)
-      publisher.observe(Eigen::Vector3d(2, 0.1 * i, 1), 1.57, ros::Time(104 + 0.01 * i));
-    map->setOccupied(Eigen::Vector3d(1, 0.5, 1));
-    EXPECT_FALSE(publisher.volumeFree(Eigen::Vector3d(1, 0.5, 1), 0.18, 0.10));
-    EXPECT_TRUE(publisher.connectionFree(0, publisher.history_.size() - 1));
   }
 
   static void entranceSpacing() {
@@ -295,7 +240,7 @@ class SafeRelayPublisherTest {
                          publisher.history_[5].sample.progress, 1e-9);
   }
 };
-TEST(SafeRelayPublisher, ActualFlightCurrentMapAndInvalidation) { SafeRelayPublisherTest::run(); }
+TEST(SafeRelayPublisher, NewEndpointsAndRetainedIssuedPoints) { SafeRelayPublisherTest::run(); }
 TEST(SafeRelayPublisher, EntranceFallbackUsesHalfMeterThenConfiguredSpacing) {
   SafeRelayPublisherTest::entranceSpacing();
 }

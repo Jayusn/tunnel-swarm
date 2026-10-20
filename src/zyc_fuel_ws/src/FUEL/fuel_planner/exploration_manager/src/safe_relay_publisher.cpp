@@ -22,27 +22,23 @@ void SafeRelayPublisher::initialize(ros::NodeHandle& nh, std::shared_ptr<SDFMap>
   params.param("sample_spacing", sample_spacing_, 0.08);
   params.param("hold_radius", hold_radius_, 0.45);
   params.param("hold_half_height", hold_half_height_, 0.32);
-  params.param("transit_radius", transit_radius_, 0.18);
-  params.param("transit_half_height", transit_half_height_, 0.10);
   params.param("map_timeout", map_timeout_, 1.0);
   params.param("odom_timeout", odom_timeout_, 0.5);
-  params.param("maximum_sample_gap", maximum_sample_gap_, 0.50);
   params.param("dynamic_wait_horizon", dynamic_wait_horizon_, 2.0);
   params.param("map_confirmations", confirmations_required_, 2);
   params.param("maximum_samples", maximum_samples_, 10000);
   for (double value : {config_.normal_spacing, config_.minimum_progress, entrance_minimum_progress_,
        config_.release_distance, config_.selection_window,
-       sample_spacing_, hold_radius_, hold_half_height_, transit_radius_,
-       transit_half_height_, map_timeout_, odom_timeout_, maximum_sample_gap_,
+       sample_spacing_, hold_radius_, hold_half_height_,
+       map_timeout_, odom_timeout_,
        dynamic_wait_horizon_}) {
     if (!std::isfinite(value) || value <= 0.0)
       throw std::runtime_error("safe_relay: all distances and timeouts must be finite and positive");
   }
-  if (hold_radius_ < transit_radius_ || hold_half_height_ < transit_half_height_ ||
-      confirmations_required_ < 1 || maximum_samples_ < 3 ||
-      maximum_sample_gap_ < sample_spacing_ || config_.normal_spacing < config_.minimum_progress ||
+  if (confirmations_required_ < 1 || maximum_samples_ < 3 ||
+      config_.normal_spacing < config_.minimum_progress ||
       config_.normal_spacing < entrance_minimum_progress_)
-    throw std::runtime_error("safe_relay: inconsistent hold/transit/history settings");
+    throw std::runtime_error("safe_relay: inconsistent spacing/history settings");
   const auto wall = ros::WallTime::now();
   session_ = ros::Time(wall.sec, wall.nsec);
   goals_pub_ = nh.advertise<nav_msgs::Path>(prefix + "/relay_waypoints", 1, true);
@@ -51,7 +47,7 @@ void SafeRelayPublisher::initialize(ros::NodeHandle& nh, std::shared_ptr<SDFMap>
   mission_sub_ = nh.subscribe(prefix + "/task_status", 1,
                               &SafeRelayPublisher::missionCallback, this);
   timer_ = nh.createTimer(ros::Duration(0.25), &SafeRelayPublisher::timerCallback, this);
-  publish("WAIT_ENTRANCE", false);
+  publish("WAIT_ENTRANCE");
 }
 
 void SafeRelayPublisher::setEntrance(const Eigen::Vector3d& origin,
@@ -84,7 +80,6 @@ void SafeRelayPublisher::observe(const Eigen::Vector3d& position, double yaw,
   point.sample.progress = history_.empty() ? 0.0 : history_.back().sample.progress + step;
   point.stamp = measured_at;
   point.yaw = yaw;
-  point.connected = step <= maximum_sample_gap_;
   history_.push_back(point);
 }
 
@@ -120,38 +115,6 @@ bool SafeRelayPublisher::volumeFree(const Eigen::Vector3d& point, double radius,
   return true;
 }
 
-bool SafeRelayPublisher::connectionFree(std::size_t from, std::size_t to) const {
-  if (from > to || to >= history_.size()) return false;
-  const double step = std::min(0.05, 0.5 * map_->getResolution());
-  if (!volumeFree(history_[from].sample.position, transit_radius_, transit_half_height_))
-    return false;
-  for (std::size_t i = from + 1; i <= to; ++i) {
-    if (!history_[i].connected) return false;
-    const Eigen::Vector3d& a = history_[i - 1].sample.position;
-    const Eigen::Vector3d delta = history_[i].sample.position - a;
-    const int count = std::max(1, static_cast<int>(std::ceil(delta.norm() / step)));
-    for (int j = 1; j <= count; ++j) {
-      if (!volumeFree(Eigen::Vector3d(a + delta * (double(j) / count)),
-                      transit_radius_, transit_half_height_)) return false;
-    }
-  }
-  return true;
-}
-
-std::vector<SafeRelayPublisher::Goal> SafeRelayPublisher::validGoals() const {
-  std::vector<Goal> valid;
-  std::size_t previous = 0;
-  for (const auto& goal : goals_) {
-    // Check every intervening segment, including those ending at omitted
-    // transit-only goals. A blocked prefix also blocks all later goals.
-    if (!connectionFree(previous, goal.route_index)) break;
-    const auto& sample = history_[goal.route_index].sample;
-    if (sample.hold_free && sample.confirmed) valid.push_back(goal);
-    previous = goal.route_index;
-  }
-  return valid;
-}
-
 void SafeRelayPublisher::timerCallback(const ros::TimerEvent&) {
   const ros::Time now = ros::Time::now();
   const uint64_t sequence = map_->getUpdateSequence();
@@ -159,15 +122,23 @@ void SafeRelayPublisher::timerCallback(const ros::TimerEvent&) {
   if (new_map) { map_sequence_ = sequence; map_seen_at_ = now; }
   if (odom_stamp_.isZero() || (now - odom_stamp_).toSec() > odom_timeout_ ||
       odom_stamp_ > now + ros::Duration(0.1)) {
-    publish("STALE_ODOMETRY", false); return;
+    publish("STALE_ODOMETRY"); return;
   }
   if (map_seen_at_.isZero() || (now - map_seen_at_).toSec() > map_timeout_) {
-    publish("STALE_MAP", false); return;
+    publish("STALE_MAP"); return;
   }
+  // Issued points are history, not live validity certificates. Never move the
+  // spacing origin backwards when a follower or obstacle occupies an old point.
+  anchor_ = goals_.empty() ? 0 : goals_.back().route_index;
   std::vector<safe_relay::Sample> samples;
   samples.reserve(history_.size());
-  for (auto& record : history_) {
+  for (std::size_t i = 0; i < history_.size(); ++i) {
+    auto& record = history_[i];
     auto& sample = record.sample;
+    if (i <= anchor_) {
+      samples.push_back(sample);
+      continue;  // Neither the entrance nor issued points need requalification.
+    }
     sample.hold_free = volumeFree(sample.position, hold_radius_, hold_half_height_) &&
                       planner_->isRelayHoldDynamicallySafe(sample.position, hold_radius_,
                                                           hold_half_height_, dynamic_wait_horizon_);
@@ -177,34 +148,15 @@ void SafeRelayPublisher::timerCallback(const ros::TimerEvent&) {
     sample.clearance = sample.hold_free ? map_->getDistance(sample.position) : 0.0;
     samples.push_back(sample);
   }
-  if (history_.empty()) { publish("WAIT_ENTRANCE_CROSSING", true); return; }
-  if (exited_) { publish("EXIT_HANDOFF", true); return; }
-  if (!goals_.empty()) {
-    const auto valid = validGoals();
-    if (valid.empty()) { publish("LAST_TARGET_INVALID", true); return; }
-    // Recover the checking origin, not the commanded destination. All new
-    // candidates still need a checked connection from this currently valid A.
-    anchor_ = valid.back().route_index;
-  }
+  if (history_.empty()) { publish("WAIT_ENTRANCE_CROSSING"); return; }
+  if (exited_) { publish("EXIT_HANDOFF"); return; }
   if (history_.size() >= static_cast<std::size_t>(maximum_samples_)) {
-    publish("HISTORY_CAPACITY_REACHED", true); return;
+    publish("HISTORY_CAPACITY_REACHED"); return;
   }
-  // Evaluate each measured segment once, even if many B/C candidates fail.
-  // Rechecking the full prefix for every candidate is quadratic on blocked routes.
-  std::vector<std::size_t> blocked_prefix(history_.size(), 0);
-  for (std::size_t i = anchor_ + 1; i < history_.size(); ++i)
-    blocked_prefix[i] = blocked_prefix[i - 1] + (connectionFree(i - 1, i) ? 0 : 1);
-  // Only the first release measures from the entrance. Recovering an older
-  // issued anchor must not re-enable the entrance's shorter fallback spacing.
+  // Only the first release uses the entrance fallback spacing.
   auto selection_config = config_;
   if (goals_.empty()) selection_config.minimum_progress = entrance_minimum_progress_;
-  const auto selected = safe_relay::select(samples, anchor_, leader_, selection_config,
-      [&](std::size_t a, std::size_t b) {
-        // Retain issued IDs/positions and advance beyond the latest issued
-        // sample even when the checking origin has moved back to an older A.
-        return (goals_.empty() || b > goals_.back().route_index) &&
-               blocked_prefix[a] == blocked_prefix[b];
-      });
+  const auto selected = safe_relay::select(samples, anchor_, leader_, selection_config);
   if (selected.kind != safe_relay::Kind::WAIT) {
     anchor_ = selected.index;
     goals_.push_back({anchor_, next_id_++});
@@ -213,10 +165,10 @@ void SafeRelayPublisher::timerCallback(const ros::TimerEvent&) {
              goals_.back().id, safe_relay::name(selected.kind), p.x(), p.y(), p.z(),
              history_[anchor_].sample.progress);
   }
-  publish(safe_relay::name(selected.kind), true);
+  publish(safe_relay::name(selected.kind));
 }
 
-void SafeRelayPublisher::publish(const std::string& status, bool evidence_fresh) {
+void SafeRelayPublisher::publish(const std::string& status) {
   nav_msgs::Path route;
   route.header.frame_id = frame_;
   route.header.stamp = odom_stamp_;
@@ -237,17 +189,17 @@ void SafeRelayPublisher::publish(const std::string& status, bool evidence_fresh)
   nav_msgs::Path goals;
   goals.header.frame_id = frame_;
   goals.header.stamp = session_;
-  if (evidence_fresh) {
-    for (const auto& goal : validGoals()) {
-      auto pose = route.poses[goal.route_index];
-      pose.header.seq = goal.id;
-      goals.poses.push_back(pose);
-    }
+  // Keep all issued IDs/XYZ even if map or odometry evidence is now stale.
+  // Freshness gates new releases; the follower owns reuse, planning and discard.
+  for (const auto& goal : goals_) {
+    auto pose = route.poses[goal.route_index];
+    pose.header.seq = goal.id;
+    goals.poses.push_back(pose);
   }
-  goals_pub_.publish(goals);  // An omitted previously issued ID is explicitly invalid now.
+  goals_pub_.publish(goals);
   std_msgs::String message;
   message.data = status + " released=" + std::to_string(goals_.size()) +
-                 " valid=" + std::to_string(goals.poses.size());
+                 " published=" + std::to_string(goals.poses.size());
   status_pub_.publish(message);
   if (status != last_status_) {
     ROS_INFO("[safe_relay] %s", message.data.c_str());
