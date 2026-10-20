@@ -6,6 +6,7 @@
 #include <memory>
 #include <deque>
 #include <vector>
+#include <limits>
 #include <geometry_msgs/Point.h>
 #include <geometry_msgs/PointStamped.h>
 #include <geometry_msgs/PoseStamped.h>
@@ -40,6 +41,8 @@ public:
   int planExploreMotion(const Vector3d& pos, const Vector3d& vel, const Vector3d& acc,
                         const Vector3d& yaw);
   bool manualWaypointsEnabled() const { return manual_path_enabled_; }
+  // 只在 FSM 真正发布轨迹后提交高度，失败候选不能改写后续水平段目标。
+  void recordPublishedTrajectoryHeight();
   // 混合模式只执行FUEL的候选评分与完整观察视点选择，轨迹由DIFF负责。
   bool selectExplorationViewpoint(const Vector3d& pos, const Vector3d& vel,
                                   const Vector3d& acc, const Vector3d& yaw,
@@ -145,6 +148,9 @@ private:
   // 2026-07-14: 保存任务层请求的最终目标；执行期碰撞不能只冷却 5m 截断后的中间点。
   Vector3d last_requested_goal_{0.0, 0.0, 0.0};
   bool has_last_requested_goal_{false};
+  double horizontal_reference_height_{std::numeric_limits<double>::quiet_NaN()};
+  double pending_reference_height_{std::numeric_limits<double>::quiet_NaN()};
+  double horizontalGoalHeight(double current_height) const;
   // 绕障侧只作可让出的连续性偏好；横移不解除，前方短路可通并前进后解除。
   bool recovery_side_latched_{false};
   bool wide_side_bypass_active_{false};

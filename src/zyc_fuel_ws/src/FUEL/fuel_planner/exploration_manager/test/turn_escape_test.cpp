@@ -61,7 +61,35 @@ class TurnEscapeTest {
     manager.task_search_manager_->initialize(nh);
   }
 public:
-  static void runMovingClimb(int mode) {
+  static void runHeightReferenceOwnership() {
+    ros::NodeHandle nh("~");
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    manager.task_search_manager_->min_search_height_ = 0.10;
+    manager.task_search_manager_->max_search_height_ = 1.90;
+    check(std::fabs(manager.horizontalGoalHeight(0.03) - 0.10) < 1e-9,
+          "ordinary horizontal goal bypassed the configured minimum height");
+    manager.pending_reference_height_ = 0.65;
+    check(std::fabs(manager.horizontalGoalHeight(0.55) - 0.55) < 1e-9,
+          "unpublished candidate changed the committed height");
+    manager.recordPublishedTrajectoryHeight();
+    manager.pending_reference_height_ = 0.20;
+    check(std::fabs(manager.horizontalGoalHeight(0.50) - 0.65) < 1e-9,
+          "unpublished recovery replaced the previous height reference");
+    manager.pending_reference_height_ = std::numeric_limits<double>::quiet_NaN();
+    manager.recordPublishedTrajectoryHeight();
+    check(std::fabs(manager.horizontalGoalHeight(0.45) - 0.65) < 1e-9,
+          "turn or escape without a new height erased the previous reference");
+    manager.low_probe_phase_ = vertical_detour::LowProbePhase::ADVANCING;
+    manager.low_probe_height_ = 0.12;
+    check(std::fabs(manager.horizontalGoalHeight(0.08) - 0.12) < 1e-9,
+          "active underpass inherited cruise height or accumulated tracking error");
+    manager.low_probe_phase_ = vertical_detour::LowProbePhase::IDLE;
+    check(std::fabs(manager.horizontalGoalHeight(0.50) - 0.65) < 1e-9,
+          "underpass probe overwrote the published reference without publication");
+  }
+
+  static void runMovingClimb(int mode, bool height_correction = false) {
     ros::NodeHandle nh("~");
     nh.setParam("mission/task_search/min_height", 0.10);
     nh.setParam("mission/task_search/cruise_height", 0.60);
@@ -101,6 +129,18 @@ public:
     }
     map.updateESDF3d();
     task.updateRobotPose(start, 0.0);
+    if (height_correction) {
+      const Vector3d horizontal = end - start;
+      const Vector3d correction = horizontal + Vector3d(0, 0, 0.275);
+      const double distance = horizontal.head<2>().norm();
+      check(manager.isLowProbeCorridorSafe(start, horizontal, distance) &&
+            manager.isKnownSafeHorizontalCorridor(start, horizontal, distance),
+            "height correction fixture must have a safe horizontal corridor");
+      check(manager.isLowProbeCorridorSafe(start, correction, distance) == (mode == 0) &&
+            manager.isKnownSafeHorizontalCorridor(start, correction, distance) == (mode == 0),
+            "height correction ignored occupied or unknown space above the horizontal route");
+      return;
+    }
     manager.recovery_side_latched_ = true;
     manager.recovery_side_dir_ = -Vector3d::UnitY();
     manager.ed_->path_next_goal_ = {start, 0.5*(start+end), end};
@@ -542,17 +582,23 @@ public:
     }
   }
 
-  static void runEntryPassage(int open_side) {
+  static void runEntryPassage(int open_side, bool height_drift = false) {
     ros::NodeHandle nh("~");
     FastExplorationManager manager;
     initialize(nh, manager);
     auto& task = *manager.task_search_manager_;
+    task.min_search_height_ = 0.10;
     task.setMap(manager.sdf_map_);
     task.enabled_ = true;
     task.global_no_return_ = false;
     task.exit_detection_enabled_ = false;
     const double mirror = open_side < 0 ? -1.0 : 1.0;
     const Vector3d start(0.033, -0.103*mirror, 0.473);
+    const double reference_height = start.z() + (height_drift ? 0.05 : 0.0);
+    if (height_drift) {
+      manager.pending_reference_height_ = reference_height;
+      manager.recordPublishedTrajectoryHeight();
+    }
     task.updateRobotPose(start, 0.0);
     pcl::PointCloud<pcl::PointXYZ> walls;
     // 采用本次入口的尺寸：左墙+0.60、右墙-0.95，障碍位于前方0.67m，
@@ -613,8 +659,17 @@ public:
           "entry passage candidate failed final straight-trajectory footprint checks");
     const double duration = manager.planner_manager_->local_data_.duration_;
     const Vector3d end = manager.planner_manager_->local_data_.position_traj_.evaluateDeBoorT(duration);
-    check(end.x()-start.x() >= 0.20-1e-3 && std::fabs(end.z()-start.z()) < 1e-6,
+    check(end.x()-start.x() >= 0.20-1e-3 && std::fabs(end.z()-reference_height) < 1e-6,
           "entry passage lost actual forward progress or changed height");
+    if (height_drift) {
+      for (int i = 0; i < 8; ++i) {
+        Vector3d measured = start;
+        measured.z() = goal.position.z() - 0.04;
+        check(manager.selectEntryForwardGoal(measured, Vector3d::UnitX(), 0.62, goal) &&
+              std::fabs(goal.position.z() - reference_height) < 1e-9,
+              "entry replans accumulated four-centimeter height tracking errors");
+      }
+    }
   }
 
   static void runWiderSideRecovery(double wide_side, bool fallback_only,
@@ -738,7 +793,8 @@ public:
     if (!fallback_only && !remember_side) checkPublishedCorridorExecution(manager);
   }
 
-  static void runSideRecovery(double side, bool block_side, bool climb = false) {
+  static void runSideRecovery(double side, bool block_side, bool climb = false,
+                              bool height_drift = false) {
     ros::NodeHandle nh("~");
     nh.setParam("manager/use_geometric_path", true);
     nh.setParam("astar/resolution_astar", 0.05);
@@ -827,7 +883,13 @@ public:
     manager.reportTrajectoryCollision();
     check(manager.recovery_side_latched_, "collision feedback erased the detour side");
 
-    const Vector3d displaced = origin + Vector3d(0, side*0.22, 0);
+    Vector3d displaced = origin + Vector3d(0, side*0.22, 0);
+    if (height_drift) {
+      task.max_search_height_ = 1.90;
+      manager.pending_reference_height_ = origin.z();
+      manager.recordPublishedTrajectoryHeight();
+      displaced.z() -= 0.05;
+    }
     task.updateRobotPose(displaced, 0.0);
     check(!manager.isLowProbeCorridorSafe(displaced, Vector3d::UnitX(), 0.40),
           "fixture did not keep the forward footprint blocked after 0.22m side progress");
@@ -856,6 +918,30 @@ public:
           "0.22m lateral progress released the side or successful plan stayed pending");
     const double duration = planner.local_data_.duration_;
     const Vector3d end = planner.local_data_.position_traj_.evaluateDeBoorT(duration);
+    if (height_drift) {
+      // A* 短段可能在到达最终高度前截断；保持的是发布段所继承的目标，
+      // 不能把截断处高度或下一次偏低里程计重新提交为目标。
+      check(std::fabs(manager.pending_reference_height_ - origin.z()) < 1e-9 &&
+            end.z() > displaced.z() + 0.005 && end.z() <= origin.z() + 0.02 &&
+            (end - displaced).y()*side >= 0.10 && planner.isTrajectorySafe(),
+            "side recovery did not retain and approach the committed height safely");
+      manager.recordPublishedTrajectoryHeight();
+      for (double error : {0.04, 0.06, 0.03, 0.05}) {
+        displaced.z() = origin.z() - error;
+        task.updateRobotPose(displaced, 0.0);
+        check(manager.planExploreMotion(displaced, Vector3d::Zero(), Vector3d::Zero(),
+                                       Vector3d(0.10, 0, 0)) == SUCCEED,
+              "height-preserving side replan failed");
+        auto& traj = planner.local_data_;
+        const double end_z = traj.position_traj_.evaluateDeBoorT(traj.duration_).z();
+        check(std::fabs(manager.pending_reference_height_ - origin.z()) < 1e-9 &&
+              end_z > displaced.z() + 0.005 && end_z <= origin.z() + 0.02 &&
+              planner.isTrajectorySafe(),
+              "published side replans ratcheted the target down with measured height");
+        manager.recordPublishedTrajectoryHeight();
+      }
+      return;
+    }
     if (climb) {
       std::cout << "moving bypass end=" << end.transpose()
                 << " selected=" << manager.ed_->next_goal_.transpose()
@@ -898,7 +984,8 @@ public:
     check(!manager.recovery_side_latched_, "confirmed turn kept the old obstacle side");
   }
 
-  static void runBypassContinuation(double side, bool change_width, bool block_side) {
+  static void runBypassContinuation(double side, bool change_width, bool block_side,
+                                    bool height_drift = false) {
     ros::NodeHandle nh("~");
     nh.setParam("manager/use_geometric_path", true);
     nh.setParam("astar/resolution_astar", 0.05);
@@ -913,7 +1000,13 @@ public:
     task.global_no_return_ = false;
     task.stable_progress_direction_ = Eigen::Vector2d::UnitX();
     task.stable_progress_direction_valid_ = true;
-    const Vector3d origin(0.013, 0.017, 1.013);
+    Vector3d origin(0.013, 0.017, 1.013);
+    const double reference_height = origin.z();
+    if (height_drift) {
+      task.max_search_height_ = 1.90;
+      manager.pending_reference_height_ = reference_height;
+      manager.recordPublishedTrajectoryHeight();
+    }
     task.updateRobotPose(origin, 0.0);
     auto& map = *manager.sdf_map_;
     pcl::PointCloud<pcl::PointXYZ> cloud;
@@ -944,6 +1037,10 @@ public:
     ViewNode::caster_ = std::make_shared<RayCaster>();
     ViewNode::caster_->setParams(map.getResolution(), map_origin);
 
+    if (height_drift) {
+      origin.z() -= 0.04;
+      task.updateRobotPose(origin, 0.0);
+    }
     Vector3d next;
     double yaw;
     bool split;
@@ -951,6 +1048,11 @@ public:
           manager.wide_side_bypass_active_ && (next-origin).y()*side > 0.15 &&
           next.x() >= origin.x()+0.19,
           "initial bypass did not choose the wider lane with available forward progress");
+    if (height_drift) {
+      check(std::fabs(next.z() - reference_height) < 1e-9,
+            "wide-side bypass copied the low measured height into its goal");
+      return;
+    }
     const Vector3d initial_origin = manager.recovery_side_origin_;
     const double release_distance = manager.wide_side_bypass_release_distance_;
     if (change_width) {
@@ -1234,6 +1336,42 @@ TEST(EntryPassage, OpenEntryKeepsStraightMotion) {
 
 TEST(EntryPassage, FullyBlockedEntryDoesNotCrossWall) {
   fast_planner::TurnEscapeTest::runEntryPassage(2);
+}
+
+TEST(HorizontalHeight, PublishedReferenceAndUnderpassKeepSeparateOwnership) {
+  fast_planner::TurnEscapeTest::runHeightReferenceOwnership();
+}
+
+TEST(HorizontalHeight, EntryDoesNotAccumulateRepeatedTrackingError) {
+  fast_planner::TurnEscapeTest::runEntryPassage(0, true);
+}
+
+TEST(HorizontalHeight, LeftBypassRetainsPublishedHeight) {
+  fast_planner::TurnEscapeTest::runBypassContinuation(1.0, false, false, true);
+}
+
+TEST(HorizontalHeight, RightBypassRetainsPublishedHeight) {
+  fast_planner::TurnEscapeTest::runBypassContinuation(-1.0, false, false, true);
+}
+
+TEST(HorizontalHeight, LeftSideReplansDoNotRatchetHeightDown) {
+  fast_planner::TurnEscapeTest::runSideRecovery(1.0, false, false, true);
+}
+
+TEST(HorizontalHeight, RightSideReplansDoNotRatchetHeightDown) {
+  fast_planner::TurnEscapeTest::runSideRecovery(-1.0, false, false, true);
+}
+
+TEST(HorizontalHeight, KnownFreeSlopeAllowsHeightCorrection) {
+  fast_planner::TurnEscapeTest::runMovingClimb(0, true);
+}
+
+TEST(HorizontalHeight, MidRouteRoofRejectsHeightCorrection) {
+  fast_planner::TurnEscapeTest::runMovingClimb(1, true);
+}
+
+TEST(HorizontalHeight, UnknownOverheadRejectsHeightCorrection) {
+  fast_planner::TurnEscapeTest::runMovingClimb(2, true);
 }
 
 int main(int argc,char** argv) {

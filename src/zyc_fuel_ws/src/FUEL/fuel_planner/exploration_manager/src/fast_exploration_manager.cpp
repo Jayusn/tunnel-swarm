@@ -49,6 +49,21 @@ FastExplorationManager::~FastExplorationManager() {
   ViewNode::map_.reset();
 }
 
+void FastExplorationManager::recordPublishedTrajectoryHeight() {
+  if (std::isfinite(pending_reference_height_))
+    horizontal_reference_height_ = pending_reference_height_;
+  pending_reference_height_ = std::numeric_limits<double>::quiet_NaN();
+}
+
+double FastExplorationManager::horizontalGoalHeight(double current_height) const {
+  // 下穿会话拥有专用低位目标，不能被旧巡航参考抬回障碍物内。
+  if (low_probe_phase_ != vertical_detour::LowProbePhase::IDLE)
+    return low_probe_height_;
+  const double height = std::isfinite(horizontal_reference_height_)
+      ? horizontal_reference_height_ : current_height;
+  return task_search_manager_ ? task_search_manager_->clampSearchHeight(height) : height;
+}
+
 bool FastExplorationManager::pointInBox(const Vector3d& pt, const Vector3d& box_min,
                                         const Vector3d& box_max) const {
   return pt.x() >= box_min.x() && pt.x() <= box_max.x() && pt.y() >= box_min.y() &&
@@ -317,8 +332,8 @@ void FastExplorationManager::applyMissionFrontierFilter() {
 bool FastExplorationManager::isKnownSafeHorizontalCorridor(
     const Vector3d& start, const Vector3d& direction, double distance) const {
   if (!sdf_map_ || !planner_manager_ || direction.head<2>().norm() < 1e-3) return false;
-  const Vector3d forward(direction.x(), direction.y(), 0.0);
-  const Vector3d unit = forward.normalized();
+  // distance 是水平距离；保留高度差，检查实际起点到定高目标的完整斜段。
+  const Vector3d unit = direction / direction.head<2>().norm();
   const double sample_step = std::max(0.05, 0.5 * sdf_map_->getResolution());
   const int ring_samples = 12;
   for (double along = 0.0; along <= distance + 1e-6; along += sample_step) {
@@ -633,6 +648,7 @@ bool FastExplorationManager::buildGroundAscentPlan(
   last_requested_goal_ = ground_ascent_target_;
   has_last_requested_goal_ = true;
   ground_ascent_plan_ = true;
+  pending_reference_height_ = ground_ascent_target_.z();
   ground_ascent_still_since_ = ros::Time(0);
   ROS_ERROR("[ground_ascent] publish fixed-xy/yaw recovery at (%.2f,%.2f), "
             "z %.2f -> %.2f.",
@@ -644,8 +660,7 @@ bool FastExplorationManager::isLowProbeCorridorSafe(
     const Vector3d& start, const Vector3d& direction, double distance) const {
   if (!sdf_map_ || !planner_manager_ || direction.head<2>().norm() < 1e-3)
     return false;
-  const Vector3d forward(direction.x(), direction.y(), 0.0);
-  const Vector3d unit = forward.normalized();
+  const Vector3d unit = direction / direction.head<2>().norm();
   const double sample_step = std::max(0.05, 0.5 * sdf_map_->getResolution());
   vector<Vector3d> path{start};
   for (double along = sample_step; along <= distance + 1e-6;
@@ -1055,6 +1070,7 @@ bool FastExplorationManager::buildStationaryVerticalDetourPlan(
   last_requested_goal_ = target;
   has_last_requested_goal_ = true;
   vertical_detour_plan_ = true;
+  pending_reference_height_ = target.z();
   ROS_ERROR("[vertical_detour] build live fixed-xy %s at (%.2f,%.2f), "
             "z %.2f -> %.2f.",
             descending ? "descent" : "ascent", pos.x(), pos.y(), pos.z(),
@@ -1428,7 +1444,7 @@ bool FastExplorationManager::buildCenterGatePassage(
 
   const double pass_distance = gate_ahead + center_gate_pass_margin_;
   Vector3d candidate = pos + pass_distance * travel + gate_center_offset * lateral;
-  candidate.z() = pos.z();
+  candidate.z() = horizontalGoalHeight(pos.z());
   const Vector3d direct_delta = candidate - pos;
   if (!pointInsideWorkspaceLock(candidate) ||
       !planner_manager_->isPositionSafe(candidate) ||
@@ -1449,7 +1465,7 @@ bool FastExplorationManager::buildCenterGatePassage(
   if (task_search_manager_) task_search_manager_->recordSelectedGoal(next_pos);
   ROS_WARN(
       "[center_gate] prefer known-free center passage width=%.2fm, gate=%.2fm ahead, "
-      "center_offset=%.2fm, target=(%.2f,%.2f,%.2f), keep current height.",
+      "center_offset=%.2fm, target=(%.2f,%.2f,%.2f), retain reference height.",
       gate_width, gate_ahead, gate_center_offset, next_pos.x(), next_pos.y(),
       next_pos.z());
   return true;
@@ -1618,9 +1634,8 @@ bool FastExplorationManager::buildWideSideBypass(
       const double lateral_offset = side_sign * shift;
       for (const double forward_step : forward_steps) {
         Vector3d candidate = pos + forward_step * travel + lateral_offset * lateral;
-        // 水平脱困必须保持实时高度。尤其在球下方的低位会话中，不能用任务搜索
-        // 最低高度把侧绕目标从当前 z 强行抬回巡航层。
-        candidate.z() = pos.z();
+        // 继承已发布目标而非偏低实测值，避免连续侧绕逐段降低高度。
+        candidate.z() = horizontalGoalHeight(pos.z());
         if (!pointInsideWorkspaceLock(candidate) ||
             !planner_manager_->isPositionSafe(candidate) ||
             sdf_map_->getOccupancy(candidate) == SDFMap::UNKNOWN ||
@@ -1697,6 +1712,7 @@ bool FastExplorationManager::selectEntryForwardGoal(
   const double sample_step = std::max(0.05, sdf_map_->getResolution());
   const SplitEvidence split = findWideSideSplit(pos, forward);
   const auto evaluate = [&](entry_forward::Goal& goal) {
+    goal.position.z() = horizontalGoalHeight(pos.z());
     const Vector3d& candidate = goal.position;
     double& clearance = goal.clearance;
     double& continuation = goal.continuation;
@@ -1736,7 +1752,8 @@ bool FastExplorationManager::selectEntryForwardGoal(
           continue;
         const double crossing_progress = split.forward_distance +
             std::max(0.15, 2.0 * sample_step);
-        const Vector3d gate = pos + crossing_progress * forward + offset * lateral;
+        Vector3d gate = pos + crossing_progress * forward + offset * lateral;
+        gate.z() = candidate.z();
         const Vector3d delta = gate - candidate;
         if (delta.dot(forward) < -1e-6 || !pointInsideWorkspaceLock(gate) ||
             !task_search_manager_->isTaskMotionAllowed(gate) ||
@@ -1835,11 +1852,12 @@ bool FastExplorationManager::buildSideRecoveryContinuation(
   const Vector3d direction = forward_clear
       ? forward : Vector3d((side > 0.0 ? 1.0 : -1.0) * lateral);
   for (double distance : {0.40, 0.30, 0.20}) {
-    const Vector3d candidate = pos + distance * direction;
+    Vector3d candidate = pos + distance * direction;
+    candidate.z() = horizontalGoalHeight(pos.z());
     const vector<Vector3d> path{pos, candidate};
     if (!pointInsideWorkspaceLock(candidate) ||
         !task_search_manager_->isRecoveryCandidateUseful(candidate) ||
-        !isLowProbeCorridorSafe(pos, direction, distance) ||
+        !isLowProbeCorridorSafe(pos, candidate - pos, distance) ||
         !pathInsideWorkspaceLock(path) ||
         !task_search_manager_->isRecoveryPathAllowed(path, false))
       continue;
@@ -1847,7 +1865,7 @@ bool FastExplorationManager::buildSideRecoveryContinuation(
     next_yaw = cur_yaw;
     recovery_side_continuation_pending_ = true;
     task_search_manager_->recordSelectedGoal(next_pos);
-    ROS_WARN("[side_recovery] keep %s side; %s %.2fm at current z=%.2fm "
+    ROS_WARN("[side_recovery] keep %s side; %s %.2fm from current z=%.2fm "
              "target=(%.2f,%.2f,%.2f).",
              side > 0.0 ? "left" : "right", forward_clear ? "advance" : "translate",
              distance, pos.z(), next_pos.x(), next_pos.y(), next_pos.z());
@@ -2971,6 +2989,7 @@ int FastExplorationManager::planManualWaypointMotion(
 
 int FastExplorationManager::planExploreMotion(
     const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, const Vector3d& yaw) {
+  pending_reference_height_ = std::numeric_limits<double>::quiet_NaN();
   // 上轮同侧短步若未生成成功，不在下一轮反复强选同一点。
   if (recovery_side_continuation_pending_) {
     recovery_side_latched_ = false;
@@ -4008,6 +4027,9 @@ int FastExplorationManager::planExploreMotion(
       task_search_manager_->enabled())
     rememberSideRecovery(pos, yaw[0], ed_->path_next_goal_);
   recovery_side_continuation_pending_ = false;
+  // 保留本段的目标高度，不能把里程计误差或 A* 截断处的中间高度当成新定高。
+  // 原地转向、人工航点和膨胀层脱困提前返回，不改写普通水平段的高度参考。
+  pending_reference_height_ = next_pos.z();
   return SUCCEED;
 }
 

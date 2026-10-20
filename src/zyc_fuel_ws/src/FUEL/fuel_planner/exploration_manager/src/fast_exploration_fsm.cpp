@@ -661,6 +661,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
         // bspline 本身会原子替换 traj_server 的旧轨迹；这里不再跨话题先发 replan，
         // 避免消息乱序后 replan 反而把刚收到的新轨迹截短。
         bspline_pub_.publish(fd_->newest_traj_);
+        expl_manager_->recordPublishedTrajectoryHeight();
         active_traj_ = planner_manager_->local_data_;
         active_traj_valid_ = true;
         active_traj_braked_ = false;
