@@ -19,5 +19,3 @@ mission:
     maximum_sample_gap: 0.50
     dynamic_wait_horizon: 2.00
     maximum_samples: 10000
-    # 每轮给点中，历史连接受阻后的 A* 搜索共享此墙钟预算。
-    replan_time_budget: 0.05

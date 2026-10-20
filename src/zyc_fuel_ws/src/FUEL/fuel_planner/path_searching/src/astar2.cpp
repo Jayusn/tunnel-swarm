@@ -15,15 +15,10 @@ Astar::~Astar() {
 }
 
 void Astar::init(ros::NodeHandle& nh, const EDTEnvironment::Ptr& env) {
-  init(nh, env, 0);
-}
-
-void Astar::init(ros::NodeHandle& nh, const EDTEnvironment::Ptr& env, int node_limit) {
   nh.param("astar/resolution_astar", resolution_, -1.0);
   nh.param("astar/lambda_heu", lambda_heu_, -1.0);
   nh.param("astar/max_search_time", max_search_time_, -1.0);
   nh.param("astar/allocate_num", allocate_num_, -1);
-  if (node_limit > 0) allocate_num_ = node_limit;
   // 2026-07-28: 默认不改变通用FUEL；比赛launch显式设置0.45~0.78m飞行高度带。
   nh.param("astar/min_search_height", min_search_height_, -1e6);
   nh.param("astar/max_search_height", max_search_height_, 1e6);
@@ -73,14 +68,6 @@ void Astar::clearProgressConstraint() {
 }
 
 int Astar::search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt) {
-  return search(start_pt, end_pt, EdgeChecker());
-}
-
-int Astar::search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt,
-                  const EdgeChecker& edge_free) {
-  // Relay searches must certify both exact endpoints, including the final edge.
-  if (edge_free && (!edge_free(start_pt, start_pt) || !edge_free(end_pt, end_pt)))
-    return NO_PATH;
   if (progress_constraint_enabled_ &&
       !directional_progress::isAllowed(start_pt, end_pt, progress_direction_,
                                        maximum_progress_regression_)) {
@@ -106,7 +93,6 @@ int Astar::search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt
   use_node_num_ += 1;
 
   const auto t1 = ros::Time::now();
-  const auto wall_start = ros::WallTime::now();
   // 2026-07-16: 保留搜索入口的栅格状态，超时/无连通域时给出可区分诊断，不能再全部只报“No path”。
   const int start_inflate = edt_env_->sdf_map_->getInflateOccupancy(start_pt);
   const int start_occ = edt_env_->sdf_map_->getOccupancy(start_pt);
@@ -125,21 +111,19 @@ int Astar::search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt
     cur_node = open_set_.top();
     bool reach_end = abs(cur_node->index(0) - end_index(0)) <= 1 &&
         abs(cur_node->index(1) - end_index(1)) <= 1 && abs(cur_node->index(2) - end_index(2)) <= 1;
-    if (reach_end && (!edge_free || edge_free(cur_node->position, end_pt))) {
+    if (reach_end) {
       backtrack(cur_node, end_pt);
       return REACH_END;
     }
 
     // Early termination if time up
-    const double elapsed = edge_free ? (ros::WallTime::now() - wall_start).toSec()
-                                    : (ros::Time::now() - t1).toSec();
-    if (elapsed > max_search_time_) {
+    if ((ros::Time::now() - t1).toSec() > max_search_time_) {
       early_terminate_cost_ = cur_node->g_score + getDiagHeu(cur_node->position, end_pt);
       // 2026-07-16: 旧配置只有1ms，复杂拐弯会把“尚未搜完”误判成“没有路”，并导致前机永久悬停。
       ROS_WARN_THROTTLE(1.0,
                         "[Astar] TIMEOUT %.4fs nodes=%d iter=%d start=(%.2f %.2f %.2f) "
                         "start_occ=%d/%d goal=(%.2f %.2f %.2f) goal_occ=%d/%d.",
-                        elapsed, use_node_num_, iter_num_,
+                        (ros::Time::now() - t1).toSec(), use_node_num_, iter_num_,
                         start_pt.x(), start_pt.y(), start_pt.z(), start_occ, start_inflate,
                         end_pt.x(), end_pt.y(), end_pt.z(), goal_occ, goal_inflate);
       return NO_PATH;
@@ -225,9 +209,6 @@ int Astar::search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt
           Eigen::Vector3i nbr_idx;
           posToIndex(nbr_pos, nbr_idx);
           if (close_set_map_.find(nbr_idx) != close_set_map_.end()) continue;
-          // Optional caller footprint applies during expansion, so a narrow
-          // shortest path does not hide a wider, actually traversable detour.
-          if (edge_free && !edge_free(cur_pos, nbr_pos)) continue;
 
           NodePtr neighbor;
           // Horizontal detours toward open space are safer than short vertical or wall-hugging
