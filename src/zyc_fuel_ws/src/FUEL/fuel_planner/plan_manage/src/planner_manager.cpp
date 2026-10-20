@@ -392,6 +392,25 @@ bool FastPlannerManager::isRawPositionSafe(const Eigen::Vector3d& position) cons
   return isRawFootprintSafe(position);
 }
 
+bool FastPlannerManager::isKnownFreePosition(const Eigen::Vector3d& position) const {
+  if (!position.allFinite() || !isPositionSafe(position)) return false;
+  for (double z_offset : {-0.06, 0.0, 0.06}) {
+    for (int ring = 0; ring <= 2; ++ring) {
+      const double radius = 0.5 * ring * footprint_check_radius_;
+      const int samples = ring == 0 ? 1 : footprint_check_samples_;
+      for (int sample = 0; sample < samples; ++sample) {
+        const double angle = 2.0 * M_PI * sample / samples;
+        const Eigen::Vector3d probe = position + Eigen::Vector3d(
+            radius * std::cos(angle), radius * std::sin(angle), z_offset);
+        if (!sdf_map_->isInMap(probe) ||
+            sdf_map_->getOccupancy(probe) != SDFMap::FREE)
+          return false;
+      }
+    }
+  }
+  return true;
+}
+
 bool FastPlannerManager::isControlledEscapePosition(
     const Eigen::Vector3d& position) const {
   const int contacts = rawFootprintCollisionCount(position);

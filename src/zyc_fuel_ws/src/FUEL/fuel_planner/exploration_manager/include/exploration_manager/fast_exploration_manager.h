@@ -344,6 +344,9 @@ private:
                              const Vector3d& yaw);
   bool isKnownSafeGroundAscentPath(const Vector3d& start,
                                    const Vector3d& target) const;
+  bool hasSafeCruiseContinuation(const Vector3d& pos, double yaw) const;
+  bool tryCruiseHeightRecovery(const Vector3d& pos, const Vector3d& vel,
+                              const Vector3d& acc, double time_lb);
   bool buildTurnInPlacePlan(const Vector3d& pos, const Vector3d& vel,
                             const Vector3d& acc, const Vector3d& yaw,
                             const Vector3d& turn_direction);

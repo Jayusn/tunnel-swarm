@@ -387,6 +387,112 @@ bool FastExplorationManager::isKnownSafeGroundAscentPath(
   return planner_manager_->isPathSafe(path, allow_contact_escape);
 }
 
+bool FastExplorationManager::hasSafeCruiseContinuation(
+    const Vector3d& pos, double yaw) const {
+  if (!task_search_manager_ || !planner_manager_) return false;
+  vector<Vector3d> directions{task_search_manager_->recoveryForwardDirection(yaw)};
+  if (recovery_side_latched_) directions.push_back(recovery_side_dir_);
+  for (const auto& direction : directions) {
+    if (direction.head<2>().norm() < 1e-3) continue;
+    const Vector3d target = pos + 0.20 * Vector3d(
+        direction.x(), direction.y(), 0.0).normalized();
+    const vector<Vector3d> path{pos, target};
+    if (pointInsideWorkspaceLock(target) && pathInsideWorkspaceLock(path) &&
+        task_search_manager_->isRecoveryCandidateUseful(target) &&
+        task_search_manager_->isRecoveryPathAllowed(path, false) &&
+        isLowProbeCorridorSafe(pos, direction, 0.20))
+      return true;
+  }
+  return false;
+}
+
+bool FastExplorationManager::tryCruiseHeightRecovery(
+    const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, double time_lb) {
+  if (!ground_ascent_enabled_ || !mission_entered_search_region_ ||
+      !task_search_manager_ || !planner_manager_ || ground_ascent_active_ ||
+      low_probe_phase_ != vertical_detour::LowProbePhase::IDLE ||
+      suspended_underpass_active_ || ed_->path_next_goal_.size() < 2)
+    return false;
+  const double target_z = task_search_manager_->projectSearchHeight(pos.z(), pos.z());
+  if (task_search_manager_->preferredSearchHeight() - pos.z() <=
+          ground_ascent_height_tolerance_ || target_z - pos.z() <= 0.02)
+    return false;
+
+  auto path = ed_->path_next_goal_;
+  const Vector3d trajectory_end =
+      planner_manager_->local_data_.position_traj_.evaluateDeBoorT(
+          planner_manager_->local_data_.duration_);
+  // 只提升已验证的水平路线；专用上下绕行、已有爬升及截断后的不同终点不重写。
+  if ((path.front() - pos).norm() > 0.05 ||
+      (path.back() - trajectory_end).norm() > 0.05 ||
+      std::any_of(path.begin(), path.end(), [&](const Vector3d& point) {
+        return std::fabs(point.z() - pos.z()) > 0.05;
+      }))
+    return false;
+  vector<double> progress(path.size(), 0.0);
+  for (size_t i = 1; i < path.size(); ++i)
+    progress[i] = progress[i-1] + (path[i] - path[i-1]).head<2>().norm();
+  if (progress.back() < 0.10) return false;
+  // 沿原水平折线渐升：每米水平路程最多抬高0.5m，且不超过任务单段爬升量。
+  const double rise = std::min(target_z - pos.z(), 0.5 * progress.back());
+  if (rise <= 0.02) return false;
+  for (size_t i = 0; i < path.size(); ++i)
+    path[i].z() = pos.z() + rise * progress[i] / progress.back();
+  if (path.size() == 2)
+    path.insert(path.begin() + 1, 0.5 * (path.front() + path.back()));
+  if (!pathInsideWorkspaceLock(path) ||
+      !task_search_manager_->isRecoveryPathAllowed(path, false))
+    return false;
+  // 先检查斜升整段的三维机体空间；抬高后的终点自由并不足以授权爬升。
+  for (size_t i = 1; i < path.size(); ++i) {
+    const Vector3d delta = path[i] - path[i-1];
+    const int count = std::max(1, static_cast<int>(std::ceil(delta.norm() / 0.025)));
+    for (int j = 0; j <= count; ++j) {
+      if (!planner_manager_->isKnownFreePosition(path[i-1] + delta * (double(j) / count))) {
+        ROS_INFO_THROTTLE(1.0, "[cruise_recovery] upper swept space unavailable; "
+                         "keep the validated horizontal route and observe while moving.");
+        return false;
+      }
+    }
+  }
+  // 高度恢复是原路线的可选改进。优化或动态边界失败时恢复整条原轨迹，不能换边。
+  const LocalTrajData original = planner_manager_->local_data_;
+  bool safe = planner_manager_->planExploreTraj(path, vel, acc, time_lb) &&
+              planner_manager_->isTrajectorySafe();
+  if (safe) {
+    auto& trajectory = planner_manager_->local_data_.position_traj_;
+    const double duration = planner_manager_->local_data_.duration_;
+    const int count = std::max(1, static_cast<int>(std::ceil(duration / 0.02)));
+    vector<Vector3d> swept;
+    swept.reserve(count + 1);
+    for (int j = 0; j <= count; ++j) {
+      const Vector3d point = trajectory.evaluateDeBoorT(duration * double(j) / count);
+      if (!planner_manager_->isKnownFreePosition(point) ||
+          point.z() < pos.z() - 0.02 || point.z() > target_z + 0.02) {
+        safe = false;
+        break;
+      }
+      swept.push_back(point);
+    }
+    safe = safe && pathInsideWorkspaceLock(swept) &&
+           task_search_manager_->isRecoveryPathAllowed(swept, false);
+  }
+  if (!safe) {
+    planner_manager_->local_data_ = original;
+    ROS_WARN("[cruise_recovery] raised trajectory rejected; retain original horizontal trajectory.");
+    return false;
+  }
+  ed_->path_next_goal_ = path;
+  ed_->next_goal_ = path.back();
+  last_requested_goal_ = path.back();
+  has_last_requested_goal_ = true;
+  task_search_manager_->recordSelectedGoal(path.back());
+  ROS_INFO("[cruise_recovery] retain horizontal route and climb %.2f -> %.2fm "
+           "over %.2fm toward cruise height %.2fm.",
+           pos.z(), path.back().z(), progress.back(), task_search_manager_->preferredSearchHeight());
+  return true;
+}
+
 bool FastExplorationManager::shouldStartGroundAscent(
     const Vector3d& pos) const {
   if (!ground_ascent_enabled_ || !mission_entered_search_region_ ||
@@ -2924,10 +3030,11 @@ int FastExplorationManager::planExploreMotion(
   if (suspended_underpass_active_ && use_vertical_detour_target &&
       low_probe_phase_ == vertical_detour::LowProbePhase::ADVANCING)
     use_center_gate_target = true;
-  // 低位下方足迹已有受支撑障碍时，先完成固定 XY/yaw 的巡航高度恢复。
-  // 该会话拥有位置目标，优先级高于任何历史切线/水平膨胀层逃逸。
+  // 有安全前进/同侧短路时先沿路恢复高度；不可继续水平推进时保留原地上升。
+  // 已经启动的竖直会话仍执行完，不在中途重新抢占位置目标。
   if (!use_vertical_detour_target && !low_probe_active &&
-      (ground_ascent_active_ || shouldStartGroundAscent(pos))) {
+      (ground_ascent_active_ || (shouldStartGroundAscent(pos) &&
+                                !hasSafeCruiseContinuation(pos, yaw[0])))) {
     if (buildGroundAscentPlan(pos, vel, yaw)) return SUCCEED;
     if (ground_ascent_active_) return FAIL;
   }
@@ -3775,6 +3882,13 @@ int FastExplorationManager::planExploreMotion(
       }
     }
   }
+
+  // 水平路线已生成并通过足迹检查后，再可选地恢复巡航高度；失败保留原路线。
+  // 当前段的左右选择与人工、入口/出口、下穿等专用高度所有权不受影响。
+  if (!use_forced_entry_target && !use_stage3_target && !use_entry_forward_target &&
+      !use_vertical_detour_target && !pending_short_backtrack_ &&
+      tryCruiseHeightRecovery(pos, vel, acc, time_lb))
+    next_pos = ed_->next_goal_;
 
   // 2026-07-24: 扫描段关闭“整段始终看前方”的约束；全向模式在位置轨迹全程插入单方向
   // 连续yaw约束，非扫描阶段完全保留原有沿路径看前方或任务固定朝向的行为。

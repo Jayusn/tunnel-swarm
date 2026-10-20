@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 #include <iostream>
 #include <fstream>
+#include <limits>
 #include <exploration_manager/fast_exploration_manager.h>
 #include <exploration_manager/fast_exploration_fsm.h>
 #include <exploration_manager/task_search_manager.h>
@@ -60,6 +61,96 @@ class TurnEscapeTest {
     manager.task_search_manager_->initialize(nh);
   }
 public:
+  static void runMovingClimb(int mode) {
+    ros::NodeHandle nh("~");
+    nh.setParam("mission/task_search/min_height", 0.10);
+    nh.setParam("mission/task_search/cruise_height", 0.60);
+    nh.setParam("mission/task_search/max_goal_climb", mode == 5 ? 0.06 : 0.30);
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    for (const auto& name : {"min_height", "cruise_height", "max_goal_climb"})
+      nh.deleteParam(std::string("mission/task_search/") + name);
+    manager.mission_entered_search_region_ = true;
+    auto& task = *manager.task_search_manager_;
+    task.setMap(manager.sdf_map_);
+    task.global_no_return_ = false;
+    task.stable_progress_direction_ = Eigen::Vector2d::UnitX();
+    task.stable_progress_direction_valid_ = true;
+    auto& planner = *manager.planner_manager_;
+    auto& map = *manager.sdf_map_;
+    const Vector3d start(0.025, 0.025, 0.325);
+    const Vector3d end = start + Vector3d(0.6, -0.3, 0.0);
+    // 每层双向真实射线建图；未知上方用例只观测当前低高度的三层。
+    for (int layer = 5; layer <= (mode == 2 ? 7 : 14); ++layer) {
+      const double z = (layer + 0.5) * 0.05;
+      for (double x : {-1.525, 1.525}) {
+        pcl::PointCloud<pcl::PointXYZ> cloud;
+        for (double y = -1.5; y <= 1.5; y += 0.025)
+          cloud.push_back(pcl::PointXYZ(x, y, z));
+        for (int i = 0; i < 5; ++i)
+          map.inputPointCloud(cloud, cloud.size(), Vector3d(-0.85*x, 0.0, z));
+      }
+    }
+    if (mode == 1) {
+      pcl::PointCloud<pcl::PointXYZ> roof;
+      for (double x : {0.275, 0.325})
+        for (double y : {-0.125, -0.075, -0.025})
+          roof.push_back(pcl::PointXYZ(x, y, 0.525));
+      for (int i = 0; i < 10; ++i)
+        map.inputPointCloud(roof, roof.size(), start);
+    }
+    map.updateESDF3d();
+    task.updateRobotPose(start, 0.0);
+    manager.recovery_side_latched_ = true;
+    manager.recovery_side_dir_ = -Vector3d::UnitY();
+    manager.ed_->path_next_goal_ = {start, 0.5*(start+end), end};
+    manager.ed_->next_goal_ = end;
+    check(planner.planExploreTraj(manager.ed_->path_next_goal_, Vector3d::Zero(),
+                                  Vector3d::Zero(), 0.0) && planner.isTrajectorySafe(),
+          "moving-climb fixture must first have a safe horizontal trajectory");
+    LocalTrajData original = planner.local_data_;
+    check(manager.hasSafeCruiseContinuation(start, 0.0),
+          "clear horizontal route did not defer optional stationary ascent");
+    if (mode == 1)
+      check(planner.isKnownFreePosition(end + Vector3d(0, 0, 0.275)),
+            "roof fixture must leave raised endpoint free to test the swept path");
+    if (mode == 2)
+      check(map.getOccupancy(Vector3d(end + Vector3d(0, 0, 0.275))) == SDFMap::UNKNOWN,
+            "unknown overhead fixture was accidentally observed");
+    if (mode == 3) manager.low_probe_phase_ = vertical_detour::LowProbePhase::ADVANCING;
+    Vector3d velocity = Vector3d::Zero();
+    if (mode == 4) velocity.x() = std::numeric_limits<double>::quiet_NaN();
+    const bool raised = manager.tryCruiseHeightRecovery(start, velocity, Vector3d::Zero(), 0.0);
+    check(raised == (mode == 0 || mode == 5),
+          "moving climb did not match overhead visibility, occupancy or active underpass");
+    check(manager.recovery_side_latched_ && manager.recovery_side_dir_.y() < -0.9,
+          "height recovery replaced the committed right-hand side");
+    if (!raised) {
+      check(planner.local_data_.position_traj_.getControlPoint().isApprox(
+                original.position_traj_.getControlPoint(), 1e-12) &&
+            planner.local_data_.traj_id_ == original.traj_id_ &&
+            planner.local_data_.duration_ == original.duration_ &&
+            manager.ed_->next_goal_.isApprox(end),
+            "rejected climb changed the validated horizontal trajectory");
+      return;
+    }
+    const double rise = mode == 5 ? 0.06 : 0.275;
+    check((manager.ed_->next_goal_.head<2>() - end.head<2>()).norm() < 1e-9 &&
+          std::fabs(manager.ed_->next_goal_.z() - start.z() - rise) < 1e-6,
+          "moving climb changed XY or ignored cruise/per-segment climb limits");
+    for (double t = 0.0; t <= planner.local_data_.duration_; t += 0.01) {
+      const Vector3d point = planner.local_data_.position_traj_.evaluateDeBoorT(t);
+      check(planner.isKnownFreePosition(point), "raised spline left known free body space");
+      check(planner.local_data_.velocity_traj_.evaluateDeBoorT(t).cwiseAbs().maxCoeff() <= 0.41 &&
+            planner.local_data_.acceleration_traj_.evaluateDeBoorT(t).cwiseAbs().maxCoeff() <= 0.51,
+            "raised spline exceeded configured dynamic limits");
+    }
+    const Vector3d actual_end = planner.local_data_.position_traj_.evaluateDeBoorT(
+        planner.local_data_.duration_);
+    check(actual_end.x() > start.x()+0.5 && actual_end.z() > start.z()+rise-0.02,
+          "generated trajectory did not both advance and regain height");
+  }
+
   static void checkPublishedCorridorExecution(FastExplorationManager& manager) {
     // 使用真正已生成的轨迹，分别经过执行 FSM 和独立安全回调。
     FastExplorationFSM fsm;
@@ -440,6 +531,7 @@ public:
           !manager.currentPlanIsTurnInPlace(), "pending approach became a confirmed exit or turn");
     const double duration = planner.local_data_.duration_;
     const Vector3d end = planner.local_data_.position_traj_.evaluateDeBoorT(duration);
+
     check((end-start).head<2>().norm()>0.2 &&
           std::fabs((end-start).dot(lateral))>(block_center ? 0.05 : 0.1),
           "fixture did not generate a translating lateral correction");
@@ -646,17 +738,25 @@ public:
     if (!fallback_only && !remember_side) checkPublishedCorridorExecution(manager);
   }
 
-  static void runSideRecovery(double side, bool block_side) {
+  static void runSideRecovery(double side, bool block_side, bool climb = false) {
     ros::NodeHandle nh("~");
     nh.setParam("manager/use_geometric_path", true);
     nh.setParam("astar/resolution_astar", 0.05);
     nh.setParam("astar/allocate_num", 100000);
     nh.setParam("astar/lambda_heu", 1.0);
     nh.setParam("astar/max_search_time", 1.0);
+    if (climb) {
+      nh.setParam("mission/task_search/min_height", 0.10);
+      nh.setParam("mission/task_search/cruise_height", 0.60);
+      nh.setParam("mission/task_search/max_goal_climb", 0.30);
+    }
     FastExplorationManager manager;
     initialize(nh, manager);
+    if (climb)
+      for (const auto& name : {"min_height", "cruise_height", "max_goal_climb"})
+        nh.deleteParam(std::string("mission/task_search/") + name);
     auto& planner = *manager.planner_manager_;
-    const Vector3d origin(0.013, 0.017, 1.013);
+    const Vector3d origin(0.013, 0.017, climb ? 0.325 : 1.013);
     // 从两边观测墙面，生成带真实FREE证据的走廊；之后补入挡住直行的立柱。
     pcl::PointCloud<pcl::PointXYZ> cloud;
     for (double x : {-1.5, 1.5}) {
@@ -668,10 +768,23 @@ public:
         manager.sdf_map_->inputPointCloud(cloud, cloud.size(),
                                         Vector3d(-0.85*x, 0, 1));
     }
+    if (climb) {
+      for (int layer = 4; layer <= 15; ++layer) {
+        const double z = (layer + 0.5)*0.05;
+        for (double x : {-1.525, 1.525}) {
+          cloud.clear();
+          for (double y=-1.3; y<=1.3; y+=0.025)
+            cloud.push_back(pcl::PointXYZ(x, y, z));
+          for (int i=0; i<5; ++i)
+            manager.sdf_map_->inputPointCloud(cloud, cloud.size(), Vector3d(-0.85*x, 0, z));
+        }
+      }
+    }
     cloud.clear();
     for (double y=-0.10; y<=0.10; y+=0.025)
       for (double z=0.25; z<=1.75; z+=0.025)
-        cloud.push_back(pcl::PointXYZ(0.50, y, z));
+        cloud.push_back(pcl::PointXYZ(climb ? 0.513 : 0.50,
+                                             climb ? y+0.013 : y, climb ? z+0.013 : z));
     for (int i=0; i<6; ++i)
       manager.sdf_map_->inputPointCloud(cloud, cloud.size(), origin);
     manager.sdf_map_->updateESDF3d();
@@ -698,7 +811,7 @@ public:
     task.stable_progress_direction_ = Eigen::Vector2d::UnitX();
     task.stable_progress_direction_valid_ = true;
     manager.vertical_detour_enabled_ = false;
-    manager.ground_ascent_enabled_ = false;
+    manager.ground_ascent_enabled_ = climb;
     manager.inflation_history_escape_enabled_ = false;
     manager.turn_in_place_enabled_ = false;
     manager.center_gate_enabled_ = false;
@@ -743,8 +856,16 @@ public:
           "0.22m lateral progress released the side or successful plan stayed pending");
     const double duration = planner.local_data_.duration_;
     const Vector3d end = planner.local_data_.position_traj_.evaluateDeBoorT(duration);
+    if (climb) {
+      std::cout << "moving bypass end=" << end.transpose()
+                << " selected=" << manager.ed_->next_goal_.transpose()
+                << " path_end=" << manager.ed_->path_next_goal_.back().transpose()
+                << " phase=" << static_cast<int>(manager.low_probe_phase_)
+                << " entered=" << manager.mission_entered_search_region_ << std::endl;
+    }
     // 宽侧规划走A*，既有短路径截断会让首段约横移0.14m，仍须保持所选方向。
-    check((end-displaced).y()*side >= 0.10 && std::fabs(end.z()-displaced.z()) < 0.05,
+    check((end-displaced).y()*side >= 0.10 &&
+          (climb ? end.z() > displaced.z()+0.05 : std::fabs(end.z()-displaced.z()) < 0.05),
           "replan switched sides or changed the recovery height");
     check(planner.isTrajectorySafe(), "same-side spline bypassed footprint safety");
     Vector3d next;
@@ -947,6 +1068,25 @@ public:
   }
 };
 }
+TEST(CruiseHeightRecovery, OpenSpaceClimbsAlongCommittedRightRoute) {
+  fast_planner::TurnEscapeTest::runMovingClimb(0);
+}
+TEST(CruiseHeightRecovery, MidRouteRoofKeepsOriginalHorizontalTrajectory) {
+  fast_planner::TurnEscapeTest::runMovingClimb(1);
+}
+TEST(CruiseHeightRecovery, UnknownOverheadKeepsOriginalHorizontalTrajectory) {
+  fast_planner::TurnEscapeTest::runMovingClimb(2);
+}
+TEST(CruiseHeightRecovery, ActiveUnderpassRetainsHeightOwnership) {
+  fast_planner::TurnEscapeTest::runMovingClimb(3);
+}
+TEST(CruiseHeightRecovery, RejectedGenerationRestoresOriginalTrajectory) {
+  fast_planner::TurnEscapeTest::runMovingClimb(4);
+}
+TEST(CruiseHeightRecovery, SmallClimbStepStillRecoversHeight) {
+  fast_planner::TurnEscapeTest::runMovingClimb(5);
+}
+
 TEST(SideBypassProgress, PartialStepsPassPillarOnLeft) {
   fast_planner::TurnEscapeTest::runBypassContinuation(1.0, false, false);
 }
@@ -1042,6 +1182,10 @@ TEST(SideRecovery, LeftDetourSurvivesCollisionAndLateralProgress) {
 
 TEST(SideRecovery, RightDetourSurvivesCollisionAndLateralProgress) {
   fast_planner::TurnEscapeTest::runSideRecovery(-1.0, false);
+}
+
+TEST(CruiseHeightRecovery, FullPlannerRaisesCommittedRightBypass) {
+  fast_planner::TurnEscapeTest::runSideRecovery(-1.0, false, true);
 }
 
 TEST(SideRecovery, BlockedSameSideYieldsToExistingRecovery) {
