@@ -185,6 +185,7 @@ class SafeRelayPublisherTest {
     nh.setParam("mission/safe_relay/topic_prefix", std::string("/safe_relay_entrance_test"));
     nh.setParam("mission/safe_relay/minimum_progress", 0.70);
     nh.setParam("mission/safe_relay/entrance_minimum_progress", 0.50);
+    nh.setParam("mission/safe_relay/minimum_xy_spacing", 0.70);
     nh.setParam("mission/safe_relay/hold_radius", 0.30);
     nh.setParam("mission/safe_relay/hold_half_height", 0.10);
     auto map = std::make_shared<SDFMap>();
@@ -194,6 +195,7 @@ class SafeRelayPublisherTest {
     publisher.timer_.stop();
     EXPECT_DOUBLE_EQ(0.50, publisher.entrance_minimum_progress_);
     EXPECT_DOUBLE_EQ(0.70, publisher.config_.minimum_progress);
+    EXPECT_DOUBLE_EQ(0.70, publisher.config_.minimum_xy_spacing);
     EXPECT_DOUBLE_EQ(1.00, publisher.config_.normal_spacing);
     ros::Time::setNow(ros::Time(200));
     publisher.setEntrance(Eigen::Vector3d(0, 0, 1), Eigen::Vector3d::UnitX());
@@ -224,7 +226,8 @@ class SafeRelayPublisherTest {
     ASSERT_EQ(1U, publisher.goals_.size());
     EXPECT_EQ(5U, publisher.goals_.front().route_index); // Entrance -> first fallback: exactly 0.5m.
     EXPECT_EQ("BEFORE_OBSTACLE_WAIT", publisher.last_status_);
-    EXPECT_DOUBLE_EQ(0.70, publisher.config_.minimum_progress); // The first-release override is local.
+    EXPECT_DOUBLE_EQ(0.70, publisher.config_.minimum_progress);
+    EXPECT_DOUBLE_EQ(0.70, publisher.config_.minimum_xy_spacing); // The first-release override is local.
 
     map->setOccupied(Eigen::Vector3d(1.5, 0, 1), 0);
     for (int i = 16; i <= 21; ++i) observe(i);
@@ -236,6 +239,8 @@ class SafeRelayPublisherTest {
     ASSERT_EQ(2U, publisher.goals_.size());
     EXPECT_EQ(12U, publisher.goals_.back().route_index); // First -> second fallback: exactly 0.7m.
     EXPECT_EQ("BEFORE_OBSTACLE_WAIT", publisher.last_status_);
+    EXPECT_NEAR(0.7, (publisher.history_[12].sample.position.head<2>() -
+                     publisher.history_[5].sample.position.head<2>()).norm(), 1e-9);
     EXPECT_NEAR(0.7, publisher.history_[12].sample.progress -
                          publisher.history_[5].sample.progress, 1e-9);
   }

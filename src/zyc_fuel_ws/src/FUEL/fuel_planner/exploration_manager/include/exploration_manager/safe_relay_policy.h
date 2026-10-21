@@ -23,6 +23,7 @@ struct Sample {
 struct Config {
   double normal_spacing{1.00};
   double minimum_progress{0.50};
+  double minimum_xy_spacing{0.70};
   double release_distance{1.00};
   double selection_window{0.50};
 };
@@ -56,6 +57,8 @@ inline Selection select(const std::vector<Sample>& route, std::size_t anchor,
       // Only the candidate needs stopping clearance. Other historical samples
       // do not certify or veto the follower's future connection to this point.
       if (point.progress - start + 1e-6 < cfg.minimum_progress ||
+          (point.position.head<2>() - route[anchor].position.head<2>()).norm() + 1e-6 <
+              cfg.minimum_xy_spacing ||
           route.back().progress - point.progress + 1e-6 < cfg.release_distance ||
           (leader.head<2>() - point.position.head<2>()).norm() + 1e-6 <
               cfg.release_distance)

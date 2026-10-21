@@ -5,6 +5,7 @@ mission:
     frame_id: world
     normal_spacing: 1.00
     minimum_progress: 0.70
+    minimum_xy_spacing: 0.70  # 后续三类点统一与上一已发点比较 XY 直线距离；首点豁免。
     entrance_minimum_progress: 0.50  # 尚未发布任何点时，相对实测入口样本的最低累计前进量。
     release_distance: 1.00
     selection_window: 0.50

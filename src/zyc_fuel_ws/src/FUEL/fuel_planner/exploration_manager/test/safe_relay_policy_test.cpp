@@ -15,7 +15,57 @@ std::vector<Sample> straight(int last = 60) {
   }
   return route;
 }
+void checkHorizontalSpacing() {
+  // Same bent measured route for all destination types. B has >1m of
+  // accumulated travel but is only 0.65m from the latest issued point A.
+  // C is exactly 0.70m away. A is deliberately not at the world origin.
+  const Eigen::Vector3d origin(3.0, -2.0, 1.0);
+  for (const auto kind : {Kind::NORMAL, Kind::AFTER_OBSTACLE, Kind::BEFORE_OBSTACLE}) {
+    const std::vector<Eigen::Vector3d> offsets{
+        {0.0, 0.0, 0.0}, {0.4, 0.0, 0.0}, {0.4, 0.5, 0.0},
+        {0.65, 0.0, 0.0}, {0.70, 0.0, 0.0}, {2.5, 0.0, 0.0}};
+    std::vector<Sample> route;
+    for (std::size_t i = 0; i < offsets.size(); ++i) {
+      Sample p;
+      p.position = origin + offsets[i];
+      p.progress = i == 0 ? 0.0 : route.back().progress +
+          (p.position - route.back().position).norm();
+      p.hold_free = p.confirmed = i == 0 || i == 3 || i == 4 ||
+          (kind == Kind::BEFORE_OBSTACLE && i < 5);
+      p.clearance = 1.0;
+      route.push_back(p);
+    }
+    Config cfg;
+    cfg.minimum_progress = 0.7;
+    cfg.normal_spacing = kind == Kind::NORMAL ? 1.0 : 10.0;
+    require(cfg.minimum_xy_spacing == 0.7, "default horizontal inter-goal spacing must be 0.7m");
+    auto selected = select(route, 0, route.back().position, cfg);
+    require(selected.kind == kind && selected.index == 4,
+            "all goal types must skip nearby B and accept C at the 0.7m XY boundary");
+
+    route[4].position.x() = origin.x() + 0.6999;
+    require(select(route, 0, route.back().position, cfg).kind == Kind::WAIT,
+            "just below 0.7m XY must wait even though cumulative progress is sufficient");
+    route[4].hold_free = route[4].confirmed = false;
+    require(select(route, 0, route.back().position, cfg).kind == Kind::WAIT,
+            "no horizontally separated endpoint must not fall back to a closer point");
+
+    // Extra altitude/3D separation cannot satisfy a horizontal-only gate.
+    route[3].position.z() += 1.0;
+    for (std::size_t i = 1; i < route.size(); ++i)
+      route[i].progress = route[i-1].progress + (route[i].position-route[i-1].position).norm();
+    require(select(route, 0, route.back().position, cfg).kind == Kind::WAIT,
+            "height changes do not substitute for XY separation");
+
+    // The publisher explicitly disables only this gate for the first goal.
+    cfg.minimum_xy_spacing = 0.0;
+    selected = select(route, 0, route.back().position, cfg);
+    require(selected.kind == kind && selected.index == 3,
+            "entrance exception leaves the existing candidate and progress checks intact");
+  }
+}
 int main() {
+  checkHorizontalSpacing();
   Config cfg;
   auto route = straight(100);
   auto pick = select(route, 0, route.back().position, cfg);
@@ -71,16 +121,18 @@ int main() {
   require(pick.kind == Kind::NORMAL && pick.index == 12,
           "independent ordinary selection must retain map confirmation");
 
+  Config entrance_cfg = cfg;
+  entrance_cfg.minimum_xy_spacing = 0.0;  // No previously issued point at entrance.
   route = straight(19);
   for (auto& s : route) s.hold_free = s.confirmed = false;
   route[0].hold_free = route[0].confirmed = true;
   route[6].hold_free = route[6].confirmed = true;
   route[7].hold_free = route[7].confirmed = true;
-  pick = select(route, 0, route.back().position, cfg);
+  pick = select(route, 0, route.back().position, entrance_cfg);
   require(pick.kind == Kind::AFTER_OBSTACLE && pick.index == 6,
           "default 1m policy retains post-obstacle fallback below normal spacing");
   route[6].hold_free = route[6].confirmed = false;
-  pick = select(route, 0, route.back().position, cfg);
+  pick = select(route, 0, route.back().position, entrance_cfg);
   require(pick.kind == Kind::AFTER_OBSTACLE && pick.index == 7,
           "default fallback still tries C after B itself fails");
   route = straight(19);
@@ -131,5 +183,5 @@ int main() {
           "arc clearance alone is insufficient on a looping route");
   require(select({}, 0, Eigen::Vector3d::Zero(), cfg).kind == Kind::WAIT,
           "empty actual route cannot produce predicted waypoints");
-  std::cout << "PASS safe relay: normal progress, B/C/W/no-update, passage, confirmation, curves, XYZ\n";
+  std::cout << "PASS safe relay: normal progress, B/C/W/no-update, passage, confirmation, curves, XY inter-goal spacing, XYZ\n";
 }

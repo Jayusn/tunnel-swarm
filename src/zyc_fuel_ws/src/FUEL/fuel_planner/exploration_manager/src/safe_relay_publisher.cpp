@@ -16,6 +16,7 @@ void SafeRelayPublisher::initialize(ros::NodeHandle& nh, std::shared_ptr<SDFMap>
   params.param<std::string>("frame_id", frame_, "world");
   params.param("normal_spacing", config_.normal_spacing, 1.00);
   params.param("minimum_progress", config_.minimum_progress, 0.50);
+  params.param("minimum_xy_spacing", config_.minimum_xy_spacing, 0.70);
   params.param("entrance_minimum_progress", entrance_minimum_progress_, 0.50);
   params.param("release_distance", config_.release_distance, 1.00);
   params.param("selection_window", config_.selection_window, 0.50);
@@ -27,7 +28,8 @@ void SafeRelayPublisher::initialize(ros::NodeHandle& nh, std::shared_ptr<SDFMap>
   params.param("dynamic_wait_horizon", dynamic_wait_horizon_, 2.0);
   params.param("map_confirmations", confirmations_required_, 2);
   params.param("maximum_samples", maximum_samples_, 10000);
-  for (double value : {config_.normal_spacing, config_.minimum_progress, entrance_minimum_progress_,
+  for (double value : {config_.normal_spacing, config_.minimum_progress, config_.minimum_xy_spacing,
+       entrance_minimum_progress_,
        config_.release_distance, config_.selection_window,
        sample_spacing_, hold_radius_, hold_half_height_,
        map_timeout_, odom_timeout_,
@@ -153,9 +155,13 @@ void SafeRelayPublisher::timerCallback(const ros::TimerEvent&) {
   if (history_.size() >= static_cast<std::size_t>(maximum_samples_)) {
     publish("HISTORY_CAPACITY_REACHED"); return;
   }
-  // Only the first release uses the entrance fallback spacing.
+  // The entrance is not a previously issued goal. Only the first release
+  // keeps its entrance progress threshold without the inter-goal XY gate.
   auto selection_config = config_;
-  if (goals_.empty()) selection_config.minimum_progress = entrance_minimum_progress_;
+  if (goals_.empty()) {
+    selection_config.minimum_progress = entrance_minimum_progress_;
+    selection_config.minimum_xy_spacing = 0.0;
+  }
   const auto selected = safe_relay::select(samples, anchor_, leader_, selection_config);
   if (selected.kind != safe_relay::Kind::WAIT) {
     anchor_ = selected.index;
