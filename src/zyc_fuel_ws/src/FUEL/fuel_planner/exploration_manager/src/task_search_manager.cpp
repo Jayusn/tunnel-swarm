@@ -424,7 +424,7 @@ void TaskSearchManager::setCorridorFrame(const Eigen::Vector3d& origin,
 
 bool TaskSearchManager::updateExitDetectionOnly(
     const Eigen::Vector3d& pos, double yaw,
-    geometry_msgs::PoseStamped& detected_exit) {
+    geometry_msgs::PoseStamped& detected_exit, bool observe_turns) {
   if (!corridor_frame_received_) {
     setCorridorFrame(pos, Eigen::Vector3d(std::cos(yaw), std::sin(yaw), 0.0));
     corridor_entry_crossed_ = true;
@@ -433,11 +433,15 @@ bool TaskSearchManager::updateExitDetectionOnly(
   }
   updateRobotPose(pos, yaw);
   // 手持全程测试由真实地图更新通道轴线；无需执行入口阶段或原地转向轨迹。
-  Eigen::Vector3d mapped_direction;
-  mappedCorridorDirection(yaw, mapped_direction, false, true);
-  if (turnYawAlignmentPending() &&
-      !corridorYawCorrectionDirection(yaw, mapped_direction))
-    completeTurnYawAlignment();
+  // 正式航点飞行由规划器/FSM执行转向并确认完成，不能等手持者先转机头，
+  // 也不能在里程计回调中提前清除仍在执行的转向锁存。
+  if (observe_turns) {
+    Eigen::Vector3d mapped_direction;
+    mappedCorridorDirection(yaw, mapped_direction, false, true);
+    if (turnYawAlignmentPending() &&
+        !corridorYawCorrectionDirection(yaw, mapped_direction))
+      completeTurnYawAlignment();
+  }
   // 新转弯会撤销旧出口证据；待机头对准且走出既有过渡区后恢复出口检测。
   updateExitCandidate(pos);
   if (!exit_candidate_confirmed_) return false;

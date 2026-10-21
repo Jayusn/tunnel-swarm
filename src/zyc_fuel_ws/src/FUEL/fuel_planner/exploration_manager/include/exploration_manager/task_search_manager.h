@@ -32,7 +32,8 @@ public:
   void updateRobotPose(const Eigen::Vector3d& pos, double yaw);
   // 独立观察入口：首帧假定已在通道内，只更新检测，不生成接近、穿越或降落目标。
   bool updateExitDetectionOnly(const Eigen::Vector3d& pos, double yaw,
-                               geometry_msgs::PoseStamped& detected_exit);
+                               geometry_msgs::PoseStamped& detected_exit,
+                               bool observe_turns = true);
   // 连续新地图证据次数；独立入口据此保留历史标记，里程计回调不额外计票。
   int exitEvidenceCount() const { return exit_candidate_hits_; }
   // 手填航点模式仍确认并锁存出口，但由航点完成事件放行穿越。

@@ -127,6 +127,9 @@ private:
   bool manual_exit_replan_pending_{false};
   Vector3d manual_actual_pos_{Vector3d::Zero()};
   double manual_path_arrive_distance_{0.25};
+  // 仅独立航点入口开启，自动探索仍走原有局部规划流程。
+  double manual_path_max_segment_length_{0.0};
+  bool manual_path_exploration_style_{false};
   ManualWaypointPath manual_path_;
   int planManualWaypointMotion(const Vector3d& pos, const Vector3d& vel,
                                const Vector3d& acc, const Vector3d& yaw);

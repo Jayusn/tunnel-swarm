@@ -8,6 +8,25 @@
 
 namespace fast_planner {
 
+// 截取已检查路径的弧长前缀；只改变本轮局部段，不消耗用户航点。
+inline std::vector<Eigen::Vector3d> manualPathPrefix(
+    const std::vector<Eigen::Vector3d>& path, double length) {
+  if (path.empty()) return {};
+  std::vector<Eigen::Vector3d> prefix{path.front()};
+  for (std::size_t i = 1; i < path.size() && length > 1e-6; ++i) {
+    const Eigen::Vector3d delta = path[i] - path[i - 1];
+    const double distance = delta.norm();
+    if (distance < 1e-6) continue;
+    if (distance >= length) {
+      prefix.push_back(path[i - 1] + delta * (length / distance));
+      break;
+    }
+    prefix.push_back(path[i]);
+    length -= distance;
+  }
+  return prefix;
+}
+
 // 只用实际里程计推进列表，规划起点和规划失败不能消耗途径点。
 struct ManualWaypointPath {
   std::vector<Eigen::Vector3d> points;

@@ -2736,6 +2736,10 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
   nh.param("mission/manual_path/wait_for_trigger", manual_path_wait_for_trigger_, false);
   nh.param("mission/manual_path/exit_enabled", manual_exit_enabled_, false);
   nh.param("mission/manual_path/arrive_distance", manual_path_arrive_distance_, 0.25);
+  nh.param("mission/manual_path/max_segment_length", manual_path_max_segment_length_, 0.0);
+  nh.param("mission/manual_path/exploration_style", manual_path_exploration_style_, false);
+  if (!std::isfinite(manual_path_max_segment_length_) || manual_path_max_segment_length_ < 0.0)
+    throw std::runtime_error("manual_path max_segment_length must be finite and nonnegative");
   if (manual_path_enabled_) {
     XmlRpc::XmlRpcValue coordinates;
     if (!nh.getParam("mission/manual_path/waypoints", coordinates) ||
@@ -3196,52 +3200,126 @@ int FastExplorationManager::planManualWaypointMotion(
     external_selected_yaw_ = target_yaw;
     return SUCCEED;
   }
+  const auto trajectory_within_limit = [&]() {
+    if (manual_path_max_segment_length_ <= 0.0) return true;
+    // 控制多边形长度是B样条弧长上界，包含优化后的实际曲线。
+    const auto controls = planner_manager_->local_data_.position_traj_.getControlPoint();
+    double bound = 0.0;
+    for (int i = 1; i < controls.rows(); ++i)
+      bound += (controls.row(i) - controls.row(i - 1)).norm();
+    return bound <= manual_path_max_segment_length_ + 1e-6;
+  };
+  // 与探索相同：地图确认转弯后先停转，不能等远航点A*成功后才允许转机头。
+  if (manual_path_exploration_style_ && !exit_motion && task_search_manager_) {
+    Vector3d direction;
+    if (turn_in_place_session_active_)
+      direction = Vector3d(std::cos(turn_in_place_final_yaw_),
+                           std::sin(turn_in_place_final_yaw_), 0.0);
+    if (turn_in_place_session_active_ ||
+        task_search_manager_->mappedCorridorDirection(yaw[0], direction, false))
+      return buildTurnInPlacePlan(pos, vel, acc, yaw, direction) &&
+             trajectory_within_limit() ? SUCCEED : FAIL;
+  }
   if (ed_->path_next_goal_.size() < 2 || (target - pos).norm() < 0.03)
     return FAIL;  // 等待实际里程计到点，预测规划起点不能推进列表。
+  const Vector3d waypoint = target;
+  bool bypass_motion = false;
   if (manual_path_use_astar_) {
-    // 独立点到点入口：只改变两个人工航点之间的路径，绝不追加探索目标。
     auto& finder = planner_manager_->path_finder_;
-    if (!finder || !planner_manager_->isPositionSafe(target)) return FAIL;
+    if (!finder) return FAIL;
     finder->clearProgressConstraint();
-    finder->reset();
-    if (finder->search(pos, target) != Astar::REACH_END) {
-      ROS_WARN_THROTTLE(1.0, "[manual_path] no known free path to waypoint; keep target.");
+    if (manual_path_exploration_style_ && !exit_motion && task_search_manager_) {
+      const Vector3d forward = task_search_manager_->recoveryForwardDirection(yaw[0]);
+      // 复用探索原有“选侧横移 -> 同侧短步通过 -> 释放后回正”。
+      // 绕障只改变局部端点，不记录为用户航点，也不绕到远目标后面。
+      if ((target - pos).dot(forward) > 0.15 &&
+          (recovery_side_latched_ || !planner_manager_->isPathSafe({pos, target}))) {
+        bool obstacle_detected = false;
+        bypass_motion = buildWideSideBypass(pos, yaw[0], forward,
+                                            target, target_yaw, obstacle_detected);
+      }
+      if (!bypass_motion) {
+        target_yaw = std::atan2(forward.y(), forward.x());
+        task_search_manager_->corridorCurveYaw(pos, target_yaw);
+      }
+    }
+    const auto find_path = [&](const Vector3d& goal) {
+      if (!planner_manager_->isPositionSafe(goal)) return false;
+      finder->reset();
+      if (finder->search(pos, goal) != Astar::REACH_END) return false;
+      // A*同栅格可能省略真实端点；保留精确XYZ并去除零长分段。
+      ed_->path_next_goal_ = {pos};
+      for (const auto& point : finder->getPath())
+        if ((point - ed_->path_next_goal_.back()).norm() >= 1e-3)
+          ed_->path_next_goal_.push_back(point);
+      if ((goal - ed_->path_next_goal_.back()).norm() >= 1e-3)
+        ed_->path_next_goal_.push_back(goal);
+      else
+        ed_->path_next_goal_.back() = goal;
+      shortenPath(ed_->path_next_goal_);
+      return true;
+    };
+    bool found = find_path(target);
+    // 远点尚未连通时，只尝试朝该点的已知自由短段；不生成frontier探索目标。
+    if (!found && manual_path_exploration_style_ && !bypass_motion &&
+        manual_path_max_segment_length_ > 0.0) {
+      const Vector3d delta = waypoint - pos;
+      const double horizon = std::min(manual_path_max_segment_length_, delta.norm());
+      for (double scale : {1.0, 2.0 / 3.0, 1.0 / 3.0}) {
+        const Vector3d local = pos + delta.normalized() * horizon * scale;
+        if (!planner_manager_->isKnownFreePosition(local) || !find_path(local)) continue;
+        target = local;
+        found = true;
+        ROS_WARN("[manual_path] remote waypoint disconnected; use known-free short approach.");
+        break;
+      }
+    }
+    if (!found) {
+      ROS_WARN_THROTTLE(1.0, "[manual_path] no known free path to waypoint or local segment; keep target.");
       return FAIL;
     }
-    // A*同栅格返回值可能省略真实起点/终点；保留精确XYZ且去除零长分段。
-    ed_->path_next_goal_ = {pos};
-    for (const auto& point : finder->getPath()) {
-      if ((point - ed_->path_next_goal_.back()).norm() >= 1e-3)
-        ed_->path_next_goal_.push_back(point);
+  }
+  const auto full_path = ed_->path_next_goal_;
+  double budget = manual_path_max_segment_length_ > 0.0
+      ? std::min(manual_path_max_segment_length_, Astar::pathLength(full_path))
+      : Astar::pathLength(full_path);
+  bool planned = false;
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    ed_->path_next_goal_ = manualPathPrefix(full_path, budget);
+    if (ed_->path_next_goal_.size() < 2) break;
+    target = ed_->path_next_goal_.back();
+    if (ed_->path_next_goal_.size() == 2)
+      ed_->path_next_goal_.insert(ed_->path_next_goal_.begin() + 1, 0.5 * (pos + target));
+    if (planner_manager_->isPositionSafe(target) &&
+        planner_manager_->isPathSafe(ed_->path_next_goal_) &&
+        planner_manager_->planExploreTraj(ed_->path_next_goal_, vel, acc, 0.0) &&
+        planner_manager_->isTrajectorySafe()) {
+      if (trajectory_within_limit()) {
+        planned = true;
+        break;
+      }
     }
-    if ((target - ed_->path_next_goal_.back()).norm() >= 1e-3)
-      ed_->path_next_goal_.push_back(target);
-    else
-      ed_->path_next_goal_.back() = target;
-    shortenPath(ed_->path_next_goal_);
+    // 同探索的短前缀重规划：不发布切墙曲线，缩短后仍走同一条已知路径。
+    if (manual_path_max_segment_length_ <= 0.0) break;
+    budget *= 2.0 / 3.0;
   }
-  if (!planner_manager_->isPositionSafe(target) ||
-      !planner_manager_->isPathSafe(ed_->path_next_goal_)) {
-    ROS_ERROR_THROTTLE(1.0, "[manual_path] specified segment failed existing footprint check.");
-    return FAIL;
-  }
-  // 共线插值仅满足连续轨迹初始化，不生成新的导航目标。
-  if (ed_->path_next_goal_.size() == 2)
-    ed_->path_next_goal_.insert(ed_->path_next_goal_.begin() + 1,
-                               0.5 * (pos + target));
-  if (!planner_manager_->planExploreTraj(ed_->path_next_goal_, vel, acc, 0.0) ||
-      !planner_manager_->isTrajectorySafe()) {
+  if (!planned) {
     ROS_ERROR_THROTTLE(1.0, "[manual_path] trajectory rejected; keep the specified waypoint.");
     return FAIL;
   }
+  ed_->next_goal_ = target;
+  pending_reference_height_ = target.z();
   // 恒定航向复用插值器，避免全零控制点进入旧航向优化器的归一化计算。
   if (std::fabs(target_yaw - yaw[0]) < 1e-6 && yaw.tail<2>().norm() < 1e-6) {
     if (!planner_manager_->planYawTurnInPlace(yaw, target_yaw)) return FAIL;
   } else {
-    planner_manager_->planYawExplore(yaw, target_yaw, true, ep_->relax_time_);
+    planner_manager_->planYawExplore(yaw, target_yaw, !manual_path_exploration_style_, ep_->relax_time_);
   }
-  ROS_INFO("[manual_path] %s target=(%.2f, %.2f, %.2f), completed=%zu/%zu.",
+  recovery_side_continuation_pending_ = false;
+  ROS_INFO("[manual_path] %s local=(%.2f, %.2f, %.2f), waypoint=(%.2f, %.2f, %.2f), "
+           "bypass=%d, completed=%zu/%zu.",
            exit_motion ? "exit approach" : "waypoint", target.x(), target.y(), target.z(),
+           waypoint.x(), waypoint.y(), waypoint.z(), static_cast<int>(bypass_motion),
            manual_path_.next, manual_path_.points.size());
   return SUCCEED;
 }
@@ -4396,13 +4474,15 @@ void FastExplorationManager::updateMissionOdometry(const Vector3d& pos, double y
   if (manual_path_enabled_) {
     if (manual_path_wait_for_trigger_ && !manual_path_started_) return;
     manual_actual_pos_ = pos;
-    if (manual_exit_enabled_ && task_search_manager_) {
+    if ((manual_exit_enabled_ || manual_path_exploration_style_) && task_search_manager_) {
       // 入口关闭时以开始任务的位置/航向建立通道参考；入口开启时复用已发布的门平面。
       geometry_msgs::PoseStamped detected_exit;
-      task_search_manager_->updateExitDetectionOnly(pos, yaw, detected_exit);
+      task_search_manager_->updateExitDetectionOnly(
+          pos, yaw, detected_exit, !manual_path_exploration_style_);
       Vector3d portal;
       Eigen::Vector2d outward;
-      if (!manual_exit_latched_ && task_search_manager_->confirmedExitPortal(portal, outward)) {
+      if (manual_exit_enabled_ && !manual_exit_latched_ &&
+          task_search_manager_->confirmedExitPortal(portal, outward)) {
         const Vector3d previous = manual_path_.finished() ? pos : manual_path_.points[manual_path_.next];
         const int nearest = manual_path_.truncateAtExit(portal, outward);
         manual_exit_latched_ = true;
@@ -4429,7 +4509,8 @@ void FastExplorationManager::updateMissionOdometry(const Vector3d& pos, double y
     while (static_cast<int>(recovery_odom_history_.size()) > recovery_history_max_size_)
       recovery_odom_history_.pop_front();
   }
-  if (task_search_manager_ && !(manual_path_enabled_ && manual_exit_enabled_))
+  if (task_search_manager_ &&
+      !(manual_path_enabled_ && (manual_exit_enabled_ || manual_path_exploration_style_)))
     task_search_manager_->updateRobotPose(pos, yaw);
 }
 
@@ -4441,10 +4522,12 @@ bool FastExplorationManager::consumeRcSearchLandingStartRequest() {
 bool FastExplorationManager::detectMappedTurnDuringExecution(
     double yaw, Vector3d& direction) {
   if (suspended_underpass_active_ || !turn_in_place_enabled_ ||
-      !mission_entered_search_region_ || !task_search_manager_ ||
+      (!manual_path_enabled_ && !mission_entered_search_region_) ||
+      (manual_path_enabled_ && (!manual_path_exploration_style_ ||
+       (manual_path_wait_for_trigger_ && !manual_path_started_))) || !task_search_manager_ ||
       !task_search_manager_->enabled() || task_search_manager_->stage3Active())
     return false;
-  if (!task_search_manager_->mappedCorridorDirection(yaw, direction))
+  if (!task_search_manager_->mappedCorridorDirection(yaw, direction, !manual_path_enabled_))
     return false;
   return task_search_manager_->turnYawAlignmentPending();
 }

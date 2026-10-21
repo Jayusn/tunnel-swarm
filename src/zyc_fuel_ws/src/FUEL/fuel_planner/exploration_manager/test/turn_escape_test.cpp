@@ -704,6 +704,8 @@ public:
 
   static void runManualAstar(const std::string& scenario) {
     ros::NodeHandle nh("~manual_astar_" + scenario);
+    nh.setParam("mission/task_search/max_height", 1.90);
+    nh.setParam("mission/global_no_return", false);
     nh.setParam("manager/use_geometric_path", true);
     nh.setParam("astar/resolution_astar", 0.10);
     nh.setParam("astar/allocate_num", 100000);
@@ -715,14 +717,24 @@ public:
     initialize(nh, manager, true);
     manager.manual_path_enabled_ = true;
     manager.manual_path_use_astar_ = true;
-    manager.task_search_manager_.reset();
+    const bool local_segments = scenario == "short_segments" || scenario == "short_detour" ||
+        scenario == "disconnected_short" || scenario == "three_stage_bypass";
+    if (local_segments) manager.manual_path_max_segment_length_ = 1.2;
+    const bool exploration_style = scenario == "disconnected_short" || scenario == "three_stage_bypass";
+    manager.manual_path_exploration_style_ = exploration_style;
+    if (!exploration_style) manager.task_search_manager_.reset();
+    else {
+      manager.task_search_manager_->setMap(manager.sdf_map_);
+      manager.task_search_manager_->exit_detection_enabled_ = false;
+      manager.ep_->mission_use_forward_fallback_ = true;
+    }
     manager.edt_environment_ = manager.planner_manager_->edt_environment_;
     ViewNode::caster_.reset(new RayCaster);
     Eigen::Vector3d origin, size;
     manager.sdf_map_->getRegion(origin, size);
     ViewNode::caster_->setParams(manager.sdf_map_->getResolution(), origin);
     auto& map = *manager.sdf_map_;
-    const Vector3d start(-1.025, 0.025, 1.025);
+    const Vector3d start(scenario == "three_stage_bypass" ? -0.625 : -1.025, 0.025, 1.025);
     const Vector3d target = scenario == "same_voxel"
         ? start + Vector3d(0.04, 0, 0) : Vector3d(1.025, 0.025, 1.025);
     const Vector3d last(1.025, 0.825, 1.025), zero = Vector3d::Zero();
@@ -743,16 +755,67 @@ public:
         for (double y : {-1.725, 1.725})
           for (double z : {0.525, 1.525}) bounds.push_back(pcl::PointXYZ(x, y, z));
       map.inputPointCloud(bounds, bounds.size(), Vector3d(0, 0, 1));
-      if (scenario != "same_voxel") {
-        const double width = scenario == "blocked" ? 1.95 : 0.30;
+      if (scenario != "same_voxel" && scenario != "short_segments") {
+        const double width = scenario == "blocked" || scenario == "disconnected_short" ? 1.95 : 0.30;
         for (double x = -0.10; x <= 0.10; x += 0.025)
           for (double y = -width; y <= width; y += 0.025)
             for (double z = 0.025; z < 1.975; z += 0.025)
               map.setOccupied(Vector3d(x, y, z));
       }
+      if (scenario == "three_stage_bypass") {
+        // 分流检测读取原始占据，setOccupied只写膨胀层，故这里用真实射线观测立柱。
+        pcl::PointCloud<pcl::PointXYZ> obstacle;
+        for (double y = -0.30; y <= 0.30; y += 0.025)
+          for (double z = 0.25; z <= 1.75; z += 0.025)
+            obstacle.push_back(pcl::PointXYZ(-0.10, y, z));
+        for (int i = 0; i < 6; ++i) map.inputPointCloud(obstacle, obstacle.size(), start);
+      }
       map.updateESDF3d();
     }
     auto& planner = *manager.planner_manager_;
+    if (local_segments) {
+      Vector3d current = start;
+      double largest_side = 0.0;
+      bool saw_side = false, saw_pass = false, saw_return = false;
+      for (int segment = 0; segment < 20 && manager.manual_path_.next == 0; ++segment) {
+        manager.updateMissionOdometry(current, 0.0);
+        const int result = manager.planExploreMotion(current, zero, zero, zero);
+        if (scenario == "disconnected_short" && segment > 0 && result == FAIL) break;
+        ASSERT_EQ(SUCCEED, result) << "segment=" << segment << " start=" << current.transpose();
+        auto& trajectory = planner.local_data_.position_traj_;
+        EXPECT_LE(trajectory.getLength(trajectory.getTimeSum() / 1000.0), 1.2 + 1e-6);
+        EXPECT_TRUE(planner.isTrajectorySafe());
+        EXPECT_TRUE(manager.last_requested_goal_.isApprox(target));
+        EXPECT_EQ(0u, manager.manual_path_.next);
+        const Vector3d end = trajectory.evaluateDeBoorT(trajectory.getTimeSum());
+        EXPECT_GT((end - current).norm(), 0.03);
+        const double side = std::fabs(end.y() - start.y());
+        if (scenario == "three_stage_bypass") {
+          if (segment == 0) {
+            EXPECT_TRUE(manager.recovery_side_latched_);
+            EXPECT_GT(side, 0.15);
+            EXPECT_LT(end.x() - current.x(), 0.30);
+            saw_side = true;
+          }
+          if (saw_side && end.x() > 0.25 && side > 0.30) saw_pass = true;
+          if (saw_pass && side < largest_side - 0.10) saw_return = true;
+          largest_side = std::max(largest_side, side);
+        }
+        current = end;
+        manager.updateMissionOdometry(current, 0.0);
+      }
+      if (scenario == "disconnected_short") {
+        EXPECT_EQ(0u, manager.manual_path_.next);
+        EXPECT_GT(current.x() - start.x(), 0.10);
+        EXPECT_LT(current.x(), 0.0);  // 局部推进不能穿墙，也不能消耗尚未到达的远点。
+      } else {
+        EXPECT_EQ(1u, manager.manual_path_.next);
+        if (scenario == "three_stage_bypass") {
+          EXPECT_TRUE(saw_side && saw_pass && saw_return);
+        }
+      }
+      return;
+    }
     if (scenario == "blocked" || scenario == "unknown") {
       EXPECT_EQ(FAIL, manager.planExploreMotion(start, zero, zero, zero));
       EXPECT_EQ(0u, manager.manual_path_.next);
@@ -780,6 +843,32 @@ public:
     EXPECT_TRUE(manager.ed_->next_goal_.isApprox(last));
     manager.updateMissionOdometry(last, 0.0);
     EXPECT_EQ(NO_FRONTIER, manager.planExploreMotion(last, zero, zero, zero));
+  }
+
+  static void runManualTurnBeforeAstar() {
+    ros::NodeHandle nh("~manual_turn_before_astar");
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    manager.manual_path_enabled_ = manager.manual_path_exploration_style_ = true;
+    manager.manual_path_max_segment_length_ = 1.2;
+    manager.manual_path_use_astar_ = true;
+    manager.turn_in_place_still_confirm_time_ = 0.0;
+    const Vector3d start(0, 0, 1), target(0, -1.5, 1), zero = Vector3d::Zero();
+    manager.manual_path_.points = {target};
+    manager.updateMissionOdometry(start, 0.0);
+    auto& task = *manager.task_search_manager_;
+    task.commitCorridorTurn(-Vector3d::UnitY());
+    // 航点之间尚无已知自由连通路径，已确认的转弯仍须先执行。
+    ASSERT_EQ(SUCCEED, manager.planExploreMotion(start, zero, zero, zero));
+    EXPECT_TRUE(manager.currentPlanIsTurnInPlace());
+    auto& trajectory = manager.planner_manager_->local_data_;
+    EXPECT_LT(trajectory.position_traj_.getLength(0.01), 1e-6);
+    EXPECT_NEAR(-M_PI_2, trajectory.yaw_traj_.evaluateDeBoorT(trajectory.duration_)[0], 1e-3);
+    EXPECT_EQ(0u, manager.manual_path_.next);
+    manager.updateMissionOdometry(start, -M_PI_2);
+    EXPECT_TRUE(task.turnYawAlignmentPending());  // 只能由FSM的实测对准确认释放。
+    manager.completeTurnInPlace(start);
+    EXPECT_FALSE(task.turnYawAlignmentPending());
   }
 
   static void run(double initial_yaw) {
@@ -1646,6 +1735,26 @@ TEST(ManualWaypoints, AstarUnknownRouteKeepsTarget) {
 
 TEST(ManualWaypoints, AstarSameVoxelPreservesExactTarget) {
   fast_planner::TurnEscapeTest::runManualAstar("same_voxel");
+}
+
+TEST(ManualWaypoints, LimitsEveryPublishedStraightSegment) {
+  fast_planner::TurnEscapeTest::runManualAstar("short_segments");
+}
+
+TEST(ManualWaypoints, LimitsCurvedDetourSegmentsWithoutSkippingWaypoint) {
+  fast_planner::TurnEscapeTest::runManualAstar("short_detour");
+}
+
+TEST(ManualWaypoints, DisconnectedRemoteGoalAllowsOnlyKnownFreeLocalProgress) {
+  fast_planner::TurnEscapeTest::runManualAstar("disconnected_short");
+}
+
+TEST(ManualWaypoints, ExplorationBypassMovesAsidePassesThenReturns) {
+  fast_planner::TurnEscapeTest::runManualAstar("three_stage_bypass");
+}
+
+TEST(ManualWaypoints, ConfirmedTurnRunsBeforeDisconnectedWaypointSearch) {
+  fast_planner::TurnEscapeTest::runManualTurnBeforeAstar();
 }
 
 TEST(ManualWaypoints, EntryGatesWaypointsThenExitWaitsForActualArrival) {
