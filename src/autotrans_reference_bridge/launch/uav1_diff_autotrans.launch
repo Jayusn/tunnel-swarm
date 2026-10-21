@@ -1,5 +1,5 @@
 <launch>
-  <arg name="force_estimator_method" default="aerothrow_ndob"/>
+  <arg name="force_estimator_method" default="window_opt"/>
   <arg name="ndob_rate" default="20.0"/>
   <arg name="ndob_cutoff_freq" default="5.0"/>
   <arg name="precision_landing_enabled" default="false"/>
