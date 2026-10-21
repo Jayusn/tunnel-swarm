@@ -478,10 +478,12 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
         odom_review_after_ = ros::Time::now();
         transitState(PUB_TRAJ, "FSM");
       } else if (res == NO_FRONTIER) {
+        if (resumeAfterWidthAttempt("width alternative unavailable")) break;
         transitState(FINISH, "FSM");
         fd_->static_state_ = true;
         clearVisMarker();
       } else if (res == FAIL) {
+        if (resumeAfterWidthAttempt("width alternative planning failed")) break;
         // Still in PLAN_TRAJ state, keep replanning
         // 转弯可能恰好在普通重规划阶段确认，此时安全定时器不在EXEC分支，必须在这里
         // 主动截断旧平移轨迹；随后只等待静止确认和原地转向候选，不能继续向旧轴推进。
@@ -615,6 +617,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
         const bool release_safe = raw_start_safe && clears_inflation &&
                                   release_state_continuous && trajectory_safe;
         if (!release_safe) {
+          if (resumeAfterWidthAttempt("width alternative failed release checks")) break;
           // 首条轨迹的速度只要尚未连续稳定就继续悬停审核，不销毁已经通过位置和地图
           // 检查的候选；这样单帧尖峰不会触发无休止的“规划-拒绝”循环。
           if (!active_traj_valid_ && position_continuous && acceleration_continuous &&
@@ -653,6 +656,20 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
       if (!pending_traj_safe_since_.isZero() &&
           (now - pending_traj_safe_since_).toSec() >=
               std::max(0.0, fp_->trajectory_release_confirm_time_)) {
+        if (width_replan_pending_ && !pending_turn_in_place_ &&
+            !pending_vertical_detour_ && !pending_ground_ascent_) {
+          vector<Vector3d> current, replacement;
+          const double elapsed = std::max(0.0, (now - active_traj_.start_time_).toSec());
+          for (double t = elapsed; t < active_traj_.duration_; t += 0.10)
+            current.push_back(active_traj_.position_traj_.evaluateDeBoorT(t));
+          current.push_back(active_traj_.position_traj_.evaluateDeBoorT(active_traj_.duration_));
+          auto& candidate = planner_manager_->local_data_;
+          for (double t = 0.0; t < candidate.duration_; t += 0.10)
+            replacement.push_back(candidate.position_traj_.evaluateDeBoorT(t));
+          replacement.push_back(candidate.position_traj_.evaluateDeBoorT(candidate.duration_));
+          if (!expl_manager_->widthReplacementImproves(current, replacement, fd_->odom_yaw_) &&
+              resumeAfterWidthAttempt("optimized spline no longer has the width gain")) break;
+        }
         // 2026-07-28: 确认等待后把发布时刻重置为执行起点，既避免轨迹已经过去0.1~0.3s而跳点，
         // 也不给执行期安全定时器留下对负轨迹时间采样的窗口。
         const ros::Time release_start = now;
@@ -665,6 +682,9 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
         active_traj_ = planner_manager_->local_data_;
         active_traj_valid_ = true;
         active_traj_braked_ = false;
+        width_replan_pending_ = false;
+        width_candidate_seen_ = false;
+        next_width_check_ = now + ros::Duration(0.5);
         active_turn_in_place_ = pending_turn_in_place_;
         active_ground_ascent_ = pending_ground_ascent_;
         active_vertical_detour_ = pending_vertical_detour_;
@@ -778,9 +798,16 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
         }
         return;
       }
-      // 已发布的通道路线先执行完。覆盖、周期和临近终点评分均不能提前换边；
-      // 碰撞与跟踪异常仍由独立 safetyCallback 随时触发重规划。
-      if (keepExecutingCorridorTrajectory()) return;
+      // 覆盖、周期和临近终点仍不能任意换边；只有连续新地图证实前方整段
+      // 明显更宽时才准备替代轨迹。碰撞与跟踪检查继续由 safetyCallback 负责。
+      if (keepExecutingCorridorTrajectory()) {
+        if (checkWiderExecutionRoute()) {
+          width_replan_pending_ = true;
+          fd_->static_state_ = false;
+          transitState(PLAN_TRAJ, "wider-known-passage");
+        }
+        return;
+      }
       if (exploration_policy::shouldReplanNearTrajectoryEnd(
               time_to_end, fp_->replan_thresh1_)) {
         transitState(PLAN_TRAJ, "FSM");
@@ -805,6 +832,60 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
       break;
     }
   }
+}
+
+bool FastExplorationFSM::checkWiderExecutionRoute() {
+  const ros::Time now = ros::Time::now();
+  if (!next_width_check_.isZero() && now < next_width_check_) return false;
+  next_width_check_ = now + ros::Duration(0.5);
+  const auto sequence = planner_manager_->edt_environment_->sdf_map_->getUpdateSequence();
+  if (sequence == width_check_map_sequence_) return false;
+  width_check_map_sequence_ = sequence;
+  const double start = std::max(0.0, (now - active_traj_.start_time_).toSec());
+  if (active_traj_.duration_ - start < 0.5) {
+    width_candidate_seen_ = false;
+    return false;
+  }
+  // The start and every following sample come from the currently published
+  // spline. Never compare a straight surrogate against a curved real route.
+  vector<Vector3d> path;
+  for (double t = start; t < active_traj_.duration_; t += 0.10)
+    path.push_back(active_traj_.position_traj_.evaluateDeBoorT(t));
+  path.push_back(active_traj_.position_traj_.evaluateDeBoorT(active_traj_.duration_));
+  if (!expl_manager_->prepareWiderRoute(path, fd_->odom_yaw_)) {
+    width_candidate_seen_ = false;
+    return false;
+  }
+  // Two consecutive evaluations must agree on the alternative. Tiny width
+  // fluctuations cannot switch sides on each callback.
+  const Vector3d target = expl_manager_->widerRouteTarget();
+  const bool confirmed = width_candidate_seen_ &&
+      (target - last_width_target_).head<2>().norm() <= 0.35;
+  last_width_target_ = target;
+  width_candidate_seen_ = true;
+  if (!confirmed) expl_manager_->clearWiderRoute();
+  return confirmed;
+}
+
+bool FastExplorationFSM::resumeAfterWidthAttempt(const string& reason) {
+  if (!width_replan_pending_) return false;
+  width_replan_pending_ = false;
+  width_candidate_seen_ = false;
+  expl_manager_->clearWiderRoute();
+  if (!keepExecutingCorridorTrajectory() ||
+      expl_manager_->turnInPlaceAlignmentPending() ||
+      expl_manager_->currentPlanIsVerticalDetour() ||
+      expl_manager_->currentPlanIsGroundAscent()) return false;
+  double collision_distance = 0.0;
+  if (!planner_manager_->checkTrajCollision(active_traj_, collision_distance, false))
+    return false;
+  fd_->static_state_ = false;
+  next_plan_retry_time_ = ros::Time(0);
+  pending_traj_safe_since_ = ros::Time(0);
+  next_width_check_ = ros::Time::now() + ros::Duration(0.5);
+  transitState(EXEC_TRAJ, "keep-valid-route-after-width-attempt");
+  ROS_WARN("[route_width] %s; continue the checked published trajectory.", reason.c_str());
+  return true;
 }
 
 bool FastExplorationFSM::keepExecutingCorridorTrajectory() const {

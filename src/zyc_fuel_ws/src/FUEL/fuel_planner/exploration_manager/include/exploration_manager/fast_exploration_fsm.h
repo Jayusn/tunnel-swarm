@@ -108,6 +108,11 @@ private:
   LocalTrajData active_traj_;
   bool active_traj_valid_{false};
   bool active_traj_braked_{false};
+  bool width_replan_pending_{false};
+  ros::Time next_width_check_;
+  Vector3d last_width_target_{Vector3d::Zero()};
+  bool width_candidate_seen_{false};
+  std::uint64_t width_check_map_sequence_{0};
   bool pending_turn_in_place_{false};
   bool active_turn_in_place_{false};
   bool pending_ground_ascent_{false};
@@ -127,6 +132,8 @@ private:
   /* helper functions */
   int callExplorationPlanner();
   bool keepExecutingCorridorTrajectory() const;
+  bool checkWiderExecutionRoute();
+  bool resumeAfterWidthAttempt(const string& reason);
   bool getReviewedOdometry(Vector3d& position, Vector3d& velocity) const;
   void updatePendingTrajectoryMessage(const ros::Time& start_time);
   void transitState(EXPL_STATE new_state, string pos_call);

@@ -92,6 +92,8 @@ if(CATKIN_ENABLE_TESTING)
   find_package(rostest REQUIRED)
   add_executable(safe_relay_policy_test test/safe_relay_policy_test.cpp)
   add_test(NAME safe_relay_policy_test COMMAND safe_relay_policy_test)
+  add_executable(route_width_policy_test test/route_width_policy_test.cpp)
+  add_test(NAME route_width_policy_test COMMAND route_width_policy_test)
   add_executable(passage_centering_policy_test test/passage_centering_policy_test.cpp)
   add_test(NAME passage_centering_policy_test COMMAND passage_centering_policy_test)
   add_rostest_gtest(safe_relay_publisher_test test/safe_relay_publisher.test

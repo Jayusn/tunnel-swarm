@@ -14,6 +14,7 @@
 #include <exploration_manager/vertical_detour_policy.h>
 #include <exploration_manager/manual_waypoint_path.h>
 #include <exploration_manager/entry_forward_policy.h>
+#include <exploration_manager/route_width_policy.h>
 using Eigen::Vector3d;
 using std::shared_ptr;
 using std::unique_ptr;
@@ -59,6 +60,11 @@ public:
   bool shouldStartInflationHistoryEscape(const Vector3d& odom_pos) const;
   bool detectMappedTurnDuringExecution(double yaw, Vector3d& direction);
   bool shouldReplanCurveHeading(const Vector3d& position, double reference_yaw) const;
+  bool prepareWiderRoute(const vector<Vector3d>& current_path, double yaw);
+  bool widthReplacementImproves(const vector<Vector3d>& current_path,
+                                const vector<Vector3d>& replacement, double yaw) const;
+  Vector3d widerRouteTarget() const { return pending_wider_route_.back(); }
+  void clearWiderRoute() { pending_wider_route_.clear(); }
   bool beginSuspendedUnderpass(const Vector3d& pos, double yaw);
   bool currentPlanIsTurnInPlace() const { return turn_in_place_plan_; }
   bool currentPlanIsGroundAscent() const { return ground_ascent_plan_; }
@@ -166,6 +172,13 @@ private:
   bool passage_centering_enabled_{true};
   double passage_centering_search_radius_{0.90};
   double passage_centering_maximum_shift_{0.45};
+  double route_width_horizon_{1.0};
+  double route_width_replan_gain_{0.10};
+  vector<Vector3d> pending_wider_route_;
+  bool width_route_plan_{false};
+  int widthColumnState(const Vector3d& point) const;
+  route_width::Score evaluateRouteWidth(const vector<Vector3d>& path,
+                                       const Vector3d& forward) const;
   // 前方竖直障碍把通道横向分开时，优先横移到占据地图中净宽更大的一侧。
   bool wide_side_bypass_enabled_{true};
   double wide_side_bypass_min_lookahead_{0.20};
@@ -327,7 +340,8 @@ private:
     double left_width{0.0};
     double right_width{0.0};
   };
-  SplitEvidence findWideSideSplit(const Vector3d& pos, const Vector3d& forward) const;
+  SplitEvidence findWideSideSplit(const Vector3d& pos, const Vector3d& forward,
+                                  bool entry_exempt = false) const;
   bool selectEntryForwardGoal(const Vector3d& pos, const Vector3d& forward,
                               double remaining, entry_forward::Goal& selected);
   bool buildWideSideBypass(const Vector3d& pos, double cur_yaw,

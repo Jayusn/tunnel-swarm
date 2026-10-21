@@ -227,6 +227,9 @@
     <param name="astar/preferred_clearance" value="0.60" type="double"/>
     <param name="astar/clearance_weight" value="12.0" type="double"/>
     <!-- 在已选择的已知自由通路内横向居中；不改固定升降和入口/出口专用目标。 -->
+    <!-- Compare complete horizontal passages before preferring straight motion. -->
+    <param name="mission/route_width/horizon" value="1.0" type="double"/>
+    <param name="mission/route_width/replan_gain" value="0.10" type="double"/>
     <param name="mission/passage_centering/enabled" value="true" type="bool"/>
     <param name="mission/passage_centering/search_radius" value="0.90" type="double"/>
     <param name="mission/passage_centering/maximum_shift" value="0.45" type="double"/>

@@ -97,6 +97,104 @@ public:
     for (int i = 0; i <= 100; ++i)
       curve_max_y = std::max(curve_max_y, trajectory.evaluateDeBoorT(trajectory.getTimeSum()*i/100.0).y());
     EXPECT_GT(curve_max_y, -0.20); // The published spline must actually use the central guide.
+    FastExplorationFSM fsm;
+    fsm.expl_manager_ = std::shared_ptr<FastExplorationManager>(&manager, [](FastExplorationManager*) {});
+    fsm.planner_manager_ = manager.planner_manager_;
+    fsm.fd_ = std::make_shared<FSMData>();
+    fsm.fd_->state_str_ = {"INIT", "WAIT", "PLAN", "PUB", "EXEC", "FINISH"};
+    fsm.active_traj_ = manager.planner_manager_->local_data_;
+    fsm.active_traj_.start_time_ = ros::Time::now();
+    fsm.active_traj_valid_ = true;
+    fsm.narrow_corridor_stage_ = true;
+    fsm.width_replan_pending_ = true;
+    fsm.state_ = PLAN_TRAJ;
+    EXPECT_TRUE(fsm.resumeAfterWidthAttempt("test rejected quality alternative"));
+    EXPECT_EQ(EXEC_TRAJ, fsm.state_);
+    EXPECT_FALSE(fsm.active_traj_braked_);
+    fsm.width_replan_pending_ = true;
+    fsm.active_traj_braked_ = true;
+    EXPECT_FALSE(fsm.resumeAfterWidthAttempt("braked route cannot resume"));
+  }
+
+  static void runWidthColumn() {
+    ros::NodeHandle nh("~width_column");
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    pcl::PointCloud<pcl::PointXYZ> cloud;
+    cloud.push_back(pcl::PointXYZ(0.325, 0.075, 0.425));
+    for (int i = 0; i < 8; ++i)
+      manager.sdf_map_->inputPointCloud(cloud, cloud.size(), Vector3d(-.5, .075, .425));
+    const Vector3d query(.325, .075, .440465);
+    EXPECT_FALSE(manager.cameraOccupancyColumn(query, query.z()));
+    EXPECT_EQ(SDFMap::OCCUPIED, manager.widthColumnState(query));
+    EXPECT_EQ(SDFMap::UNKNOWN, manager.widthColumnState(Vector3d(1, 1, 1)));
+  }
+
+  static void runStraightWidth(bool mirror) {
+    ros::NodeHandle nh("~straight_width");
+    nh.setParam("manager/use_geometric_path", true);
+    nh.setParam("astar/resolution_astar", 0.05);
+    nh.setParam("astar/allocate_num", 100000);
+    nh.setParam("astar/lambda_heu", 1.0);
+    nh.setParam("astar/max_search_time", 0.1);
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    auto& map = *manager.sdf_map_;
+    const double side = mirror ? -1.0 : 1.0;
+    const Vector3d start(-.4, .40 * side, 1.025);
+    // Observe FREE cells from both directions before adding walls/divider.
+    for (double y = -1.7; y <= 1.7; y += .05)
+      for (double z = .725; z <= 1.325; z += .05) {
+        pcl::PointCloud<pcl::PointXYZ> cloud;
+        cloud.push_back(pcl::PointXYZ(1.9, y, z));
+        map.inputPointCloud(cloud, 1, Vector3d(-1.9, y, z));
+        cloud.front().x = -1.9;
+        map.inputPointCloud(cloud, 1, Vector3d(1.9, y, z));
+      }
+    pcl::PointCloud<pcl::PointXYZ> cloud;
+    for (double x = -.3; x <= 1.6; x += .025)
+      for (double z = .725; z <= 1.325; z += .025) {
+        cloud.push_back(pcl::PointXYZ(x, .80 * side, z));
+        cloud.push_back(pcl::PointXYZ(x, -1.4 * side, z));
+        if (x >= .4) cloud.push_back(pcl::PointXYZ(x, 0.0, z));
+      }
+    for (int i = 0; i < 8; ++i) map.inputPointCloud(cloud, cloud.size(), start);
+    map.updateESDF3d();
+    manager.ep_->mission_use_forward_fallback_ = true;
+    manager.ep_->mission_use_workspace_lock_ = true;
+    manager.ep_->mission_forward_fallback_step_ = .2;
+    manager.ep_->mission_forward_fallback_max_ = 1.8;
+    manager.mission_workspace_lock_received_ = true;
+    manager.mission_workspace_origin_ = start - Vector3d(1, 0, 0);
+    manager.mission_workspace_dir_ = Vector3d::UnitX();
+    manager.entry_forward_complete_ = true;
+    manager.wide_side_bypass_enabled_ = false; // Exercise the generic straight branch.
+    auto& task = *manager.task_search_manager_;
+    task.setMap(manager.sdf_map_);
+    task.enabled_ = true;
+    task.global_no_return_ = false;
+    task.exit_detection_enabled_ = false;
+    task.cruise_height_ = start.z();
+    task.stable_progress_direction_ = Eigen::Vector2d::UnitX();
+    task.stable_progress_direction_valid_ = true;
+    task.updateRobotPose(start, 0.0);
+    const vector<Vector3d> straight{start, start + Vector3d(1, 0, 0)};
+    manager.entry_forward_complete_ = false;
+    EXPECT_FALSE(manager.prepareWiderRoute(straight, 0));
+    manager.entry_forward_complete_ = true;
+    ASSERT_TRUE(manager.planner_manager_->isPathSafe(straight));
+    const auto straight_width = manager.evaluateRouteWidth(straight, Vector3d::UnitX());
+    ASSERT_TRUE(straight_width.complete);
+    Vector3d target; double yaw = 0;
+    ASSERT_TRUE(manager.buildMissionForwardFallback(start, 0, target, yaw));
+    std::cout << "width recovery: " << target.transpose() << std::endl;
+    EXPECT_LT((target.y() - start.y()) * side, -.15);
+    // The same physical fixture must offer a quality replan from the executing
+    // straight path, and the selected path must retain the original hard checks.
+    manager.recovery_side_latched_ = false;
+    ASSERT_TRUE(manager.prepareWiderRoute(straight, 0));
+    EXPECT_LT((manager.widerRouteTarget().y() - start.y()) * side, -.15);
+    EXPECT_TRUE(manager.planner_manager_->isPathSafe(manager.pending_wider_route_));
   }
 
   static void runHeightReferenceOwnership() {
@@ -782,7 +880,7 @@ public:
     manager.frontier_finder_ = std::make_shared<FrontierFinder>(manager.edt_environment_, nh);
     // 动态入口已完成推进：有原绕行侧时先续接，无原侧时才比较宽度。
     manager.mission_entered_search_region_ = fallback_only;
-    manager.entry_forward_complete_ = !fallback_only;
+    manager.entry_forward_complete_ = true;
     manager.ep_->mission_use_forward_fallback_ = true;
     manager.ep_->mission_use_workspace_lock_ = true;
     manager.ep_->mission_forward_fallback_step_ = 0.20;
@@ -1058,6 +1156,7 @@ public:
     nh.setParam("astar/max_search_time", 1.0);
     FastExplorationManager manager;
     initialize(nh, manager);
+    manager.entry_forward_complete_ = true;
     manager.ep_->mission_use_forward_fallback_ = true;
     auto& task = *manager.task_search_manager_;
     task.setMap(manager.sdf_map_);
@@ -1122,7 +1221,9 @@ public:
     if (change_width) {
       // 新观测改变截面宽度，但原侧仍有已知安全短路，不应立即掉头换边。
       cloud.clear();
-      for (double y=0.70; y<=0.725; y+=0.025)
+      // Keep the obstacle disjoint: the old bounding-box merge incorrectly
+      // counted the empty gap as part of the pillar. Narrow the actual free gap.
+      for (double y=0.35; y<=0.375; y+=0.025)
         for (double z=0.25; z<=1.75; z+=0.025)
           cloud.push_back(pcl::PointXYZ(0.55, side*y, z));
       observe(origin, 8);
@@ -1462,6 +1563,16 @@ TEST(HorizontalHeight, UnknownOverheadRejectsHeightCorrection) {
   fast_planner::TurnEscapeTest::runMovingClimb(2, true);
 }
 TEST(PassageCentre, LowCorridorGuidesActualSpline) { fast_planner::TurnEscapeTest::runPassageCentre(); }
+
+TEST(RouteWidth, OccupiedLayerBetweenOldColumnSamplesIsNotMissed) {
+  fast_planner::TurnEscapeTest::runWidthColumn();
+}
+TEST(RouteWidth, FeasibleStraightCompetesWithWiderRightRoute) {
+  fast_planner::TurnEscapeTest::runStraightWidth(false);
+}
+TEST(RouteWidth, MirroredWiderLeftRouteUsesSameRanking) {
+  fast_planner::TurnEscapeTest::runStraightWidth(true);
+}
 
 int main(int argc,char** argv) {
   ros::init(argc,argv,"turn_escape_test");
