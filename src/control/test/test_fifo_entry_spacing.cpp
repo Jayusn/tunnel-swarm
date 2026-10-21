@@ -41,6 +41,9 @@ class FifoEntrySpacing : public ::testing::Test {
   void SetUp() override {
     follower.reset(new LeaderSafePathFollower);
     follower->timer_.stop();
+    ASSERT_DOUBLE_EQ(follower->ordinary_waypoint_dwell_, 2.0);
+    // 既有回归用例隔离计时；下方驻留用例单独验证生产默认的2秒等待。
+    follower->ordinary_waypoint_dwell_ = 0.0;
     ASSERT_DOUBLE_EQ(follower->min_separation_, 1.0);
     ASSERT_DOUBLE_EQ(follower->separation_release_distance_, 1.0);
     follower->simple_segment_endpoint_following_ = true;
@@ -891,7 +894,7 @@ TEST_F(FifoEntrySpacing, OrdinaryYawAllowsBothTwentyDegreeBoundaries) {
   }
 }
 
-TEST_F(FifoEntrySpacing, QualifiedOrdinaryPointKeepsFifteenCmButDoesNotWaitForSpeedOrDwell) {
+TEST_F(FifoEntrySpacing, QualifiedOrdinaryPointWithDwellDisabledKeepsFifteenCmWithoutSpeedGate) {
   prepareQualifiedPoints();
   follower->handleSimpleDiffPlannerExecution(ros::Time::now());
   follower->follower_odom_.pose.pose.position.x = 0.65;
@@ -915,6 +918,87 @@ TEST_F(FifoEntrySpacing, QualifiedOrdinaryPointKeepsFifteenCmButDoesNotWaitForSp
   follower->handleSimpleDiffPlannerExecution(ros::Time::now());
   EXPECT_TRUE(follower->diff_goal_published_);
   EXPECT_FALSE(follower->diff_wait_hold_active_); // Planning the next leg must not freeze it.
+}
+
+TEST_F(FifoEntrySpacing, OrdinaryDwellWaitsFullTwoSecondsAndKeepsEndpointReference) {
+  prepareQualifiedPoints();
+  follower->ordinary_waypoint_dwell_ = 2.0;
+  const auto now = ros::Time::now();
+  follower->handleSimpleDiffPlannerExecution(now);
+  const auto first_goal = follower->diff_active_goal_stamp_ns_;
+  follower->follower_odom_.pose.pose.position.x = 0.9;
+  follower->follower_horizontal_speed_ = 0.2; // No new low-speed gate.
+  follower->handleSimpleDiffPlannerExecution(now);
+  ASSERT_EQ(2U, follower->relay_waypoints_.size());
+  EXPECT_EQ(now, follower->relay_arrival_stamp_);
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+  follower->relay_arrival_stamp_ = now - ros::Duration(1.999);
+  follower->handleSimpleDiffPlannerExecution(now);
+  EXPECT_EQ(2U, follower->relay_waypoints_.size());
+  EXPECT_EQ(first_goal, follower->diff_active_goal_stamp_ns_);
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+  follower->relay_arrival_stamp_ = now - ros::Duration(2.0);
+  follower->handleSimpleDiffPlannerExecution(now);
+  ASSERT_EQ(1U, follower->relay_waypoints_.size());
+  EXPECT_TRUE(follower->relay_arrival_stamp_.isZero());
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+  follower->handleSimpleDiffPlannerExecution(now);
+  EXPECT_TRUE(follower->diff_goal_published_);
+  EXPECT_NE(first_goal, follower->diff_active_goal_stamp_ns_);
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+  // Each ordinary point gets its own full dwell, also on the legacy FIFO path.
+  follower->relay_waypoints_.front().safe_relay_id = 0;
+  follower->follower_odom_.pose.pose.position.x = 1.9;
+  follower->handleSimpleDiffPlannerExecution(now);
+  EXPECT_EQ(1U, follower->relay_waypoints_.size());
+  EXPECT_EQ(now, follower->relay_arrival_stamp_);
+}
+
+TEST_F(FifoEntrySpacing, OrdinaryDwellDoesNotRestartAfterPositionHeightOrYawLeavesTolerance) {
+  prepareQualifiedPoints();
+  follower->ordinary_waypoint_dwell_ = 2.0;
+  const auto now = ros::Time::now();
+  follower->handleSimpleDiffPlannerExecution(now);
+  follower->follower_odom_.pose.pose.position.x = 0.9;
+  follower->handleSimpleDiffPlannerExecution(now);
+  const auto started = follower->relay_arrival_stamp_;
+  ASSERT_EQ(now, started);
+  for (int axis = 0; axis < 3; ++axis) {
+    auto& pose = follower->follower_odom_.pose.pose;
+    pose.position.x = 0.9;
+    pose.position.z = 0.6;
+    pose.orientation.w = 1.0;
+    pose.orientation.z = 0.0;
+    if (axis == 0) pose.position.x = 0.84;
+    if (axis == 1) pose.position.z = 0.44;
+    if (axis == 2) {
+      pose.orientation.w = std::cos(21.0 * M_PI / 360.0);
+      pose.orientation.z = std::sin(21.0 * M_PI / 360.0);
+    }
+    follower->handleSimpleDiffPlannerExecution(now);
+    EXPECT_EQ(2U, follower->relay_waypoints_.size());
+    EXPECT_EQ(started, follower->relay_arrival_stamp_);
+    EXPECT_FALSE(follower->diff_wait_hold_active_);
+  }
+  // Still outside the yaw tolerance when time expires: release without restarting.
+  follower->relay_arrival_stamp_ = now - ros::Duration(2.0);
+  follower->handleSimpleDiffPlannerExecution(now);
+  EXPECT_EQ(1U, follower->relay_waypoints_.size());
+  EXPECT_TRUE(follower->relay_arrival_stamp_.isZero());
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+}
+
+TEST_F(FifoEntrySpacing, OrdinaryDwellStillAllowsEmergencySeparationHold) {
+  prepareQualifiedPoints();
+  follower->ordinary_waypoint_dwell_ = 2.0;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  follower->follower_odom_.pose.pose.position.x = 0.9;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_FALSE(follower->relay_arrival_stamp_.isZero());
+  setLeader(1.9);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->diff_wait_hold_active_);
+  EXPECT_EQ(2U, follower->relay_waypoints_.size());
 }
 
 TEST_F(FifoEntrySpacing, QualifiedArrivalKeepsConvergingWhileNextPointWaitsForLeader) {
@@ -974,6 +1058,7 @@ TEST_F(FifoEntrySpacing, QualifiedHandoffIgnoresOldRepliesAndStillHoldsOnCurrent
 
 TEST_F(FifoEntrySpacing, QualifiedExitStillRequiresSpeedAndDwell) {
   prepareQualifiedPoints();
+  follower->ordinary_waypoint_dwell_ = 2.0; // Exit continues using its original dwell.
   follower->exit_waypoint_index_ = 0;
   follower->follower_odom_.pose.pose.position.x = 0.9;
   follower->follower_horizontal_speed_ = 0.5;
@@ -1025,6 +1110,7 @@ TEST_F(FifoEntrySpacing, AcceptedEndpointKeepsConvergingInsteadOfFreezingPositio
 
 TEST_F(FifoEntrySpacing, OccupiedPointIsAttemptedFirstThenSkippedAndOldReplyCannotUnlock) {
   prepareQualifiedPoints();
+  follower->ordinary_waypoint_dwell_ = 2.0; // Obstacle skipping must not dwell at the blocked point.
   occupyFirstPoint();
   follower->handleSimpleDiffPlannerExecution(ros::Time::now());
   ASSERT_EQ(2U, follower->relay_waypoints_.size());

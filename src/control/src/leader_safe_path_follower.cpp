@@ -346,6 +346,7 @@ class LeaderSafePathFollower {
     pnh_.param("relay_arrive_radius", relay_arrive_radius_, 0.25);
     pnh_.param("relay_arrive_z_tolerance", relay_arrive_z_tolerance_, 0.20);
     pnh_.param("ordinary_waypoint_z_tolerance", ordinary_waypoint_z_tolerance_, 0.15);
+    pnh_.param("ordinary_waypoint_dwell", ordinary_waypoint_dwell_, 2.0);
     // 最终降落点保留停驻净空；普通接力点另用小体素检查，不能让侧墙否决狭窄通道。
     pnh_.param("relay_endpoint_clearance_radius", relay_endpoint_clearance_radius_, 0.38);
     pnh_.param("relay_endpoint_z_margin", relay_endpoint_z_margin_, 0.28);
@@ -2225,6 +2226,8 @@ class LeaderSafePathFollower {
         (!activeSafeRelay() || ordinary_relay ||
          (follower_horizontal_speed_ <= relay_arrive_max_horizontal_speed_ &&
           follower_vertical_speed_ <= relay_arrive_max_vertical_speed_));
+    const bool ordinary_dwell_started = ordinary_relay && ordinary_waypoint_dwell_ > 0.0 &&
+        !relay_arrival_stamp_.isZero();
 
     // 只用新鲜点云确认点本身占据；规划失败、快照超时或字段错误不等于障碍。
     // 前机未离开当前点时不能跳点；下一普通点仍由原放行门槛和Diff检查。
@@ -2261,7 +2264,7 @@ class LeaderSafePathFollower {
     }
 
     // 已到达当前普通点时直接消费，不能再被旧点的间距保护拉回。
-    if (!terminal_relay && !waypoint_arrival &&
+    if (!terminal_relay && !waypoint_arrival && !ordinary_dwell_started &&
         enable_diff_separation_safety_) {
       if (!leaderOdomFresh(now)) {
         simple_waypoint_clearance_hold_active_ = true;
@@ -2319,9 +2322,19 @@ class LeaderSafePathFollower {
         heading_arrived &&
         follower_horizontal_speed_ <= relay_arrive_max_horizontal_speed_ &&
         follower_vertical_speed_ <= relay_arrive_max_vertical_speed_;
-    if (waypoint_arrival || terminal_arrival || skip_occupied_point) {
-      // 普通接力点按位置和航向连续放行；不等待速度降到门槛或驻留。
+    if (waypoint_arrival || ordinary_dwell_started || terminal_arrival || skip_occupied_point) {
+      // 普通点首次达到容差后等待2秒；偏出容差不重计时。
+      // 期间保留完整终点和航向参考继续收敛。
       // 入口、出口、门外等待及最终降落保留各自原有到达规则。
+      if (ordinary_relay && !skip_occupied_point && ordinary_waypoint_dwell_ > 0.0) {
+        if (relay_arrival_stamp_.isZero()) relay_arrival_stamp_ = now;
+        const double elapsed = (now - relay_arrival_stamp_).toSec();
+        if (elapsed < ordinary_waypoint_dwell_) {
+          ROS_INFO_THROTTLE(1.0, "[safe_follower] FIFO endpoint dwell %.2f/%.2fs; "
+                            "retain endpoint/yaw reference.", elapsed, ordinary_waypoint_dwell_);
+          return true;
+        }
+      }
       if (activeSafeRelay() && !ordinary_relay && !skip_occupied_point) {
         if (relay_arrival_stamp_.isZero()) relay_arrival_stamp_ = now;
         if ((now - relay_arrival_stamp_).toSec() < relay_arrive_dwell_) return true;
@@ -2354,7 +2367,7 @@ class LeaderSafePathFollower {
         setFollowerDetectionEnable(false, "follower reached outside-door hover point");
         tryQueueFollowerTerminalTarget();
       }
-      // 普通点达到放行容差后准备下一段，原轨迹仍向完整终点收敛；
+      // 普通点满足到达和等待时间后准备下一段，原轨迹仍向完整终点收敛；
       // 不能在容差边缘锁存当前位置和朝向。新轨迹就绪后由控制器接续。
       if (desired_world.is_door || outside_wait_relay ||
           (activeSafeRelay() && !ordinary_relay) ||
@@ -4589,6 +4602,7 @@ class LeaderSafePathFollower {
   double relay_waypoint_spacing_{2.50};
   double relay_arrive_radius_{0.25}, relay_arrive_z_tolerance_{0.20};
   double ordinary_waypoint_z_tolerance_{0.15};
+  double ordinary_waypoint_dwell_{2.0};
   // 终点仍使用较大停驻净空；普通接力点只查落点小体素并允许安全附件到达。
   double relay_endpoint_clearance_radius_{0.38}, relay_endpoint_z_margin_{0.28};
   double relay_point_occupied_radius_{0.12}, relay_point_occupied_z_margin_{0.18};

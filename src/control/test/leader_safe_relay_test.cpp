@@ -135,7 +135,10 @@ class LeaderSafeRelayTest {
     follower.follower_horizontal_speed_ = 0.5;
     follower.follower_vertical_speed_ = 0.12;
     follower.handleDiffPlannerExecution(ros::Time::now());
-    EXPECT_TRUE(follower.relay_waypoints_.empty()); // Ordinary point releases without stopping/dwell.
+    ASSERT_EQ(1U, follower.relay_waypoints_.size()); // Keep the endpoint throughout the dwell.
+    follower.relay_arrival_stamp_ = ros::Time::now() - ros::Duration(2.0);
+    follower.handleDiffPlannerExecution(ros::Time::now());
+    EXPECT_TRUE(follower.relay_waypoints_.empty());
     EXPECT_TRUE(follower.diff_wait_hold_active_);
     path->header.seq = 8;
     path->poses[0].pose.position.x += 0.2;
