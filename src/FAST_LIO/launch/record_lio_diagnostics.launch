@@ -1,0 +1,24 @@
+<launch>
+  <!-- Separate raw-data bag: bounded queue; splitting does not delete old files. -->
+  <arg name="vehicle_ns" default="UAV1"/>
+  <arg name="bag_prefix"/>
+  <node pkg="rosbag" type="record" ns="$(arg vehicle_ns)"
+        name="lio_diagnostics_recorder" output="screen"
+        args="--lz4 --buffsize=64 --split --size=1024 --publish
+              -O &quot;$(arg bag_prefix)&quot;
+              /$(arg vehicle_ns)/livox/lidar
+              /$(arg vehicle_ns)/livox/imu
+              /$(arg vehicle_ns)/livox/imu_body
+              /$(arg vehicle_ns)/livox/imu_mps2
+              /$(arg vehicle_ns)/fast_lio/state_diagnostics
+              /$(arg vehicle_ns)/fast_lio/Odometry
+              /$(arg vehicle_ns)/fast_lio/Odom_high_freq
+              /$(arg vehicle_ns)/mavros/imu/data_raw
+              /$(arg vehicle_ns)/mavros/state
+              /$(arg vehicle_ns)/mavros/extended_state
+              /$(arg vehicle_ns)/mavros/esc_status
+              /$(arg vehicle_ns)/mavros/battery
+              /tf /tf_static /rosout">
+    <remap from="begin_write" to="/$(arg vehicle_ns)/lio_recording_started"/>
+  </node>
+</launch>

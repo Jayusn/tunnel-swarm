@@ -137,6 +137,7 @@
       - "$(arg planner_odom_topic)"
       - "$(arg force_attitude_odom_topic)"
       - "/UAV1/mavros/local_position/odom"
+      - "/UAV1/mavros/imu/data_raw"
       - "$(arg imu_topic)"
       - "/UAV1/livox/imu"
       - "/UAV1/livox/imu_body"

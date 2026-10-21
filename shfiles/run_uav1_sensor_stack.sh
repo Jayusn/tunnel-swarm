@@ -27,7 +27,8 @@ usage()
 说明：
   mavros  启动 /UAV1/mavros，并设置 ESC 状态频率为 200 Hz。
   mid360  启动 /UAV1/livox/lidar 和 /UAV1/livox/imu。
-  fastlio 启动 /UAV1/fast_lio 下的 FAST-LIO 话题。
+  fastlio 先启动原始点云诊断录包，再启动 /UAV1/fast_lio。
+          起飞前、停桨后各保留约 20 秒，再关闭本终端。
   landing 只启动 /UAV1/down_camera；搜索和精降节点由
           leader_safe_path_follower.launch 统一启动，避免重复节点。
 EOF
@@ -119,13 +120,50 @@ run_mid360()
 
 run_fastlio()
 {
-    exec roslaunch fast_lio mapping_mid360.launch \
+    local record_dir recorder_pid mapping_pid=""
+    mkdir -p "$HOME/.ros/fast_lio_diagnostics"
+    record_dir=$(mktemp -d "$HOME/.ros/fast_lio_diagnostics/$(date +%Y%m%d_%H%M%S)_XXXXXX")
+    echo "[UAV1 FAST-LIO] 原始点云/诊断录包：$record_dir"
+    echo "[UAV1 FAST-LIO] 缓存 64 MB，1 GB 分包；起飞前、停桨后各保留约 20 秒。"
+    git -C "$MATCH_WS" rev-parse HEAD > "$record_dir/source_revision.txt" 2>/dev/null || true
+    sha256sum "$MATCH_WS/devel/lib/fast_lio/fastlio_mapping" > "$record_dir/binary.sha256"
+    git -C "$MATCH_WS" diff -- src/FAST_LIO shfiles/run_uav1_sensor_stack.sh > "$record_dir/source_diff.patch"
+    timeout 3 rosparam dump "$record_dir/params_before.yaml" /UAV1 2>/dev/null || true
+    cp "$MATCH_WS/src/FAST_LIO/config/mid360.yaml" "$record_dir/"
+    cp "$MATCH_WS/src/FAST_LIO/launch/mapping_mid360.launch" "$record_dir/"
+    cp "$MATCH_WS/src/FAST_LIO/launch/record_lio_diagnostics.launch" "$record_dir/"
+    cleanup_fastlio_recording()
+    {
+        # Keep the master alive while writing the final parameter snapshot and bag index.
+        timeout 3 rosparam dump "$record_dir/params_end.yaml" /UAV1 2>/dev/null || true
+        if [ -n "$mapping_pid" ]; then
+            kill -INT "$mapping_pid" 2>/dev/null || true
+            wait "$mapping_pid" 2>/dev/null || true
+        fi
+        kill -INT "$recorder_pid" 2>/dev/null || true
+        wait "$recorder_pid" 2>/dev/null || true
+    }
+    roslaunch fast_lio record_lio_diagnostics.launch \
+        bag_prefix:="$record_dir/raw" > "$record_dir/recorder.log" 2>&1 &
+    recorder_pid=$!
+    trap cleanup_fastlio_recording EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    # rosbag's latched begin_write confirms that the file is open before LIO starts.
+    if ! timeout 8 rostopic echo -n 1 /UAV1/lio_recording_started > "$record_dir/recording_started.txt"; then
+        echo "[UAV1 FAST-LIO][警告] 未确认录包就绪，初始化数据可能缺失；检查 $record_dir/recorder.log" >&2
+    fi
+    roslaunch fast_lio mapping_mid360.launch \
         rviz_goal_topic:=/UAV1/planning/goal \
         vehicle_ns:=UAV1 \
         odom_topic:=/UAV1/fast_lio/Odometry \
         high_freq_odom_topic:=/UAV1/fast_lio/Odom_high_freq \
         performance_logging:=false \
-        publish_odometry:=true
+        publish_odometry:=true &
+    mapping_pid=$!
+    wait "$mapping_pid"
+    cleanup_fastlio_recording
+    trap - EXIT INT TERM
 }
 
 find_down_camera()

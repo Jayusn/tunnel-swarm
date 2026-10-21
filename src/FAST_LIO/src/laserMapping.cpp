@@ -37,6 +37,7 @@
 #include <fast_lio/StateDiagnostics.h>
 #include <algorithm>
 #include <atomic>
+#include <limits>
 #include <mutex>
 #include <math.h>
 #include <thread>
@@ -1221,10 +1222,11 @@ int main(int argc, char** argv)
             /*** iterated state estimation ***/
             double t_update_start = omp_get_wtime();
             double solve_H_time = 0;
-            // Only snapshot scalars when a recorder/subscriber is connected.
+            // Snapshot diagnostics only when a recorder/subscriber is connected.
             // Both snapshots are at lidar_end_time; do not use extrapolated IMU state.
             const bool record_state = state_diagnostics_pub.getNumSubscribers() > 0;
             fast_lio::StateDiagnostics diagnostics;
+            esekfom::UpdateDiagnostics update_diagnostics;
             if (record_state)
             {
                 diagnostics.header.stamp = ros::Time().fromSec(lidar_end_time);
@@ -1236,9 +1238,21 @@ int main(int argc, char** argv)
                     diagnostics.velocity_before[i] = before.vel[i];
                     diagnostics.accel_bias_before[i] = before.ba[i];
                     diagnostics.gravity_before[i] = before.grav[i];
+                    diagnostics.gyro_bias_before[i] = before.bg[i];
                 }
             }
-            kf.update_iterated_dyn_share_modified(LASER_POINT_COV, solve_H_time);
+            if (record_state)
+            {
+                static_assert(state_ikfom::DOF == 23, "StateDiagnostics covariance layout changed");
+                const auto before = kf.get_x();
+                const auto covariance = kf.get_P();
+                for (int i = 0; i < 4; ++i) diagnostics.attitude_before[i] = before.rot.coeffs()[i];
+                for (int row = 0; row < 23; ++row)
+                    for (int col = 0; col < 23; ++col)
+                        diagnostics.covariance_before[row * 23 + col] = covariance(row, col);
+            }
+            kf.update_iterated_dyn_share_modified(LASER_POINT_COV, solve_H_time,
+                                                 record_state ? &update_diagnostics : nullptr);
             state_point = kf.get_x();
             euler_cur = SO3ToEuler(state_point.rot);
             pos_lid = state_point.pos + state_point.rot * state_point.offset_T_L_I;
@@ -1262,6 +1276,33 @@ int main(int argc, char** argv)
                     diagnostics.velocity_after[i] = state_point.vel[i];
                     diagnostics.accel_bias_after[i] = state_point.ba[i];
                     diagnostics.gravity_after[i] = state_point.grav[i];
+                    diagnostics.gyro_bias_after[i] = state_point.bg[i];
+                }
+                const auto covariance = kf.get_P();
+                for (int i = 0; i < 4; ++i) diagnostics.attitude_after[i] = state_point.rot.coeffs()[i];
+                for (int row = 0; row < 23; ++row)
+                    for (int col = 0; col < 23; ++col)
+                        diagnostics.covariance_after[row * 23 + col] = covariance(row, col);
+                diagnostics.downsampled_points = feats_down_size;
+                diagnostics.matched_points = effct_feat_num;
+                diagnostics.iteration_count = update_diagnostics.iterations;
+                diagnostics.valid_iteration_count = update_diagnostics.valid_iterations;
+                diagnostics.final_measurement_valid = update_diagnostics.final_measurement_valid;
+                diagnostics.last_increment_converged = update_diagnostics.last_increment_converged;
+                diagnostics.covariance_updated = update_diagnostics.covariance_updated;
+                diagnostics.update_wall_ms = (t_update_end - t_update_start) * 1000.0;
+                diagnostics.residual_mean_abs_m = std::numeric_limits<double>::quiet_NaN();
+                diagnostics.residual_rms_m = std::numeric_limits<double>::quiet_NaN();
+                if (update_diagnostics.final_measurement_valid && effct_feat_num > 0)
+                {
+                    diagnostics.residual_mean_abs_m = res_mean_last;
+                    double squared_residual = 0.0;
+                    for (int i = 0; i < effct_feat_num; ++i)
+                    {
+                        const double residual = corr_normvect->points[i].intensity;
+                        squared_residual += residual * residual;
+                    }
+                    diagnostics.residual_rms_m = std::sqrt(squared_residual / effct_feat_num);
                 }
                 state_diagnostics_pub.publish(diagnostics);
             }

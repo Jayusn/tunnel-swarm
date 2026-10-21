@@ -139,7 +139,7 @@ collect_evo_reports() {
   done < <(matching_pids '(^|[[:space:]/])generate_evo_report\.py([[:space:]]|$)')
 }
 
-shutdown_autotrans_loggers() {
+shutdown_log_recorders() {
   local pid command
   local -a logger_pids=()
   while IFS= read -r pid; do
@@ -147,11 +147,11 @@ shutdown_autotrans_loggers() {
     is_protected_pid "${pid}" && continue
     logger_pids+=("${pid}")
     command="$(ps -p "${pid}" -o args= 2>/dev/null | sed 's/^[[:space:]]*//')"
-    log "先正常关闭 AutoTrans logger：${pid} ${command}"
+    log "先正常关闭 AutoTrans logger/原始点云录包：${pid} ${command}"
     if [[ "${DRY_RUN}" == false ]]; then
       kill -INT "${pid}" 2>/dev/null || true
     fi
-  done < <(matching_pids '(^|[[:space:]/])autotrans_mpc_logger\.py([[:space:]]|$)')
+  done < <(matching_pids '(^|[[:space:]/])autotrans_mpc_logger\.py([[:space:]]|$)|/rosbag/record[[:space:]].*__name:=lio_diagnostics_recorder([[:space:]]|$)')
 
   [[ "${DRY_RUN}" == false ]] || return 0
   ((${#logger_pids[@]} > 0)) || return 0
@@ -267,7 +267,7 @@ collect_protected_pids
 if [[ "${DRY_RUN}" == false ]]; then
   # Terminator 或 rosnode 全量退出都可能提前终止 logger，必须先单独让它完成
   # rosbag/CSV 收尾并启动脱离 ROS 进程组的 EVO。
-  shutdown_autotrans_loggers
+  shutdown_log_recorders
   close_uav0_terminator
 
   # ROS master 正常时先通知节点退出；最多等待 2 秒，绝不让停止脚本卡住。
@@ -277,7 +277,7 @@ if [[ "${DRY_RUN}" == false ]]; then
   fi
   collect_evo_reports
 else
-  shutdown_autotrans_loggers
+  shutdown_log_recorders
   collect_evo_reports
 fi
 

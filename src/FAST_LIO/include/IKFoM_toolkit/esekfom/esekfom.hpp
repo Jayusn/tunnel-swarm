@@ -102,6 +102,14 @@ struct dyn_runtime_share_datastruct
 	Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic> R;
 };
 
+// Optional observation of the existing update; never changes update decisions.
+struct UpdateDiagnostics {
+    unsigned iterations = 0, valid_iterations = 0;
+    bool final_measurement_valid = false;
+    bool last_increment_converged = false;
+    bool covariance_updated = false;
+};
+
 template<typename state, int process_noise_dof, typename input = state, typename measurement=state, int measurement_noise_dof=0>
 class esekf{
 
@@ -1616,8 +1624,9 @@ public:
 	}
 	
 	//iterated error state EKF update modified for one specific system.
-	void update_iterated_dyn_share_modified(double R, double &solve_time) {
+	void update_iterated_dyn_share_modified(double R, double &solve_time, UpdateDiagnostics *diagnostics = nullptr) {
 		
+        if (diagnostics) *diagnostics = UpdateDiagnostics{};
 		dyn_share_datastruct<scalar_type> dyn_share;
 		dyn_share.valid = true;
 		dyn_share.converge = true;
@@ -1634,6 +1643,11 @@ public:
 		{
 			dyn_share.valid = true;	
 			h_dyn_share(x_, dyn_share);
+            if (diagnostics) {
+                ++diagnostics->iterations;
+                diagnostics->final_measurement_valid = dyn_share.valid;
+                if (dyn_share.valid) ++diagnostics->valid_iterations;
+            }
 
 			if(! dyn_share.valid)
 			{
@@ -1824,6 +1838,7 @@ public:
 					break;
 				}
 			}
+            if (diagnostics) diagnostics->last_increment_converged = dyn_share.converge;
 			if(dyn_share.converge) t++;
 			
 			if(!t && i == maximum_iter - 2)
@@ -1924,6 +1939,7 @@ public:
 					P_ = L_ - K_x.template block<n, 12>(0, 0) * P_.template block<12, n>(0, 0);
 				//}
 				solve_time += omp_get_wtime() - solve_start;
+				if (diagnostics) diagnostics->covariance_updated = true;
 				return;
 			}
 			solve_time += omp_get_wtime() - solve_start;
