@@ -38,9 +38,7 @@ export UAV0_PLANNER_ROSBAG_EXTRA_TOPICS="${UAV0_PLANNER_ROSBAG_EXTRA_TOPICS:-/UA
 # 同时记录接力点快照、有效性状态和实飞参考路线；保留外部自定义的附加话题。
 export UAV0_PLANNER_ROSBAG_EXTRA_TOPICS="${UAV0_PLANNER_ROSBAG_EXTRA_TOPICS} /UAV0/mission/relay_waypoints /UAV0/mission/relay_status /UAV0/mission/reference_route"
 
-# 两个独立开关；只影响本航点入口。开启入口时，RViz点击先找门，近入口才交接航点。
-export UAV0_WAYPOINT_ENTRY_ENABLED="${UAV0_WAYPOINT_ENTRY_ENABLED:-true}"
-export UAV0_WAYPOINT_EXIT_ENABLED="${UAV0_WAYPOINT_EXIT_ENABLED:-true}"
+# 入口、出口开关直接修改 run_exp_single_fuel_waypoints.launch 顶部的 true/false。
 # 出口后复用现有Diff搜板降落，AutoTrans须启用已有FUEL/DIFF阶段仲裁。
 # 出口关闭时也可保持混合桥接：任务不进入降落阶段，控制权始终属于FUEL。
 export UAV0_AUTOTRANS_PURE_FUEL_MODE=false
