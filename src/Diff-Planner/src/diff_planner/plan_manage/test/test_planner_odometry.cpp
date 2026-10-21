@@ -467,6 +467,22 @@ TEST_F(PlannerEndpoint, OccupiedEmergencyKeepsFirstStopWhenPositionBecomesFree)
   EXPECT_EQ(published, 1);
 }
 
+TEST_F(PlannerEndpoint, TrackingRequestDoesNotBypassOccupiedGoalStop)
+{
+  publishPoint(goal + Eigen::Vector3d(0.10, 0.0, 0.0));
+  ASSERT_NE(planner.planner_manager_->grid_map_->getInflateOccupancy(goal), 0);
+  ASSERT_EQ(planner.planner_manager_->grid_map_->getInflateOccupancy(planner.odom_pos_), 0);
+  planner.tracking_replan_pending_ = true;
+  planner.tracking_request_.header.seq = 3;
+  planner.tracking_request_.header.stamp = ros::Time(999.9);
+  exec();
+  EXPECT_EQ(planner.exec_state_, FSM::EMERGENCY_STOP);
+  EXPECT_FALSE(planner.tracking_replan_pending_); // matched stop result was sent
+  EXPECT_TRUE(planner.need_hover_stop_);
+  exec();
+  EXPECT_EQ(planner.exec_state_, FSM::EMERGENCY_STOP); // no retry of the occupied goal
+}
+
 TEST_F(PlannerEndpoint, NonOccupiedEmergencyStillResumesCurrentTarget)
 {
   planner.exec_state_ = FSM::EMERGENCY_STOP;
@@ -1142,4 +1158,29 @@ int main(int argc, char **argv)
   ros::init(argc, argv, "test_planner_odometry");
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
+}
+
+TEST(TrackingRequest, IgnoreOldRequestAndRespectMandatoryStop) {
+  diff_planner::DiffReplanFSM planner;
+  planner.have_target_ = planner.have_trigger_ = true;
+  planner.mandatory_stop_ = false;
+  traj_utils::TrackingReplan::Ptr request(new traj_utils::TrackingReplan);
+  request->header.stamp = ros::Time(100);
+  request->header.seq = 1;
+  planner.trackingReplanCallback(request);
+  EXPECT_TRUE(planner.tracking_replan_pending_);
+  planner.tracking_replan_pending_ = false;
+  planner.trackingReplanCallback(request);
+  EXPECT_FALSE(planner.tracking_replan_pending_);
+  request->header.stamp = ros::Time(101);
+  request->header.seq = 2;
+  request->stop_current = true;
+  planner.trackingReplanCallback(request);
+  EXPECT_TRUE(planner.tracking_replan_pending_);
+  EXPECT_TRUE(planner.tracking_request_.stop_current);
+  planner.tracking_replan_pending_ = false;
+  planner.mandatory_stop_ = true;
+  request->header.stamp = ros::Time(102);
+  planner.trackingReplanCallback(request);
+  EXPECT_FALSE(planner.tracking_replan_pending_);
 }

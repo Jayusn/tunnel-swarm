@@ -453,3 +453,27 @@ TEST_F(WaypointYaw, ExistingExitLockStillHasPriority) {
   controller->setTrajectoyReference(trajectory, 7.9, 0.0, &end_yaw);
   for (int i = 0; i <= kSamples; ++i) EXPECT_NEAR(yaw(i), 0.4, 1e-5);
 }
+
+TEST_F(WaypointYaw, TrackingDeviationStopsWithoutWaitingForPlanner) {
+  auto info = trajectoryInfo();
+  prepareStop(info);
+  fsm->tracking_replan_enabled_ = true;
+  fsm->tracking_replan_pub_ = nh.advertise<traj_utils::TrackingReplan>("tracking_request_test", 10);
+  fsm->odom_data.p = Eigen::Vector3d(.3, .11, .6);
+  ros::Time::setNow(ros::Time(1002));
+  fsm->checkTrackingDeviation(ros::Time::now());
+  EXPECT_FALSE(fsm->trajectory_data.replan_pending);
+  ros::Time::setNow(ros::Time(1002.11));
+  fsm->checkTrackingDeviation(ros::Time::now());
+  EXPECT_TRUE(fsm->trajectory_data.replan_pending);
+  EXPECT_FALSE(fsm->trajectory_data.replan_stopped);
+  const auto soft = fsm->trajectory_data.replan_request;
+  fsm->odom_data.p.y() = .16;
+  ros::Time::setNow(ros::Time(1002.12));
+  fsm->checkTrackingDeviation(ros::Time::now());
+  EXPECT_TRUE(fsm->trajectory_data.replan_stopped);
+  EXPECT_TRUE(fsm->trajectory_data.traj_queue.empty());
+  EXPECT_GT(fsm->trajectory_data.replan_request.seq, soft.seq);
+  EXPECT_EQ(fsm->exec_traj_state_, MPCFSM::HOVER);
+  EXPECT_LT((fsm->hover_pose_ - fsm->odom_data.p).norm(), 1e-9);
+}

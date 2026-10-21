@@ -167,6 +167,8 @@
         <remap from="~planning/broadcast_traj_recv" to = "/broadcast_traj_to_planner"/>
         <remap from="~planning/heartbeat" to="$(arg planner_heartbeat_topic)"/>
         <!-- 2026-07-28: 暴露每架Diff规划结果，供接力管理器在失败时切换到安全短子目标。 -->
+        <remap from="~planning/tracking_replan" to="/drone_$(arg drone_id)_planning/tracking_replan"/>
+        <remap from="~planning/tracking_result" to="/drone_$(arg drone_id)_planning/tracking_result"/>
         <remap from="~planning/status" to = "/drone_$(arg drone_id)_planning/status"/>
         <remap from="~grid_map/odom" to="$(arg odom_topic)"/>
         <remap from="~grid_map/cloud" to="$(arg cloud_topic)"/>

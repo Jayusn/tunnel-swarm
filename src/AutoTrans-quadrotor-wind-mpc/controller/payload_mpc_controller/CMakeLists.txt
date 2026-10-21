@@ -29,6 +29,7 @@ find_package(catkin REQUIRED COMPONENTS
   mavros_msgs
   rosgraph_msgs
   quadrotor_msgs
+  traj_utils
   uav_utils
 
 )
@@ -124,6 +125,8 @@ target_link_libraries(mpc_controller_node
   ${catkin_LIBRARIES}
 )
 
+add_dependencies(mpc_controller_node ${catkin_EXPORTED_TARGETS})
+
 get_target_property(force_estimator_includes mpc_controller_node INCLUDE_DIRECTORIES)
 add_executable(force_estimator_replay src/force_estimator_replay.cpp)
 # ROS Noetic / Boost 1.71 rosbag headers require the pre-C++20 allocator API.
@@ -144,10 +147,11 @@ if(CATKIN_ENABLE_TESTING)
   get_target_property(locked_yaw_test_sources mpc_controller_node SOURCES)
   list(REMOVE_ITEM locked_yaw_test_sources src/mpc_controller_node.cpp)
   add_rostest_gtest(test_locked_exit_yaw test/locked_exit_yaw.test
-    test/test_locked_exit_yaw.cpp test/test_waypoint_yaw.cpp test/test_force_controller_integration.cpp ${locked_yaw_test_sources})
+    test/test_locked_exit_yaw.cpp test/test_tracking_replan.cpp test/test_waypoint_yaw.cpp test/test_force_controller_integration.cpp ${locked_yaw_test_sources})
   if(TARGET test_locked_exit_yaw)
     get_target_property(locked_yaw_test_includes mpc_controller_node INCLUDE_DIRECTORIES)
     target_include_directories(test_locked_exit_yaw PRIVATE ${locked_yaw_test_includes})
+    add_dependencies(test_locked_exit_yaw ${catkin_EXPORTED_TARGETS})
     target_link_libraries(test_locked_exit_yaw ${catkin_LIBRARIES})
   endif()
   foreach(force_test force_observer_input_synchronizer disturbance_slew_limiter vertical_disturbance_low_pass)

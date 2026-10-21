@@ -35,6 +35,22 @@ namespace PayloadMPC
 																							  controller_(controller),
 																							  odom_spike_guard_(makeOdomSpikeGuardConfig(params))
 	{
+        nh_.param("tracking_replan/enabled", tracking_replan_enabled_, false);
+        nh_.param("tracking_replan/error", tracking_replan_error_, 0.10);
+        nh_.param("tracking_replan/stop_error", tracking_stop_error_, 0.15);
+        if (!std::isfinite(tracking_replan_error_) || tracking_replan_error_ <= 0.0 ||
+            !std::isfinite(tracking_stop_error_) || tracking_stop_error_ <= tracking_replan_error_)
+            throw std::invalid_argument("tracking_replan: require 0 < error < stop_error");
+        if (tracking_replan_enabled_) {
+            std::string request_topic, result_topic;
+            nh_.param<std::string>("tracking_replan/request_topic", request_topic,
+                                  "/drone_1_planning/tracking_replan");
+            nh_.param<std::string>("tracking_replan/result_topic", result_topic,
+                                  "/drone_1_planning/tracking_result");
+            tracking_replan_pub_ = nh_.advertise<traj_utils::TrackingReplan>(request_topic, 10);
+            tracking_result_sub_ = nh_.subscribe<traj_utils::TrackingReplanResult>(result_topic, 10,
+                &Trajectory_Data_t::feedTrackingResult, &trajectory_data, ros::TransportHints().tcpNoDelay());
+        }
         std::string locked_yaw_topic;
         nh_.param<std::string>("locked_yaw_topic", locked_yaw_topic, "");
         if (!locked_yaw_topic.empty())
@@ -926,9 +942,49 @@ namespace PayloadMPC
 
 
 	*/
+    void MPCFSM::checkTrackingDeviation(const ros::Time& now)
+    {
+        if (!tracking_replan_enabled_ || safety_hold_active_ || precision_landing_active_ ||
+            trajectory_data.exec_traj != 1 || trajectory_data.traj_queue.empty()) {
+            tracking_error_since_ = -1.0;
+            return;
+        }
+        const auto& current = trajectory_data.traj_queue.front();
+        const double t = (now - current.traj_start_time).toSec();
+        if (t < 0.0 || t > current.traj.getTotalDuration()) return;
+        const double distance = localPathDistance(current.traj, t, odom_data.p);
+        const double timed_error = (current.traj.getPos(t) - odom_data.p).norm();
+        if (!std::isfinite(distance) || !std::isfinite(timed_error)) return;
+        const bool stop = distance > tracking_stop_error_;
+        // On-route lag retimes from measured state, without classifying it as
+        // lateral deviation or invoking the hard stop.
+        const bool needs_replan = distance > tracking_replan_error_ ||
+                                 timed_error > tracking_stop_error_;
+        if (!needs_replan) { tracking_error_since_ = -1.0; return; }
+        if (tracking_error_since_ < 0.0) tracking_error_since_ = now.toSec();
+        if (!stop && (now.toSec() - tracking_error_since_ < 0.10 || trajectory_data.replan_pending)) return;
+        if (stop && trajectory_data.replan_stopped) return;
+        const int old_id = trajectory_data.last_trajectory_id;
+        trajectory_data.beginTrackingReplan(now, stop);
+        if (stop) {
+            update_hover_pose();
+            exec_traj_state_ = HOVER;
+        }
+        traj_utils::TrackingReplan request;
+        request.header = trajectory_data.replan_request;
+        request.trajectory_id = old_id;
+        request.stop_current = stop;
+        request.path_error = distance;
+        tracking_replan_pub_.publish(request);
+        ROS_WARN("[跟踪重规划] request=%u, stop=%d, path_error=%.3f, timed_error=%.3f, old_id=%d。",
+            request.header.seq, stop, distance, timed_error, old_id);
+        tracking_error_since_ = -1.0;
+    }
+
 	void MPCFSM::CMD_CTRL_process()
 	{
 		ros::Time now_time = ros::Time::now();
+        checkTrackingDeviation(now_time);
 		if (safety_hold_active_)
 		{
 			if (!safety_hold_pose_valid_ && !odom_data.rcv_stamp.isZero())
@@ -987,7 +1043,7 @@ namespace PayloadMPC
 
 			if (should_stop)
 			{
-				if (params_.use_trajectory_ending_pos_ && normal_end &&
+				if (params_.use_trajectory_ending_pos_ && normal_end && !trajectory_data.replan_pending &&
 					trajectory_data.last_end_position_valid)
 				{
 					// 只有完整轨迹正常结束时才使用缓存的轨迹终点；中止、空队列和异常均停在当前位置。

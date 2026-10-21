@@ -27,6 +27,8 @@
 #include <plan_manage/planner_manager.h>
 #include <traj_utils/planning_visualization.h>
 #include <traj_utils/PolyTraj.h>
+#include <traj_utils/TrackingReplan.h>
+#include <traj_utils/TrackingReplanResult.h>
 #include <traj_utils/MINCOTraj.h>
 #include <plan_manage/swing_obstacle_guard.h>
 
@@ -182,6 +184,13 @@ namespace diff_planner
     ros::Subscriber waypoint_sub_, odom_sub_, trigger_sub_, subgoal_sub_, broadcast_ploytraj_sub_, mandatory_stop_sub_, planning_restart_sub_, swing_obstacle_sub_, fapp_obstacle_sub_;
     ros::Subscriber entry_waypoint_sub_;
     ros::Publisher poly_traj_pub_, data_disp_pub_, broadcast_ploytraj_pub_, heartbeat_pub_, ground_height_pub_;
+    ros::Subscriber tracking_replan_sub_;
+    ros::Publisher tracking_result_pub_;
+    traj_utils::TrackingReplan tracking_request_;
+    bool tracking_replan_pending_{false};
+    double tracking_retry_after_{0.0};
+    void trackingReplanCallback(const traj_utils::TrackingReplan::ConstPtr& request);
+    void publishTrackingResult(const traj_utils::PolyTraj& trajectory);
     ros::Publisher planning_status_pub_;  // 2026-07-28: 向接力管理器反馈Diff规划成功/连续失败。
     SwingObstacleGuard swing_obstacle_guard_;
 

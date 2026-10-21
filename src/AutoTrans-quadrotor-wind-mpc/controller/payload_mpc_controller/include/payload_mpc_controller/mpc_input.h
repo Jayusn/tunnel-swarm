@@ -1,3 +1,4 @@
+#include <traj_utils/TrackingReplanResult.h>
 #ifndef __INPUT_H
 #define __INPUT_H
 
@@ -179,6 +180,13 @@ public:
   bool trajectory_acceptance_enabled{true};
   ros::Time accept_trajectory_after{0};
 
+  // While a request is pending, ordinary (untagged) trajectory deliveries
+  // cannot release a stop or replace the trajectory being assessed.
+  std_msgs::Header replan_request;
+  bool replan_pending{false};
+  bool replan_stopped{false};
+  void beginTrackingReplan(const ros::Time& stamp, bool stop);
+  void feedTrackingResult(const traj_utils::TrackingReplanResult::ConstPtr& result);
   Trajectory_Data_t();
   void adjust_end_time()
   {

@@ -22,6 +22,8 @@ add_message_files(
   DataDisp.msg
   PolyTraj.msg
   MINCOTraj.msg
+  TrackingReplan.msg
+  TrackingReplanResult.msg
   )
   
 # Generate added messages and services with any dependencies listed here

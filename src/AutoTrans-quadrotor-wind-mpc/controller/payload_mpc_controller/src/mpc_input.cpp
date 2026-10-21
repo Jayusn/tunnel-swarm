@@ -264,6 +264,7 @@ Trajectory_Data_t::Trajectory_Data_t()
 
 void Trajectory_Data_t::blockTrajectoryAcceptance()
 {
+    replan_pending = replan_stopped = false;
     trajectory_acceptance_enabled = false;
     total_traj_start_time = ros::Time(0);
     total_traj_end_time = ros::Time(0);
@@ -279,8 +280,66 @@ void Trajectory_Data_t::allowTrajectoryAcceptanceAfter(const ros::Time &stamp)
     traj_queue.clear();
     exec_traj = 0;
     last_end_position_valid = false;
-    accept_trajectory_after = stamp;
+    replan_pending = replan_stopped = false;
+    accept_trajectory_after = std::max(accept_trajectory_after, stamp);
     trajectory_acceptance_enabled = true;
+}
+
+void Trajectory_Data_t::beginTrackingReplan(const ros::Time& stamp, bool stop)
+{
+    ++replan_request.seq;
+    replan_request.stamp = stamp;
+    replan_pending = true;
+    replan_stopped = stop;
+    if (!stop && traj_queue.size() > 1) {
+        traj_queue.erase(traj_queue.begin() + 1, traj_queue.end());
+        total_traj_end_time = traj_queue.front().traj_end_time;
+    }
+    if (stop) {
+        traj_queue.clear();
+        total_traj_start_time = total_traj_end_time = ros::Time(0);
+        last_end_position_valid = false;
+        exec_traj = -1;
+    }
+}
+
+void Trajectory_Data_t::feedTrackingResult(
+    const traj_utils::TrackingReplanResult::ConstPtr& result)
+{
+    if (!replan_pending || result->header.seq != replan_request.seq ||
+        result->header.stamp != replan_request.stamp) return;
+    const auto& input = result->trajectory;
+    const size_t n = static_cast<size_t>(input.order) + 1;
+    if (input.traj_id < 1 || input.order > 20 || input.duration.empty() ||
+        input.start_time <= replan_request.stamp ||
+        input.coef_x.size() != input.duration.size() * n ||
+        input.coef_y.size() != input.coef_x.size() ||
+        input.coef_z.size() != input.coef_x.size()) return;
+    quadrotor_msgs::PolynomialTraj::Ptr converted(new quadrotor_msgs::PolynomialTraj);
+    converted->header.stamp = input.start_time;
+    converted->trajectory_id = input.traj_id;
+    converted->action = quadrotor_msgs::PolynomialTraj::ACTION_ADD;
+    for (size_t i = 0; i < input.duration.size(); ++i) {
+        quadrotor_msgs::PolynomialMatrix piece;
+        piece.num_order = input.order;
+        piece.num_dim = 3;
+        piece.duration = input.duration[i];
+        for (size_t j = 0; j < n; ++j) {
+            piece.data.push_back(input.coef_x[i*n+j]);
+            piece.data.push_back(input.coef_y[i*n+j]);
+            piece.data.push_back(input.coef_z[i*n+j]);
+        }
+        converted->trajectory.push_back(piece);
+    }
+    replan_pending = false;
+    feed(converted);  // Same validation and replacement path as ordinary input.
+    if (last_trajectory_stamp != input.start_time) {
+        replan_pending = true;
+        return;
+    }
+    replan_stopped = false;
+    ROS_WARN("[跟踪重规划] 已接替旧轨迹：request=%u, trajectory=%d。",
+             result->header.seq, input.traj_id);
 }
 
 void Trajectory_Data_t::feed(quadrotor_msgs::PolynomialTrajConstPtr pMsg)
@@ -290,6 +349,7 @@ void Trajectory_Data_t::feed(quadrotor_msgs::PolynomialTrajConstPtr pMsg)
     const quadrotor_msgs::PolynomialTraj &traj = *pMsg;
     if (traj.action == quadrotor_msgs::PolynomialTraj::ACTION_ADD)
     {
+        if (replan_pending) return;
         const ros::Time now = ros::Time::now();
         if (!trajectory_acceptance_enabled)
         {
@@ -405,6 +465,8 @@ void Trajectory_Data_t::feed(quadrotor_msgs::PolynomialTrajConstPtr pMsg)
     }
     else if (traj.action == quadrotor_msgs::PolynomialTraj::ACTION_ABORT)
     {
+        replan_pending = replan_stopped = false;
+        accept_trajectory_after = std::max(accept_trajectory_after, ros::Time::now());
         ROS_WARN("[轨迹] 收到中止指令，清空当前轨迹并保持悬停。");
         total_traj_start_time = ros::Time(0);
         total_traj_end_time = ros::Time(0);
@@ -414,6 +476,8 @@ void Trajectory_Data_t::feed(quadrotor_msgs::PolynomialTrajConstPtr pMsg)
     }
     else if (traj.action == quadrotor_msgs::PolynomialTraj::ACTION_WARN_IMPOSSIBLE)
     {
+        replan_pending = replan_stopped = false;
+        accept_trajectory_after = std::max(accept_trajectory_after, ros::Time::now());
         total_traj_start_time = ros::Time(0);
         total_traj_end_time = ros::Time(0);
         traj_queue.clear();

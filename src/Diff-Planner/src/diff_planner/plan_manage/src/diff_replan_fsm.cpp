@@ -208,6 +208,9 @@ namespace diff_planner
                                                                   this,
                                                                   ros::TransportHints().tcpNoDelay());
 
+    tracking_replan_sub_ = nh.subscribe("planning/tracking_replan", 10,
+        &DiffReplanFSM::trackingReplanCallback, this, ros::TransportHints().tcpNoDelay());
+    tracking_result_pub_ = nh.advertise<traj_utils::TrackingReplanResult>("planning/tracking_result", 10);
     poly_traj_pub_ = nh.advertise<traj_utils::PolyTraj>("planning/trajectory", 10);
     data_disp_pub_ = nh.advertise<traj_utils::DataDisp>("planning/data_display", 100);
     heartbeat_pub_ = nh.advertise<std_msgs::Empty>("planning/heartbeat", 10);
@@ -251,6 +254,29 @@ namespace diff_planner
       cout << "Wrong target_type_ value! target_type_=" << target_type_ << endl;
   }
 
+  void DiffReplanFSM::trackingReplanCallback(const traj_utils::TrackingReplan::ConstPtr& request)
+  {
+    if (request->header.stamp.isZero() ||
+        request->header.stamp <= tracking_request_.header.stamp ||
+        !have_target_ || !have_trigger_ || mandatory_stop_) return;
+    tracking_request_ = *request;
+    tracking_replan_pending_ = true;
+    tracking_retry_after_ = 0.0;
+    periodic_replan_pending_ = false;
+    ROS_WARN("[跟踪重规划] 收到控制器 request=%u, stop=%d；从最新里程计重算。",
+             request->header.seq, request->stop_current);
+  }
+
+  void DiffReplanFSM::publishTrackingResult(const traj_utils::PolyTraj& trajectory)
+  {
+    if (!tracking_replan_pending_) return;
+    traj_utils::TrackingReplanResult result;
+    result.header = tracking_request_.header;
+    result.trajectory = trajectory;
+    tracking_result_pub_.publish(result);
+    tracking_replan_pending_ = false;
+  }
+
   void DiffReplanFSM::execFSMCallback(const ros::TimerEvent &e)
   {
     exec_timer_.stop(); // To avoid blockage
@@ -292,12 +318,39 @@ namespace diff_planner
       }
     }
 
+    if (tracking_replan_pending_ && have_target_ && normal_planning_state &&
+        exec_state_ != EMERGENCY_STOP &&
+        planner_manager_->grid_map_->getInflateOccupancy(final_goal_) != 0)
+    {
+      need_hover_stop_ = true;
+      flag_escape_emergency_ = true;
+      changeFSMExecState(EMERGENCY_STOP, "TRACKING_TARGET_OCCUPIED");
+    }
+
     static int fsm_num = 0;
     fsm_num++;
     if (fsm_num == 500)
     {
       fsm_num = 0;
       printFSMExecState();
+    }
+
+    if (tracking_replan_pending_ && have_target_ && have_trigger_ && !mandatory_stop_ &&
+        (exec_state_ == EXEC_TRAJ || exec_state_ == REPLAN_TRAJ || exec_state_ == GEN_NEW_TRAJ))
+    {
+      if (now_sec >= tracking_retry_after_)
+      {
+        tracking_retry_after_ = now_sec + std::max(0.1, replan_thresh_);
+        // Occupied goals must not be retried as if they were executable.
+        if (planner_manager_->grid_map_->getInflateOccupancy(final_goal_) == 0 &&
+            planFromGlobalTraj(1)) {
+          periodic_replan_pending_ = false;
+          changeFSMExecState(EXEC_TRAJ, "CONTROLLER_TRACKING_REPLAN");
+        }
+      }
+      finishProcess();
+      exec_timer_.start();
+      return;
     }
 
     switch (exec_state_)
@@ -714,6 +767,8 @@ namespace diff_planner
           // 2026-07-07: 对非 mandatory stop 的中途急停优先尝试自动恢复规划，避免录像里那种停住后直接丢失当前任务。
           if (have_target_ && have_trigger_ && !mandatory_stop_)
           {
+            if (planner_manager_->grid_map_->getInflateOccupancy(final_goal_) != 0)
+              break; // Keep stopped while the same goal is still occupied.
             ROS_INFO("Exiting EMERGENCY_STOP. Resume current target with GEN_NEW_TRAJ.");
             need_hover_stop_ = false;
             last_target_change_time_ = ros::Time::now().toSec();
@@ -1281,6 +1336,7 @@ namespace diff_planner
     traj_utils::MINCOTraj MINCO_msg;
     polyTraj2ROSMsg(poly_msg, MINCO_msg);
     poly_traj_pub_.publish(poly_msg);
+    publishTrackingResult(poly_msg);
     broadcast_ploytraj_pub_.publish(MINCO_msg);
     return true;
   }
@@ -1603,6 +1659,7 @@ namespace diff_planner
     traj_utils::MINCOTraj minco_msg;
     polyTraj2ROSMsg(poly_msg, minco_msg);
     poly_traj_pub_.publish(poly_msg);
+    publishTrackingResult(poly_msg);
     // MINCO只包含端点PVA和中间位置，接收端会重新求解，无法表达拐点停转。
     // 异构接力由完整PolyTraj驱动；不能把多段退让广播成一条重新切角的MINCO。
     if (history_path.empty() || planner_manager_->traj_.local_traj.traj.getPieceNum() == 1)
@@ -1726,6 +1783,7 @@ namespace diff_planner
       traj_utils::MINCOTraj MINCO_msg;
       polyTraj2ROSMsg(poly_msg, MINCO_msg);
       poly_traj_pub_.publish(poly_msg);
+      publishTrackingResult(poly_msg);
       broadcast_ploytraj_pub_.publish(MINCO_msg);
     }
 
@@ -1792,7 +1850,8 @@ namespace diff_planner
     const double tracking_error = prediction_finite
                                       ? (predicted_pos - odom_pos_).norm()
                                       : std::numeric_limits<double>::infinity();
-    const bool replan_from_odom = !trajectory_time_valid || !prediction_finite ||
+    const bool replan_from_odom = tracking_replan_pending_ ||
+                                  !trajectory_time_valid || !prediction_finite ||
                                   !std::isfinite(tracking_error) ||
                                   tracking_error > max_tracking_error_;
 
