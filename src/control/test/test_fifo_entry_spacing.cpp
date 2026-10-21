@@ -41,9 +41,8 @@ class FifoEntrySpacing : public ::testing::Test {
   void SetUp() override {
     follower.reset(new LeaderSafePathFollower);
     follower->timer_.stop();
-    ASSERT_DOUBLE_EQ(follower->ordinary_waypoint_dwell_, 2.0);
-    // 既有回归用例隔离计时；下方驻留用例单独验证生产默认的2秒等待。
-    follower->ordinary_waypoint_dwell_ = 0.0;
+    ASSERT_DOUBLE_EQ(follower->ordinary_waypoint_dwell_, 0.0);
+    // 默认到达即放行；下方驻留用例仅验证显式启用等待的配置。
     ASSERT_DOUBLE_EQ(follower->min_separation_, 1.0);
     ASSERT_DOUBLE_EQ(follower->separation_release_distance_, 1.0);
     follower->simple_segment_endpoint_following_ = true;

@@ -346,7 +346,7 @@ class LeaderSafePathFollower {
     pnh_.param("relay_arrive_radius", relay_arrive_radius_, 0.25);
     pnh_.param("relay_arrive_z_tolerance", relay_arrive_z_tolerance_, 0.20);
     pnh_.param("ordinary_waypoint_z_tolerance", ordinary_waypoint_z_tolerance_, 0.15);
-    pnh_.param("ordinary_waypoint_dwell", ordinary_waypoint_dwell_, 2.0);
+    pnh_.param("ordinary_waypoint_dwell", ordinary_waypoint_dwell_, 0.0);
     // 最终降落点保留停驻净空；普通接力点另用小体素检查，不能让侧墙否决狭窄通道。
     pnh_.param("relay_endpoint_clearance_radius", relay_endpoint_clearance_radius_, 0.38);
     pnh_.param("relay_endpoint_z_margin", relay_endpoint_z_margin_, 0.28);
@@ -2323,7 +2323,7 @@ class LeaderSafePathFollower {
         follower_horizontal_speed_ <= relay_arrive_max_horizontal_speed_ &&
         follower_vertical_speed_ <= relay_arrive_max_vertical_speed_;
     if (waypoint_arrival || ordinary_dwell_started || terminal_arrival || skip_occupied_point) {
-      // 普通点首次达到容差后等待2秒；偏出容差不重计时。
+      // 显式配置驻留时，从普通点首次达到容差开始计时；偏出容差不重计时。
       // 期间保留完整终点和航向参考继续收敛。
       // 入口、出口、门外等待及最终降落保留各自原有到达规则。
       if (ordinary_relay && !skip_occupied_point && ordinary_waypoint_dwell_ > 0.0) {
@@ -4602,7 +4602,7 @@ class LeaderSafePathFollower {
   double relay_waypoint_spacing_{2.50};
   double relay_arrive_radius_{0.25}, relay_arrive_z_tolerance_{0.20};
   double ordinary_waypoint_z_tolerance_{0.15};
-  double ordinary_waypoint_dwell_{2.0};
+  double ordinary_waypoint_dwell_{0.0};
   // 终点仍使用较大停驻净空；普通接力点只查落点小体素并允许安全附件到达。
   double relay_endpoint_clearance_radius_{0.38}, relay_endpoint_z_margin_{0.28};
   double relay_point_occupied_radius_{0.12}, relay_point_occupied_z_margin_{0.18};

@@ -238,9 +238,9 @@
         <!-- 40cm为接近邻域；普通点实际放行还需满足下方15cm水平捕获和20度航向容差。 -->
         <param name="relay_arrive_radius" value="0.40"/>
         <param name="relay_arrive_z_tolerance" value="0.20"/>
-        <!-- 普通点首次满足位置和航向容差后等待2秒；偏出容差不重计时，继续向原终点收敛。 -->
+        <!-- 普通点满足位置和航向容差即放行，不再额外等待。 -->
         <param name="ordinary_waypoint_z_tolerance" value="0.15"/>
-        <param name="ordinary_waypoint_dwell" value="2.0"/>
+        <param name="ordinary_waypoint_dwell" value="0.0"/>
         <!-- 较大圆柱净空仅用于最终降落点；普通接力点只检查精确落点小体素。 -->
         <param name="relay_endpoint_clearance_radius" value="0.38"/>
         <param name="relay_endpoint_z_margin" value="0.28"/>

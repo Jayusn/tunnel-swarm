@@ -239,21 +239,36 @@ protected:
   int published{0}, initial_id{0};
 };
 
-TEST_F(PlannerEndpoint, CollisionTimerFinishesOldGoalBeforeReplanning)
+TEST_F(PlannerEndpoint, CollisionTimerChecksOccupiedEndpointBeforeCompletion)
 {
-  // A map update occupies the old endpoint, but the measured vehicle remains
-  // free and within 8 cm. Previously the safety timer generated a return trip.
+  // 即使当前位置自由且已在到达容差内，也不能跳过终点占据处理。
+  planner.mondify_final_goal_ = false;
   publishPoint(goal + Eigen::Vector3d(0.10, 0.0, 0.0));
   ASSERT_NE(planner.planner_manager_->grid_map_->getInflateOccupancy(goal), 0);
   ASSERT_EQ(planner.planner_manager_->grid_map_->getInflateOccupancy(planner.odom_pos_), 0);
   planner.checkCollisionCallback(ros::TimerEvent());
-  EXPECT_EQ(planner.exec_state_, FSM::WAIT_TARGET);
-  EXPECT_FALSE(planner.have_target_);
-  for (int i = 0; i < 5; ++i) {
-    exec();
-    planner.checkCollisionCallback(ros::TimerEvent());
-  }
+  EXPECT_EQ(planner.exec_state_, FSM::EMERGENCY_STOP);
+  EXPECT_TRUE(planner.have_target_);
   expectNoReplacement();
+}
+
+TEST_F(PlannerEndpoint, ExpiredEndpointChecksOccupiedGoalInBothPlanningStates)
+{
+  planner.mondify_final_goal_ = false;
+  publishPoint(goal + Eigen::Vector3d(0.10, 0.0, 0.0));
+  ASSERT_NE(planner.planner_manager_->grid_map_->getInflateOccupancy(goal), 0);
+  for (const auto state : {FSM::EXEC_TRAJ, FSM::REPLAN_TRAJ}) {
+    for (const double error : {0.08, 0.18}) {
+      planner.odom_pos_ = goal - Eigen::Vector3d(error, 0.0, 0.0);
+      ASSERT_EQ(planner.planner_manager_->grid_map_->getInflateOccupancy(planner.odom_pos_), 0);
+      planner.exec_state_ = state;
+      exec();
+      EXPECT_EQ(planner.exec_state_, FSM::EMERGENCY_STOP);
+      EXPECT_TRUE(planner.have_target_);
+      EXPECT_TRUE(planner.need_hover_stop_);
+      expectNoReplacement();
+    }
+  }
 }
 
 TEST_F(PlannerEndpoint, EntryGoalUsesTwoPiecesAndNormalGoalRestoresDefault)
@@ -336,6 +351,34 @@ TEST_F(PlannerEndpoint, ExpirationWaitsForSmallRemainingErrorToConverge)
   planner.odom_pos_ = goal - Eigen::Vector3d(0.08, 0.0, 0.0);
   planner.checkCollisionCallback(ros::TimerEvent());
   EXPECT_EQ(planner.exec_state_, FSM::WAIT_TARGET);
+  expectNoReplacement();
+}
+
+TEST_F(PlannerEndpoint, EndpointConvergenceStillDetectsStuckAfterGrace)
+{
+  planner.odom_pos_ = goal - Eigen::Vector3d(0.18, 0.0, 0.0);
+  planner.enable_stuck_detect_ = true;
+  planner.stuck_detect_ignore_until_ = 999.0;
+  exec(); // Initialize the existing progress baseline while holding the endpoint.
+  ASSERT_EQ(planner.exec_state_, FSM::EXEC_TRAJ);
+  planner.last_target_change_time_ = 1000.0 - planner.TARGET_STUCK_TIME - 1.0;
+  exec();
+  EXPECT_EQ(planner.exec_state_, FSM::EMERGENCY_STOP);
+  EXPECT_TRUE(planner.need_hover_stop_);
+  EXPECT_TRUE(planner.have_target_);
+  expectNoReplacement();
+}
+
+TEST_F(PlannerEndpoint, EndpointConvergenceKeepsExistingStuckGrace)
+{
+  planner.odom_pos_ = goal - Eigen::Vector3d(0.18, 0.0, 0.0);
+  planner.enable_stuck_detect_ = true;
+  planner.stuck_detect_ignore_until_ = 1001.0;
+  planner.last_target_change_time_ = 1000.0 - planner.TARGET_STUCK_TIME - 1.0;
+  for (int i = 0; i < 3; ++i)
+    exec();
+  EXPECT_EQ(planner.exec_state_, FSM::EXEC_TRAJ);
+  EXPECT_TRUE(planner.have_target_);
   expectNoReplacement();
 }
 

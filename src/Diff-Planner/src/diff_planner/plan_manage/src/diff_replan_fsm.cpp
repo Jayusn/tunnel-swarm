@@ -444,7 +444,8 @@ namespace diff_planner
 
     case EXEC_TRAJ:
     {
-      if (handleManualTrajectoryEnd(now_sec))
+      const bool holding_manual_endpoint = handleManualTrajectoryEnd(now_sec);
+      if (holding_manual_endpoint && exec_state_ != EXEC_TRAJ)
         break;
       /* determine if need to replan */
       LocalTrajData *info = &planner_manager_->traj_.local_traj;
@@ -497,7 +498,7 @@ namespace diff_planner
         /* The navigation task completed */
         changeFSMExecState(WAIT_TARGET, "FSM");
       }
-      else if (enable_periodic_replan_ && t_cur > replan_thresh_ &&
+      else if (!holding_manual_endpoint && enable_periodic_replan_ && t_cur > replan_thresh_ &&
                now_sec - last_periodic_replan_attempt_time_ > replan_thresh_)
       {
         periodic_replan_pending_ = true;
@@ -900,6 +901,27 @@ namespace diff_planner
     if (!std::isfinite(error) || error > max_tracking_error_)
       return false; // A real tracking deviation still needs replanning.
 
+    // 终点收敛也执行原有目标占据处理，不能先判完成或直接跳过检查。
+    // 三个调用入口（执行、重规划、碰撞定时器）沿用同一处理。
+    if (planner_manager_->grid_map_->getInflateOccupancy(final_goal_))
+    {
+      if (!mondify_final_goal_)
+      {
+        ROS_WARN("Final goal in obstacle, unsafe. Emergency stop.");
+        need_hover_stop_ = true;
+        flag_escape_emergency_ = true;
+        changeFSMExecState(EMERGENCY_STOP, "STUCK_DETECT");
+        return true;
+      }
+      if (mondifyInCollisionFinalGoal())
+      {
+        ROS_WARN("Successfully modified final_goal at trajectory end !!!");
+        changeFSMExecState(REPLAN_TRAJ, "mondify_FSM");
+        return true;
+      }
+      return false;
+    }
+
     periodic_replan_pending_ = false;
     replan_fail_count_ = 0;
     if (error <= no_replan_thresh_)
@@ -915,7 +937,7 @@ namespace diff_planner
       changeFSMExecState(EXEC_TRAJ, "ENDPOINT_CONVERGING");
 
     // Expiration alone is not a tracking fault. Keep the controller's terminal
-    // reference while it converges; do not generate another trip to this goal.
+    // reference while it converges; skip periodic replanning, not stuck checks.
     return true;
   }
 
