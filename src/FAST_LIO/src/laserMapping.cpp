@@ -34,6 +34,7 @@
 // POSSIBILITY OF SUCH DAMAGE.
 #include <omp.h>
 #include "performance_trace.h"
+#include <fast_lio/StateDiagnostics.h>
 #include <algorithm>
 #include <atomic>
 #include <mutex>
@@ -92,6 +93,7 @@ string map_file_path, lid_topic, imu_topic;
 // 2026-07-13: 将 FAST-LIO 输出话题和 TF 帧参数化，为 iris_0 显式命名空间及后续 iris_1 并行实例隔离全局资源。
 string cloud_registered_topic, cloud_registered_body_topic, cloud_effected_topic, laser_map_topic;
 string odometry_topic, path_topic, high_freq_odom_topic, imu_mps2_topic, world_frame, body_frame;
+string state_diagnostics_topic;
 
 double res_mean_last = 0.05, total_residual = 0.0;
 double last_timestamp_lidar = 0, last_timestamp_imu = -1.0;
@@ -987,6 +989,7 @@ int main(int argc, char** argv)
     nh.param<bool>("publish/odometry_enable", odometry_pub_en, true);
     nh.param<string>("publish/path_topic", path_topic, "/path");
     nh.param<string>("publish/high_freq_odom_topic", high_freq_odom_topic, "/Odom_high_freq");
+    nh.param<string>("publish/state_diagnostics_topic", state_diagnostics_topic, "/fast_lio/state_diagnostics");
     nh.param<string>("publish/imu_mps2_topic", imu_mps2_topic, "/livox/imu_mps2");
     nh.param<string>("publish/world_frame", world_frame, "camera_init");
     nh.param<string>("publish/body_frame", body_frame, "body");
@@ -1099,6 +1102,8 @@ int main(int argc, char** argv)
             (high_freq_odom_topic, 10000);
     // 单位转换后的 MID360 IMU，仅供需要 m/s^2 的下游节点使用；不替换 FAST-LIO 原始 IMU 输入。
     imu_mps2_pub = nh.advertise<sensor_msgs::Imu>(imu_mps2_topic, 10000);
+    ros::Publisher state_diagnostics_pub = nh.advertise<fast_lio::StateDiagnostics>
+            (state_diagnostics_topic, 10);
     imu_spinner.start();
 //------------------------------------------------------------------------------------------------------
     signal(SIGINT, SigHandle);
@@ -1216,6 +1221,23 @@ int main(int argc, char** argv)
             /*** iterated state estimation ***/
             double t_update_start = omp_get_wtime();
             double solve_H_time = 0;
+            // Only snapshot scalars when a recorder/subscriber is connected.
+            // Both snapshots are at lidar_end_time; do not use extrapolated IMU state.
+            const bool record_state = state_diagnostics_pub.getNumSubscribers() > 0;
+            fast_lio::StateDiagnostics diagnostics;
+            if (record_state)
+            {
+                diagnostics.header.stamp = ros::Time().fromSec(lidar_end_time);
+                diagnostics.header.frame_id = world_frame;
+                const auto before = kf.get_x();
+                for (int i = 0; i < 3; ++i)
+                {
+                    diagnostics.position_before[i] = before.pos[i];
+                    diagnostics.velocity_before[i] = before.vel[i];
+                    diagnostics.accel_bias_before[i] = before.ba[i];
+                    diagnostics.gravity_before[i] = before.grav[i];
+                }
+            }
             kf.update_iterated_dyn_share_modified(LASER_POINT_COV, solve_H_time);
             state_point = kf.get_x();
             euler_cur = SO3ToEuler(state_point.rot);
@@ -1230,6 +1252,19 @@ int main(int argc, char** argv)
 
             // 每次点云 EKF 校正完成后刷新 IMU 前向预测初值；普通校正里程计仍按原逻辑发布。
             updateLatestStates();
+
+            // Publish after prediction handoff, without holding the IMU buffer lock.
+            if (record_state)
+            {
+                for (int i = 0; i < 3; ++i)
+                {
+                    diagnostics.position_after[i] = state_point.pos[i];
+                    diagnostics.velocity_after[i] = state_point.vel[i];
+                    diagnostics.accel_bias_after[i] = state_point.ba[i];
+                    diagnostics.gravity_after[i] = state_point.grav[i];
+                }
+                state_diagnostics_pub.publish(diagnostics);
+            }
 
             /******* Publish odometry *******/
             publish_odometry(pubOdomAftMapped);

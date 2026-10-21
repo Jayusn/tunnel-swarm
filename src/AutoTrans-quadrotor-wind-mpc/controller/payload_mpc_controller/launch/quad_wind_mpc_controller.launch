@@ -141,6 +141,7 @@
       - "/UAV1/livox/imu"
       - "/UAV1/livox/imu_body"
       - "/UAV1/livox/imu_mps2"
+      - "/UAV1/fast_lio/state_diagnostics"
       - "$(arg state_topic)"
       - "$(arg extended_state_topic)"
       - "$(arg rc_topic)"
