@@ -1,3 +1,15 @@
+一、当前双机网络（2026-10-21）
+
+当前这台电脑是前机 UAV0：192.168.43.14，也是唯一 ROS Master。
+后机 UAV1：192.168.43.21；两机 ROS_MASTER_URI 都指向 http://192.168.43.14:11311。
+
+每个手动启动终端先加载网络配置；前机执行：
+
+source ~/match_ws/shfiles/configure_dual_uav_ros_network.sh
+configure_dual_uav_ros_network uav0
+
+后机同步上述网络脚本后使用 configure_dual_uav_ros_network uav1。
+已运行的 ROS 节点需要在停止后重新启动，才会使用新地址。
 
 二、当前可执行的 UAV0 实机启动顺序
 
