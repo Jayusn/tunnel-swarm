@@ -76,6 +76,7 @@ namespace PayloadMPC
     Eigen::Vector3d opt_fq_{Eigen::Vector3d::Zero()};
     Eigen::VectorXd opt_variable;
     double var_weight_{50.0};
+    bool separate_z_limit_{false};
 
   public:
     Eigen::Vector3d quad_acc_{Eigen::Vector3d::Zero()};
@@ -100,6 +101,7 @@ namespace PayloadMPC
       mass_quad_ = params.dyn_params_.mass_q;
       sqrt_kf_ = params.force_estimator_param_.sqrt_kf;
       use_force_estimator_ = params.force_estimator_param_.enable_force_estimation;
+      separate_z_limit_ = params.force_estimator_param_.force_axis_gain_z == 0.0;
       max_force_ = params.force_estimator_param_.max_force;
       max_force_sqr_ = max_force_ * max_force_;
       sample_freq_fq_ = params.force_estimator_param_.sample_freq_fq;
@@ -183,7 +185,15 @@ namespace PayloadMPC
             opt_variable.resize(3 * param_num_);
             opt_variable.setZero();
           }
-          if (opt_variable.maxCoeff() > 3 * max_force_ || opt_variable.minCoeff() < -3 * max_force_)
+          if (separate_z_limit_)
+          {
+            // A large disabled Z estimate must not reset the XY warm start.
+            Eigen::Map<Eigen::Matrix3Xd> initial(opt_variable.data(), 3, param_num_);
+            for (int axis = 0; axis < 3; ++axis)
+              if (initial.row(axis).cwiseAbs().maxCoeff() > 3 * max_force_)
+                initial.row(axis).setZero();
+          }
+          else if (opt_variable.maxCoeff() > 3 * max_force_ || opt_variable.minCoeff() < -3 * max_force_)
           {
             opt_variable.setZero();
           }
@@ -210,7 +220,22 @@ namespace PayloadMPC
 
           Eigen::Map<Eigen::Matrix3Xd> all_opt_fq(opt_variable.data(), 3, param_num_);
           opt_fq_ = all_opt_fq.col(param_num_ - 1);
-          if (opt_fq_.squaredNorm() > max_force_sqr_)
+          if (separate_z_limit_)
+          {
+            // Keep the disabled Z channel for diagnostics without spending XY's limit.
+            const double xy_norm = opt_fq_.head<2>().norm();
+            if (xy_norm > max_force_)
+            {
+              opt_fq_.head<2>() *= max_force_ / xy_norm;
+              all_opt_fq.topRows<2>().setZero();
+            }
+            if (std::abs(opt_fq_.z()) > max_force_)
+            {
+              opt_fq_.z() = std::copysign(max_force_, opt_fq_.z());
+              all_opt_fq.row(2).setZero();
+            }
+          }
+          else if (opt_fq_.squaredNorm() > max_force_sqr_)
           {
             opt_fq_ = opt_fq_.normalized() * max_force_;
             all_opt_fq.setZero();
@@ -229,8 +254,15 @@ namespace PayloadMPC
           return false;
         }
         // 二阶低通可能在阶跃输入后产生过冲；滤波后再次限幅，保证发布值和 NMPC 补偿值
-        // 的世界系合力始终不超过 max_force_（单位 N）。
-        if (fq.squaredNorm() > max_force_sqr_)
+        // Z 补偿关闭时分别限制 XY 合力与 Z；启用时保持三轴合力限幅。
+        if (separate_z_limit_)
+        {
+          const double xy_norm = fq.head<2>().norm();
+          if (xy_norm > max_force_) fq.head<2>() *= max_force_ / xy_norm;
+          if (std::abs(fq.z()) > max_force_) fq.z() = std::copysign(max_force_, fq.z());
+          opt_fq_ = fq;
+        }
+        else if (fq.squaredNorm() > max_force_sqr_)
         {
           fq = fq.normalized() * max_force_;
           opt_fq_ = fq;

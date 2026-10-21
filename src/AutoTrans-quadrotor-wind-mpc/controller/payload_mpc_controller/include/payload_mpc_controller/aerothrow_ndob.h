@@ -24,6 +24,7 @@ class AeroThrowNDOB {
     sqrt_kf_ = f.sqrt_kf;
     alpha_ = f.ndob_rate / p.ctrl_freq_max_;
     max_force_ = f.max_force;
+    separate_z_limit_ = f.force_axis_gain_z == 0.0;
     enabled_ = f.enable_force_estimation;
     required_samples_ = f.max_queue;
     filter_.set_cutoff_frequency(p.ctrl_freq_max_, f.ndob_cutoff_freq);
@@ -51,10 +52,18 @@ class AeroThrowNDOB {
     if (!enabled_ || count_ == 0) return false;
     state_ += alpha_ * (residual_ - state_);
     Eigen::Vector3d bounded = state_;
-    if (bounded.norm() > max_force_) bounded *= max_force_ / bounded.norm();
+    if (separate_z_limit_) {
+      const double xy_norm = bounded.head<2>().norm();
+      if (xy_norm > max_force_) bounded.head<2>() *= max_force_ / xy_norm;
+      bounded.z() = std::max(-max_force_, std::min(max_force_, bounded.z()));
+    } else if (bounded.norm() > max_force_) bounded *= max_force_ / bounded.norm();
     fq = filter_.apply(bounded);
     if (!fq.allFinite()) { reset(); fq.setZero(); return false; }
-    if (fq.norm() > max_force_) fq *= max_force_ / fq.norm();
+    if (separate_z_limit_) {
+      const double xy_norm = fq.head<2>().norm();
+      if (xy_norm > max_force_) fq.head<2>() *= max_force_ / xy_norm;
+      fq.z() = std::max(-max_force_, std::min(max_force_, fq.z()));
+    } else if (fq.norm() > max_force_) fq *= max_force_ / fq.norm();
     return true;
   }
   bool windowFull() const {
@@ -64,7 +73,7 @@ class AeroThrowNDOB {
   const Eigen::Vector3d& observerState() const { return state_; }
  private:
   double mass_{1.0}, sqrt_kf_{0.0}, alpha_{0.0}, max_force_{5.0};
-  bool enabled_{false};
+  bool enabled_{false}, separate_z_limit_{false};
   int required_samples_{20};
   size_t count_{0};
   Eigen::Vector3d residual_{Eigen::Vector3d::Zero()}, state_{Eigen::Vector3d::Zero()};

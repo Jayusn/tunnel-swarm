@@ -26,12 +26,13 @@ class ForceEstimatorTestAccess {
 using namespace PayloadMPC;
 TEST(ForceControllerIntegration, ProductionCallSiteMatchesReplayEventsAndDownstreamGates) {
   ros::NodeHandle nh("~");
+  for(double z_gain : {0.0, 0.7})
   for(const std::string method:{"window_opt","aerothrow_ndob"}) {
     MpcParams p;p.config_from_ros_handle(nh);p.force_estimator_param_.method=method;
     // Exercise retained unequal axis gains and norm clipping as well as direct application.
     p.force_estimator_param_.force_axis_gain_x=.5;
     p.force_estimator_param_.force_axis_gain_y=.8;
-    p.force_estimator_param_.force_axis_gain_z=.7;
+    p.force_estimator_param_.force_axis_gain_z=z_gain;
     p.force_estimator_param_.max_applied_force=.45;
     MpcController controller(p);MPCFSM fsm(nh,p,controller);controller.waitForPreparation();
     SelectedForceEstimator offline;offline.init(p);
@@ -42,7 +43,7 @@ TEST(ForceControllerIntegration, ProductionCallSiteMatchesReplayEventsAndDownstr
       ForceEstimatorTestAccess::prepare(fsm,now);
       if(k==160) {ForceEstimatorTestAccess::reset(fsm);offline.reset();input=false;}
       if(k%2==0) {
-        const Eigen::Vector3d force(.6*std::sin(.07*k),-.4,.8);
+        const Eigen::Vector3d force(.6*std::sin(.07*k),-.4,z_gain==0?6.:.8);
         Eigen::Vector3d a=force/p.dyn_params_.mass_q;
         a.z()+=(p.force_estimator_param_.sqrt_kf*rpm).squaredNorm()/p.dyn_params_.mass_q;
         ForceEstimatorTestAccess::sample(fsm,a,rpm);offline.setSystemState(a,Eigen::Quaterniond::Identity(),rpm);input=true;
@@ -62,7 +63,8 @@ TEST(ForceControllerIntegration, ProductionCallSiteMatchesReplayEventsAndDownstr
         applied=target;
       }
       // The first ready sample is applied immediately, with no 0.03 N Z ramp.
-      if(k==38) { EXPECT_GT(ForceEstimatorTestAccess::applied(fsm).z(),.03); }
+      if(k==38 && z_gain>0) { EXPECT_GT(ForceEstimatorTestAccess::applied(fsm).z(),.03); }
+      if(z_gain==0) EXPECT_DOUBLE_EQ(ForceEstimatorTestAccess::applied(fsm).z(),0.0);
       EXPECT_LT((out-ForceEstimatorTestAccess::estimate(fsm)).norm(),1e-12)<<method<<" tick="<<k;
       EXPECT_LT((applied-ForceEstimatorTestAccess::applied(fsm)).norm(),1e-8)<<method<<" tick="<<k;
       if(k<38 || blocked) { EXPECT_TRUE(ForceEstimatorTestAccess::applied(fsm).isZero()); }

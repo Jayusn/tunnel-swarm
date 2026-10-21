@@ -107,6 +107,64 @@ TEST(SelectedForceEstimator, SelectedNdobMatchesCoreUnderTheSameEventSequence) {
     EXPECT_TRUE((f1.array()==f2.array()).all());EXPECT_EQ(online.windowFull(),core.windowFull());
   }
 }
+TEST(SelectedForceEstimator, DisabledZCannotConsumeHorizontalLimit) {
+  for (const std::string method : {"window_opt", "aerothrow_ndob"}) {
+    for (const V force : {V(1,0,6), V(6,8,-30)}) {
+      auto p=params(); p.force_estimator_param_.method=method;
+      p.force_estimator_param_.force_axis_gain_z=0;
+      SelectedForceEstimator e; e.init(p); V fl,out;
+      const auto q=Eigen::Quaterniond::Identity();
+      for (int k=0;k<300;++k) {
+        e.setSystemState(specific(p,force,q),q,rpm);
+        if (!e.caculate_force(fl,out)) continue;
+        EXPECT_LE(out.head<2>().norm(),5+1e-10) << method;
+        EXPECT_LE(std::abs(out.z()),5+1e-10) << method;
+      }
+      V expected=force;
+      if (expected.head<2>().norm()>5) expected.head<2>()*=5/expected.head<2>().norm();
+      expected.z()=std::copysign(5.,force.z());
+      EXPECT_LT((out-expected).norm(),1e-4) << method;
+    }
+  }
+}
+TEST(SelectedForceEstimator, DisabledZStepsAndResetPreserveHorizontalResponse) {
+  for (const std::string method : {"window_opt", "aerothrow_ndob"}) {
+    auto p=params(); p.force_estimator_param_.method=method;
+    p.force_estimator_param_.force_axis_gain_z=0;
+    SelectedForceEstimator clean,disturbed; clean.init(p); disturbed.init(p);
+    const auto q=Eigen::Quaterniond::Identity();
+    for (int k=0;k<600;++k) {
+      if (k==350) {clean.reset();disturbed.reset();}
+      if (k%3!=0) { // Include held input and opposite-sign large Z transients.
+        V force(.8*std::sin(.03*k),-.4*std::cos(.02*k),0);
+        clean.setSystemState(specific(p,force,q),q,rpm);
+        force.z()=k<100?0:(k<250?30:-30);
+        disturbed.setSystemState(specific(p,force,q),q,rpm);
+      }
+      V fl,a,b;
+      EXPECT_EQ(clean.caculate_force(fl,a),disturbed.caculate_force(fl,b));
+      EXPECT_LT((a-b).head<2>().norm(),1e-3) << method << " tick=" << k;
+      EXPECT_LE(b.head<2>().norm(),5+1e-10);
+      EXPECT_LE(std::abs(b.z()),5+1e-10);
+      EXPECT_EQ(clean.sampleCount(),disturbed.sampleCount());
+    }
+  }
+}
+TEST(SelectedForceEstimator, EnabledZRetainsThreeAxisNormLimit) {
+  for (const std::string method : {"window_opt", "aerothrow_ndob"}) {
+    for (double gain : {.7,1.}) {
+      auto p=params(); p.force_estimator_param_.method=method;
+      p.force_estimator_param_.force_axis_gain_z=gain;
+      SelectedForceEstimator e; e.init(p); V fl,out;
+      const V force(1,0,6); const auto q=Eigen::Quaterniond::Identity();
+      for (int k=0;k<300;++k) {
+        e.setSystemState(specific(p,force,q),q,rpm);
+        if (e.caculate_force(fl,out)) EXPECT_LE(out.norm(),5+1e-10);
+      }
+      EXPECT_LT((out-force.normalized()*5).norm(),1e-4) << method;
+    }
+  }
+}
 int main(int argc,char** argv) {
   testing::InitGoogleTest(&argc,argv);
   ros::Time::init();
