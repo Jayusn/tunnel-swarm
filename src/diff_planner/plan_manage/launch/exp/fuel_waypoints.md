@@ -64,11 +64,12 @@ mission:
 bash ~/match_ws/shfiles/start_uav0_twaypoints.sh
 ```
 
-通过环境变量分别开关入口、出口，例如仅关闭入口：
+入口、出口开关直接修改 `run_exp_single_fuel_waypoints.launch` 顶部的 `true` / `false`，
+七分屏脚本使用这里的设置。例如仅关闭入口：
 
-```bash
-UAV0_WAYPOINT_ENTRY_ENABLED=false UAV0_WAYPOINT_EXIT_ENABLED=true \
-  bash ~/match_ws/shfiles/start_uav0_twaypoints.sh
+```xml
+<arg name="enable_entry_recognition" default="false"/>
+<arg name="enable_exit_recognition" default="true"/>
 ```
 
 新脚本沿用原网络、检测栈、控制器和录包布局，第六屏加载本规划器，第七屏启用现有

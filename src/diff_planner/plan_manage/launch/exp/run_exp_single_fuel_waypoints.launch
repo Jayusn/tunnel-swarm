@@ -1,10 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <launch>
   <!-- 两个独立开关：入口完成后才开始航点；出口最近点完成后接现有搜板降落。 -->
-  <arg name="enable_entry_recognition" default="$(optenv UAV0_WAYPOINT_ENTRY_ENABLED true)"/>
-  <arg name="enable_exit_recognition" default="$(optenv UAV0_WAYPOINT_EXIT_ENABLED true)"/>
+  <arg name="enable_entry_recognition" default="true"/>
+  <arg name="enable_exit_recognition" default="true"/>
 
-  <!-- FUEL手填XYZ多点入口；与自动探索入口二选一，控制器仍单独启动。 -->
   <arg name="waypoints_file" default="$(find diff_planner)/launch/exp/fuel_waypoints.yaml"/>
   <arg name="entry_complete_topic" default="/UAV0/fuel_waypoints/entry_complete"/>
   <arg name="enable_rviz" default="true"/>
