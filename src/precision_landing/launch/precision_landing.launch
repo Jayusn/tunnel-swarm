@@ -46,7 +46,7 @@
   <arg name="aruco_rosbag_prefix"
        default="$(env HOME)/.ros/aruco_detection_$(arg vehicle_ns)"/>
   <arg name="aruco_front_sensor_topics"
-       value="$(eval ' '.join([arg('front_image_topic'), arg('front_camera_info_topic'), arg('front_depth_topic')]) if arg('enable_front_aruco_hint') else '')"/>
+       value="$(eval arg('front_camera_info_topic') if arg('enable_front_aruco_hint') else '')"/>
   <!-- 基础配置保留 UAV0 外参；UAV1 入口通过可选覆盖文件加载自身外参。 -->
   <arg name="landing_search_config"
        default="$(find precision_landing)/config/landing_search.yaml"/>
@@ -106,8 +106,8 @@
   </node>
 
   <!--
-    录制候选、状态和位姿；启用前视识别时同时保存彩色图、对齐深度图和内参，
-    用于区分深度缺失、时间不同步、无有效深度和测距不一致。
+    录制候选、状态和位姿；启用前视识别时同时保存相机内参，
+    不录制彩色图和对齐深度图，以减少录包体积。
     LandingPlatformArray 可直接还原每次稳定检测到的 ArUco 数量和 ID。
   -->
   <node if="$(arg enable_aruco_rosbag)" pkg="rosbag" type="record"
