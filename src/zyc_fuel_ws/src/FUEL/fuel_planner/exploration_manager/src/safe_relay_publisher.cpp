@@ -20,9 +20,12 @@ void SafeRelayPublisher::initialize(ros::NodeHandle& nh, std::shared_ptr<SDFMap>
   params.param("entrance_minimum_progress", entrance_minimum_progress_, 0.50);
   params.param("release_distance", config_.release_distance, 1.00);
   params.param("selection_window", config_.selection_window, 0.50);
+  params.param("maximum_gap", config_.maximum_gap, 1.50);
   params.param("sample_spacing", sample_spacing_, 0.08);
   params.param("hold_radius", hold_radius_, 0.45);
   params.param("hold_half_height", hold_half_height_, 0.32);
+  params.param("clearance_search_radius", clearance_search_radius_, 0.60);
+  params.param("candidate_search_radius", candidate_search_radius_, 0.60);
   params.param("map_timeout", map_timeout_, 1.0);
   params.param("odom_timeout", odom_timeout_, 0.5);
   params.param("dynamic_wait_horizon", dynamic_wait_horizon_, 2.0);
@@ -30,14 +33,16 @@ void SafeRelayPublisher::initialize(ros::NodeHandle& nh, std::shared_ptr<SDFMap>
   params.param("maximum_samples", maximum_samples_, 10000);
   for (double value : {config_.normal_spacing, config_.minimum_progress, config_.minimum_xy_spacing,
        entrance_minimum_progress_,
-       config_.release_distance, config_.selection_window,
-       sample_spacing_, hold_radius_, hold_half_height_,
+       config_.release_distance, config_.selection_window, config_.maximum_gap,
+       sample_spacing_, hold_radius_, hold_half_height_, clearance_search_radius_,
+       candidate_search_radius_,
        map_timeout_, odom_timeout_,
        dynamic_wait_horizon_}) {
     if (!std::isfinite(value) || value <= 0.0)
       throw std::runtime_error("safe_relay: all distances and timeouts must be finite and positive");
   }
   if (confirmations_required_ < 1 || maximum_samples_ < 3 ||
+      clearance_search_radius_ < hold_radius_ ||
       config_.normal_spacing < config_.minimum_progress ||
       config_.normal_spacing < entrance_minimum_progress_)
     throw std::runtime_error("safe_relay: inconsistent spacing/history settings");
@@ -80,6 +85,7 @@ void SafeRelayPublisher::observe(const Eigen::Vector3d& position, double yaw,
   Record point;
   point.sample.position = position;  // Keep measured XYZ; never flatten to follower height.
   point.sample.progress = history_.empty() ? 0.0 : history_.back().sample.progress + step;
+  point.candidate = point.sample;
   point.stamp = measured_at;
   point.yaw = yaw;
   history_.push_back(point);
@@ -117,6 +123,100 @@ bool SafeRelayPublisher::volumeFree(const Eigen::Vector3d& point, double radius,
   return true;
 }
 
+std::vector<Eigen::Vector2d> SafeRelayPublisher::horizontalBoundaries(
+    const Eigen::Vector3d& point, double radius) const {
+  // Project all non-free voxel boxes intersecting the stopping-height band.
+  // Collect once per search instead of querying the 3-D map for every option.
+  const Eigen::Vector3d extent(radius, radius, hold_half_height_);
+  Eigen::Vector3i lower, upper;
+  map_->posToIndex(Eigen::Vector3d(point - extent), lower);
+  map_->posToIndex(Eigen::Vector3d(point + extent), upper);
+  std::vector<Eigen::Vector2d> boundaries;
+  for (int x = lower.x(); x <= upper.x(); ++x)
+    for (int y = lower.y(); y <= upper.y(); ++y) {
+      for (int z = lower.z(); z <= upper.z(); ++z) {
+        const Eigen::Vector3i index(x, y, z);
+        if (!map_->isInMap(index) || map_->getOccupancy(index) != SDFMap::FREE) {
+          Eigen::Vector3d centre;
+          map_->indexToPos(index, centre);
+          boundaries.push_back(centre.head<2>());
+          break;
+        }
+      }
+    }
+  return boundaries;
+}
+
+namespace {
+double clearanceToBoxes(const Eigen::Vector3d& point,
+                        const std::vector<Eigen::Vector2d>& boundaries,
+                        double half_cell, double cap) {
+  double squared_distance = cap * cap;
+  for (const auto& centre : boundaries) {
+    const double dx = std::max(0.0, std::fabs(centre.x() - point.x()) - half_cell);
+    const double dy = std::max(0.0, std::fabs(centre.y() - point.y()) - half_cell);
+    squared_distance = std::min(squared_distance, dx * dx + dy * dy);
+  }
+  return std::sqrt(squared_distance);
+}
+}  // namespace
+
+double SafeRelayPublisher::horizontalClearance(const Eigen::Vector3d& point) const {
+  return clearanceToBoxes(point, horizontalBoundaries(point, clearance_search_radius_),
+                          0.5 * map_->getResolution(), clearance_search_radius_);
+}
+
+void SafeRelayPublisher::qualifyCandidate(Record& record, bool new_map) {
+  const auto& reference = record.sample.position;
+  const auto boundaries = horizontalBoundaries(
+      reference, candidate_search_radius_ + clearance_search_radius_);
+  const double half_cell = 0.5 * map_->getResolution();
+  struct Option { Eigen::Vector3d position; double clearance; double offset; };
+  std::vector<Option> options;
+  const double step = std::max(0.10, map_->getResolution());
+  const int cells = static_cast<int>(std::floor(candidate_search_radius_ / step + 1e-6));
+  for (int x = -cells; x <= cells; ++x)
+    for (int y = -cells; y <= cells; ++y) {
+      const double offset = step * std::hypot(x, y);
+      if (offset > candidate_search_radius_ + 1e-6) continue;
+      const Eigen::Vector3d p = reference + Eigen::Vector3d(x * step, y * step, 0.0);
+      const double gap = clearanceToBoxes(p, boundaries, half_cell, clearance_search_radius_);
+      if (gap + 1e-9 >= hold_radius_) options.push_back({p, gap, offset});
+    }
+  std::sort(options.begin(), options.end(), [](const Option& a, const Option& b) {
+    if (a.clearance != b.clearance) return a.clearance > b.clearance;
+    return a.offset < b.offset;
+  });
+  const auto safe = [&](const Eigen::Vector3d& p) {
+    return volumeFree(p, hold_radius_, hold_half_height_) &&
+        planner_->isRelayHoldDynamicallySafe(p, hold_radius_, hold_half_height_, dynamic_wait_horizon_);
+  };
+  auto& candidate = record.candidate;
+  candidate.hold_free = candidate.confirmed = false;
+  for (const auto& option : options) {
+    if (!safe(option.position)) continue;
+    Eigen::Vector3d selected = option.position;
+    double gap = option.clearance;
+    const double previous_gap = clearanceToBoxes(
+        candidate.position, boundaries, half_cell, clearance_search_radius_);
+    // Keep a still-valid choice within 2cm of the best clearance, so map-cell
+    // ties do not repeatedly restart the two-map confirmation.
+    if (previous_gap + 0.02 + 1e-9 >= gap && safe(candidate.position)) {
+      selected = candidate.position;
+      gap = previous_gap;
+    }
+    if ((selected - candidate.position).norm() > 1e-6) record.confirmations = 0;
+    candidate.position = selected;
+    candidate.clearance = gap;
+    candidate.hold_free = true;
+    if (new_map) record.confirmations = std::min(confirmations_required_, record.confirmations + 1);
+    candidate.confirmed = record.confirmations >= confirmations_required_;
+    return;
+  }
+  record.confirmations = 0;
+  candidate.clearance = 0.0;
+}
+
 void SafeRelayPublisher::timerCallback(const ros::TimerEvent&) {
   const ros::Time now = ros::Time::now();
   const uint64_t sequence = map_->getUpdateSequence();
@@ -141,14 +241,12 @@ void SafeRelayPublisher::timerCallback(const ros::TimerEvent&) {
       samples.push_back(sample);
       continue;  // Neither the entrance nor issued points need requalification.
     }
-    sample.hold_free = volumeFree(sample.position, hold_radius_, hold_half_height_) &&
-                      planner_->isRelayHoldDynamicallySafe(sample.position, hold_radius_,
-                                                          hold_half_height_, dynamic_wait_horizon_);
-    if (!sample.hold_free) record.confirmations = 0;
-    else if (new_map) record.confirmations = std::min(confirmations_required_, record.confirmations + 1);
-    sample.confirmed = record.confirmations >= confirmations_required_;
-    sample.clearance = sample.hold_free ? map_->getDistance(sample.position) : 0.0;
-    samples.push_back(sample);
+    qualifyCandidate(record, new_map);
+    samples.push_back(record.candidate);
+  }
+  if (!goals_.empty()) {
+    const auto& p = goals_.back().pose.pose.position;
+    samples[anchor_].position = Eigen::Vector3d(p.x, p.y, p.z);
   }
   if (history_.empty()) { publish("WAIT_ENTRANCE_CROSSING"); return; }
   if (exited_) { publish("EXIT_HANDOFF"); return; }
@@ -165,11 +263,20 @@ void SafeRelayPublisher::timerCallback(const ros::TimerEvent&) {
   const auto selected = safe_relay::select(samples, anchor_, leader_, selection_config);
   if (selected.kind != safe_relay::Kind::WAIT) {
     anchor_ = selected.index;
-    goals_.push_back({anchor_, next_id_++});
-    const auto& p = history_[anchor_].sample.position;
-    ROS_WARN("[safe_relay] RELEASE id=%u type=%s actual=(%.2f,%.2f,%.2f) s=%.2f",
+    const auto& record = history_[anchor_];
+    const auto& p = record.candidate.position;
+    geometry_msgs::PoseStamped pose;
+    pose.header.frame_id = frame_;
+    pose.header.stamp = now;
+    pose.pose.position.x = p.x();
+    pose.pose.position.y = p.y();
+    pose.pose.position.z = p.z();
+    pose.pose.orientation.w = std::cos(0.5 * record.yaw);
+    pose.pose.orientation.z = std::sin(0.5 * record.yaw);
+    goals_.push_back({anchor_, next_id_++, pose});
+    ROS_WARN("[safe_relay] RELEASE id=%u type=%s target=(%.2f,%.2f,%.2f) s=%.2f horizontal_clearance=%.3fm offset=%.3fm",
              goals_.back().id, safe_relay::name(selected.kind), p.x(), p.y(), p.z(),
-             history_[anchor_].sample.progress);
+             record.sample.progress, record.candidate.clearance, (p - record.sample.position).norm());
   }
   publish(safe_relay::name(selected.kind));
 }
@@ -198,7 +305,7 @@ void SafeRelayPublisher::publish(const std::string& status) {
   // Keep all issued IDs/XYZ even if map or odometry evidence is now stale.
   // Freshness gates new releases; the follower owns reuse, planning and discard.
   for (const auto& goal : goals_) {
-    auto pose = route.poses[goal.route_index];
+    auto pose = goal.pose;
     pose.header.seq = goal.id;
     goals.poses.push_back(pose);
   }

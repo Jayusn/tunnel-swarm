@@ -226,6 +226,10 @@
     <!-- 宽通道优先：0.60m净空内按距离连续惩罚贴墙路径，不扩大0.14m硬膨胀边界。 -->
     <param name="astar/preferred_clearance" value="0.60" type="double"/>
     <param name="astar/clearance_weight" value="12.0" type="double"/>
+    <!-- 在已选择的已知自由通路内横向居中；不改固定升降和入口/出口专用目标。 -->
+    <param name="mission/passage_centering/enabled" value="true" type="bool"/>
+    <param name="mission/passage_centering/search_radius" value="0.90" type="double"/>
+    <param name="mission/passage_centering/maximum_shift" value="0.45" type="double"/>
     <param name="astar/resolution_astar" value="0.2" type="double"/>
     <param name="astar/allocate_num" value="1000000" type="int"/>
     <!-- 2026-07-16: 旧值1ms会把复杂但可达的通道误判为No path；50ms仍满足规划周期且允许绕柱搜索。 -->

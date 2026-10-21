@@ -1,4 +1,4 @@
-# 实飞一次即可入选；map_confirmations 是地图更新次数，不是停留或往返次数。
+# 实飞位置作为进度参考，允许选附近未飞过的已知自由空间；map_confirmations 是地图更新次数。
 mission:
   safe_relay:
     enabled: false  # 双机 UAV0 入口显式开启，其他入口保持原任务行为。
@@ -9,10 +9,13 @@ mission:
     entrance_minimum_progress: 0.50  # 尚未发布任何点时，相对实测入口样本的最低累计前进量。
     release_distance: 1.00
     selection_window: 0.50
+    maximum_gap: 1.50  # 没有常规新点时，累计前进达到此距离允许在当前位置附近补点。
     sample_spacing: 0.08
     # 只检查新点自身的停留包络；已发点不撤回，连接路径由后机规划。
     hold_radius: 0.30
     hold_half_height: 0.10
+    clearance_search_radius: 0.60  # 合格点在自身高度带内比较原始体素水平净空，上限 0.60m。
+    candidate_search_radius: 0.60  # 在实飞参考位置附近搜索更宽敞的已知自由空间，不要求点本身飞过。
     map_confirmations: 2
     map_timeout: 1.00
     odom_timeout: 0.50

@@ -61,6 +61,44 @@ class TurnEscapeTest {
     manager.task_search_manager_->initialize(nh);
   }
 public:
+  static void runPassageCentre() {
+    ros::NodeHandle nh("~passage_centre");
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    auto& map = *manager.sdf_map_;
+    // Raw FREE evidence bounded by UNKNOWN walls. Z is intentionally close
+    // to the floor: centre guidance must depend on lateral feasible space.
+    for (int y = -14; y <= 14; ++y)
+      for (int z = 3; z <= 10; ++z) {
+        pcl::PointCloud<pcl::PointXYZ> cloud;
+        pcl::PointXYZ end;
+        end.x = 1.9; end.y = y * 0.05 + 0.025; end.z = z * 0.05 + 0.025;
+        cloud.push_back(end);
+        map.inputPointCloud(cloud, 1, Vector3d(-1.9, end.y, end.z));
+        cloud.front().x = -1.9;
+        map.inputPointCloud(cloud, 1, Vector3d(1.9, end.y, end.z));
+      }
+    map.updateESDF3d();
+    std::vector<Vector3d> path{{-1.0, -0.35, 0.30}, {0.0, -0.35, 0.30}, {1.0, -0.35, 0.30}};
+    ASSERT_TRUE(manager.planner_manager_->isPathSafe(path));
+    ASSERT_TRUE(manager.centrePassagePath(path, 3.0));
+    EXPECT_TRUE(path.front().isApprox(Vector3d(-1, -0.35, 0.3)));
+    EXPECT_TRUE(path.back().isApprox(Vector3d(1, -0.35, 0.3)));
+    double max_y = -0.35;
+    for (const auto& p : path) {
+      EXPECT_DOUBLE_EQ(0.30, p.z());
+      max_y = std::max(max_y, p.y());
+    }
+    EXPECT_GT(max_y, -0.1);
+    ASSERT_TRUE(manager.planner_manager_->planExploreTraj(path, Vector3d::Zero(), Vector3d::Zero(), 0));
+    ASSERT_TRUE(manager.planner_manager_->isTrajectorySafe());
+    auto& trajectory = manager.planner_manager_->local_data_.position_traj_;
+    double curve_max_y = -0.35;
+    for (int i = 0; i <= 100; ++i)
+      curve_max_y = std::max(curve_max_y, trajectory.evaluateDeBoorT(trajectory.getTimeSum()*i/100.0).y());
+    EXPECT_GT(curve_max_y, -0.20); // The published spline must actually use the central guide.
+  }
+
   static void runHeightReferenceOwnership() {
     ros::NodeHandle nh("~");
     FastExplorationManager manager;
@@ -983,7 +1021,8 @@ public:
     double yaw = 0.0;
     check(manager.isLowProbeCorridorSafe(end, Vector3d::UnitX(), 0.40) &&
           manager.buildSideRecoveryContinuation(end, 0.0, next, yaw) &&
-          next.x() > end.x()+0.15 && std::fabs(next.y()-end.y()) < 1e-6,
+          next.x() > end.x()+0.15 && std::fabs(next.y()-end.y()) <= 0.24 + 1e-6 &&
+          manager.isLowProbeCorridorSafe(end, next-end, (next-end).head<2>().norm()),
           "clear same-side lane did not resume forward motion");
     Vector3d passed = end;
     passed.x() = manager.recovery_side_origin_.x() +
@@ -1125,6 +1164,14 @@ public:
     }
     check((pos-origin).x() > release_distance,
           "repeated bypass replans produced no forward progress past the obstacle");
+    // 居中会改变到达位置；补扫通过柱子后的前方，避免把测试建图射线的
+    // 人工终点墙当成第二个障碍，干扰“首个绕障已完成”的释放检查。
+    cloud.clear();
+    for (double y=-1.3; y<=1.3; y+=0.025)
+      for (double z=0.25; z<=1.75; z+=0.025)
+        cloud.push_back(pcl::PointXYZ(20.0, y, z));
+    observe(pos, 8);
+    map.updateESDF3d();
     task.updateRobotPose(pos, 0.0);
     check(!manager.buildSideRecoveryContinuation(pos, 0.0, next, yaw) &&
           !manager.wide_side_bypass_active_ && !manager.recovery_side_latched_,
@@ -1414,6 +1461,7 @@ TEST(HorizontalHeight, MidRouteRoofRejectsHeightCorrection) {
 TEST(HorizontalHeight, UnknownOverheadRejectsHeightCorrection) {
   fast_planner::TurnEscapeTest::runMovingClimb(2, true);
 }
+TEST(PassageCentre, LowCorridorGuidesActualSpline) { fast_planner::TurnEscapeTest::runPassageCentre(); }
 
 int main(int argc,char** argv) {
   ros::init(argc,argv,"turn_escape_test");

@@ -10,8 +10,8 @@
 namespace fast_planner {
 namespace safe_relay {
 
-// Only measured odometry samples enter this list. No trajectory endpoints,
-// interpolated goals or hovering/dwell requirements are used for selection.
+// Candidates follow measured route progress, but their XYZ may be improved
+// within nearby known free space. No hovering/dwell evidence is required.
 struct Sample {
   Eigen::Vector3d position{Eigen::Vector3d::Zero()};
   double progress{0.0};
@@ -26,15 +26,16 @@ struct Config {
   double minimum_xy_spacing{0.70};
   double release_distance{1.00};
   double selection_window{0.50};
+  double maximum_gap{1.50};
 };
 
-enum class Kind { WAIT, NORMAL, AFTER_OBSTACLE, BEFORE_OBSTACLE };
+enum class Kind { WAIT, NORMAL, AFTER_OBSTACLE, BEFORE_OBSTACLE, GAP_FALLBACK };
 struct Selection {
   std::size_t index{std::numeric_limits<std::size_t>::max()};
   Kind kind{Kind::WAIT};
 };
 
-// Qualify new measured endpoints relative to the latest released sample.
+// Qualify spatial endpoints relative to the latest released goal and progress.
 // The follower owns connection planning; old route occupancy does not veto B.
 inline Selection select(const std::vector<Sample>& route, std::size_t anchor,
                         const Eigen::Vector3d& leader, const Config& cfg) {
@@ -46,7 +47,7 @@ inline Selection select(const std::vector<Sample>& route, std::size_t anchor,
     if (!route[i].hold_free) { first_narrow = i; break; }
   }
 
-  std::vector<std::size_t> candidates;
+  std::vector<std::size_t> candidates, gap_candidates;
   for (std::size_t begin = anchor; begin < route.size();) {
     if (!route[begin].hold_free || !route[begin].confirmed) { ++begin; continue; }
     std::size_t end = begin;
@@ -58,11 +59,33 @@ inline Selection select(const std::vector<Sample>& route, std::size_t anchor,
       // do not certify or veto the follower's future connection to this point.
       if (point.progress - start + 1e-6 < cfg.minimum_progress ||
           (point.position.head<2>() - route[anchor].position.head<2>()).norm() + 1e-6 <
-              cfg.minimum_xy_spacing ||
-          route.back().progress - point.progress + 1e-6 < cfg.release_distance ||
+              cfg.minimum_xy_spacing)
+        continue;
+      gap_candidates.push_back(i);
+      if (route.back().progress - point.progress + 1e-6 < cfg.release_distance ||
           (leader.head<2>() - point.position.head<2>()).norm() + 1e-6 <
               cfg.release_distance)
         continue;
+      // A transit point just past the spacing threshold must not become a
+      // waiting goal if nearby mapped stopping space is appreciably wider.
+      // Compare qualified neighbours even when they are too close to A or the
+      // leader to release: otherwise a narrow point would win by eligibility
+      // alone. Neighbours need not all be safe; isolated safe B still qualifies.
+      constexpr double clearance_tolerance = 0.02;
+      std::size_t first = i;
+      while (first > anchor + 1 &&
+             point.progress - route[first - 1].progress <= cfg.selection_window + 1e-6)
+        --first;
+      bool better_neighbour = false;
+      for (std::size_t j = first; j < route.size() &&
+           route[j].progress - point.progress <= cfg.selection_window + 1e-6; ++j) {
+        if (route[j].hold_free && route[j].confirmed &&
+            route[j].clearance > point.clearance + clearance_tolerance + 1e-6) {
+          better_neighbour = true;
+          break;
+        }
+      }
+      if (better_neighbour) continue;
       candidates.push_back(i);
     }
     begin = end + 1;
@@ -78,20 +101,20 @@ inline Selection select(const std::vector<Sample>& route, std::size_t anchor,
       pool.push_back(i);
     }
     if (pool.empty()) return false;
-    // Prefer a clear measured sample near the first available post-obstacle
-    // region / ordinary spacing. Waiting points advance as far as safely possible.
+    // First bound selection to a local route window; within that window choose
+    // maximum horizontal voxel clearance, not an offset-dominated mixed score.
     const double preferred = kind == Kind::BEFORE_OBSTACLE
                                  ? route[pool.back()].progress
                                  : route[pool.front()].progress;
-    std::stable_sort(pool.begin(), pool.end(), [&](std::size_t a, std::size_t b) {
-      auto score = [&](std::size_t i) {
-        const double offset = std::fabs(route[i].progress - preferred);
-        return (offset <= cfg.selection_window ? 10.0 : 0.0) +
-               std::min(1.0, route[i].clearance) - offset;
-      };
-      return score(a) > score(b);
-    });
-    result.index = pool.front();
+    std::size_t best = kind == Kind::BEFORE_OBSTACLE ? pool.back() : pool.front();
+    for (const auto i : pool) {
+      if (std::fabs(route[i].progress - preferred) > cfg.selection_window + 1e-6) continue;
+      if (route[i].clearance > route[best].clearance + 1e-6 ||
+          (std::fabs(route[i].clearance - route[best].clearance) <= 1e-6 &&
+           std::fabs(route[i].progress - preferred) <
+               std::fabs(route[best].progress - preferred))) best = i;
+    }
+    result.index = best;
     result.kind = kind;
     return true;
   };
@@ -100,7 +123,20 @@ inline Selection select(const std::vector<Sample>& route, std::size_t anchor,
   if (choose(Kind::NORMAL)) return result;
   if (first_narrow != route.size()) {
     if (choose(Kind::AFTER_OBSTACLE)) return result;
-    choose(Kind::BEFORE_OBSTACLE);
+    if (choose(Kind::BEFORE_OBSTACLE)) return result;
+  }
+  // A long gap must not wait indefinitely for a local clearance peak or for
+  // the leader to move 1m beyond it. Allow a qualified current/nearby endpoint;
+  // execution and real-time inter-vehicle separation belong to the follower.
+  if (route.back().progress - start + 1e-6 >= cfg.maximum_gap && !gap_candidates.empty()) {
+    std::size_t best = gap_candidates.front();
+    for (const auto i : gap_candidates) {
+      if (route[i].clearance > route[best].clearance + 1e-6 ||
+          (std::fabs(route[i].clearance - route[best].clearance) <= 1e-6 &&
+           route[i].progress > route[best].progress)) best = i;
+    }
+    result.index = best;
+    result.kind = Kind::GAP_FALLBACK;
   }
   return result;
 }
@@ -110,6 +146,7 @@ inline const char* name(Kind kind) {
     case Kind::NORMAL: return "NORMAL";
     case Kind::AFTER_OBSTACLE: return "AFTER_OBSTACLE";
     case Kind::BEFORE_OBSTACLE: return "BEFORE_OBSTACLE_WAIT";
+    case Kind::GAP_FALLBACK: return "GAP_FALLBACK";
     default: return "WAIT_NO_VALID_TARGET";
   }
 }

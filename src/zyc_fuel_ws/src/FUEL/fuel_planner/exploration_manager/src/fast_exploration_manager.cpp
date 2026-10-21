@@ -23,6 +23,7 @@
 #include <exploration_manager/expl_data.h>
 #include <exploration_manager/motion_direction_rules.h>
 #include <exploration_manager/path_shortening_policy.h>
+#include <exploration_manager/passage_centering_policy.h>
 #include <exploration_manager/task_search_manager.h>
 
 #include <pcl/point_cloud.h>
@@ -1593,6 +1594,7 @@ bool FastExplorationManager::buildWideSideBypass(
     double lateral_offset{0.0};
     double forward_step{0.0};
     double lane_width{0.0};
+    double centre_error{0.0};
   } best;
 
   auto minimumPathClearance = [&](const vector<Vector3d>& path) {
@@ -1657,13 +1659,17 @@ bool FastExplorationManager::buildWideSideBypass(
 
         const double path_clearance = minimumPathClearance(path);
         const double endpoint_clearance = sdf_map_->getDistance(candidate);
+        const double centre_error = passage_centering_enabled_
+            ? std::fabs(lateral_offset - lane_center) : 0.0;
         if (!best.valid || lane_width > best.lane_width + 1e-6 ||
             (std::fabs(lane_width - best.lane_width) <= 1e-6 &&
              (forward_step > best.forward_step + 1e-6 ||
               (std::fabs(forward_step - best.forward_step) <= 1e-6 &&
-               (path_clearance > best.path_clearance + 0.01 ||
-                (std::fabs(path_clearance - best.path_clearance) <= 0.01 &&
-                 endpoint_clearance > best.endpoint_clearance + 0.01)))))) {
+               (centre_error < best.centre_error - 1e-6 ||
+                (std::fabs(centre_error - best.centre_error) <= 1e-6 &&
+                 (path_clearance > best.path_clearance + 0.01 ||
+                  (std::fabs(path_clearance - best.path_clearance) <= 0.01 &&
+                   endpoint_clearance > best.endpoint_clearance + 0.01)))))))) {
           best.valid = true;
           best.target = candidate;
           best.endpoint_clearance = endpoint_clearance;
@@ -1671,6 +1677,7 @@ bool FastExplorationManager::buildWideSideBypass(
           best.lateral_offset = lateral_offset;
           best.forward_step = forward_step;
           best.lane_width = lane_width;
+          best.centre_error = centre_error;
         }
       }
     }
@@ -1857,13 +1864,26 @@ bool FastExplorationManager::buildSideRecoveryContinuation(
   for (double distance : {0.40, 0.30, 0.20}) {
     Vector3d candidate = pos + distance * direction;
     candidate.z() = horizontalGoalHeight(pos.z());
-    const vector<Vector3d> path{pos, candidate};
-    if (!pointInsideWorkspaceLock(candidate) ||
-        !task_search_manager_->isRecoveryCandidateUseful(candidate) ||
-        !isLowProbeCorridorSafe(pos, candidate - pos, distance) ||
-        !pathInsideWorkspaceLock(path) ||
-        !task_search_manager_->isRecoveryPathAllowed(path, false))
-      continue;
+    const auto usable = [&](const Vector3d& point) {
+      const vector<Vector3d> path{pos, point};
+      return pointInsideWorkspaceLock(point) &&
+          task_search_manager_->isRecoveryCandidateUseful(point) &&
+          isLowProbeCorridorSafe(pos, point - pos, (point - pos).head<2>().norm()) &&
+          pathInsideWorkspaceLock(path) &&
+          task_search_manager_->isRecoveryPathAllowed(path, false);
+    };
+    if (passage_centering_enabled_ && forward_clear) {
+      passage_centering::Config cfg;
+      cfg.step = std::min(0.05, 0.5 * sdf_map_->getResolution());
+      cfg.search_radius = passage_centering_search_radius_;
+      const Vector3d centred = passage_centering::sectionCentre(
+          candidate, forward, std::min(passage_centering_maximum_shift_, 0.6 * distance),
+          cfg, [&](const Vector3d& p) {
+            return pointInsideWorkspaceLock(p) && planner_manager_->isKnownFreePosition(p);
+          });
+      if (usable(centred)) candidate = centred;
+    }
+    if (!usable(candidate)) continue;
     next_pos = candidate;
     next_yaw = cur_yaw;
     recovery_side_continuation_pending_ = true;
@@ -2865,6 +2885,13 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
            straight_run_extension_distance_, 0.30);
   nh.param("mission/straight_run_extension/min_turn_deg",
            straight_run_extension_min_turn_deg_, 35.0);
+  nh.param("mission/passage_centering/enabled", passage_centering_enabled_, true);
+  nh.param("mission/passage_centering/search_radius", passage_centering_search_radius_, 0.90);
+  nh.param("mission/passage_centering/maximum_shift", passage_centering_maximum_shift_, 0.45);
+  if (!std::isfinite(passage_centering_search_radius_) ||
+      !std::isfinite(passage_centering_maximum_shift_) ||
+      passage_centering_search_radius_ <= 0.0 || passage_centering_maximum_shift_ <= 0.0)
+    throw std::runtime_error("passage_centering: search radius and shift must be positive");
   straight_run_extension_distance_ =
       std::max(0.0, straight_run_extension_distance_);
   straight_run_extension_min_turn_deg_ =
@@ -3719,6 +3746,18 @@ int FastExplorationManager::planExploreMotion(
   // 2026-07-22: FUEL远端frontier只决定前进方向；沿A*路径截取短安全段作为本轮路线点，
   // 避免刚穿门就发布跨越数米未知/窄区的整条轨迹，并让新点云在每段之间更新地图。
   const double route_horizon = std::max(0.20, ep_->mission_max_route_segment_length_);
+  const bool centre_guidance = passage_centering_enabled_ &&
+      !use_forced_entry_target && !use_stage3_target && !exit_transit_active && !use_entry_forward_target &&
+      !use_vertical_detour_target &&
+      (!use_center_gate_target || recovery_side_continuation_pending_);
+  bool has_central_guides = false;
+  // Simplify first, then retain central cross-section points as spline guides.
+  // Centre before the 1.2m cut so its endpoint can lie in the lane centre.
+  if (centre_guidance) {
+    shortenPath(ed_->path_next_goal_);
+    extendSafeStraightRuns(ed_->path_next_goal_);
+    has_central_guides = centrePassagePath(ed_->path_next_goal_, route_horizon + 0.50);
+  }
   // 只有原始前沿点本身在前方超过该距离时才截断；近前沿即使因绕障导致A*路径变长，
   // 也必须保留其完整路径，不能把“路径长”误当成“前沿点远”。
   const bool far_frontier_goal =
@@ -3761,7 +3800,7 @@ int FastExplorationManager::planExploreMotion(
     if (task_search_manager_) task_search_manager_->reportGoalFailure(next_pos);
     return FAIL;
   }
-  // 2026-07-13: 几何路径在缩短前按完整机体足迹复核，避免优化器把中心安全路径贴到障碍物上。
+  // 缩短、居中和截断后的最终几何路径仍按完整机体足迹复核。
   if (!planner_manager_->isPathSafe(ed_->path_next_goal_)) {
     // 2026-07-14: 路径失败会反馈给任务层更换出口接近点，不再以 100 Hz 输出同一错误。
     ROS_ERROR_THROTTLE(1.0,
@@ -3769,14 +3808,16 @@ int FastExplorationManager::planExploreMotion(
     if (task_search_manager_) task_search_manager_->reportGoalFailure(next_pos);
     return FAIL;
   }
-  shortenPath(ed_->path_next_goal_);
-  extendSafeStraightRuns(ed_->path_next_goal_);
-  // 2026-07-14: shortenPath 会用中心射线删除 A* 转折点，删除后必须重新做完整机体足迹检查。
-  if (!planner_manager_->isPathSafe(ed_->path_next_goal_)) {
-    ROS_ERROR_THROTTLE(
-        1.0, "[footprint_safety] reject shortened path whose Iris footprint intersects obstacles.");
-    if (task_search_manager_) task_search_manager_->reportGoalFailure(next_pos);
-    return FAIL;
+  // 固定入口、出口、上下穿以及关闭居中时仍按原顺序先截断再缩短。
+  if (!centre_guidance) {
+    shortenPath(ed_->path_next_goal_);
+    extendSafeStraightRuns(ed_->path_next_goal_);
+    if (!planner_manager_->isPathSafe(ed_->path_next_goal_)) {
+      ROS_ERROR_THROTTLE(
+          1.0, "[footprint_safety] reject shortened path whose Iris footprint intersects obstacles.");
+      if (task_search_manager_) task_search_manager_->reportGoalFailure(next_pos);
+      return FAIL;
+    }
   }
   // 2026-07-23: shortenPath后只对普通探索路径再次做禁回头判定，任务出口路径由门状态机约束方向。
   if (task_search_manager_ && !exit_transit_active &&
@@ -3806,7 +3847,7 @@ int FastExplorationManager::planExploreMotion(
   if (use_entry_forward_target) {
     if (!planner_manager_->planStraightTraj(pos, next_pos)) return FAIL;
     ed_->next_goal_ = next_pos;
-  } else if (len < radius_close) {
+  } else if (len < radius_close || (has_central_guides && len <= radius_far)) {
     // Next viewpoint is very close, no need to search kinodynamic path, just use waypoints-based
     // optimization
     if (!planner_manager_->planExploreTraj(ed_->path_next_goal_, vel, acc, time_lb)) {
@@ -4119,6 +4160,26 @@ bool FastExplorationManager::shouldStartInflationHistoryEscape(
   return inflation_history_escape_enabled_ && recovery_odom_history_.size() >= 2 &&
          inflation_escape::shouldStartFromOdometry(
              planner_manager_->isControlledEscapePosition(odom_pos));
+}
+
+bool FastExplorationManager::centrePassagePath(vector<Vector3d>& path, double horizon) {
+  passage_centering::Config cfg;
+  cfg.step = std::min(0.05, 0.5 * sdf_map_->getResolution());
+  cfg.search_radius = passage_centering_search_radius_;
+  cfg.maximum_shift = passage_centering_maximum_shift_;
+  const bool changed = passage_centering::centrePath(path, horizon, cfg,
+      [&](const Vector3d& p) {
+        return pointInsideWorkspaceLock(p) && planner_manager_->isKnownFreePosition(p);
+      }, [&](const vector<Vector3d>& candidate) {
+        return planner_manager_->isPathSafe(candidate) &&
+            pathInsideWorkspaceLock(candidate) &&
+            (!task_search_manager_ || task_search_manager_->isRecoveryPathAllowed(
+                candidate, pending_short_backtrack_));
+      });
+  if (changed)
+    ROS_WARN("[passage_centering] preserve %zu centre-guided route points before local cut.",
+             path.size());
+  return changed;
 }
 
 void FastExplorationManager::shortenPath(vector<Vector3d>& path) {

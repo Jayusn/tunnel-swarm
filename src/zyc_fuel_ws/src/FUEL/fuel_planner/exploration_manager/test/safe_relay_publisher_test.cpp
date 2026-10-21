@@ -17,6 +17,8 @@ class SafeRelayPublisherTest {
     nh.setParam("sdf_map/obstacles_inflation", 0.1);
     nh.setParam("mission/safe_relay/enabled", true);
     nh.setParam("mission/safe_relay/minimum_progress", 0.70);
+    nh.setParam("mission/safe_relay/candidate_search_radius", 0.01);
+    nh.setParam("mission/safe_relay/maximum_gap", 100.0);
     nh.setParam("mission/safe_relay/topic_prefix", std::string("/safe_relay_test"));
     auto map = std::make_shared<SDFMap>();
     map->initMap(nh);
@@ -109,8 +111,7 @@ class SafeRelayPublisherTest {
       ASSERT_EQ(3U, received_goals.poses.size());
       for (std::size_t i = 0; i < 2; ++i) {
         EXPECT_EQ(i + 1, received_goals.poses[i].header.seq);
-        EXPECT_EQ(initial_history[initial_goals[i].route_index].stamp,
-                  received_goals.poses[i].header.stamp);
+        EXPECT_EQ(initial_goals[i].pose.header.stamp, received_goals.poses[i].header.stamp);
         EXPECT_DOUBLE_EQ(initial_history[initial_goals[i].route_index].sample.position.x(),
                          received_goals.poses[i].pose.position.x);
       }
@@ -125,7 +126,7 @@ class SafeRelayPublisherTest {
     publisher.timerCallback(ros::TimerEvent());
     ASSERT_EQ(3U, publisher.goals_.size());
     EXPECT_GT(publisher.goals_.back().route_index, 30U);
-    EXPECT_TRUE(publisher.history_[publisher.goals_.back().route_index].sample.confirmed);
+    EXPECT_TRUE(publisher.history_[publisher.goals_.back().route_index].candidate.confirmed);
     map->setOccupied(Eigen::Vector3d(3.0, 0, 1), 0);
     restore_issued();
 
@@ -188,6 +189,8 @@ class SafeRelayPublisherTest {
     nh.setParam("mission/safe_relay/minimum_xy_spacing", 0.70);
     nh.setParam("mission/safe_relay/hold_radius", 0.30);
     nh.setParam("mission/safe_relay/hold_half_height", 0.10);
+    nh.setParam("mission/safe_relay/candidate_search_radius", 0.01);
+    nh.setParam("mission/safe_relay/maximum_gap", 100.0);
     auto map = std::make_shared<SDFMap>();
     map->initMap(nh);
     SafeRelayPublisher publisher;
@@ -244,10 +247,137 @@ class SafeRelayPublisherTest {
     EXPECT_NEAR(0.7, publisher.history_[12].sample.progress -
                          publisher.history_[5].sample.progress, 1e-9);
   }
+
+  static void voxelClearance() {
+    ros::NodeHandle nh("~voxel_clearance");
+    nh.setParam("sdf_map/resolution", 0.1);
+    nh.setParam("sdf_map/map_size_x", 4.0);
+    nh.setParam("sdf_map/map_size_y", 4.0);
+    nh.setParam("sdf_map/map_size_z", 2.0);
+    nh.setParam("sdf_map/ground_height", 0.0);
+    nh.setParam("sdf_map/max_ray_length", 20.0);
+    nh.setParam("sdf_map/obstacles_inflation", 0.1);
+    auto map = std::make_shared<SDFMap>();
+    map->initMap(nh);
+    SafeRelayPublisher publisher;
+    publisher.map_ = map;
+    publisher.hold_half_height_ = 0.10;
+    publisher.hold_radius_ = 0.30;
+    const Eigen::Vector3d point(0.05, 0.05, 0.35);
+    EXPECT_DOUBLE_EQ(0.0, publisher.horizontalClearance(point)); // UNKNOWN is a boundary.
+    for (int y = -10; y <= 10; ++y)
+      for (int z = 0; z <= 10; ++z) {
+        pcl::PointCloud<pcl::PointXYZ> cloud;
+        pcl::PointXYZ end;
+        end.x = 20.0; end.y = 0.1*y + 0.05; end.z = 0.1*z + 0.05;
+        cloud.push_back(end);
+        map->inputPointCloud(cloud, 1, Eigen::Vector3d(-1.9, end.y, end.z));
+      }
+    ASSERT_TRUE(publisher.volumeFree(point, 0.3, 0.1));
+    EXPECT_DOUBLE_EQ(0.6, publisher.horizontalClearance(point));
+    auto occupy = [&](const Eigen::Vector3d& obstacle) {
+      // setOccupied changes only inflation; real hits must update raw occupancy.
+      pcl::PointCloud<pcl::PointXYZ> cloud;
+      cloud.push_back(pcl::PointXYZ(obstacle.x(), obstacle.y(), obstacle.z()));
+      for (int i = 0; i < 20; ++i) map->inputPointCloud(cloud, 1, point);
+      ASSERT_EQ(SDFMap::OCCUPIED, map->getOccupancy(obstacle));
+    };
+    occupy(Eigen::Vector3d(0.05, 0.05, 0.05)); // Ground outside +/-0.1m.
+    EXPECT_DOUBLE_EQ(0.6, publisher.horizontalClearance(point));
+    occupy(Eigen::Vector3d(0.45, 0.05, 0.35));
+    EXPECT_NEAR(0.35, publisher.horizontalClearance(point), 1e-9); // BOX face, not centre distance 0.4.
+    EXPECT_TRUE(publisher.volumeFree(point, 0.3, 0.1));
+    occupy(Eigen::Vector3d(0.25, 0.05, 0.35));
+    EXPECT_NEAR(0.15, publisher.horizontalClearance(point), 1e-9);
+    EXPECT_FALSE(publisher.volumeFree(point, 0.3, 0.1));
+    EXPECT_LT(publisher.horizontalClearance(Eigen::Vector3d(1.85, 0.05, 0.35)), 0.3);
+  }
+
+  static void unflownPocketAndGap() {
+    ros::NodeHandle nh("~unflown_pocket");
+    nh.setParam("sdf_map/resolution", 0.1);
+    nh.setParam("sdf_map/map_size_x", 4.0);
+    nh.setParam("sdf_map/map_size_y", 4.0);
+    nh.setParam("sdf_map/map_size_z", 2.0);
+    nh.setParam("sdf_map/ground_height", 0.0);
+    nh.setParam("sdf_map/max_ray_length", 20.0);
+    nh.setParam("sdf_map/obstacles_inflation", 0.1);
+    nh.setParam("mission/safe_relay/enabled", true);
+    nh.setParam("mission/safe_relay/hold_radius", 0.30);
+    nh.setParam("mission/safe_relay/hold_half_height", 0.10);
+    nh.setParam("mission/safe_relay/topic_prefix", std::string("/safe_relay_pocket_test"));
+    auto map = std::make_shared<SDFMap>();
+    map->initMap(nh);
+    SafeRelayPublisher publisher;
+    publisher.initialize(nh, map, std::make_shared<FastPlannerManager>());
+    publisher.timer_.stop();
+    nav_msgs::Path route, goals;
+    auto route_sub = nh.subscribe<nav_msgs::Path>("/safe_relay_pocket_test/reference_route", 1,
+        [&](const nav_msgs::Path::ConstPtr& msg) { route = *msg; });
+    auto goals_sub = nh.subscribe<nav_msgs::Path>("/safe_relay_pocket_test/relay_waypoints", 1,
+        [&](const nav_msgs::Path::ConstPtr& msg) { goals = *msg; });
+    auto spin = []() {
+      for (int i = 0; i < 10; ++i) { ros::spinOnce(); ros::WallDuration(0.01).sleep(); }
+    };
+    spin();
+    ros::Time::setNow(ros::Time(300));
+    publisher.setEntrance(Eigen::Vector3d(-1.0, 0.0, 0.45), Eigen::Vector3d::UnitX());
+    for (int i = 0; i <= 15; ++i)
+      publisher.observe(Eigen::Vector3d(-1.0 + 0.1*i, 0.0, 0.45), 0,
+                        ros::Time(299.8 + 0.01*i));
+    publisher.timerCallback(ros::TimerEvent());
+    EXPECT_TRUE(publisher.goals_.empty()); // UNKNOWN must not create an unflown goal.
+    const auto map_frame = [&]() {
+      // Leader flies near the lower boundary y=-0.30; the wider stopping
+      // pocket lies at y=+0.30 and has never been traversed by the leader.
+      for (int y = -3; y <= 9; ++y)
+        for (int z = 2; z <= 7; ++z) {
+          pcl::PointCloud<pcl::PointXYZ> cloud;
+          const pcl::PointXYZ end(20.0, 0.1*y + 0.05, 0.1*z + 0.05);
+          cloud.push_back(end);
+          map->inputPointCloud(cloud, 1, Eigen::Vector3d(-1.9, end.y, end.z));
+        }
+    };
+    map_frame();
+    publisher.timerCallback(ros::TimerEvent());
+    publisher.timerCallback(ros::TimerEvent());
+    EXPECT_TRUE(publisher.goals_.empty()); // Same map cannot confirm a shifted point twice.
+    map_frame();
+    publisher.timerCallback(ros::TimerEvent());
+    ASSERT_EQ(1U, publisher.goals_.size());
+    EXPECT_EQ("GAP_FALLBACK", publisher.last_status_);
+    const auto released = publisher.goals_.front();
+    const auto& p = released.pose.pose.position;
+    EXPECT_GE(p.y, 0.29);
+    EXPECT_DOUBLE_EQ(0.45, p.z);
+    EXPECT_GE(publisher.horizontalClearance(Eigen::Vector3d(p.x, p.y, p.z)), 0.59);
+    EXPECT_TRUE(publisher.volumeFree(Eigen::Vector3d(p.x, p.y, p.z), 0.30, 0.10));
+    EXPECT_LT((Eigen::Vector3d(p.x, p.y, p.z) - publisher.leader_).norm(), 1.0);
+    spin();
+    ASSERT_EQ(16U, route.poses.size());
+    ASSERT_EQ(1U, goals.poses.size());
+    for (const auto& pose : route.poses) EXPECT_DOUBLE_EQ(0.0, pose.pose.position.y);
+    EXPECT_DOUBLE_EQ(p.y, goals.poses.front().pose.position.y);
+    EXPECT_EQ(ros::Time(300), goals.poses.front().header.stamp);
+    // The immutable goal has its own coordinates; it is not reconstructed from
+    // the measured reference route when that endpoint is later occupied.
+    map->setOccupied(Eigen::Vector3d(p.x, p.y, p.z));
+    publisher.timerCallback(ros::TimerEvent());
+    spin();
+    ASSERT_EQ(1U, goals.poses.size());
+    EXPECT_DOUBLE_EQ(p.y, goals.poses.front().pose.position.y);
+    EXPECT_EQ(released.id, goals.poses.front().header.seq);
+  }
 };
 TEST(SafeRelayPublisher, NewEndpointsAndRetainedIssuedPoints) { SafeRelayPublisherTest::run(); }
 TEST(SafeRelayPublisher, EntranceFallbackUsesHalfMeterThenConfiguredSpacing) {
   SafeRelayPublisherTest::entranceSpacing();
+}
+TEST(SafeRelayPublisher, RawVoxelBoxesAndLowHeightClearance) {
+  SafeRelayPublisherTest::voxelClearance();
+}
+TEST(SafeRelayPublisher, UnflownKnownFreePocketAndCurrentPositionGapFallback) {
+  SafeRelayPublisherTest::unflownPocketAndGap();
 }
 }  // namespace fast_planner
 int main(int argc, char** argv) {

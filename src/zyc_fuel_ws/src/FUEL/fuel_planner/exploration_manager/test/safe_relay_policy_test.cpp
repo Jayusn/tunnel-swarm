@@ -67,6 +67,73 @@ void checkHorizontalSpacing() {
 int main() {
   checkHorizontalSpacing();
   Config cfg;
+  // Legacy cases below exercise the ordinary leader-clearance gate separately
+  // from the new long-gap exception.
+  cfg.maximum_gap = 100.0;
+  Config gap_cfg;
+  auto gap_route = straight(14);
+  require(select(gap_route, 0, gap_route.back().position, gap_cfg).kind == Kind::WAIT,
+          "current-position fallback must not activate before 1.5m of route progress");
+  gap_route = straight(15);
+  for (auto& p : gap_route) p.clearance = 0.31 + 0.01 * p.progress;
+  auto gap_pick = select(gap_route, 0, gap_route.back().position, gap_cfg);
+  require(gap_pick.kind == Kind::GAP_FALLBACK && gap_pick.index == 15,
+          "1.5m gap must allow the qualified current endpoint without waiting another 1m");
+  for (auto& p : gap_route) p.confirmed = false;
+  require(select(gap_route, 0, gap_route.back().position, gap_cfg).kind == Kind::WAIT,
+          "long-gap fallback must retain map confirmation");
+  for (auto& p : gap_route) { p.confirmed = true; p.hold_free = false; }
+  require(select(gap_route, 0, gap_route.back().position, gap_cfg).kind == Kind::WAIT,
+          "1.5m gap must never fabricate an unsafe endpoint");
+  for (auto& p : gap_route) { p.hold_free = true; p.position.x() = 0.65; }
+  gap_route[0].position.x() = 0.0;
+  require(select(gap_route, 0, gap_route.back().position, gap_cfg).kind == Kind::WAIT,
+          "long-gap fallback still requires 0.7m XY separation from the last published point");
+  // Prefer a local clearance peak even when a weaker candidate is already
+  // eligible for release. Merely crossing the spacing gate is insufficient.
+  auto ranked = straight();
+  for (auto& p : ranked) p.clearance = 0.31;
+  ranked[14].clearance = 0.55;
+  ranked[16].clearance = 0.60;
+  require(select(ranked, 0, ranked.back().position, cfg).index == 16,
+          "ordinary point must wait for the better nearby clearance peak");
+  ranked[16].confirmed = false;
+  require(select(ranked, 0, ranked.back().position, cfg).index == 14,
+          "unconfirmed wider space must not veto a confirmed waiting point");
+  ranked[16].confirmed = true;
+  Config wait_cfg = cfg;
+  wait_cfg.normal_spacing = 10.0;
+  ranked[16].clearance = 0.31;
+  for (std::size_t i = 20; i < ranked.size(); ++i) ranked[i].hold_free = false;
+  require(select(ranked, 0, ranked.back().position, wait_cfg).index == 14,
+          "pre-obstacle fallback also compares clearance within its window");
+  ranked = straight();
+  for (auto& p : ranked) p.clearance = 0.31;
+  ranked[5].hold_free = false;
+  ranked[11].clearance = 0.55;
+  ranked[13].clearance = 0.60;
+  Config after_cfg = wait_cfg;
+  after_cfg.minimum_xy_spacing = 0.0;
+  require(select(ranked, 0, ranked.back().position, after_cfg).index == 13,
+          "post-obstacle fallback must maximize clearance within its local window");
+  // A broad previous pocket -> weak pre-obstacle point -> weak post-obstacle
+  // point -> broad new pocket. Model the geometry behind recorded points 9-12,
+  // without hard-coding their coordinates or requiring a larger global radius.
+  auto pockets = straight();
+  const std::vector<double> gaps{0.55, 0.55, 0.55, 0.55, 0.55, 0.55, 0.55,
+      0.47, 0.40, 0.31, 0.0, 0.33, 0.35, 0.42, 0.50, 0.58, 0.59,
+      0.58, 0.50, 0.45, 0.40, 0.35};
+  for (std::size_t i = 0; i < pockets.size(); ++i) {
+    pockets[i].hold_free = pockets[i].confirmed = i < gaps.size() && i != 10;
+    pockets[i].clearance = i < gaps.size() ? gaps[i] : 0.0;
+  }
+  require(select(pockets, 0, pockets.back().position, cfg).index == 16 &&
+          select(pockets, 0, pockets.back().position, wait_cfg).index == 16,
+          "ordinary and fallback goals must skip both weak transition points for the wide pocket");
+  for (std::size_t i = 10; i < pockets.size(); ++i)
+    pockets[i].hold_free = pockets[i].confirmed = false;
+  require(select(pockets, 0, pockets.back().position, wait_cfg).kind == Kind::WAIT,
+          "pre-obstacle fallback must retain the existing pocket instead of publishing a weaker point");
   auto route = straight(100);
   auto pick = select(route, 0, route.back().position, cfg);
   require(pick.kind == Kind::NORMAL && pick.index == 10, "normal route must release at 1m progress");

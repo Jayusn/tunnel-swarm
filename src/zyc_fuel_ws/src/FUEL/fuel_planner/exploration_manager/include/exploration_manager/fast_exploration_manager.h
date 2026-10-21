@@ -163,6 +163,9 @@ private:
   bool straight_run_extension_enabled_{true};
   double straight_run_extension_distance_{0.30};
   double straight_run_extension_min_turn_deg_{35.0};
+  bool passage_centering_enabled_{true};
+  double passage_centering_search_radius_{0.90};
+  double passage_centering_maximum_shift_{0.45};
   // 前方竖直障碍把通道横向分开时，优先横移到占据地图中净宽更大的一侧。
   bool wide_side_bypass_enabled_{true};
   double wide_side_bypass_min_lookahead_{0.20};
@@ -290,6 +293,7 @@ private:
                        vector<Vector3d>& refined_pts, vector<double>& refined_yaws);
 
   void shortenPath(vector<Vector3d>& path);
+  bool centrePassagePath(vector<Vector3d>& path, double horizon);
   void extendSafeStraightRuns(vector<Vector3d>& path);
 
   // 2026-07-08 19:26: 为比赛任务层提供最小约束工具，把“先过门进入搜索区、起飞区禁搜、未完成任务不结束”
