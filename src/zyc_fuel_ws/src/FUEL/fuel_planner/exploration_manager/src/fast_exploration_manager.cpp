@@ -2733,6 +2733,8 @@ void FastExplorationManager::completeTurnInPlace(const Vector3d&) {
 void FastExplorationManager::initialize(ros::NodeHandle& nh) {
   nh.param("mission/manual_path/enabled", manual_path_enabled_, false);
   nh.param("mission/manual_path/use_astar", manual_path_use_astar_, false);
+  nh.param("mission/manual_path/wait_for_trigger", manual_path_wait_for_trigger_, false);
+  nh.param("mission/manual_path/exit_enabled", manual_exit_enabled_, false);
   nh.param("mission/manual_path/arrive_distance", manual_path_arrive_distance_, 0.25);
   if (manual_path_enabled_) {
     XmlRpc::XmlRpcValue coordinates;
@@ -2772,6 +2774,7 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
   // 2026-07-13: 初始化比赛第二阶段任务搜索层，颜色/二维码/温度接口与 frontier 生命周期解耦。
   task_search_manager_.reset(new TaskSearchManager);
   task_search_manager_->initialize(nh);
+  task_search_manager_->deferExitCrossing(manual_path_enabled_ && manual_exit_enabled_);
   nh.param("mission/short_backtrack_enabled", short_backtrack_enabled_, false);
   // 短回撤启用时的距离、冷却、次数和换向角均可在launch调节。
   nh.param("mission/short_backtrack_min_distance", short_backtrack_min_distance_, 0.10);
@@ -3156,22 +3159,38 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
 
 int FastExplorationManager::planManualWaypointMotion(
     const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, const Vector3d& yaw) {
+  if (manual_path_wait_for_trigger_ && !manual_path_started_) return FAIL;
   if (task_search_manager_ && task_search_manager_->landingRequested()) return NO_FRONTIER;
-  if (manual_path_.finished()) {
+  Vector3d target;
+  double target_yaw = yaw[0];
+  const bool exit_motion = manual_exit_enabled_ && manual_exit_latched_ && manual_path_.finished();
+  if (exit_motion) {
+    task_search_manager_->resumeDeferredExitCrossing();
+    // 出口阶段交接只根据真实里程计，不能用预测起点提前把控制权交给降落。
+    if (!task_search_manager_->buildStage3Goal(manual_actual_pos_, yaw[0], false,
+                                               target, target_yaw))
+      return task_search_manager_->exitTransitActive() ? FAIL : NO_FRONTIER;
+    ed_->path_next_goal_ = {pos, target};
+    ed_->global_tour_ = {pos, target};
+  } else if (manual_path_.finished()) {
+    if (manual_exit_enabled_) {
+      ROS_INFO_THROTTLE(1.0, "[manual_path] route complete; waiting for confirmed exit.");
+      return FAIL;
+    }
     ROS_INFO_THROTTLE(1.0, "[manual_path] all specified waypoints completed; finish route.");
     return NO_FRONTIER;
+  } else {
+    target = manual_path_.points[manual_path_.next];
+    ed_->path_next_goal_ = manual_path_.path(pos);
+    ed_->global_tour_ = {pos};
+    ed_->global_tour_.insert(ed_->global_tour_.end(),
+        manual_path_.points.begin() + manual_path_.next, manual_path_.points.end());
+    const Eigen::Vector2d direction = target.head<2>() - pos.head<2>();
+    if (direction.norm() > 0.15) target_yaw = std::atan2(direction.y(), direction.x());
   }
-  const Vector3d target = manual_path_.points[manual_path_.next];
   ed_->next_goal_ = target;
-  ed_->path_next_goal_ = manual_path_.path(pos);
-  ed_->global_tour_ = {pos};
-  ed_->global_tour_.insert(ed_->global_tour_.end(),
-      manual_path_.points.begin() + manual_path_.next, manual_path_.points.end());
   last_requested_goal_ = target;
   has_last_requested_goal_ = true;
-  const Eigen::Vector2d direction = target.head<2>() - pos.head<2>();
-  const double target_yaw = direction.norm() > 0.15
-      ? std::atan2(direction.y(), direction.x()) : yaw[0];
   if (external_selection_only_) {
     external_selected_viewpoint_ = target;
     external_selected_yaw_ = target_yaw;
@@ -3221,8 +3240,9 @@ int FastExplorationManager::planManualWaypointMotion(
   } else {
     planner_manager_->planYawExplore(yaw, target_yaw, true, ep_->relax_time_);
   }
-  ROS_INFO("[manual_path] waypoint %zu/%zu target=(%.2f, %.2f, %.2f).",
-           manual_path_.next + 1, manual_path_.points.size(), target.x(), target.y(), target.z());
+  ROS_INFO("[manual_path] %s target=(%.2f, %.2f, %.2f), completed=%zu/%zu.",
+           exit_motion ? "exit approach" : "waypoint", target.x(), target.y(), target.z(),
+           manual_path_.next, manual_path_.points.size());
   return SUCCEED;
 }
 
@@ -4373,8 +4393,30 @@ void FastExplorationManager::updateMissionOdometry(const Vector3d& pos, double y
       safe_relay_->setEntrance(mission_workspace_origin_, mission_workspace_dir_);
     safe_relay_->observe(pos, yaw, stamp);
   }
-  if (manual_path_enabled_)
+  if (manual_path_enabled_) {
+    if (manual_path_wait_for_trigger_ && !manual_path_started_) return;
+    manual_actual_pos_ = pos;
+    if (manual_exit_enabled_ && task_search_manager_) {
+      // 入口关闭时以开始任务的位置/航向建立通道参考；入口开启时复用已发布的门平面。
+      geometry_msgs::PoseStamped detected_exit;
+      task_search_manager_->updateExitDetectionOnly(pos, yaw, detected_exit);
+      Vector3d portal;
+      Eigen::Vector2d outward;
+      if (!manual_exit_latched_ && task_search_manager_->confirmedExitPortal(portal, outward)) {
+        const Vector3d previous = manual_path_.finished() ? pos : manual_path_.points[manual_path_.next];
+        const int nearest = manual_path_.truncateAtExit(portal, outward);
+        manual_exit_latched_ = true;
+        manual_exit_replan_pending_ = manual_path_.finished() ||
+            (manual_path_.points[manual_path_.next] - previous).norm() > 1e-6;
+        ROS_WARN("[manual_path] exit locked; finish original waypoint %d then approach exit; "
+                 "outside and later waypoints discarded.", nearest + 1);
+      }
+    }
+    const bool was_finished = manual_path_.finished();
     manual_path_.updateOdometry(pos, manual_path_arrive_distance_);
+    if (manual_exit_latched_ && !was_finished && manual_path_.finished())
+      manual_exit_replan_pending_ = true;
+  }
   if (!entry_forward_complete_ && mission_workspace_lock_received_ &&
       (pos - mission_workspace_origin_).dot(mission_workspace_dir_) >= 1.0 - 1e-6) {
     entry_forward_complete_ = true;
@@ -4387,7 +4429,8 @@ void FastExplorationManager::updateMissionOdometry(const Vector3d& pos, double y
     while (static_cast<int>(recovery_odom_history_.size()) > recovery_history_max_size_)
       recovery_odom_history_.pop_front();
   }
-  if (task_search_manager_) task_search_manager_->updateRobotPose(pos, yaw);
+  if (task_search_manager_ && !(manual_path_enabled_ && manual_exit_enabled_))
+    task_search_manager_->updateRobotPose(pos, yaw);
 }
 
 bool FastExplorationManager::consumeRcSearchLandingStartRequest() {

@@ -2277,6 +2277,26 @@ void TaskSearchManager::beginExitCrossing(const ros::Time& now) {
             "confirmed exit latched; approach and cross before landing search.");
 }
 
+bool TaskSearchManager::confirmedExitPortal(
+    Eigen::Vector3d& portal, Eigen::Vector2d& outward) const {
+  if (!enabled_ || !exit_detection_enabled_ || !exit_portal_locked_ ||
+      !exit_candidate_confirmed_ || !exit_portal_outside_verified_) return false;
+  portal = exit_portal_center_;
+  outward = exit_outward_direction_;
+  return true;
+}
+
+bool TaskSearchManager::resumeDeferredExitCrossing() {
+  Eigen::Vector3d portal;
+  Eigen::Vector2d outward;
+  if (rc_land_active_ || !exit_crossing_deferred_ ||
+      mission_stage_ != SEARCH_CORRIDOR || !confirmedExitPortal(portal, outward)) return false;
+  exit_crossing_deferred_ = false;
+  beginExitCrossing(ros::Time::now());
+  publishSearchState();
+  return true;
+}
+
 void TaskSearchManager::updateExitCandidate(const Eigen::Vector3d& cur_pos) {
   if (rc_land_active_ || !enabled_ || !exit_detection_enabled_ || !sdf_map_ ||
       !corridor_frame_received_ || !corridor_entry_crossed_ ||
@@ -2330,7 +2350,8 @@ void TaskSearchManager::updateExitCandidate(const Eigen::Vector3d& cur_pos) {
   // 本次地图确认有效后立即锁存，下一轮规划前的地图更新不能撤销或替换出口。
   if (exit_auto_crossing_enabled_ && exit_candidate_confirmed_ &&
       (!require_stage2_detections_ || allStage2TargetsFound())) {
-    beginExitCrossing(now);
+    if (exit_crossing_deferred_) lockExitPortal(now);
+    else beginExitCrossing(now);
   }
   publishSearchState();
 }
@@ -2345,7 +2366,7 @@ bool TaskSearchManager::buildStage3Goal(const Eigen::Vector3d& cur_pos, double c
   if (mission_stage_ == SEARCH_CORRIDOR) {
     // 完整飞行观察时继续更新出口证据和显示，但不生成接近/穿越/补扫目标。
     // CH9人工入口不受此自动接管开关影响。
-    if (!exit_auto_crossing_enabled_) return false;
+    if (!exit_auto_crossing_enabled_ || exit_crossing_deferred_) return false;
     // 任务允许接管时才锁定出口和冻结frontier，确认本身不阻止剩余目标搜索。
     if (require_stage2_detections_ && !allStage2TargetsFound()) return false;
     if (!exit_candidate_confirmed_) {

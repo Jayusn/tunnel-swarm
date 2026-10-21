@@ -324,6 +324,14 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
   odom_callback_queue_.callAvailable(ros::WallDuration(0.0));
   ROS_INFO_STREAM_THROTTLE(1.0, "[FSM]: state: " << fd_->state_str_[int(state_)]);
 
+  if ((state_ == PLAN_TRAJ || state_ == PUB_TRAJ || state_ == EXEC_TRAJ) &&
+      expl_manager_->consumeManualExitReplanRequest()) {
+    requestActiveTrajectoryBrake("manual waypoint exit handoff");
+    fd_->static_state_ = true;
+    next_plan_retry_time_ = ros::Time(0);
+    transitState(PLAN_TRAJ, "manual-exit-handoff");
+  }
+
   // 已开始准备下一条轨迹但旧轨迹先到终点时，明确结束旧轨迹并让控制器锁住实时XY。
   // 仅在PLAN/PUB等待阶段触发；通道内普通轨迹执行到终点附近后才重新选路。
   if ((state_ == PLAN_TRAJ || state_ == PUB_TRAJ) && active_traj_valid_) {
@@ -1037,6 +1045,7 @@ void FastExplorationFSM::triggerCallback(const nav_msgs::PathConstPtr& msg) {
   if (msg->poses[0].pose.position.z < -0.1) return;
   if (state_ != WAIT_TRIGGER) return;
   fd_->trigger_ = true;
+  expl_manager_->startManualWaypointMission();
   cout << "Triggered!" << endl;
   if (use_diff_for_fuel_exploration_) {
     if (exploration_policy::shouldActivateExternalExploration(

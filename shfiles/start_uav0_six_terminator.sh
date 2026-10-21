@@ -126,7 +126,7 @@ run_controller_pane() {
   printf '[启动] UAV0 FUEL bridge、AutoTrans NMPC、logger 与同目录 rosbag\n'
   printf '[安全] 本屏不重复启动 FUEL，不自动解锁或切换 OFFBOARD。\n'
   roslaunch autotrans_reference_bridge uav0_autotrans_controller.launch \
-    pure_fuel_mode:=true precision_landing_mission_mode:=true
+    pure_fuel_mode:="${UAV0_AUTOTRANS_PURE_FUEL_MODE:-true}" precision_landing_mission_mode:=true
   printf '[退出] AutoTrans 分屏，返回码=%s\n' "$?"
   keep_open
 }

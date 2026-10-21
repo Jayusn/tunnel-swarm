@@ -612,6 +612,60 @@ public:
           "finished manual route resumed frontier exploration");
   }
 
+  static void runManualPortalHandoff(bool with_entry) {
+    ros::NodeHandle nh(with_entry ? "~manual_entry_exit" : "~manual_exit_only");
+    nh.setParam("mission/task_search/require_stage2_detections", false);
+    nh.setParam("mission/task_search/cruise_height", 1.0);
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    manager.manual_path_enabled_ = true;
+    manager.manual_path_wait_for_trigger_ = true;
+    manager.manual_exit_enabled_ = true;
+    manager.external_selection_only_ = true;
+    const Vector3d first(0, 0, 1), nearest(0.6, 0, 1), portal(1.0, 0, 1);
+    const Vector3d outside(1.2, 0, 1), zero = Vector3d::Zero();
+    manager.manual_path_.points = with_entry ? std::vector<Vector3d>{first, nearest, outside}
+                                            : std::vector<Vector3d>{first, outside, nearest, outside};
+    auto& task = *manager.task_search_manager_;
+    task.deferExitCrossing(true);
+    task.external_landing_planner_ = true;
+    if (with_entry) task.setCorridorFrame(Vector3d(-0.5, 0, 1), Vector3d::UnitX());
+    manager.updateMissionOdometry(first, 0.0);
+    EXPECT_EQ(0u, manager.manual_path_.next);
+    EXPECT_EQ(FAIL, manager.planExploreMotion(first, zero, zero, zero));
+    manager.startManualWaypointMission();
+    manager.updateMissionOdometry(first, 0.0);
+    EXPECT_EQ(1u, manager.manual_path_.next);
+    EXPECT_TRUE(task.corridor_entry_crossed_);
+    EXPECT_NEAR(task.corridor_origin_.x(), with_entry ? -0.5 : 0.0, 1e-6);
+    // 出口检测已由真实地图回归测试覆盖，此处隔离验证航点与出口阶段之间的交接。
+    task.exit_candidate_confirmed_ = task.exit_portal_outside_verified_ = true;
+    task.exit_portal_center_ = portal;
+    task.exit_outward_direction_ = Eigen::Vector2d::UnitX();
+    task.lockExitPortal(ros::Time::now());
+    manager.updateMissionOdometry(first, 0.0);
+    EXPECT_TRUE(manager.manual_exit_latched_);
+    EXPECT_EQ(2u, manager.manual_path_.points.size());
+    EXPECT_EQ(!with_entry, manager.consumeManualExitReplanRequest());
+    EXPECT_FALSE(task.stage3Active());
+    EXPECT_EQ(SUCCEED, manager.planExploreMotion(first, zero, zero, zero));
+    EXPECT_TRUE(manager.ed_->next_goal_.isApprox(nearest));
+    // 预测起点到达最近点/出口不能替代真实到点，也不能提前交接降落。
+    manager.planExploreMotion(portal, zero, zero, zero);
+    EXPECT_EQ(1u, manager.manual_path_.next);
+    EXPECT_FALSE(task.stage3Active());
+    manager.updateMissionOdometry(nearest, 0.0);
+    EXPECT_TRUE(manager.consumeManualExitReplanRequest());
+    EXPECT_FALSE(manager.consumeManualExitReplanRequest());
+    // 未给测试地图自由证据：只能重试出口，不能跳回列表或追加frontier。
+    EXPECT_EQ(FAIL, manager.planExploreMotion(portal, zero, zero, zero));
+    EXPECT_TRUE(task.exitTransitActive());
+    manager.updateMissionOdometry(portal, 0.0);
+    EXPECT_EQ(NO_FRONTIER, manager.planExploreMotion(portal, zero, zero, zero));
+    EXPECT_EQ(TaskSearchManager::SEARCH_OUTSIDE_LANDING, task.mission_stage_);
+    EXPECT_FALSE(task.landingRequested());
+  }
+
   static void runManualAstar(const std::string& scenario) {
     ros::NodeHandle nh("~manual_astar_" + scenario);
     nh.setParam("manager/use_geometric_path", true);
@@ -1556,6 +1610,14 @@ TEST(ManualWaypoints, AstarUnknownRouteKeepsTarget) {
 
 TEST(ManualWaypoints, AstarSameVoxelPreservesExactTarget) {
   fast_planner::TurnEscapeTest::runManualAstar("same_voxel");
+}
+
+TEST(ManualWaypoints, EntryGatesWaypointsThenExitWaitsForActualArrival) {
+  fast_planner::TurnEscapeTest::runManualPortalHandoff(true);
+}
+
+TEST(ManualWaypoints, ExitOnlyUsesInitialHeadingAndSkipsOutsideWaypoints) {
+  fast_planner::TurnEscapeTest::runManualPortalHandoff(false);
 }
 
 TEST(TurnEscape, ClearsContactBeforeResumingLatchedYaw) {

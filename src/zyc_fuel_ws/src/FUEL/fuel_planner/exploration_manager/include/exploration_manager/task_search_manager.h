@@ -35,6 +35,10 @@ public:
                                geometry_msgs::PoseStamped& detected_exit);
   // 连续新地图证据次数；独立入口据此保留历史标记，里程计回调不额外计票。
   int exitEvidenceCount() const { return exit_candidate_hits_; }
+  // 手填航点模式仍确认并锁存出口，但由航点完成事件放行穿越。
+  void deferExitCrossing(bool defer) { exit_crossing_deferred_ = defer; }
+  bool confirmedExitPortal(Eigen::Vector3d& portal, Eigen::Vector2d& outward) const;
+  bool resumeDeferredExitCrossing();
   int selectSearchCandidate(const std::vector<Eigen::Vector3d>& points,
                             const std::vector<double>& yaws,
                             const std::vector<std::vector<Eigen::Vector3d>>& frontiers,
@@ -117,6 +121,7 @@ public:
   }
 
 private:
+  bool exit_crossing_deferred_{false};
   friend class TurnEscapeTest;
   friend class TaskSearchManagerTest;
 

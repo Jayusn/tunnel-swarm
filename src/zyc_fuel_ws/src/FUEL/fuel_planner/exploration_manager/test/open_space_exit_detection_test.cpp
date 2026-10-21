@@ -552,6 +552,13 @@ public:
     automatic.setMap(exit_map);
     automatic.setCorridorFrame(Eigen::Vector3d(-1,0,1), Eigen::Vector3d::UnitX());
     automatic.corridor_entry_crossed_ = true;
+    TaskSearchManager deferred;
+    deferred.initialize(nh);
+    deferred.setMap(exit_map);
+    deferred.setCorridorFrame(Eigen::Vector3d(-1,0,1), Eigen::Vector3d::UnitX());
+    deferred.corridor_entry_crossed_ = true;
+    deferred.deferExitCrossing(true);
+    check(!deferred.resumeDeferredExitCrossing(), "unconfirmed exit started deferred crossing");
     const std::vector<std::pair<Eigen::Vector2d, Eigen::Vector2d>> exit_walls = {
         {{-3,-0.65},{0.5,-0.65}}, {{0.5,-0.65},{0.5,-2.6}},
         {{0.5,-2.6},{3,-2.6}}, {{3,-2.6},{3,2.6}},
@@ -591,6 +598,7 @@ public:
       ros::Time::setNow(ros::Time(200 + vote));
       exit_map->inputPointCloud(cloud, cloud.size(), exit_eye);
       automatic.updateRobotPose(exit_eye, 0.0);
+      deferred.updateRobotPose(exit_eye, 0.0);
       if (vote < 2)
         check(!automatic.exit_portal_locked_ && !automatic.stage3Active(),
               "automatic crossing started before three valid map observations");
@@ -599,6 +607,22 @@ public:
           automatic.mission_stage_ == TaskSearchManager::EXIT_APPROACH_INSIDE,
           "third real-map confirmation did not immediately latch and start exit approach");
     const Eigen::Vector3d locked_portal = automatic.exit_portal_center_;
+    Eigen::Vector3d deferred_portal, deferred_goal;
+    Eigen::Vector2d deferred_outward;
+    double deferred_yaw = 0;
+    check(deferred.confirmedExitPortal(deferred_portal, deferred_outward) &&
+          (deferred_portal - locked_portal).norm() < 1e-6 && !deferred.stage3Active(),
+          "manual exit failed to latch or took over before waypoint completion");
+    check(!deferred.buildStage3Goal(exit_eye, 0, true, deferred_goal, deferred_yaw) &&
+          !deferred.stage3Active(), "search exhaustion bypassed deferred exit");
+    check(deferred.resumeDeferredExitCrossing() && !deferred.resumeDeferredExitCrossing(),
+          "deferred exit could not start once after waypoint completion");
+    check(deferred.buildStage3Goal(exit_eye, 0, false, deferred_goal, deferred_yaw) &&
+          (deferred_goal - locked_portal).norm() < 1e-6 && deferred.exitTransitActive(),
+          "deferred crossing did not target the confirmed portal");
+    check(!deferred.buildStage3Goal(locked_portal, 0, false, deferred_goal, deferred_yaw) &&
+          deferred.mission_stage_ == TaskSearchManager::SEARCH_OUTSIDE_LANDING &&
+          !deferred.landingRequested(), "deferred exit did not hand off to landing search");
     Eigen::Vector3d crossing_goal;
     double crossing_yaw = 0;
     check(automatic.buildStage3Goal(locked_portal - Eigen::Vector3d(1.1,0,0),

@@ -41,5 +41,28 @@ int main() {
   require(route.path(second).size() == 1);
   route.updateOdometry(second, 0.25);
   require(route.next == 3 && route.finished() && route.path(start).empty());
+  // 最近门内点之后结束；即使门外点排在它前面，也不能继续执行门外点。
+  const Vector3d portal(4, 0, 0.8), outside(4.1, 0, 0.8), nearest(3.8, 0, 0.8);
+  route.points = {first, outside, second, nearest, Vector3d(2, 0, 0.8)};
+  route.next = 1;
+  require(route.truncateAtExit(portal, Eigen::Vector2d::UnitX()) == 3);
+  require(route.points.size() == 3 && route.next == 1 && route.points[1] == second &&
+          route.points.back() == nearest && !route.finished());
+  route.updateOdometry(second, 0.25);
+  require(route.path(second).back() == nearest);
+  route.updateOdometry(nearest, 0.25);
+  require(route.finished());
+  // 最近点已经飞完时直接交接，不回头；没有门内点时也直接交接。
+  route.points = {nearest, second, outside};
+  route.next = 1;
+  require(route.truncateAtExit(portal, Eigen::Vector2d::UnitX()) == 0 && route.finished());
+  route.points = {outside}; route.next = 0;
+  require(route.truncateAtExit(portal, Eigen::Vector2d::UnitX()) == -1 && route.finished());
+  require(route.truncateAtExit(portal, Eigen::Vector2d::UnitX()) == -1);
+  // 门内外按出口法向判断，不把世界X轴当出口朝向；最近距离包含XYZ。
+  route.points = {{0, 3.9, 2.0}, {0, 3.7, 0.8}, {0, 4.1, 0.8}};
+  route.next = 0;
+  require(route.truncateAtExit(Vector3d(0, 4, 0.8), Eigen::Vector2d::UnitY()) == 1 &&
+          route.points.size() == 2);
   return 0;
 }

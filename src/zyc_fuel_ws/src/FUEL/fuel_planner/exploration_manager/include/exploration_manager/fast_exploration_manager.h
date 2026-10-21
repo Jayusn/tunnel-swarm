@@ -42,6 +42,12 @@ public:
   int planExploreMotion(const Vector3d& pos, const Vector3d& vel, const Vector3d& acc,
                         const Vector3d& yaw);
   bool manualWaypointsEnabled() const { return manual_path_enabled_; }
+  void startManualWaypointMission() { manual_path_started_ = true; }
+  bool consumeManualExitReplanRequest() {
+    const bool pending = manual_exit_replan_pending_;
+    manual_exit_replan_pending_ = false;
+    return pending;
+  }
   // 只在 FSM 真正发布轨迹后提交高度，失败候选不能改写后续水平段目标。
   void recordPublishedTrajectoryHeight();
   // 混合模式只执行FUEL的候选评分与完整观察视点选择，轨迹由DIFF负责。
@@ -114,6 +120,12 @@ private:
   bool external_selection_only_{false};
   bool manual_path_enabled_{false};
   bool manual_path_use_astar_{false};
+  bool manual_path_wait_for_trigger_{false};
+  bool manual_path_started_{false};
+  bool manual_exit_enabled_{false};
+  bool manual_exit_latched_{false};
+  bool manual_exit_replan_pending_{false};
+  Vector3d manual_actual_pos_{Vector3d::Zero()};
   double manual_path_arrive_distance_{0.25};
   ManualWaypointPath manual_path_;
   int planManualWaypointMotion(const Vector3d& pos, const Vector3d& vel,
