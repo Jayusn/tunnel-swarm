@@ -467,13 +467,13 @@ TEST_F(WaypointYaw, TrackingDeviationStopsWithoutWaitingForPlanner) {
   fsm->checkTrackingDeviation(ros::Time::now());
   EXPECT_TRUE(fsm->trajectory_data.replan_pending);
   EXPECT_FALSE(fsm->trajectory_data.replan_stopped);
-  const auto soft = fsm->trajectory_data.replan_request;
+  const auto soft = fsm->trajectory_data.replan_request_id;
   fsm->odom_data.p.y() = .16;
   ros::Time::setNow(ros::Time(1002.12));
   fsm->checkTrackingDeviation(ros::Time::now());
   EXPECT_TRUE(fsm->trajectory_data.replan_stopped);
   EXPECT_TRUE(fsm->trajectory_data.traj_queue.empty());
-  EXPECT_GT(fsm->trajectory_data.replan_request.seq, soft.seq);
+  EXPECT_GT(fsm->trajectory_data.replan_request_id, soft);
   EXPECT_EQ(fsm->exec_traj_state_, MPCFSM::HOVER);
   EXPECT_LT((fsm->hover_pose_ - fsm->odom_data.p).norm(), 1e-9);
 }

@@ -264,7 +264,7 @@ namespace diff_planner
     tracking_retry_after_ = 0.0;
     periodic_replan_pending_ = false;
     ROS_WARN("[跟踪重规划] 收到控制器 request=%u, stop=%d；从最新里程计重算。",
-             request->header.seq, request->stop_current);
+             request->request_id, request->stop_current);
   }
 
   void DiffReplanFSM::publishTrackingResult(const traj_utils::PolyTraj& trajectory)
@@ -272,6 +272,7 @@ namespace diff_planner
     if (!tracking_replan_pending_) return;
     traj_utils::TrackingReplanResult result;
     result.header = tracking_request_.header;
+    result.request_id = tracking_request_.request_id;
     result.trajectory = trajectory;
     tracking_result_pub_.publish(result);
     tracking_replan_pending_ = false;
@@ -1762,20 +1763,45 @@ namespace diff_planner
     {
       ROS_WARN("Successfully modified final_goal in callReboundReplan !!!");
     }
-    planner_manager_->getLocalTarget(
-        planning_horizen_, start_pt_, final_goal_,
-        local_target_pt_, local_target_vel_,
-        touch_goal_);
+    const auto& previous_traj = planner_manager_->traj_.local_traj.traj;
+    const bool has_previous = previous_traj.getPieceNum() > 0;
+    const Eigen::Vector3d previous_target = has_previous
+        ? previous_traj.getPos(previous_traj.getTotalDuration()) : start_pt_;
+    const Eigen::Vector3d previous_velocity = has_previous
+        ? previous_traj.getVel(previous_traj.getTotalDuration()) : start_vel_;
+    const bool previous_final = has_previous && (previous_target - final_goal_).norm() < 1e-2;
+    const bool segmented = planner_manager_->segmentedPlanning();
+    if (segmented) {
+      Eigen::Vector3d target, velocity;
+      bool final_segment;
+      if (!planner_manager_->prepareLocalSegment(start_pt_, final_goal_,
+              target, velocity, final_segment)) return false;
+      local_target_pt_ = target;
+      local_target_vel_ = velocity;
+      touch_goal_ = final_segment;
+      // A longer remaining segment is not a worse replacement of a nearly
+      // consumed one. Keep the quality gate only for the same endpoint.
+      if ((previous_target - local_target_pt_).norm() > 0.05) require_improvement = false;
+    } else {
+      planner_manager_->getLocalTarget(
+          planning_horizen_, start_pt_, final_goal_,
+          local_target_pt_, local_target_vel_, touch_goal_);
+    }
 
     bool trajectory_replaced = false;
     bool plan_success = planner_manager_->reboundReplan(
         start_pt_, start_vel_, start_acc_,
         local_target_pt_, local_target_vel_,
         (have_new_target_ || flag_use_poly_init),
-        flag_randomPolyTraj, touch_goal_, require_improvement,
+        flag_randomPolyTraj, touch_goal_ || segmented, require_improvement,
         &trajectory_replaced);
 
     have_new_target_ = false;
+    if (segmented && !trajectory_replaced) {
+      local_target_pt_ = previous_target;
+      local_target_vel_ = previous_velocity;
+      touch_goal_ = previous_final;
+    }
 
     if (plan_success && trajectory_replaced)
     {

@@ -19,6 +19,8 @@
     <arg name="acc_tolerance" default="1.0"/>
     <arg name="planning_horizon"/>
     <!-- 旧局部轨迹预测与实际里程计的三维偏差超过该值时，从里程计强制重规划。 -->
+    <arg name="route_segment_count" default="1"/>
+    <arg name="route_segment_min_length" default="0.60"/>
     <arg name="max_tracking_error" default="0.30"/>
     <!-- 通道摆球避障默认关闭，由明确接入LDOP的实飞launch开启。 -->
     <arg name="enable_swing_obstacle_guard" default="false"/>
@@ -185,6 +187,8 @@
         <param name="fsm/enable_random_local_init" value="$(arg enable_random_local_init)" type="bool"/>
         <param name="fsm/thresh_replan_time" value="1.0" type="double"/>
         <param name="fsm/planning_horizon" value="$(arg planning_horizon)" type="double"/>
+        <param name="manager/route_segment_count" value="$(arg route_segment_count)"/>
+        <param name="manager/route_segment_min_length" value="$(arg route_segment_min_length)"/>
         <param name="fsm/max_tracking_error" value="$(arg max_tracking_error)" type="double"/>
         <param name="fsm/enable_swing_obstacle_guard" value="$(arg enable_swing_obstacle_guard)" type="bool"/>
         <param name="fsm/swing_obstacle_topic" value="$(arg swing_obstacle_topic)"/>

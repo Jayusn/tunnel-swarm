@@ -972,12 +972,13 @@ namespace PayloadMPC
         }
         traj_utils::TrackingReplan request;
         request.header = trajectory_data.replan_request;
+        request.request_id = trajectory_data.replan_request_id;
         request.trajectory_id = old_id;
         request.stop_current = stop;
         request.path_error = distance;
         tracking_replan_pub_.publish(request);
         ROS_WARN("[跟踪重规划] request=%u, stop=%d, path_error=%.3f, timed_error=%.3f, old_id=%d。",
-            request.header.seq, stop, distance, timed_error, old_id);
+            request.request_id, stop, distance, timed_error, old_id);
         tracking_error_since_ = -1.0;
     }
 

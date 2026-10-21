@@ -825,6 +825,16 @@ namespace diff_planner
     return constraint_added;
   }
 
+  bool PolyTrajOptimizer::searchRouteGuide(const Eigen::Vector3d& start,
+      const Eigen::Vector3d& end, std::vector<Eigen::Vector3d>& path)
+  {
+    beginPlanningCycle();
+    const bool success = searchObstaclePath(start, end, path) == ASTAR_RET::SUCCESS &&
+                         !checkPlanningTimeout("rolling route search");
+    endPlanningCycle();
+    return success;
+  }
+
   ASTAR_RET PolyTrajOptimizer::searchObstaclePath(
       const Eigen::Vector3d &start, const Eigen::Vector3d &end,
       std::vector<Eigen::Vector3d> &path)

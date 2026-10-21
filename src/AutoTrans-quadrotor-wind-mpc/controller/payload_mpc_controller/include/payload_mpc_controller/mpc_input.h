@@ -183,6 +183,7 @@ public:
   // While a request is pending, ordinary (untagged) trajectory deliveries
   // cannot release a stop or replace the trajectory being assessed.
   std_msgs::Header replan_request;
+  uint32_t replan_request_id{0};
   bool replan_pending{false};
   bool replan_stopped{false};
   void beginTrackingReplan(const ros::Time& stamp, bool stop);

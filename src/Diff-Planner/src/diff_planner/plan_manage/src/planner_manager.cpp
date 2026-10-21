@@ -19,6 +19,11 @@ namespace diff_planner
   {
     /* read algorithm parameters */
 
+    nh.param("manager/route_segment_count", route_segment_count_, 1);
+    nh.param("manager/route_segment_min_length", route_segment_min_length_, 0.60);
+    if (route_segment_count_ < 1 || route_segment_count_ > 10 ||
+        !std::isfinite(route_segment_min_length_) || route_segment_min_length_ <= 0.0)
+      throw std::invalid_argument("invalid rolling route segment parameters");
     nh.param("manager/max_vel", pp_.max_vel_, -1.0);
     normal_max_vel_ = pp_.max_vel_;
     nh.param("manager/entry_max_vel", entry_max_vel_, normal_max_vel_);
@@ -279,6 +284,8 @@ namespace diff_planner
 
     bool retained_current_trajectory = false;
     const auto commit_candidate = [&](const poly_traj::MinJerkOpt &candidate_opt) {
+      if (segmentedPlanning() && !ploy_traj_opt_->trajectoryCollisionFree(
+          candidate_opt.getTraj(), ros::Time::now().toSec(), ros::Time::now().toSec())) return false;
       if (require_improvement && enable_replan_quality_gate_ &&
           traj_.local_traj.traj.getPieceNum() > 0)
       {
@@ -646,6 +653,33 @@ namespace diff_planner
       return true;
     }
 
+    if (segmentedPlanning() && route_segment_guide_.size() >= 2 &&
+        (route_segment_guide_.front() - start_pt).norm() < 1e-4 &&
+        (route_segment_guide_.back() - local_target_pt).norm() < 1e-4)
+    {
+      std::vector<double> distance(route_segment_guide_.size(), 0.0);
+      for (size_t i = 1; i < distance.size(); ++i)
+        distance[i] = distance[i-1] + (route_segment_guide_[i] - route_segment_guide_[i-1]).norm();
+      const double length = distance.back();
+      const int pieces = std::max(2, int(std::ceil(length / std::min(0.30, pp_.polyTraj_piece_length))));
+      Eigen::MatrixXd inner(3, pieces - 1);
+      size_t edge = 1;
+      for (int i = 1; i < pieces; ++i) {
+        const double at = length * i / pieces;
+        while (edge + 1 < distance.size() && distance[edge] < at) ++edge;
+        inner.col(i-1) = route_segment_guide_[edge-1] +
+            (at-distance[edge-1]) / (distance[edge]-distance[edge-1]) *
+            (route_segment_guide_[edge]-route_segment_guide_[edge-1]);
+      }
+      Eigen::Matrix3d head, tail;
+      head << start_pt, start_vel, start_acc;
+      tail << local_target_pt, local_target_vel, Eigen::Vector3d::Zero();
+      initMJO.reset(head, tail, pieces);
+      initMJO.generate(inner, Eigen::VectorXd::Constant(pieces,
+          std::max(0.10, length / (pieces * pp_.max_vel_))));
+      return true;
+    }
+
     static bool flag_first_call = true;
 
     if (flag_first_call || flag_polyInit) /*** case 1: polynomial initialization ***/
@@ -770,6 +804,58 @@ namespace diff_planner
       initMJO.generate(innerPs, piece_dur_vec);
     }
 
+    return true;
+  }
+
+  bool DiffPlannerManager::prepareLocalSegment(const Eigen::Vector3d& start,
+      const Eigen::Vector3d& goal, Eigen::Vector3d& target,
+      Eigen::Vector3d& velocity, bool& final)
+  {
+    route_segment_guide_.clear();
+    std::vector<Eigen::Vector3d> path;
+    if (!start.allFinite() || !goal.allFinite() ||
+        grid_map_->getInflateOccupancy(start) != 0 ||
+        grid_map_->getInflateOccupancy(goal) != 0 ||
+        !ploy_traj_opt_->searchRouteGuide(start, goal, path) || path.empty()) return false;
+    // A* grid-center endpoints may differ from the requested endpoints.
+    path.insert(path.begin(), start);
+    path.push_back(goal);
+    double length = 0.0;
+    for (size_t i = 1; i < path.size(); ++i) length += (path[i] - path[i-1]).norm();
+    if (!route_segment_goal_.allFinite() || (goal - route_segment_goal_).norm() > 1e-3) {
+      route_segment_goal_ = goal;
+      route_segment_length_ = std::max(route_segment_min_length_, length / route_segment_count_);
+    }
+    const double horizon = route_segment_length_;
+    final = length <= horizon + 0.05;
+    const double limit = final ? length : horizon;
+    route_segment_guide_.push_back(start);
+    double along = 0.0;
+    Eigen::Vector3d tangent = Eigen::Vector3d::Zero();
+    for (size_t i = 1; i < path.size(); ++i) {
+      const Eigen::Vector3d delta = path[i] - path[i-1];
+      const double span = delta.norm();
+      if (span < 1e-6) continue;
+      const double keep = std::min(span, std::max(0.0, limit - along));
+      const Eigen::Vector3d end = path[i-1] + delta * (keep / span);
+      // Check exact endpoints and interpolated edges, including A* endpoint adjustments.
+      const int samples = std::max(1, int(std::ceil(keep / (0.5 * grid_map_->getResolution()))));
+      for (int j = 0; j <= samples; ++j) {
+        if (ploy_traj_opt_->staticPositionOccupied(path[i-1] +
+              (end - path[i-1]) * (double(j) / samples))) return false;
+      }
+      if ((end - route_segment_guide_.back()).norm() > 1e-6)
+        route_segment_guide_.push_back(end);
+      tangent = delta / span;
+      along += keep;
+      if (along >= limit - 1e-6) break;
+    }
+    if (route_segment_guide_.size() < 2) return false;
+    target = final ? goal : route_segment_guide_.back();
+    // Intermediate endpoints retain forward velocity; only the final goal stops.
+    velocity = final ? Eigen::Vector3d::Zero().eval() : (pp_.max_vel_ * tangent).eval();
+    ROS_INFO("[分段规划] route=%.3fm segment=%.3fm count=%d final=%d target=(%.3f,%.3f,%.3f)",
+             length, along, route_segment_count_, final, target.x(), target.y(), target.z());
     return true;
   }
 

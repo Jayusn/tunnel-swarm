@@ -287,7 +287,7 @@ void Trajectory_Data_t::allowTrajectoryAcceptanceAfter(const ros::Time &stamp)
 
 void Trajectory_Data_t::beginTrackingReplan(const ros::Time& stamp, bool stop)
 {
-    ++replan_request.seq;
+    ++replan_request_id;
     replan_request.stamp = stamp;
     replan_pending = true;
     replan_stopped = stop;
@@ -306,7 +306,7 @@ void Trajectory_Data_t::beginTrackingReplan(const ros::Time& stamp, bool stop)
 void Trajectory_Data_t::feedTrackingResult(
     const traj_utils::TrackingReplanResult::ConstPtr& result)
 {
-    if (!replan_pending || result->header.seq != replan_request.seq ||
+    if (!replan_pending || result->request_id != replan_request_id ||
         result->header.stamp != replan_request.stamp) return;
     const auto& input = result->trajectory;
     const size_t n = static_cast<size_t>(input.order) + 1;
@@ -339,7 +339,7 @@ void Trajectory_Data_t::feedTrackingResult(
     }
     replan_stopped = false;
     ROS_WARN("[跟踪重规划] 已接替旧轨迹：request=%u, trajectory=%d。",
-             result->header.seq, input.traj_id);
+             result->request_id, input.traj_id);
 }
 
 void Trajectory_Data_t::feed(quadrotor_msgs::PolynomialTrajConstPtr pMsg)

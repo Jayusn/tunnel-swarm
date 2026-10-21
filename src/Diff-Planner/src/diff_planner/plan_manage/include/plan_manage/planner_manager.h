@@ -2,6 +2,7 @@
 #define _PLANNER_MANAGER_H_
 
 #include <stdlib.h>
+#include <limits>
 #include <functional>
 
 #include <optimizer/poly_traj_optimizer.h>
@@ -49,6 +50,9 @@ namespace diff_planner
         const Eigen::Vector3d &start_pos, const Eigen::Vector3d &start_vel,
         const Eigen::Vector3d &start_acc, const std::vector<Eigen::Vector3d> &waypoints,
         const Eigen::Vector3d &end_vel, const Eigen::Vector3d &end_acc);
+    bool segmentedPlanning() const { return route_segment_count_ > 1 && !two_piece_entry_; }
+    bool prepareLocalSegment(const Eigen::Vector3d& start, const Eigen::Vector3d& goal,
+                             Eigen::Vector3d& target, Eigen::Vector3d& velocity, bool& final);
     void getLocalTarget(
         const double planning_horizen,
         const Eigen::Vector3d &start_pt, const Eigen::Vector3d &global_end_pt,
@@ -88,6 +92,12 @@ namespace diff_planner
     TrajContainer traj_;
 
   private:
+    int route_segment_count_{1};
+    double route_segment_min_length_{0.60};
+    double route_segment_length_{0.0};
+    Eigen::Vector3d route_segment_goal_{Eigen::Vector3d::Constant(
+        std::numeric_limits<double>::quiet_NaN())};
+    std::vector<Eigen::Vector3d> route_segment_guide_;
     double normal_max_vel_{0.0}, normal_optimizer_max_vel_{0.0}, entry_max_vel_{0.0};
     bool setLocalTrajFromTrajectory(poly_traj::Trajectory traj, int constraint_end,
                                     bool check_dynamic_obstacles,

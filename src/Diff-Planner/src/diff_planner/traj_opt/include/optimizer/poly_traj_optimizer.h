@@ -171,6 +171,9 @@ namespace diff_planner
                                 const DynamicObstacleState &obstacle,
                                 double collision_time, int direction,
                                 std::vector<Eigen::Vector3d> &path);
+    // Reuse the same side-lock / underpass policy for rolling route guidance.
+    bool searchRouteGuide(const Eigen::Vector3d& start, const Eigen::Vector3d& end,
+                          std::vector<Eigen::Vector3d>& path);
     bool staticPositionOccupied(const Eigen::Vector3d &position) const;
     bool trajectoryCollisionFree(const poly_traj::Trajectory &trajectory,
                                  double start_time, double reference_time,

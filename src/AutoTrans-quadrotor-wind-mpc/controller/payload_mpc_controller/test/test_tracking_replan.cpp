@@ -15,9 +15,10 @@ quadrotor_msgs::PolynomialTraj::Ptr line(double stamp, unsigned id) {
   msg->trajectory.push_back(p);
   return msg;
 }
-traj_utils::TrackingReplanResult::Ptr response(const std_msgs::Header& request, double stamp) {
+traj_utils::TrackingReplanResult::Ptr response(const std_msgs::Header& request, double stamp, uint32_t id = 1) {
   traj_utils::TrackingReplanResult::Ptr r(new traj_utils::TrackingReplanResult);
   r->header = request;
+  r->request_id = id;
   r->trajectory.traj_id = 9;
   r->trajectory.start_time = ros::Time(stamp);
   r->trajectory.order = 1;
@@ -56,7 +57,7 @@ TEST_F(TrackingReplan, HardRequestInvalidatesSoftResultAndOldQueue) {
   data.feedTrackingResult(response(soft, 100.4)); // completed during hard-stop escalation
   EXPECT_TRUE(data.replan_pending);
   EXPECT_TRUE(data.traj_queue.empty());
-  auto current = response(data.replan_request, 100.4);
+  auto current = response(data.replan_request, 100.4, data.replan_request_id);
   data.feedTrackingResult(current);
   ASSERT_FALSE(data.replan_pending);
   ASSERT_FALSE(data.replan_stopped);
@@ -71,7 +72,11 @@ TEST_F(TrackingReplan, InvalidOrPreviousSessionResultCannotReleaseStop) {
   data.beginTrackingReplan(ros::Time(100.1), true);
   ros::Time::setNow(ros::Time(100.4));
   auto r = response(data.replan_request, 100.3);
-  r->header.stamp = ros::Time(99.0); // same seq, wrong request epoch
+  r->request_id += 1;
+  data.feedTrackingResult(r);
+  EXPECT_TRUE(data.replan_pending);
+  r->request_id = data.replan_request_id;
+  r->header.stamp = ros::Time(99.0); // same application id, wrong request epoch
   data.feedTrackingResult(r);
   EXPECT_TRUE(data.replan_pending);
   r->header = data.replan_request;
@@ -85,6 +90,33 @@ TEST_F(TrackingReplan, InvalidOrPreviousSessionResultCannotReleaseStop) {
   EXPECT_TRUE(data.replan_pending);
   EXPECT_TRUE(data.replan_stopped);
 }
+TEST_F(TrackingReplan, RequestIdentitySurvivesRosWireHeaderSequenceRewrite) {
+  ros::NodeHandle nh;
+  uint32_t wire_sequence = 9999;
+  auto subscriber = nh.subscribe<traj_utils::TrackingReplanResult>("/test/tracking_wire_result", 10,
+      [&](const traj_utils::TrackingReplanResult::ConstPtr& result) {
+        wire_sequence = result->header.seq;
+        data.feedTrackingResult(result);
+      });
+  auto publisher = nh.advertise<traj_utils::TrackingReplanResult>("/test/tracking_wire_result", 10);
+  const auto deadline = ros::WallTime::now() + ros::WallDuration(2.0);
+  while (publisher.getNumSubscribers() == 0 && ros::WallTime::now() < deadline)
+    ros::WallDuration(.01).sleep();
+  ASSERT_GT(publisher.getNumSubscribers(), 0U);
+  data.beginTrackingReplan(ros::Time(100.1), true);
+  auto r = response(data.replan_request, 100.3, data.replan_request_id);
+  r->header.seq = 9999; // transport will replace this; application id must survive
+  ros::Time::setNow(ros::Time(100.4));
+  publisher.publish(*r);
+  while (data.replan_pending && ros::WallTime::now() < deadline) {
+    ros::spinOnce(); ros::WallDuration(.01).sleep();
+  }
+  EXPECT_NE(wire_sequence, 9999U);
+  EXPECT_FALSE(data.replan_pending);
+  EXPECT_FALSE(data.replan_stopped);
+  EXPECT_EQ(data.exec_traj, 1);
+}
+
 TEST_F(TrackingReplan, AbortCannotBeUndoneByPendingResult) {
   data.beginTrackingReplan(ros::Time(100.1), true);
   auto r = response(data.replan_request, 100.3);
@@ -104,7 +136,7 @@ TEST_F(TrackingReplan, HigherPriorityHoldOrLandingCancelsPendingResult) {
   data.feedTrackingResult(r);
   EXPECT_TRUE(data.traj_queue.empty());
   data.beginTrackingReplan(ros::Time(100.3), true);
-  r = response(data.replan_request, 100.4);
+  r = response(data.replan_request, 100.4, data.replan_request_id);
   data.blockTrajectoryAcceptance();
   data.feedTrackingResult(r);
   EXPECT_TRUE(data.traj_queue.empty());

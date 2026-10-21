@@ -103,8 +103,10 @@ class PlannerEndpoint : public testing::Test
 {
 protected:
   using FSM = diff_planner::DiffReplanFSM;
+  virtual int routeSegments() const { return 1; }
   void SetUp() override
   {
+    nh.setParam("manager/route_segment_count", routeSegments());
     ros::Time::setNow(ros::Time(1000));
     // A small real map and optimizer, with the relay's arrival/tracking limits.
     nh.setParam("fsm/flight_type", 1);
@@ -238,6 +240,104 @@ protected:
   traj_utils::PolyTraj last_trajectory;
   int published{0}, initial_id{0};
 };
+
+class RollingPlannerEndpoint : public PlannerEndpoint {
+  int routeSegments() const override { return 3; }
+};
+
+TEST_F(RollingPlannerEndpoint, RollingSegmentsRetainGoalAndNonzeroIntermediateVelocity)
+{
+  auto& m = *planner.planner_manager_;
+  const Eigen::Vector3d start = goal - Eigen::Vector3d(1.8, 0, 0);
+  Eigen::Vector3d target, velocity;
+  bool final = true;
+  ASSERT_TRUE(m.prepareLocalSegment(start, goal, target, velocity, final));
+  EXPECT_FALSE(final);
+  EXPECT_GT(velocity.norm(), 0.0);
+  EXPECT_NEAR((target-start).norm(), 0.60, 0.12);
+  const double horizon = (target-start).norm();
+  poly_traj::MinJerkOpt seed;
+  ASSERT_TRUE(m.computeInitState(start, .1*Eigen::Vector3d::UnitX(), Eigen::Vector3d::Zero(),
+      target, velocity, true, false, 1.0, seed));
+  EXPECT_LT((seed.getTraj().getVel(0) - .1*Eigen::Vector3d::UnitX()).norm(), 1e-8);
+  EXPECT_LT((seed.getTraj().getVel(seed.getTraj().getTotalDuration()) - velocity).norm(), 1e-8);
+  ASSERT_TRUE(m.prepareLocalSegment(goal-Eigen::Vector3d(.30,0,0), goal, target, velocity, final));
+  EXPECT_TRUE(final);
+  EXPECT_LT((target-goal).norm(), 1e-8);
+  EXPECT_LT(velocity.norm(), 1e-8);
+  ASSERT_TRUE(m.prepareLocalSegment(start+Eigen::Vector3d(.30,0,0), goal, target, velocity, final));
+  EXPECT_FALSE(final);
+  EXPECT_NEAR((target-start-Eigen::Vector3d(.30,0,0)).norm(), horizon, .08); // fixed horizon
+  m.two_piece_entry_ = true;
+  EXPECT_FALSE(m.segmentedPlanning());
+}
+
+TEST_F(RollingPlannerEndpoint, RollingSegmentSearchRejectsOccupiedGoal)
+{
+  auto& m = *planner.planner_manager_;
+  publishPoint(goal+Eigen::Vector3d(.10,0,0));
+  Eigen::Vector3d target, velocity; bool final;
+  EXPECT_FALSE(m.prepareLocalSegment(planner.odom_pos_, goal, target, velocity, final));
+  EXPECT_EQ(m.traj_.local_traj.traj_id, initial_id);
+}
+
+TEST_F(RollingPlannerEndpoint, OptimizedSegmentPreservesMovingStartAndDoesNotStopAtBoundary)
+{
+  auto& m = *planner.planner_manager_;
+  planner.start_pt_ = goal - Eigen::Vector3d(1.8, 0, 0);
+  planner.start_vel_ = Eigen::Vector3d(.1, 0, 0);
+  planner.start_acc_.setZero();
+  ASSERT_TRUE(planner.callReboundReplan(true, false, false));
+  const auto trajectory = m.traj_.local_traj.traj;
+  EXPECT_GT(m.traj_.local_traj.traj_id, initial_id);
+  EXPECT_FALSE(planner.touch_goal_);
+  EXPECT_LT((trajectory.getPos(0) - planner.start_pt_).norm(), 1e-7);
+  EXPECT_LT((trajectory.getVel(0) - planner.start_vel_).norm(), 1e-7);
+  EXPECT_GT(trajectory.getVel(trajectory.getTotalDuration()).norm(), .01);
+  EXPECT_GT((trajectory.getPos(trajectory.getTotalDuration()) - goal).norm(), .5);
+  for (int i = 0; i <= 200; ++i)
+    EXPECT_EQ(m.grid_map_->getInflateOccupancy(
+        trajectory.getPos(trajectory.getTotalDuration() * i / 200.0)), 0);
+  // Replan while moving; continuity must hold through the production FSM path.
+  const double switch_time = .6 * trajectory.getTotalDuration();
+  const Eigen::Vector3d position = trajectory.getPos(switch_time);
+  const Eigen::Vector3d velocity = trajectory.getVel(switch_time);
+  const Eigen::Vector3d acceleration = trajectory.getAcc(switch_time);
+  const int first_id = m.traj_.local_traj.traj_id;
+  ros::Time::setNow(ros::Time(m.traj_.local_traj.start_time + switch_time));
+  planner.odom_pos_ = position;
+  planner.odom_vel_ = velocity;
+  planner.odom_stamp_ = ros::Time::now();
+  ASSERT_TRUE(planner.planFromLocalTraj(1, true));
+  ASSERT_GT(m.traj_.local_traj.traj_id, first_id);
+  const auto& next = m.traj_.local_traj.traj;
+  EXPECT_LT((next.getPos(0) - position).norm(), 1e-7);
+  EXPECT_LT((next.getVel(0) - velocity).norm(), 1e-7);
+  EXPECT_LT((next.getAcc(0) - acceleration).norm(), 1e-7);
+  EXPECT_GT(next.getVel(0).norm(), .01);
+}
+
+TEST_F(RollingPlannerEndpoint, ShortSegmentOptimizesAroundMappedObstacle)
+{
+  auto& m = *planner.planner_manager_;
+  planner.start_pt_ = goal - Eigen::Vector3d(1.8, 0, 0);
+  planner.start_vel_.setZero();
+  planner.start_acc_.setZero();
+  const Eigen::Vector3d obstacle = planner.start_pt_ + Eigen::Vector3d(.35, 0, 0);
+  publishPoint(obstacle);
+  ASSERT_NE(m.grid_map_->getInflateOccupancy(obstacle), 0);
+  ASSERT_TRUE(planner.callReboundReplan(true, false, false));
+  const auto& trajectory = m.traj_.local_traj.traj;
+  EXPECT_FALSE(planner.touch_goal_);
+  double departure = 0;
+  for (int i = 0; i <= 500; ++i) {
+    const Eigen::Vector3d p = trajectory.getPos(trajectory.getTotalDuration() * i / 500.0);
+    EXPECT_EQ(m.grid_map_->getInflateOccupancy(p), 0);
+    departure = std::max(departure, (p - planner.start_pt_).tail<2>().norm());
+  }
+  EXPECT_GT(departure, .05); // the straight route intersects inflated occupancy
+  EXPECT_GT(trajectory.getVel(trajectory.getTotalDuration()).norm(), .01);
+}
 
 TEST_F(PlannerEndpoint, CollisionTimerChecksOccupiedEndpointBeforeCompletion)
 {
