@@ -147,7 +147,8 @@ if(CATKIN_ENABLE_TESTING)
   get_target_property(locked_yaw_test_sources mpc_controller_node SOURCES)
   list(REMOVE_ITEM locked_yaw_test_sources src/mpc_controller_node.cpp)
   add_rostest_gtest(test_locked_exit_yaw test/locked_exit_yaw.test
-    test/test_locked_exit_yaw.cpp test/test_tracking_replan.cpp test/test_waypoint_yaw.cpp test/test_force_controller_integration.cpp ${locked_yaw_test_sources})
+    test/test_locked_exit_yaw.cpp test/test_tracking_replan.cpp test/test_waypoint_yaw.cpp test/test_force_controller_integration.cpp
+    test/test_vertical_velocity_input.cpp ${locked_yaw_test_sources})
   if(TARGET test_locked_exit_yaw)
     get_target_property(locked_yaw_test_includes mpc_controller_node INCLUDE_DIRECTORIES)
     target_include_directories(test_locked_exit_yaw PRIVATE ${locked_yaw_test_includes})

@@ -50,11 +50,19 @@ int main(int argc, char **argv)
                                          &fsm,
                                          ros::TransportHints().tcpNoDelay());
 
-    // FAST-LIO odom 提供平移状态；MAVROS 融合里程计为 NMPC、推力模型和外力估计提供姿态。
+    // 保持原有控制姿态和外力估计姿态来源，不与新的PX4垂直速度输入绑定。
     ros::Subscriber force_attitude_odom_sub =
         nh.subscribe<nav_msgs::Odometry>("force_attitude_odom",
                                          100,
                                          &PayloadMPC::MPCFSM::forceAttitudeOdomCallback,
+                                         &fsm,
+                                         ros::TransportHints().tcpNoDelay());
+
+    // PX4 local odom的twist为机体系速度；FSM转换到LIO世界系后仅使用Vz。
+    ros::Subscriber vertical_velocity_odom_sub =
+        nh.subscribe<nav_msgs::Odometry>("vertical_velocity_odom",
+                                         100,
+                                         &PayloadMPC::MPCFSM::verticalVelocityOdomCallback,
                                          &fsm,
                                          ros::TransportHints().tcpNoDelay());
 

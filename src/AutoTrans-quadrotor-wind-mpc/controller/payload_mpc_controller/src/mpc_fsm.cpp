@@ -35,6 +35,7 @@ namespace PayloadMPC
 																							  controller_(controller),
 																							  odom_spike_guard_(makeOdomSpikeGuardConfig(params))
 	{
+        vertical_velocity_odom_data.v.setZero();
         nh_.param("tracking_replan/enabled", tracking_replan_enabled_, false);
         nh_.param("tracking_replan/error", tracking_replan_error_, 0.10);
         nh_.param("tracking_replan/stop_error", tracking_stop_error_, 0.15);
@@ -118,9 +119,12 @@ namespace PayloadMPC
 		    "\ncontrol_frequency: " + std::to_string(params_.ctrl_freq_max_) +
 		    "\nimu: " + nh_.resolveName("drone_imu/data") +
 		    "\nattitude: " + nh_.resolveName("force_attitude_odom") +
+		    "\ncontrol_vertical_velocity: " + nh_.resolveName("vertical_velocity_odom") +
+		    " (body velocity rotated to odom world; latest received sample)" +
 		    "\nrpm: " + nh_.resolveName("/mavros/esc_status") +
 		    "\ncompensation_processing: axis_gains_and_norm_limit_only\nparameters_xml:\n" + parameter_snapshot.toXml();
 		force_config_pub_.publish(config);
+		ROS_INFO("[控制状态] 位置和XY速度来自 odom；Z速度来自 vertical_velocity_odom 的机体系速度，经 odom 姿态转换到定位世界系。");
 		ROS_INFO("[外力] method=%s, rate=%.3f s^-1, cutoff=%.3f Hz, control=%.1f Hz; build=%s",
 		    params_.force_estimator_param_.method.c_str(), params_.force_estimator_param_.ndob_rate,
 		    params_.force_estimator_param_.ndob_cutoff_freq, params_.ctrl_freq_max_, FORCE_BUILD_INFO);
@@ -178,6 +182,11 @@ namespace PayloadMPC
 				msg->header.stamp.toSec(), force_attitude_odom_data.rcv_stamp.toSec(),
 				force_attitude_odom_data.q), "attitude");
 		}
+	}
+
+	void MPCFSM::verticalVelocityOdomCallback(const nav_msgs::Odometry::ConstPtr &msg)
+	{
+		vertical_velocity_odom_data.feed(msg);
 	}
 
 	void MPCFSM::imuCallback(const sensor_msgs::Imu::ConstPtr &msg)
@@ -515,7 +524,7 @@ namespace PayloadMPC
 			return;
 		}
 
-		setEstimateState(odom_data, force_attitude_odom_data);
+		setEstimateState(odom_data, force_attitude_odom_data, vertical_velocity_odom_data);
 		if (!direct_auto_land_active_ && auto_state && odom_spike_guard_.faultActive())
 			beginMpcRecovery(now_time, "FAST-LIO 里程计连续尖峰");
 		if (odom_failsafe_active_)
@@ -1132,10 +1141,14 @@ namespace PayloadMPC
 	}
 
 	void MPCFSM::setEstimateState(const Odom_Data_t &translation_odom,
-							  const Odom_Data_t &attitude_odom)
+							  const Odom_Data_t &attitude_odom,
+							  const Odom_Data_t &vertical_velocity_odom)
 	{
 		const double q_norm = attitude_odom.q.norm();
+		const double translation_q_norm = translation_odom.q.norm();
 		if (!translation_odom.p.allFinite() || !translation_odom.v.allFinite() ||
+			!vertical_velocity_odom.v.allFinite() || !translation_odom.q.coeffs().allFinite() ||
+			!std::isfinite(translation_q_norm) || translation_q_norm <= 1.0e-6 ||
 			!attitude_odom.q.coeffs().allFinite() || !std::isfinite(q_norm) || q_norm <= 1.0e-6)
 		{
 			// 无效组合状态不进入求解器；自动状态会在 process() 开头触发安全保护。
@@ -1154,7 +1167,12 @@ namespace PayloadMPC
 		est_state_(kOriZ) = rot_q.z();
 		est_state_(kVelX) = translation_odom.v[0];
 		est_state_(kVelY) = translation_odom.v[1];
-		est_state_(kVelZ) = translation_odom.v[2];
+		// MAVROS local odom 的 twist 属于 base_link，不可直接取其 z 作为世界系速度。
+		// 两路 body 轴已按安装角对齐；使用 LIO 的 body->world 旋转，使 Vz 与位置同系。
+		// 沿用求解前处理输入、保持最新 PX4 样本的调度，不引入滤波或加速度外推。
+		const Eigen::Vector3d px4_velocity_in_lio_world =
+			translation_odom.q.normalized() * vertical_velocity_odom.v;
+		est_state_(kVelZ) = px4_velocity_in_lio_world.z();
 	}
 
 	void MPCFSM::addNewForceObseverState()
@@ -1419,7 +1437,10 @@ namespace PayloadMPC
 	bool MPCFSM::odom_state_valid() const
 	{
 		const double q_norm = force_attitude_odom_data.q.norm();
+		const double translation_q_norm = odom_data.q.norm();
 		return odom_data.p.allFinite() && odom_data.v.allFinite() &&
+			vertical_velocity_odom_data.v.allFinite() && odom_data.q.coeffs().allFinite() &&
+			std::isfinite(translation_q_norm) && translation_q_norm > 1.0e-6 &&
 			force_attitude_odom_data.q.coeffs().allFinite() &&
 			std::isfinite(q_norm) && q_norm > 1.0e-6;
 	}
@@ -2046,7 +2067,8 @@ namespace PayloadMPC
 	{
 		(void)now_time;
 		return !odom_data.rcv_stamp.isZero() &&
-			!force_attitude_odom_data.rcv_stamp.isZero();
+			!force_attitude_odom_data.rcv_stamp.isZero() &&
+			!vertical_velocity_odom_data.rcv_stamp.isZero();
 	}
 
 	bool MPCFSM::imu_is_received(const ros::Time &now_time) const

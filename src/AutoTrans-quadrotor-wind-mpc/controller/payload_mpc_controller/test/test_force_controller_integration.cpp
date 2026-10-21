@@ -29,6 +29,8 @@ TEST(ForceControllerIntegration, ProductionCallSiteMatchesReplayEventsAndDownstr
   for(double z_gain : {0.0, 0.7})
   for(const std::string method:{"window_opt","aerothrow_ndob"}) {
     MpcParams p;p.config_from_ros_handle(nh);p.force_estimator_param_.method=method;
+    // 该测试验证补偿门控，与实机配置是否关闭补偿无关。
+    p.force_estimator_param_.enable_disturbance_compensation=true;
     // Exercise retained unequal axis gains and norm clipping as well as direct application.
     p.force_estimator_param_.force_axis_gain_x=.5;
     p.force_estimator_param_.force_axis_gain_y=.8;

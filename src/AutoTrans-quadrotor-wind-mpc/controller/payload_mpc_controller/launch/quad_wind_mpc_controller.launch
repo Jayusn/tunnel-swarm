@@ -14,10 +14,11 @@
   <arg name="landing_state_topic" default="/landing/state"/>
   <arg name="rc_land_active_topic" default="/landing/rc_land_active"/>
 
-  <!-- NMPC 平移状态来自 odom_topic，姿态来自 force_attitude_odom_topic。 -->
+  <!-- NMPC位置和XY速度来自odom_topic；姿态保持force_attitude_odom_topic来源；Vz单独取PX4机体系速度并旋转到odom世界系。 -->
   <arg name="odom_topic" default="/Odometry"/>
   <!-- 通用入口默认共用里程计；实机入口可将该参数覆盖为 MAVROS 融合里程计。 -->
   <arg name="force_attitude_odom_topic" default="$(arg odom_topic)"/>
+  <arg name="vertical_velocity_odom_topic" default="/mavros/local_position/odom"/>
   <!-- PX4 原生位置环的反馈与恢复锁点必须共用 PX4 local 坐标系。 -->
   <arg name="local_pose_topic" default="/mavros/local_position/pose"/>
   <arg name="position_setpoint_topic" default="/mavros/setpoint_raw/local"/>
@@ -83,10 +84,11 @@
     <remap from="~landing_target" to="$(arg landing_target_topic)"/>
     <remap from="~landing_state" to="$(arg landing_state_topic)"/>
     <remap from="~rc_land_active" to="$(arg rc_land_active_topic)"/>
-    <!-- World-frame position, velocity, and attitude estimate from PX4 EKF. -->
+    <!-- 定位世界系位置和XY速度。 -->
     <remap from="~odom" to="$(arg odom_topic)"/>
-    <!-- Only the force estimator consumes this attitude source. -->
+    <!-- 保持控制和外力估计的原有姿态来源；PX4速度只用于控制Vz。 -->
     <remap from="~force_attitude_odom" to="$(arg force_attitude_odom_topic)"/>
+    <remap from="~vertical_velocity_odom" to="$(arg vertical_velocity_odom_topic)"/>
     <remap from="~mavros_local_pose" to="$(arg local_pose_topic)"/>
     <remap from="~recovery_position_setpoint" to="$(arg position_setpoint_topic)"/>
     <!-- Body-frame acceleration and angular velocity from MAVROS IMU. -->
@@ -142,6 +144,7 @@
       - "$(arg odom_topic)"
       - "$(arg planner_odom_topic)"
       - "$(arg force_attitude_odom_topic)"
+      - "$(arg vertical_velocity_odom_topic)"
       - "/UAV1/mavros/local_position/odom"
       - "/UAV1/mavros/imu/data_raw"
       - "$(arg imu_topic)"

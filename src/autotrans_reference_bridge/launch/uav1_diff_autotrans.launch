@@ -9,7 +9,7 @@
   <!-- 跟随器只在后机执行出口及后续航段时发布，NMPC锁存到精降结束。 -->
   <arg name="locked_yaw_topic" default="/UAV1/planning/yaw"/>
   <!-- CAV1 单机集成入口：传感器/MAVROS 由 start_autotrans_quad_wind_lidar.sh 启动。 -->
-  <!-- NMPC 平移状态来源：FAST-LIO 高频预测里程计，提供 camera_init 世界系位置和速度。 -->
+  <!-- NMPC位置和XY速度来自FAST-LIO；Z速度单独取PX4融合里程计并转到camera_init世界系。 -->
   <arg name="odom_topic" default="/UAV1/fast_lio/Odom_high_freq"/>
   <!-- Diff-Planner 与 NMPC 平移状态统一使用 FAST-LIO 高频预测里程计。 -->
   <arg name="planner_odom_topic" default="/UAV1/fast_lio/Odom_high_freq"/>
@@ -21,6 +21,7 @@
   <arg name="imu_topic" default="/UAV1/livox/imu_mps2"/>
   <!-- NMPC、推力模型与外力估计统一使用 FAST-LIO 高频姿态，与位置、速度和轨迹保持同一世界系。 -->
   <arg name="force_attitude_odom_topic" default="$(arg odom_topic)"/>
+  <arg name="vertical_velocity_odom_topic" default="/UAV1/mavros/local_position/odom"/>
   <arg name="local_pose_topic" default="/UAV1/mavros/local_position/pose"/>
   <arg name="position_setpoint_topic" default="/UAV1/mavros/setpoint_raw/local"/>
   <arg name="state_topic" default="/UAV1/mavros/state"/>
@@ -67,7 +68,7 @@
 
   <!-- 共用UAV0 ROS Master时必须隔离控制器和logger节点名及私有诊断话题。 -->
   <group ns="UAV1">
-  <!-- AutoTrans 的位置、速度和姿态统一来自 FAST-LIO 高频里程计，只发布唯一的 attitude setpoint。 -->
+  <!-- 位置、XY速度和原有姿态保持FAST-LIO来源；仅控制Vz改取PX4。 -->
   <include if="$(arg enable_controller)" file="$(find payload_mpc_controller)/launch/quad_wind_mpc_controller.launch">
     <arg name="tracking_replan_enabled" value="$(arg tracking_replan_enabled)"/>
     <arg name="tracking_replan_error" value="$(arg tracking_replan_error)"/>
@@ -87,6 +88,7 @@
     <arg name="safety_hold_topic" value="$(arg safety_hold_topic)"/>
     <arg name="imu_topic" value="$(arg imu_topic)"/>
     <arg name="force_attitude_odom_topic" value="$(arg force_attitude_odom_topic)"/>
+    <arg name="vertical_velocity_odom_topic" value="$(arg vertical_velocity_odom_topic)"/>
     <arg name="local_pose_topic" value="$(arg local_pose_topic)"/>
     <arg name="position_setpoint_topic" value="$(arg position_setpoint_topic)"/>
     <arg name="state_topic" value="$(arg state_topic)"/>
