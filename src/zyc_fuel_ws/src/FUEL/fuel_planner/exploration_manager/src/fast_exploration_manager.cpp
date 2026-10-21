@@ -2732,6 +2732,7 @@ void FastExplorationManager::completeTurnInPlace(const Vector3d&) {
 
 void FastExplorationManager::initialize(ros::NodeHandle& nh) {
   nh.param("mission/manual_path/enabled", manual_path_enabled_, false);
+  nh.param("mission/manual_path/use_astar", manual_path_use_astar_, false);
   nh.param("mission/manual_path/arrive_distance", manual_path_arrive_distance_, 0.25);
   if (manual_path_enabled_) {
     XmlRpc::XmlRpcValue coordinates;
@@ -3178,14 +3179,37 @@ int FastExplorationManager::planManualWaypointMotion(
   }
   if (ed_->path_next_goal_.size() < 2 || (target - pos).norm() < 0.03)
     return FAIL;  // 等待实际里程计到点，预测规划起点不能推进列表。
+  if (manual_path_use_astar_) {
+    // 独立点到点入口：只改变两个人工航点之间的路径，绝不追加探索目标。
+    auto& finder = planner_manager_->path_finder_;
+    if (!finder || !planner_manager_->isPositionSafe(target)) return FAIL;
+    finder->clearProgressConstraint();
+    finder->reset();
+    if (finder->search(pos, target) != Astar::REACH_END) {
+      ROS_WARN_THROTTLE(1.0, "[manual_path] no known free path to waypoint; keep target.");
+      return FAIL;
+    }
+    // A*同栅格返回值可能省略真实起点/终点；保留精确XYZ且去除零长分段。
+    ed_->path_next_goal_ = {pos};
+    for (const auto& point : finder->getPath()) {
+      if ((point - ed_->path_next_goal_.back()).norm() >= 1e-3)
+        ed_->path_next_goal_.push_back(point);
+    }
+    if ((target - ed_->path_next_goal_.back()).norm() >= 1e-3)
+      ed_->path_next_goal_.push_back(target);
+    else
+      ed_->path_next_goal_.back() = target;
+    shortenPath(ed_->path_next_goal_);
+  }
   if (!planner_manager_->isPositionSafe(target) ||
       !planner_manager_->isPathSafe(ed_->path_next_goal_)) {
     ROS_ERROR_THROTTLE(1.0, "[manual_path] specified segment failed existing footprint check.");
     return FAIL;
   }
   // 共线插值仅满足连续轨迹初始化，不生成新的导航目标。
-  ed_->path_next_goal_.insert(ed_->path_next_goal_.begin() + 1,
-                             0.5 * (pos + target));
+  if (ed_->path_next_goal_.size() == 2)
+    ed_->path_next_goal_.insert(ed_->path_next_goal_.begin() + 1,
+                               0.5 * (pos + target));
   if (!planner_manager_->planExploreTraj(ed_->path_next_goal_, vel, acc, 0.0) ||
       !planner_manager_->isTrajectorySafe()) {
     ROS_ERROR_THROTTLE(1.0, "[manual_path] trajectory rejected; keep the specified waypoint.");

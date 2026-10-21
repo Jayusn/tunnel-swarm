@@ -23,7 +23,8 @@ class TurnEscapeTest {
   static void check(bool ok, const char* message) {
     if (!ok) { std::cerr << message << std::endl; std::exit(1); }
   }
-  static void initialize(ros::NodeHandle& nh, FastExplorationManager& manager) {
+  static void initialize(ros::NodeHandle& nh, FastExplorationManager& manager,
+                         bool production_weights = false) {
     nh.setParam("sdf_map/resolution", 0.05);
     nh.setParam("sdf_map/map_size_x", 4.0);
     nh.setParam("sdf_map/map_size_y", 4.0);
@@ -48,6 +49,17 @@ class TurnEscapeTest {
     for (int i=1;i<=4;++i) {
       nh.setParam("optimization/max_iteration_num"+std::to_string(i), 200);
       nh.setParam("optimization/max_iteration_time"+std::to_string(i), 0.2);
+    }
+    if (production_weights) {
+      // 绕障采用正式algorithm.xml的优化权重，旧测试保持原单位权重。
+      nh.setParam("optimization/ld_smooth", 20.0);
+      nh.setParam("optimization/ld_dist", 25.0);
+      nh.setParam("optimization/ld_feasi", 2.0);
+      nh.setParam("optimization/ld_start", 100.0);
+      nh.setParam("optimization/ld_end", 0.5);
+      nh.setParam("optimization/ld_guide", 12.0);
+      nh.setParam("optimization/dist0", 0.27);
+      nh.setParam("optimization/max_iteration_num2", 2000);
     }
     manager.planner_manager_ = std::make_shared<FastPlannerManager>();
     auto& planner = *manager.planner_manager_;
@@ -598,6 +610,86 @@ public:
     manager.updateMissionOdometry(last, 0.0);
     check(manager.planExploreMotion(last, zero, zero, zero) == NO_FRONTIER,
           "finished manual route resumed frontier exploration");
+  }
+
+  static void runManualAstar(const std::string& scenario) {
+    ros::NodeHandle nh("~manual_astar_" + scenario);
+    nh.setParam("manager/use_geometric_path", true);
+    nh.setParam("astar/resolution_astar", 0.10);
+    nh.setParam("astar/allocate_num", 100000);
+    nh.setParam("astar/lambda_heu", 1.0);
+    nh.setParam("astar/max_search_time", 1.0);
+    nh.setParam("astar/preferred_clearance", 0.50);
+    nh.setParam("astar/clearance_weight", 12.0);
+    FastExplorationManager manager;
+    initialize(nh, manager, true);
+    manager.manual_path_enabled_ = true;
+    manager.manual_path_use_astar_ = true;
+    manager.task_search_manager_.reset();
+    manager.edt_environment_ = manager.planner_manager_->edt_environment_;
+    ViewNode::caster_.reset(new RayCaster);
+    Eigen::Vector3d origin, size;
+    manager.sdf_map_->getRegion(origin, size);
+    ViewNode::caster_->setParams(manager.sdf_map_->getResolution(), origin);
+    auto& map = *manager.sdf_map_;
+    const Vector3d start(-1.025, 0.025, 1.025);
+    const Vector3d target = scenario == "same_voxel"
+        ? start + Vector3d(0.04, 0, 0) : Vector3d(1.025, 0.025, 1.025);
+    const Vector3d last(1.025, 0.825, 1.025), zero = Vector3d::Zero();
+    manager.manual_path_.points = {target, last};
+    if (scenario != "unknown") {
+      // 用真实射线建立自由空间，不把未观测体素直接标成可走。
+      for (double y = -1.725; y < 1.75; y += 0.05)
+        for (double z = 0.525; z < 1.55; z += 0.05) {
+          pcl::PointCloud<pcl::PointXYZ> cloud;
+          cloud.push_back(pcl::PointXYZ(1.9, y, z));
+          map.inputPointCloud(cloud, 1, Vector3d(-1.9, y, z));
+          cloud.front().x = -1.9;
+          map.inputPointCloud(cloud, 1, Vector3d(1.9, y, z));
+        }
+      // 最后一批点覆盖完整测试盒，避免ESDF只更新最后一条射线的z切片。
+      pcl::PointCloud<pcl::PointXYZ> bounds;
+      for (double x : {-1.9, 1.9})
+        for (double y : {-1.725, 1.725})
+          for (double z : {0.525, 1.525}) bounds.push_back(pcl::PointXYZ(x, y, z));
+      map.inputPointCloud(bounds, bounds.size(), Vector3d(0, 0, 1));
+      if (scenario != "same_voxel") {
+        const double width = scenario == "blocked" ? 1.95 : 0.30;
+        for (double x = -0.10; x <= 0.10; x += 0.025)
+          for (double y = -width; y <= width; y += 0.025)
+            for (double z = 0.025; z < 1.975; z += 0.025)
+              map.setOccupied(Vector3d(x, y, z));
+      }
+      map.updateESDF3d();
+    }
+    auto& planner = *manager.planner_manager_;
+    if (scenario == "blocked" || scenario == "unknown") {
+      EXPECT_EQ(FAIL, manager.planExploreMotion(start, zero, zero, zero));
+      EXPECT_EQ(0u, manager.manual_path_.next);
+      EXPECT_TRUE(manager.ed_->next_goal_.isApprox(target));
+      return;
+    }
+    if (scenario == "detour") {
+      EXPECT_FALSE(planner.isPathSafe({start, target}));
+    }
+    ASSERT_EQ(SUCCEED, manager.planExploreMotion(start, zero, zero, zero));
+    EXPECT_EQ(0u, manager.manual_path_.next);
+    EXPECT_TRUE(manager.ed_->next_goal_.isApprox(target));
+    EXPECT_TRUE(manager.ed_->path_next_goal_.front().isApprox(start));
+    EXPECT_TRUE(manager.ed_->path_next_goal_.back().isApprox(target));
+    EXPECT_TRUE(planner.isPathSafe(manager.ed_->path_next_goal_));
+    EXPECT_TRUE(planner.isTrajectorySafe());
+    EXPECT_LT((planner.local_data_.position_traj_.evaluateDeBoorT(
+                   planner.local_data_.duration_) - target).norm(), 0.08);
+    EXPECT_TRUE(planner.local_data_.yaw_traj_.getControlPoint().allFinite());
+    EXPECT_EQ(FAIL, manager.planExploreMotion(target, zero, zero, zero));
+    EXPECT_EQ(0u, manager.manual_path_.next);  // 预测起点到达不能跳过航点。
+    manager.updateMissionOdometry(target, 0.0);
+    EXPECT_EQ(1u, manager.manual_path_.next);
+    ASSERT_EQ(SUCCEED, manager.planExploreMotion(target, zero, zero, zero));
+    EXPECT_TRUE(manager.ed_->next_goal_.isApprox(last));
+    manager.updateMissionOdometry(last, 0.0);
+    EXPECT_EQ(NO_FRONTIER, manager.planExploreMotion(last, zero, zero, zero));
   }
 
   static void run(double initial_yaw) {
@@ -1448,6 +1540,22 @@ TEST(ManualWaypoints, CompletesWithoutFrontierTargets) {
 
 TEST(ManualWaypoints, BlockedSegmentKeepsSpecifiedTarget) {
   fast_planner::TurnEscapeTest::runManualWaypoints(true);
+}
+
+TEST(ManualWaypoints, AstarDetoursWithoutChangingWaypointOrder) {
+  fast_planner::TurnEscapeTest::runManualAstar("detour");
+}
+
+TEST(ManualWaypoints, AstarBlockedRouteKeepsTarget) {
+  fast_planner::TurnEscapeTest::runManualAstar("blocked");
+}
+
+TEST(ManualWaypoints, AstarUnknownRouteKeepsTarget) {
+  fast_planner::TurnEscapeTest::runManualAstar("unknown");
+}
+
+TEST(ManualWaypoints, AstarSameVoxelPreservesExactTarget) {
+  fast_planner::TurnEscapeTest::runManualAstar("same_voxel");
 }
 
 TEST(TurnEscape, ClearsContactBeforeResumingLatchedYaw) {

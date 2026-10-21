@@ -113,6 +113,7 @@ private:
   bool entry_forward_complete_{false};
   bool external_selection_only_{false};
   bool manual_path_enabled_{false};
+  bool manual_path_use_astar_{false};
   double manual_path_arrive_distance_{0.25};
   ManualWaypointPath manual_path_;
   int planManualWaypointMotion(const Vector3d& pos, const Vector3d& vel,

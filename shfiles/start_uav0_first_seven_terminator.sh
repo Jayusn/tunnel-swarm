@@ -314,7 +314,7 @@ run_planner_pane() {
   wait_for_topic "${ODOM_TOPIC}" 180 || keep_pane_open
   wait_for_topic /UAV0/fast_lio/cloud_registered 180 || keep_pane_open
   local planner_launch
-  planner_launch="$(timeout --kill-after=1s 5s rospack find diff_planner 2>/dev/null)/launch/exp/run_swarm_indoor1_fuel_exploration.launch"
+  planner_launch="$(timeout --kill-after=1s 5s rospack find diff_planner 2>/dev/null)/launch/exp/${UAV0_FUEL_PLANNER_LAUNCH:-run_swarm_indoor1_fuel_exploration.launch}"
   if [[ ! -f "${planner_launch}" ]]; then
     log "找不到 FUEL 规划器 launch：${planner_launch}"
     keep_pane_open
