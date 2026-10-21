@@ -1,0 +1,172 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<launch>
+  <!-- FUEL手填XYZ多点入口；与自动探索入口二选一，控制器仍单独启动。 -->
+  <arg name="waypoints_file" default="$(find diff_planner)/launch/exp/fuel_waypoints.yaml"/>
+  <arg name="enable_rviz" default="true"/>
+  <!-- 与七分屏脚本兼容：沿用检测和诊断录包开关，手动启动时默认静态FUEL。 -->
+  <arg name="enable_fapp_detection" default="false"/>
+  <arg name="dynamic_mode" default="swing-only"/>
+  <arg name="enable_fapp_dynamic_avoidance" default="false"/>
+  <arg name="fapp_planner_priority" default="false"/>
+  <arg name="enable_planner_rosbag" default="true"/>
+  <arg name="planner_rosbag_prefix" default="fuel_waypoints_UAV0"/>
+  <arg name="planner_rosbag_split_size_mb" default="1024"/>
+  <arg name="planner_rosbag_extra_topics" default=""/>
+  <arg name="drone_id" default="0"/>
+  <arg name="vehicle_ns" default="UAV0"/>
+  <arg name="topic_prefix" default="/UAV0"/>
+  <arg name="odom_topic" default="/UAV0/fast_lio/Odom_high_freq"/>
+  <arg name="cloud_topic" default="/UAV0/fast_lio/cloud_registered"/>
+  <arg name="rviz_goal_topic" default="/UAV0/move_base_simple/goal"/>
+  <arg name="init_x" default="-2.5"/>
+  <arg name="init_y" default="-3.0"/>
+  <arg name="init_z" default="0.15"/>
+  <arg name="map_size_x" default="20.0"/>
+  <arg name="map_size_y" default="20"/>
+  <arg name="map_size_z" default="3.0"/>
+  <arg name="box_min_x" default="-10.0"/>
+  <arg name="box_min_y" default="-10.0"/>
+  <arg name="box_min_z" default="0.05"/>
+  <arg name="box_max_x" default="10"/>
+  <arg name="box_max_y" default="10"/>
+  <arg name="box_max_z" default="2.0"/>
+  <arg name="raycast_max_dist" default="8.0"/>
+  <arg name="perception_max_dist" default="7.0"/>
+  <arg name="fuel_max_vel" default="0.40"/>
+  <arg name="fuel_max_acc" default="0.50"/>
+  <arg name="retain_global_static_cloud" default="false"/>
+  <arg name="start_trigger_topic" default="/UAV0/fuel_waypoints/start"/>
+  <!-- 清除上次探索残留的门平面、出口和任务参数，再加载同一套建图/轨迹参数。 -->
+  <group ns="exploration_node" clear_params="true"/>
+  <include file="$(find exploration_manager)/launch/algorithm.xml">
+    <arg name="map_size_x_" value="$(arg map_size_x)"/>
+    <arg name="map_size_y_" value="$(arg map_size_y)"/>
+    <arg name="map_size_z_" value="$(arg map_size_z)"/>
+    <arg name="box_min_x" value="$(arg box_min_x)"/>
+    <arg name="box_min_y" value="$(arg box_min_y)"/>
+    <arg name="box_min_z" value="$(arg box_min_z)"/>
+    <arg name="box_max_x" value="$(arg box_max_x)"/>
+    <arg name="box_max_y" value="$(arg box_max_y)"/>
+    <arg name="box_max_z" value="$(arg box_max_z)"/>
+    <arg name="odometry_topic" value="$(arg odom_topic)"/>
+    <arg name="sensor_pose_topic" value="$(arg odom_topic)"/>
+    <arg name="depth_topic" value="no_use_depth"/>
+    <arg name="cloud_topic" value="$(arg cloud_topic)"/>
+    <arg name="cx" value="319.31427001953125"/>
+    <arg name="cy" value="239.09725952148438"/>
+    <arg name="fx" value="386.2706298828125"/>
+    <arg name="fy" value="386.2706298828125"/>
+    <arg name="max_vel" value="$(arg fuel_max_vel)"/>
+    <arg name="max_acc" value="$(arg fuel_max_acc)"/>
+    <arg name="vehicle_ns" value="$(arg vehicle_ns)"/>
+    <arg name="topic_prefix" value="$(arg topic_prefix)"/>
+    <arg name="raycast_max_dist" value="$(arg raycast_max_dist)"/>
+    <arg name="perception_max_dist" value="$(arg perception_max_dist)"/>
+  </include>
+  <!-- 只允许人工列表选目标；此处覆盖不修改共享algorithm.xml或原探索launch。 -->
+  <rosparam command="load" ns="/exploration_node" file="$(arg waypoints_file)"/>
+  <param name="/exploration_node/mission/manual_path/enabled" value="true" type="bool"/>
+  <param name="/exploration_node/mission/manual_path/use_astar" value="true" type="bool"/>
+  <param name="/exploration_node/fsm/use_diff_for_fuel_exploration" value="false" type="bool"/>
+  <param name="/exploration_node/mission/task_search/enabled" value="false" type="bool"/>
+  <param name="/exploration_node/mission/task_search/exit/enabled" value="false" type="bool"/>
+  <param name="/exploration_node/mission/task_search/exit/auto_crossing_enabled" value="false" type="bool"/>
+  <param name="/exploration_node/mission/task_search/exit/rc_trigger/enabled" value="false" type="bool"/>
+  <param name="/exploration_node/mission/safe_relay/enabled" value="false" type="bool"/>
+  <param name="/exploration_node/mission/use_entry_transit" value="false" type="bool"/>
+  <param name="/exploration_node/mission/use_workspace_lock" value="false" type="bool"/>
+  <param name="/exploration_node/mission/global_no_return" value="false" type="bool"/>
+  <param name="/exploration_node/mission/use_camera_viewpoint_yaw" value="false" type="bool"/>
+  <param name="/exploration_node/mission/camera_head_sweep/enabled" value="false" type="bool"/>
+  <param name="/exploration_node/mission/camera_obstacle_scan/enabled" value="false" type="bool"/>
+  <include if="$(arg enable_fapp_detection)" file="$(find mot_mapping)/launch/uav0_frame_event_verified.launch">
+    <arg name="dynamic_mode" value="$(arg dynamic_mode)"/>
+  </include>
+  <param name="/exploration_node/fapp/enabled" value="$(arg enable_fapp_dynamic_avoidance)" type="bool"/>
+  <param name="/exploration_node/fapp/planner_priority" value="$(arg fapp_planner_priority)" type="bool"/>
+  <param name="/exploration_node/fapp/topic" value="/UAV0/fapp/states"/>
+  <param name="/exploration_node/fapp/frame_id" value="UAV0/camera_init"/>
+  <param name="/exploration_node/fsm/hold_on_plan_failure" value="false" type="bool"/>
+  <param name="/exploration_node/fsm/safety_hold_enabled" value="false" type="bool"/>
+  <param name="/exploration_node/fsm/endpoint_hold_enabled" value="true" type="bool"/>
+  <param name="/exploration_node/fsm/periodic_replan_enabled" value="false" type="bool"/>
+  <param name="/exploration_node/sdf_map/static_retention_enabled" value="$(arg retain_global_static_cloud)" type="bool"/>
+  <!-- 直接输出现有UAV0控制器话题，不启动Diff规划器、通道管理器或降落搜索。 -->
+  <node pkg="plan_manage" name="fuel_traj_server" type="traj_server" output="screen">
+    <remap from="/position_cmd" to="$(arg topic_prefix)/planning/pos_cmd"/>
+    <remap from="/odom_world" to="$(arg odom_topic)"/>
+    <remap from="planning/bspline" to="$(arg topic_prefix)/planning/bspline"/>
+    <remap from="planning/replan" to="$(arg topic_prefix)/planning/replan"/>
+    <remap from="planning/emergency_brake" to="$(arg topic_prefix)/planning/emergency_brake"/>
+    <remap from="planning/new" to="$(arg topic_prefix)/planning/new"/>
+    <remap from="planning/position_cmd_vis" to="$(arg topic_prefix)/planning/position_cmd_vis"/>
+    <remap from="planning/travel_traj" to="$(arg topic_prefix)/planning/travel_traj"/>
+    <remap from="/planning/traj_started" to="$(arg topic_prefix)/planning/traj_started"/>
+    <param name="traj_server/time_forward" value="1.5" type="double"/>
+    <param name="traj_server/emergency_brake_horizon" value="0.12" type="double"/>
+    <param name="traj_server/pub_traj_id" value="4" type="int"/>
+    <param name="traj_server/init_x" value="$(arg init_x)" type="double"/>
+    <param name="traj_server/init_y" value="$(arg init_y)" type="double"/>
+    <param name="traj_server/init_z" value="$(arg init_z)" type="double"/>
+    <param name="perception_utils/top_angle" value="0.56125" type="double"/>
+    <param name="perception_utils/left_angle" value="0.69222" type="double"/>
+    <param name="perception_utils/right_angle" value="0.68901" type="double"/>
+    <param name="perception_utils/max_dist" value="$(arg perception_max_dist)" type="double"/>
+    <param name="perception_utils/vis_dist" value="1.0" type="double"/>
+  </node>
+  <!-- RViz的2D Nav Goal仅开始列表，点击坐标不参与路线；也可向start_trigger_topic发PoseStamped。 -->
+  <node pkg="waypoint_generator" name="fuel_waypoint_generator" type="waypoint_generator" output="screen">
+    <remap from="~odom" to="$(arg odom_topic)"/>
+    <remap from="~goal" to="$(arg rviz_goal_topic)"/>
+    <remap from="~traj_start_trigger" to="$(arg start_trigger_topic)"/>
+    <remap from="~waypoints" to="$(arg topic_prefix)/waypoint_generator/waypoints"/>
+    <param name="waypoint_type" value="point"/>
+  </node>
+  <!-- 保持当前UAV0的world/camera_init单位变换和RViz观感。 -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="world_to_map" args="0 0 0 0 0 0 world map"/>
+  <node pkg="tf2_ros" type="static_transform_publisher" name="world_to_camera_init" args="0 0 0 0 0 0 world UAV0/camera_init"/>
+  <node pkg="tf2_ros" type="static_transform_publisher" name="body_to_base_link" args="0 0 0 0 0 0 UAV0/body UAV0/base_link"/>
+  <node pkg="tf" type="static_transform_publisher" name="world_to_navigation" args="0 0 0 0 0 0 world navigation 100"/>
+  <node pkg="odom_visualization" name="drone_$(arg drone_id)_odom_visualization" type="odom_visualization" output="screen">
+    <remap from="~odom" to="$(arg odom_topic)"/>
+    <remap from="~cmd" to="/UAV0/planning/pos_cmd"/>
+    <remap from="~pose" to="/UAV0/odom_visualization/pose"/>
+    <remap from="~path" to="/UAV0/odom_visualization/path"/>
+    <remap from="~velocity" to="/UAV0/odom_visualization/velocity"/>
+    <remap from="~covariance" to="/UAV0/odom_visualization/covariance"/>
+    <remap from="~covariance_velocity" to="/UAV0/odom_visualization/covariance_velocity"/>
+    <remap from="~trajectory" to="/UAV0/odom_visualization/trajectory"/>
+    <remap from="~sensor" to="/UAV0/odom_visualization/sensor"/>
+    <remap from="~robot" to="/UAV0/odom_visualization/robot"/>
+    <remap from="~height" to="/UAV0/odom_visualization/height"/>
+    <param name="color/a" value="1.0"/>
+    <param name="color/r" value="0.0"/>
+    <param name="color/g" value="0.0"/>
+    <param name="color/b" value="0.0"/>
+    <param name="covariance_scale" value="100.0"/>
+    <param name="robot_scale" value="0.35"/>
+    <param name="frame_id" value="UAV0/camera_init"/>
+    <param name="use_cmd_yaw_for_mesh" value="true"/>
+    <param name="cmd_yaw_timeout" value="0.8"/>
+    <param name="rotate_yaw_deg" value="90.0"/>
+    <param name="tf45" value="false"/>
+    <param name="drone_id" value="$(arg drone_id)"/>
+  </node>
+  <node if="$(arg enable_rviz)" name="rviz" pkg="rviz" type="rviz" args="-d $(find plan_manage)/config/traj.rviz" required="true">
+    <remap from="/move_base_simple/goal" to="$(arg rviz_goal_topic)"/>
+  </node>
+  <node if="$(arg enable_planner_rosbag)" pkg="rosbag" type="record"
+        name="fuel_planner_recorder" ns="$(arg vehicle_ns)" cwd="ROS_HOME" output="screen"
+        args="--lz4 --split --size=$(arg planner_rosbag_split_size_mb)
+              -o &quot;$(arg planner_rosbag_prefix)&quot; $(arg planner_rosbag_extra_topics)
+              $(arg odom_topic) $(arg start_trigger_topic) $(arg rviz_goal_topic)
+              $(arg topic_prefix)/planning/bspline $(arg topic_prefix)/planning/pos_cmd
+              $(arg topic_prefix)/planning/replan $(arg topic_prefix)/planning/new
+              $(arg topic_prefix)/planning/emergency_brake
+              $(arg topic_prefix)/planning/safety_hold $(arg topic_prefix)/planning/endpoint_hold
+              $(arg topic_prefix)/sdf_map/occupancy_local
+              $(arg topic_prefix)/sdf_map/occupancy_local_inflate
+              $(arg topic_prefix)/sdf_map/update_range
+              $(arg topic_prefix)/planning_vis/trajectory $(arg topic_prefix)/planning_vis/topo_path
+              $(arg topic_prefix)/planning_vis/yaw /tf /tf_static /rosout /rosout_agg"/>
+</launch>
