@@ -72,10 +72,20 @@
   <param name="/exploration_node/mission/manual_path/enabled" value="true" type="bool"/>
   <param name="/exploration_node/mission/manual_path/use_astar" value="true" type="bool"/>
   <param name="/exploration_node/mission/manual_path/wait_for_trigger" value="true" type="bool"/>
+  <!-- 航点只作远目标：每段最多1.2m，复用探索的停转、侧移、通过和回正。 -->
+  <param name="/exploration_node/mission/manual_path/max_segment_length" value="1.20" type="double"/>
+  <param name="/exploration_node/mission/manual_path/exploration_style" value="true" type="bool"/>
   <param name="/exploration_node/mission/manual_path/exit_enabled" value="$(arg enable_exit_recognition)" type="bool"/>
   <param name="/exploration_node/mission/workspace_lock_topic" value="/UAV0/corridor_search/workspace_lock"/>
   <param name="/exploration_node/fsm/use_diff_for_fuel_exploration" value="false" type="bool"/>
-  <param name="/exploration_node/mission/task_search/enabled" value="$(arg enable_exit_recognition)" type="bool"/>
+  <!-- 通道转弯也需要地图检测；出口开关只控制出口识别和降落。 -->
+  <param name="/exploration_node/mission/task_search/enabled" value="true" type="bool"/>
+  <param name="/exploration_node/mission/task_search/curve_heading/enabled" value="true" type="bool"/>
+  <param name="/exploration_node/mission/task_search/recovery/turn_confirmation_count" value="1" type="int"/>
+  <param name="/exploration_node/mission/task_search/recovery/turn_in_place_enabled" value="true" type="bool"/>
+  <param name="/exploration_node/mission/task_search/recovery/turn_in_place_yaw_rate_deg" value="30.0" type="double"/>
+  <param name="/exploration_node/mission/task_search/recovery/turn_in_place_completion_tolerance_deg" value="8.0" type="double"/>
+  <param name="/exploration_node/mission/task_search/recovery/turn_in_place_completion_confirm_time" value="0.15" type="double"/>
   <param name="/exploration_node/mission/task_search/exit/enabled" value="$(arg enable_exit_recognition)" type="bool"/>
   <param name="/exploration_node/mission/task_search/exit/auto_crossing_enabled" value="$(arg enable_exit_recognition)" type="bool"/>
   <param name="/exploration_node/mission/task_search/exit/rc_trigger/enabled" value="false" type="bool"/>
