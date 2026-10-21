@@ -15,7 +15,7 @@ bash /home/oem/match_ws/shfiles/start_uav1_inplace_landing_test.sh
 bash /home/oem/match_ws/shfiles/start_uav1_inplace_landing_test.sh start
 ```
 
-使用后机本机 ROS master 10.224.119.232，飞控接口为 UAV1。
+使用后机本机 ROS master 192.168.43.21，飞控接口为 UAV1。
 目标起飞高度 1.7m，MPC 起飞目标用 5 秒爬升；50cm ArUco，任意 ID。
 起飞航向在已解锁且 OFFBOARD 接管时按当前 MAVROS 航向锁存，起飞期间保持；
 不沿用执行 start 时的旧航向，避免等待解锁期间航向重对齐导致突然转向。

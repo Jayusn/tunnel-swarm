@@ -9,8 +9,8 @@ SCRIPT_PATH="${SCRIPT_DIR}/start_uav1_inplace_landing_test.sh"
 source_ros() {
   source /opt/ros/noetic/setup.bash
   source "${MATCH_WS}/devel/setup.bash"
-  export ROS_MASTER_URI="http://${UAV1_SINGLE_ROS_MASTER_IP:-10.224.119.232}:11311"
-  export ROS_IP="${UAV1_SINGLE_ROS_IP:-10.224.119.232}"
+  export ROS_MASTER_URI="http://${UAV1_SINGLE_ROS_MASTER_IP:-192.168.43.21}:11311"
+  export ROS_IP="${UAV1_SINGLE_ROS_IP:-192.168.43.21}"
   unset ROS_HOSTNAME
 }
 
