@@ -1045,7 +1045,6 @@ void FastExplorationFSM::triggerCallback(const nav_msgs::PathConstPtr& msg) {
   if (msg->poses[0].pose.position.z < -0.1) return;
   if (state_ != WAIT_TRIGGER) return;
   fd_->trigger_ = true;
-  expl_manager_->startManualWaypointMission();
   cout << "Triggered!" << endl;
   if (use_diff_for_fuel_exploration_) {
     if (exploration_policy::shouldActivateExternalExploration(
@@ -1057,6 +1056,8 @@ void FastExplorationFSM::triggerCallback(const nav_msgs::PathConstPtr& msg) {
   // corridor_search_manager发布的触发点已经位于入口内侧。清空门外历史样本并让
   // PLAN_TRAJ等待触发后的五帧高频里程计，避免旧起点使门内A*路径看起来回穿入口。
   odom_callback_queue_.callAvailable(ros::WallDuration(0.0));
+  // 先处理触发前积压的里程计，再允许新样本推进人工航点。
+  expl_manager_->startManualWaypointMission();
   odom_review_window_.clear();
   odom_review_after_ = ros::Time::now();
   initial_plan_waiting_for_fresh_odom_ = true;

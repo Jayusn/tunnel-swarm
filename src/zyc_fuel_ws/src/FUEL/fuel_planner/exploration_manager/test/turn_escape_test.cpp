@@ -612,6 +612,42 @@ public:
           "finished manual route resumed frontier exploration");
   }
 
+  static void runManualTriggerQueue() {
+    ros::NodeHandle nh("~manual_trigger_queue");
+    auto manager = std::make_shared<FastExplorationManager>();
+    initialize(nh, *manager);
+    manager->manual_path_enabled_ = true;
+    manager->manual_path_wait_for_trigger_ = true;
+    const Vector3d waypoint(0.5, 0, 1);
+    manager->manual_path_.points = {waypoint};
+    struct QueuedOdometry : ros::CallbackInterface {
+      std::shared_ptr<FastExplorationManager> manager;
+      Vector3d position;
+      CallResult call() override {
+        manager->updateMissionOdometry(position, 0.0);
+        return Success;
+      }
+    };
+    auto queued = boost::make_shared<QueuedOdometry>();
+    queued->manager = manager;
+    queued->position = waypoint;
+    FastExplorationFSM fsm;
+    fsm.expl_manager_ = manager;
+    fsm.fd_ = std::make_shared<FSMData>();
+    fsm.fd_->state_str_ = {"INIT", "WAIT", "PLAN", "PUB", "EXEC", "FINISH"};
+    fsm.state_ = WAIT_TRIGGER;
+    fsm.odom_callback_queue_.addCallback(queued);
+    auto trigger = boost::make_shared<nav_msgs::Path>();
+    trigger->poses.resize(1);
+    trigger->poses[0].pose.position.z = 1.0;
+    fsm.triggerCallback(trigger);
+    EXPECT_EQ(PLAN_TRAJ, fsm.state_);
+    EXPECT_TRUE(manager->manual_path_started_);
+    EXPECT_EQ(0u, manager->manual_path_.next);
+    manager->updateMissionOdometry(waypoint, 0.0);
+    EXPECT_EQ(1u, manager->manual_path_.next);
+  }
+
   static void runManualPortalHandoff(bool with_entry) {
     ros::NodeHandle nh(with_entry ? "~manual_entry_exit" : "~manual_exit_only");
     nh.setParam("mission/task_search/require_stage2_detections", false);
@@ -1614,6 +1650,10 @@ TEST(ManualWaypoints, AstarSameVoxelPreservesExactTarget) {
 
 TEST(ManualWaypoints, EntryGatesWaypointsThenExitWaitsForActualArrival) {
   fast_planner::TurnEscapeTest::runManualPortalHandoff(true);
+}
+
+TEST(ManualWaypoints, TriggerDiscardsQueuedPreEntryOdometry) {
+  fast_planner::TurnEscapeTest::runManualTriggerQueue();
 }
 
 TEST(ManualWaypoints, ExitOnlyUsesInitialHeadingAndSkipsOutsideWaypoints) {
