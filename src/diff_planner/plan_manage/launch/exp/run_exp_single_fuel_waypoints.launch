@@ -2,6 +2,10 @@
 <launch>
   <!-- FUEL手填XYZ多点入口；与自动探索入口二选一，控制器仍单独启动。 -->
   <arg name="waypoints_file" default="$(find diff_planner)/launch/exp/fuel_waypoints.yaml"/>
+  <!-- 两个独立开关：入口完成后才开始航点；出口最近点完成后接现有搜板降落。 -->
+  <arg name="enable_entry_recognition" default="$(optenv UAV0_WAYPOINT_ENTRY_ENABLED true)"/>
+  <arg name="enable_exit_recognition" default="$(optenv UAV0_WAYPOINT_EXIT_ENABLED true)"/>
+  <arg name="entry_complete_topic" default="/UAV0/fuel_waypoints/entry_complete"/>
   <arg name="enable_rviz" default="true"/>
   <!-- 与七分屏脚本兼容：沿用检测和诊断录包开关，手动启动时默认静态FUEL。 -->
   <arg name="enable_fapp_detection" default="false"/>
@@ -67,10 +71,13 @@
   <rosparam command="load" ns="/exploration_node" file="$(arg waypoints_file)"/>
   <param name="/exploration_node/mission/manual_path/enabled" value="true" type="bool"/>
   <param name="/exploration_node/mission/manual_path/use_astar" value="true" type="bool"/>
+  <param name="/exploration_node/mission/manual_path/wait_for_trigger" value="true" type="bool"/>
+  <param name="/exploration_node/mission/manual_path/exit_enabled" value="$(arg enable_exit_recognition)" type="bool"/>
+  <param name="/exploration_node/mission/workspace_lock_topic" value="/UAV0/corridor_search/workspace_lock"/>
   <param name="/exploration_node/fsm/use_diff_for_fuel_exploration" value="false" type="bool"/>
-  <param name="/exploration_node/mission/task_search/enabled" value="false" type="bool"/>
-  <param name="/exploration_node/mission/task_search/exit/enabled" value="false" type="bool"/>
-  <param name="/exploration_node/mission/task_search/exit/auto_crossing_enabled" value="false" type="bool"/>
+  <param name="/exploration_node/mission/task_search/enabled" value="$(arg enable_exit_recognition)" type="bool"/>
+  <param name="/exploration_node/mission/task_search/exit/enabled" value="$(arg enable_exit_recognition)" type="bool"/>
+  <param name="/exploration_node/mission/task_search/exit/auto_crossing_enabled" value="$(arg enable_exit_recognition)" type="bool"/>
   <param name="/exploration_node/mission/task_search/exit/rc_trigger/enabled" value="false" type="bool"/>
   <param name="/exploration_node/mission/safe_relay/enabled" value="false" type="bool"/>
   <param name="/exploration_node/mission/use_entry_transit" value="false" type="bool"/>
@@ -91,9 +98,24 @@
   <param name="/exploration_node/fsm/endpoint_hold_enabled" value="true" type="bool"/>
   <param name="/exploration_node/fsm/periodic_replan_enabled" value="false" type="bool"/>
   <param name="/exploration_node/sdf_map/static_retention_enabled" value="$(arg retain_global_static_cloud)" type="bool"/>
-  <!-- 直接输出现有UAV0控制器话题，不启动Diff规划器、通道管理器或降落搜索。 -->
+  <!-- 入口接近和出口后的搜板降落使用原流程；航点与到出口的轨迹由FUEL规划。 -->
+  <include file="$(find diff_planner)/launch/exp/fuel_waypoint_portals.xml">
+    <arg name="enable_entry_recognition" value="$(arg enable_entry_recognition)"/>
+    <arg name="enable_exit_recognition" value="$(arg enable_exit_recognition)"/>
+    <arg name="odom_topic" value="$(arg odom_topic)"/>
+    <arg name="cloud_topic" value="$(arg cloud_topic)"/>
+    <arg name="rviz_goal_topic" value="$(arg rviz_goal_topic)"/>
+    <arg name="entry_complete_topic" value="$(arg entry_complete_topic)"/>
+    <arg name="drone_id" value="$(arg drone_id)"/>
+    <arg name="map_size_x" value="$(arg map_size_x)"/>
+    <arg name="map_size_y" value="$(arg map_size_y)"/>
+    <arg name="map_size_z" value="$(arg map_size_z)"/>
+    <arg name="init_x" value="$(arg init_x)"/>
+    <arg name="init_y" value="$(arg init_y)"/>
+    <arg name="init_z" value="$(arg init_z)"/>
+  </include>
   <node pkg="plan_manage" name="fuel_traj_server" type="traj_server" output="screen">
-    <remap from="/position_cmd" to="$(arg topic_prefix)/planning/pos_cmd"/>
+    <remap from="/position_cmd" to="$(eval arg('topic_prefix') + ('/fuel/planning/pos_cmd' if arg('enable_exit_recognition') else '/planning/pos_cmd'))"/>
     <remap from="/odom_world" to="$(arg odom_topic)"/>
     <remap from="planning/bspline" to="$(arg topic_prefix)/planning/bspline"/>
     <remap from="planning/replan" to="$(arg topic_prefix)/planning/replan"/>
@@ -114,11 +136,11 @@
     <param name="perception_utils/max_dist" value="$(arg perception_max_dist)" type="double"/>
     <param name="perception_utils/vis_dist" value="1.0" type="double"/>
   </node>
-  <!-- RViz的2D Nav Goal仅开始列表，点击坐标不参与路线；也可向start_trigger_topic发PoseStamped。 -->
+  <!-- 开入口时RViz只触发找门，航点只接受入口完成信号；关入口时RViz/公共start直接开始列表。 -->
   <node pkg="waypoint_generator" name="fuel_waypoint_generator" type="waypoint_generator" output="screen">
     <remap from="~odom" to="$(arg odom_topic)"/>
-    <remap from="~goal" to="$(arg rviz_goal_topic)"/>
-    <remap from="~traj_start_trigger" to="$(arg start_trigger_topic)"/>
+    <remap from="~goal" to="$(eval '/UAV0/fuel_waypoints/unused_goal' if arg('enable_entry_recognition') else arg('rviz_goal_topic'))"/>
+    <remap from="~traj_start_trigger" to="$(eval arg('entry_complete_topic') if arg('enable_entry_recognition') else arg('start_trigger_topic'))"/>
     <remap from="~waypoints" to="$(arg topic_prefix)/waypoint_generator/waypoints"/>
     <param name="waypoint_type" value="point"/>
   </node>
@@ -159,7 +181,11 @@
         name="fuel_planner_recorder" ns="$(arg vehicle_ns)" cwd="ROS_HOME" output="screen"
         args="--lz4 --split --size=$(arg planner_rosbag_split_size_mb)
               -o &quot;$(arg planner_rosbag_prefix)&quot; $(arg planner_rosbag_extra_topics)
-              $(arg odom_topic) $(arg start_trigger_topic) $(arg rviz_goal_topic)
+              $(arg odom_topic) $(arg start_trigger_topic) $(arg rviz_goal_topic) $(arg entry_complete_topic)
+              /UAV0/mission/task_status /UAV0/mission/final_exit /UAV0/mission/landing_request
+              /UAV0/corridor_search/workspace_lock /landing_diff_search_manager/state
+              /UAV0/landing_diff/subgoal /UAV0/landing_diff/trigger
+              /UAV0/fuel/planning/pos_cmd /UAV0/diff/planning/pos_cmd /drone_0_planning/trajectory
               $(arg topic_prefix)/planning/bspline $(arg topic_prefix)/planning/pos_cmd
               $(arg topic_prefix)/planning/replan $(arg topic_prefix)/planning/new
               $(arg topic_prefix)/planning/emergency_brake

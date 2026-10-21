@@ -1,0 +1,299 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<launch>
+  <!-- 仅供手填航点入口使用：复用原入口检测、出口识别参数和降落节点；不修改原探索launch。 -->
+  <arg name="enable_entry_recognition" />
+  <arg name="enable_exit_recognition" />
+  <arg name="odom_topic" />
+  <arg name="cloud_topic" />
+  <arg name="rviz_goal_topic" />
+  <arg name="entry_complete_topic" />
+  <arg name="drone_id" />
+  <arg name="map_size_x" />
+  <arg name="map_size_y" />
+  <arg name="map_size_z" />
+  <arg name="init_x" />
+  <arg name="init_y" />
+  <arg name="init_z" />
+  <arg name="entry_detection_mode" default="c" />
+  <arg name="landing_search_max_vel" default="0.30" />
+  <arg name="landing_search_max_acc" default="0.60" />
+  <group if="$(arg enable_exit_recognition)">
+    <include file="$(find diff_planner)/launch/include/advanced_param_exp.xml">
+      <arg name="odom_topic" value="$(arg odom_topic)" />
+      <arg name="drone_id" value="$(arg drone_id)" />
+      <arg name="camera_pose_topic" value="no_use_diff_pose" />
+      <arg name="depth_topic" value="no_use_diff_depth" />
+      <arg name="cloud_topic" value="$(arg cloud_topic)" />
+      <arg name="cx" value="319.31427001953125" />
+      <arg name="cy" value="239.09725952148438" />
+      <arg name="fx" value="386.2706298828125" />
+      <arg name="fy" value="386.2706298828125" />
+      <arg name="flight_type" value="4" />
+      <arg name="point_num" value="1" />
+      <arg name="point0_x" value="0.0" />
+      <arg name="point0_y" value="0.0" />
+      <arg name="point0_z" value="2.0" />
+      <arg name="point1_x" value="0.0" />
+      <arg name="point1_y" value="0.0" />
+      <arg name="point1_z" value="2.0" />
+      <arg name="point2_x" value="0.0" />
+      <arg name="point2_y" value="0.0" />
+      <arg name="point2_z" value="2.0" />
+      <arg name="point3_x" value="0.0" />
+      <arg name="point3_y" value="0.0" />
+      <arg name="point3_z" value="2.0" />
+      <arg name="point4_x" value="0.0" />
+      <arg name="point4_y" value="0.0" />
+      <arg name="point4_z" value="2.0" />
+      <arg name="max_vel" value="$(arg landing_search_max_vel)" />
+      <arg name="max_acc" value="$(arg landing_search_max_acc)" />
+      <arg name="max_jer" value="2.0" />
+      <arg name="planning_horizon" value="6.0" />
+      <arg name="waypoint_switch_dist" value="0.25" />
+      <arg name="local_map_size_x" value="$(arg map_size_x)" />
+      <arg name="local_map_size_y" value="$(arg map_size_y)" />
+      <arg name="local_map_size_z" value="$(arg map_size_z)" />
+      <arg name="enable_virtual_wall" value="true" />
+      <arg name="virtual_ceil" value="2.25" />
+      <arg name="virtual_ground" value="0.10" />
+      <arg name="map_resolution" value="0.15" />
+      <arg name="inflation_size" value="0.15" />
+      <arg name="obstacle_clearance" value="0.15" />
+      <arg name="init_x" value="$(arg init_x)" />
+      <arg name="init_y" value="$(arg init_y)" />
+      <arg name="init_z" value="$(arg init_z)" />
+      <arg name="cloud_use_init_offset" value="false" />
+      <arg name="preserve_global_map" value="true" />
+      <arg name="enable_stuck_detect" value="false" />
+      <arg name="stuck_detect_grace_time" value="20.0" />
+      <arg name="require_pre_agent_trajectory" value="false" />
+      <arg name="enable_random_global_init" value="false" />
+      <arg name="search_subgoal_topic" value="/UAV0/landing_diff/subgoal" />
+      <arg name="search_subgoal_update_distance" value="0.15" />
+      <arg name="search_trigger_topic" value="/UAV0/landing_diff/trigger" />
+      <arg name="search_goal_trigger_topic" value="/UAV0/landing_diff/manual_trigger" />
+    </include>
+    <rosparam param="/exploration_node/mission/task_search/world_frame">world</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/cruise_height">0.6</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/min_height">0.10</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/max_height">1.90</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/inside_return_margin">0.10</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/occupancy_turn_enabled">true</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/curve_heading/enabled">true</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_probe_length">1.50</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_probe_step">0.10</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_min_angle_deg">45.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_max_angle_deg">120.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_confirmation_count">1</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_confirmation_min_interval">0.15</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_confirmation_angle_deg">15.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_confirmation_accumulation_window">8.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_no_return_margin">0.50</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_yaw_release_angle_deg">15.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/require_stage2_detections">false</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/search_max_forward">2.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/min_open_width">2.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/min_open_ratio">0.80</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/sector_ray_count">11</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/sector_half_angle_deg">20.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/inside_length">0.90</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/outside_length">1.20</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/confirmation_angle_deg">15.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/footprint_half_height">0.15</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/inference_period">0.50</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/stability_radius">0.30</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/confirmation_count">3</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/confirmation_max_distance">1.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/verification_yaw_hold_time">2.5</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/standoff">0.45</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/arrive_distance">0.50</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/portal_arrive_distance">0.10</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/progress_reverse_reject_deg">120.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/candidate_max_behind_distance">0.35</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/pending_observation_min_hits">3</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/pending_observation_lateral_offset">0.25</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/pending_observation_min_move">0.22</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/cross_step">0.35</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/cross_target_distance">0.90</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/cross_confirm_distance">0.60</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/footprint_extra_radius">0.20</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/footprint_samples">12</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/scan_radius">0.35</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/scan_dwell_time">1.2</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/external_landing_planner">true</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/final_landing_marker_topic">/UAV0/mission/detection/final_aruco</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/require_final_landing_marker">true</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/frontier_local_adjust_radius">1.20</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/frontier_max_distance_increase">0.45</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/final_landing_marker_confirmation_count">3</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/final_landing_marker_consistency_radius">0.20</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/landing_approach_height">1.70</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/landing_trigger_distance">0.30</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/landing_column_bottom_clearance">0.20</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/landing_column_step">0.10</rosparam>
+    <node pkg="diff_planner" name="landing_diff_traj_server" type="traj_server" output="screen">
+      <remap from="position_cmd" to="/UAV0/diff/planning/pos_cmd" />
+      <remap from="~planning/trajectory" to="/drone_$(arg drone_id)_planning/trajectory" />
+      <remap from="~planning/yaw" to="/UAV0/landing_diff/yaw" />
+      <remap from="~heartbeat" to="/drone_$(arg drone_id)_traj_server/heartbeat" />
+      <param name="traj_server/time_forward" value="1.0" type="double" />
+      <param name="traj_server/yaw_dot_max" value="3.14" type="double" />
+      <param name="traj_server/yaw_dot_dot_max" value="15.71" type="double" />
+    </node>
+    <node pkg="diff_planner" name="planner_command_arbiter" type="planner_command_arbiter" output="screen">
+      <param name="fuel_topic" value="/UAV0/fuel/planning/pos_cmd" />
+      <param name="diff_topic" value="/UAV0/diff/planning/pos_cmd" />
+      <param name="output_topic" value="/UAV0/planning/pos_cmd" />
+      <param name="stage_topic" value="/UAV0/mission/task_status" />
+      <param name="odom_topic" value="$(arg odom_topic)" />
+      <param name="dynamic_objects_topic" value="/UAV0/ldop/dynamic_objects" />
+      <param name="emergency_brake_topic" value="/UAV0/planning/emergency_brake" />
+      <param name="dynamic_avoidance_enabled" value="false" />
+      <param name="dynamic_object_timeout" value="0.60" />
+      <param name="dynamic_safety_radius" value="0.45" />
+      <param name="dynamic_vertical_margin" value="0.25" />
+      <param name="dynamic_prediction_horizon" value="1.0" />
+      <param name="dynamic_prediction_step" value="0.20" />
+    </node>
+    <node pkg="diff_planner" name="landing_diff_search_manager" type="landing_diff_search_manager" output="screen">
+      <param name="odom_topic" value="$(arg odom_topic)" />
+      <param name="stage_topic" value="/UAV0/mission/task_status" />
+      <param name="marker_topic" value="/UAV0/mission/detection/final_aruco" />
+      <param name="front_hint_topic" value="/UAV0/landing/front_aruco_hint" />
+      <param name="assigned_target_topic" value="/UAV0/landing/assigned_target" />
+      <param name="enable_single_front_hint_approach" value="false" />
+      <param name="subgoal_topic" value="/UAV0/landing_diff/subgoal" />
+      <param name="trigger_topic" value="/UAV0/landing_diff/trigger" />
+      <param name="yaw_topic" value="/UAV0/landing_diff/yaw" />
+      <param name="landing_request_topic" value="/UAV0/mission/landing_request" />
+      <param name="front_approach_distance" value="0.2" />
+      <param name="front_approach_height" value="0.60" />
+      <param name="front_approach_arrive_xy" value="0.15" />
+      <param name="front_scan_anchor_topic" value="/UAV0/landing/front_scan_anchor" />
+      <param name="exit_portal_topic" value="/UAV0/mission/final_exit" />
+      <param name="search_height" value="1.7" />
+      <param name="lane_spacing" value="1.0" />
+      <param name="sweep_stall_timeout_sec" value="4.0" />
+      <param name="sweep_motion_reset_distance" value="0.10" />
+      <param name="search_width" value="3.0" />
+      <param name="search_depth" value="4.0" />
+      <param name="arrive_xy" value="0.35" />
+      <param name="arrive_z" value="0.20" />
+      <param name="front_hint_dwell_sec" value="2.0" />
+      <param name="front_hint_initial_wait_sec" value="1.0" />
+      <param name="front_yaw_scan_half_angle_rad" value="0.7854" />
+      <param name="front_yaw_scan_rate_rad_s" value="0.2617993878" />
+      <param name="front_yaw_arrive_tolerance_rad" value="0.12" />
+      <param name="front_yaw_return_dwell_sec" value="0.50" />
+      <param name="front_hint_forward_margin" value="1.0" />
+      <param name="front_hint_lateral_margin" value="1.0" />
+      <param name="front_hint_min_z" value="-0.50" />
+      <param name="front_hint_max_z" value="1.50" />
+      <param name="target_frame" value="world" />
+      <param name="marker_timeout_sec" value="0.50" />
+      <param name="front_hint_timeout_sec" value="0.50" />
+      <param name="assigned_target_timeout_sec" value="0.50" />
+      <param name="max_header_future_sec" value="0.05" />
+    </node>
+  </group>
+  <node pkg="diff_planner" type="corridor_search_manager" name="corridor_search_manager" output="screen" if="$(arg enable_entry_recognition)">
+    <param name="search_manager/entry_detection_mode" value="$(arg entry_detection_mode)" />
+    <remap from="/corridor_search/debug_goal" to="/UAV0/corridor_search/debug_goal" />
+    <remap from="/corridor_search/accumulated_occ_map" to="/UAV0/corridor_search/accumulated_occ_map" />
+    <param name="search_manager/odom_topic" value="$(arg odom_topic)" />
+    <param name="search_manager/cloud_topic" value="$(arg cloud_topic)" />
+    <param name="search_manager/trigger_topic" value="$(arg rviz_goal_topic)" />
+    <param name="search_manager/ready_topic" value="/UAV0/start_after_hover" />
+    <param name="search_manager/world_frame" value="world" />
+    <param name="search_manager/goal_topic" value="/UAV0/corridor_search/pre_entry_goal" />
+    <param name="search_manager/entry_pose_topic" value="/UAV0/corridor_search/entry_pose" />
+    <param name="search_manager/workspace_lock_topic" value="/UAV0/corridor_search/workspace_lock" />
+    <param name="search_manager/exploration_trigger_topic" value="$(arg entry_complete_topic)" />
+    <param name="search_manager/position_cmd_topic" value="/UAV0/planning/pos_cmd" />
+    <param name="search_manager/wait_for_hover_ready" value="false" />
+    <param name="search_manager/map_occ_topic" value="/UAV0/sdf_map/occupancy_all" />
+    <param name="search_manager/map_unknown_topic" value="/UAV0/sdf_map/unknown" />
+    <param name="search_manager/use_internal_accumulated_map" value="true" />
+    <param name="search_manager/map_accum_voxel_res" value="0.10" />
+    <param name="search_manager/map_accum_min_hits" value="2" />
+    <param name="search_manager/map_accum_max_voxels" value="60000" />
+    <param name="search_manager/map_accum_min_neighbors" value="2" />
+    <param name="search_manager/map_accum_min_vertical_bins" value="2" />
+    <param name="search_manager/map_accum_max_use_z" value="1.25" />
+    <param name="search_manager/door_path_clearance" value="0.25" />
+    <param name="search_manager/use_fixed_entry_goal" value="false" />
+    <param name="search_manager/entry_goal_x" value="-0.20" />
+    <param name="search_manager/entry_goal_y" value="1.15" />
+    <param name="search_manager/entry_goal_z" value="0.80" />
+    <param name="search_manager/entry_arrive_dist" value="0.30" />
+    <param name="search_manager/entry_reach_by_search_region" value="true" />
+    <param name="search_manager/publish_entry_marker" value="true" />
+    <param name="search_manager/publish_pre_entry_pos_cmd" value="true" />
+    <param name="search_manager/entry_max_speed" value="1.0" />
+    <param name="search_manager/entry_max_acceleration" value="1.0" />
+    <param name="search_manager/min_start_height" value="0.35" />
+    <param name="search_manager/goal_height_mode" value="keep_current" />
+    <param name="search_manager/cruise_height" value="0.6" />
+    <param name="search_manager/min_goal_z" value="0.45" />
+    <param name="search_manager/max_goal_z" value="0.78" />
+    <param name="search_manager/arrive_dist" value="0.45" />
+    <param name="search_manager/reissue_timeout" value="0.8" />
+    <param name="search_manager/search_period" value="0.15" />
+    <param name="search_manager/front_search_half_fov_deg" value="50.0" />
+    <param name="search_manager/front_search_step_deg" value="10.0" />
+    <param name="search_manager/min_entry_support_points" value="12" />
+    <param name="search_manager/min_entry_progress" value="0.55" />
+    <param name="search_manager/prefer_progress_weight" value="1.8" />
+    <param name="search_manager/door_bin_step_deg" value="5.0" />
+    <param name="search_manager/min_door_depth" value="1.35" />
+    <param name="search_manager/max_door_side_range" value="2.3" />
+    <param name="search_manager/door_width_min" value="0.40" />
+    <param name="search_manager/door_width_max" value="2.00" />
+    <param name="search_manager/door_prefer_width" value="1.40" />
+    <param name="search_manager/door_pass_dist" value="0.90" />
+    <param name="search_manager/door_cross_trigger_dist" value="-0.08" />
+    <param name="search_manager/door_x_offset" value="0.0" />
+    <param name="search_manager/max_entry_door_distance" value="2.5" />
+    <param name="search_manager/entry_yaw_hold_radius" value="0.25" />
+    <param name="search_manager/door_confirmation_enabled" value="false" />
+    <param name="search_manager/door_confirm_cycles" value="2" />
+    <param name="search_manager/portal_min_post_height" value="0.70" />
+    <param name="search_manager/portal_max_depth_mismatch" value="0.35" />
+    <param name="search_manager/portal_max_gap_occupied" value="1" />
+    <param name="search_manager/portal_exit_probe_depth" value="1.10" />
+    <param name="search_manager/portal_min_exit_support_rows" value="4" />
+    <param name="search_manager/prefer_first_entry" value="true" />
+    <param name="search_manager/first_entry_progress_tolerance" value="0.35" />
+    <param name="search_manager/door_mid_free_margin" value="0.55" />
+    <param name="search_manager/door_mid_block_margin" value="0.20" />
+    <param name="search_manager/max_door_center_lateral" value="1.40" />
+    <param name="search_manager/min_door_alignment" value="0.70" />
+    <param name="search_manager/min_door_gap_free_ratio" value="0.60" />
+    <param name="search_manager/min_door_side_points" value="3" />
+    <param name="search_manager/min_door_post_height" value="0.35" />
+    <param name="search_manager/frame_b_min_post_height" value="0.55" />
+    <param name="search_manager/frame_b_door_width_min" value="1.20" />
+    <param name="search_manager/frame_b_door_width_max" value="1.60" />
+    <param name="search_manager/frame_b_min_free_ratio" value="0.45" />
+    <param name="search_manager/frame_b_min_known_free_depth" value="0.50" />
+    <param name="search_manager/frame_b_full_free_depth" value="1.00" />
+    <param name="search_manager/frame_b_max_mid_blocked_bins" value="2" />
+    <param name="search_manager/frame_b_path_clearance" value="0.10" />
+    <param name="search_manager/frame_b_path_max_blocked_bins" value="6" />
+    <param name="search_manager/frame_b_lintel_min_height" value="0.65" />
+    <param name="search_manager/frame_b_require_lintel" value="false" />
+    <param name="search_manager/frame_b_lintel_row_tolerance" value="0.0" />
+    <param name="search_manager/frame_b_lintel_max_height_spread" value="0.15" />
+    <param name="search_manager/frame_b_lintel_min_ratio" value="0.15" />
+    <param name="search_manager/frame_b_lintel_min_bins" value="2" />
+    <param name="search_manager/frame_b_lintel_bonus" value="1.20" />
+    <param name="search_manager/max_door_mid_blocked_bins" value="1" />
+    <param name="search_manager/max_door_mid_near_bins" value="0" />
+    <param name="search_manager/search_region_min_x" value="-1.20" />
+    <param name="search_manager/search_region_min_y" value="0.70" />
+    <param name="search_manager/search_region_min_z" value="0.20" />
+    <param name="search_manager/search_region_max_x" value="6.20" />
+    <param name="search_manager/search_region_max_y" value="6.80" />
+    <param name="search_manager/search_region_max_z" value="1.90" />
+  </node>
+</launch>
