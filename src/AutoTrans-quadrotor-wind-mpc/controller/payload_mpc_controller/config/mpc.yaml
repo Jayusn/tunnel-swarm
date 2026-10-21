@@ -121,10 +121,10 @@ force_estimator: # *
     force_sync_max_interp_gap: 0.03
     force_sync_max_age: 0.10
     force_sync_reset_backjump: 0.10
-    # 实际写入 NMPC 的世界系三轴补偿增益；当前启用 XYZ 三轴补偿。
+    # 实际写入 NMPC 的世界系三轴补偿增益；仅启用 XY 补偿，Z 轴继续估计和记录。
     force_axis_gain_x: 1.0
     force_axis_gain_y: 1.0
-    force_axis_gain_z: 1.0
+    force_axis_gain_z: 0.0
     # 仅在 AUTO_HOVER/CMD_CTRL 中，PX4 连续确认 IN_AIR 达到该时间后才允许 f_Q 进入 NMPC，单位 s。
     compensation_airborne_delay: 0.8
     # 四路电机用于外力估计和补偿的最低有效机械转速，单位 rpm。
