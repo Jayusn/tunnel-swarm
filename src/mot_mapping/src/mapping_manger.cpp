@@ -150,6 +150,7 @@ void MappingRos::init() {
     throw std::runtime_error("detection/dynamic_mode must be general or swing-only");
   mp_->swing_only = dynamic_mode == "swing-only";
   nh.param("detection/object_motion_evidence_enabled", mp_->object_motion_evidence_enabled, false);
+  nh.param("detection/object_motion_span_enabled", mp_->object_motion_span_enabled, false);
   nh.param("detection/object_motion_match_fraction", mp_->object_motion_match_fraction, 0.45);
   nh.param("detection/object_motion_match_advantage", mp_->object_motion_match_advantage, 0.30);
   nh.param("detection/object_motion_depth_fraction", mp_->object_motion_depth_fraction, 0.40);
@@ -497,6 +498,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     observed_sensor_poses.clear();
     timed_observations_.clear();
     bidirectional_previous_observation_.points.reset();
+    motion_raw_history_.clear();
     next_background_sample_stamp_ = ros::Time();
     last_background_sample_stamp_ = ros::Time();
     if (online_background_) {
@@ -806,6 +808,33 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     if (have_previous_ray)
       previous_depth_view.build(*previous_ray.points, previous_ray.sensor_pose.R, previous_ray.sensor_pose.T);
     bidirectional_previous_observation_ = {cloud_stamp_, latest_cloud, current_sensor_pose};
+  }
+  // Use a real scene 0.2--0.4 s ago as a second motion baseline. Adjacent
+  // returns on a moving ball can overlap within the 5 cm matching tolerance.
+  RawObservation motion_reference;
+  BidirectionalDepth motion_reference_depth;
+  pcl::search::KdTree<PointType> motion_reference_tree;
+  if (mp_->object_motion_evidence_enabled && mp_->object_motion_span_enabled) {
+    if (!motion_raw_history_.empty() && cloud_stamp_ <= motion_raw_history_.back().stamp)
+      motion_raw_history_.clear();
+    while (!motion_raw_history_.empty() &&
+           (cloud_stamp_ - motion_raw_history_.front().stamp).toSec() > 0.41)
+      motion_raw_history_.pop_front();
+    double error = 1.0;
+    for (const auto& sample : motion_raw_history_) {
+      const double age = (cloud_stamp_ - sample.stamp).toSec();
+      if (age >= 0.19 && age <= 0.41 && std::abs(age - 0.4) < error) {
+        motion_reference = sample;
+        error = std::abs(age - 0.4);
+      }
+    }
+    if (motion_reference.points && !motion_reference.points->empty()) {
+      motion_reference_tree.setInputCloud(motion_reference.points);
+      motion_reference_depth.build(*motion_reference.points,
+          motion_reference.sensor_pose.R, motion_reference.sensor_pose.T);
+    }
+    motion_raw_history_.push_back(bidirectional_previous_observation_);
+    while (motion_raw_history_.size() > 6) motion_raw_history_.pop_front();
   }
   std::vector<Candidate> candidates;
   std::vector<bool> object_components(cluster_indices.size(), false);
@@ -1769,6 +1798,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
       tracker->bidirectional_evidence.clear();
     const ros::Time previous_motion_stamp = tracker->last_motion_stamp;
     bool object_motion_ready = false;
+    bool span_motion_ready = false;
     bool measured_continuation_motion = false;
     if (mp_->object_motion_evidence_enabled) {
       const bool valid_observation = !candidate.static_background && shape_consistent &&
@@ -1824,6 +1854,62 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
           << " " << candidate.state.position.transpose() << " " << valid_observation
           << " " << bidirectional_transition_valid << " " << moving_fraction
           << " " << static_fraction << " " << depth_fraction << " " << object_motion_ready);
+      if (mp_->object_motion_span_enabled) {
+        double span_moving = 0.0, span_static = 0.0, span_depth = 0.0;
+        auto& samples = tracker->motion_samples;
+        if (!valid_observation || (!samples.empty() &&
+            (cloud_stamp_ <= samples.back().stamp ||
+             (cloud_stamp_ - samples.back().stamp).toSec() > 0.21))) samples.clear();
+        while (!samples.empty() && (cloud_stamp_ - samples.front().stamp).toSec() > 0.41)
+          samples.pop_front();
+        const auto old = std::find_if(samples.begin(), samples.end(), [&](const Ekf::MotionSample& sample) {
+          return sample.stamp == motion_reference.stamp;
+        });
+        if (valid_observation && !candidate.supplemental && samples.size() >= 2 &&
+            old != samples.end() && motion_reference.points && !motion_reference.points->empty()) {
+          const Eigen::Vector3d shift = candidate.state.position - old->center;
+          const double duration = (cloud_stamp_ - old->stamp).toSec();
+          const auto match = mot_mapping::matchLocalMotion(old->shape, candidate.dense_points, shift);
+          size_t stationary = 0, foreground = 0, vacated = 0;
+          std::vector<int> nearest(1);
+          std::vector<float> distance(1);
+          for (const auto& relative : candidate.dense_points) {
+            const Eigen::Vector3d world = candidate.state.position + relative;
+            PointType point; point.x = world.x(); point.y = world.y(); point.z = world.z();
+            if (motion_reference_tree.nearestKSearch(point, 1, nearest, distance) > 0 &&
+                distance[0] <= 0.05 * 0.05) ++stationary;
+            foreground += motion_reference_depth.classify(world) == BidirectionalDepth::Foreground;
+          }
+          for (const auto& relative : old->shape)
+            vacated += current_depth_view.classify(old->center + relative) == BidirectionalDepth::Foreground;
+          const double static_match = double(stationary) / candidate.dense_points.size();
+          const double depth = std::max(double(foreground) / candidate.dense_points.size(),
+                                       double(vacated) / old->shape.size());
+          span_moving = match.forward_moving;
+          span_static = static_match;
+          span_depth = depth;
+          span_motion_ready = shift.norm() >= mp_->motion_displacement &&
+              shift.norm() / duration >= mp_->min_motion_speed &&
+              match.supports(mp_->object_motion_match_fraction, mp_->object_motion_match_advantage) &&
+              match.forward_moving - static_match >= mp_->object_motion_match_advantage &&
+              depth >= mp_->object_motion_depth_fraction;
+          if (mp_->object_motion_local_bidirectional_enabled)
+            span_motion_ready = span_motion_ready && match.supports(
+                mp_->object_motion_local_match_fraction, mp_->object_motion_local_match_advantage);
+          ROS_DEBUG_STREAM("FAPP_MOTION_SPAN " << cloud_stamp_.toNSec() << " " << tracker->id
+              << " " << candidate.state.position.transpose() << " " << duration
+              << " " << shift.norm() << " " << match.forward_moving << " " << static_match
+              << " " << depth << " " << span_motion_ready);
+        }
+        span_motion_ready = tracker->span_motion_evidence.update(
+            cloud_stamp_.toNSec(), previous_ray.stamp.toNSec(), valid_observation,
+            span_motion_ready, span_moving, span_static, span_depth,
+            mp_->object_motion_match_fraction, mp_->object_motion_match_advantage,
+            mp_->object_motion_depth_fraction,
+            static_cast<uint64_t>(mp_->object_motion_evidence_window * 1e9));
+        if (valid_observation) samples.push_back({cloud_stamp_, candidate.state.position, candidate.dense_points});
+        while (samples.size() > 6) samples.pop_front();
+      }
     }
     // Do not seed a later swing with positions across a rejected shape change.
     if (check_observed_shape && !shape_consistent)
@@ -2051,10 +2137,27 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     if (mp_->object_motion_evidence_enabled) {
       // Replace all legacy startup paths; retain the existing 0.6 s exit hold.
       tracker->last_motion_stamp = previous_motion_stamp;
-      strong_motion_confirmation = has_motion && object_motion_ready &&
-          !bidirectional_static_suppression && candidate.novel_fraction >= required_novel_fraction;
+      // Longer comparisons maintain an already observed dynamic region.
+      // They do not introduce new moving regions from sparse background samples.
+      // Remember its location for 10 s, like the active planner history; fresh
+      // measured motion is still required, so a stopped body cannot renew itself.
+      bool known_region = false;
+      if (span_motion_ready && mp_->spatial_reacquisition_enabled)
+        for (const auto& known : trackers)
+          if (known->spatial_confirmation.supports(cloud_stamp_.toSec(),
+                candidate.state.position, candidate.state.size,
+                10.0, mp_->spatial_reacquisition_radius)) {
+            known_region = true;
+            break;
+          }
+      strong_motion_confirmation = !bidirectional_static_suppression &&
+          ((has_motion && object_motion_ready && candidate.novel_fraction >= required_novel_fraction) ||
+           (span_motion_ready && known_region));
       if (strong_motion_confirmation) tracker->last_motion_stamp = cloud_stamp_;
-      if (bidirectional_static_suppression) tracker->object_motion_evidence.clear();
+      if (bidirectional_static_suppression) {
+        tracker->object_motion_evidence.clear();
+        tracker->span_motion_evidence.clear();
+      }
     }
     bool confirmed = !tracker->last_motion_stamp.isZero() &&
                      (cloud_stamp_ - tracker->last_motion_stamp).toSec() <= 0.6;
@@ -2064,10 +2167,16 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     SpatialConfirmation previous_confirmation;
     if (!confirmed && mp_->object_motion_evidence_enabled && mp_->spatial_reacquisition_enabled &&
         !candidate.static_background && !bidirectional_static_suppression && shape_consistent &&
-        !candidate.supplemental && measured_continuation_motion) {
+        !candidate.supplemental) {
       double closest = mp_->spatial_reacquisition_radius;
       for (const auto& known : trackers) {
         const auto& measured = known->spatial_confirmation;
+        // A real return near a recently moving body may bridge its turning
+        // point. Only strong measured motion refreshes this bounded hold.
+        const bool recent_motion = mp_->object_motion_span_enabled && measured.motion_stamp > 0.0 &&
+            cloud_stamp_.toSec() > measured.motion_stamp &&
+            cloud_stamp_.toSec() - measured.motion_stamp <= mp_->spatial_reacquisition_max_gap;
+        if (!measured_continuation_motion && !recent_motion) continue;
         const double distance = (candidate.state.position - measured.position).norm();
         if (distance <= closest && measured.supports(cloud_stamp_.toSec(),
               candidate.state.position, candidate.state.size,
@@ -2198,6 +2307,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
     if (mp_->object_motion_evidence_enabled && mp_->spatial_reacquisition_enabled) {
       if (spatial_continuation) tracker->spatial_confirmation = previous_confirmation;
       if (strong_motion_confirmation || tracker->spatial_confirmation.stamp == 0.0) {
+        tracker->spatial_confirmation.motion_stamp = cloud_stamp_.toSec();
         tracker->spatial_confirmation.size = published_state.size;
         tracker->spatial_confirmation.confirmed_position = published_state.position;
       }

@@ -1,6 +1,7 @@
 <launch>
   <arg name="dynamic_mode" default="swing-only"/>
   <arg name="object_motion_evidence_enabled" default="true"/>
+  <arg name="object_motion_span_enabled" default="true"/>
   <arg name="object_motion_evidence_window" default="0.4"/>
   <arg name="spatial_reacquisition_enabled" default="true"/>
   <arg name="object_motion_local_bidirectional_enabled" default="false"/>
@@ -20,6 +21,7 @@
       <!-- Swing and measured-motion confirmation supply their own observation checks. -->
       <param if="$(eval arg('dynamic_mode') == 'swing-only' or arg('object_motion_evidence_enabled'))" name="detection/motion_confirmation_duration" value="0.0"/>
       <param name="detection/object_motion_evidence_enabled" value="$(arg object_motion_evidence_enabled)"/>
+      <param name="detection/object_motion_span_enabled" value="$(arg object_motion_span_enabled)"/>
       <param name="detection/object_motion_evidence_window" value="$(arg object_motion_evidence_window)"/>
       <param name="detection/spatial_reacquisition_enabled" value="$(arg spatial_reacquisition_enabled)"/>
       <param name="detection/object_motion_local_bidirectional_enabled" value="$(arg object_motion_local_bidirectional_enabled)"/>

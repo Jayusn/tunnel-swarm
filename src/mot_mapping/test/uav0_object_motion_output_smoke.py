@@ -14,6 +14,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--local-bidirectional', action='store_true')
     parser.add_argument('--spatial-continuation', action='store_true')
+    parser.add_argument('--motion-span', action='store_true')
     args = parser.parse_args()
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))
@@ -40,12 +41,16 @@ def main():
             from obj_state_msgs.msg import ObjectsStates
             rospy.init_node('swing_output_smoke', anonymous=True)
             rospy.set_param('/UAV0/fapp/mapping_node/detection/object_motion_evidence_enabled', True)
+            rospy.set_param('/UAV0/fapp/mapping_node/detection/object_motion_span_enabled', args.motion_span)
             rospy.set_param('/UAV0/fapp/mapping_node/detection/object_motion_local_bidirectional_enabled', args.local_bidirectional)
             rospy.set_param('/UAV0/fapp/mapping_node/detection/motion_confirmation_duration', .5)
             rospy.set_param('/UAV0/fapp/mapping_node/detection/spatial_reacquisition_enabled', args.spatial_continuation)
             rospy.set_param('/UAV0/fapp/mapping_node/detection/object_motion_evidence_window', .4 if args.spatial_continuation else 0.0)
             start(['roslaunch', 'mot_mapping', 'uav0_detection.launch',
                    'dynamic_mode:=general', 'native_input_enabled:=true',
+                   # Match the active frame-event preset for the span trial.
+                   'motion_displacement:='+('.06' if args.motion_span else '.08'),
+                   'min_motion_speed:='+('.14' if args.motion_span else '.15'),
                    'shape_consistency_enabled:=true'], 'node.log')
             received = {k: {} for k in ('states', 'dynamic_cloud', 'dynamic_object_markers', 'dynamic_track_markers')}
             def collect(key, msg):
@@ -127,13 +132,18 @@ def main():
             for i in range(16):
                 assert frame(2+.005*(i%2)) == 0, 'Static jitter confirmed'
             for period, samples in ((2., 40), (6., 70)):
-                for _ in range(12 if args.spatial_continuation else 8):
+                # The span path maintains a known region through slow motion;
+                # its test keeps that region recent after the fast swing.
+                gap_frames = 3 if args.motion_span and period == 6. else (12 if args.spatial_continuation else 8)
+                for _ in range(gap_frames):
                     frame()
                 counts = [frame(2+.25*math.sin(2*math.pi*i*.1/period)) for i in range(samples)]
                 print('SWING_PERIOD_SECONDS', period, 'HIT_FRAMES', sum(bool(n) for n in counts),
                       'TOTAL_FRAMES', samples, flush=True)
                 if period == 2.:
                     assert any(counts), 'Fast swing missed entirely'
+                if period == 6. and args.motion_span:
+                    assert any(counts), 'Previously confirmed swing was not maintained during slow motion'
             for _ in range(12 if args.spatial_continuation else 8):
                 frame()
             counts = [frame(2+.08*i, spacing=.3) for i in range(6)]

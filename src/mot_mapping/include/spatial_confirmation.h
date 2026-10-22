@@ -7,6 +7,7 @@ namespace mot_mapping {
 // only by strong motion confirmation; weak fragments cannot enlarge it repeatedly.
 struct SpatialConfirmation {
   double stamp = 0.0;
+  double motion_stamp = 0.0;
   Eigen::Vector3d position = Eigen::Vector3d::Zero();
   Eigen::Vector3d confirmed_position = Eigen::Vector3d::Zero();
   Eigen::Vector3d size = Eigen::Vector3d::Zero();
