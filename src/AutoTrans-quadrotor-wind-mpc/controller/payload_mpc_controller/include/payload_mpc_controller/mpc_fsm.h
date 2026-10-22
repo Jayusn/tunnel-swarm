@@ -39,7 +39,7 @@ namespace PayloadMPC
 		State_Data_t state_data;
 		ExtendedState_Data_t extended_state_data;
 		Odom_Data_t odom_data;
-		// PX4融合姿态及世界系三轴速度；NMPC、模式判断、推力模型和外力估计共用。
+		// FAST-LIO 同源姿态；NMPC、推力模型与外力估计共用，平移状态取 odom_data。
 		Odom_Data_t force_attitude_odom_data;
 		Imu_Data_t imu_data;
 		Command_Data_t cmd_data;
@@ -119,7 +119,7 @@ namespace PayloadMPC
 
 	private:
         friend class ForceEstimatorTestAccess;
-        friend class Px4StateInputTestAccess;
+        friend class LioStateInputTestAccess;
         void landingTargetCallback(const mavros_msgs::PositionTarget::ConstPtr &msg);
         void landingStateCallback(const std_msgs::String::ConstPtr &msg);
         void processPrecisionLanding(const ros::Time &now);

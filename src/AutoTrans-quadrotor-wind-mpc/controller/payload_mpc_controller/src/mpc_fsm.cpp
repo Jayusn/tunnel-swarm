@@ -35,7 +35,7 @@ namespace PayloadMPC
 																							  controller_(controller),
 																							  odom_spike_guard_(makeOdomSpikeGuardConfig(params))
 	{
-        force_attitude_odom_data.v.setZero();
+        odom_data.v.setZero();
         nh_.param("tracking_replan/enabled", tracking_replan_enabled_, false);
         nh_.param("tracking_replan/error", tracking_replan_error_, 0.10);
         nh_.param("tracking_replan/stop_error", tracking_stop_error_, 0.15);
@@ -120,12 +120,12 @@ namespace PayloadMPC
 		    "\ncontrol_frequency: " + std::to_string(params_.ctrl_freq_max_) +
 		    "\nimu: " + nh_.resolveName("drone_imu/data") +
 		    "\nattitude: " + nh_.resolveName("force_attitude_odom") +
-		    "\ncontrol_velocity_xyz: " + nh_.resolveName("force_attitude_odom") +
-		    " (PX4 body velocity rotated by PX4 attitude to local world; latest received sample)" +
+		    "\ncontrol_velocity_xyz: " + nh_.resolveName("odom") +
+		    " (FAST-LIO world velocity; accepted odometry sample)" +
 		    "\nrpm: " + nh_.resolveName("/mavros/esc_status") +
 		    "\ncompensation_processing: axis_gains_and_norm_limit_only\nparameters_xml:\n" + parameter_snapshot.toXml();
 		force_config_pub_.publish(config);
-		ROS_INFO("[控制状态] 仅位置来自 odom；姿态和三轴速度来自 PX4 force_attitude_odom，IMU来自 drone_imu/data。LIO位置/轨迹与PX4 local须沿用同一视觉世界系。");
+		ROS_INFO("[控制状态] 位置和三轴世界系速度来自 FAST-LIO odom；控制与外力估计姿态来自同源 force_attitude_odom，IMU来自 Livox drone_imu/data（m/s^2）。");
 		ROS_INFO("[外力] method=%s, rate=%.3f s^-1, cutoff=%.3f Hz, control=%.1f Hz; build=%s",
 		    params_.force_estimator_param_.method.c_str(), params_.force_estimator_param_.ndob_rate,
 		    params_.force_estimator_param_.ndob_cutoff_freq, params_.ctrl_freq_max_, FORCE_BUILD_INFO);
@@ -151,8 +151,8 @@ namespace PayloadMPC
         d.lio_latest_receive_stamp = latest_lio_receive_;
         d.lio_used_source_stamp = odom_data.msg.header.stamp;
         d.lio_used_receive_stamp = odom_data.rcv_stamp;
-        d.px4_used_source_stamp = force_attitude_odom_data.msg.header.stamp;
-        d.px4_used_receive_stamp = force_attitude_odom_data.rcv_stamp;
+        // 已恢复 LIO 反馈；保留消息兼容字段，但不把 LIO 时间戳标成 PX4。
+        // px4_used_* 保持零时间，px4_used_age_s 按缺失输入记为 NaN。
         const auto age = [&](const ros::Time& stamp) {
             return stamp.isZero() ? std::numeric_limits<double>::quiet_NaN()
                                  : (d.header.stamp - stamp).toSec();
@@ -165,9 +165,9 @@ namespace PayloadMPC
         d.lio_rejected_total = lio_rejected_total_;
         d.lio_rejected_consecutive = lio_rejected_consecutive_;
         d.position.x = odom_data.p.x(); d.position.y = odom_data.p.y(); d.position.z = odom_data.p.z();
-        d.velocity.x = force_attitude_odom_data.v.x();
-        d.velocity.y = force_attitude_odom_data.v.y();
-        d.velocity.z = force_attitude_odom_data.v.z();
+        d.velocity.x = odom_data.v.x();
+        d.velocity.y = odom_data.v.y();
+        d.velocity.z = odom_data.v.z();
         d.input_dispatch_ms = dispatch_ms;
         diagnostic_exec_begin_ = controller_.diagnostic_exec_count_;
         diagnostic_exec_ms_begin_ = controller_.diagnostic_exec_total_ms_;
@@ -191,7 +191,7 @@ namespace PayloadMPC
         latest_lio_source_ = msg->header.stamp;
         latest_lio_receive_ = candidate.rcv_stamp;
 		const OdomSpikeGuardResult result = odom_spike_guard_.evaluate(
-			candidate.rcv_stamp.toSec(), candidate.p, force_attitude_odom_data.v);
+			candidate.rcv_stamp.toSec(), candidate.p, candidate.v);
 
 		if (result == OdomSpikeGuardResult::ACCEPTED ||
 			result == OdomSpikeGuardResult::RECOVERED)
@@ -212,7 +212,7 @@ namespace PayloadMPC
         ++lio_rejected_total_;
 		ROS_WARN_THROTTLE(
 			0.5,
-			"[ODOM_SPIKE] 拒绝 LIO位置/PX4速度 异常样本：位置残差 xy=%.3f z=%.3f m，速度突变 xy=%.3f z=%.3f m/s；暂用上一可信状态。",
+			"[ODOM_SPIKE] 拒绝 FAST-LIO 异常样本：位置残差 xy=%.3f z=%.3f m，速度突变 xy=%.3f z=%.3f m/s；暂用上一可信状态。",
 			odom_spike_guard_.lastPositionResidualXY(),
 			odom_spike_guard_.lastPositionResidualZ(),
 			odom_spike_guard_.lastVelocityJumpXY(),
@@ -227,12 +227,7 @@ namespace PayloadMPC
 	void MPCFSM::forceAttitudeOdomCallback(const nav_msgs::Odometry::ConstPtr &msg)
 	{
 		force_attitude_odom_data.feed(msg);
-		// MAVROS local odom的twist为base_link机体系；仅用PX4自身姿态转到local世界系。
-		const double q_norm = force_attitude_odom_data.q.norm();
-		if (force_attitude_odom_data.q.coeffs().allFinite() &&
-			std::isfinite(q_norm) && q_norm > 1.0e-6)
-			force_attitude_odom_data.v =
-				force_attitude_odom_data.q.normalized() * force_attitude_odom_data.v;
+		// FAST-LIO twist 已是世界系速度；此订阅仅提供同源姿态，不再旋转速度。
 		if (params_.force_estimator_param_.enable_input_sync)
 		{
 			recordForceSyncInputResult(force_input_synchronizer_.addAttitude(
@@ -708,9 +703,9 @@ namespace PayloadMPC
 					ROS_WARN_THROTTLE(1.0, "[AUTO_HOVER] 拒绝进入悬停：里程计无效。");
 					break;
 				}
-				if (force_attitude_odom_data.v.norm() > 3.0)
+				if (odom_data.v.norm() > 3.0)
 				{
-					ROS_WARN_THROTTLE(5.0, "[AUTO_HOVER] 拒绝进入悬停：定位速度 %.2f m/s 超过 3.0 m/s。", force_attitude_odom_data.v.norm());
+					ROS_WARN_THROTTLE(5.0, "[AUTO_HOVER] 拒绝进入悬停：定位速度 %.2f m/s 超过 3.0 m/s。", odom_data.v.norm());
 					break;
 				}
 
@@ -736,9 +731,9 @@ namespace PayloadMPC
 					ROS_WARN_THROTTLE(1.0, "[CMD_CTRL] 拒绝进入命令模式：里程计无效。");
 					break;
 				}
-				if (force_attitude_odom_data.v.norm() > 3.0)
+				if (odom_data.v.norm() > 3.0)
 				{
-					ROS_WARN_THROTTLE(5.0, "[CMD_CTRL] 拒绝进入命令模式：定位速度 %.2f m/s 超过 3.0 m/s。", force_attitude_odom_data.v.norm());
+					ROS_WARN_THROTTLE(5.0, "[CMD_CTRL] 拒绝进入命令模式：定位速度 %.2f m/s 超过 3.0 m/s。", odom_data.v.norm());
 					break;
 				}
 
@@ -1203,7 +1198,7 @@ namespace PayloadMPC
 							  const Odom_Data_t &attitude_odom)
 	{
 		const double q_norm = attitude_odom.q.norm();
-		if (!translation_odom.p.allFinite() || !attitude_odom.v.allFinite() ||
+		if (!translation_odom.p.allFinite() || !translation_odom.v.allFinite() ||
 			!attitude_odom.q.coeffs().allFinite() || !std::isfinite(q_norm) || q_norm <= 1.0e-6)
 		{
 			// 无效组合状态不进入求解器；自动状态会在 process() 开头触发安全保护。
@@ -1220,8 +1215,8 @@ namespace PayloadMPC
 		est_state_(kOriX) = rot_q.x();
 		est_state_(kOriY) = rot_q.y();
 		est_state_(kOriZ) = rot_q.z();
-		// 回调已完成PX4机体系到local世界系转换；不再使用LIO速度或姿态。
-		est_state_.segment<3>(kVelX) = attitude_odom.v.cast<real_t>();
+		// FAST-LIO odom 的速度已经位于定位世界系，直接使用三轴分量。
+		est_state_.segment<3>(kVelX) = translation_odom.v.cast<real_t>();
 	}
 
 	void MPCFSM::addNewForceObseverState()
@@ -1486,7 +1481,7 @@ namespace PayloadMPC
 	bool MPCFSM::odom_state_valid() const
 	{
 		const double q_norm = force_attitude_odom_data.q.norm();
-		return odom_data.p.allFinite() && force_attitude_odom_data.v.allFinite() &&
+		return odom_data.p.allFinite() && odom_data.v.allFinite() &&
 			force_attitude_odom_data.q.coeffs().allFinite() &&
 			std::isfinite(q_norm) && q_norm > 1.0e-6;
 	}
@@ -1586,8 +1581,8 @@ namespace PayloadMPC
 
 		// 等速度明显收敛后再恢复名义硬约束，避免在约束边界附近因噪声反复重置。
 		const bool velocity_ready_for_nominal =
-			force_attitude_odom_data.v.head<2>().norm() <= params_.safety_.mpc_recovery_exit_speed_xy &&
-			std::abs(force_attitude_odom_data.v.z()) <= params_.safety_.mpc_recovery_exit_speed_z;
+			odom_data.v.head<2>().norm() <= params_.safety_.mpc_recovery_exit_speed_xy &&
+			std::abs(odom_data.v.z()) <= params_.safety_.mpc_recovery_exit_speed_z;
 		if (controller_.lastMpcSolveSuccessful() &&
 			controller_.recoveryVelocityLimitsRelaxed() && velocity_ready_for_nominal)
 		{
@@ -1597,7 +1592,7 @@ namespace PayloadMPC
 
 		const double deg_to_rad = M_PI / 180.0;
 		const bool state_converged = recoveryStateConverged(
-			odom_data.p, hover_pose_, force_attitude_odom_data.v, force_attitude_odom_data.q,
+			odom_data.p, hover_pose_, odom_data.v, force_attitude_odom_data.q,
 			params_.safety_.mpc_recovery_exit_position_error,
 			params_.safety_.mpc_recovery_exit_speed_xy,
 			params_.safety_.mpc_recovery_exit_speed_z,
@@ -1921,7 +1916,7 @@ namespace PayloadMPC
 			reason = "SENSOR_STALE";
 			return false;
 		}
-		if (!odom_data.p.allFinite() || !force_attitude_odom_data.v.allFinite() ||
+		if (!odom_data.p.allFinite() || !odom_data.v.allFinite() ||
 			!force_attitude_odom_data.q.coeffs().allFinite() ||
 			force_attitude_odom_data.q.norm() <= 1.0e-6 ||
 			!imu_data.filtered_a.allFinite() || !rpm_data.rpm_vec.allFinite() ||
@@ -1930,7 +1925,7 @@ namespace PayloadMPC
 			reason = "SENSOR_INVALID";
 			return false;
 		}
-		if (force_attitude_odom_data.v.norm() > 0.5)
+		if (odom_data.v.norm() > 0.5)
 		{
 			reason = "SPEED_UNSAFE";
 			return false;
@@ -2149,7 +2144,7 @@ namespace PayloadMPC
 		const Eigen::Vector4d cached_input =
 			controller_.lastValidControlInput().head<4>().cast<double>();
 		return conservativeLastValidInput(
-			force_attitude_odom_data.v, force_attitude_odom_data.q, cached_input,
+			odom_data.v, force_attitude_odom_data.q, cached_input,
 			params_.safety_.mpc_recovery_exit_speed_xy,
 			params_.safety_.mpc_recovery_exit_speed_z,
 			params_.safety_.mpc_recovery_exit_tilt_deg * M_PI / 180.0,

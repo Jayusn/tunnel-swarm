@@ -17,6 +17,7 @@ class InputCallbackPriorityTest(unittest.TestCase):
         preamble = r'''
 #include <ros/ros.h>
 #include <ros/callback_queue.h>
+#include <chrono>
 #include <memory>
 #include <thread>
 #include <cassert>
@@ -25,6 +26,8 @@ struct MPCFSM {
     int last_input=0, solved_input=0, observer_input=0;
     std::thread::id owner=std::this_thread::get_id();
     void process() { assert(owner==std::this_thread::get_id()); solved_input=last_input; }
+    void beginInputDiagnostics(double) { assert(owner==std::this_thread::get_id()); }
+    void publishInputDiagnostics(double) { assert(owner==std::this_thread::get_id()); }
     void addNewForceObseverState() {
         assert(owner==std::this_thread::get_id()); observer_input=last_input;
     }

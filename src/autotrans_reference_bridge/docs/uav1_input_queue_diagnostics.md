@@ -14,13 +14,13 @@
 | 字段 | 含义 |
 |---|---|
 | lio_latest_source_stamp / receive_stamp | 最新进入 LIO 回调的消息源时间/本机回调时间，即使它被拒收也更新 |
-| lio_used_source_stamp / receive_stamp | 最后被接受的 LIO 位置对应源时间/回调时间，拒收时保持 |
-| px4_used_source_stamp / receive_stamp | 本周期最新 PX4 姿态/速度输入时间；速度沿用已有 PX4 姿态旋转到 PX4 local 世界系逻辑 |
+| lio_used_source_stamp / receive_stamp | 最后被接受的 LIO 位置及三轴速度对应源时间/回调时间，拒收时保持 |
+| px4_used_source_stamp / receive_stamp | 兼容历史包保留字段；恢复 FAST-LIO 反馈后不再使用 PX4 状态，时间为 0，对应年龄为 NaN |
 | lio_latest_age_s / lio_used_age_s / px4_used_age_s | 相对快照时间的源数据年龄（秒），未收到数据时为 NaN，源时间为 0；不把负年龄截零 |
 | since_lio_accept_s | 距最后一次接受 LIO 位置回调的时间，包含正常采样间隔 |
 | rejected_hold_s | 当前连续拒收序列从第一条拒收到快照时刻的时长，无连续拒收时为 0 |
 | lio_rejected_total / consecutive | 含瞬态、持续异常及恢复等待在内的拒收总数/连续数；接受时仅连续数清零 |
-| position / velocity | 输入位置和速度；state_prepared=true 时对应组装后的 est_state。位置属 LIO 世界系，速度属 PX4 local 世界系，不表示完成两套世界系对齐 |
+| position / velocity | 输入位置和速度；state_prepared=true 时对应组装后的 est_state。位置和速度均属 LIO 世界系，速度直接来自已接受的 LIO odom，不再旋转 PX4 速度 |
 | state_prepared | 本周期是否执行状态组装；为 false 时不能将 position/velocity 解释为已用于求解 |
 | mpc_solve_count / success | 本周期 execMPC 调用次数及最后一次成功状态；次数 0 时 success=false，耗时为 0，不重复报告上一周期求解 |
 | input_dispatch_ms | 上次控制调用以来累计输入队列 callAvailable 的稳态时钟耗时，包含控制前的输入处理，不是某一条消息延迟 |
@@ -28,6 +28,8 @@
 | mpc_exec_wall_ms | 本周期 execMPC 累计墙钟耗时，包含等待上次 preparation 线程及反馈求解；不包含返回后异步执行的下一轮 preparation |
 
 是否真正进入求解以 mpc_solve_count 为准；state_prepared 也可能发生在手动模式或随后进入既有恢复处理的周期。输入缺失/无效时沿用原控制逻辑，不因诊断改变处理结果。
+
+2026-10-22 恢复输入来源后：位置、三轴速度和姿态来自 `/UAV1/fast_lio/Odom_high_freq`；控制及外力估计的 IMU 来自 `/UAV1/livox/imu_mps2`，滤波采样率恢复为 200 Hz。PX4 odom/raw IMU 仍录包以供比较，但不作为当前 NMPC 或外力估计的对应输入。RPM 仍来自 ESC。
 
 ## FAST-LIO queue_diagnostics（每次完成的激光建图帧，约 10 Hz）
 

@@ -64,7 +64,7 @@ int main(int argc, char **argv)
                                          &fsm,
                                          ros::TransportHints().tcpNoDelay());
 
-    // PX4融合里程计同时提供姿态和三轴速度；回调将机体系速度转为世界系。
+    // FAST-LIO 同源里程计提供控制与外力估计姿态；速度直接取 odom 的世界系分量。
     ros::Subscriber force_attitude_odom_sub =
         nh.subscribe<nav_msgs::Odometry>("force_attitude_odom",
                                          100,

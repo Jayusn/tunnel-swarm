@@ -6,6 +6,7 @@ time lio_latest_source_stamp
 time lio_latest_receive_stamp
 time lio_used_source_stamp
 time lio_used_receive_stamp
+# Legacy PX4 fields: zero stamps / NaN age when control feedback uses FAST-LIO.
 time px4_used_source_stamp
 time px4_used_receive_stamp
 float64 lio_latest_age_s
