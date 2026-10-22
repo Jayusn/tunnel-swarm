@@ -6,11 +6,12 @@
   <!-- 常用开关可直接改成 true/false；动态避障依赖上面的FAPP检测也开启。 -->
   <arg name="enable_fapp_detection" default="true"/>
   <arg name="enable_fapp_dynamic_avoidance" default="true"/>
-  <!-- true保留动态软代价，常规轨迹跳过动态硬拒绝；false启用动态碰撞硬检查。
-       航点选路仍先检查摆球下方通路；可下穿则下降/低位通过/回升，否则左右侧绕。 -->
+  <!-- true保留动态软代价，常规轨迹跳过动态硬拒绝；历史包络用于选路与样条生成；false启用动态碰撞硬检查。
+       航点选路仍先检查摆球下方通路；可下穿则前进下降/低位通过/前进回升，否则左右侧绕。 -->
   <arg name="fapp_planner_priority" default="true"/>
-  <!-- 空检测帧保留近期目标；未越过的目标持续失观时制动并等待重新观测。 -->
+  <!-- 保存历史最低点与摆动包络；持续空帧仍依历史范围规划，不仅因超时制动。 -->
   <arg name="fapp_memory_enabled" default="true"/>
+  <arg name="fapp_history_duration" default="10.0"/>
   <arg name="fapp_observation_retention" default="0.8"/>
   <arg name="fapp_association_distance" default="0.6"/>
 
@@ -120,6 +121,7 @@
   <param name="/exploration_node/fapp/frame_id" value="UAV0/camera_init"/>
   <param name="/exploration_node/fapp/memory_enabled" value="$(arg fapp_memory_enabled)" type="bool"/>
   <param name="/exploration_node/fapp/observation_retention" value="$(arg fapp_observation_retention)"/>
+  <param name="/exploration_node/fapp/history_duration" value="$(arg fapp_history_duration)"/>
   <param name="/exploration_node/fapp/association_distance" value="$(arg fapp_association_distance)"/>
   <param name="/exploration_node/fsm/hold_on_plan_failure" value="false" type="bool"/>
   <param name="/exploration_node/fsm/safety_hold_enabled" value="false" type="bool"/>
