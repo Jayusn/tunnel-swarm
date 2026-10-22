@@ -177,6 +177,24 @@ void FastPlannerManager::fappCallback(const obj_state_msgs::ObjectsStates::Const
         [&](const fuel_fapp::DynamicObstacleState& state) {
           return now - state.stamp > fapp_history_duration_;
         }), fapp_history_.end());
+    // 同一位置已有多帧观测时，以历史尺寸为准。单帧竖直大框不能
+    // 将已确认的摆球底部拉到地面；正常尺寸的更低观测仍保留。
+    observations.erase(std::remove_if(observations.begin(), observations.end(),
+        [&](const fuel_fapp::DynamicObstacleState& fresh) {
+          std::vector<double> heights;
+          for (const auto& old : fapp_history_)
+            if (old.stamp < fresh.stamp && old.size.allFinite() && old.size.z() > 0.0 &&
+                (old.position - fresh.position).norm() <= fapp_association_distance_)
+              heights.push_back(old.size.z());
+          if (heights.size() < 3) return false;
+          auto middle = heights.begin() + heights.size() / 2;
+          std::nth_element(heights.begin(), middle, heights.end());
+          if (fresh.size.z() <= 2.0 * *middle + 0.05) return false;
+          ROS_WARN_THROTTLE(1.0, "[FAPP memory] ignore isolated tall box z_size=%.3f "
+              "historical_median=%.3f samples=%zu; retain confirmed region.",
+              fresh.size.z(), *middle, heights.size());
+          return true;
+        }), observations.end());
     for (const auto& fresh : observations) {
       const bool duplicate = std::any_of(fapp_history_.begin(), fapp_history_.end(),
           [&](const fuel_fapp::DynamicObstacleState& old) {

@@ -73,6 +73,84 @@ class TurnEscapeTest {
     manager.task_search_manager_->initialize(nh);
   }
 public:
+  static void runFappTallOutlier() {
+    FastPlannerManager planner;
+    planner.fapp_config_.enabled = true;
+    planner.fapp_config_.vehicle_top_height = 0.05;
+    planner.fapp_memory_enabled_ = true;
+    planner.fapp_frame_ = "UAV0/camera_init";
+    auto message = boost::make_shared<obj_state_msgs::ObjectsStates>();
+    message->header.frame_id = planner.fapp_frame_;
+    obj_state_msgs::State ball;
+    ball.position.x = 3.15;
+    ball.position.y = 0.32;
+    ball.position.z = 0.592;
+    ball.size.x = 0.08;
+    ball.size.y = 0.16;
+    ball.size.z = 0.158;
+    const double now = ros::Time::now().toSec();
+    for (int i = 0; i < 4; ++i) {
+      message->header.stamp.fromSec(now - 0.5 + 0.1*i);
+      message->states = {ball};
+      planner.fappCallback(message);
+    }
+    planner.watchFappObstacle(&planner.fapp_states_.front());
+    const Vector3d lower = planner.fapp_watched_lower_;
+    // 21:31录包中的异常大框：中心在高度范围内，但底部被拉至0.098m。
+    ball.position.x = 3.177462;
+    ball.position.y = 0.468733;
+    ball.position.z = 0.476641;
+    ball.size.z = 0.757740;
+    message->header.stamp.fromSec(now - 0.05);
+    message->states = {ball};
+    planner.fappCallback(message);
+    ASSERT_EQ(1u, planner.fapp_states_.size());
+    EXPECT_EQ(4u, planner.fapp_history_.size());
+    EXPECT_TRUE(planner.fapp_watched_lower_.isApprox(lower));
+    EXPECT_NEAR(0.158, planner.fapp_states_.front().size.z(), 1e-9);
+    // 正常尺寸的真实低点照常更新，不把球的下降误当作尺寸异常。
+    ball.size.z = 0.158;
+    message->header.stamp.fromSec(now);
+    message->states = {ball};
+    planner.fappCallback(message);
+    EXPECT_EQ(5u, planner.fapp_history_.size());
+    EXPECT_LT(planner.fapp_watched_lower_.z(), lower.z() - 0.10);
+    // 其他位置的目标不受这个区域的尺寸约束。
+    ball.position.x = 5.0;
+    ball.size.z = 0.758;
+    message->states = {ball};
+    planner.fappCallback(message);
+    EXPECT_EQ(2u, planner.fapp_states_.size());
+  }
+
+  static void checkManualFappExecution(FastExplorationManager& manager, const Vector3d& start) {
+    FastExplorationFSM fsm;
+    fsm.expl_manager_ = std::shared_ptr<FastExplorationManager>(
+        &manager, [](FastExplorationManager*) {});
+    fsm.planner_manager_ = manager.planner_manager_;
+    fsm.fd_ = std::make_shared<FSMData>();
+    fsm.fp_ = std::make_shared<FSMParam>();
+    fsm.fd_->state_str_ = {"INIT", "WAIT", "PLAN", "PUB", "EXEC", "FINISH"};
+    fsm.fp_->tracking_error_grace_time_ = 1000.0;
+    fsm.fp_->max_tracking_error_xy_ = 1.0;
+    fsm.fp_->max_tracking_error_z_ = 1.0;
+    fsm.fp_->emergency_brake_horizon_ = 0.12;
+    fsm.active_traj_valid_ = true;
+    fsm.active_traj_ = manager.planner_manager_->local_data_;
+    fsm.active_traj_.start_time_ = ros::Time::now();
+    fsm.state_ = EXEC_TRAJ;
+    fsm.fd_->odom_pos_ = start;
+    fsm.fd_->odom_yaw_ = 0.0;
+    ros::NodeHandle nh("~manual_execution");
+    fsm.emergency_brake_pub_ = nh.advertise<std_msgs::Int32>("brake", 1);
+    for (int i = 0; i < 3; ++i) {
+      fsm.last_suspended_underpass_check_ = ros::Time();
+      fsm.safetyCallback(ros::TimerEvent());
+      EXPECT_EQ(EXEC_TRAJ, fsm.state_);
+      EXPECT_FALSE(fsm.active_traj_braked_);
+    }
+  }
+
   static void runFappMemory() {
     ros::NodeHandle nh("~memory_history");
     FastPlannerManager planner;
@@ -313,6 +391,7 @@ public:
     }
     ASSERT_EQ(SUCCEED, result);
     if (approach || asymmetric) {
+      checkManualFappExecution(manager, start);
       double age = 0.0;
       ASSERT_TRUE(manager.planner_manager_->watchedFappBounds(lower, upper, age));
       EXPECT_EQ(0u, manager.manual_path_.next);
@@ -2187,6 +2266,9 @@ TEST(ManualSuspended, FappBallUsesDescentLowStepsAndAscentBeforeSides) {
 }
 TEST(FappMemory, EmptyPartialInvalidAndExpiredObservationsUseSpatialMemory) {
   fast_planner::TurnEscapeTest::runFappMemory();
+}
+TEST(FappMemory, ConfirmedRegionRejectsSingleTallBoxButKeepsRealLowerObservation) {
+  fast_planner::TurnEscapeTest::runFappTallOutlier();
 }
 TEST(FappMemory, HistoricalUnderpassMovesForwardThroughContinuousDropout) {
   fast_planner::TurnEscapeTest::runManualSuspended("memory_below");

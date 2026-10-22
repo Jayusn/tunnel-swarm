@@ -1095,8 +1095,10 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
     return;
   }
 
-  // 行进中提前确认悬挂障碍；已有轨迹先短制动，再由 PLAN_TRAJ 发布固定 XY 下降段。
-  if (state_ == EXPL_STATE::EXEC_TRAJ && !active_turn_in_place_ &&
+  // 航点模式已在选路时处理连续下穿/侧绕，执行中不能再用前向直线
+  // 触发旧的刹车下降流程，否则每条新轨迹都会因同一障碍被立即取消。
+  if (!expl_manager_->manualWaypointsEnabled() &&
+      state_ == EXPL_STATE::EXEC_TRAJ && !active_turn_in_place_ &&
       !inflation_escape_active_ &&
       (last_suspended_underpass_check_.isZero() ||
        (ros::Time::now() - last_suspended_underpass_check_).toSec() >= 0.20)) {
