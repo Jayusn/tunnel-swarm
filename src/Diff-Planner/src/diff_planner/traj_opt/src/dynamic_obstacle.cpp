@@ -14,6 +14,10 @@ bool evaluateDynamicObstacle(
     double *clearance, Eigen::Vector3d *clearance_gradient,
     Eigen::Vector3d *obstacle_position, Eigen::Vector3d *obstacle_velocity)
 {
+  const double top = config.vehicle_top_height >= 0.0 ? config.vehicle_top_height : config.vehicle_half_height;
+  const double bottom = config.vehicle_bottom_height >= 0.0 ? config.vehicle_bottom_height : config.vehicle_half_height;
+  const double half_height = 0.5 * (top + bottom);
+  const Eigen::Vector3d body_center = vehicle_position + Eigen::Vector3d(0.0, 0.0, 0.5*(top-bottom));
   const bool measured_box = state.size.allFinite() &&
       (state.size.array() >= 0.0).all() && (state.size.array() > 0.0).any();
   if (!config.enabled || !vehicle_position.allFinite() ||
@@ -21,8 +25,7 @@ bool evaluateDynamicObstacle(
       !std::isfinite(state.stamp) || !std::isfinite(query_time) ||
       !std::isfinite(reference_time) ||
       !std::isfinite(config.vehicle_radius) || config.vehicle_radius <= 0.0 ||
-      !std::isfinite(config.vehicle_half_height) ||
-      config.vehicle_half_height <= 0.0 ||
+      !std::isfinite(top) || !std::isfinite(bottom) || top <= 0.0 || bottom <= 0.0 ||
       (!measured_box &&
        (!std::isfinite(config.ball_radius) || config.ball_radius <= 0.0)) ||
       !std::isfinite(config.margin) || config.margin < 0.0 ||
@@ -54,18 +57,18 @@ bool evaluateDynamicObstacle(
   if (measured_box)
   {
     const double box_clearance = cylinderBoxClearance(
-        vehicle_position, predicted_position, state.size, config.vehicle_radius,
-        config.vehicle_half_height, config.margin, clearance_gradient);
+        body_center, predicted_position, state.size, config.vehicle_radius,
+        half_height, config.margin, clearance_gradient);
     if (clearance != nullptr)
       *clearance = box_clearance;
     return true;
   }
 
-  const Eigen::Vector3d relative = vehicle_position - predicted_position;
+  const Eigen::Vector3d relative = body_center - predicted_position;
   const double radial_distance = relative.head<2>().norm();
   const double radial_gap = radial_distance - config.vehicle_radius;
   const double vertical_gap =
-      std::abs(relative.z()) - config.vehicle_half_height;
+      std::abs(relative.z()) - half_height;
   const double outside_radial = std::max(0.0, radial_gap);
   const double outside_vertical = std::max(0.0, vertical_gap);
   const double outside_distance = std::hypot(outside_radial, outside_vertical);

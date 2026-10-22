@@ -18,6 +18,9 @@ namespace diff_planner
   void DiffPlannerManager::initPlanModules(ros::NodeHandle &nh, PlanningVisualization::Ptr vis)
   {
     /* read algorithm parameters */
+    nh.param("manager/fapp_memory_enabled", fapp_memory_enabled_, false);
+    nh.param("manager/fapp_history_duration", fapp_history_.duration, 10.0);
+    nh.param("manager/fapp_association_distance", fapp_history_.association, 0.6);
 
     nh.param("manager/route_segment_count", route_segment_count_, 1);
     nh.param("manager/route_segment_min_length", route_segment_min_length_, 0.60);
@@ -95,7 +98,19 @@ namespace diff_planner
       obstacle.stamp = stamp.isZero() ? ros::Time::now().toSec() : stamp.toSec();
       obstacles.push_back(obstacle);
     }
-    ploy_traj_opt_->setDynamicObstacles(obstacles);
+    if (fapp_memory_enabled_) {
+      fapp_history_.update(obstacles, ros::Time::now().toSec());
+      refreshDynamicHistory();
+    } else ploy_traj_opt_->setDynamicObstacles(obstacles);
+  }
+
+  void DiffPlannerManager::refreshDynamicHistory() {
+    if (fapp_memory_enabled_)
+      ploy_traj_opt_->setDynamicObstacles(fapp_history_.regions(ros::Time::now().toSec()), true);
+  }
+
+  void DiffPlannerManager::observeDynamicPosition(const Eigen::Vector3d& actual) {
+    if (fapp_memory_enabled_) fapp_history_.observePosition(actual);
   }
 
   bool DiffPlannerManager::dynamicAvoidanceEnabled() const
@@ -160,6 +175,7 @@ namespace diff_planner
     head << nominal.getJuncPos(0), nominal.getJuncVel(0), nominal.getJuncAcc(0);
     tail << nominal.getJuncPos(last), nominal.getJuncVel(last), nominal.getJuncAcc(last);
     const double budget = ploy_traj_opt_->planningTimeRemaining();
+    const bool priority = ploy_traj_opt_->fappPlannerPriority();
     const double publish_budget = 0.1 * budget;
     const double reference = ploy_traj_opt_->planningReferenceTime();
     const int directions[] = {0, 1, -1};
@@ -176,7 +192,7 @@ namespace diff_planner
       const double remaining = ploy_traj_opt_->planningTimeRemaining();
       const double reserved = std::max(publish_budget,
           index == 0 ? 0.5 * budget : (index == 1 ? 0.25 * budget : 0.0));
-      ploy_traj_opt_->beginDynamicCandidate(std::max(0.0, remaining - reserved));
+      ploy_traj_opt_->beginDynamicCandidate(priority ? std::min(0.20 * budget, remaining) : std::max(0.0, remaining - reserved));
       std::vector<Eigen::Vector3d> path;
       bool success = ploy_traj_opt_->searchDynamicCandidate(
           head.col(0), tail.col(0), obstacle, collision_time, directions[index], path);
@@ -276,6 +292,7 @@ namespace diff_planner
     dynamic_candidates_failed_ = false;
     ros::Time t_start = ros::Time::now();
     ros::Duration t_init, t_opt;
+    refreshDynamicHistory();
     ploy_traj_opt_->beginPlanningCycle();
     const auto finish_planning_cycle = [this](const bool result) {
       ploy_traj_opt_->endPlanningCycle();
@@ -371,7 +388,7 @@ namespace diff_planner
     const auto find_dynamic_conflict = [&](const poly_traj::Trajectory &nominal) {
       // In planner priority mode the normal optimizer still includes FAPP cost,
       // without requiring a dynamic-clear candidate before it can run.
-      if (!dynamicAvoidanceEnabled() || ploy_traj_opt_->fappPlannerPriority()) return false;
+      if (!dynamicAvoidanceEnabled()) return false;
       const auto samples = sampleCollisionTrajectory(nominal, 0.0,
           nominal.getTotalDuration(), 0.5 * grid_map_->getResolution());
       const double reference = ploy_traj_opt_->planningReferenceTime();
@@ -386,6 +403,11 @@ namespace diff_planner
           {
             first_obstacle = obstacle;
             first_collision_time = sample.first;
+            if (fapp_memory_enabled_) {
+              const auto& config = ploy_traj_opt_->getDynamicObstacleConfig();
+              fapp_history_.watch(obstacle, start_pt, local_target_pt,
+                  config.vehicle_radius + config.margin + grid_map_->getResolution());
+            }
             return true;
           }
         }
@@ -421,7 +443,13 @@ namespace diff_planner
                                                first_collision_time, best_MJO, commit_candidate);
       t_opt = ros::Time::now() - t_start;
     }
-    else if (pp_.use_multitopology_trajs)
+    if (has_dynamic_conflict && !flag_success && ploy_traj_opt_->fappPlannerPriority()) {
+      has_dynamic_conflict = false;
+      if (ploy_traj_opt_->finelyCheckAndSetConstraintPoints(segments, initMJO, true) == PolyTrajOptimizer::CHK_RET::ERR)
+        return finish_planning_cycle(false);
+      ROS_WARN("[FAPP候选] 下穿/侧绕不可用，继续普通前进规划，不触发动态等待。");
+    }
+    if (!has_dynamic_conflict && pp_.use_multitopology_trajs)
     {
       std::vector<ConstraintPoints> trajs = ploy_traj_opt_->distinctiveTrajs(segments);
       Eigen::VectorXi success = Eigen::VectorXi::Zero(trajs.size());
@@ -472,7 +500,7 @@ namespace diff_planner
 
       visualization_->displayMultiOptimalPathList(vis_trajs, 0.1); // This visuallization will take up several milliseconds.
     }
-    else
+    else if (!has_dynamic_conflict)
     {
       poly_traj::Trajectory initTraj = initMJO.getTraj();
       int PN = initTraj.getPieceNum();
@@ -492,7 +520,7 @@ namespace diff_planner
     /*** STEP 3: Store and display results ***/
     // A static detour may introduce a dynamic conflict that was absent from
     // the nominal initialization. Apply the same candidate selection then.
-    if (flag_success && !has_dynamic_conflict && find_dynamic_conflict(best_MJO.getTraj()))
+    if (flag_success && !has_dynamic_conflict && !ploy_traj_opt_->fappPlannerPriority() && find_dynamic_conflict(best_MJO.getTraj()))
     {
       has_dynamic_conflict = true;
       poly_traj::MinJerkOpt detour;
@@ -826,7 +854,23 @@ namespace diff_planner
       route_segment_goal_ = goal;
       route_segment_length_ = std::max(route_segment_min_length_, length / route_segment_count_);
     }
-    const double horizon = route_segment_length_;
+    refreshDynamicHistory();
+    bool crossing = false;
+    if (fapp_memory_enabled_ && dynamicAvoidanceEnabled()) {
+      const auto& config = ploy_traj_opt_->getDynamicObstacleConfig();
+      for (const auto& obstacle : ploy_traj_opt_->getDynamicObstacles()) {
+        for (size_t i = 1; i < path.size(); ++i) {
+          double clearance;
+          const double now = ros::Time::now().toSec();
+          if (evaluateDynamicObstacle(path[i], obstacle, now, now, config, &clearance) && clearance < 0.0) {
+            crossing = true;
+            fapp_history_.watch(obstacle, start, goal, config.vehicle_radius + config.margin + grid_map_->getResolution());
+            break;
+          }
+        }
+      }
+    }
+    const double horizon = crossing ? length : route_segment_length_;
     final = length <= horizon + 0.05;
     const double limit = final ? length : horizon;
     route_segment_guide_.push_back(start);

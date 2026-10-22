@@ -371,3 +371,14 @@ int main(int argc, char **argv)
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
 }
+
+TEST(DynamicAsymmetricBody, TopAndBottomHaveDifferentClearance) {
+  diff_planner::DynamicObstacleConfig config;config.enabled=true;
+  config.vehicle_top_height=0.05;config.vehicle_bottom_height=0.20;config.margin=0.0;
+  diff_planner::DynamicObstacleState ball;ball.position=Eigen::Vector3d(0,0,0.8);
+  ball.size=Eigen::Vector3d(0.1,0.1,0.1);ball.stamp=10.0;
+  double lower,upper;
+  ASSERT_TRUE(diff_planner::evaluateDynamicObstacle(Eigen::Vector3d(0,0,0.6),ball,10,10,config,&lower));
+  ASSERT_TRUE(diff_planner::evaluateDynamicObstacle(Eigen::Vector3d(0,0,1.0),ball,10,10,config,&upper));
+  EXPECT_NEAR(0.10,lower,1e-9);EXPECT_NEAR(-0.05,upper,1e-9);
+}

@@ -3,6 +3,7 @@
 #include <queue>
 #include "swing_confirmation.h"
 #include "object_motion_evidence.h"
+#include "spatial_confirmation.h"
 #include <vector>
 #include <Eigen/Geometry>
 
@@ -11,6 +12,8 @@ struct Ekf {
   int id;
   mot_mapping::SwingConfirmation swing_confirmation;
   mot_mapping::ObjectMotionEvidence object_motion_evidence;
+  mot_mapping::ObjectMotionEvidence span_motion_evidence;
+  mot_mapping::SpatialConfirmation spatial_confirmation;
   double dt;
   ros::Time last_update_stamp_;
   int age, update_num;
@@ -22,6 +25,12 @@ struct Ekf {
   std::deque<Eigen::MatrixXd> InnoCov_list;
   std::deque<std::pair<ros::Time, Eigen::Vector3d>> observations;
   std::deque<std::pair<ros::Time, Eigen::Vector3d>> evidence_observations;
+  struct MotionSample {
+    ros::Time stamp;
+    Eigen::Vector3d center;
+    std::vector<Eigen::Vector3d> shape;
+  };
+  std::deque<MotionSample> motion_samples;
   // Each item stores {max(F,V), exact-static-F, exact-static-V} for one
   // consecutive measured transition.
   std::deque<std::pair<ros::Time, Eigen::Vector3d>> bidirectional_evidence;
@@ -92,8 +101,11 @@ struct Ekf {
     update_num = 0;
     id = id_;
     observations.clear();
+    motion_samples.clear();
     swing_confirmation.clear();
     object_motion_evidence.clear();
+    span_motion_evidence.clear();
+    spatial_confirmation = mot_mapping::SpatialConfirmation();
     swing_shape_points.clear();
     supplemental_candidate = false;
     object_component = false;

@@ -104,9 +104,14 @@ class PlannerEndpoint : public testing::Test
 protected:
   using FSM = diff_planner::DiffReplanFSM;
   virtual int routeSegments() const { return 1; }
+  virtual bool fappMemory() const { return false; }
   void SetUp() override
   {
     nh.setParam("manager/route_segment_count", routeSegments());
+    nh.setParam("manager/fapp_memory_enabled", fappMemory());
+    nh.setParam("optimization/fapp_continuous_crossing", fappMemory());
+    nh.setParam("optimization/fapp_vehicle_top_height", fappMemory() ? 0.05 : 0.125);
+    nh.setParam("optimization/fapp_vehicle_bottom_height", fappMemory() ? 0.20 : 0.125);
     ros::Time::setNow(ros::Time(1000));
     // A small real map and optimizer, with the relay's arrival/tracking limits.
     nh.setParam("fsm/flight_type", 1);
@@ -244,6 +249,31 @@ protected:
 class RollingPlannerEndpoint : public PlannerEndpoint {
   int routeSegments() const override { return 3; }
 };
+
+class FappRollingEndpoint : public PlannerEndpoint {
+  int routeSegments() const override { return 3; }
+  bool fappMemory() const override { return true; }
+};
+
+TEST_F(FappRollingEndpoint, CrossingKeepsReleasedRelayEndpointAndHistoryThroughDropout) {
+  auto& m = *planner.planner_manager_;
+  const Eigen::Vector3d start = goal - Eigen::Vector3d(1.8,0,0);
+  obj_state_msgs::ObjectsStates message;
+  message.header.stamp = ros::Time::now();message.states.resize(1);
+  auto& ball = message.states.front();ball.position.x=goal.x()-0.9;
+  ball.position.y=goal.y();ball.position.z=0.8;
+  ball.size.x=ball.size.y=ball.size.z=0.15;
+  m.updateDynamicObjects(message);
+  Eigen::Vector3d target,velocity;bool final=false;
+  ASSERT_TRUE(m.prepareLocalSegment(start,goal,target,velocity,final));
+  EXPECT_TRUE(final); EXPECT_LT((target-goal).norm(),1e-6);
+  EXPECT_NEAR(goal.z(),target.z(),1e-6);
+  message.states.clear();ros::Time::setNow(ros::Time(1020));m.updateDynamicObjects(message);
+  EXPECT_TRUE(m.dynamicTrajectoryBlocked({{0.0,goal-Eigen::Vector3d(0.9,0,0)}},1020));
+  EXPECT_FALSE(m.avoidanceTrajectoryBlocked({{0.0,goal-Eigen::Vector3d(0.9,0,0)}},1020));
+  m.observeDynamicPosition(goal);m.updateDynamicObjects(message);
+  EXPECT_FALSE(m.dynamicTrajectoryBlocked({{0.0,goal-Eigen::Vector3d(0.9,0,0)}},1020));
+}
 
 TEST_F(RollingPlannerEndpoint, RollingSegmentsRetainGoalAndNonzeroIntermediateVelocity)
 {

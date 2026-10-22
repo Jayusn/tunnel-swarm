@@ -19,7 +19,8 @@ struct DynamicObstacleConfig
 {
   bool enabled{false};
   double vehicle_radius{0.262};
-  double vehicle_half_height{0.125};
+  double vehicle_half_height{0.125}; // Legacy symmetric fallback.
+  double vehicle_top_height{-1.0}, vehicle_bottom_height{-1.0};
   double ball_radius{0.10};
   double margin{0.10};
   double observation_retention{0.80};

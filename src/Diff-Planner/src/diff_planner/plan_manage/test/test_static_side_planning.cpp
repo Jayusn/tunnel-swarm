@@ -693,3 +693,61 @@ TEST_F(UnderpassEndpointPlanning, NoRouteAboveFloorStillFailsFinalChecks)
   optimizer.endPlanningCycle();
 }
 } // namespace
+
+#include <plan_manage/fapp_history.h>
+
+TEST(FappHistory, KeepsRegionAcrossDropoutAndRejectsIsolatedTallBox) {
+  diff_planner::FappHistory history;
+  diff_planner::DynamicObstacleState ball;
+  ball.position = Vector3d(0,0,0.8); ball.size = Vector3d(0.15,0.15,0.15);
+  for (int i=0;i<4;++i) { ball.stamp=1+0.1*i; history.update({ball},ball.stamp); }
+  history.watch(history.regions(1.3).front(), Vector3d(-1,0,0.6), Vector3d(1,0,0.6),0.4);
+  ball.stamp=1.4; ball.size.z()=0.7; ball.position.z()=0.5;
+  history.update({ball},1.4);
+  history.update({},20.0);
+  const auto regions=history.regions(20.0);
+  ASSERT_EQ(1u, regions.size());
+  EXPECT_NEAR(0.15,regions.front().size.z(),1e-6);
+  EXPECT_DOUBLE_EQ(20.0,regions.front().stamp);
+  history.observePosition(Vector3d(0.2,0,0.6)); EXPECT_TRUE(history.active());
+  history.observePosition(Vector3d(0.6,0,0.6)); EXPECT_FALSE(history.active());
+  EXPECT_TRUE(history.regions(20.0).empty());
+}
+
+TEST_F(StaticSidePlanning, DynamicCrossingUsesForwardSideDipAndReturnsToGoalHeight) {
+  fillCorridor(2.0,3.0);
+  PolyTrajOptimizer optimizer; configure(optimizer,true);
+  optimizer.dynamic_continuous_crossing_=true;
+  optimizer.dynamic_obstacle_config_.vehicle_top_height=0.05;
+  optimizer.dynamic_obstacle_config_.vehicle_bottom_height=0.20;
+  diff_planner::DynamicObstacleState ball;
+  ball.position=Vector3d(-0.2,0,0.8); ball.size=Vector3d(0.15,0.15,0.15);
+  ball.stamp=ros::Time::now().toSec();
+  optimizer.setDynamicObstacles({ball});optimizer.beginPlanningCycle();
+  std::vector<Vector3d> path;
+  ASSERT_TRUE(optimizer.searchDynamicCandidate(start,Vector3d(1.3,0,0.6),ball,0,0,path));
+  EXPECT_NEAR(0.6,path.back().z(),1e-6);
+  bool dipped=false,side=false;
+  for(size_t i=1;i<path.size();++i) {
+    EXPECT_GT(path[i].x(),path[i-1].x());
+    EXPECT_GE(path[i].z(),0.15);
+    dipped |= path[i].z()<0.55; side |= std::abs(path[i].y())>0.1;
+  }
+  EXPECT_TRUE(dipped);EXPECT_TRUE(side);
+}
+
+TEST_F(StaticSidePlanning, DynamicLowBallRejectsUnderpassButAllowsSide) {
+  fillCorridor(2.0,3.0);
+  PolyTrajOptimizer optimizer;configure(optimizer,true);
+  optimizer.dynamic_continuous_crossing_=true;
+  optimizer.dynamic_obstacle_config_.vehicle_top_height=0.05;
+  optimizer.dynamic_obstacle_config_.vehicle_bottom_height=0.20;
+  diff_planner::DynamicObstacleState ball;
+  ball.position=Vector3d(0,0,0.3);ball.size=Vector3d(0.15,0.15,0.3);
+  ball.stamp=ros::Time::now().toSec();optimizer.setDynamicObstacles({ball});
+  optimizer.beginPlanningCycle();std::vector<Vector3d> path;
+  EXPECT_FALSE(optimizer.searchDynamicCandidate(start,end,ball,0,0,path));
+  optimizer.endDynamicCandidate();
+  EXPECT_TRUE(optimizer.searchDynamicCandidate(start,end,ball,0,1,path));
+  ASSERT_FALSE(path.empty());EXPECT_NEAR(0.6,path.back().z(),1e-6);
+}

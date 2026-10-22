@@ -9,11 +9,14 @@
          default="$(optenv UAV1_ENABLE_DYNAMIC_OBSTACLE_DETECTION false)"/>
     <!-- 六分屏入口默认同时打开 UAV1 Diff-Planner 的 RViz；可通过 launch 参数关闭。 -->
     <arg name="enable_diff_rviz" default="true"/>
-    <arg name="detector_backend" default="legacy"/>
-    <arg name="fapp_verified_preset" default="false"/>
-    <arg name="object_motion_evidence_enabled" default="false"/>
-    <arg name="enable_fapp_dynamic_avoidance" default="false"/>
-    <arg name="fapp_planner_priority" default="false"/>
+    <arg name="detector_backend" default="fapp"/>
+    <arg name="fapp_verified_preset" default="true"/>
+    <arg name="object_motion_evidence_enabled" default="true"/>
+    <arg name="enable_fapp_dynamic_avoidance" default="true"/>
+    <arg name="fapp_planner_priority" default="true"/>
+    <!-- 与前机一致：定位坐标系中的目标中心Z范围，单位m。 -->
+    <arg name="fapp_detection_min_z" default="0.3"/>
+    <arg name="fapp_detection_max_z" default="1.2"/>
     <!-- six 第6屏独立录制检测复盘数据，不使用 AutoTrans 录包。 -->
     <arg name="record_dynamic_debug" default="true"/>
     <arg name="dynamic_bag_prefix" default="/home/oem/bags/corridor_debug"/>
@@ -26,6 +29,8 @@
         <arg name="object_motion_evidence_enabled" value="$(arg object_motion_evidence_enabled)"/>
         <arg name="enable_fapp_dynamic_avoidance" value="$(arg enable_fapp_dynamic_avoidance)"/>
         <arg name="fapp_planner_priority" value="$(arg fapp_planner_priority)"/>
+        <arg name="fapp_detection_min_z" value="$(arg fapp_detection_min_z)"/>
+        <arg name="fapp_detection_max_z" value="$(arg fapp_detection_max_z)"/>
         <arg name="record_dynamic_debug" value="$(arg record_dynamic_debug)"/>
         <arg name="dynamic_bag_prefix" value="$(arg dynamic_bag_prefix)"/>
         <arg name="enable_rviz" value="false"/>

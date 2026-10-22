@@ -128,6 +128,9 @@ namespace diff_planner
     double t_now_;
     DynamicObstacleConfig dynamic_obstacle_config_;
     bool fapp_planner_priority_{false};
+    bool dynamic_continuous_crossing_{false};
+    double dynamic_min_height_{0.15};
+    double dynamic_underpass_side_{0.20};
     std::vector<DynamicObstacleState> dynamic_obstacles_;
     double wei_dynamic_obstacle_{10000.0};
     double dynamic_underpass_height_{0.50}; // Legacy parameter; no fixed-height preference.
@@ -152,7 +155,7 @@ namespace diff_planner
     void setSwarmTrajs(SwarmTrajData *swarm_trajs_ptr);
     void setDroneId(const int drone_id);
     void setIfTouchGoal(const bool touch_goal);
-    void setDynamicObstacles(const std::vector<DynamicObstacleState> &obstacles);
+    void setDynamicObstacles(const std::vector<DynamicObstacleState> &obstacles, bool replace_empty = false);
     const std::vector<DynamicObstacleState> &getDynamicObstacles() const {
       return planning_deadline_active_ ? planning_obstacles_ : dynamic_obstacles_;
     }

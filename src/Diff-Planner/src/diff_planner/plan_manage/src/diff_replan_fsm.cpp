@@ -2193,6 +2193,7 @@ namespace diff_planner
     odom_pos_(0) = msg->pose.pose.position.x;
     odom_pos_(1) = msg->pose.pose.position.y;
     odom_pos_(2) = msg->pose.pose.position.z;
+    if (planner_manager_) planner_manager_->observeDynamicPosition(odom_pos_);
 
     odom_vel_(0) = msg->twist.twist.linear.x;
     odom_vel_(1) = msg->twist.twist.linear.y;

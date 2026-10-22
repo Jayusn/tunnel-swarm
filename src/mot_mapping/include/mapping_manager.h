@@ -56,12 +56,17 @@ typedef vector<PointType, Eigen::aligned_allocator<PointType>>  PointVector;
 struct MapParam {
   bool swing_only = false;
   bool object_motion_evidence_enabled = false;
+  bool object_motion_span_enabled = false;
   bool object_motion_local_bidirectional_enabled = false;
   double object_motion_local_match_fraction = 0.60;
   double object_motion_local_match_advantage = 0.20;
   double object_motion_match_fraction = 0.45;
   double object_motion_match_advantage = 0.30;
   double object_motion_depth_fraction = 0.40;
+  double object_motion_evidence_window = 0.0;
+  bool spatial_reacquisition_enabled = false;
+  double spatial_reacquisition_max_gap = 1.0;
+  double spatial_reacquisition_radius = 0.45;
   // DBSCAN Params
   int core_pts;
   double tolerance;
@@ -88,6 +93,7 @@ struct MapParam {
   double min_motion_novel_fraction;
   double tracked_motion_novel_fraction;
   double max_above_uav;
+  double detection_min_z, detection_max_z;
   bool geometry_association_enabled;
   bool global_assignment_enabled;
   double position_measurement_variance;
@@ -173,6 +179,7 @@ private:
   };
   std::deque<RawObservation> timed_observations_;
   RawObservation bidirectional_previous_observation_;
+  std::deque<RawObservation> motion_raw_history_;
   ros::Time next_background_sample_stamp_, last_background_sample_stamp_;
   std::deque<PointsPtr> input_point;
   std::deque<std::shared_ptr<pcl::search::KdTree<PointType>>> background_history_;

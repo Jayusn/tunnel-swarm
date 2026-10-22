@@ -15,6 +15,7 @@
 #include <plan_manage/replan_quality_gate.h>
 #include <plan_manage/swing_obstacle_guard.h>
 #include <obj_state_msgs/ObjectsStates.h>
+#include <plan_manage/fapp_history.h>
 
 namespace diff_planner
 {
@@ -72,6 +73,7 @@ namespace diff_planner
         const std::vector<std::pair<double, Eigen::Vector3d>> &samples,
         double now, SwingCollisionResult *result = nullptr) const;
     bool dynamicAvoidanceEnabled() const;
+    void observeDynamicPosition(const Eigen::Vector3d& actual);
     bool dynamicCandidatesFailed(SwingCollisionResult *result) const {
       if (result != nullptr) *result = dynamic_candidate_failure_;
       return dynamic_candidates_failed_;
@@ -92,6 +94,9 @@ namespace diff_planner
     TrajContainer traj_;
 
   private:
+    FappHistory fapp_history_;
+    bool fapp_memory_enabled_{false};
+    void refreshDynamicHistory();
     int route_segment_count_{1};
     double route_segment_min_length_{0.60};
     double route_segment_length_{0.0};

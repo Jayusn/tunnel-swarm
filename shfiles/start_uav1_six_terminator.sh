@@ -27,7 +27,7 @@ RUNTIME_CONFIG="${UAV1_SIX_RUNTIME_CONFIG:-/tmp/uav1_six_terminator_${RUN_ID}.co
 WAIT_TIMEOUT="${UAV1_SIX_WAIT_TIMEOUT:-180}"
 THERMAL="${UAV1_SIX_THERMAL:-true}"
 DETECTOR="${UAV1_SIX_DETECTOR:-fapp}"
-DYNAMIC_AVOIDANCE="${UAV1_SIX_DYNAMIC_AVOIDANCE:-false}"
+DYNAMIC_AVOIDANCE="${UAV1_SIX_DYNAMIC_AVOIDANCE:-true}"
 PLANNER_PRIORITY="${UAV1_SIX_PLANNER_PRIORITY:-true}"
 
 MAVROS_STATE_TOPIC="/UAV1/mavros/state"
@@ -65,13 +65,13 @@ usage() {
   - 第 7 屏的 uav1_diff_autotrans.launch 默认 enable_planner=false，
     因此不会与第 6 屏重复启动 Diff-Planner。
   - 第 5 屏默认启动热成像检测和 D435 融合；未接设备时可加 --no-thermal。
-  - FAPP 默认采用原始点云运动证据确认动态目标，只检测，不启用动态避障。
+  - FAPP 默认采用原始点云运动证据确认动态目标，保留历史范围，默认启用连续下穿／侧绕及规划优先。
   - 可用环境变量 UAV1_SIX_WAIT_TIMEOUT 修改前级等待超时，默认按实际时间等待 180 秒。
 
 选项：
   --detector fapp|ldop       动态障碍检测算法，默认 fapp
-  --dynamic-avoidance        开启 FAPP 动态避障
-  --detection-only          关闭 FAPP 动态避障，只保留检测（默认）
+  --dynamic-avoidance        开启 FAPP 动态避障（默认）
+  --detection-only          关闭 FAPP 动态避障，只保留检测
   --planner-priority        开启 FAPP 规划优先（默认）
   --strict-dynamic          恢复 FAPP 动态碰撞硬检查
   --thermal                 第 5 屏同时启动热成像检测和 D435 融合

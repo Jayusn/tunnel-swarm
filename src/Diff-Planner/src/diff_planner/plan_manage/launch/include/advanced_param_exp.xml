@@ -54,6 +54,9 @@
     <arg name="fapp_prediction_horizon" default="1.0"/>
     <arg name="fapp_vehicle_radius" default="0.262"/>
     <arg name="fapp_vehicle_half_height" default="0.125"/>
+    <arg name="fapp_vehicle_top_height" default="$(arg fapp_vehicle_half_height)"/>
+    <arg name="fapp_vehicle_bottom_height" default="$(arg fapp_vehicle_half_height)"/>
+    <arg name="fapp_memory_enabled" default="false"/>
     <arg name="fapp_ball_radius" default="0.10"/>
     <arg name="fapp_margin" default="0.10"/>
     <arg name="fapp_minimum_ball_bottom" default="0.80"/>
@@ -339,6 +342,13 @@
         <param name="optimization/fapp_prediction_horizon" value="$(arg fapp_prediction_horizon)" type="double"/>
         <param name="optimization/fapp_vehicle_radius" value="$(arg fapp_vehicle_radius)" type="double"/>
         <param name="optimization/fapp_vehicle_half_height" value="$(arg fapp_vehicle_half_height)" type="double"/>
+        <param name="optimization/fapp_vehicle_top_height" value="$(arg fapp_vehicle_top_height)" type="double"/>
+        <param name="optimization/fapp_vehicle_bottom_height" value="$(arg fapp_vehicle_bottom_height)" type="double"/>
+        <param name="optimization/fapp_continuous_crossing" value="$(arg fapp_memory_enabled)" type="bool"/>
+        <param name="optimization/fapp_min_height" value="$(arg underpass_min_height)" type="double"/>
+        <param name="manager/fapp_memory_enabled" value="$(arg fapp_memory_enabled)" type="bool"/>
+        <param name="manager/fapp_history_duration" value="10.0"/>
+        <param name="manager/fapp_association_distance" value="0.6"/>
         <param name="optimization/fapp_ball_radius" value="$(arg fapp_ball_radius)" type="double"/>
         <param name="optimization/fapp_margin" value="$(arg fapp_margin)" type="double"/>
         <param name="optimization/fapp_minimum_ball_bottom" value="$(arg fapp_minimum_ball_bottom)" type="double"/>

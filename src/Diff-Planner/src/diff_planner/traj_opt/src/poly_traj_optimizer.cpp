@@ -1910,11 +1910,11 @@ namespace diff_planner
   }
 
   void PolyTrajOptimizer::setDynamicObstacles(
-      const std::vector<DynamicObstacleState> &obstacles)
+      const std::vector<DynamicObstacleState> &obstacles, bool replace_empty)
   {
     // Empty detection lists retain the last measured target until the same
     // 0.8-second observation timeout used by the original corridor guard.
-    if (!obstacles.empty())
+    if (replace_empty || !obstacles.empty())
       dynamic_obstacles_ = obstacles;
   }
 
@@ -2104,6 +2104,10 @@ namespace diff_planner
     nh.param("optimization/fapp_planner_priority", fapp_planner_priority_, false);
     nh.param("optimization/fapp_vehicle_radius", dynamic_obstacle_config_.vehicle_radius, 0.262);
     nh.param("optimization/fapp_vehicle_half_height", dynamic_obstacle_config_.vehicle_half_height, 0.125);
+    nh.param("optimization/fapp_vehicle_top_height", dynamic_obstacle_config_.vehicle_top_height, -1.0);
+    nh.param("optimization/fapp_vehicle_bottom_height", dynamic_obstacle_config_.vehicle_bottom_height, -1.0);
+    nh.param("optimization/fapp_continuous_crossing", dynamic_continuous_crossing_, false);
+    nh.param("optimization/fapp_min_height", dynamic_min_height_, 0.15);
     nh.param("optimization/fapp_ball_radius", dynamic_obstacle_config_.ball_radius, 0.10);
     nh.param("optimization/fapp_margin", dynamic_obstacle_config_.margin, 0.10);
     nh.param("optimization/fapp_observation_retention", dynamic_obstacle_config_.observation_retention, 0.80);
@@ -2200,7 +2204,8 @@ namespace diff_planner
         ? Eigen::Vector3i(160, 160, 100) : Eigen::Vector3i(100, 100, 100));
     if (dynamic_obstacle_config_.enabled)
       a_star_->setOccupancyChecker([this](const Eigen::Vector3d &position) {
-        if (checkPlanningTimeout("A-star occupancy query") || staticPositionOccupied(position))
+        if (checkPlanningTimeout("A-star occupancy query") || staticPositionOccupied(position) ||
+            (dynamic_candidate_active_ && dynamic_continuous_crossing_ && position.z() < dynamic_min_height_))
           return true;
         if (dynamic_candidate_active_)
           for (const auto &obstacle : getDynamicObstacles())
@@ -2304,6 +2309,7 @@ namespace diff_planner
   bool PolyTrajOptimizer::candidatePointInside(const Eigen::Vector3d &point) const
   {
     const auto &region = dynamic_candidate_region_;
+    if (dynamic_continuous_crossing_ && point.z() < dynamic_min_height_) return false;
     // Search seeds reserve half a voxel beyond the required physical margin.
     // Accept the optimized route against the physical passage boundary; the
     // common collision evaluator separately checks every rounded corner.
@@ -2351,7 +2357,8 @@ namespace diff_planner
     if (direction == 0)
     {
       region.limit_local_max_z = true;
-      region.max_z = center.z() - half_size.z() - config.vehicle_half_height -
+      const double top = config.vehicle_top_height >= 0.0 ? config.vehicle_top_height : config.vehicle_half_height;
+      region.max_z = center.z() - half_size.z() - top -
           config.margin - 0.5 * resolution;
       region.height_origin = center;
       region.height_axis = axis;
@@ -2373,6 +2380,36 @@ namespace diff_planner
     }
     dynamic_candidate_region_ = region;
     dynamic_candidate_active_ = true;
+    if (dynamic_continuous_crossing_ && direction == 0) {
+      // 将前机五次平滑侧下穿作为连续初始路径，终点仍是已放行的接力目标。
+      const double near = (center-start).dot(axis) - region.height_half_length - resolution;
+      const double far = (center-start).dot(axis) + region.height_half_length + resolution;
+      const double distance = (end-start).dot(axis);
+      const double low = std::min(std::min(start.z(), end.z()), region.max_z - 0.06);
+      if (low < dynamic_min_height_ || near < 0.10 || distance < far + 0.50) return false;
+      const auto smooth = [](double u) { u = std::max(0.0, std::min(1.0, u)); return u*u*u*(10.0+u*(-15.0+6.0*u)); };
+      const int count = std::max(2, int(std::ceil(distance / (0.5*resolution))));
+      for (const double side : {dynamic_underpass_side_, -dynamic_underpass_side_}) {
+        std::vector<Eigen::Vector3d> candidate{start};
+        bool safe = true;
+        for (int i = 1; i <= count && safe; ++i) {
+          const double u = double(i)/count, along = distance*u;
+          const double dip = along < near ? smooth(along/near) :
+              (along > far ? 1.0-smooth((along-far)/(distance-far)) : 1.0);
+          Eigen::Vector3d point = start + u*(end-start) + side*dip*left;
+          point.z() += (low-point.z())*dip;
+          safe = !staticPositionOccupied(point) && candidatePointInside(point);
+          for (const auto& other : getDynamicObstacles()) {
+            double gap;
+            if (evaluateDynamicObstacle(point, other, dynamic_candidate_query_time_,
+                  planning_reference_time_, config, &gap) && gap < 0.0) safe = false;
+          }
+          candidate.push_back(point);
+        }
+        if (safe) { path.swap(candidate); dynamic_underpass_side_ = side; return true; }
+      }
+      return false;
+    }
     Eigen::Vector3d crossing = start + axis * (center - start).dot(axis);
     crossing.z() = std::min(start.z(), end.z());
     if (direction == 0) crossing.z() = std::min(crossing.z(), region.max_z);

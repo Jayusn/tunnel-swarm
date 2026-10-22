@@ -16,11 +16,14 @@
     <arg name="dynamic_bag_prefix" default="/home/oem/bags/corridor_debug"/>
     <!-- UAV1 LDOP 动态检测只使用独立限频点云，不改变 Diff 原始建图输入。 -->
     <arg name="enable_ldop" default="true"/>
-    <arg name="detector_backend" default="legacy"/>
-    <arg name="fapp_verified_preset" default="false"/>
-    <arg name="object_motion_evidence_enabled" default="false"/>
-    <arg name="enable_fapp_dynamic_avoidance" default="false"/>
-    <arg name="fapp_planner_priority" default="false"/>
+    <arg name="detector_backend" default="fapp"/>
+    <arg name="fapp_verified_preset" default="true"/>
+    <arg name="object_motion_evidence_enabled" default="true"/>
+    <arg name="enable_fapp_dynamic_avoidance" default="true"/>
+    <arg name="fapp_planner_priority" default="true"/>
+    <!-- 与前机一致：定位坐标系中的目标中心Z范围，单位m。 -->
+    <arg name="fapp_detection_min_z" default="0.3"/>
+    <arg name="fapp_detection_max_z" default="1.2"/>
     <arg name="start_ldop" default="$(eval arg('detector_backend') == 'ldop' or (arg('detector_backend') == 'legacy' and arg('enable_ldop')))"/>
     <arg name="ldop_input_rate" default="5.0"/>
     <!-- 垂地障碍物锁定一侧，避免重规划时在障碍物两侧来回换边。 -->
@@ -52,6 +55,9 @@
         <arg name="route_segment_min_length" value="$(arg route_segment_min_length)"/>
         <arg name="enable_fapp_dynamic_avoidance" value="$(arg enable_fapp_dynamic_avoidance)"/>
         <arg name="fapp_planner_priority" value="$(arg fapp_planner_priority)"/>
+        <arg name="fapp_memory_enabled" value="true"/>
+        <arg name="fapp_vehicle_top_height" value="0.05"/>
+        <arg name="fapp_vehicle_bottom_height" value="0.20"/>
         <arg name="planner_heartbeat_topic" value="/drone_1_planning/heartbeat"/>
         <arg name="odom_topic" value="$(arg odom_topic)"/>
         <arg name="camera_pose_topic" value="no_use_uav1_pose"/>
@@ -174,6 +180,9 @@
 
     <include if="$(eval arg('detector_backend') == 'fapp' and arg('fapp_verified_preset'))"
              file="$(find mot_mapping)/launch/uav1_frame_event_verified.launch">
+        <arg name="dynamic_mode" value="swing-only"/>
+        <arg name="detection_min_z" value="$(arg fapp_detection_min_z)"/>
+        <arg name="detection_max_z" value="$(arg fapp_detection_max_z)"/>
         <arg name="object_motion_evidence_enabled" value="$(arg object_motion_evidence_enabled)"/>
         <arg name="cloud_topic" value="$(arg cloud_topic)"/>
         <arg name="odom_topic" value="$(arg odom_topic)"/>
