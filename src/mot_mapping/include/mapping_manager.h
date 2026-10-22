@@ -55,6 +55,13 @@ typedef vector<PointType, Eigen::aligned_allocator<PointType>>  PointVector;
 
 struct MapParam {
   bool swing_only = false;
+  bool object_motion_evidence_enabled = false;
+  bool object_motion_local_bidirectional_enabled = false;
+  double object_motion_local_match_fraction = 0.60;
+  double object_motion_local_match_advantage = 0.20;
+  double object_motion_match_fraction = 0.45;
+  double object_motion_match_advantage = 0.30;
+  double object_motion_depth_fraction = 0.40;
   // DBSCAN Params
   int core_pts;
   double tolerance;
@@ -63,6 +70,8 @@ struct MapParam {
   double cluster_voxel_size;
   bool density_split_enabled;
   bool candidate_partition_enabled;
+  bool object_candidate_split_enabled = false;
+  bool object_candidate_isolation_enabled = false;
   double core_radius;
   double core_density_fraction;
   // Dynamic Detection Params
@@ -72,6 +81,7 @@ struct MapParam {
   int motion_confirmation_frames;
   bool time_evidence_enabled;
   double motion_window;
+  double motion_confirmation_duration, motion_continuity_tolerance;
   bool confirmed_reacquisition_enabled;
   double reacquisition_max_gap;
   double min_motion_speed;

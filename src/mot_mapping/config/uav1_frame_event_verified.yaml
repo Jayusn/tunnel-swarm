@@ -30,6 +30,9 @@ background_surface/enabled: true
 clustering/core_density_fraction: 0.7
 clustering/core_radius: 0.08
 clustering/density_split_enabled: true
+clustering/object_candidate_split_enabled: false
+# Experimental: keep original and added component track histories separate.
+association/object_candidate_isolation_enabled: false
 clustering/voxel_size: 0.05
 dbscan/core_pts: 3
 dbscan/max_cluster: 800
@@ -44,6 +47,9 @@ detection/max_above_uav: 1.5
 detection/min_motion_novel_fraction: 0.26
 detection/min_motion_speed: 0.14
 detection/motion_confirmation_frames: 3
+# Require a continuous 0.5 s motion history; do not count wall-fragment jumps.
+detection/motion_confirmation_duration: 0.5
+detection/motion_continuity_tolerance: 0.04
 detection/motion_displacement: 0.06
 detection/motion_window: 0.6
 detection/occlusion_startup_enabled: true
@@ -71,3 +77,14 @@ ros/lidar_topic: /UAV1/fast_lio/cloud_registered
 ros/odom_topic: /UAV1/fast_lio/Odom_high_freq
 synchronization/nearest_available_odom_enabled: false
 tracking/position_measurement_variance: 0.01
+
+# Experimental: three valid observations, two supported measured transitions.
+# Defaults stay disabled until labeled recall, false alarms and latency pass.
+detection/object_motion_evidence_enabled: false
+# Experimental: require both measured track shapes to support translation.
+detection/object_motion_local_bidirectional_enabled: false
+detection/object_motion_local_match_fraction: 0.60
+detection/object_motion_local_match_advantage: 0.20
+detection/object_motion_match_fraction: 0.45
+detection/object_motion_match_advantage: 0.30
+detection/object_motion_depth_fraction: 0.40

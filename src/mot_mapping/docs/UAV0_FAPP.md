@@ -1,5 +1,35 @@
 # UAV0 FAPP 检测与 FUEL 动态避障
 
+## 2026-10-22 当前同步版本
+
+从后机 `vehicle/cav1` 的已提交版本 `2b3f65fa` 同步 FAPP 检测代码、参数、单元测试和近期实验报告；运动证据入口行为对应后机 `0f625c98`。本次仅更新 `mot_mapping`，不修改 FUEL、Diff、AutoTrans、航点、网络和控制器配置。
+
+前机 `uav0_frame_event_verified.launch` 默认开启 `object_motion_evidence_enabled`，原有六/七分屏及 FUEL 航点入口通过现有 include 使用新检测。该路径根据连续三个有效观测中的两次移动匹配、静态匹配优势和深度证据确认运动，无需等待目标换向；保持当前后机阈值 `0.45 / 0.30 / 0.40`，并将额外连续性确认时长设为 `0.0`。双向局部匹配、候选拆分及候选关联隔离实验均保持关闭。
+
+检测订阅和发布仍使用 UAV0：`/UAV0/fast_lio/cloud_registered`、`/UAV0/fast_lio/Odom_high_freq`、`/UAV0/fapp/states` 及原有点云/标记输出；坐标系为 `UAV0/camera_init`，雷达外参读取 `/UAV0/mapping/extrinsic_T`。共享 YAML 沿用 `uav1_frame_event_verified.yaml` 文件名，实际话题和坐标系由前机 launch 覆盖。
+
+**前机原有动态避障设置保持原值**：启动脚本仍默认开启 FUEL 动态避障及规划优先；与后机六分屏默认只检测不同。原有 `--detection-only`、`--dynamic-avoidance`、`--strict-dynamic` 等开关继续生效。使用新检测会改变送入已开启 FUEL 动态代价的目标集合，未新增规划流程。
+
+需要复现原摆动检测时可直接运行：
+
+```bash
+roslaunch mot_mapping uav0_frame_event_verified.launch object_motion_evidence_enabled:=false dynamic_mode:=swing-only
+```
+
+本次同步不代表实飞验收通过。已同步的历史报告保留了真实误报、慢摆漏检和处理延迟问题：历史球运动证据检出为 101/113；最新既有录包仅 204/819，尚未达到既有检出率及延迟目标。墙面场景的非空输出不能一概视为误报，完整审查见 `motion_truth_audit_20261016.md`。这些是后机历史录包结果，不是前机实测结果。
+
+本次验证和备份目录：`/home/asus/match_ws_transfer_backups/fapp_20261022_115635`。构建更新前机主工作空间 `devel/lib/mot_mapping/mapping_node`；未启动 MAVROS、控制器或飞行流程。
+
+### 本次验证结果
+
+- 前机主工作空间使用 `catkin_make --pkg mot_mapping -j2 -l2` 构建成功，依赖消息目标同步检查；检测器不导出被其他包链接的实现，本次不需修改或重编 FUEL/Diff/控制器源码。
+- `devel/lib/mot_mapping/mapping_node` 的生成时间晚于本次同步及相关源码时间，确认实际启动入口使用的新产物。
+- 7 项 `mot_mapping` CTest 全部通过；6 组 launch 解析覆盖当前默认、general、原检测回退、FUEL 探索和手填航点入口，核对前机话题、坐标系与实验开关。
+- 两组独立 localhost ROS master 合成输出测试通过：运动证据覆盖直线/双目标、换向、停止、重获、静止抖动和四路输出一致性；原摆动回归覆盖换向门槛、停止、重获及稀疏形状拒绝。
+- 运动证据合成直线首次确认约 0.252 秒，2 秒周期摆动命中 34/40 帧；6 秒周期慢摆 0/70，稀疏输入首次确认约 0.653 秒。慢摆和稀疏输入限制仍保留，没有为通过同步验证调参。
+
+## 2026-10-15 原同步记录（历史版本）
+
 2026-10-15 从后机已提交的 `b8da5304` 同步少误报摆动检测，保留前机 FUEL 探索、AutoTrans 控制和降落流程。检测节点的输出命名空间、默认坐标系及雷达外参参数路径改为 UAV0；检测算法不变。
 
 在前机使用原入口启动，默认开启 FAPP 检测和动态避障，模式为 `swing-only`：

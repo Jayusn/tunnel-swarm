@@ -1,5 +1,11 @@
 <launch>
   <arg name="dynamic_mode" default="swing-only"/>
+  <arg name="object_motion_evidence_enabled" default="true"/>
+  <arg name="object_motion_local_bidirectional_enabled" default="false"/>
+  <arg name="object_motion_local_match_fraction" default="0.60"/>
+  <arg name="object_motion_local_match_advantage" default="0.20"/>
+  <arg name="object_candidate_split_enabled" default="false"/>
+  <arg name="object_candidate_isolation_enabled" default="false"/>
   <!-- Explicit trial preset; the general detection launch retains its defaults. -->
   <arg name="cloud_topic" default="/UAV0/fast_lio/cloud_registered"/>
   <arg name="odom_topic" default="/UAV0/fast_lio/Odom_high_freq"/>
@@ -7,8 +13,14 @@
   <group ns="UAV0/fapp">
     <node pkg="mot_mapping" type="mapping_node" name="mapping_node" output="screen">
       <rosparam command="load" file="$(find mot_mapping)/config/uav1_frame_event_verified.yaml"/>
-      <!-- Swing confirmation supplies its own local continuity test. -->
-      <param if="$(eval arg('dynamic_mode') == 'swing-only')" name="detection/motion_confirmation_duration" value="0.0"/>
+      <!-- Swing and measured-motion confirmation supply their own observation checks. -->
+      <param if="$(eval arg('dynamic_mode') == 'swing-only' or arg('object_motion_evidence_enabled'))" name="detection/motion_confirmation_duration" value="0.0"/>
+      <param name="detection/object_motion_evidence_enabled" value="$(arg object_motion_evidence_enabled)"/>
+      <param name="detection/object_motion_local_bidirectional_enabled" value="$(arg object_motion_local_bidirectional_enabled)"/>
+      <param name="detection/object_motion_local_match_fraction" value="$(arg object_motion_local_match_fraction)"/>
+      <param name="detection/object_motion_local_match_advantage" value="$(arg object_motion_local_match_advantage)"/>
+      <param name="clustering/object_candidate_split_enabled" value="$(arg object_candidate_split_enabled)"/>
+      <param name="association/object_candidate_isolation_enabled" value="$(arg object_candidate_isolation_enabled)"/>
       <param name="detection/dynamic_mode" value="$(arg dynamic_mode)"/>
       <param name="ros/lidar_topic" value="$(arg cloud_topic)"/>
       <param name="ros/odom_topic" value="$(arg odom_topic)"/>

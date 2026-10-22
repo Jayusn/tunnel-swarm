@@ -2,6 +2,7 @@
 #include <ros/ros.h>
 #include <queue>
 #include "swing_confirmation.h"
+#include "object_motion_evidence.h"
 #include <vector>
 #include <Eigen/Geometry>
 
@@ -9,6 +10,7 @@ struct Ekf {
   typedef std::shared_ptr<Ekf> Ptr;
   int id;
   mot_mapping::SwingConfirmation swing_confirmation;
+  mot_mapping::ObjectMotionEvidence object_motion_evidence;
   double dt;
   ros::Time last_update_stamp_;
   int age, update_num;
@@ -27,6 +29,7 @@ struct Ekf {
   ros::Time last_published_stamp;
   int last_seen_frame = 0;
   bool supplemental_candidate = false;
+  bool object_component = false;
   Eigen::Vector3d observed_dense_size = Eigen::Vector3d::Zero();
   size_t observed_dense_count = 0;
   bool observed_reference_foreground = false;
@@ -90,8 +93,10 @@ struct Ekf {
     id = id_;
     observations.clear();
     swing_confirmation.clear();
+    object_motion_evidence.clear();
     swing_shape_points.clear();
     supplemental_candidate = false;
+    object_component = false;
     evidence_observations.clear();
     bidirectional_evidence.clear();
     observed_dense_count = 0;
