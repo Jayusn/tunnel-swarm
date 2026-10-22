@@ -363,8 +363,8 @@ run_mavros_pane() {
     stop_owned_local_master
     keep_pane_open
   fi
-  printf '[启动] UAV1 MAVROS，并设置 IMU/姿态/里程计/ESC 频率\n'
-  sh "${MATCH_WS}/shfiles/run_uav1_sensor_stack.sh" mavros
+  printf '[启动] UAV1 MAVROS，设置原始 IMU 目标 220 Hz、ESC 目标 200 Hz\n'
+  UAV1_HIGHRES_IMU_INTERVAL_US=4545 sh "${MATCH_WS}/shfiles/run_uav1_sensor_stack.sh" mavros
   pane_status=$?
   printf '[保留] UAV1 本机 ROS master 继续运行：%s\n' "${ROS_MASTER_URI}"
   printf '[退出] MAVROS 分屏，返回码=%s\n' "${pane_status}"

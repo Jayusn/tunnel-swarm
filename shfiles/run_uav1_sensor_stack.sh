@@ -107,6 +107,10 @@ run_mavros()
     wait_for_mavros
 
     # MAV_CMD_SET_MESSAGE_INTERVAL(511) 的间隔单位为微秒。
+    # 六/七分屏入口指定原始 IMU 间隔，对应 /UAV1/mavros/imu/data_raw。
+    if [ -n "${UAV1_HIGHRES_IMU_INTERVAL_US:-}" ]; then
+        set_interval 105 "$UAV1_HIGHRES_IMU_INTERVAL_US" "HIGHRES_IMU"
+    fi
     set_interval 291 5000 "ESC_STATUS 目标 200 Hz"
 
     echo "[UAV1 MAVROS] 频率请求已发送，保持当前终端显示 MAVROS 日志。"
