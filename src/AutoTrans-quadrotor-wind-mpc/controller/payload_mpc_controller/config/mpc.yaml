@@ -9,7 +9,7 @@ Q_pos_xy:   200.0    # 增强水平位置跟踪，同时仍低于原 250 的激�
 Q_pos_z:  200.0    # 垂直位置误差代价。
 Q_attitude_rp:  120.0   # 横滚和俯仰姿态误差代价。
 Q_attitude_yaw:  120.0    # 偏航姿态误差代价。
-Q_velocity:  55   # 降低速度参考变化引起的姿态冲击。
+Q_velocity:  60   # 降低速度参考变化引起的姿态冲击。
 
 # 以下 payload/cable 权重仅为兼容旧参数读取保留；普通四旋翼 NMPC 的 10 维状态不使用这些项。
 Q_payload_xy:  20.0
@@ -41,7 +41,7 @@ max_bodyrate_z:     0.5         # 连续轨迹偏航的最大角速度 [rad/s]
 min_thrust:         1.0
 max_thrust:         29.5
 # NMPC 世界系正常速度软约束，单位 m/s；x/y 分量使用同一上限，z 单独限制。
-max_velocity_xy: 0.4
+max_velocity_xy: 0.3
 max_velocity_z: 1.0
 # 松弛量硬上限形成紧急速度边界：|vx/vy| <= 2.0 m/s，|vz| <= 2.0 m/s。
 max_velocity_slack_xy: 1.5
@@ -124,7 +124,7 @@ force_estimator: # *
     # 实际写入 NMPC 的世界系三轴补偿增益；仅启用 XY 补偿，Z 轴继续估计和记录。
     force_axis_gain_x: 1.0
     force_axis_gain_y: 1.0
-    force_axis_gain_z: 0.0
+    force_axis_gain_z: 1.0
     # 仅在 AUTO_HOVER/CMD_CTRL 中，PX4 连续确认 IN_AIR 达到该时间后才允许 f_Q 进入 NMPC，单位 s。
     compensation_airborne_delay: 0.8
     # 四路电机用于外力估计和补偿的最低有效机械转速，单位 rpm。
