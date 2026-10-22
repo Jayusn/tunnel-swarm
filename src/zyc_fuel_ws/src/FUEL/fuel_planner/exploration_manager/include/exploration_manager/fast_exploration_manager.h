@@ -42,6 +42,12 @@ public:
   int planExploreMotion(const Vector3d& pos, const Vector3d& vel, const Vector3d& acc,
                         const Vector3d& yaw);
   bool manualWaypointsEnabled() const { return manual_path_enabled_; }
+  bool preserveTrajectoryEndpoint() const {
+    return manual_path_enabled_ || fapp_exploration_crossing_enabled_;
+  }
+  bool explorationFappCrossingActive() const {
+    return fapp_exploration_crossing_enabled_ && manual_fapp_active_;
+  }
   // 只有真实里程计可释放未越过的动态障碍；预测规划起点不能提前解除等待。
   bool manualFappObservationMissing(const Vector3d& pos, double yaw,
                                      bool actual_odometry = false);
@@ -134,6 +140,7 @@ private:
   double manual_path_max_segment_length_{0.0};
   bool manual_path_exploration_style_{false};
   bool manual_fapp_active_{false};
+  bool fapp_exploration_crossing_enabled_{false};
   Vector3d manual_fapp_forward_{Vector3d::UnitX()};
   double manual_fapp_exit_progress_{0.0};
   ros::Time manual_fapp_wait_since_;
@@ -143,6 +150,8 @@ private:
   double manual_fapp_curve_side_{0.0};
   bool buildManualFappUnderpassPath(const Vector3d& pos, const Vector3d& waypoint,
                                    std::vector<Vector3d>& path);
+  bool planExplorationFappCrossing(const Vector3d& pos, const Vector3d& vel,
+                                   const Vector3d& acc, const Vector3d& yaw);
   ManualWaypointPath manual_path_;
   int planManualWaypointMotion(const Vector3d& pos, const Vector3d& vel,
                                const Vector3d& acc, const Vector3d& yaw);

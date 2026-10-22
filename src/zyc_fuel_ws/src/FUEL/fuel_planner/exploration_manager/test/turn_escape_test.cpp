@@ -250,8 +250,9 @@ public:
     const bool committed = scenario == "distant_committed";
     const bool inside = scenario == "inside_history" || scenario == "inside_history_strict";
     const bool approach = scenario == "distant_blocked" || committed || inside;
-    const bool asymmetric_side = scenario == "asymmetric_side";
-    const bool asymmetric = scenario == "asymmetric_low" || asymmetric_side;
+    const bool exploration = scenario == "exploration_low" || scenario == "exploration_side";
+    const bool asymmetric_side = scenario == "asymmetric_side" || scenario == "exploration_side";
+    const bool asymmetric = scenario == "asymmetric_low" || scenario == "exploration_low" || asymmetric_side;
     const bool memory = scenario == "memory_below" || scenario == "memory_left" ||
         scenario == "memory_curve_right" || recorded || approach || asymmetric;
     const bool stale = scenario == "stale";
@@ -406,7 +407,43 @@ public:
       message.states.clear();
       send();
     }
+    if (exploration) {
+      manager.manual_path_enabled_ = false;
+      manager.fapp_exploration_crossing_enabled_ = true;
+      manager.manual_path_.points.clear(); // 自主探索不能依赖人工航点列表。
+    }
     const int result = manager.planExploreMotion(start, zero, zero, zero);
+    if (exploration) {
+      ASSERT_EQ(SUCCEED, result);
+      EXPECT_FALSE(manager.manualWaypointsEnabled());
+      EXPECT_TRUE(manager.manual_fapp_active_);
+      EXPECT_FALSE(manager.currentPlanIsVerticalDetour());
+      EXPECT_EQ(vertical_detour::LowProbePhase::IDLE, manager.low_probe_phase_);
+      EXPECT_EQ(!asymmetric_side, manager.manual_fapp_curve_active_);
+      EXPECT_EQ(asymmetric_side, manager.recovery_side_latched_);
+      if (!asymmetric_side) {
+        EXPECT_GT(manager.ed_->next_goal_.x(), upper.x() + 0.1);
+        EXPECT_GT(Astar::pathLength(manager.ed_->path_next_goal_), 1.2);
+        EXPECT_NEAR(start.z(), manager.ed_->next_goal_.z(), 1e-6);
+      } else {
+        EXPECT_GT(std::fabs(manager.ed_->next_goal_.y() - start.y()), 0.2);
+        EXPECT_NEAR(start.z(), manager.ed_->next_goal_.z(), 1e-6);
+      }
+      checkManualFappExecution(manager, start);
+      message.states.clear();
+      send();
+      EXPECT_FALSE(manager.manualFappObservationMissing(start, 0.0));
+      EXPECT_TRUE(manager.manual_fapp_active_);
+      EXPECT_FALSE(manager.beginSuspendedUnderpass(start, 0.0));
+      if (!asymmetric_side) {
+        const Vector3d end = manager.ed_->next_goal_;
+        EXPECT_FALSE(manager.manualFappObservationMissing(end, 0.0));
+        EXPECT_TRUE(manager.manual_fapp_active_); // 预测端点不能释放历史。
+        EXPECT_FALSE(manager.manualFappObservationMissing(end, 0.0, true));
+        EXPECT_FALSE(manager.manual_fapp_active_);
+      }
+      return;
+    }
     if (inside) {
       auto& planner = *manager.planner_manager_;
       ASSERT_FALSE(planner.isWatchedFappPositionSafe(start));
@@ -2317,6 +2354,12 @@ TEST(FappMemory, PlannerPriorityAdvancesFromInsideHistoricalEnvelope) {
 }
 TEST(FappMemory, StrictModeStillRejectsHistoricalEnvelopeOverlap) {
   fast_planner::TurnEscapeTest::runManualSuspended("inside_history_strict");
+}
+TEST(FappExploration, ContinuousCrossingWithoutManualWaypointsKeepsHistoryAndEndpoint) {
+  fast_planner::TurnEscapeTest::runManualSuspended("exploration_low");
+}
+TEST(FappExploration, LowerPassageUnavailableUsesSideWithoutStationaryDescent) {
+  fast_planner::TurnEscapeTest::runManualSuspended("exploration_side");
 }
 TEST(FappMemory, HistoricalUnderpassMovesForwardThroughContinuousDropout) {
   fast_planner::TurnEscapeTest::runManualSuspended("memory_below");

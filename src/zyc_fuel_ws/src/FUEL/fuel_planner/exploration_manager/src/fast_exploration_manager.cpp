@@ -1227,6 +1227,7 @@ bool FastExplorationManager::detectSuspendedObstacle(
 
 bool FastExplorationManager::beginSuspendedUnderpass(const Vector3d& pos,
                                                       double yaw) {
+  if (explorationFappCrossingActive()) return false;
   const bool manual = manual_path_enabled_ && manual_path_exploration_style_;
   if (manual_path_enabled_ && (!manual || manual_path_.finished() ||
       (manual_path_wait_for_trigger_ && !manual_path_started_)))
@@ -1925,14 +1926,15 @@ bool FastExplorationManager::buildFappSideBypass(
     const Vector3d& pos, double cur_yaw, const Vector3d& forward,
     Vector3d& next_pos, double& next_yaw, bool& obstacle_detected) {
   obstacle_detected = false;
-  if (!manual_path_enabled_ || !manual_path_exploration_style_ ||
+  const bool manual = manual_path_enabled_ && manual_path_exploration_style_;
+  if ((!manual && !fapp_exploration_crossing_enabled_) ||
       !wide_side_bypass_enabled_ || !planner_manager_ || !sdf_map_ ||
-      forward.head<2>().norm() < 1e-3 || manual_path_.finished())
+      forward.head<2>().norm() < 1e-3 || (manual && manual_path_.finished()))
     return false;
   const Vector3d travel = forward.normalized();
   const Vector3d lateral(-travel.y(), travel.x(), 0.0);
-  const double horizon = std::min(underpass_lookahead_,
-      (manual_path_.points[manual_path_.next] - pos).dot(travel));
+  const double horizon = manual ? std::min(underpass_lookahead_,
+      (manual_path_.points[manual_path_.next] - pos).dot(travel)) : underpass_lookahead_;
   if (horizon <= 0.15) return false;
   Vector3d lower, upper;
   obstacle_detected = planner_manager_->fappBlockingBounds(
@@ -2131,7 +2133,8 @@ bool FastExplorationManager::buildSideRecoveryContinuation(
       ? wide_side_bypass_release_distance_ : recovery_side_release_distance_;
   const double remaining = std::max(0.40,
       release_distance - (pos - recovery_side_origin_).dot(forward));
-  const bool manual_side = manual_path_enabled_ && manual_path_exploration_style_ &&
+  const bool manual_side = ((manual_path_enabled_ && manual_path_exploration_style_) ||
+      explorationFappCrossingActive()) &&
       wide_side_bypass_active_;
   const bool forward_clear = isLowProbeCorridorSafe(pos, forward, 0.40) &&
       (!manual_side || planner_manager_->isFappPathSafe({pos, pos + remaining * forward}));
@@ -2860,6 +2863,7 @@ void FastExplorationManager::completeTurnInPlace(const Vector3d&) {
 }
 
 void FastExplorationManager::initialize(ros::NodeHandle& nh) {
+  nh.param("fapp/exploration_crossing_enabled", fapp_exploration_crossing_enabled_, false);
   nh.param("mission/manual_path/enabled", manual_path_enabled_, false);
   nh.param("mission/manual_path/use_astar", manual_path_use_astar_, false);
   nh.param("mission/manual_path/wait_for_trigger", manual_path_wait_for_trigger_, false);
@@ -3293,16 +3297,19 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
 
 bool FastExplorationManager::manualFappObservationMissing(
     const Vector3d& pos, double yaw, bool actual_odometry) {
-  if (!manual_path_enabled_ || !manual_path_exploration_style_ ||
-      (manual_path_wait_for_trigger_ && !manual_path_started_) ||
+  const bool manual = manual_path_enabled_ && manual_path_exploration_style_;
+  if ((!manual && !fapp_exploration_crossing_enabled_) ||
+      (manual && manual_path_wait_for_trigger_ && !manual_path_started_) ||
       !planner_manager_ || !planner_manager_->fappMemoryEnabled() || !task_search_manager_)
+    return false;
+  if (!manual && (!task_search_manager_->enabled() || task_search_manager_->stage3Active()))
     return false;
   Vector3d lower, upper;
   if (!manual_fapp_active_) {
-    if (manual_path_.finished()) return false;
+    if (manual && manual_path_.finished()) return false;
     const Vector3d forward = task_search_manager_->recoveryForwardDirection(yaw).normalized();
-    const double distance = std::min(underpass_lookahead_,
-        (manual_path_.points[manual_path_.next] - pos).dot(forward));
+    const double distance = manual ? std::min(underpass_lookahead_,
+        (manual_path_.points[manual_path_.next] - pos).dot(forward)) : underpass_lookahead_;
     fuel_fapp::DynamicObstacleState observation;
     if (distance <= 0.15 || !planner_manager_->fappBlockingBounds(
             {pos, pos + distance * forward}, lower, upper, &observation))
@@ -3432,6 +3439,66 @@ bool FastExplorationManager::buildManualFappUnderpassPath(
   low_probe_height_ = low;
   low_probe_return_height_ = origin.z();
   low_probe_exit_progress_ = far;
+  return true;
+}
+
+bool FastExplorationManager::planExplorationFappCrossing(
+    const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, const Vector3d& yaw) {
+  if (!fapp_exploration_crossing_enabled_ || manual_path_enabled_ || external_selection_only_ ||
+      !task_search_manager_ || !task_search_manager_->enabled() ||
+      task_search_manager_->stage3Active() || task_search_manager_->landingRequested() ||
+      turn_in_place_session_active_ || low_probe_phase_ != vertical_detour::LowProbePhase::IDLE)
+    return false;
+  manualFappObservationMissing(pos, yaw[0]);
+  if (!manual_fapp_active_) return false;
+  Vector3d lower, upper;
+  double age;
+  if (!planner_manager_->watchedFappBounds(lower, upper, age)) return false;
+  const Vector3d forward = manual_fapp_forward_;
+  const double far = (0.5 * (lower + upper)).dot(forward) +
+      (0.5 * (upper - lower)).dot(forward.cwiseAbs()) + sdf_map_->getResolution();
+  const double low = lower.z() - underpass_height_tracking_margin_;
+  // 自动探索没有远端人工航点，以历史障碍远端加恢复距离作为完整穿越终点。
+  const double end = manual_fapp_curve_active_ ? manual_fapp_curve_end_ :
+      far + std::max(0.50, 2.0 * std::max(0.0, pos.z() - low)) + 0.10;
+  Vector3d target = pos + (end - pos.dot(forward)) * forward;
+  std::vector<Vector3d> path;
+  double target_yaw = yaw[0];
+  bool crossing = !recovery_side_latched_ && buildManualFappUnderpassPath(pos, target, path);
+  if (!crossing) {
+    manual_fapp_curve_active_ = false;
+    suspended_underpass_active_ = false;
+    bool obstacle = false;
+    crossing = recovery_side_latched_ &&
+        buildSideRecoveryContinuation(pos, yaw[0], target, target_yaw);
+    if (!crossing)
+      crossing = buildFappSideBypass(pos, yaw[0], forward, target, target_yaw, obstacle);
+    if (crossing) path = {pos, 0.5 * (pos + target), target};
+  }
+  if (!crossing || !pathInsideWorkspaceLock(path) ||
+      !task_search_manager_->isRecoveryPathAllowed(path, false) ||
+      !planner_manager_->isPathSafe(path) ||
+      !planner_manager_->isFappPathSafe(path) ||
+      !planner_manager_->planExploreTraj(path, vel, acc, 0.0) ||
+      !planner_manager_->isTrajectorySafe() ||
+      !planner_manager_->planYawTurnInPlace(yaw, target_yaw)) {
+    // 避让候选不可用时继续原探索选路，不能封死普通前进规划。
+    manual_fapp_curve_active_ = false;
+    suspended_underpass_active_ = false;
+    return false;
+  }
+  // 完整动态穿越沿用航点版长度豁免，不进入普通探索的1.2m截断。
+  ed_->path_next_goal_ = path;
+  ed_->global_tour_ = {pos, path.back()};
+  ed_->next_goal_ = path.back();
+  last_requested_goal_ = path.back();
+  has_last_requested_goal_ = true;
+  pending_reference_height_ = path.back().z();
+  recovery_side_continuation_pending_ = false;
+  ROS_WARN("[exploration_fapp] continuous crossing target=(%.2f,%.2f,%.2f) "
+           "curve=%d side=%d; complete crossing is exempt from route length limit.",
+           path.back().x(), path.back().y(), path.back().z(),
+           static_cast<int>(manual_fapp_curve_active_), static_cast<int>(recovery_side_latched_));
   return true;
 }
 
@@ -3692,6 +3759,7 @@ int FastExplorationManager::planExploreMotion(
     return NO_FRONTIER;
   }
   planner_manager_->path_finder_->clearProgressConstraint();
+  if (planExplorationFappCrossing(pos, vel, acc, yaw)) return SUCCEED;
   // 已确认的悬挂障碍优先于普通前沿选点、地面恢复和远目标 A*。
   if (low_probe_phase_ == vertical_detour::LowProbePhase::IDLE &&
       beginSuspendedUnderpass(pos, yaw[0]) && suspended_underpass_blocked_)
@@ -4798,6 +4866,8 @@ void FastExplorationManager::updateMissionOdometry(const Vector3d& pos, double y
       safe_relay_->setEntrance(mission_workspace_origin_, mission_workspace_dir_);
     safe_relay_->observe(pos, yaw, stamp);
   }
+  if (!manual_path_enabled_ && fapp_exploration_crossing_enabled_ && manual_fapp_active_)
+    manualFappObservationMissing(pos, yaw, true);
   if (manual_path_enabled_) {
     if (manual_path_wait_for_trigger_ && !manual_path_started_) return;
     manual_actual_pos_ = pos;
