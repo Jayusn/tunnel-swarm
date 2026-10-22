@@ -4,14 +4,28 @@
 #include <ros/ros.h>
 #include <ros/callback_queue.h>
 #include <clocale>
+#include <chrono>
 
 // 输入与控制计算保持单线程访问，求解前优先处理已到达输入。
 ros::CallbackQueue input_callback_queue;
 std::unique_ptr<PayloadMPC::MPCFSM> fsm_ptr;
+double input_dispatch_ms = 0.0;
+void dispatchInputs()
+{
+    const auto start = std::chrono::steady_clock::now();
+    input_callback_queue.callAvailable(ros::WallDuration(0.0));
+    input_dispatch_ms += std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - start).count();
+}
 void MPC_controller_main(const ros::TimerEvent &)
 {
-    input_callback_queue.callAvailable(ros::WallDuration(0.0));
+    dispatchInputs();
+    fsm_ptr->beginInputDiagnostics(input_dispatch_ms);
+    input_dispatch_ms = 0.0;
+    const auto start = std::chrono::steady_clock::now();
     fsm_ptr->process();
+    fsm_ptr->publishInputDiagnostics(std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - start).count());
 }
 
 void system_state_update_main(const ros::TimerEvent &)
@@ -147,7 +161,7 @@ int main(int argc, char **argv)
         ROS_INFO("[启动] 等待遥控器数据。");
         while (ros::ok())
         {
-            input_callback_queue.callAvailable(ros::WallDuration(0.0));
+            dispatchInputs();
             if (fsm.rc_is_received(ros::Time::now()))
             {
                 ROS_INFO("[启动] 已收到遥控器数据。");
@@ -158,7 +172,7 @@ int main(int argc, char **argv)
         int trials = 0;
         while (ros::ok() && !fsm.state_data.current_state.connected)
         {
-            input_callback_queue.callAvailable(ros::WallDuration(0.0));
+            dispatchInputs();
             ros::Duration(1.0).sleep();
             if (trials++ > 5)
                 ROS_ERROR_THROTTLE(5.0, "[启动] 无法连接 PX4，请检查 MAVROS 链路。");
@@ -177,7 +191,7 @@ int main(int argc, char **argv)
 
     while (ros::ok())
     {
-        input_callback_queue.callAvailable(ros::WallDuration(0.0));
+        dispatchInputs();
         ros::getGlobalCallbackQueue()->callOne(ros::WallDuration(0.001));
     }
 

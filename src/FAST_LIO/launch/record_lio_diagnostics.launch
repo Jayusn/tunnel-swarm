@@ -11,6 +11,7 @@
               /$(arg vehicle_ns)/livox/imu_body
               /$(arg vehicle_ns)/livox/imu_mps2
               /$(arg vehicle_ns)/fast_lio/state_diagnostics
+              /$(arg vehicle_ns)/fast_lio/queue_diagnostics
               /$(arg vehicle_ns)/fast_lio/Odometry
               /$(arg vehicle_ns)/fast_lio/Odom_high_freq
               /$(arg vehicle_ns)/mavros/imu/data_raw

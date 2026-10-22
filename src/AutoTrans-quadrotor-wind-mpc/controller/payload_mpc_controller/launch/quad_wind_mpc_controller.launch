@@ -155,6 +155,8 @@
       - "/UAV1/livox/imu_body"
       - "/UAV1/livox/imu_mps2"
       - "/UAV1/fast_lio/state_diagnostics"
+      - "/UAV1/fast_lio/queue_diagnostics"
+      - "/UAV1/mpc_controller_node/mpc/input_diagnostics"
       - "$(arg state_topic)"
       - "$(arg extended_state_topic)"
       - "$(arg rc_topic)"

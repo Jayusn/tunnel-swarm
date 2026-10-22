@@ -2,6 +2,7 @@
 #define __MPCFSM_H
 
 #include <ros/ros.h>
+#include <payload_mpc_controller/InputDiagnostics.h>
 #include <ros/assert.h>
 
 #include <geometry_msgs/PoseStamped.h>
@@ -54,6 +55,14 @@ namespace PayloadMPC
 		ros::Publisher recovery_position_pub_;
 		ros::Publisher pub_force_marker_, pub_force_, pub_force_applied_;
 
+        void beginInputDiagnostics(double dispatch_ms);
+        void publishInputDiagnostics(double process_ms);
+        payload_mpc_controller::InputDiagnostics input_diagnostics_;
+        ros::Publisher input_diagnostics_pub_;
+        ros::Time latest_lio_source_, latest_lio_receive_, first_lio_reject_;
+        uint64_t lio_rejected_total_{0}, diagnostic_exec_begin_{0};
+        uint32_t lio_rejected_consecutive_{0};
+        double diagnostic_exec_ms_begin_{0.0};
 		ros::Publisher debug_pub; // debug
 		ros::ServiceClient set_FCU_mode_srv;
 		ros::ServiceClient reboot_FCU_srv;

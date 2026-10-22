@@ -20,6 +20,7 @@ find_package(Eigen3 REQUIRED)
 find_package(yaml-cpp REQUIRED)
 find_package(catkin REQUIRED COMPONENTS
   roscpp
+  message_generation
   rosbag
   rospy
   std_msgs
@@ -34,7 +35,9 @@ find_package(catkin REQUIRED COMPONENTS
 
 )
 
-catkin_package()
+add_message_files(FILES InputDiagnostics.msg)
+generate_messages(DEPENDENCIES std_msgs geometry_msgs)
+catkin_package(CATKIN_DEPENDS message_runtime std_msgs geometry_msgs)
 
 # Record the configured source revision and content fingerprint, including local edits.
 execute_process(COMMAND git describe --always --dirty WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
@@ -125,7 +128,7 @@ target_link_libraries(mpc_controller_node
   ${catkin_LIBRARIES}
 )
 
-add_dependencies(mpc_controller_node ${catkin_EXPORTED_TARGETS})
+add_dependencies(mpc_controller_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 
 get_target_property(force_estimator_includes mpc_controller_node INCLUDE_DIRECTORIES)
 add_executable(force_estimator_replay src/force_estimator_replay.cpp)
@@ -152,7 +155,7 @@ if(CATKIN_ENABLE_TESTING)
   if(TARGET test_locked_exit_yaw)
     get_target_property(locked_yaw_test_includes mpc_controller_node INCLUDE_DIRECTORIES)
     target_include_directories(test_locked_exit_yaw PRIVATE ${locked_yaw_test_includes})
-    add_dependencies(test_locked_exit_yaw ${catkin_EXPORTED_TARGETS})
+    add_dependencies(test_locked_exit_yaw ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
     target_link_libraries(test_locked_exit_yaw ${catkin_LIBRARIES})
   endif()
   foreach(force_test force_observer_input_synchronizer disturbance_slew_limiter vertical_disturbance_low_pass)

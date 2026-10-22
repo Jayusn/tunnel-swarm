@@ -72,6 +72,7 @@ add_message_files(
   FILES
   Pose6D.msg
   StateDiagnostics.msg
+  QueueDiagnostics.msg
 )
 
 generate_messages(

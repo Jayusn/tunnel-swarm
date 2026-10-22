@@ -35,6 +35,7 @@
 #include <omp.h>
 #include "performance_trace.h"
 #include <fast_lio/StateDiagnostics.h>
+#include <fast_lio/QueueDiagnostics.h>
 #include <algorithm>
 #include <atomic>
 #include <limits>
@@ -95,6 +96,10 @@ string map_file_path, lid_topic, imu_topic;
 string cloud_registered_topic, cloud_registered_body_topic, cloud_effected_topic, laser_map_topic;
 string odometry_topic, path_topic, high_freq_odom_topic, imu_mps2_topic, world_frame, body_frame;
 string state_diagnostics_topic;
+string queue_diagnostics_topic;
+fast_lio::QueueDiagnostics queue_diagnostics;
+bool record_queue_diagnostics = false;
+ros::Time lidar_callback_receive, lidar_callback_source, imu_callback_receive, imu_callback_source;
 
 double res_mean_last = 0.05, total_residual = 0.0;
 double last_timestamp_lidar = 0, last_timestamp_imu = -1.0;
@@ -188,7 +193,12 @@ void predictIMUState(double t, V3D acc, V3D gyr)
 void updateLatestStates()
 {
     // 只在校正状态交接/历史重放期间锁住 IMU；点云匹配、建图和发布均不持有该锁。
+    const double handoff_begin = omp_get_wtime();
     std::lock_guard<std::mutex> lock(mtx_buffer);
+    if (record_queue_diagnostics) {
+        queue_diagnostics.handoff_lock_wait_ms = (omp_get_wtime() - handoff_begin) * 1000.0;
+        queue_diagnostics.imu_replay_count = 0;
+    }
     latest_acceleration_scale = G_m_s2 / p_imu->GetMeanAccNorm();
     latest_gravity = V3D(state_point.grav[0], state_point.grav[1], state_point.grav[2]);
     latest_time = lidar_end_time;
@@ -223,11 +233,18 @@ void updateLatestStates()
 
     // IMU 回调独立运行；持锁重放校正计算期间收到的 IMU，追上最后发布的采样时刻。
     // 逐帧重放到最新采样时刻，避免用最新两帧一步跨过整个校正延迟。
+    const double replay_begin = omp_get_wtime();
     for (const auto &imu : imu_buffer)
     {
+        if (record_queue_diagnostics && imu->header.stamp.toSec() > latest_time)
+            ++queue_diagnostics.imu_replay_count;
         predictIMUState(imu->header.stamp.toSec(),
             V3D(imu->linear_acceleration.x, imu->linear_acceleration.y, imu->linear_acceleration.z),
             V3D(imu->angular_velocity.x, imu->angular_velocity.y, imu->angular_velocity.z));
+    }
+    if (record_queue_diagnostics) {
+        queue_diagnostics.imu_replay_ms = (omp_get_wtime() - replay_begin) * 1000.0;
+        queue_diagnostics.scan_end_to_handoff_ms = (ros::Time::now().toSec() - lidar_end_time) * 1000.0;
     }
     init = true;
 }
@@ -398,11 +415,14 @@ void lasermap_fov_segment()
 
 void standard_pcl_cbk(const sensor_msgs::PointCloud2::ConstPtr &msg) 
 {
+    const ros::Time callback_entry = ros::Time::now();
     scan_count ++;
     double preprocess_start_time = omp_get_wtime();
     PointCloudXYZI::Ptr ptr(new PointCloudXYZI());
     p_pre->process(msg, ptr);
     std::lock_guard<std::mutex> lock(mtx_buffer);
+    lidar_callback_receive = callback_entry;
+    lidar_callback_source = msg->header.stamp;
     if (msg->header.stamp.toSec() < last_timestamp_lidar)
     {
         ROS_ERROR("lidar loop back, clear buffer");
@@ -420,11 +440,14 @@ double timediff_lidar_wrt_imu = 0.0;
 bool   timediff_set_flg = false;
 void livox_pcl_cbk(const livox_ros_driver2::CustomMsg::ConstPtr &msg) 
 {
+    const ros::Time callback_entry = ros::Time::now();
     double preprocess_start_time = omp_get_wtime();
     scan_count ++;
     PointCloudXYZI::Ptr ptr(new PointCloudXYZI());
     p_pre->process(msg, ptr);
     std::lock_guard<std::mutex> lock(mtx_buffer);
+    lidar_callback_receive = callback_entry;
+    lidar_callback_source = msg->header.stamp;
     if (msg->header.stamp.toSec() < last_timestamp_lidar)
     {
         ROS_ERROR("lidar loop back, clear buffer");
@@ -453,6 +476,7 @@ void livox_pcl_cbk(const livox_ros_driver2::CustomMsg::ConstPtr &msg)
 
 void imu_cbk(const sensor_msgs::Imu::ConstPtr &msg_in) 
 {
+    const ros::Time callback_entry = ros::Time::now();
     publish_count ++;
     // cout<<"IMU got at: "<<msg_in->header.stamp.toSec()<<endl;
     sensor_msgs::Imu::Ptr msg(new sensor_msgs::Imu(*msg_in));
@@ -466,6 +490,9 @@ void imu_cbk(const sensor_msgs::Imu::ConstPtr &msg_in)
         msg->header.stamp =
             ros::Time().fromSec(timediff_lidar_wrt_imu + msg_in->header.stamp.toSec());
     }
+
+    imu_callback_receive = callback_entry;
+    imu_callback_source = msg->header.stamp;
 
     if (init)
     {
@@ -548,6 +575,26 @@ bool sync_packages(MeasureGroup &meas)
         return false;
     }
 
+    if (record_queue_diagnostics) {
+        auto& d = queue_diagnostics;
+        d.queue_sample_stamp = ros::Time::now();
+        d.scan_end_stamp = ros::Time().fromSec(lidar_end_time);
+        d.lidar_queue_size = lidar_buffer.size();
+        d.lidar_time_queue_size = time_buffer.size();
+        d.imu_queue_size = imu_buffer.size();
+        d.oldest_lidar_stamp = time_buffer.empty() ? ros::Time(0) : ros::Time().fromSec(time_buffer.front());
+        d.oldest_imu_stamp = imu_buffer.empty() ? ros::Time(0) : imu_buffer.front()->header.stamp;
+        const auto age = [&](const ros::Time& stamp) {
+            return stamp.isZero() ? std::numeric_limits<double>::quiet_NaN()
+                                 : (d.queue_sample_stamp - stamp).toSec();
+        };
+        d.oldest_lidar_age_s = age(d.oldest_lidar_stamp);
+        d.oldest_imu_age_s = age(d.oldest_imu_stamp);
+        d.lidar_callback_receive_stamp = lidar_callback_receive;
+        d.lidar_callback_source_stamp = lidar_callback_source;
+        d.imu_callback_receive_stamp = imu_callback_receive;
+        d.imu_callback_source_stamp = imu_callback_source;
+    }
     /*** push imu data, and pop from imu buffer ***/
     double imu_time = imu_buffer.front()->header.stamp.toSec();
     meas.imu.clear();
@@ -991,6 +1038,7 @@ int main(int argc, char** argv)
     nh.param<string>("publish/path_topic", path_topic, "/path");
     nh.param<string>("publish/high_freq_odom_topic", high_freq_odom_topic, "/Odom_high_freq");
     nh.param<string>("publish/state_diagnostics_topic", state_diagnostics_topic, "/fast_lio/state_diagnostics");
+    nh.param<string>("publish/queue_diagnostics_topic", queue_diagnostics_topic, "/fast_lio/queue_diagnostics");
     nh.param<string>("publish/imu_mps2_topic", imu_mps2_topic, "/livox/imu_mps2");
     nh.param<string>("publish/world_frame", world_frame, "camera_init");
     nh.param<string>("publish/body_frame", body_frame, "body");
@@ -1108,6 +1156,7 @@ int main(int argc, char** argv)
     imu_spinner.start();
 //------------------------------------------------------------------------------------------------------
     signal(SIGINT, SigHandle);
+    ros::Publisher queue_diagnostics_pub = nh.advertise<fast_lio::QueueDiagnostics>(queue_diagnostics_topic, 10);
     bool performance_trace_enabled = false;
     nh.param("performance_trace_enable", performance_trace_enabled, false);
     PerformanceTrace performance_trace(performance_trace_enabled);
@@ -1116,6 +1165,8 @@ int main(int argc, char** argv)
     while (status)
     {
         if (flg_exit) break;
+        const double diagnostic_frame_begin = omp_get_wtime();
+        record_queue_diagnostics = queue_diagnostics_pub.getNumSubscribers() > 0;
         PerformanceTrace::Loop perf_loop(performance_trace);
         ros::spinOnce();
         perf_loop.mark(0);
@@ -1353,6 +1404,12 @@ int main(int argc, char** argv)
                 fout_out << setw(20) << Measures.lidar_beg_time - first_lidar_time << " " << euler_cur.transpose() << " " << state_point.pos.transpose()<< " " << ext_euler.transpose() << " "<<state_point.offset_T_L_I.transpose()<<" "<< state_point.vel.transpose() \
                 <<" "<<state_point.bg.transpose()<<" "<<state_point.ba.transpose()<<" "<<state_point.grav<<" "<<feats_undistort->points.size()<<endl;
                 dump_lio_state_to_log(fp);
+            }
+            if (record_queue_diagnostics) {
+                queue_diagnostics.header.stamp = ros::Time::now();
+                queue_diagnostics.header.frame_id = world_frame;
+                queue_diagnostics.frame_wall_ms = (omp_get_wtime() - diagnostic_frame_begin) * 1000.0;
+                queue_diagnostics_pub.publish(queue_diagnostics);
             }
         }
 

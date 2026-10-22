@@ -384,7 +384,7 @@ run_fastlio_pane() {
   pane_init 3 FAST-LIO
   wait_for_topic_message "${LIDAR_TOPIC}" || keep_pane_open
   wait_for_topic_message "${LIDAR_IMU_TOPIC}" || keep_pane_open
-  printf '[启动] UAV1 FAST-LIO\n'
+  printf '[启动] UAV1 FAST-LIO（自动录入内部队列诊断 /UAV1/fast_lio/queue_diagnostics）\n'
   sh "${MATCH_WS}/shfiles/run_uav1_sensor_stack.sh" fastlio
   printf '[退出] FAST-LIO 分屏，返回码=%s\n' "$?"
   keep_pane_open
@@ -462,6 +462,7 @@ run_controller_pane() {
   wait_for_topic_message "${VISION_POSE_TOPIC}" || keep_pane_open
   printf '[启动] UAV1 轨迹桥接、AutoTrans、日志和自动 rosbag\n'
   printf '[控制] AutoTrans 直接发布 /UAV1/mavros/setpoint_raw/attitude\n'
+  printf '[录包] 自动记录 /UAV1/mpc_controller_node/mpc/input_diagnostics 和 /UAV1/fast_lio/queue_diagnostics\n'
   roslaunch autotrans_reference_bridge uav1_diff_autotrans.launch \
     enable_planner:=false \
     setpoint_topic:=/UAV1/mavros/setpoint_raw/attitude

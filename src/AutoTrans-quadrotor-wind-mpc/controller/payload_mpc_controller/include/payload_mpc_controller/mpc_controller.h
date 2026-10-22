@@ -86,6 +86,8 @@ namespace PayloadMPC
     void setDynamicParams(const real_t mass_q)
       {mpc_wrapper_.setDynamicParams(mass_q);}
     void setExternalForce(const Eigen::Ref<const Eigen::Vector3d>& fq);
+    uint64_t diagnostic_exec_count_{0};
+    double diagnostic_exec_total_ms_{0.0};
     bool lastMpcSolveSuccessful() const { return last_mpc_solve_success_; }
     bool hasRecentValidControl(const ros::Time &now, double max_age) const;
     const Eigen::Matrix<real_t, kInputSize, 1> &lastValidControlInput() const

@@ -191,3 +191,95 @@ TEST_F(Px4StateInput, Px4ImuAccelerationAndAngularRateReachExistingInputPath) {
   EXPECT_TRUE(fsm->imu_data.filtered_a.allFinite());
   EXPECT_TRUE(Px4StateInputTestAccess::valid(*fsm));
 }
+
+TEST_F(Px4StateInput, DiagnosticsDistinguishRejectedInputFromAcceptedState) {
+  ros::Time::setNow(ros::Time(100.));
+  nav_msgs::Odometry::Ptr px4(new nav_msgs::Odometry);
+  px4->header.stamp = ros::Time(99.98);
+  px4->pose.pose.orientation.w = 1.;
+  fsm->forceAttitudeOdomCallback(px4);
+  nav_msgs::Odometry::Ptr lio(new nav_msgs::Odometry);
+  lio->header.stamp = ros::Time(99.995);
+  lio->pose.pose.position.z = .6;
+  lio->pose.pose.orientation.w = 1.;
+  fsm->odomCallback(lio);
+  ros::Time::setNow(ros::Time(100.01));
+  lio->header.stamp = ros::Time(100.005);
+  lio->pose.pose.position.z = 1.6;
+  fsm->odomCallback(lio);
+  ros::Time::setNow(ros::Time(100.03));
+  fsm->beginInputDiagnostics(1.25);
+  const auto& d = fsm->input_diagnostics_;
+  EXPECT_NEAR(d.position.z, .6, 1e-9);
+  EXPECT_EQ(d.lio_latest_source_stamp, ros::Time(100.005));
+  EXPECT_EQ(d.lio_used_source_stamp, ros::Time(99.995));
+  EXPECT_NEAR(d.lio_used_age_s, .035, 1e-8);
+  EXPECT_NEAR(d.px4_used_age_s, .05, 1e-8);
+  EXPECT_NEAR(d.since_lio_accept_s, .03, 1e-8);
+  EXPECT_NEAR(d.rejected_hold_s, .02, 1e-8);
+  EXPECT_EQ(d.lio_rejected_total, 1U);
+  EXPECT_EQ(d.lio_rejected_consecutive, 1U);
+  fsm->publishInputDiagnostics(2.0);
+  EXPECT_EQ(d.mpc_solve_count, 0U);
+  EXPECT_FALSE(d.mpc_solve_success);
+  EXPECT_DOUBLE_EQ(d.mpc_exec_wall_ms, 0.0);
+  EXPECT_DOUBLE_EQ(d.input_dispatch_ms, 1.25);
+  ros::Time::setNow(ros::Time(100.04));
+  lio->header.stamp = ros::Time(100.035);
+  lio->pose.pose.position.z = .6;
+  fsm->odomCallback(lio); // returning from the spike is also a raw-sample jump
+  fsm->beginInputDiagnostics(0.);
+  EXPECT_EQ(d.lio_rejected_consecutive, 2U);
+  ros::Time::setNow(ros::Time(100.05));
+  lio->header.stamp = ros::Time(100.045);
+  fsm->odomCallback(lio);
+  fsm->beginInputDiagnostics(0.);
+  EXPECT_EQ(d.lio_rejected_consecutive, 0U);
+  EXPECT_DOUBLE_EQ(d.rejected_hold_s, 0.);
+  EXPECT_EQ(d.lio_rejected_total, 2U);
+  EXPECT_EQ(d.lio_used_source_stamp, ros::Time(100.045));
+}
+
+TEST_F(Px4StateInput, DiagnosticsReportMissingInputAndOnlyCurrentCycleSolves) {
+  ros::Time::setNow(ros::Time(100.));
+  fsm->beginInputDiagnostics(0.);
+  EXPECT_TRUE(std::isnan(fsm->input_diagnostics_.lio_used_age_s));
+  EXPECT_TRUE(std::isnan(fsm->input_diagnostics_.px4_used_age_s));
+  fsm->force_attitude_odom_data.v.setZero();
+  controller->setHoverReference(fsm->odom_data.p, 0.);
+  Eigen::Matrix<real_t, kStateSize, kSamples + 1> predicted;
+  Eigen::Matrix<real_t, kInputSize, kSamples> inputs;
+  controller->execMPC(Px4StateInputTestAccess::state(*fsm), predicted, inputs);
+  fsm->publishInputDiagnostics(2.);
+  EXPECT_EQ(fsm->input_diagnostics_.mpc_solve_count, 1U);
+  EXPECT_GT(fsm->input_diagnostics_.mpc_exec_wall_ms, 0.);
+  fsm->beginInputDiagnostics(0.);
+  fsm->publishInputDiagnostics(1.);
+  EXPECT_EQ(fsm->input_diagnostics_.mpc_solve_count, 0U);
+  EXPECT_DOUBLE_EQ(fsm->input_diagnostics_.mpc_exec_wall_ms, 0.);
+}
+
+TEST_F(Px4StateInput, InputDiagnosticsReachRosSubscriber) {
+  bool received = false;
+  payload_mpc_controller::InputDiagnostics recorded;
+  auto subscriber = nh.subscribe<payload_mpc_controller::InputDiagnostics>(
+      "mpc/input_diagnostics", 10,
+      [&](const payload_mpc_controller::InputDiagnostics::ConstPtr& message) {
+        recorded = *message; received = true;
+      });
+  const auto deadline = ros::WallTime::now() + ros::WallDuration(2.0);
+  while (fsm->input_diagnostics_pub_.getNumSubscribers() == 0 && ros::WallTime::now() < deadline)
+    ros::WallDuration(.01).sleep();
+  ASSERT_GT(fsm->input_diagnostics_pub_.getNumSubscribers(), 0U);
+  ros::Time::setNow(ros::Time(100.));
+  fsm->beginInputDiagnostics(.7);
+  fsm->publishInputDiagnostics(2.3);
+  while (!received && ros::WallTime::now() < deadline) {
+    ros::spinOnce(); ros::WallDuration(.01).sleep();
+  }
+  ASSERT_TRUE(received);
+  EXPECT_EQ(recorded.header.stamp, ros::Time(100.));
+  EXPECT_DOUBLE_EQ(recorded.input_dispatch_ms, .7);
+  EXPECT_DOUBLE_EQ(recorded.process_wall_ms, 2.3);
+  EXPECT_EQ(recorded.mpc_solve_count, 0U);
+}

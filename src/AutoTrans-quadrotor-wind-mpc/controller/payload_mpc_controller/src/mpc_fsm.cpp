@@ -107,6 +107,7 @@ namespace PayloadMPC
 		pub_rmse_info_ = nh_.advertise<std_msgs::Float64MultiArray>("mpc/rmse_info", 1);
 
 		force_estimator_.init(params_);
+        input_diagnostics_pub_ = nh_.advertise<payload_mpc_controller::InputDiagnostics>("mpc/input_diagnostics", 10);
 		force_timing_pub_ = nh_.advertise<geometry_msgs::Vector3Stamped>("mpc/force_timing", 10);
 		force_config_pub_ = nh_.advertise<std_msgs::String>("mpc/force_config", 1, true);
 		XmlRpc::XmlRpcValue parameter_snapshot;
@@ -140,10 +141,55 @@ namespace PayloadMPC
 								params_.rc_mode_.high_threshold);
 	}
 
+    void MPCFSM::beginInputDiagnostics(double dispatch_ms)
+    {
+        input_diagnostics_ = payload_mpc_controller::InputDiagnostics();
+        auto& d = input_diagnostics_;
+        d.header.stamp = ros::Time::now();
+        d.header.frame_id = odom_data.msg.header.frame_id;
+        d.lio_latest_source_stamp = latest_lio_source_;
+        d.lio_latest_receive_stamp = latest_lio_receive_;
+        d.lio_used_source_stamp = odom_data.msg.header.stamp;
+        d.lio_used_receive_stamp = odom_data.rcv_stamp;
+        d.px4_used_source_stamp = force_attitude_odom_data.msg.header.stamp;
+        d.px4_used_receive_stamp = force_attitude_odom_data.rcv_stamp;
+        const auto age = [&](const ros::Time& stamp) {
+            return stamp.isZero() ? std::numeric_limits<double>::quiet_NaN()
+                                 : (d.header.stamp - stamp).toSec();
+        };
+        d.lio_latest_age_s = age(d.lio_latest_source_stamp);
+        d.lio_used_age_s = age(d.lio_used_source_stamp);
+        d.px4_used_age_s = age(d.px4_used_source_stamp);
+        d.since_lio_accept_s = age(d.lio_used_receive_stamp);
+        d.rejected_hold_s = first_lio_reject_.isZero() ? 0.0 : age(first_lio_reject_);
+        d.lio_rejected_total = lio_rejected_total_;
+        d.lio_rejected_consecutive = lio_rejected_consecutive_;
+        d.position.x = odom_data.p.x(); d.position.y = odom_data.p.y(); d.position.z = odom_data.p.z();
+        d.velocity.x = force_attitude_odom_data.v.x();
+        d.velocity.y = force_attitude_odom_data.v.y();
+        d.velocity.z = force_attitude_odom_data.v.z();
+        d.input_dispatch_ms = dispatch_ms;
+        diagnostic_exec_begin_ = controller_.diagnostic_exec_count_;
+        diagnostic_exec_ms_begin_ = controller_.diagnostic_exec_total_ms_;
+    }
+
+    void MPCFSM::publishInputDiagnostics(double process_ms)
+    {
+        auto& d = input_diagnostics_;
+        d.publish_stamp = ros::Time::now();
+        d.process_wall_ms = process_ms;
+        d.mpc_solve_count = controller_.diagnostic_exec_count_ - diagnostic_exec_begin_;
+        d.mpc_exec_wall_ms = controller_.diagnostic_exec_total_ms_ - diagnostic_exec_ms_begin_;
+        d.mpc_solve_success = d.mpc_solve_count > 0 && controller_.lastMpcSolveSuccessful();
+        if (input_diagnostics_pub_.getNumSubscribers()) input_diagnostics_pub_.publish(d);
+    }
+
 	void MPCFSM::odomCallback(const nav_msgs::Odometry::ConstPtr &msg)
 	{
 		Odom_Data_t candidate;
 		candidate.feed(msg);
+        latest_lio_source_ = msg->header.stamp;
+        latest_lio_receive_ = candidate.rcv_stamp;
 		const OdomSpikeGuardResult result = odom_spike_guard_.evaluate(
 			candidate.rcv_stamp.toSec(), candidate.p, force_attitude_odom_data.v);
 
@@ -151,6 +197,8 @@ namespace PayloadMPC
 			result == OdomSpikeGuardResult::RECOVERED)
 		{
 			odom_data = candidate;
+            lio_rejected_consecutive_ = 0;
+            first_lio_reject_ = ros::Time(0);
 			if (result == OdomSpikeGuardResult::RECOVERED)
 			{
 				ROS_WARN("[ODOM_SPIKE] FAST-LIO 已连续恢复 %d 个正常样本，解除尖峰故障锁存。",
@@ -159,6 +207,9 @@ namespace PayloadMPC
 			return;
 		}
 
+        if (lio_rejected_consecutive_ == 0) first_lio_reject_ = candidate.rcv_stamp;
+        ++lio_rejected_consecutive_;
+        ++lio_rejected_total_;
 		ROS_WARN_THROTTLE(
 			0.5,
 			"[ODOM_SPIKE] 拒绝 LIO位置/PX4速度 异常样本：位置残差 xy=%.3f z=%.3f m，速度突变 xy=%.3f z=%.3f m/s；暂用上一可信状态。",
@@ -526,6 +577,13 @@ namespace PayloadMPC
 		}
 
 		setEstimateState(odom_data, force_attitude_odom_data);
+        input_diagnostics_.state_prepared = true;
+        input_diagnostics_.position.x = est_state_(kPosX);
+        input_diagnostics_.position.y = est_state_(kPosY);
+        input_diagnostics_.position.z = est_state_(kPosZ);
+        input_diagnostics_.velocity.x = est_state_(kVelX);
+        input_diagnostics_.velocity.y = est_state_(kVelY);
+        input_diagnostics_.velocity.z = est_state_(kVelZ);
 		if (!direct_auto_land_active_ && auto_state && odom_spike_guard_.faultActive())
 			beginMpcRecovery(now_time, "FAST-LIO 里程计连续尖峰");
 		if (odom_failsafe_active_)

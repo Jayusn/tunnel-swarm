@@ -1,4 +1,5 @@
 #include "mpc_controller.h"
+#include <chrono>
 #include <nav_msgs/Odometry.h>
 #include <algorithm>
 #include <ctime>
@@ -68,6 +69,7 @@ namespace PayloadMPC
                               Eigen::Matrix<real_t, kStateSize, kSamples + 1> &predicted_states,
                               Eigen::Matrix<real_t, kInputSize, kSamples> &control_inputs)
   {
+    const auto diagnostic_start = std::chrono::steady_clock::now();
     const clock_t start = clock();
 
     if (preparation_thread_.joinable())
@@ -123,6 +125,10 @@ namespace PayloadMPC
 
     // Start a thread to prepare for the next execution.
     preparation_thread_ = std::thread(&MpcController::preparationThread, this);
+
+    ++diagnostic_exec_count_;
+    diagnostic_exec_total_ms_ += std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - diagnostic_start).count();
 
     // Timing
     const clock_t end = clock();

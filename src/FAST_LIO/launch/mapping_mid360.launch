@@ -27,6 +27,7 @@
   <arg name="publish_odometry" default="true" />
   <arg name="high_freq_odom_topic" default="/$(arg vehicle_ns)/fast_lio/Odom_high_freq" />
   <arg name="state_diagnostics_topic" default="/$(arg vehicle_ns)/fast_lio/state_diagnostics" />
+  <arg name="queue_diagnostics_topic" default="/$(arg vehicle_ns)/fast_lio/queue_diagnostics" />
   <arg name="cloud_topic" default="/$(arg vehicle_ns)/fast_lio/cloud_registered" />
   <arg name="cloud_body_topic" default="/$(arg vehicle_ns)/fast_lio/cloud_registered_body" />
   <arg name="cloud_effected_topic" default="/$(arg vehicle_ns)/fast_lio/cloud_effected" />
@@ -59,6 +60,7 @@
     <param name="publish/odometry_enable" value="$(arg publish_odometry)" />
     <param name="publish/high_freq_odom_topic" value="$(arg high_freq_odom_topic)" />
     <param name="publish/state_diagnostics_topic" value="$(arg state_diagnostics_topic)" />
+    <param name="publish/queue_diagnostics_topic" value="$(arg queue_diagnostics_topic)" />
     <param name="publish/cloud_registered_topic" value="$(arg cloud_topic)" />
     <param name="publish/cloud_registered_body_topic" value="$(arg cloud_body_topic)" />
     <param name="publish/cloud_effected_topic" value="$(arg cloud_effected_topic)" />
