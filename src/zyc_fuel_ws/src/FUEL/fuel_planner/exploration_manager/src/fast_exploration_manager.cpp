@@ -1297,9 +1297,9 @@ bool FastExplorationManager::beginSuspendedUnderpass(const Vector3d& pos,
   const double target_z = std::min(dynamic_target_z, vertical_detour::underpassTargetHeight(
       bottom_z, underpass_lidar_above_odom_, underpass_clearance_,
       underpass_height_tracking_margin_, return_height));
-  // 专用悬空障碍下穿最低为0.25m，与普通固定高度下探目标分开。
+  // 下穿最低参考点Z使用独立参数，不将定位原点当作地面。
   const double minimum_height =
-      std::max(0.25, task_search_manager_->clampSearchHeight(-1e3));
+      std::max(underpass_min_height_, task_search_manager_->clampSearchHeight(-1e3));
   Vector3d low_start = pos;
   low_start.z() = std::min(target_z, pos.z());
   const double crossing_distance = std::max(step, exit_progress - pos.dot(direction));
@@ -3075,6 +3075,7 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
            underpass_clearance_, 0.10);
   nh.param("mission/vertical_detour/underpass/height_tracking_margin",
            underpass_height_tracking_margin_, 0.06);
+  nh.param("mission/vertical_detour/underpass/min_height", underpass_min_height_, 0.25);
   nh.param("mission/vertical_detour/underpass/lookahead",
            underpass_lookahead_, 2.00);
   vertical_detour_low_height_ = std::max(0.10, vertical_detour_low_height_);
@@ -3380,7 +3381,7 @@ bool FastExplorationManager::buildManualFappUnderpassPath(
   const double near = center - extent - sdf_map_->getResolution();
   const double far = center + extent + sdf_map_->getResolution();
   const double low = std::min(origin.z(), lower.z() - underpass_height_tracking_margin_);
-  const double minimum = std::max(0.25, task_search_manager_->clampSearchHeight(-1e3));
+  const double minimum = std::max(underpass_min_height_, task_search_manager_->clampSearchHeight(-1e3));
   if (low < minimum || (near - begin < 0.10 && origin.z() > low + 0.02)) return false;
   // 将高度变化分配在前向距离上。五次平滑插值在接近/离开包络处斜率和曲率为零。
   const double recovery = std::max(0.50, 2.0 * (origin.z() - low));
@@ -3540,10 +3541,6 @@ int FastExplorationManager::planManualWaypointMotion(
         bool dynamic_obstacle = false;
         if (recovery_side_latched_)
           bypass_motion = buildSideRecoveryContinuation(pos, yaw[0], target, target_yaw);
-        if (!bypass_motion && recovery_side_latched_ && manual_fapp_active_) {
-          ROS_WARN_THROTTLE(1.0, "[manual_fapp] committed side unavailable; wait without switching side");
-          return FAIL;
-        }
         if (!bypass_motion)
           bypass_motion = buildFappSideBypass(pos, yaw[0], forward,
                                               target, target_yaw, dynamic_obstacle);
@@ -3552,8 +3549,9 @@ int FastExplorationManager::planManualWaypointMotion(
           bypass_motion = buildWideSideBypass(pos, yaw[0], forward,
                                               target, target_yaw, obstacle_detected);
         if (!bypass_motion && (dynamic_obstacle || suspended_underpass_blocked_)) {
-          ROS_WARN_THROTTLE(1.0, "[manual_path] lower passage and both sides unavailable; keep waypoint.");
-          return FAIL;
+          // 完整穿越暂未找到，仍允许下面的A*与短前缀生成接近轨迹。
+          // 候选前缀和实际样条继续检查历史障碍，不提前否决整条航点路线。
+          ROS_WARN_THROTTLE(1.0, "[manual_path] crossing unavailable; try normal path and short approach.");
         }
       }
       if (!bypass_motion) {

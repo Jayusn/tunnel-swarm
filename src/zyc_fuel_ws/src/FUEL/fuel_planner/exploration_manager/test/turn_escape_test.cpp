@@ -153,8 +153,12 @@ public:
     ros::NodeHandle nh("~manual_suspended_" + scenario);
     const bool disabled = scenario == "disabled";
     const bool recorded = scenario == "recorded_history";
+    const bool committed = scenario == "distant_committed";
+    const bool approach = scenario == "distant_blocked" || committed;
+    const bool asymmetric_side = scenario == "asymmetric_side";
+    const bool asymmetric = scenario == "asymmetric_low" || asymmetric_side;
     const bool memory = scenario == "memory_below" || scenario == "memory_left" ||
-        scenario == "memory_curve_right" || recorded;
+        scenario == "memory_curve_right" || recorded || approach || asymmetric;
     const bool stale = scenario == "stale";
     const bool mapped = scenario == "mapped";
     const bool mapped_ball = scenario == "mapped_ball" || scenario == "mapped_ball_left";
@@ -169,11 +173,15 @@ public:
     nh.setParam("astar/allocate_num", 100000);
     nh.setParam("astar/lambda_heu", 1.0);
     nh.setParam("astar/max_search_time", 1.0);
-    nh.setParam("mission/task_search/min_height", 0.25);
+    nh.setParam("mission/task_search/min_height", asymmetric ? 0.15 : 0.25);
     nh.setParam("mission/task_search/max_height", 1.90);
     nh.setParam("fapp/enabled", !disabled && !mapped);
     nh.setParam("fapp/planner_priority", true);
     nh.setParam("fapp/memory_enabled", memory);
+    if (approach || asymmetric) {
+      nh.setParam("fapp/vehicle_top_height", 0.05);
+      nh.setParam("fapp/vehicle_bottom_height", 0.20);
+    }
     const std::string topic = nh.resolveName("states");
     nh.setParam("fapp/topic", topic);
     FastExplorationManager manager;
@@ -182,6 +190,12 @@ public:
     manager.manual_path_use_astar_ = true;
     manager.manual_path_exploration_style_ = true;
     manager.manual_path_max_segment_length_ = scenario == "memory_left" ? 0.15 : 1.2;
+    if (asymmetric) manager.underpass_min_height_ = 0.15;
+    if (committed) {
+      manager.recovery_side_latched_ = true;
+      // 旧侧向已与当前前进方向不符，续接失败也不能提前否决正常规划。
+      manager.recovery_side_dir_ = Vector3d::UnitX();
+    }
     manager.ep_->mission_use_forward_fallback_ = true;
     manager.task_search_manager_->setMap(manager.sdf_map_);
     manager.task_search_manager_->exit_detection_enabled_ = false;
@@ -190,18 +204,20 @@ public:
     Vector3d origin, size;
     manager.sdf_map_->getRegion(origin, size);
     ViewNode::caster_->setParams(manager.sdf_map_->getResolution(), origin);
-    const Vector3d start(mapped || mapped_ball ? 0.025 : (recorded ? -1.375 : -0.675),
-                         0.025, recorded ? 0.582 : 1.025);
+    const Vector3d start(mapped || mapped_ball ? 0.025 : (recorded || approach || asymmetric ? -1.375 : -0.675),
+                         0.025, recorded || asymmetric ? 0.582 : 1.025);
     const Vector3d goal(mapped_ball ? 1.650 : 1.425, 0.025, start.z()), zero = Vector3d::Zero();
     manager.manual_path_.points = {goal};
     auto& map = *manager.sdf_map_;
+    // 低空用未截断的射线建立自由观测，避免地图忽略Z<0.2的超量程射线。
+    const double ray_origin_x = asymmetric ? 0.9 : 1.9;
     for (double y = -1.725; y < 1.75; y += 0.05)
-      for (double z = unknown_below ? 0.875 : 0.225; z < 1.65; z += 0.05) {
+      for (double z = unknown_below ? 0.875 : (asymmetric ? 0.075 : 0.225); z < 1.65; z += 0.05) {
         pcl::PointCloud<pcl::PointXYZ> cloud;
         cloud.push_back(pcl::PointXYZ(1.9, y, z));
-        map.inputPointCloud(cloud, 1, Vector3d(-1.9, y, z));
+        map.inputPointCloud(cloud, 1, Vector3d(-ray_origin_x, y, z));
         cloud.front().x = -1.9;
-        map.inputPointCloud(cloud, 1, Vector3d(1.9, y, z));
+        map.inputPointCloud(cloud, 1, Vector3d(ray_origin_x, y, z));
       }
     if (floor_blocked || mapped)
       for (double x = mapped ? 0.375 : (mapped_ball ? 0.525 : -0.10);
@@ -260,6 +276,13 @@ public:
     ball.position.z = scenario == "moving" ? 1.125 : 1.025;
     ball.velocity.z = scenario == "moving" ? -0.10 : 0.0;
     ball.size.x = ball.size.y = ball.size.z = 0.20;
+    if (approach) {
+      ball.position.x = 0.225; // 1.6m ahead, full crossing currently unavailable.
+      ball.position.z = 0.70;
+      ball.size.y = 2.0;
+      ball.size.z = 1.20;
+    }
+    if (asymmetric) ball.position.z = asymmetric_side ? 0.40 : 0.54;
     message.states.push_back(ball);
     const auto send = [&]() {
       message.header.stamp = ros::Time::now() - ros::Duration(stale ? 2.0 : 0.0);
@@ -289,6 +312,38 @@ public:
       return;
     }
     ASSERT_EQ(SUCCEED, result);
+    if (approach || asymmetric) {
+      double age = 0.0;
+      ASSERT_TRUE(manager.planner_manager_->watchedFappBounds(lower, upper, age));
+      EXPECT_EQ(0u, manager.manual_path_.next);
+      EXPECT_FALSE(manager.currentPlanIsVerticalDetour());
+      if (!asymmetric_side) EXPECT_GT(manager.ed_->next_goal_.x(), start.x() + 0.2);
+      if (approach) {
+        EXPECT_EQ(committed, manager.recovery_side_latched_);
+        EXPECT_FALSE(manager.manual_fapp_curve_active_);
+        EXPECT_LT(manager.ed_->next_goal_.x(), lower.x());
+        EXPECT_NEAR(start.z(), manager.ed_->next_goal_.z(), 1e-6);
+      } else if (asymmetric_side) {
+        EXPECT_LT(lower.z() - manager.underpass_height_tracking_margin_, 0.15);
+        EXPECT_FALSE(manager.manual_fapp_curve_active_);
+        EXPECT_TRUE(manager.recovery_side_latched_);
+        EXPECT_GT(std::fabs(manager.ed_->next_goal_.y() - start.y()), 0.2);
+        EXPECT_NEAR(start.z(), manager.ed_->next_goal_.z(), 1e-6);
+      } else {
+        EXPECT_TRUE(manager.manual_fapp_curve_active_);
+        EXPECT_NEAR(0.23, manager.low_probe_height_, 1e-6);
+        EXPECT_NEAR(0.29, lower.z(), 1e-6);
+        EXPECT_NEAR(0.94, upper.z(), 1e-6);
+        EXPECT_GT(manager.ed_->next_goal_.x(), upper.x());
+      }
+      auto& traj = manager.planner_manager_->local_data_.position_traj_;
+      for (double t = 0; t <= traj.getTimeSum(); t += 0.02) {
+        const Vector3d p = traj.evaluateDeBoorT(t);
+        EXPECT_TRUE(manager.planner_manager_->isWatchedFappPositionSafe(p));
+        EXPECT_GE(p.z(), 0.15);
+      }
+      return;
+    }
     const bool expected_underpass = !floor_blocked && !unknown_below && !disabled && !stale && !recorded;
     EXPECT_EQ(expected_underpass && !memory, manager.currentPlanIsVerticalDetour());
     EXPECT_EQ(expected_underpass, manager.suspended_underpass_active_);
@@ -2324,4 +2379,18 @@ int main(int argc,char** argv) {
   ros::init(argc,argv,"turn_escape_test");
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
+}
+
+TEST(FappMemory, DistantBlockedCrossingStillPlansForwardApproach) {
+  fast_planner::TurnEscapeTest::runManualSuspended("distant_blocked");
+}
+TEST(FappMemory, AsymmetricBodyAllowsCurveBelowOldMinimum) {
+  fast_planner::TurnEscapeTest::runManualSuspended("asymmetric_low");
+}
+
+TEST(FappMemory, UnavailableCommittedSideStillAllowsForwardApproach) {
+  fast_planner::TurnEscapeTest::runManualSuspended("distant_committed");
+}
+TEST(FappMemory, AsymmetricBodyFallsBackToSideBelowMinimum) {
+  fast_planner::TurnEscapeTest::runManualSuspended("asymmetric_side");
 }

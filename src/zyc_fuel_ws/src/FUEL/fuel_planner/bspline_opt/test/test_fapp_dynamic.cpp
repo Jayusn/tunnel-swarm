@@ -45,6 +45,28 @@ TEST_F(DynamicObstacleTest, UnderpassUsesFiniteVehicleHeight)
   EXPECT_LT(clearanceAt(Eigen::Vector3d(0.0, 0.0, 0.70)), 0.0);
 }
 
+TEST_F(DynamicObstacleTest, AsymmetricBodyUsesTopBelowAndBottomAbove)
+{
+  config.vehicle_top_height = 0.05;
+  config.vehicle_bottom_height = 0.20;
+  for (bool measured : {false, true}) {
+    state.size = measured ? Eigen::Vector3d::Constant(0.2) : Eigen::Vector3d::Zero();
+    Eigen::Vector3d gradient;
+    EXPECT_NEAR(clearanceAt(Eigen::Vector3d(0, 0, 0.70), &gradient), 0.05, 1e-12);
+    EXPECT_NEAR(gradient.z(), -1.0, 1e-12);
+    EXPECT_NEAR(clearanceAt(Eigen::Vector3d(0, 0, 1.45), &gradient), 0.05, 1e-12);
+    EXPECT_NEAR(gradient.z(), 1.0, 1e-12);
+    EXPECT_LT(clearanceAt(Eigen::Vector3d(0, 0, 1.30)), 0.0);
+    const Eigen::Vector3d point(0.45, 0.15, 0.70);
+    clearanceAt(point, &gradient);
+    for (int axis = 0; axis < 3; ++axis) {
+      const Eigen::Vector3d offset = 1e-6 * Eigen::Vector3d::Unit(axis);
+      EXPECT_NEAR(gradient(axis), (clearanceAt(point + offset) -
+          clearanceAt(point - offset)) / 2e-6, 1e-6);
+    }
+  }
+}
+
 TEST_F(DynamicObstacleTest, MeasuredBoxUsesEachObservedExtent)
 {
   state.size = Eigen::Vector3d(0.2, 0.8, 0.6);
@@ -112,7 +134,7 @@ TEST_F(DynamicObstacleTest, RoundedCornerRejectsGapMissedByAnEllipsoid)
   const double ellipsoid_value =
       std::pow(position.x() / (config.vehicle_radius + config.ball_radius), 2) +
       std::pow((position.z() - state.position.z()) /
-                   (config.vehicle_half_height + config.ball_radius),
+                   (config.vehicle_top_height + config.ball_radius),
                2);
   EXPECT_GT(ellipsoid_value, 1.0);
   EXPECT_LT(clearanceAt(position), 0.0);

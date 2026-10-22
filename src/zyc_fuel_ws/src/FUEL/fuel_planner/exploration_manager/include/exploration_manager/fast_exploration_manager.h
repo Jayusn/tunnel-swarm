@@ -318,6 +318,7 @@ private:
   double underpass_clearance_{0.10};
   double underpass_height_tracking_margin_{0.06};
   double underpass_lookahead_{2.00};
+  double underpass_min_height_{0.25};
 
   double low_probe_yaw_{0.0};
   ros::Time low_probe_verify_start_;

@@ -65,6 +65,11 @@ void FastPlannerManager::initPlanModules(ros::NodeHandle& nh) {
   turn_time_scale_ = std::max(1.0, turn_time_scale_);
 
   nh.param("fapp/enabled", fapp_config_.enabled, false);
+  nh.param("fapp/vehicle_top_height", fapp_config_.vehicle_top_height, 0.125);
+  nh.param("fapp/vehicle_bottom_height", fapp_config_.vehicle_bottom_height, 0.125);
+  if (!std::isfinite(fapp_config_.vehicle_top_height) || fapp_config_.vehicle_top_height <= 0.0 ||
+      !std::isfinite(fapp_config_.vehicle_bottom_height) || fapp_config_.vehicle_bottom_height <= 0.0)
+    throw std::runtime_error("FAPP vehicle top/bottom heights must be positive");
   nh.param("fapp/planner_priority", fapp_planner_priority_, false);
   nh.param("fapp/memory_enabled", fapp_memory_enabled_, false);
   nh.param("fapp/observation_retention", fapp_config_.observation_retention, 0.8);
@@ -243,9 +248,11 @@ void FastPlannerManager::includeFappHistory(
         (state.size.array() > 0.0).any()) half = 0.5 * state.size;
     half += Eigen::Vector3d(fapp_config_.vehicle_radius + fapp_config_.margin,
                            fapp_config_.vehicle_radius + fapp_config_.margin,
-                           fapp_config_.vehicle_half_height + fapp_config_.margin);
+                           fapp_config_.vehicle_top_height + fapp_config_.margin);
     lower = lower.cwiseMin(state.position - half);
-    upper = upper.cwiseMax(state.position + half);
+    Eigen::Vector3d upper_extent = half;
+    upper_extent.z() += fapp_config_.vehicle_bottom_height - fapp_config_.vehicle_top_height;
+    upper = upper.cwiseMax(state.position + upper_extent);
   };
   include(observation);
   for (const auto& state : fapp_history_)
@@ -336,7 +343,8 @@ bool FastPlannerManager::isRelayHoldDynamicallySafe(
   if (!fapp_config_.enabled) return true;
   auto config = fapp_config_;
   config.vehicle_radius = std::max(config.vehicle_radius, radius);
-  config.vehicle_half_height = std::max(config.vehicle_half_height, half_height);
+  config.vehicle_top_height = std::max(config.vehicle_top_height, half_height);
+  config.vehicle_bottom_height = std::max(config.vehicle_bottom_height, half_height);
   const double reference = ros::Time::now().toSec();
   const int steps = std::max(1, static_cast<int>(std::ceil(horizon / 0.1)));
   const double dt = horizon / steps;
@@ -387,9 +395,10 @@ bool FastPlannerManager::fappBlockingBounds(
           half = 0.5 * obstacle.size;
         half += Eigen::Vector3d(fapp_config_.vehicle_radius + fapp_config_.margin,
                                fapp_config_.vehicle_radius + fapp_config_.margin,
-                               fapp_config_.vehicle_half_height + fapp_config_.margin);
+                               fapp_config_.vehicle_top_height + fapp_config_.margin);
         lower = center - half;
         upper = center + half;
+        upper.z() += fapp_config_.vehicle_bottom_height - fapp_config_.vehicle_top_height;
         if (observation) *observation = obstacle;
         return true;
       }
@@ -460,7 +469,7 @@ bool FastPlannerManager::fappGuidePath(std::vector<Eigen::Vector3d>& path) const
   // The same three geometric choices as the rear planner, checked in FUEL's map.
   const double along=half.dot(axis.cwiseAbs())+fapp_config_.vehicle_radius+fapp_config_.margin+0.15;
   const double lateral=half.dot(side.cwiseAbs())+fapp_config_.vehicle_radius+fapp_config_.margin+0.15;
-  const double below=half.z()+fapp_config_.vehicle_half_height+fapp_config_.margin+0.15;
+  const double below=half.z()+fapp_config_.vehicle_top_height+fapp_config_.margin+0.15;
   std::vector<Eigen::Vector3d> best;double best_length=std::numeric_limits<double>::infinity();
   for(int direction=0;direction<3;++direction) {
     const Eigen::Vector3d offset=direction==0?Eigen::Vector3d(0,0,-below):
