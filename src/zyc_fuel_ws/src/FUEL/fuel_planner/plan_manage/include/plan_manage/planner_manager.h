@@ -74,6 +74,11 @@ public:
   // Relay stopping space is checked even when FUEL uses soft dynamic costs.
   bool isRelayHoldDynamicallySafe(const Eigen::Vector3d& position, double radius,
                                  double half_height, double horizon) const;
+  // 航点悬挂物选路使用同一套 FAPP 时效/预测/机体尺寸，不受软代价优先开关影响。
+  // 返回首次阻挡路径的预测包围盒，已包含机体尺寸和动态净空。
+  bool fappBlockingBounds(const vector<Eigen::Vector3d>& path,
+                          Eigen::Vector3d& lower, Eigen::Vector3d& upper) const;
+  bool isFappPathSafe(const vector<Eigen::Vector3d>& path) const;
   // 局部脱困专用：允许少量受支撑占据采样，但只能沿采样数和ESDF净空持续改善的方向退出。
   int rawFootprintCollisionCount(const Eigen::Vector3d& position) const;
   // 统计机体下方圆盘内的受支撑占据，用于区分贴地障碍与侧墙接触。

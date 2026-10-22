@@ -179,6 +179,49 @@ bool FastPlannerManager::isRelayHoldDynamicallySafe(
   return true;
 }
 
+bool FastPlannerManager::fappBlockingBounds(
+    const vector<Eigen::Vector3d>& path, Eigen::Vector3d& lower,
+    Eigen::Vector3d& upper) const {
+  if (!fapp_config_.enabled || path.size() < 2) return false;
+  const double reference = ros::Time::now().toSec();
+  const double speed = std::max(0.1, pp_.max_vel_ * 0.5);
+  double elapsed = 0.0;
+  for (size_t i = 1; i < path.size(); ++i) {
+    const double length = (path[i] - path[i - 1]).norm();
+    const int samples = std::max(1, static_cast<int>(std::ceil(length / 0.05)));
+    for (int j = 0; j <= samples; ++j) {
+      const double u = static_cast<double>(j) / samples;
+      const Eigen::Vector3d point = path[i - 1] + u * (path[i] - path[i - 1]);
+      for (const auto& obstacle : fapp_states_) {
+        double clearance;
+        Eigen::Vector3d center;
+        if (!fuel_fapp::evaluateDynamicObstacle(
+                point, obstacle, reference + elapsed + u * length / speed,
+                reference, fapp_config_, &clearance, nullptr, &center) ||
+            clearance >= 0.0)
+          continue;
+        Eigen::Vector3d half = Eigen::Vector3d::Constant(fapp_config_.ball_radius);
+        if (obstacle.size.allFinite() && (obstacle.size.array() >= 0.0).all() &&
+            (obstacle.size.array() > 0.0).any())
+          half = 0.5 * obstacle.size;
+        half += Eigen::Vector3d(fapp_config_.vehicle_radius + fapp_config_.margin,
+                               fapp_config_.vehicle_radius + fapp_config_.margin,
+                               fapp_config_.vehicle_half_height + fapp_config_.margin);
+        lower = center - half;
+        upper = center + half;
+        return true;
+      }
+    }
+    elapsed += length / speed;
+  }
+  return false;
+}
+
+bool FastPlannerManager::isFappPathSafe(const vector<Eigen::Vector3d>& path) const {
+  Eigen::Vector3d lower, upper;
+  return !fappBlockingBounds(path, lower, upper);
+}
+
 bool FastPlannerManager::fappGuidePath(std::vector<Eigen::Vector3d>& path) const {
   // Planner priority retains the B-spline dynamic cost without requiring a clear guide.
   if (fapp_planner_priority_ || !fapp_config_.enabled || fapp_states_.empty() || path.size()<2) return true;

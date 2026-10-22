@@ -386,7 +386,9 @@ bool FastExplorationManager::isKnownSafeVerticalPath(const Vector3d& start,
       return false;
     path.push_back(point);
   }
-  return planner_manager_->isPathSafe(path);
+  return planner_manager_->isPathSafe(path) &&
+      (!(manual_path_enabled_ && manual_path_exploration_style_) ||
+       planner_manager_->isFappPathSafe(path));
 }
 
 bool FastExplorationManager::isKnownSafeGroundAscentPath(
@@ -687,7 +689,9 @@ bool FastExplorationManager::isLowProbeCorridorSafe(
       sdf_map_->getOccupancy(endpoint) != SDFMap::FREE)
     return false;
   if ((path.back() - endpoint).norm() > 1e-3) path.push_back(endpoint);
-  return planner_manager_->isPathSafe(path);
+  return planner_manager_->isPathSafe(path) &&
+      (!(manual_path_enabled_ && manual_path_exploration_style_) ||
+       planner_manager_->isFappPathSafe(path));
 }
 
 bool FastExplorationManager::buildVerticalDetourFallback(
@@ -903,9 +907,17 @@ bool FastExplorationManager::handleActiveLowProbe(
     bool split_obstacle_detected = false;
     Vector3d side_target;
     double side_yaw = low_probe_yaw_;
-    const bool use_side_target = buildWideSideBypass(
-        pos, low_probe_yaw_, low_probe_direction_, side_target, side_yaw,
-        split_obstacle_detected);
+    bool use_side_target = false;
+    bool dynamic_obstacle = false;
+    if (manual_path_enabled_ && manual_path_exploration_style_) {
+      use_side_target = buildFappSideBypass(pos, low_probe_yaw_, low_probe_direction_,
+                                           side_target, side_yaw, dynamic_obstacle);
+    }
+    if (!use_side_target && !dynamic_obstacle)
+      use_side_target = buildWideSideBypass(
+          pos, low_probe_yaw_, low_probe_direction_, side_target, side_yaw,
+          split_obstacle_detected);
+    split_obstacle_detected = split_obstacle_detected || dynamic_obstacle;
     if (split_obstacle_detected && (use_side_target || !suspended_underpass_active_)) {
       cancelActiveLowProbe("low corridor blocked; use horizontal lane");
       ROS_WARN("[vertical_detour] low-altitude forward path is blocked; keep current z "
@@ -1059,6 +1071,9 @@ bool FastExplorationManager::buildStationaryVerticalDetourPlan(
   Vector3d target = low_probe_target_;
   target.x() = pos.x();
   target.y() = pos.y();
+  if (manual_path_enabled_ && manual_path_max_segment_length_ > 0.0)
+    target.z() = pos.z() + std::max(-manual_path_max_segment_length_,
+        std::min(manual_path_max_segment_length_, target.z() - pos.z()));
   if (!isKnownSafeVerticalPath(pos, target.z(), descending)) return false;
   if (!planner_manager_->planVerticalTraj(pos, target)) return false;
   const bool controlled_escape =
@@ -1066,7 +1081,9 @@ bool FastExplorationManager::buildStationaryVerticalDetourPlan(
   if (!planner_manager_->isTrajectorySafe(0.03, controlled_escape)) return false;
   if (!planner_manager_->planYawTurnInPlace(yaw, low_probe_yaw_)) return false;
 
-  low_probe_target_ = target;
+  // 竖直短段可以截断，低位会话仍保留最终高度，下一段继续下降/回升。
+  low_probe_target_.x() = target.x();
+  low_probe_target_.y() = target.y();
   if (descending) {
     low_probe_origin_.x() = pos.x();
     low_probe_origin_.y() = pos.y();
@@ -1209,23 +1226,50 @@ bool FastExplorationManager::detectSuspendedObstacle(
 
 bool FastExplorationManager::beginSuspendedUnderpass(const Vector3d& pos,
                                                       double yaw) {
+  const bool manual = manual_path_enabled_ && manual_path_exploration_style_;
+  if (manual_path_enabled_ && (!manual || manual_path_.finished() ||
+      (manual_path_wait_for_trigger_ && !manual_path_started_)))
+    return false;
   if (!vertical_detour_enabled_ || !task_search_manager_ ||
       !task_search_manager_->enabled() ||
-      (!mission_entered_search_region_ &&
+      (!manual && !mission_entered_search_region_ &&
        !task_search_manager_->hasConfirmedCorridorTurn()) ||
       task_search_manager_->stage3Active() ||
       low_probe_phase_ != vertical_detour::LowProbePhase::IDLE ||
       turn_in_place_session_active_)
     return false;
-  if (suspended_underpass_active_) return false;
+  if (suspended_underpass_active_ || (manual && recovery_side_latched_)) return false;
   const Vector3d direction = task_search_manager_->recoveryForwardDirection(yaw);
+  if (manual && (manual_path_.points[manual_path_.next] - pos).dot(direction) <= 0.15)
+    return false;
   double bottom_z, exit_progress, first_hit_distance;
-  if (!detectSuspendedObstacle(pos, direction, bottom_z, exit_progress,
-                               first_hit_distance)) {
+  const bool mapped = detectSuspendedObstacle(pos, direction, bottom_z,
+                                               exit_progress, first_hit_distance);
+  Vector3d lower, upper;
+  const double lookahead = manual
+      ? std::min(underpass_lookahead_,
+                 (manual_path_.points[manual_path_.next] - pos).dot(direction))
+      : underpass_lookahead_;
+  const bool dynamic = manual && planner_manager_->fappBlockingBounds(
+      {pos, pos + lookahead * direction}, lower, upper);
+  double dynamic_target_z = std::numeric_limits<double>::infinity();
+  if (dynamic) {
+    const Vector3d center = 0.5 * (lower + upper);
+    const Vector3d half = 0.5 * (upper - lower);
+    const double extent = half.dot(direction.cwiseAbs());
+    const double near_distance = (center - pos).dot(direction) - extent;
+    const double far_progress = center.dot(direction) + extent + sdf_map_->getResolution();
+    first_hit_distance = mapped ? std::min(first_hit_distance, near_distance) : near_distance;
+    exit_progress = mapped ? std::max(exit_progress, far_progress) : far_progress;
+    // 包围盒已扣除机体半高和动态净空，再留现有高度跟踪余量。
+    dynamic_target_z = lower.z() - underpass_height_tracking_margin_;
+    if (!mapped) bottom_z = std::numeric_limits<double>::infinity();
+  }
+  if (!mapped && !dynamic) {
     suspended_underpass_blocked_ = false;
     return false;
   }
-  if (first_hit_distance > kUnderpassStartDistance) {
+  if (first_hit_distance > kUnderpassStartDistance && !dynamic) {
     suspended_underpass_blocked_ = false;
     ROS_INFO_THROTTLE(2.0, "[suspended_underpass] obstacle %.2fm ahead; "
                       "continue horizontal route until %.2fm.",
@@ -1248,20 +1292,24 @@ bool FastExplorationManager::beginSuspendedUnderpass(const Vector3d& pos,
     }
   }
   // 狭窄通道按雷达到悬挂障碍底部0.10m净空下穿，并额外留出高度跟踪余量。
-  const double target_z = vertical_detour::underpassTargetHeight(
+  const double return_height = manual ? pos.z() : task_search_manager_->preferredSearchHeight();
+  const double target_z = std::min(dynamic_target_z, vertical_detour::underpassTargetHeight(
       bottom_z, underpass_lidar_above_odom_, underpass_clearance_,
-      underpass_height_tracking_margin_,
-      task_search_manager_->preferredSearchHeight());
+      underpass_height_tracking_margin_, return_height));
   // 专用悬空障碍下穿最低为0.25m，与普通固定高度下探目标分开。
   const double minimum_height =
       std::max(0.25, task_search_manager_->clampSearchHeight(-1e3));
+  Vector3d low_start = pos;
+  low_start.z() = std::min(target_z, pos.z());
+  const double crossing_distance = std::max(step, exit_progress - pos.dot(direction));
   if (target_z < minimum_height ||
       (pos.z() > target_z + vertical_detour_height_tolerance_ &&
-       !isKnownSafeVerticalPath(pos, target_z))) {
+       !isKnownSafeVerticalPath(pos, target_z, !manual)) ||
+      (manual && !isLowProbeCorridorSafe(low_start, direction, crossing_distance))) {
     suspended_underpass_blocked_ = true;
-    ROS_ERROR_THROTTLE(1.0, "[suspended_underpass] confirmed obstacle bottom=%.2f "
-                       "but fixed-XY descent z=%.2f is unavailable; hold before obstacle.",
-                       bottom_z, target_z);
+    ROS_ERROR_THROTTLE(1.0, "[suspended_underpass] confirmed obstacle (map=%d FAPP=%d) "
+                       "but lower passage z=%.2f is unavailable; use side selection in waypoint mode.",
+                       static_cast<int>(mapped), static_cast<int>(dynamic), target_z);
     return true;
   }
   suspended_underpass_blocked_ = false;
@@ -1278,13 +1326,14 @@ bool FastExplorationManager::beginSuspendedUnderpass(const Vector3d& pos,
   low_probe_origin_ = pos;
   low_probe_target_ = pos;
   low_probe_target_.z() = low_probe_height_;
-  low_probe_return_height_ = task_search_manager_->preferredSearchHeight();
+  low_probe_return_height_ = return_height;
   low_probe_yaw_ = yaw;
   low_probe_verify_start_ = already_low ? ros::Time::now() : ros::Time();
   low_probe_descent_end_time_ = ros::Time();
-  ROS_WARN("[suspended_underpass] ACTIVE bottom=%.2f target_z=%.2f exit_progress=%.2f "
+  ROS_WARN("[suspended_underpass] ACTIVE map=%d FAPP=%d target_z=%.2f exit_progress=%.2f "
            "lidar_clearance=%.2f; %s before ordinary frontier planning.",
-           bottom_z, low_probe_height_, exit_progress, underpass_clearance_,
+           static_cast<int>(mapped), static_cast<int>(dynamic),
+           low_probe_height_, exit_progress, underpass_clearance_,
            already_low ? "verify low corridor" : "descend");
   return true;
 }
@@ -1871,6 +1920,78 @@ bool FastExplorationManager::buildWideSideBypass(
   return true;
 }
 
+bool FastExplorationManager::buildFappSideBypass(
+    const Vector3d& pos, double cur_yaw, const Vector3d& forward,
+    Vector3d& next_pos, double& next_yaw, bool& obstacle_detected) {
+  obstacle_detected = false;
+  if (!manual_path_enabled_ || !manual_path_exploration_style_ ||
+      !wide_side_bypass_enabled_ || !planner_manager_ || !sdf_map_ ||
+      forward.head<2>().norm() < 1e-3 || manual_path_.finished())
+    return false;
+  const Vector3d travel = forward.normalized();
+  const Vector3d lateral(-travel.y(), travel.x(), 0.0);
+  const double horizon = std::min(underpass_lookahead_,
+      (manual_path_.points[manual_path_.next] - pos).dot(travel));
+  if (horizon <= 0.15) return false;
+  Vector3d lower, upper;
+  obstacle_detected = planner_manager_->fappBlockingBounds(
+      {pos, pos + horizon * travel}, lower, upper);
+  if (!obstacle_detected) return false;
+  const Vector3d center = 0.5 * (lower + upper);
+  const Vector3d half = 0.5 * (upper - lower);
+  const double margin = sdf_map_->getResolution();
+  const double pass_distance = (center - pos).dot(travel) +
+      half.dot(travel.cwiseAbs()) + margin;
+  const double side_extent = half.dot(lateral.cwiseAbs()) + margin;
+  bool found = false;
+  double best_clearance = -1.0;
+  double best_shift = 0.0;
+  for (double sign : {1.0, -1.0}) {
+    const double shift = (center - pos).dot(lateral) + sign * side_extent;
+    if (sign * shift <= 0.0 || std::fabs(shift) > wide_side_bypass_lateral_range_)
+      continue;
+    const Vector3d side = pos + shift * lateral;
+    const Vector3d passed = side + std::max(0.0, pass_distance) * travel;
+    const vector<Vector3d> route{pos, side, passed};
+    // 先确认横移后确实能从该侧通过，再分短段执行，不能只选一个旁边的空点。
+    if (!isLowProbeCorridorSafe(pos, side - pos, std::fabs(shift)) ||
+        !isLowProbeCorridorSafe(side, travel, std::max(margin, pass_distance)) ||
+        !pathInsideWorkspaceLock(route) || !planner_manager_->isFappPathSafe(route))
+      continue;
+    double clearance = std::numeric_limits<double>::infinity();
+    for (size_t i = 1; i < route.size(); ++i) {
+      const int samples = std::max(1, static_cast<int>(std::ceil(
+          (route[i] - route[i - 1]).norm() / margin)));
+      for (int j = 0; j <= samples; ++j) {
+        const Vector3d point = route[i - 1] +
+            static_cast<double>(j) / samples * (route[i] - route[i - 1]);
+        clearance = std::min(clearance, sdf_map_->getDistance(point));
+      }
+    }
+    if (!found || clearance > best_clearance + 0.01 ||
+        (std::fabs(clearance - best_clearance) <= 0.01 &&
+         std::fabs(shift) < std::fabs(best_shift))) {
+      found = true;
+      best_clearance = clearance;
+      best_shift = shift;
+    }
+  }
+  if (!found) return false;
+  const double sign = best_shift > 0.0 ? 1.0 : -1.0;
+  next_pos = pos + sign * std::min(std::fabs(best_shift),
+                                  wide_side_bypass_max_lateral_step_) * lateral;
+  next_yaw = cur_yaw;
+  recovery_side_latched_ = true;
+  recovery_side_origin_ = pos;
+  recovery_side_dir_ = sign * lateral;
+  wide_side_bypass_active_ = true;
+  wide_side_bypass_release_distance_ = pass_distance;
+  ROS_WARN("[manual_path] FAPP lower passage unavailable; choose %s side, "
+           "translate %.2fm then pass %.2fm before returning to waypoint.",
+           sign > 0.0 ? "left" : "right", (next_pos - pos).norm(), pass_distance);
+  return true;
+}
+
 bool FastExplorationManager::selectEntryForwardGoal(
     const Vector3d& pos, const Vector3d& forward, double remaining,
     entry_forward::Goal& selected) {
@@ -2004,9 +2125,14 @@ bool FastExplorationManager::buildSideRecoveryContinuation(
     wide_side_bypass_active_ = false;
     return false;
   }
-  const bool forward_clear = isLowProbeCorridorSafe(pos, forward, 0.40);
   const double release_distance = wide_side_bypass_active_
       ? wide_side_bypass_release_distance_ : recovery_side_release_distance_;
+  const double remaining = std::max(0.40,
+      release_distance - (pos - recovery_side_origin_).dot(forward));
+  const bool manual_side = manual_path_enabled_ && manual_path_exploration_style_ &&
+      wide_side_bypass_active_;
+  const bool forward_clear = isLowProbeCorridorSafe(pos, forward, 0.40) &&
+      (!manual_side || planner_manager_->isFappPathSafe({pos, pos + remaining * forward}));
   if (forward_clear && (pos - recovery_side_origin_).dot(forward) >=
                            release_distance) {
     recovery_side_latched_ = false;
@@ -2028,7 +2154,7 @@ bool FastExplorationManager::buildSideRecoveryContinuation(
           pathInsideWorkspaceLock(path) &&
           task_search_manager_->isRecoveryPathAllowed(path, false);
     };
-    if (passage_centering_enabled_ && forward_clear) {
+    if (passage_centering_enabled_ && forward_clear && !manual_side) {
       passage_centering::Config cfg;
       cfg.step = std::min(0.05, 0.5 * sdf_map_->getResolution());
       cfg.search_radius = passage_centering_search_radius_;
@@ -3209,8 +3335,24 @@ int FastExplorationManager::planManualWaypointMotion(
       bound += (controls.row(i) - controls.row(i - 1)).norm();
     return bound <= manual_path_max_segment_length_ + 1e-6;
   };
-  // 与探索相同：地图确认转弯后先停转，不能等远航点A*成功后才允许转机头。
+  const Vector3d waypoint = target;
+  bool underpass_motion = false;
   if (manual_path_exploration_style_ && !exit_motion && task_search_manager_) {
+    if (low_probe_phase_ == vertical_detour::LowProbePhase::IDLE &&
+        !recovery_side_latched_)
+      beginSuspendedUnderpass(pos, yaw[0]);
+    bool waiting = false;
+    underpass_motion = handleActiveLowProbe(pos, target, target_yaw, waiting);
+    if (waiting) return FAIL;
+    if (underpass_motion &&
+        (low_probe_phase_ == vertical_detour::LowProbePhase::DESCENDING ||
+         low_probe_phase_ == vertical_detour::LowProbePhase::ASCENDING))
+      return buildStationaryVerticalDetourPlan(pos, yaw) && trajectory_within_limit()
+          ? SUCCEED : FAIL;
+    if (underpass_motion) ed_->path_next_goal_ = {pos, target};
+  }
+  // 与探索相同：地图确认转弯后先停转，不能等远航点A*成功后才允许转机头。
+  if (manual_path_exploration_style_ && !exit_motion && !underpass_motion && task_search_manager_) {
     Vector3d direction;
     if (turn_in_place_session_active_)
       direction = Vector3d(std::cos(turn_in_place_final_yaw_),
@@ -3222,9 +3364,8 @@ int FastExplorationManager::planManualWaypointMotion(
   }
   if (ed_->path_next_goal_.size() < 2 || (target - pos).norm() < 0.03)
     return FAIL;  // 等待实际里程计到点，预测规划起点不能推进列表。
-  const Vector3d waypoint = target;
   bool bypass_motion = false;
-  if (manual_path_use_astar_) {
+  if (manual_path_use_astar_ && !underpass_motion) {
     auto& finder = planner_manager_->path_finder_;
     if (!finder) return FAIL;
     finder->clearProgressConstraint();
@@ -3233,10 +3374,24 @@ int FastExplorationManager::planManualWaypointMotion(
       // 复用探索原有“选侧横移 -> 同侧短步通过 -> 释放后回正”。
       // 绕障只改变局部端点，不记录为用户航点，也不绕到远目标后面。
       if ((target - pos).dot(forward) > 0.15 &&
-          (recovery_side_latched_ || !planner_manager_->isPathSafe({pos, target}))) {
+          (recovery_side_latched_ || suspended_underpass_blocked_ ||
+           !planner_manager_->isPathSafe({pos, target}) ||
+           !planner_manager_->isFappPathSafe({pos, target}))) {
         bool obstacle_detected = false;
-        bypass_motion = buildWideSideBypass(pos, yaw[0], forward,
-                                            target, target_yaw, obstacle_detected);
+        bool dynamic_obstacle = false;
+        if (recovery_side_latched_)
+          bypass_motion = buildSideRecoveryContinuation(pos, yaw[0], target, target_yaw);
+        if (!bypass_motion)
+          bypass_motion = buildFappSideBypass(pos, yaw[0], forward,
+                                              target, target_yaw, dynamic_obstacle);
+        // 摆球也可能留在静态图内，先按动态包围盒选侧，避免较小静态足迹的候选反复被否决。
+        if (!bypass_motion && !dynamic_obstacle)
+          bypass_motion = buildWideSideBypass(pos, yaw[0], forward,
+                                              target, target_yaw, obstacle_detected);
+        if (!bypass_motion && (dynamic_obstacle || suspended_underpass_blocked_)) {
+          ROS_WARN_THROTTLE(1.0, "[manual_path] lower passage and both sides unavailable; keep waypoint.");
+          return FAIL;
+        }
       }
       if (!bypass_motion) {
         target_yaw = std::atan2(forward.y(), forward.x());
@@ -3292,6 +3447,8 @@ int FastExplorationManager::planManualWaypointMotion(
       ed_->path_next_goal_.insert(ed_->path_next_goal_.begin() + 1, 0.5 * (pos + target));
     if (planner_manager_->isPositionSafe(target) &&
         planner_manager_->isPathSafe(ed_->path_next_goal_) &&
+        (!(manual_path_exploration_style_ && !exit_motion) ||
+         planner_manager_->isFappPathSafe(ed_->path_next_goal_)) &&
         planner_manager_->planExploreTraj(ed_->path_next_goal_, vel, acc, 0.0) &&
         planner_manager_->isTrajectorySafe()) {
       if (trajectory_within_limit()) {

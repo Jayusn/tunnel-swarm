@@ -73,6 +73,179 @@ class TurnEscapeTest {
     manager.task_search_manager_->initialize(nh);
   }
 public:
+  static void runManualSuspended(const std::string& scenario) {
+    ros::NodeHandle nh("~manual_suspended_" + scenario);
+    const bool disabled = scenario == "disabled";
+    const bool stale = scenario == "stale";
+    const bool mapped = scenario == "mapped";
+    const bool mapped_ball = scenario == "mapped_ball" || scenario == "mapped_ball_left";
+    const bool left_blocked = scenario == "right" || scenario == "blocked";
+    const bool right_blocked = scenario == "left" || scenario == "blocked" ||
+        scenario == "mapped_ball_left";
+    const bool floor_blocked = left_blocked || right_blocked;
+    const bool unknown_below = scenario == "unknown_below";
+    nh.setParam("manager/use_geometric_path", true);
+    nh.setParam("astar/resolution_astar", 0.10);
+    nh.setParam("astar/allocate_num", 100000);
+    nh.setParam("astar/lambda_heu", 1.0);
+    nh.setParam("astar/max_search_time", 1.0);
+    nh.setParam("mission/task_search/min_height", 0.25);
+    nh.setParam("mission/task_search/max_height", 1.90);
+    nh.setParam("fapp/enabled", !disabled && !mapped);
+    nh.setParam("fapp/planner_priority", true);
+    const std::string topic = nh.resolveName("states");
+    nh.setParam("fapp/topic", topic);
+    FastExplorationManager manager;
+    initialize(nh, manager, true);
+    manager.manual_path_enabled_ = true;
+    manager.manual_path_use_astar_ = true;
+    manager.manual_path_exploration_style_ = true;
+    manager.manual_path_max_segment_length_ = 1.2;
+    manager.ep_->mission_use_forward_fallback_ = true;
+    manager.task_search_manager_->setMap(manager.sdf_map_);
+    manager.task_search_manager_->exit_detection_enabled_ = false;
+    manager.edt_environment_ = manager.planner_manager_->edt_environment_;
+    ViewNode::caster_.reset(new RayCaster);
+    Vector3d origin, size;
+    manager.sdf_map_->getRegion(origin, size);
+    ViewNode::caster_->setParams(manager.sdf_map_->getResolution(), origin);
+    const Vector3d start(mapped || mapped_ball ? 0.025 : -0.675, 0.025, 1.025);
+    const Vector3d goal(mapped_ball ? 1.650 : 1.425, 0.025, 1.025), zero = Vector3d::Zero();
+    manager.manual_path_.points = {goal};
+    auto& map = *manager.sdf_map_;
+    for (double y = -1.725; y < 1.75; y += 0.05)
+      for (double z = unknown_below ? 0.875 : 0.225; z < 1.65; z += 0.05) {
+        pcl::PointCloud<pcl::PointXYZ> cloud;
+        cloud.push_back(pcl::PointXYZ(1.9, y, z));
+        map.inputPointCloud(cloud, 1, Vector3d(-1.9, y, z));
+        cloud.front().x = -1.9;
+        map.inputPointCloud(cloud, 1, Vector3d(1.9, y, z));
+      }
+    if (floor_blocked || mapped)
+      for (double x = mapped ? 0.375 : (mapped_ball ? 0.525 : -0.10);
+           x <= (mapped ? 0.525 : (mapped_ball ? 0.725 : 0.15)); x += 0.025)
+        for (double y = -0.125; y <= 0.175; y += 0.025)
+          for (double z = mapped ? 0.825 : 0.225;
+               z <= (mapped ? 1.275 : 0.725); z += 0.025)
+            map.setOccupied(Vector3d(x, y, z));
+    if (mapped || mapped_ball) {
+      // 悬挂分类读取原始占据证据；setOccupied 只修改膨胀层，需真实点云命中。
+      pcl::PointCloud<pcl::PointXYZ> hanging;
+      for (double x = mapped ? 0.375 : 0.525; x <= (mapped ? 0.525 : 0.725); x += 0.025)
+        for (double y = -0.125; y <= 0.175; y += 0.025)
+          for (double z = mapped ? 0.825 : 0.925; z <= (mapped ? 1.275 : 1.125); z += 0.025)
+            hanging.push_back(pcl::PointXYZ(x, y, z));
+      for (int repeat = 0; repeat < 8; ++repeat)
+        map.inputPointCloud(hanging, hanging.size(), start);
+    }
+    for (double sign : {-1.0, 1.0}) {
+      if ((sign > 0.0 && !left_blocked) || (sign < 0.0 && !right_blocked)) continue;
+      for (double x = -1.0; x <= 1.0; x += 0.05)
+        for (double y = 0.275; y <= 1.025; y += 0.05)
+          for (double z = 0.225; z <= 1.625; z += 0.05)
+            map.setOccupied(Vector3d(x, 0.025 + sign * y, z));
+    }
+    map.updateESDF3d();
+    auto pub = nh.advertise<obj_state_msgs::ObjectsStates>(topic, 1, true);
+    if (!disabled && !mapped) {
+      for (int i = 0; i < 50 && pub.getNumSubscribers() == 0; ++i) {
+        ros::spinOnce();
+        ros::WallDuration(0.01).sleep();
+      }
+      ASSERT_GT(pub.getNumSubscribers(), 0u);
+    }
+    obj_state_msgs::ObjectsStates message;
+    message.header.frame_id = "UAV0/camera_init";
+    obj_state_msgs::State ball;
+    ball.position.x = mapped_ball ? 0.625 : 0.025;
+    ball.position.y = 0.025;
+    ball.position.z = scenario == "moving" ? 1.125 : 1.025;
+    ball.velocity.z = scenario == "moving" ? -0.10 : 0.0;
+    ball.size.x = ball.size.y = ball.size.z = 0.20;
+    message.states.push_back(ball);
+    const auto send = [&]() {
+      message.header.stamp = ros::Time::now() - ros::Duration(stale ? 2.0 : 0.0);
+      pub.publish(message);
+      for (int i = 0; i < 3; ++i) {
+        ros::WallDuration(0.01).sleep();
+        ros::spinOnce();
+      }
+    };
+    send();
+    Vector3d lower, upper;
+    EXPECT_EQ(!disabled && !stale && !mapped,
+              manager.planner_manager_->fappBlockingBounds({start, goal}, lower, upper));
+    const int result = manager.planExploreMotion(start, zero, zero, zero);
+    if (scenario == "blocked") {
+      EXPECT_EQ(FAIL, result);
+      EXPECT_EQ(0u, manager.manual_path_.next);
+      EXPECT_FALSE(manager.suspended_underpass_active_);
+      return;
+    }
+    ASSERT_EQ(SUCCEED, result);
+    const bool expected_underpass = !floor_blocked && !unknown_below && !disabled && !stale;
+    EXPECT_EQ(expected_underpass, manager.currentPlanIsVerticalDetour());
+    EXPECT_EQ(expected_underpass, manager.suspended_underpass_active_);
+    if (disabled || stale) {
+      EXPECT_NEAR(start.z(), manager.ed_->next_goal_.z(), 1e-6);
+      EXPECT_FALSE(manager.recovery_side_latched_);
+      return;
+    }
+    if (expected_underpass) {
+      EXPECT_NEAR(0.0, (manager.ed_->next_goal_ - start).head<2>().norm(), 1e-9);
+      EXPECT_LT(manager.ed_->next_goal_.z(), start.z() - 0.25);
+      if (!mapped) { EXPECT_NEAR(0.640, manager.low_probe_height_, 0.001); }
+      EXPECT_DOUBLE_EQ(start.z(), manager.low_probe_return_height_);
+      EXPECT_FALSE(manager.recovery_side_latched_);
+    } else {
+      EXPECT_TRUE(manager.recovery_side_latched_);
+      EXPECT_NEAR(start.z(), manager.ed_->next_goal_.z(), 1e-6);
+      if (scenario == "left") { EXPECT_GT(manager.ed_->next_goal_.y(), start.y() + 0.20); }
+      if (scenario == "right") { EXPECT_LT(manager.ed_->next_goal_.y(), start.y() - 0.20); }
+    }
+    Vector3d current = start;
+    bool saw_low_advance = false, saw_ascent = false, saw_side_pass = false;
+    int planned = result;
+    for (int step = 0; step < 75 && !manager.manual_path_.finished(); ++step) {
+      if (planned == SUCCEED) {
+        auto& trajectory = manager.planner_manager_->local_data_.position_traj_;
+        const auto control = trajectory.getControlPoint();
+        double length = 0.0;
+        for (int i = 1; i < control.rows(); ++i)
+          length += (control.row(i) - control.row(i - 1)).norm();
+        EXPECT_LE(length, 1.2 + 1e-6);
+        std::vector<Vector3d> flown_path;
+        for (int i = 0; i <= 50; ++i)
+          flown_path.push_back(trajectory.evaluateDeBoorT(trajectory.getTimeSum() * i / 50.0));
+        EXPECT_TRUE(manager.planner_manager_->isFappPathSafe(flown_path));
+        const Vector3d end = trajectory.evaluateDeBoorT(trajectory.getTimeSum());
+        if (expected_underpass && end.x() > start.x() + 0.10 &&
+            end.z() < start.z() - 0.20)
+          saw_low_advance = true;
+        if (saw_low_advance && manager.currentPlanIsVerticalDetour() && end.z() > current.z()) {
+          EXPECT_GE(current.x(), manager.low_probe_exit_progress_ - 1e-6);
+          EXPECT_NEAR(0.0, (end - current).head<2>().norm(), 1e-6);
+          saw_ascent = true;
+        }
+        if (!expected_underpass && end.x() > 0.40 && std::fabs(end.y() - start.y()) > 0.40)
+          saw_side_pass = true;
+        current = end;
+        manager.updateMissionOdometry(current, 0.0);
+      }
+      send();
+      planned = manager.planExploreMotion(current, zero, zero, zero);
+    }
+    EXPECT_EQ(1u, manager.manual_path_.next);
+    if (expected_underpass) {
+      EXPECT_TRUE(saw_low_advance);
+      EXPECT_TRUE(saw_ascent);
+      EXPECT_FALSE(manager.suspended_underpass_active_);
+    } else {
+      EXPECT_TRUE(saw_side_pass);
+      EXPECT_LT(std::fabs(current.y() - goal.y()), manager.manual_path_arrive_distance_);
+    }
+  }
+
   static void runPassageCentre() {
     ros::NodeHandle nh("~passage_centre");
     FastExplorationManager manager;
@@ -1747,6 +1920,40 @@ TEST(ManualWaypoints, LimitsCurvedDetourSegmentsWithoutSkippingWaypoint) {
 
 TEST(ManualWaypoints, DisconnectedRemoteGoalAllowsOnlyKnownFreeLocalProgress) {
   fast_planner::TurnEscapeTest::runManualAstar("disconnected_short");
+}
+
+TEST(ManualSuspended, FappBallUsesDescentLowStepsAndAscentBeforeSides) {
+  fast_planner::TurnEscapeTest::runManualSuspended("below");
+}
+TEST(ManualSuspended, DownwardPredictionLowersUnderpassHeight) {
+  fast_planner::TurnEscapeTest::runManualSuspended("moving");
+}
+TEST(ManualSuspended, StaticHangingObstacleUsesSameStages) {
+  fast_planner::TurnEscapeTest::runManualSuspended("mapped");
+}
+TEST(ManualSuspended, BallInBothMapAndFappStillPrefersUnderpass) {
+  fast_planner::TurnEscapeTest::runManualSuspended("mapped_ball");
+}
+TEST(ManualSuspended, BallInBothMapAndFappUsesSideWhenBelowBlocked) {
+  fast_planner::TurnEscapeTest::runManualSuspended("mapped_ball_left");
+}
+TEST(ManualSuspended, BlockedLowerPassageUsesLeftThenReturns) {
+  fast_planner::TurnEscapeTest::runManualSuspended("left");
+}
+TEST(ManualSuspended, BlockedLowerPassageUsesRightThenReturns) {
+  fast_planner::TurnEscapeTest::runManualSuspended("right");
+}
+TEST(ManualSuspended, UnknownBelowUsesSideInsteadOfDescending) {
+  fast_planner::TurnEscapeTest::runManualSuspended("unknown_below");
+}
+TEST(ManualSuspended, NoLowerOrSidePassageKeepsWaypoint) {
+  fast_planner::TurnEscapeTest::runManualSuspended("blocked");
+}
+TEST(ManualSuspended, DisabledFappDoesNotTriggerBallAvoidance) {
+  fast_planner::TurnEscapeTest::runManualSuspended("disabled");
+}
+TEST(ManualSuspended, StaleFappDoesNotTriggerBallAvoidance) {
+  fast_planner::TurnEscapeTest::runManualSuspended("stale");
 }
 
 TEST(ManualWaypoints, ExplorationBypassMovesAsidePassesThenReturns) {
