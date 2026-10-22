@@ -9,19 +9,18 @@
   <!-- 跟随器只在后机执行出口及后续航段时发布，NMPC锁存到精降结束。 -->
   <arg name="locked_yaw_topic" default="/UAV1/planning/yaw"/>
   <!-- CAV1 单机集成入口：传感器/MAVROS 由 start_autotrans_quad_wind_lidar.sh 启动。 -->
-  <!-- NMPC位置和XY速度来自FAST-LIO；Z速度单独取PX4融合里程计并转到camera_init世界系。 -->
+  <!-- NMPC仅位置来自FAST-LIO；三轴速度、姿态和IMU输入改用PX4。 -->
   <arg name="odom_topic" default="/UAV1/fast_lio/Odom_high_freq"/>
-  <!-- Diff-Planner 与 NMPC 平移状态统一使用 FAST-LIO 高频预测里程计。 -->
+  <!-- Diff-Planner保持FAST-LIO输入，NMPC仅取其中的位置。 -->
   <arg name="planner_odom_topic" default="/UAV1/fast_lio/Odom_high_freq"/>
   <arg name="cloud_topic" default="/UAV1/fast_lio/cloud_registered"/>
   <arg name="trajectory_topic" default="/drone_1_planning/autotrans_trajectory"/>
   <arg name="safety_hold_topic" default="/UAV1/planning/safety_hold"/>
   <arg name="frame_id" default="UAV1/camera_init"/>
-  <!-- MID360 IMU 已旋转到 UAV1/body，且加速度已由 g 换算为包含重力的 m/s^2。 -->
-  <arg name="imu_topic" default="/UAV1/livox/imu_mps2"/>
-  <!-- NMPC、推力模型与外力估计统一使用 FAST-LIO 高频姿态，与位置、速度和轨迹保持同一世界系。 -->
-  <arg name="force_attitude_odom_topic" default="$(arg odom_topic)"/>
-  <arg name="vertical_velocity_odom_topic" default="/UAV1/mavros/local_position/odom"/>
+  <!-- PX4 IMU为base_link机体系、加速度单位m/s^2（含重力比力），角速度单位rad/s。 -->
+  <arg name="imu_topic" default="/UAV1/mavros/imu/data_raw"/>
+  <!-- NMPC、推力模型与外力估计使用PX4姿态；机体系速度由该姿态转换到local世界系。 -->
+  <arg name="force_attitude_odom_topic" default="/UAV1/mavros/local_position/odom"/>
   <arg name="local_pose_topic" default="/UAV1/mavros/local_position/pose"/>
   <arg name="position_setpoint_topic" default="/UAV1/mavros/setpoint_raw/local"/>
   <arg name="state_topic" default="/UAV1/mavros/state"/>
@@ -68,7 +67,7 @@
 
   <!-- 共用UAV0 ROS Master时必须隔离控制器和logger节点名及私有诊断话题。 -->
   <group ns="UAV1">
-  <!-- 位置、XY速度和原有姿态保持FAST-LIO来源；仅控制Vz改取PX4。 -->
+  <!-- 仅位置取FAST-LIO；速度、姿态、IMU取PX4，沿用现有视觉世界系约定。 -->
   <include if="$(arg enable_controller)" file="$(find payload_mpc_controller)/launch/quad_wind_mpc_controller.launch">
     <arg name="tracking_replan_enabled" value="$(arg tracking_replan_enabled)"/>
     <arg name="tracking_replan_error" value="$(arg tracking_replan_error)"/>
@@ -88,7 +87,6 @@
     <arg name="safety_hold_topic" value="$(arg safety_hold_topic)"/>
     <arg name="imu_topic" value="$(arg imu_topic)"/>
     <arg name="force_attitude_odom_topic" value="$(arg force_attitude_odom_topic)"/>
-    <arg name="vertical_velocity_odom_topic" value="$(arg vertical_velocity_odom_topic)"/>
     <arg name="local_pose_topic" value="$(arg local_pose_topic)"/>
     <arg name="position_setpoint_topic" value="$(arg position_setpoint_topic)"/>
     <arg name="state_topic" value="$(arg state_topic)"/>

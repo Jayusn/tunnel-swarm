@@ -14,15 +14,17 @@
   <arg name="landing_state_topic" default="/landing/state"/>
   <arg name="rc_land_active_topic" default="/landing/rc_land_active"/>
 
-  <!-- NMPC位置和XY速度来自odom_topic；姿态保持force_attitude_odom_topic来源；Vz单独取PX4机体系速度并旋转到odom世界系。 -->
+  <!-- NMPC仅位置来自odom_topic；姿态和三轴速度来自PX4，速度用PX4姿态转为local世界系。 -->
   <arg name="odom_topic" default="/Odometry"/>
-  <!-- 通用入口默认共用里程计；实机入口可将该参数覆盖为 MAVROS 融合里程计。 -->
-  <arg name="force_attitude_odom_topic" default="$(arg odom_topic)"/>
-  <arg name="vertical_velocity_odom_topic" default="/mavros/local_position/odom"/>
+  <!-- 位置/轨迹与PX4 local沿用现有外部视觉世界系；不使用LIO姿态旋转PX4速度。 -->
+  <arg name="force_attitude_odom_topic" default="/mavros/local_position/odom"/>
   <!-- PX4 原生位置环的反馈与恢复锁点必须共用 PX4 local 坐标系。 -->
   <arg name="local_pose_topic" default="/mavros/local_position/pose"/>
   <arg name="position_setpoint_topic" default="/mavros/setpoint_raw/local"/>
-  <arg name="imu_topic" default="/mavros/imu/data"/>
+  <arg name="imu_topic" default="/mavros/imu/data_raw"/>
+  <!-- PX4 IMU约50Hz；同步插值间隔覆盖约30Hz的PX4姿态采样。 -->
+  <arg name="imu_sample_freq" default="50.0"/>
+  <arg name="force_sync_max_interp_gap" default="0.05"/>
   <!-- MAVROS topics and services are supplied by the vehicle integration launch. -->
   <arg name="state_topic" default="/mavros/state"/>
   <arg name="extended_state_topic" default="/mavros/extended_state"/>
@@ -70,6 +72,9 @@
   <node pkg="payload_mpc_controller" type="mpc_controller_node" name="mpc_controller_node" output="screen">
     <rosparam command="load" file="$(find payload_mpc_controller)/config/mpc.yaml"/>
     <rosparam command="load" file="$(find payload_mpc_controller)/config/model.yaml"/>
+    <param name="filter/sample_freq_quad_acc" value="$(arg imu_sample_freq)"/>
+    <param name="filter/sample_freq_quad_omg" value="$(arg imu_sample_freq)"/>
+    <param name="force_estimator/force_sync_max_interp_gap" value="$(arg force_sync_max_interp_gap)"/>
     <param name="tracking_replan/enabled" value="$(arg tracking_replan_enabled)"/>
     <param name="tracking_replan/error" value="$(arg tracking_replan_error)"/>
     <param name="tracking_replan/stop_error" value="$(arg tracking_stop_error)"/>
@@ -84,11 +89,10 @@
     <remap from="~landing_target" to="$(arg landing_target_topic)"/>
     <remap from="~landing_state" to="$(arg landing_state_topic)"/>
     <remap from="~rc_land_active" to="$(arg rc_land_active_topic)"/>
-    <!-- 定位世界系位置和XY速度。 -->
+    <!-- 仅取定位世界系位置。 -->
     <remap from="~odom" to="$(arg odom_topic)"/>
-    <!-- 保持控制和外力估计的原有姿态来源；PX4速度只用于控制Vz。 -->
+    <!-- PX4姿态和三轴速度，控制与外力估计共用。 -->
     <remap from="~force_attitude_odom" to="$(arg force_attitude_odom_topic)"/>
-    <remap from="~vertical_velocity_odom" to="$(arg vertical_velocity_odom_topic)"/>
     <remap from="~mavros_local_pose" to="$(arg local_pose_topic)"/>
     <remap from="~recovery_position_setpoint" to="$(arg position_setpoint_topic)"/>
     <!-- Body-frame acceleration and angular velocity from MAVROS IMU. -->
@@ -144,7 +148,6 @@
       - "$(arg odom_topic)"
       - "$(arg planner_odom_topic)"
       - "$(arg force_attitude_odom_topic)"
-      - "$(arg vertical_velocity_odom_topic)"
       - "/UAV1/mavros/local_position/odom"
       - "/UAV1/mavros/imu/data_raw"
       - "$(arg imu_topic)"

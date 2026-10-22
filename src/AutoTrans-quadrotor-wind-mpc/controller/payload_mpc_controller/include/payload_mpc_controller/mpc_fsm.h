@@ -38,10 +38,8 @@ namespace PayloadMPC
 		State_Data_t state_data;
 		ExtendedState_Data_t extended_state_data;
 		Odom_Data_t odom_data;
-		// NMPC、推力模型和外力估计共用该姿态，保持原有来源。
+		// PX4融合姿态及世界系三轴速度；NMPC、模式判断、推力模型和外力估计共用。
 		Odom_Data_t force_attitude_odom_data;
-		// PX4融合里程计的机体系速度，仅用于转换后的控制Vz。
-		Odom_Data_t vertical_velocity_odom_data;
 		Imu_Data_t imu_data;
 		Command_Data_t cmd_data;
 		Battery_Data_t bat_data;
@@ -105,7 +103,6 @@ namespace PayloadMPC
 		void addNewForceObseverState();
 		void odomCallback(const nav_msgs::Odometry::ConstPtr &msg);
 		void forceAttitudeOdomCallback(const nav_msgs::Odometry::ConstPtr &msg);
-		void verticalVelocityOdomCallback(const nav_msgs::Odometry::ConstPtr &msg);
 		void imuCallback(const sensor_msgs::Imu::ConstPtr &msg);
 		void rpmCallback(const mavros_msgs::ESCStatus::ConstPtr &msg);
 		void mavrosLocalPoseCallback(const geometry_msgs::PoseStamped::ConstPtr &msg);
@@ -113,7 +110,7 @@ namespace PayloadMPC
 
 	private:
         friend class ForceEstimatorTestAccess;
-        friend class VerticalVelocityInputTestAccess;
+        friend class Px4StateInputTestAccess;
         void landingTargetCallback(const mavros_msgs::PositionTarget::ConstPtr &msg);
         void landingStateCallback(const std_msgs::String::ConstPtr &msg);
         void processPrecisionLanding(const ros::Time &now);
@@ -254,8 +251,7 @@ namespace PayloadMPC
 			ThrustModelGateReason::DISABLED_BY_PARAM};
 
 		void setEstimateState(const Odom_Data_t &translation_odom,
-						  const Odom_Data_t &attitude_odom,
-						  const Odom_Data_t &vertical_velocity_odom);
+						  const Odom_Data_t &attitude_odom);
 		void setForceEstimation();
 		void clearForceObserverState();
 		void recordForceSyncInputResult(ForceObserverInputResult result, const char *source);

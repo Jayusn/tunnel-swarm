@@ -50,19 +50,11 @@ int main(int argc, char **argv)
                                          &fsm,
                                          ros::TransportHints().tcpNoDelay());
 
-    // 保持原有控制姿态和外力估计姿态来源，不与新的PX4垂直速度输入绑定。
+    // PX4融合里程计同时提供姿态和三轴速度；回调将机体系速度转为世界系。
     ros::Subscriber force_attitude_odom_sub =
         nh.subscribe<nav_msgs::Odometry>("force_attitude_odom",
                                          100,
                                          &PayloadMPC::MPCFSM::forceAttitudeOdomCallback,
-                                         &fsm,
-                                         ros::TransportHints().tcpNoDelay());
-
-    // PX4 local odom的twist为机体系速度；FSM转换到LIO世界系后仅使用Vz。
-    ros::Subscriber vertical_velocity_odom_sub =
-        nh.subscribe<nav_msgs::Odometry>("vertical_velocity_odom",
-                                         100,
-                                         &PayloadMPC::MPCFSM::verticalVelocityOdomCallback,
                                          &fsm,
                                          ros::TransportHints().tcpNoDelay());
 
