@@ -3,15 +3,16 @@
   <!-- 两个独立开关：入口完成后才开始航点；出口最近点完成后接现有搜板降落。 -->
   <arg name="enable_entry_recognition" default="true"/>
   <arg name="enable_exit_recognition" default="true"/>
+  <!-- 常用开关可直接改成 true/false；动态避障依赖上面的FAPP检测也开启。 -->
+  <arg name="enable_fapp_detection" default="true"/>
+  <arg name="enable_fapp_dynamic_avoidance" default="true"/>
+  <!-- true保留动态障碍软代价、优先生成轨迹；false启用动态碰撞硬拒绝。 -->
+  <arg name="fapp_planner_priority" default="true"/>
 
   <arg name="waypoints_file" default="$(find diff_planner)/launch/exp/fuel_waypoints.yaml"/>
   <arg name="entry_complete_topic" default="/UAV0/fuel_waypoints/entry_complete"/>
   <arg name="enable_rviz" default="true"/>
-  <!-- 直接启动也使用前机已同步的FAPP运动证据检测与动态避障。 -->
-  <arg name="enable_fapp_detection" default="true"/>
   <arg name="dynamic_mode" default="swing-only"/>
-  <arg name="enable_fapp_dynamic_avoidance" default="true"/>
-  <arg name="fapp_planner_priority" default="true"/>
   <arg name="fapp_object_motion_evidence_enabled" default="true"/>
   <arg name="fapp_object_motion_local_bidirectional_enabled" default="false"/>
   <arg name="fapp_object_candidate_split_enabled" default="false"/>
