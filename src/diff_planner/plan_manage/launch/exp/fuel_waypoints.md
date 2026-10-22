@@ -128,6 +128,35 @@ roslaunch diff_planner run_exp_single_fuel_waypoints.launch \
   waypoints_file:=/绝对路径/我的航点.yaml fuel_max_vel:=0.4 fuel_max_acc:=0.5
 ```
 
+## 在 RViz 查看 FAPP 检测
+
+航点入口加载同目录的 `fuel_waypoints.rviz`，默认展开并勾选 `FAPP_Dynamic`：
+
+| 显示项 | 话题 | 画面含义 |
+| --- | --- | --- |
+| `dynamic_points` | `/UAV0/fapp/dynamic_cloud` | 红色动态目标点云 |
+| `dynamic_bboxes` | `/UAV0/fapp/dynamic_object_markers` | 橙色目标包围框 |
+| `dynamic_velocity` | `/UAV0/fapp/dynamic_track_markers` | 绿色速度方向箭头，长度固定，不代表预测轨迹或速度大小 |
+
+Fixed Frame 保持 `world`，launch 提供到 `UAV0/camera_init` 的变换。
+`enable_fapp_detection=true` 即可观察检测；显示不依赖 `enable_fapp_dynamic_avoidance`。
+本配置不添加预测轨迹显示，因为当前 FAPP 没有发布相应的 Marker 话题。
+
+已经打开的 RViz 可用 **File → Open Config** 加载此文件，无需重启规划器。
+不要为切换配置直接关闭 RViz 窗口：当前 launch 将它设为 `required=true`，退出会连带停止该 launch。
+
+确认目标前，输出可能是空点云、空状态列表和清除标记；话题有频率不等于检测到目标。
+摆球暂时接近静止时，速度箭头也可能不可见。需要排查时在已加载工作区环境的终端运行：
+
+```bash
+rosnode info /UAV0/fapp/mapping_node
+rostopic hz /UAV0/fapp/states
+rostopic echo -n 1 /UAV0/fapp/states
+```
+
+节点存在说明已启动，状态话题持续发布说明检测链路有输出；`states` 非空才表示当帧发布了动态目标。
+若三项显示均正常订阅但 `states: []`，应继续检查输入点云、里程计和目标确认，而不是只调整 RViz。
+
 ## 规划链路
 
 - 航点段和出口接近段仍使用FUEL `algorithm.xml`、地图、A*、B样条和既有碰撞检查。

@@ -195,7 +195,8 @@
     <param name="tf45" value="false"/>
     <param name="drone_id" value="$(arg drone_id)"/>
   </node>
-  <node if="$(arg enable_rviz)" name="rviz" pkg="rviz" type="rviz" args="-d $(find plan_manage)/config/traj.rviz" required="true">
+  <!-- 航点入口使用独立FAPP显示配置：动态点云、包围框和速度方向。 -->
+  <node if="$(arg enable_rviz)" name="rviz" pkg="rviz" type="rviz" args="-d $(find diff_planner)/launch/exp/fuel_waypoints.rviz" required="true">
     <remap from="/move_base_simple/goal" to="$(arg rviz_goal_topic)"/>
   </node>
   <node if="$(arg enable_planner_rosbag)" pkg="rosbag" type="record"
