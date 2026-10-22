@@ -188,6 +188,11 @@ void MappingRos::init() {
   nh.param("detection/tracked_motion_novel_fraction", mp_->tracked_motion_novel_fraction,
            mp_->min_motion_novel_fraction);
   nh.param("detection/max_above_uav", mp_->max_above_uav, 1.5);
+  nh.param("detection/min_z", mp_->detection_min_z, -std::numeric_limits<double>::max());
+  nh.param("detection/max_z", mp_->detection_max_z, std::numeric_limits<double>::max());
+  if (!std::isfinite(mp_->detection_min_z) || !std::isfinite(mp_->detection_max_z) ||
+      mp_->detection_min_z > mp_->detection_max_z)
+    throw std::runtime_error("detection/min_z and max_z must be finite and ordered");
   nh.param("association/geometry_enabled", mp_->geometry_association_enabled, false);
   nh.param("association/competition_enabled", mp_->competition_association_enabled, false);
   nh.param("association/point_source_competition_enabled", mp_->point_source_competition_enabled, false);
@@ -2284,6 +2289,17 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
           << tracker->id << " " << published_state.position.transpose() << " "
           << published_state.size.transpose() << " " << published_indices.indices.size());
     }
+    const Eigen::Vector3d output_position = mp_->publish_measured_body_position_enabled ?
+        published_state.position : tracker->pos();
+    // Filter whole detections in the registered frame, after measuring the
+    // body. Keep all raw scene returns available to the motion/depth checks.
+    if (published_state.position.z() < mp_->detection_min_z ||
+        published_state.position.z() > mp_->detection_max_z ||
+        output_position.z() < mp_->detection_min_z || output_position.z() > mp_->detection_max_z) {
+      ROS_DEBUG_STREAM("FAPP_REJECT " << cloud_stamp_.toNSec() << " "
+          << published_state.position.transpose() << " output_height");
+      continue;
+    }
     // Preserve the detector's qualified-candidate feedback even before swing
     // publication, otherwise published_startup_source prevents confirmation.
     tracker->last_published_stamp = cloud_stamp_;
@@ -2340,8 +2356,6 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
 
     obj_state_msgs::State state;
     state.header = states.header;
-    const Eigen::Vector3d output_position = mp_->publish_measured_body_position_enabled ?
-        published_state.position : tracker->pos();
     state.position.x = output_position.x();
     state.position.y = output_position.y();
     state.position.z = output_position.z();

@@ -15,6 +15,7 @@ def main():
     parser.add_argument('--local-bidirectional', action='store_true')
     parser.add_argument('--spatial-continuation', action='store_true')
     parser.add_argument('--motion-span', action='store_true')
+    parser.add_argument('--height-range', action='store_true')
     args = parser.parse_args()
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))
@@ -42,6 +43,9 @@ def main():
             rospy.init_node('swing_output_smoke', anonymous=True)
             rospy.set_param('/UAV0/fapp/mapping_node/detection/object_motion_evidence_enabled', True)
             rospy.set_param('/UAV0/fapp/mapping_node/detection/object_motion_span_enabled', args.motion_span)
+            if args.height_range:
+                rospy.set_param('/UAV0/fapp/mapping_node/detection/min_z', .3)
+                rospy.set_param('/UAV0/fapp/mapping_node/detection/max_z', 1.2)
             rospy.set_param('/UAV0/fapp/mapping_node/detection/object_motion_local_bidirectional_enabled', args.local_bidirectional)
             rospy.set_param('/UAV0/fapp/mapping_node/detection/motion_confirmation_duration', .5)
             rospy.set_param('/UAV0/fapp/mapping_node/detection/spatial_reacquisition_enabled', args.spatial_continuation)
@@ -67,7 +71,7 @@ def main():
                 time.sleep(.1)
             assert cloud.get_num_connections() and odom.get_num_connections(), 'Missing input connections'
             frame_stamps = []
-            def frame(x=None, second=None, bootstrap=False, rotated=False, seventh=False, spacing=.1):
+            def frame(x=None, second=None, bootstrap=False, rotated=False, seventh=False, spacing=.1, height=1.):
                 header = Header(stamp=rospy.Time.now(), frame_id='UAV0/camera_init')
                 pose = Odometry(header=header)
                 pose.pose.pose.orientation.w = 1
@@ -80,9 +84,9 @@ def main():
                                 dx, dy, dz = ((2*dx-dy+2*dz)/3,
                                               (2*dx+2*dy-dz)/3,
                                               (-dx+2*dy+2*dz)/3)
-                            points.append((cx+dx, cy+dy, 1+dz))
+                            points.append((cx+dx, cy+dy, height+dz))
                         if seventh:
-                            points.append((cx, cy, 1))
+                            points.append((cx, cy, height))
                 odom.publish(pose)
                 cloud.publish(point_cloud2.create_cloud_xyz32(header, points))
                 if bootstrap:
@@ -102,6 +106,8 @@ def main():
                 assert all(key in values for values in received.values()), 'Missing output'
                 frame_stamps.append(header.stamp.to_sec())
                 rows = received['states'][key].states
+                if args.height_range:
+                    assert all(.3 <= r.position.z <= 1.2 for r in rows), 'Output outside configured height range'
                 for name in ('dynamic_object_markers', 'dynamic_track_markers'):
                     assert sum(m.action == m.ADD for m in received[name][key].markers) == len(rows)
                 assert bool(received['dynamic_cloud'][key].width) == bool(rows)
@@ -150,6 +156,16 @@ def main():
             first = next((i for i,n in enumerate(counts) if n), None)
             latency = None if first is None else frame_stamps[-6+first]-frame_stamps[-6]
             print('SPARSE_FIRST_CONFIRM_SECONDS', latency, 'COUNTS', counts, flush=True)
+            if args.height_range:
+                for height in (.2, 1.3, .6):
+                    for _ in range(22):
+                        assert frame() == 0
+                    counts = [frame(2+.06*i, height=height) for i in range(12)]
+                    if .3 <= height <= 1.2:
+                        assert any(counts), 'In-range moving body was suppressed'
+                    else:
+                        assert not any(counts), 'Out-of-range moving body was published'
+                print('PASS configured height range on states, markers and dynamic cloud', flush=True)
             print('PASS linear/multiple targets, reversal, stop, reacquisition, static jitter and four outputs')
         finally:
             import shutil

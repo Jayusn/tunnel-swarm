@@ -93,6 +93,7 @@ struct MapParam {
   double min_motion_novel_fraction;
   double tracked_motion_novel_fraction;
   double max_above_uav;
+  double detection_min_z, detection_max_z;
   bool geometry_association_enabled;
   bool global_assignment_enabled;
   double position_measurement_variance;

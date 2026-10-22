@@ -1,5 +1,7 @@
 <launch>
   <arg name="dynamic_mode" default="swing-only"/>
+  <arg name="detection_min_z" default="0.3"/>
+  <arg name="detection_max_z" default="1.2"/>
   <arg name="object_motion_evidence_enabled" default="true"/>
   <arg name="object_motion_span_enabled" default="true"/>
   <arg name="object_motion_evidence_window" default="0.4"/>
@@ -16,6 +18,8 @@
   <group ns="UAV0/fapp">
     <node pkg="mot_mapping" type="mapping_node" name="mapping_node" output="screen">
       <rosparam command="load" file="$(find mot_mapping)/config/uav1_frame_event_verified.yaml"/>
+      <param name="detection/min_z" value="$(arg detection_min_z)"/>
+      <param name="detection/max_z" value="$(arg detection_max_z)"/>
       <!-- Startup accumulation can include the swinging ball; do not veto it as fixed background. -->
       <param name="background_reference/enabled" value="false"/>
       <!-- Swing and measured-motion confirmation supply their own observation checks. -->
