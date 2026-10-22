@@ -5,6 +5,9 @@
   <arg name="enable_exit_recognition" default="true"/>
   <!-- 常用开关可直接改成 true/false；动态避障依赖上面的FAPP检测也开启。 -->
   <arg name="enable_fapp_detection" default="true"/>
+  <!-- 动态目标中心在定位坐标系中的Z范围，单位m；不是相对机体高度。 -->
+  <arg name="fapp_detection_min_z" default="0.3"/>
+  <arg name="fapp_detection_max_z" default="1.2"/>
   <arg name="enable_fapp_dynamic_avoidance" default="true"/>
   <!-- true保留动态软代价，常规轨迹跳过动态硬拒绝；历史包络用于选路与样条生成；false启用动态碰撞硬检查。
        航点选路仍先检查摆球下方通路；可下穿则前进下降/低位通过/前进回升，否则左右侧绕。 -->
@@ -109,6 +112,8 @@
   <param name="/exploration_node/mission/camera_head_sweep/enabled" value="false" type="bool"/>
   <param name="/exploration_node/mission/camera_obstacle_scan/enabled" value="false" type="bool"/>
   <include if="$(arg enable_fapp_detection)" file="$(find mot_mapping)/launch/uav0_frame_event_verified.launch">
+    <arg name="detection_min_z" value="$(arg fapp_detection_min_z)"/>
+    <arg name="detection_max_z" value="$(arg fapp_detection_max_z)"/>
     <arg name="dynamic_mode" value="$(arg dynamic_mode)"/>
     <arg name="object_motion_evidence_enabled" value="$(arg fapp_object_motion_evidence_enabled)"/>
     <arg name="object_motion_local_bidirectional_enabled" value="$(arg fapp_object_motion_local_bidirectional_enabled)"/>
