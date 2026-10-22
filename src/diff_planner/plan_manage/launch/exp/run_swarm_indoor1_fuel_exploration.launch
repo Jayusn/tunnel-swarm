@@ -1,15 +1,42 @@
 <launch>
-    <arg name="enable_fapp_detection" default="false"/>
+    <!-- 与单机航点入口共用已验证的检测、历史包络及连续穿越策略。 -->
+    <arg name="enable_fapp_detection" default="true"/>
     <arg name="dynamic_mode" default="swing-only"/>
-    <arg name="enable_fapp_dynamic_avoidance" default="false"/>
-    <arg name="fapp_planner_priority" default="false"/>
+    <arg name="enable_fapp_dynamic_avoidance" default="true"/>
+    <arg name="fapp_planner_priority" default="true"/>
+    <!-- 定位坐标系中的动态目标中心Z，单位m。 -->
+    <arg name="fapp_detection_min_z" default="0.3"/>
+    <arg name="fapp_detection_max_z" default="1.2"/>
+    <arg name="fapp_memory_enabled" default="true"/>
+    <arg name="fapp_history_duration" default="10.0"/>
+    <arg name="fapp_observation_retention" default="0.8"/>
+    <arg name="fapp_association_distance" default="0.6"/>
+    <arg name="fapp_object_motion_evidence_enabled" default="true"/>
+    <arg name="fapp_object_motion_local_bidirectional_enabled" default="false"/>
+    <arg name="fapp_object_candidate_split_enabled" default="false"/>
+    <arg name="fapp_object_candidate_isolation_enabled" default="false"/>
     <include if="$(arg enable_fapp_detection)" file="$(find mot_mapping)/launch/uav0_frame_event_verified.launch">
         <arg name="dynamic_mode" value="$(arg dynamic_mode)"/>
+        <arg name="detection_min_z" value="$(arg fapp_detection_min_z)"/>
+        <arg name="detection_max_z" value="$(arg fapp_detection_max_z)"/>
+        <arg name="object_motion_evidence_enabled" value="$(arg fapp_object_motion_evidence_enabled)"/>
+        <arg name="object_motion_local_bidirectional_enabled" value="$(arg fapp_object_motion_local_bidirectional_enabled)"/>
+        <arg name="object_candidate_split_enabled" value="$(arg fapp_object_candidate_split_enabled)"/>
+        <arg name="object_candidate_isolation_enabled" value="$(arg fapp_object_candidate_isolation_enabled)"/>
     </include>
     <param name="/exploration_node/fapp/planner_priority" value="$(arg fapp_planner_priority)" type="bool"/>
-    <param name="/exploration_node/fapp/enabled" value="$(arg enable_fapp_dynamic_avoidance)"/>
+    <param name="/exploration_node/fapp/enabled" value="$(arg enable_fapp_dynamic_avoidance)" type="bool"/>
     <param name="/exploration_node/fapp/topic" value="/UAV0/fapp/states"/>
     <param name="/exploration_node/fapp/frame_id" value="UAV0/camera_init"/>
+    <param name="/exploration_node/fapp/memory_enabled" value="$(arg fapp_memory_enabled)" type="bool"/>
+    <param name="/exploration_node/fapp/history_duration" value="$(arg fapp_history_duration)"/>
+    <param name="/exploration_node/fapp/observation_retention" value="$(arg fapp_observation_retention)"/>
+    <param name="/exploration_node/fapp/association_distance" value="$(arg fapp_association_distance)"/>
+    <param name="/exploration_node/fapp/vehicle_top_height" value="0.05" type="double"/>
+    <param name="/exploration_node/fapp/vehicle_bottom_height" value="0.20" type="double"/>
+    <!-- 自主选点保持原流程；摆球走连续侧下穿/侧绕，不能原地下降或因旧包络封死前进。 -->
+    <param name="/exploration_node/fapp/exploration_crossing_enabled" value="true" type="bool"/>
+    <param name="/exploration_node/mission/vertical_detour/underpass/min_height" value="0.15" type="double"/>
 
     <!-- 2026-07-07: 这是给 indoor1 雷达未知环境做验证的混合探索入口，保留当前 /Odometry + /cloud_registered 链路，但上层任务从固定 waypoint 改成 FUEL exploration_manager。 -->
     <!-- 2026-07-07: 该 launch 依赖 /home/togan/老张/zyc_fuel_ws 已经 source 且其中的 exploration_manager、plan_manage、waypoint_generator 已编译可用。 -->
@@ -830,6 +857,9 @@
                 $(arg planner_rosbag_extra_topics)
                 $(arg odom_topic)
                 $(arg start_trigger_topic)
+                /UAV0/fapp/states
+                /exploration_node/fapp/memory
+                /exploration_node/fapp/memory_status
                 /UAV0/planning/bspline
                 /UAV0/planning/pos_cmd
                 /UAV0/planning/replan
