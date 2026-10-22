@@ -3322,9 +3322,13 @@ bool FastExplorationManager::manualFappObservationMissing(
     manual_fapp_exit_progress_ = std::max(manual_fapp_exit_progress_, exit);
   }
   const bool passed = known && actual_odometry &&
-      pos.dot(manual_fapp_forward_) >= manual_fapp_exit_progress_;
-  const bool missing = !passed &&
-      (!known || age > planner_manager_->fappObservationRetention());
+      pos.dot(manual_fapp_forward_) >= manual_fapp_exit_progress_ &&
+      (!manual_fapp_curve_active_ ||
+       (pos.dot(manual_fapp_forward_) >= manual_fapp_curve_end_ - manual_path_arrive_distance_ &&
+        std::fabs(pos.z() - manual_fapp_curve_origin_.z()) <= vertical_detour_height_tolerance_));
+  // 失去新鲜帧不等于失去历史障碍：保留历史位置与最低点用于选路。
+  // 不再仅因观测超过0.8秒而刹停并无限等待。
+  const bool missing = !passed && !known;
   if (missing) {
     if (manual_fapp_wait_since_.isZero()) manual_fapp_wait_since_ = ros::Time::now();
     ROS_WARN_THROTTLE(1.0, "[manual_fapp] WAIT age=%.2fs underpass=%d phase=%d "
@@ -3351,8 +3355,83 @@ bool FastExplorationManager::manualFappObservationMissing(
         manual_fapp_exit_progress_);
     planner_manager_->watchFappObstacle(nullptr);
     manual_fapp_active_ = false;
+    if (manual_fapp_curve_active_) {
+      manual_fapp_curve_active_ = false;
+      suspended_underpass_active_ = false;
+    }
   }
   return false;
+}
+
+bool FastExplorationManager::buildManualFappUnderpassPath(
+    const Vector3d& pos, const Vector3d& waypoint, std::vector<Vector3d>& path) {
+  Vector3d lower, upper;
+  double age;
+  if (!planner_manager_->watchedFappBounds(lower, upper, age)) return false;
+  Vector3d forward = manual_fapp_forward_;
+  forward.z() = 0.0;
+  if (forward.norm() < 1e-6) return false;
+  forward.normalize();
+  const Vector3d origin = manual_fapp_curve_active_ ? manual_fapp_curve_origin_ : pos;
+  const double begin = origin.dot(forward);
+  const double current = pos.dot(forward);
+  const double center = (0.5 * (lower + upper)).dot(forward);
+  const double extent = (0.5 * (upper - lower)).dot(forward.cwiseAbs());
+  const double near = center - extent - sdf_map_->getResolution();
+  const double far = center + extent + sdf_map_->getResolution();
+  const double low = std::min(origin.z(), lower.z() - underpass_height_tracking_margin_);
+  const double minimum = std::max(0.25, task_search_manager_->clampSearchHeight(-1e3));
+  if (low < minimum || (near - begin < 0.10 && origin.z() > low + 0.02)) return false;
+  // 将高度变化分配在前向距离上。五次平滑插值在接近/离开包络处斜率和曲率为零。
+  const double recovery = std::max(0.50, 2.0 * (origin.z() - low));
+  const double end = std::min(far + recovery, waypoint.dot(forward));
+  if (end <= far + 0.10 || end <= current + 0.03) return false;
+  const auto smooth = [](double u) {
+    u = std::max(0.0, std::min(1.0, u));
+    return u*u*u*(10.0 + u*(-15.0 + 6.0*u));
+  };
+  const Vector3d lateral(-forward.y(), forward.x(), 0.0);
+  const int count = std::max(2, static_cast<int>(std::ceil((end-current)/0.10)));
+  const auto side_path = [&](double side, std::vector<Vector3d>& candidate) {
+    candidate = {pos};
+    for (int i = 1; i <= count; ++i) {
+      const double progress = current + (end-current)*i/count;
+      double dip = 1.0;
+      if (progress < near) dip = smooth((progress-begin)/(near-begin));
+      else if (progress > far) dip = 1.0-smooth((progress-far)/(end-far));
+      // 左下/右下穿越：接近时同时向侧下方移动，通过后平滑回到航线。
+      Vector3d point = origin + (progress-begin)*forward + side*dip*lateral;
+      point.z() = origin.z() + (low-origin.z())*dip;
+      if (!planner_manager_->isKnownFreePosition(point)) return false;
+      candidate.push_back(point);
+    }
+    return planner_manager_->isPathSafe(candidate) && planner_manager_->isFappPathSafe(candidate);
+  };
+  double side = manual_fapp_curve_side_;
+  if (manual_fapp_curve_active_) {
+    if (!side_path(side, path)) return false;
+  } else {
+    // 只尝试左右两个侧下方通路；选定后保持方向，不逐帧反复换边。
+    side = 0.20;
+    if (!side_path(side, path)) {
+      side = -0.20;
+      if (!side_path(side, path)) return false;
+    }
+  }
+  if (!manual_fapp_curve_active_)
+    ROS_WARN("[manual_fapp] continuous underpass from=(%.2f,%.2f,%.2f) "
+             "clearance_z=%.2f low=%.2f near=%.2f far=%.2f side=%.2f age=%.2f",
+        pos.x(), pos.y(), pos.z(), lower.z(), low, near, far, side, age);
+  manual_fapp_curve_active_ = true;
+  manual_fapp_curve_origin_ = origin;
+  manual_fapp_curve_end_ = end;
+  manual_fapp_curve_side_ = side;
+  suspended_underpass_active_ = true;
+  suspended_underpass_blocked_ = false;
+  low_probe_height_ = low;
+  low_probe_return_height_ = origin.z();
+  low_probe_exit_progress_ = far;
+  return true;
 }
 
 int FastExplorationManager::planManualWaypointMotion(
@@ -3407,18 +3486,28 @@ int FastExplorationManager::planManualWaypointMotion(
   const Vector3d waypoint = target;
   bool underpass_motion = false;
   if (manual_path_exploration_style_ && !exit_motion && task_search_manager_) {
-    if (low_probe_phase_ == vertical_detour::LowProbePhase::IDLE &&
-        !recovery_side_latched_)
-      beginSuspendedUnderpass(pos, yaw[0]);
-    bool waiting = false;
-    underpass_motion = handleActiveLowProbe(pos, target, target_yaw, waiting);
-    if (waiting) return FAIL;
-    if (underpass_motion &&
-        (low_probe_phase_ == vertical_detour::LowProbePhase::DESCENDING ||
-         low_probe_phase_ == vertical_detour::LowProbePhase::ASCENDING))
-      return buildStationaryVerticalDetourPlan(pos, yaw) && trajectory_within_limit()
-          ? SUCCEED : FAIL;
-    if (underpass_motion) ed_->path_next_goal_ = {pos, target};
+    if (manual_fapp_active_ && !recovery_side_latched_) {
+      underpass_motion = buildManualFappUnderpassPath(pos, waypoint, ed_->path_next_goal_);
+      if (!underpass_motion) {
+        // 动态下穿不再退回原地竖直下探；沿用已有的侧绕选择。
+        manual_fapp_curve_active_ = false;
+        suspended_underpass_active_ = false;
+        suspended_underpass_blocked_ = true;
+      }
+    } else if (!manual_fapp_active_) {
+      if (low_probe_phase_ == vertical_detour::LowProbePhase::IDLE &&
+          !recovery_side_latched_)
+        beginSuspendedUnderpass(pos, yaw[0]);
+      bool waiting = false;
+      underpass_motion = handleActiveLowProbe(pos, target, target_yaw, waiting);
+      if (waiting) return FAIL;
+      if (underpass_motion &&
+          (low_probe_phase_ == vertical_detour::LowProbePhase::DESCENDING ||
+           low_probe_phase_ == vertical_detour::LowProbePhase::ASCENDING))
+        return buildStationaryVerticalDetourPlan(pos, yaw) && trajectory_within_limit()
+            ? SUCCEED : FAIL;
+      if (underpass_motion) ed_->path_next_goal_ = {pos, target};
+    }
   }
   // 与探索相同：地图确认转弯后先停转，不能等远航点A*成功后才允许转机头。
   if (manual_path_exploration_style_ && !exit_motion && !underpass_motion && task_search_manager_) {
@@ -3515,6 +3604,10 @@ int FastExplorationManager::planManualWaypointMotion(
   for (int attempt = 0; attempt < 3; ++attempt) {
     ed_->path_next_goal_ = manualPathPrefix(full_path, budget);
     if (ed_->path_next_goal_.size() < 2) break;
+    // 曲线按弧长截取时，末点可能离前一点不足毫米，合并以满足样条输入要求。
+    if (ed_->path_next_goal_.size() > 2 &&
+        (ed_->path_next_goal_.back() - ed_->path_next_goal_[ed_->path_next_goal_.size()-2]).norm() < 1e-3)
+      ed_->path_next_goal_.erase(ed_->path_next_goal_.end()-2);
     target = ed_->path_next_goal_.back();
     if (ed_->path_next_goal_.size() == 2)
       ed_->path_next_goal_.insert(ed_->path_next_goal_.begin() + 1, 0.5 * (pos + target));

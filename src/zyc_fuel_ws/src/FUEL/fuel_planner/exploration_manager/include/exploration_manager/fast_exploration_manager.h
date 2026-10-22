@@ -137,6 +137,12 @@ private:
   Vector3d manual_fapp_forward_{Vector3d::UnitX()};
   double manual_fapp_exit_progress_{0.0};
   ros::Time manual_fapp_wait_since_;
+  bool manual_fapp_curve_active_{false};
+  Vector3d manual_fapp_curve_origin_{Vector3d::Zero()};
+  double manual_fapp_curve_end_{0.0};
+  double manual_fapp_curve_side_{0.0};
+  bool buildManualFappUnderpassPath(const Vector3d& pos, const Vector3d& waypoint,
+                                   std::vector<Vector3d>& path);
   ManualWaypointPath manual_path_;
   int planManualWaypointMotion(const Vector3d& pos, const Vector3d& vel,
                                const Vector3d& acc, const Vector3d& yaw);

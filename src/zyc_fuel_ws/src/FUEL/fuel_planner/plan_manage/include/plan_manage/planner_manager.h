@@ -82,10 +82,8 @@ public:
   bool isFappPathSafe(const vector<Eigen::Vector3d>& path) const;
   bool fappMemoryEnabled() const { return fapp_config_.enabled && fapp_memory_enabled_; }
   double fappObservationRetention() const { return fapp_config_.observation_retention; }
-  void watchFappObstacle(const fuel_fapp::DynamicObstacleState* observation) {
-    fapp_watched_valid_ = observation != nullptr;
-    if (observation) fapp_watched_state_ = *observation;
-  }
+  void watchFappObstacle(const fuel_fapp::DynamicObstacleState* observation);
+  bool isWatchedFappPositionSafe(const Eigen::Vector3d& point) const;
   bool watchedFappBounds(Eigen::Vector3d& lower, Eigen::Vector3d& upper,
                          double& age) const;
   // 局部脱困专用：允许少量受支撑占据采样，但只能沿采样数和ESDF净空持续改善的方向退出。
@@ -125,7 +123,11 @@ private:
   double fapp_association_distance_{0.60};
   bool fapp_watched_valid_{false};
   fuel_fapp::DynamicObstacleState fapp_watched_state_;
-  std::vector<fuel_fapp::DynamicObstacleState> fapp_memory_;
+  std::vector<fuel_fapp::DynamicObstacleState> fapp_memory_, fapp_history_;
+  double fapp_history_duration_{10.0};
+  Eigen::Vector3d fapp_watched_lower_, fapp_watched_upper_;
+  void includeFappHistory(const fuel_fapp::DynamicObstacleState& observation,
+                          Eigen::Vector3d& lower, Eigen::Vector3d& upper) const;
   ros::Publisher fapp_memory_pub_, fapp_memory_status_pub_;
   ros::Timer fapp_memory_timer_;
   void publishFappMemory(const ros::TimerEvent& event);

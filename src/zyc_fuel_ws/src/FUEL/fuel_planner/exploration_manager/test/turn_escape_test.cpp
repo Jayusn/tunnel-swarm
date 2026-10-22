@@ -74,6 +74,7 @@ class TurnEscapeTest {
   }
 public:
   static void runFappMemory() {
+    ros::NodeHandle nh("~memory_history");
     FastPlannerManager planner;
     planner.fapp_config_.enabled = true;
     planner.fapp_memory_enabled_ = true;
@@ -127,16 +128,23 @@ public:
     Vector3d lower, upper;
     double age;
     ASSERT_TRUE(planner.watchedFappBounds(lower, upper, age));
-    EXPECT_GT(age, 0.8); // 过期区域只保留用于等待，不再作为新鲜预测。
+    EXPECT_GT(age, 0.8); // 新鲜预测过期，历史包络仍约束路径。
+    EXPECT_FALSE(planner.isWatchedFappPositionSafe(Vector3d(0,0,1)));
+    EXPECT_TRUE(planner.isWatchedFappPositionSafe(Vector3d(0,0,0.3)));
+    const double historical_bottom = lower.z();
     ball.position.x = 2.0;
     message->states = {ball};
     planner.fappCallback(message);
     EXPECT_DOUBLE_EQ(updated_stamp, planner.fapp_watched_state_.stamp);
     ball.position.x = 0.15;
+    ball.position.z += 0.15;
     message->states = {ball};
     planner.fappCallback(message);
     EXPECT_DOUBLE_EQ(0.15, planner.fapp_watched_state_.position.x());
     EXPECT_GT(planner.fapp_watched_state_.stamp, updated_stamp);
+    ASSERT_TRUE(planner.watchedFappBounds(lower, upper, age));
+    EXPECT_DOUBLE_EQ(historical_bottom, lower.z()); // 球升高不能抬高历史最低点。
+    EXPECT_FALSE(planner.isFappPathSafe({Vector3d(-1,0,1), Vector3d(1,0,1)}));
     planner.watchFappObstacle(nullptr);
     EXPECT_FALSE(planner.watchedFappBounds(lower, upper, age));
   }
@@ -144,14 +152,17 @@ public:
   static void runManualSuspended(const std::string& scenario) {
     ros::NodeHandle nh("~manual_suspended_" + scenario);
     const bool disabled = scenario == "disabled";
-    const bool memory = scenario == "memory_below" || scenario == "memory_left";
+    const bool recorded = scenario == "recorded_history";
+    const bool memory = scenario == "memory_below" || scenario == "memory_left" ||
+        scenario == "memory_curve_right" || recorded;
     const bool stale = scenario == "stale";
     const bool mapped = scenario == "mapped";
     const bool mapped_ball = scenario == "mapped_ball" || scenario == "mapped_ball_left";
-    const bool left_blocked = scenario == "right" || scenario == "blocked";
+    const bool left_blocked = scenario == "right" || scenario == "blocked" ||
+        scenario == "memory_curve_right";
     const bool right_blocked = scenario == "left" || scenario == "blocked" ||
         scenario == "mapped_ball_left" || scenario == "memory_left";
-    const bool floor_blocked = left_blocked || right_blocked;
+    const bool floor_blocked = (left_blocked || right_blocked) && scenario != "memory_curve_right";
     const bool unknown_below = scenario == "unknown_below";
     nh.setParam("manager/use_geometric_path", true);
     nh.setParam("astar/resolution_astar", 0.10);
@@ -179,8 +190,9 @@ public:
     Vector3d origin, size;
     manager.sdf_map_->getRegion(origin, size);
     ViewNode::caster_->setParams(manager.sdf_map_->getResolution(), origin);
-    const Vector3d start(mapped || mapped_ball ? 0.025 : -0.675, 0.025, 1.025);
-    const Vector3d goal(mapped_ball ? 1.650 : 1.425, 0.025, 1.025), zero = Vector3d::Zero();
+    const Vector3d start(mapped || mapped_ball ? 0.025 : (recorded ? -1.375 : -0.675),
+                         0.025, recorded ? 0.582 : 1.025);
+    const Vector3d goal(mapped_ball ? 1.650 : 1.425, 0.025, start.z()), zero = Vector3d::Zero();
     manager.manual_path_.points = {goal};
     auto& map = *manager.sdf_map_;
     for (double y = -1.725; y < 1.75; y += 0.05)
@@ -215,6 +227,22 @@ public:
           for (double z = 0.225; z <= 1.625; z += 0.05)
             map.setOccupied(Vector3d(x, 0.025 + sign * y, z));
     }
+    if (memory && (floor_blocked || scenario == "memory_curve_right")) {
+      // 侧下方通路需要真实占据墙/底座，不能仅设置膨胀层而漏掉旋翼足迹。
+      pcl::PointCloud<pcl::PointXYZ> occupied;
+      if (floor_blocked) {
+        for (double x=-0.10; x<=0.15; x+=0.025)
+          for (double y=-0.125; y<=0.175; y+=0.025)
+            for (double z=0.225; z<=0.725; z+=0.025)
+              occupied.push_back(pcl::PointXYZ(x,y,z));
+      } else {
+        for (double x=-1.0; x<=1.4; x+=0.05)
+          for (double z=0.225; z<=1.625; z+=0.05)
+            occupied.push_back(pcl::PointXYZ(x,0.325,z));
+      }
+      for (int repeat=0; repeat<8; ++repeat)
+        map.inputPointCloud(occupied, occupied.size(), start);
+    }
     map.updateESDF3d();
     auto pub = nh.advertise<obj_state_msgs::ObjectsStates>(topic, 1, true);
     if (!disabled && !mapped) {
@@ -241,6 +269,14 @@ public:
         ros::spinOnce();
       }
     };
+    if (recorded) {
+      // 2026-10-22实飞包16:00:15.900的球高度与尺寸，平移XY放入测试地图。
+      message.states[0].position.z = 0.5756615251302719;
+      message.states[0].size.z = 0.30854132771492004;
+      send();
+      message.states[0].position.z = 0.60;
+      message.states[0].size.z = 0.10;
+    }
     send();
     Vector3d lower, upper;
     EXPECT_EQ(!disabled && !stale && !mapped,
@@ -253,8 +289,8 @@ public:
       return;
     }
     ASSERT_EQ(SUCCEED, result);
-    const bool expected_underpass = !floor_blocked && !unknown_below && !disabled && !stale;
-    EXPECT_EQ(expected_underpass, manager.currentPlanIsVerticalDetour());
+    const bool expected_underpass = !floor_blocked && !unknown_below && !disabled && !stale && !recorded;
+    EXPECT_EQ(expected_underpass && !memory, manager.currentPlanIsVerticalDetour());
     EXPECT_EQ(expected_underpass, manager.suspended_underpass_active_);
     if (disabled || stale) {
       EXPECT_NEAR(start.z(), manager.ed_->next_goal_.z(), 1e-6);
@@ -262,7 +298,14 @@ public:
       return;
     }
     if (expected_underpass) {
-      EXPECT_NEAR(0.0, (manager.ed_->next_goal_ - start).head<2>().norm(), 1e-9);
+      if (memory) {
+        EXPECT_TRUE(manager.manual_fapp_curve_active_);
+        EXPECT_NEAR(0.20, std::fabs(manager.manual_fapp_curve_side_), 1e-9);
+        if (scenario == "memory_curve_right") EXPECT_LT(manager.manual_fapp_curve_side_, 0.0);
+        EXPECT_GT(manager.ed_->next_goal_.x(), start.x() + 0.10);
+      } else {
+        EXPECT_NEAR(0.0, (manager.ed_->next_goal_ - start).head<2>().norm(), 1e-9);
+      }
       EXPECT_LT(manager.ed_->next_goal_.z(), start.z() - 0.25);
       if (!mapped) { EXPECT_NEAR(0.640, manager.low_probe_height_, 0.001); }
       EXPECT_DOUBLE_EQ(start.z(), manager.low_probe_return_height_);
@@ -272,6 +315,14 @@ public:
       EXPECT_NEAR(start.z(), manager.ed_->next_goal_.z(), 1e-6);
       if (scenario == "left") { EXPECT_GT(manager.ed_->next_goal_.y(), start.y() + 0.20); }
       if (scenario == "right") { EXPECT_LT(manager.ed_->next_goal_.y(), start.y() - 0.20); }
+    }
+    if (recorded) {
+      double age = 0.0;
+      ASSERT_TRUE(manager.planner_manager_->watchedFappBounds(lower, upper, age));
+      EXPECT_NEAR(0.1363908612728119, lower.z()-manager.underpass_height_tracking_margin_, 1e-6);
+      EXPECT_FALSE(manager.manual_fapp_curve_active_);
+      EXPECT_TRUE(manager.recovery_side_latched_);
+      return;
     }
     if (memory) {
       auto& planner = *manager.planner_manager_;
@@ -287,46 +338,32 @@ public:
       EXPECT_EQ(phase, manager.low_probe_phase_);
       EXPECT_EQ(side, manager.recovery_side_latched_);
       ros::WallDuration(0.85).sleep(); // 也覆盖消息完全停发，而非仅连续空帧。
-      EXPECT_TRUE(manager.manualFappObservationMissing(start, 0.0));
-      EXPECT_EQ(FAIL, manager.planExploreMotion(start, zero, zero, zero));
+      EXPECT_FALSE(manager.manualFappObservationMissing(start, 0.0));
+      EXPECT_EQ(SUCCEED, manager.planExploreMotion(start, zero, zero, zero));
       EXPECT_EQ(phase, manager.low_probe_phase_);
       EXPECT_EQ(side, manager.recovery_side_latched_);
       EXPECT_EQ(0u, manager.manual_path_.next);
-      FastExplorationFSM fsm;
-      fsm.expl_manager_ = std::shared_ptr<FastExplorationManager>(
-          &manager, [](FastExplorationManager*) {});
-      fsm.planner_manager_ = manager.planner_manager_;
-      fsm.fd_ = std::make_shared<FSMData>();
-      fsm.fp_ = std::make_shared<FSMParam>();
-      fsm.fd_->state_str_ = {"INIT", "WAIT", "PLAN", "PUB", "EXEC", "FINISH"};
-      fsm.fd_->odom_pos_ = start;
-      fsm.fd_->odom_yaw_ = 0.0;
-      fsm.fp_->emergency_brake_horizon_ = 0.12;
-      fsm.emergency_brake_pub_ = nh.advertise<std_msgs::Int32>("test_fapp_brake", 1);
-      for (const auto state : {EXEC_TRAJ, PLAN_TRAJ, PUB_TRAJ}) {
-        fsm.active_traj_ = planner.local_data_;
-        fsm.active_traj_.start_time_ = ros::Time::now();
-        fsm.active_traj_valid_ = true;
-        fsm.active_traj_braked_ = false;
-        fsm.state_ = state;
-        if (state == EXEC_TRAJ) fsm.safetyCallback(ros::TimerEvent());
-        else fsm.FSMCallback(ros::TimerEvent());
-        EXPECT_TRUE(fsm.active_traj_braked_);
-        EXPECT_EQ(PLAN_TRAJ, fsm.state_);
-        EXPECT_TRUE(fsm.fd_->static_state_);
-      }
-      // 尚无旧轨迹时，待发布的候选也不能越过失观门控。
-      fsm.active_traj_valid_ = false;
-      fsm.state_ = PUB_TRAJ;
-      fsm.FSMCallback(ros::TimerEvent());
-      EXPECT_EQ(PLAN_TRAJ, fsm.state_);
-      // 预测起点即使已越过障碍，也不能解除等待。
-      EXPECT_TRUE(manager.manualFappObservationMissing(goal, 0.0));
-      if (side) {
-        manager.recovery_side_continuation_pending_ = true;
-        EXPECT_EQ(FAIL, manager.planExploreMotion(start, zero, zero, zero));
-        EXPECT_TRUE(manager.recovery_side_latched_);
-        EXPECT_TRUE(manager.recovery_side_dir_.isApprox(side_direction));
+      // 预测起点不能释放历史；失观时也不能让穿过球的直线通过检查。
+      EXPECT_FALSE(manager.manualFappObservationMissing(goal, 0.0));
+      EXPECT_TRUE(manager.manual_fapp_active_);
+      EXPECT_FALSE(planner.isFappPathSafe({start, goal}));
+      if (side) EXPECT_TRUE(manager.recovery_side_dir_.isApprox(side_direction));
+      if (expected_underpass) {
+        auto preceding = planner.local_data_.position_traj_;
+        const double t = preceding.getTimeSum()*0.4;
+        const Vector3d p = preceding.evaluateDeBoorT(t);
+        const Vector3d v = preceding.getDerivative().evaluateDeBoorT(t);
+        const Vector3d a = preceding.getDerivative().getDerivative().evaluateDeBoorT(t);
+        ASSERT_GT(v.norm(), 0.01);
+        ASSERT_EQ(SUCCEED, manager.planExploreMotion(p, v, a, zero));
+        auto& replanned = planner.local_data_.position_traj_;
+        EXPECT_LT((replanned.evaluateDeBoorT(0.0)-p).norm(), 0.003);
+        EXPECT_LT((replanned.getDerivative().evaluateDeBoorT(0.0)-v).norm(), 1e-3);
+        EXPECT_LT((replanned.getDerivative().getDerivative().evaluateDeBoorT(0.0)-a).norm(), 1e-3);
+        ASSERT_EQ(SUCCEED, manager.planExploreMotion(start, zero, zero, zero));
+        planner.local_data_.start_time_ = ros::Time::now();
+        double distance = 0.0;
+        EXPECT_TRUE(planner.checkTrajCollision(distance));
       }
       send();
       EXPECT_FALSE(manager.manualFappObservationMissing(start, 0.0));
@@ -352,6 +389,12 @@ public:
         if (expected_underpass && end.x() > start.x() + 0.10 &&
             end.z() < start.z() - 0.20)
           saw_low_advance = true;
+        if (memory && expected_underpass) {
+          EXPECT_GT(end.x(), current.x() + 0.01);
+          for (const auto& point : flown_path)
+            EXPECT_TRUE(manager.planner_manager_->isWatchedFappPositionSafe(point));
+          if (saw_low_advance && end.z() > current.z() + 0.02) saw_ascent = true;
+        }
         if (saw_low_advance && manager.currentPlanIsVerticalDetour() && end.z() > current.z()) {
           EXPECT_GE(current.x(), manager.low_probe_exit_progress_ - 1e-6);
           EXPECT_NEAR(0.0, (end - current).head<2>().norm(), 1e-6);
@@ -362,7 +405,8 @@ public:
         current = end;
         manager.updateMissionOdometry(current, 0.0);
       }
-      send();
+      // 首次确认后持续空帧直到完成穿越，不能靠重新检测到球推动流程。
+      if (!memory) send();
       if (memory && step % 2 == 0) {
         auto empty = boost::make_shared<obj_state_msgs::ObjectsStates>();
         empty->header.frame_id = "UAV0/camera_init";
@@ -2065,10 +2109,16 @@ TEST(ManualSuspended, FappBallUsesDescentLowStepsAndAscentBeforeSides) {
 TEST(FappMemory, EmptyPartialInvalidAndExpiredObservationsUseSpatialMemory) {
   fast_planner::TurnEscapeTest::runFappMemory();
 }
-TEST(FappMemory, UnderpassSurvivesDropoutsAndWaitsForReobservation) {
+TEST(FappMemory, HistoricalUnderpassMovesForwardThroughContinuousDropout) {
   fast_planner::TurnEscapeTest::runManualSuspended("memory_below");
 }
-TEST(FappMemory, SideBypassSurvivesDropoutsAndWaitsForReobservation) {
+TEST(FappMemory, LeftWallSelectsRightBottomCurve) {
+  fast_planner::TurnEscapeTest::runManualSuspended("memory_curve_right");
+}
+TEST(FappMemory, RecordedLowExtentSelectsSideRatherThanVerticalDescent) {
+  fast_planner::TurnEscapeTest::runManualSuspended("recorded_history");
+}
+TEST(FappMemory, SideBypassUsesHistoricalBoundsThroughDropout) {
   fast_planner::TurnEscapeTest::runManualSuspended("memory_left");
 }
 TEST(ManualSuspended, DownwardPredictionLowersUnderpassHeight) {
