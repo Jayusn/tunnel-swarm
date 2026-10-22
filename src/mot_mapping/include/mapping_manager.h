@@ -62,6 +62,10 @@ struct MapParam {
   double object_motion_match_fraction = 0.45;
   double object_motion_match_advantage = 0.30;
   double object_motion_depth_fraction = 0.40;
+  double object_motion_evidence_window = 0.0;
+  bool spatial_reacquisition_enabled = false;
+  double spatial_reacquisition_max_gap = 1.0;
+  double spatial_reacquisition_radius = 0.45;
   // DBSCAN Params
   int core_pts;
   double tolerance;

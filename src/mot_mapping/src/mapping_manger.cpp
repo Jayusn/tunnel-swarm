@@ -153,6 +153,14 @@ void MappingRos::init() {
   nh.param("detection/object_motion_match_fraction", mp_->object_motion_match_fraction, 0.45);
   nh.param("detection/object_motion_match_advantage", mp_->object_motion_match_advantage, 0.30);
   nh.param("detection/object_motion_depth_fraction", mp_->object_motion_depth_fraction, 0.40);
+  nh.param("detection/object_motion_evidence_window", mp_->object_motion_evidence_window, 0.0);
+  nh.param("detection/spatial_reacquisition_enabled", mp_->spatial_reacquisition_enabled, false);
+  nh.param("detection/spatial_reacquisition_max_gap", mp_->spatial_reacquisition_max_gap, 1.0);
+  nh.param("detection/spatial_reacquisition_radius", mp_->spatial_reacquisition_radius, 0.45);
+  if (!std::isfinite(mp_->object_motion_evidence_window) || mp_->object_motion_evidence_window < 0.0 ||
+      !std::isfinite(mp_->spatial_reacquisition_max_gap) || mp_->spatial_reacquisition_max_gap <= 0.0 ||
+      !std::isfinite(mp_->spatial_reacquisition_radius) || mp_->spatial_reacquisition_radius <= 0.0)
+    throw std::runtime_error("invalid motion evidence window or spatial reacquisition parameter");
   nh.param("detection/object_motion_local_bidirectional_enabled", mp_->object_motion_local_bidirectional_enabled, false);
   nh.param("detection/object_motion_local_match_fraction", mp_->object_motion_local_match_fraction, 0.60);
   nh.param("detection/object_motion_local_match_advantage", mp_->object_motion_local_match_advantage, 0.20);
@@ -1695,7 +1703,9 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
         confirmed_reacquisition = mp_->confirmed_reacquisition_enabled &&
             dt > 0.0 && dt <= mp_->reacquisition_max_gap &&
             published_gap >= 0.0 && published_gap <= mp_->reacquisition_max_gap;
-        retained_gap = confirmed_reacquisition ||
+        retained_gap = (mp_->object_motion_evidence_enabled &&
+            mp_->object_motion_evidence_window > 0.0 && dt > 0.0 &&
+            dt <= mp_->object_motion_evidence_window) || confirmed_reacquisition ||
             (mp_->reference_motion_enabled && reference_tree_ &&
             tracker->last_seen_frame == frame_num - 2 &&
             !tracker->last_published_stamp.isZero() &&
@@ -1759,6 +1769,7 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
       tracker->bidirectional_evidence.clear();
     const ros::Time previous_motion_stamp = tracker->last_motion_stamp;
     bool object_motion_ready = false;
+    bool measured_continuation_motion = false;
     if (mp_->object_motion_evidence_enabled) {
       const bool valid_observation = !candidate.static_background && shape_consistent &&
           !candidate.dense_points.empty();
@@ -1782,6 +1793,12 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
         static_fraction = double(stationary) / candidate.dense_points.size();
         depth_fraction = tracker->bidirectional_evidence.back().second.x();
       }
+      // A known region may use one weaker measured transition, but nearby
+      // static samples alone cannot keep extending its confirmation.
+      measured_continuation_motion = valid_observation && bidirectional_transition_valid &&
+          moving_fraction >= mp_->object_motion_match_fraction &&
+          moving_fraction - static_fraction >= 0.5 * mp_->object_motion_match_advantage &&
+          depth_fraction >= 0.5 * mp_->object_motion_depth_fraction;
       bool local_supported = true;
       if (mp_->object_motion_local_bidirectional_enabled) {
         mot_mapping::LocalMotionMatch local;
@@ -1796,11 +1813,13 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
             << " " << local.reverse_moving << " " << local.reverse_static
             << " " << local_supported);
       }
+      measured_continuation_motion = measured_continuation_motion && local_supported;
       object_motion_ready = tracker->object_motion_evidence.update(
           cloud_stamp_.toNSec(), previous_ray.stamp.toNSec(), valid_observation,
           bidirectional_transition_valid && local_supported, moving_fraction, static_fraction, depth_fraction,
           mp_->object_motion_match_fraction, mp_->object_motion_match_advantage,
-          mp_->object_motion_depth_fraction);
+          mp_->object_motion_depth_fraction,
+          static_cast<uint64_t>(mp_->object_motion_evidence_window * 1e9));
       ROS_DEBUG_STREAM("FAPP_OBJECT_MOTION " << cloud_stamp_.toNSec() << " " << tracker->id
           << " " << candidate.state.position.transpose() << " " << valid_observation
           << " " << bidirectional_transition_valid << " " << moving_fraction
@@ -2028,18 +2047,42 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
           << candidate.state.position.transpose() << " " << displacement << " "
           << observed_speed << " " << candidate.novel_fraction);
     }
+    bool strong_motion_confirmation = false;
     if (mp_->object_motion_evidence_enabled) {
       // Replace all legacy startup paths; retain the existing 0.6 s exit hold.
       tracker->last_motion_stamp = previous_motion_stamp;
-      if (has_motion && object_motion_ready && !bidirectional_static_suppression &&
-          candidate.novel_fraction >= required_novel_fraction)
-        tracker->last_motion_stamp = cloud_stamp_;
+      strong_motion_confirmation = has_motion && object_motion_ready &&
+          !bidirectional_static_suppression && candidate.novel_fraction >= required_novel_fraction;
+      if (strong_motion_confirmation) tracker->last_motion_stamp = cloud_stamp_;
       if (bidirectional_static_suppression) tracker->object_motion_evidence.clear();
     }
     bool confirmed = !tracker->last_motion_stamp.isZero() &&
                      (cloud_stamp_ - tracker->last_motion_stamp).toSec() <= 0.6;
     if (confirmed_reacquisition)
       confirmed = confirmed && has_motion && candidate.novel_fraction >= required_novel_fraction;
+    bool spatial_continuation = false;
+    SpatialConfirmation previous_confirmation;
+    if (!confirmed && mp_->object_motion_evidence_enabled && mp_->spatial_reacquisition_enabled &&
+        !candidate.static_background && !bidirectional_static_suppression && shape_consistent &&
+        !candidate.supplemental && measured_continuation_motion) {
+      double closest = mp_->spatial_reacquisition_radius;
+      for (const auto& known : trackers) {
+        const auto& measured = known->spatial_confirmation;
+        const double distance = (candidate.state.position - measured.position).norm();
+        if (distance <= closest && measured.supports(cloud_stamp_.toSec(),
+              candidate.state.position, candidate.state.size,
+              mp_->spatial_reacquisition_max_gap, mp_->spatial_reacquisition_radius)) {
+          closest = distance;
+          previous_confirmation = measured;
+          spatial_continuation = true;
+        }
+      }
+      if (spatial_continuation) {
+        confirmed = true; // Current measured candidate only; never publish a predicted/empty return.
+        ROS_DEBUG_STREAM("FAPP_SPATIAL_CONTINUE " << cloud_stamp_.toNSec() << " "
+            << tracker->id << " " << candidate.state.position.transpose() << " " << closest);
+      }
+    }
     ROS_DEBUG_STREAM("FAPP_TRACK " << cloud_stamp_.toNSec() << " "
         << candidate.state.position.transpose() << " " << tracker->id << " "
         << matched[i] << " " << tracker->observations.size() << " "
@@ -2151,6 +2194,15 @@ void MappingRos::cloudOdomCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
       ROS_DEBUG_STREAM("FAPP_SWING " << cloud_stamp_.toNSec() << " "
           << tracker->id << " " << swing);
       if (!swing) continue;
+    }
+    if (mp_->object_motion_evidence_enabled && mp_->spatial_reacquisition_enabled) {
+      if (spatial_continuation) tracker->spatial_confirmation = previous_confirmation;
+      if (strong_motion_confirmation || tracker->spatial_confirmation.stamp == 0.0) {
+        tracker->spatial_confirmation.size = published_state.size;
+        tracker->spatial_confirmation.confirmed_position = published_state.position;
+      }
+      tracker->spatial_confirmation.position = published_state.position;
+      tracker->spatial_confirmation.stamp = cloud_stamp_.toSec();
     }
     int detection_index = detections.size();
     detections.push_back(published_state);

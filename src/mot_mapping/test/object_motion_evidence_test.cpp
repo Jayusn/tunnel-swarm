@@ -33,5 +33,25 @@ int main() {
   check(!update(1800,1700),"duplicate time");
   track.clear();
   check(!update(2000,1900),"reset");
+  ObjectMotionEvidence window;
+  auto short_window = [&](uint64_t t, uint64_t p, bool valid=true, double stationary=.1) {
+    return window.update(t,p,valid,true,.8,stationary,.4,.6,.2,.3,400);
+  };
+  check(!short_window(100,0), "window first observation");
+  check(!short_window(200,100), "window first supported transition");
+  check(!short_window(400,300), "missing frame is not inferred motion");
+  check(short_window(500,400), "two measured transitions around one missing frame");
+  check(!short_window(600,500,true,.8), "static evidence itself cannot confirm");
+  check(!short_window(700,600,true,.8), "two unsupported observations clear window");
+  check(!short_window(800,700), "restart after two unsupported observations");
+  check(short_window(900,800), "fresh supported pair confirms");
+  check(!short_window(1000,900,false), "rejected background clears retained window");
+  check(!short_window(1100,1000), "no carry across invalid shape/background");
+  check(!short_window(1200,1100), "one new supported transition");
+  check(short_window(1300,1200), "two new supported transitions");
+  check(!short_window(2000,1300), "expired window cannot bridge long gap");
+  check(!short_window(2100,2000), "long gap does not count as a supported transition");
+  check(short_window(2200,2100), "reconfirm after long gap");
+  check(!short_window(2200,2100), "duplicate time clears window");
   std::cout << "PASS adjacency, translation, static jitter, unknown depth, gaps, invalid shape, independent tracks\n";
 }

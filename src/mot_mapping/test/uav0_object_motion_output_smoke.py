@@ -13,6 +13,7 @@ import time
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--local-bidirectional', action='store_true')
+    parser.add_argument('--spatial-continuation', action='store_true')
     args = parser.parse_args()
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))
@@ -41,6 +42,8 @@ def main():
             rospy.set_param('/UAV0/fapp/mapping_node/detection/object_motion_evidence_enabled', True)
             rospy.set_param('/UAV0/fapp/mapping_node/detection/object_motion_local_bidirectional_enabled', args.local_bidirectional)
             rospy.set_param('/UAV0/fapp/mapping_node/detection/motion_confirmation_duration', .5)
+            rospy.set_param('/UAV0/fapp/mapping_node/detection/spatial_reacquisition_enabled', args.spatial_continuation)
+            rospy.set_param('/UAV0/fapp/mapping_node/detection/object_motion_evidence_window', .4 if args.spatial_continuation else 0.0)
             start(['roslaunch', 'mot_mapping', 'uav0_detection.launch',
                    'dynamic_mode:=general', 'native_input_enabled:=true',
                    'shape_consistency_enabled:=true'], 'node.log')
@@ -114,24 +117,24 @@ def main():
             for _ in range(16):
                 last = frame(2)
             assert last == 0, 'Stopped target retained indefinitely'
-            for _ in range(8):
+            for _ in range(12 if args.spatial_continuation else 8):
                 assert frame() == 0
             assert frame(2) == 0, 'Reacquisition inherited old evidence'
             assert frame(2.06) == 0, 'Reacquisition needs two transitions'
             assert any(frame(2+.06*i) for i in range(2,7)), 'Reacquisition failed'
-            for _ in range(8):
+            for _ in range(12 if args.spatial_continuation else 8):
                 assert frame() == 0
             for i in range(16):
                 assert frame(2+.005*(i%2)) == 0, 'Static jitter confirmed'
             for period, samples in ((2., 40), (6., 70)):
-                for _ in range(8):
+                for _ in range(12 if args.spatial_continuation else 8):
                     frame()
                 counts = [frame(2+.25*math.sin(2*math.pi*i*.1/period)) for i in range(samples)]
                 print('SWING_PERIOD_SECONDS', period, 'HIT_FRAMES', sum(bool(n) for n in counts),
                       'TOTAL_FRAMES', samples, flush=True)
                 if period == 2.:
                     assert any(counts), 'Fast swing missed entirely'
-            for _ in range(8):
+            for _ in range(12 if args.spatial_continuation else 8):
                 frame()
             counts = [frame(2+.08*i, spacing=.3) for i in range(6)]
             first = next((i for i,n in enumerate(counts) if n), None)

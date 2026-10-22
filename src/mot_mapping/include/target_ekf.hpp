@@ -3,6 +3,7 @@
 #include <queue>
 #include "swing_confirmation.h"
 #include "object_motion_evidence.h"
+#include "spatial_confirmation.h"
 #include <vector>
 #include <Eigen/Geometry>
 
@@ -11,6 +12,7 @@ struct Ekf {
   int id;
   mot_mapping::SwingConfirmation swing_confirmation;
   mot_mapping::ObjectMotionEvidence object_motion_evidence;
+  mot_mapping::SpatialConfirmation spatial_confirmation;
   double dt;
   ros::Time last_update_stamp_;
   int age, update_num;
@@ -94,6 +96,7 @@ struct Ekf {
     observations.clear();
     swing_confirmation.clear();
     object_motion_evidence.clear();
+    spatial_confirmation = mot_mapping::SpatialConfirmation();
     swing_shape_points.clear();
     supplemental_candidate = false;
     object_component = false;
