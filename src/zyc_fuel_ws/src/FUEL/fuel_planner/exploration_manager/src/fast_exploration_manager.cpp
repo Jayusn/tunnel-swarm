@@ -939,7 +939,8 @@ bool FastExplorationManager::handleActiveLowProbe(
       observation.verification_timed_out;
   if (check_ascent) {
     const bool past_obstacle = !suspended_underpass_active_ ||
-        pos.head<2>().dot(low_probe_direction_.head<2>()) >= low_probe_exit_progress_;
+        (!manual_fapp_active_ &&
+         pos.head<2>().dot(low_probe_direction_.head<2>()) >= low_probe_exit_progress_);
     observation.ascent_path_safe = past_obstacle &&
         isKnownSafeVerticalPath(pos, low_probe_return_height_, false);
     Vector3d return_level_start = pos;
@@ -2121,6 +2122,7 @@ bool FastExplorationManager::buildSideRecoveryContinuation(
   const double side = recovery_side_dir_.dot(lateral);
   // 确认新通道后旧侧向不再有效，不让旧绕柱偏好约束正常转弯。
   if (std::fabs(side) < 0.5) {
+    if (manual_fapp_active_) return false;
     recovery_side_latched_ = false;
     wide_side_bypass_active_ = false;
     return false;
@@ -2133,7 +2135,7 @@ bool FastExplorationManager::buildSideRecoveryContinuation(
       wide_side_bypass_active_;
   const bool forward_clear = isLowProbeCorridorSafe(pos, forward, 0.40) &&
       (!manual_side || planner_manager_->isFappPathSafe({pos, pos + remaining * forward}));
-  if (forward_clear && (pos - recovery_side_origin_).dot(forward) >=
+  if (!manual_fapp_active_ && forward_clear && (pos - recovery_side_origin_).dot(forward) >=
                            release_distance) {
     recovery_side_latched_ = false;
     wide_side_bypass_active_ = false;
@@ -2177,6 +2179,7 @@ bool FastExplorationManager::buildSideRecoveryContinuation(
     return true;
   }
   // 只是先尝试原侧；同侧短路不可行时本轮直接交还原有换边/上下绕行。
+  if (manual_fapp_active_) return false;
   recovery_side_latched_ = false;
   wide_side_bypass_active_ = false;
   ROS_WARN("[side_recovery] continuation unavailable; yield to existing recovery.");
@@ -3287,10 +3290,76 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
   // fout.close();
 }
 
+bool FastExplorationManager::manualFappObservationMissing(
+    const Vector3d& pos, double yaw, bool actual_odometry) {
+  if (!manual_path_enabled_ || !manual_path_exploration_style_ ||
+      (manual_path_wait_for_trigger_ && !manual_path_started_) ||
+      !planner_manager_ || !planner_manager_->fappMemoryEnabled() || !task_search_manager_)
+    return false;
+  Vector3d lower, upper;
+  if (!manual_fapp_active_) {
+    if (manual_path_.finished()) return false;
+    const Vector3d forward = task_search_manager_->recoveryForwardDirection(yaw).normalized();
+    const double distance = std::min(underpass_lookahead_,
+        (manual_path_.points[manual_path_.next] - pos).dot(forward));
+    fuel_fapp::DynamicObstacleState observation;
+    if (distance <= 0.15 || !planner_manager_->fappBlockingBounds(
+            {pos, pos + distance * forward}, lower, upper, &observation))
+      return false;
+    manual_fapp_active_ = true;
+    planner_manager_->watchFappObstacle(&observation);
+    manual_fapp_forward_ = forward;
+    manual_fapp_exit_progress_ = -std::numeric_limits<double>::infinity();
+    ROS_WARN("[manual_fapp] watch region=(%.2f,%.2f,%.2f) before choosing underpass or side",
+             observation.position.x(), observation.position.y(), observation.position.z());
+  }
+  double age = std::numeric_limits<double>::infinity();
+  const bool known = planner_manager_->watchedFappBounds(lower, upper, age);
+  if (known) {
+    const double exit = (0.5 * (lower + upper)).dot(manual_fapp_forward_) +
+        (0.5 * (upper - lower)).dot(manual_fapp_forward_.cwiseAbs()) +
+        sdf_map_->getResolution();
+    manual_fapp_exit_progress_ = std::max(manual_fapp_exit_progress_, exit);
+  }
+  const bool passed = known && actual_odometry &&
+      pos.dot(manual_fapp_forward_) >= manual_fapp_exit_progress_;
+  const bool missing = !passed &&
+      (!known || age > planner_manager_->fappObservationRetention());
+  if (missing) {
+    if (manual_fapp_wait_since_.isZero()) manual_fapp_wait_since_ = ros::Time::now();
+    ROS_WARN_THROTTLE(1.0, "[manual_fapp] WAIT age=%.2fs underpass=%d phase=%d "
+        "side=%d progress=%.2f exit=%.2f; retain waypoint and detour",
+        age,
+        static_cast<int>(suspended_underpass_active_), static_cast<int>(low_probe_phase_),
+        static_cast<int>(recovery_side_latched_), pos.dot(manual_fapp_forward_),
+        manual_fapp_exit_progress_);
+    return true;
+  }
+  if (!manual_fapp_wait_since_.isZero()) {
+    // 等待失观确认的时间不算作下穿执行/验证超时。
+    const ros::Duration paused = ros::Time::now() - manual_fapp_wait_since_;
+    for (ros::Time* timer : {&low_probe_verify_start_, &low_probe_descent_end_time_,
+                            &low_probe_ascent_start_})
+      if (!timer->isZero()) *timer += paused;
+    manual_fapp_wait_since_ = ros::Time();
+    ROS_WARN("[manual_fapp] RESUME reason=%s age=%.2fs",
+        passed ? "passed" : "reobserved", age);
+  }
+  if (passed) {
+    ROS_WARN("[manual_fapp] PASSED actual_progress=%.2f exit=%.2f",
+        pos.dot(manual_fapp_forward_),
+        manual_fapp_exit_progress_);
+    planner_manager_->watchFappObstacle(nullptr);
+    manual_fapp_active_ = false;
+  }
+  return false;
+}
+
 int FastExplorationManager::planManualWaypointMotion(
     const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, const Vector3d& yaw) {
   if (manual_path_wait_for_trigger_ && !manual_path_started_) return FAIL;
   if (task_search_manager_ && task_search_manager_->landingRequested()) return NO_FRONTIER;
+  if (manualFappObservationMissing(pos, yaw[0])) return FAIL;
   Vector3d target;
   double target_yaw = yaw[0];
   const bool exit_motion = manual_exit_enabled_ && manual_exit_latched_ && manual_path_.finished();
@@ -3381,6 +3450,10 @@ int FastExplorationManager::planManualWaypointMotion(
         bool dynamic_obstacle = false;
         if (recovery_side_latched_)
           bypass_motion = buildSideRecoveryContinuation(pos, yaw[0], target, target_yaw);
+        if (!bypass_motion && recovery_side_latched_ && manual_fapp_active_) {
+          ROS_WARN_THROTTLE(1.0, "[manual_fapp] committed side unavailable; wait without switching side");
+          return FAIL;
+        }
         if (!bypass_motion)
           bypass_motion = buildFappSideBypass(pos, yaw[0], forward,
                                               target, target_yaw, dynamic_obstacle);
@@ -3486,7 +3559,7 @@ int FastExplorationManager::planExploreMotion(
   width_route_plan_ = false;
   pending_reference_height_ = std::numeric_limits<double>::quiet_NaN();
   // 上轮同侧短步若未生成成功，不在下一轮反复强选同一点。
-  if (recovery_side_continuation_pending_) {
+  if (recovery_side_continuation_pending_ && !manual_fapp_active_) {
     recovery_side_latched_ = false;
     wide_side_bypass_active_ = false;
   }
@@ -4631,6 +4704,7 @@ void FastExplorationManager::updateMissionOdometry(const Vector3d& pos, double y
   if (manual_path_enabled_) {
     if (manual_path_wait_for_trigger_ && !manual_path_started_) return;
     manual_actual_pos_ = pos;
+    if (manual_fapp_active_) manualFappObservationMissing(pos, yaw, true);
     if ((manual_exit_enabled_ || manual_path_exploration_style_) && task_search_manager_) {
       // 入口关闭时以开始任务的位置/航向建立通道参考；入口开启时复用已发布的门平面。
       geometry_msgs::PoseStamped detected_exit;

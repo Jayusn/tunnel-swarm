@@ -390,6 +390,11 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
     }
 
     case PLAN_TRAJ: {
+      if (expl_manager_->manualFappObservationMissing(fd_->odom_pos_, fd_->odom_yaw_, true)) {
+        requestActiveTrajectoryBrake("FAPP observation lost before passing obstacle");
+        fd_->static_state_ = true;
+        return;
+      }
       // 2026-07-22: 失败冷却期间不发布replan、不重新选点也不刷新规划可视化。
       if (!next_plan_retry_time_.isZero() && ros::Time::now() < next_plan_retry_time_) return;
       // 入口触发可能与耗时的frontier回调相邻执行。禁止首轮规划继续使用触发前的
@@ -510,6 +515,12 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
     }
 
     case PUB_TRAJ: {
+      if (expl_manager_->manualFappObservationMissing(fd_->odom_pos_, fd_->odom_yaw_, true)) {
+        requestActiveTrajectoryBrake("FAPP observation lost before trajectory release");
+        fd_->static_state_ = true;
+        transitState(PLAN_TRAJ, "fapp-observation-wait");
+        return;
+      }
       const ros::Time now = ros::Time::now();
       Eigen::Vector3d reviewed_position;
       Eigen::Vector3d reviewed_velocity;
@@ -1075,6 +1086,14 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
                               active_traj_valid_, replacement_pending,
                               active_traj_braked_))
     return;
+
+  if (expl_manager_->manualFappObservationMissing(fd_->odom_pos_, fd_->odom_yaw_, true)) {
+    requestActiveTrajectoryBrake("FAPP observation lost before passing obstacle");
+    fd_->static_state_ = true;
+    if (state_ != EXPL_STATE::PLAN_TRAJ)
+      transitState(PLAN_TRAJ, "fapp-observation-wait");
+    return;
+  }
 
   // 行进中提前确认悬挂障碍；已有轨迹先短制动，再由 PLAN_TRAJ 发布固定 XY 下降段。
   if (state_ == EXPL_STATE::EXEC_TRAJ && !active_turn_in_place_ &&

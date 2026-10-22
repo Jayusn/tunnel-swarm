@@ -9,9 +9,12 @@
 #include <pcl/point_types.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <visualization_msgs/Marker.h>
+#include <std_msgs/String.h>
 
 #include <cmath>
 #include <limits>
+#include <sstream>
+#include <stdexcept>
 
 namespace fast_planner {
 // SECTION interfaces for setup and query
@@ -63,11 +66,24 @@ void FastPlannerManager::initPlanModules(ros::NodeHandle& nh) {
 
   nh.param("fapp/enabled", fapp_config_.enabled, false);
   nh.param("fapp/planner_priority", fapp_planner_priority_, false);
+  nh.param("fapp/memory_enabled", fapp_memory_enabled_, false);
+  nh.param("fapp/observation_retention", fapp_config_.observation_retention, 0.8);
+  nh.param("fapp/association_distance", fapp_association_distance_, 0.6);
+  if (!std::isfinite(fapp_config_.observation_retention) ||
+      fapp_config_.observation_retention <= 0.0 ||
+      !std::isfinite(fapp_association_distance_) || fapp_association_distance_ <= 0.0)
+    throw std::runtime_error("FAPP retention and association distance must be positive");
   nh.param<std::string>("fapp/frame_id", fapp_frame_, "UAV0/camera_init");
   if (fapp_config_.enabled) {
     std::string topic;
     nh.param<std::string>("fapp/topic", topic, "/UAV0/fapp/states");
     fapp_sub_ = nh.subscribe(topic, 10, &FastPlannerManager::fappCallback, this);
+    if (fapp_memory_enabled_) {
+      fapp_memory_pub_ = nh.advertise<obj_state_msgs::ObjectsStates>("fapp/memory", 1);
+      fapp_memory_status_pub_ = nh.advertise<std_msgs::String>("fapp/memory_status", 1);
+      fapp_memory_timer_ = nh.createTimer(ros::Duration(0.1),
+          &FastPlannerManager::publishFappMemory, this);
+    }
   }
 
   bool use_geometric_path, use_kinodynamic_path, use_topo_path, use_optimization,
@@ -125,10 +141,13 @@ void FastPlannerManager::initPlanModules(ros::NodeHandle& nh) {
 }
 
 void FastPlannerManager::fappCallback(const obj_state_msgs::ObjectsStates::ConstPtr& message) {
-  if (!message->header.frame_id.empty() && message->header.frame_id != fapp_frame_)
+  if (!message->header.frame_id.empty() && message->header.frame_id != fapp_frame_) {
     ROS_WARN_THROTTLE(2.0, "[FAPP] verify state frame %s against %s",
                       message->header.frame_id.c_str(), fapp_frame_.c_str());
-  fapp_states_.clear();
+    if (fapp_memory_enabled_) return;
+  }
+  const double now = ros::Time::now().toSec();
+  std::vector<fuel_fapp::DynamicObstacleState> observations;
   for (const auto& state : message->states) {
     fuel_fapp::DynamicObstacleState obstacle;
     obstacle.position = Eigen::Vector3d(state.position.x,state.position.y,state.position.z);
@@ -136,10 +155,120 @@ void FastPlannerManager::fappCallback(const obj_state_msgs::ObjectsStates::Const
     obstacle.size = Eigen::Vector3d(state.size.x,state.size.y,state.size.z);
     const ros::Time stamp = state.header.stamp.isZero() ? message->header.stamp : state.header.stamp;
     obstacle.stamp = stamp.isZero() ? ros::Time::now().toSec() : stamp.toSec();
-    fapp_states_.push_back(obstacle);
+    if (fapp_memory_enabled_ &&
+        (stamp.isZero() || !obstacle.position.allFinite() || !obstacle.velocity.allFinite() ||
+         (!state.header.frame_id.empty() && state.header.frame_id != fapp_frame_) ||
+         obstacle.stamp > now + 0.05 || now - obstacle.stamp > fapp_config_.observation_retention))
+      continue;
+    observations.push_back(obstacle);
+  }
+  if (!fapp_memory_enabled_) {
+    fapp_states_ = observations;
+  } else {
+    // 普通记忆有限保留；当前未绕过的区域另存一份，用于失观等待。
+    fapp_memory_.erase(std::remove_if(fapp_memory_.begin(), fapp_memory_.end(),
+        [&](const fuel_fapp::DynamicObstacleState& state) {
+          return now - state.stamp > fapp_config_.observation_retention;
+        }), fapp_memory_.end());
+    const auto distance_to = [&](const fuel_fapp::DynamicObstacleState& old,
+                                 const fuel_fapp::DynamicObstacleState& fresh) {
+      const double dt = std::max(0.0, std::min(fresh.stamp - old.stamp,
+                                              fapp_config_.prediction_horizon));
+      // 只关心同一片空间内是否仍有障碍，兼顾摆球换向，不维护身份ID。
+      return std::min((fresh.position - old.position).norm(),
+                     (fresh.position - old.position - dt * old.velocity).norm());
+    };
+    if (fapp_watched_valid_) {
+      double nearest = fapp_association_distance_;
+      const fuel_fapp::DynamicObstacleState* update = nullptr;
+      for (const auto& fresh : observations) {
+        const double distance = distance_to(fapp_watched_state_, fresh);
+        if (fresh.stamp > fapp_watched_state_.stamp && distance <= nearest) {
+          nearest = distance;
+          update = &fresh;
+        }
+      }
+      if (update) fapp_watched_state_ = *update;
+    }
+    // 每个已有区域每帧最多更新一次，避免不同位置的障碍互相覆盖。
+    std::vector<bool> updated(fapp_memory_.size(), false);
+    for (const auto& fresh : observations) {
+      double nearest = fapp_association_distance_;
+      size_t index = fapp_memory_.size();
+      for (size_t i = 0; i < updated.size(); ++i) {
+        const double distance = distance_to(fapp_memory_[i], fresh);
+        if (!updated[i] && distance <= nearest) {
+          nearest = distance;
+          index = i;
+        }
+      }
+      if (index == fapp_memory_.size()) {
+        fapp_memory_.push_back(fresh);
+      } else {
+        updated[index] = true;
+        // 乱序/重发不能回退位置或延长有效期。
+        if (fresh.stamp > fapp_memory_[index].stamp) fapp_memory_[index] = fresh;
+      }
+    }
+    fapp_states_ = fapp_memory_;
+    ROS_INFO_THROTTLE(1.0, "[FAPP memory] observed=%zu retained=%zu watched=%d",
+        observations.size(), fapp_states_.size(), static_cast<int>(fapp_watched_valid_));
   }
   for (auto& optimizer : bspline_optimizers_)
     optimizer->setFappObstacles(fapp_states_, fapp_config_);
+}
+
+bool FastPlannerManager::watchedFappBounds(
+    Eigen::Vector3d& lower, Eigen::Vector3d& upper, double& age) const {
+  if (!fappMemoryEnabled() || !fapp_watched_valid_) return false;
+  const auto& state = fapp_watched_state_;
+  age = std::max(0.0, ros::Time::now().toSec() - state.stamp);
+  Eigen::Vector3d half = Eigen::Vector3d::Constant(fapp_config_.ball_radius);
+  if (state.size.allFinite() && (state.size.array() >= 0.0).all() &&
+      (state.size.array() > 0.0).any()) half = 0.5 * state.size;
+  half += Eigen::Vector3d(fapp_config_.vehicle_radius + fapp_config_.margin,
+                         fapp_config_.vehicle_radius + fapp_config_.margin,
+                         fapp_config_.vehicle_half_height + fapp_config_.margin);
+  const Eigen::Vector3d predicted = state.position +
+      fapp_config_.prediction_horizon * state.velocity;
+  // 仅用于确认越过障碍；失观后不继续外推、不刷新观测时间。
+  lower = state.position.cwiseMin(predicted) - half;
+  upper = state.position.cwiseMax(predicted) + half;
+  return true;
+}
+
+void FastPlannerManager::publishFappMemory(const ros::TimerEvent&) {
+  const double now = ros::Time::now().toSec();
+  obj_state_msgs::ObjectsStates message;
+  message.header.stamp = ros::Time::now();
+  message.header.frame_id = fapp_frame_;
+  std::ostringstream detail;
+  detail << "watched=" << fapp_watched_valid_;
+  std::vector<fuel_fapp::DynamicObstacleState> visible;
+  for (const auto& obstacle : fapp_memory_)
+    if (now - obstacle.stamp <= fapp_config_.observation_retention) visible.push_back(obstacle);
+  if (fapp_watched_valid_ && now - fapp_watched_state_.stamp > fapp_config_.observation_retention)
+    visible.push_back(fapp_watched_state_);
+  for (const auto& obstacle : visible) {
+    const double age = std::max(0.0, now - obstacle.stamp);
+    const bool fresh = age <= fapp_config_.observation_retention;
+    obj_state_msgs::State state;
+    state.header.frame_id = fapp_frame_;
+    state.header.stamp.fromSec(obstacle.stamp);
+    state.position.x = obstacle.position.x(); state.position.y = obstacle.position.y();
+    state.position.z = obstacle.position.z();
+    state.velocity.x = obstacle.velocity.x(); state.velocity.y = obstacle.velocity.y();
+    state.velocity.z = obstacle.velocity.z();
+    state.size.x = obstacle.size.x(); state.size.y = obstacle.size.y(); state.size.z = obstacle.size.z();
+    message.states.push_back(state);
+    detail << "; age=" << age
+           << " status=" << (fresh ? "retained" : "lost_wait")
+           << " xyz=" << obstacle.position.transpose();
+  }
+  std_msgs::String status;
+  status.data = detail.str();
+  fapp_memory_pub_.publish(message);
+  fapp_memory_status_pub_.publish(status);
 }
 
 bool FastPlannerManager::fappPositionSafe(const Eigen::Vector3d& point,
@@ -181,7 +310,7 @@ bool FastPlannerManager::isRelayHoldDynamicallySafe(
 
 bool FastPlannerManager::fappBlockingBounds(
     const vector<Eigen::Vector3d>& path, Eigen::Vector3d& lower,
-    Eigen::Vector3d& upper) const {
+    Eigen::Vector3d& upper, fuel_fapp::DynamicObstacleState* observation) const {
   if (!fapp_config_.enabled || path.size() < 2) return false;
   const double reference = ros::Time::now().toSec();
   const double speed = std::max(0.1, pp_.max_vel_ * 0.5);
@@ -209,6 +338,7 @@ bool FastPlannerManager::fappBlockingBounds(
                                fapp_config_.vehicle_half_height + fapp_config_.margin);
         lower = center - half;
         upper = center + half;
+        if (observation) *observation = obstacle;
         return true;
       }
     }

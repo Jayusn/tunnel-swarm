@@ -42,6 +42,9 @@ public:
   int planExploreMotion(const Vector3d& pos, const Vector3d& vel, const Vector3d& acc,
                         const Vector3d& yaw);
   bool manualWaypointsEnabled() const { return manual_path_enabled_; }
+  // 只有真实里程计可释放未越过的动态障碍；预测规划起点不能提前解除等待。
+  bool manualFappObservationMissing(const Vector3d& pos, double yaw,
+                                     bool actual_odometry = false);
   void startManualWaypointMission() { manual_path_started_ = true; }
   bool consumeManualExitReplanRequest() {
     const bool pending = manual_exit_replan_pending_;
@@ -130,6 +133,10 @@ private:
   // 仅独立航点入口开启，自动探索仍走原有局部规划流程。
   double manual_path_max_segment_length_{0.0};
   bool manual_path_exploration_style_{false};
+  bool manual_fapp_active_{false};
+  Vector3d manual_fapp_forward_{Vector3d::UnitX()};
+  double manual_fapp_exit_progress_{0.0};
+  ros::Time manual_fapp_wait_since_;
   ManualWaypointPath manual_path_;
   int planManualWaypointMotion(const Vector3d& pos, const Vector3d& vel,
                                const Vector3d& acc, const Vector3d& yaw);

@@ -77,8 +77,17 @@ public:
   // 航点悬挂物选路使用同一套 FAPP 时效/预测/机体尺寸，不受软代价优先开关影响。
   // 返回首次阻挡路径的预测包围盒，已包含机体尺寸和动态净空。
   bool fappBlockingBounds(const vector<Eigen::Vector3d>& path,
-                          Eigen::Vector3d& lower, Eigen::Vector3d& upper) const;
+                          Eigen::Vector3d& lower, Eigen::Vector3d& upper,
+                          fuel_fapp::DynamicObstacleState* observation = nullptr) const;
   bool isFappPathSafe(const vector<Eigen::Vector3d>& path) const;
+  bool fappMemoryEnabled() const { return fapp_config_.enabled && fapp_memory_enabled_; }
+  double fappObservationRetention() const { return fapp_config_.observation_retention; }
+  void watchFappObstacle(const fuel_fapp::DynamicObstacleState* observation) {
+    fapp_watched_valid_ = observation != nullptr;
+    if (observation) fapp_watched_state_ = *observation;
+  }
+  bool watchedFappBounds(Eigen::Vector3d& lower, Eigen::Vector3d& upper,
+                         double& age) const;
   // 局部脱困专用：允许少量受支撑占据采样，但只能沿采样数和ESDF净空持续改善的方向退出。
   int rawFootprintCollisionCount(const Eigen::Vector3d& position) const;
   // 统计机体下方圆盘内的受支撑占据，用于区分贴地障碍与侧墙接触。
@@ -107,10 +116,19 @@ public:
   unique_ptr<TopologyPRM> topo_prm_;
 
 private:
+  friend class TurnEscapeTest;
   ros::Subscriber fapp_sub_;
   fuel_fapp::DynamicObstacleConfig fapp_config_;
   bool fapp_planner_priority_{false};
   std::vector<fuel_fapp::DynamicObstacleState> fapp_states_;
+  bool fapp_memory_enabled_{false};
+  double fapp_association_distance_{0.60};
+  bool fapp_watched_valid_{false};
+  fuel_fapp::DynamicObstacleState fapp_watched_state_;
+  std::vector<fuel_fapp::DynamicObstacleState> fapp_memory_;
+  ros::Publisher fapp_memory_pub_, fapp_memory_status_pub_;
+  ros::Timer fapp_memory_timer_;
+  void publishFappMemory(const ros::TimerEvent& event);
   std::string fapp_frame_;
   void fappCallback(const obj_state_msgs::ObjectsStates::ConstPtr& message);
   bool fappGuidePath(std::vector<Eigen::Vector3d>& path) const;
