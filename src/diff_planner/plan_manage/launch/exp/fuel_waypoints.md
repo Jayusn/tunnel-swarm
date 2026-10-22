@@ -111,6 +111,11 @@ roslaunch diff_planner run_exp_single_fuel_waypoints.launch \
 ## 规划链路
 
 - 航点段和出口接近段仍使用FUEL `algorithm.xml`、地图、A*、B样条和既有碰撞检查。
+- 此 launch 默认启动刚同步的 UAV0 FAPP 运动证据检测，并将动态目标接入 FUEL 优化器及运行期
+  轨迹检查；默认启用动态避障和规划优先，设置与 `start_uav0_twaypoints.sh` 一致。
+  如果只想看检测输出而不让FUEL避障，可启动时设置 `enable_fapp_dynamic_avoidance:=false`；
+  关闭检测节点用 `enable_fapp_detection:=false`。运动证据由
+  `fapp_object_motion_evidence_enabled` 控制，双向匹配、候选拆分及候选关联隔离默认关闭。
 - 航点只决定远处目的地，每次沿已知路径规划最多 **1.2米** 的局部段；还检查优化后B样条的
   控制多边形长度上界，避免短路径被平滑成超长轨迹。到局部端点后按新地图续接，
   只有真实里程计到达用户航点，才推进 YAML 列表。长度在 launch 的

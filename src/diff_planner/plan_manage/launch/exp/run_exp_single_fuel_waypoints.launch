@@ -7,11 +7,15 @@
   <arg name="waypoints_file" default="$(find diff_planner)/launch/exp/fuel_waypoints.yaml"/>
   <arg name="entry_complete_topic" default="/UAV0/fuel_waypoints/entry_complete"/>
   <arg name="enable_rviz" default="true"/>
-  <!-- 与七分屏脚本兼容：沿用检测和诊断录包开关，手动启动时默认静态FUEL。 -->
-  <arg name="enable_fapp_detection" default="false"/>
+  <!-- 直接启动也使用前机已同步的FAPP运动证据检测与动态避障。 -->
+  <arg name="enable_fapp_detection" default="true"/>
   <arg name="dynamic_mode" default="swing-only"/>
-  <arg name="enable_fapp_dynamic_avoidance" default="false"/>
-  <arg name="fapp_planner_priority" default="false"/>
+  <arg name="enable_fapp_dynamic_avoidance" default="true"/>
+  <arg name="fapp_planner_priority" default="true"/>
+  <arg name="fapp_object_motion_evidence_enabled" default="true"/>
+  <arg name="fapp_object_motion_local_bidirectional_enabled" default="false"/>
+  <arg name="fapp_object_candidate_split_enabled" default="false"/>
+  <arg name="fapp_object_candidate_isolation_enabled" default="false"/>
   <arg name="enable_planner_rosbag" default="true"/>
   <arg name="planner_rosbag_prefix" default="fuel_waypoints_UAV0"/>
   <arg name="planner_rosbag_split_size_mb" default="1024"/>
@@ -98,6 +102,10 @@
   <param name="/exploration_node/mission/camera_obstacle_scan/enabled" value="false" type="bool"/>
   <include if="$(arg enable_fapp_detection)" file="$(find mot_mapping)/launch/uav0_frame_event_verified.launch">
     <arg name="dynamic_mode" value="$(arg dynamic_mode)"/>
+    <arg name="object_motion_evidence_enabled" value="$(arg fapp_object_motion_evidence_enabled)"/>
+    <arg name="object_motion_local_bidirectional_enabled" value="$(arg fapp_object_motion_local_bidirectional_enabled)"/>
+    <arg name="object_candidate_split_enabled" value="$(arg fapp_object_candidate_split_enabled)"/>
+    <arg name="object_candidate_isolation_enabled" value="$(arg fapp_object_candidate_isolation_enabled)"/>
   </include>
   <param name="/exploration_node/fapp/enabled" value="$(arg enable_fapp_dynamic_avoidance)" type="bool"/>
   <param name="/exploration_node/fapp/planner_priority" value="$(arg fapp_planner_priority)" type="bool"/>
