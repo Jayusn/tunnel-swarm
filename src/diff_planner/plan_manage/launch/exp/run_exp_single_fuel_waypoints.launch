@@ -6,7 +6,8 @@
   <!-- 常用开关可直接改成 true/false；动态避障依赖上面的FAPP检测也开启。 -->
   <arg name="enable_fapp_detection" default="true"/>
   <arg name="enable_fapp_dynamic_avoidance" default="true"/>
-  <!-- true保留动态软代价，常规轨迹跳过动态硬拒绝；false启用动态碰撞硬检查。 -->
+  <!-- true保留动态软代价，常规轨迹跳过动态硬拒绝；false启用动态碰撞硬检查。
+       航点选路仍先检查摆球下方通路；可下穿则下降/低位通过/回升，否则左右侧绕。 -->
   <arg name="fapp_planner_priority" default="true"/>
 
   <arg name="waypoints_file" default="$(find diff_planner)/launch/exp/fuel_waypoints.yaml"/>
@@ -77,7 +78,8 @@
   <param name="/exploration_node/mission/manual_path/enabled" value="true" type="bool"/>
   <param name="/exploration_node/mission/manual_path/use_astar" value="true" type="bool"/>
   <param name="/exploration_node/mission/manual_path/wait_for_trigger" value="true" type="bool"/>
-  <!-- 航点只作远目标：每段最多1.2m，复用探索的停转、侧移、通过和回正。 -->
+  <!-- 航点只作远目标：每段最多1.2m，复用探索的停转、悬挂物下穿和三段侧绕。
+       FAPP动态避障开启时摆球也参与下穿/侧绕选路；关闭时只处理静态地图障碍。 -->
   <param name="/exploration_node/mission/manual_path/max_segment_length" value="1.20" type="double"/>
   <param name="/exploration_node/mission/manual_path/exploration_style" value="true" type="bool"/>
   <param name="/exploration_node/mission/manual_path/exit_enabled" value="$(arg enable_exit_recognition)" type="bool"/>
