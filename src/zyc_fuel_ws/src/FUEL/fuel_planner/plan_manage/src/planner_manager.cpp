@@ -1153,7 +1153,8 @@ bool FastPlannerManager::planExploreTraj(const vector<Eigen::Vector3d>& input_to
     for (int sample = 1; sample <= samples; ++sample) {
       const Eigen::Vector3d point = trajectory.evaluateDeBoorT(
           flight_time * static_cast<double>(sample) / samples);
-      if (!point.allFinite() || !isWatchedFappPositionSafe(point)) return false;
+      if (!point.allFinite() ||
+          (!fapp_planner_priority_ && !isWatchedFappPositionSafe(point))) return false;
       const Eigen::Vector3d step = point - previous;
       arc += step.norm();
       reverse += std::max(0.0, -step.dot(forward));

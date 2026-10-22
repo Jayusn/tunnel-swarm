@@ -149,6 +149,22 @@ public:
       EXPECT_EQ(EXEC_TRAJ, fsm.state_);
       EXPECT_FALSE(fsm.active_traj_braked_);
     }
+    // 下一段暂未就绪且里程计掉高时，等待不能覆盖原轨迹终点。
+    fsm.state_ = PLAN_TRAJ;
+    fsm.active_traj_.start_time_ = ros::Time::now() -
+        ros::Duration(fsm.active_traj_.duration_ + 0.1);
+    fsm.fd_->odom_pos_ = fsm.active_traj_.position_traj_.evaluateDeBoorT(
+        fsm.active_traj_.duration_);
+    fsm.fd_->odom_pos_.z() -= 0.10;
+    fsm.next_plan_retry_time_ = ros::Time::now() + ros::Duration(10.0);
+    fsm.endpoint_hold_pub_ = nh.advertise<std_msgs::Bool>("endpoint_hold", 1);
+    const Vector3d endpoint = fsm.active_traj_.position_traj_.evaluateDeBoorT(
+        fsm.active_traj_.duration_);
+    fsm.FSMCallback(ros::TimerEvent());
+    EXPECT_FALSE(fsm.active_traj_braked_);
+    EXPECT_FALSE(fsm.endpoint_hold_active_);
+    EXPECT_TRUE(endpoint.isApprox(fsm.active_traj_.position_traj_.evaluateDeBoorT(
+        fsm.active_traj_.duration_)));
   }
 
   static void runFappMemory() {
@@ -232,7 +248,8 @@ public:
     const bool disabled = scenario == "disabled";
     const bool recorded = scenario == "recorded_history";
     const bool committed = scenario == "distant_committed";
-    const bool approach = scenario == "distant_blocked" || committed;
+    const bool inside = scenario == "inside_history" || scenario == "inside_history_strict";
+    const bool approach = scenario == "distant_blocked" || committed || inside;
     const bool asymmetric_side = scenario == "asymmetric_side";
     const bool asymmetric = scenario == "asymmetric_low" || asymmetric_side;
     const bool memory = scenario == "memory_below" || scenario == "memory_left" ||
@@ -254,7 +271,7 @@ public:
     nh.setParam("mission/task_search/min_height", asymmetric ? 0.15 : 0.25);
     nh.setParam("mission/task_search/max_height", 1.90);
     nh.setParam("fapp/enabled", !disabled && !mapped);
-    nh.setParam("fapp/planner_priority", true);
+    nh.setParam("fapp/planner_priority", scenario != "inside_history_strict" && scenario != "blocked");
     nh.setParam("fapp/memory_enabled", memory);
     if (approach || asymmetric) {
       nh.setParam("fapp/vehicle_top_height", 0.05);
@@ -355,7 +372,7 @@ public:
     ball.velocity.z = scenario == "moving" ? -0.10 : 0.0;
     ball.size.x = ball.size.y = ball.size.z = 0.20;
     if (approach) {
-      ball.position.x = 0.225; // 1.6m ahead, full crossing currently unavailable.
+      ball.position.x = inside ? start.x() + 0.10 : 0.225;
       ball.position.z = 0.70;
       ball.size.y = 2.0;
       ball.size.z = 1.20;
@@ -382,7 +399,30 @@ public:
     Vector3d lower, upper;
     EXPECT_EQ(!disabled && !stale && !mapped,
               manager.planner_manager_->fappBlockingBounds({start, goal}, lower, upper));
+    if (inside) {
+      // 历史包络曾覆盖当前位置，之后已无新鲜目标；旧包络不能封死出路。
+      manager.planner_manager_->watchFappObstacle(&manager.planner_manager_->fapp_states_.front());
+      ros::WallDuration(0.85).sleep();
+      message.states.clear();
+      send();
+    }
     const int result = manager.planExploreMotion(start, zero, zero, zero);
+    if (inside) {
+      auto& planner = *manager.planner_manager_;
+      ASSERT_FALSE(planner.isWatchedFappPositionSafe(start));
+      if (scenario == "inside_history_strict") {
+        EXPECT_EQ(FAIL, result);
+      } else {
+        ASSERT_EQ(SUCCEED, result);
+        auto& trajectory = planner.local_data_.position_traj_;
+        const Vector3d end = trajectory.evaluateDeBoorT(trajectory.getTimeSum());
+        EXPECT_GT(end.x(), start.x() + 0.3);
+        EXPECT_GT(end.z(), start.z() - 0.05);
+        EXPECT_FALSE(manager.currentPlanIsVerticalDetour());
+        checkManualFappExecution(manager, start);
+      }
+      return;
+    }
     if (scenario == "blocked") {
       EXPECT_EQ(FAIL, result);
       EXPECT_EQ(0u, manager.manual_path_.next);
@@ -400,7 +440,8 @@ public:
       if (approach) {
         EXPECT_EQ(committed, manager.recovery_side_latched_);
         EXPECT_FALSE(manager.manual_fapp_curve_active_);
-        EXPECT_LT(manager.ed_->next_goal_.x(), lower.x());
+        // 规划优先允许普通前进段进入历史包络，不能被包络边界卡住。
+        EXPECT_LE(manager.ed_->next_goal_.x(), start.x() + 1.20 + 1e-6);
         EXPECT_NEAR(start.z(), manager.ed_->next_goal_.z(), 1e-6);
       } else if (asymmetric_side) {
         EXPECT_LT(lower.z() - manager.underpass_height_tracking_margin_, 0.15);
@@ -418,7 +459,8 @@ public:
       auto& traj = manager.planner_manager_->local_data_.position_traj_;
       for (double t = 0; t <= traj.getTimeSum(); t += 0.02) {
         const Vector3d p = traj.evaluateDeBoorT(t);
-        EXPECT_TRUE(manager.planner_manager_->isWatchedFappPositionSafe(p));
+        if (!approach) EXPECT_TRUE(manager.planner_manager_->isWatchedFappPositionSafe(p));
+        EXPECT_TRUE(manager.planner_manager_->isPositionSafe(p));
         EXPECT_GE(p.z(), 0.15);
       }
       return;
@@ -2269,6 +2311,12 @@ TEST(FappMemory, EmptyPartialInvalidAndExpiredObservationsUseSpatialMemory) {
 }
 TEST(FappMemory, ConfirmedRegionRejectsSingleTallBoxButKeepsRealLowerObservation) {
   fast_planner::TurnEscapeTest::runFappTallOutlier();
+}
+TEST(FappMemory, PlannerPriorityAdvancesFromInsideHistoricalEnvelope) {
+  fast_planner::TurnEscapeTest::runManualSuspended("inside_history");
+}
+TEST(FappMemory, StrictModeStillRejectsHistoricalEnvelopeOverlap) {
+  fast_planner::TurnEscapeTest::runManualSuspended("inside_history_strict");
 }
 TEST(FappMemory, HistoricalUnderpassMovesForwardThroughContinuousDropout) {
   fast_planner::TurnEscapeTest::runManualSuspended("memory_below");

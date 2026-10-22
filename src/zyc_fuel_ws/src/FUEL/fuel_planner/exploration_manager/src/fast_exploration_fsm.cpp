@@ -332,9 +332,12 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
     transitState(PLAN_TRAJ, "manual-exit-handoff");
   }
 
-  // 已开始准备下一条轨迹但旧轨迹先到终点时，明确结束旧轨迹并让控制器锁住实时XY。
+  // 航点模式由traj_server持续发布原轨迹终点，保留高度误差修正目标。
+  // 不能仅因等待下一段就刹车并将偏低的实测Z重新锁成目标。
+  // 其他模式仍在等待时结束旧轨迹并锁住实时位置。
   // 仅在PLAN/PUB等待阶段触发；通道内普通轨迹执行到终点附近后才重新选路。
-  if ((state_ == PLAN_TRAJ || state_ == PUB_TRAJ) && active_traj_valid_) {
+  if (!expl_manager_->manualWaypointsEnabled() &&
+      (state_ == PLAN_TRAJ || state_ == PUB_TRAJ) && active_traj_valid_) {
     const double elapsed =
         std::max(0.0, (ros::Time::now() - active_traj_.start_time_).toSec());
     const double time_to_end = active_traj_.duration_ - elapsed;
@@ -597,7 +600,8 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
         const double velocity_error =
             (trajectory_start_velocity - reviewed_velocity).norm();
         // 只对旧轨迹结束后的端点保持放宽重新起步容差，飞行中换轨保持原值。
-        const bool restarting_from_endpoint = active_traj_valid_ && endpoint_hold_active_ &&
+        const bool restarting_from_endpoint = active_traj_valid_ &&
+            (endpoint_hold_active_ || expl_manager_->manualWaypointsEnabled()) &&
             (now - active_traj_.start_time_).toSec() >= active_traj_.duration_;
         const double max_velocity_error = restarting_from_endpoint
             ? fp_->trajectory_restart_max_velocity_error_

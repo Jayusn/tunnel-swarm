@@ -3617,6 +3617,7 @@ int FastExplorationManager::planManualWaypointMotion(
     if (planner_manager_->isPositionSafe(target) &&
         planner_manager_->isPathSafe(ed_->path_next_goal_) &&
         (!(manual_path_exploration_style_ && !exit_motion) ||
+         planner_manager_->fappPlannerPriority() ||
          planner_manager_->isFappPathSafe(ed_->path_next_goal_)) &&
         planner_manager_->planExploreTraj(ed_->path_next_goal_, vel, acc, 0.0) &&
         planner_manager_->isTrajectorySafe()) {

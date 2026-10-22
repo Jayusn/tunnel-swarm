@@ -80,6 +80,7 @@ public:
                           Eigen::Vector3d& lower, Eigen::Vector3d& upper,
                           fuel_fapp::DynamicObstacleState* observation = nullptr) const;
   bool isFappPathSafe(const vector<Eigen::Vector3d>& path) const;
+  bool fappPlannerPriority() const { return fapp_planner_priority_; }
   bool fappMemoryEnabled() const { return fapp_config_.enabled && fapp_memory_enabled_; }
   double fappObservationRetention() const { return fapp_config_.observation_retention; }
   void watchFappObstacle(const fuel_fapp::DynamicObstacleState* observation);
