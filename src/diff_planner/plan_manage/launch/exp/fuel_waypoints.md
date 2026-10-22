@@ -26,15 +26,34 @@ mission:
 单位米，z 不是相对当前高度。实际里程计进入 `arrive_distance` 三维半径后才推进列表；
 预测起点到点或规划失败都不算完成。修改配置或重新飞行，需要重启规划器。
 
-## 两个独立开关
+## 入口、出口和动态避障开关
 
-在 `run_exp_single_fuel_waypoints.launch` 顶部设置，也可以通过启动参数覆盖。
-两个开关默认均为 `true`，支持全部四种组合。
+在 `run_exp_single_fuel_waypoints.launch` 顶部直接改 `true` / `false`，也可以通过
+`roslaunch` 参数覆盖。七分屏航点脚本默认尊重 launch 文件顶部的设置；显式设置 FAPP
+环境变量，或使用 `--dynamic-mode`、`--detection-only`、`--dynamic-avoidance`、
+`--planner-priority`、`--strict-dynamic` 时，才覆盖对应的 FAPP 参数。自动探索 launch 的启动参数
+和默认行为不变。
 
 | 开关 | true | false |
 | --- | --- | --- |
 | `enable_entry_recognition` | RViz点击后沿用现有找门、接近入口流程，到门平面附近才触发航点 | 不启动入口识别，RViz点击直接开始航点 |
 | `enable_exit_recognition` | 识别并锁存出口，完成最近门内点后转向出口，再接搜板降落 | 不识别出口、不自动进入降落；飞完全部点后结束路线 |
+| `enable_fapp_detection` | 启动FAPP运动目标检测节点，发布动态目标状态 | 不运行FAPP检测节点 |
+| `enable_fapp_dynamic_avoidance` | FUEL订阅FAPP状态，并将移动目标用于动态避障 | FUEL忽略FAPP动态目标；检测节点仍可单独运行供查看 |
+| `fapp_planner_priority` | 保留动态障碍软优化代价，同时优先生成可行轨迹 | 对动态碰撞启用硬拒绝/检查，可能因此暂缓或拒绝规划 |
+
+这三个 FAPP 开关默认均为 `true`，但控制的是链路里的不同环节。检测流程是：点云和里程计进入
+FAPP检测节点，检测节点把确认的动态目标发布到 `/UAV0/fapp/states`；开启动态避障后，FUEL
+读取目标的位置、速度和尺寸，在航点之间的局部路径优化和轨迹检查中考虑这些目标。静态地图、
+A* 和原有静态碰撞检查仍由 FUEL 原流程负责。关闭检测时，即使动态避障开关为 `true`，也没有
+这条检测状态输入，因而不会得到有效的 FAPP 动态障碍物避让。
+
+`fapp_planner_priority` 不是检测开关，也不是动态避障总开关：`true` 会继续把动态障碍代价交给
+优化器，但候选轨迹和执行期检查会跳过 FAPP 动态硬拒绝；如果软代价未能绕开预测区域，轨迹仍
+可能与动态障碍重叠。静态地图和机体碰撞检查仍然生效。`false` 会按动态碰撞硬检查处理，安全
+约束更严格，但障碍堵住通道或检测不稳定时可能出现规划失败。检测开启、动态避障关闭适合只观察检测输出；要完全关闭 FAPP，在 launch 顶部
+同时把 `enable_fapp_detection` 和 `enable_fapp_dynamic_avoidance` 改为 `false`。默认组合是三项均为
+`true`，即检测、FUEL动态避障和规划优先都开启。
 
 入口沿用原方案C及交接阈值 `door_cross_trigger_dist=-0.08`：入口参考完成、满足横向条件，
 实际位置到门前约8cm范围即可交给FUEL。入口阶段不会提前消耗航点。
@@ -64,8 +83,8 @@ mission:
 bash ~/match_ws/shfiles/start_uav0_twaypoints.sh
 ```
 
-入口、出口开关直接修改 `run_exp_single_fuel_waypoints.launch` 顶部的 `true` / `false`，
-七分屏脚本使用这里的设置。例如仅关闭入口：
+入口、出口和 FAPP 开关直接修改 `run_exp_single_fuel_waypoints.launch` 顶部的 `true` / `false`，
+七分屏脚本默认使用这里的设置。例如仅关闭入口：
 
 ```xml
 <arg name="enable_entry_recognition" default="false"/>

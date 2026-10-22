@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <launch>
-  <!-- 两个独立开关：入口完成后才开始航点；出口最近点完成后接现有搜板降落。 -->
+  <!-- 入口/出口控制任务阶段；FAPP检测、动态避障和规划优先在下方单独开关。 -->
   <arg name="enable_entry_recognition" default="true"/>
   <arg name="enable_exit_recognition" default="true"/>
   <!-- 常用开关可直接改成 true/false；动态避障依赖上面的FAPP检测也开启。 -->
   <arg name="enable_fapp_detection" default="true"/>
   <arg name="enable_fapp_dynamic_avoidance" default="true"/>
-  <!-- true保留动态障碍软代价、优先生成轨迹；false启用动态碰撞硬拒绝。 -->
+  <!-- true保留动态软代价并跳过动态硬拒绝；false启用动态碰撞硬检查。 -->
   <arg name="fapp_planner_priority" default="true"/>
 
   <arg name="waypoints_file" default="$(find diff_planner)/launch/exp/fuel_waypoints.yaml"/>
