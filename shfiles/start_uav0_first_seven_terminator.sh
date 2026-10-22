@@ -320,6 +320,24 @@ run_planner_pane() {
     keep_pane_open
   fi
   local -a recording_args=()
+  local -a fapp_args=()
+  if [[ "${UAV0_FUEL_PLANNER_LAUNCH:-run_swarm_indoor1_fuel_exploration.launch}" == "run_exp_single_fuel_waypoints.launch" ]]; then
+    # Waypoint launch: its top-level XML booleans are authoritative unless the
+    # operator explicitly supplied one of the existing FAPP CLI/environment overrides.
+    [[ -z "${UAV0_FAPP_DYNAMIC_MODE+x}" ]] || fapp_args+=("dynamic_mode:=${UAV0_FAPP_DYNAMIC_MODE}")
+    [[ -z "${UAV0_FAPP_DYNAMIC_AVOIDANCE+x}" ]] || fapp_args+=("enable_fapp_dynamic_avoidance:=${UAV0_FAPP_DYNAMIC_AVOIDANCE}")
+    [[ -z "${UAV0_FAPP_PLANNER_PRIORITY+x}" ]] || fapp_args+=("fapp_planner_priority:=${UAV0_FAPP_PLANNER_PRIORITY}")
+    printf '[FAPP] 航点 launch 使用文件顶部的检测、动态避障和规划优先开关；显式 CLI 选项可覆盖。\n'
+  else
+    # Preserve the existing defaults and overrides for automatic exploration.
+    fapp_args=(
+      'enable_fapp_detection:=true'
+      "dynamic_mode:=${UAV0_FAPP_DYNAMIC_MODE:-swing-only}"
+      "enable_fapp_dynamic_avoidance:=${UAV0_FAPP_DYNAMIC_AVOIDANCE:-true}"
+      "fapp_planner_priority:=${UAV0_FAPP_PLANNER_PRIORITY:-true}"
+    )
+    printf '[FAPP] 模式=%s，动态避障=%s，规划优先=%s\n' "${UAV0_FAPP_DYNAMIC_MODE:-swing-only}" "${UAV0_FAPP_DYNAMIC_AVOIDANCE:-true}" "${UAV0_FAPP_PLANNER_PRIORITY:-true}"
+  fi
   if [[ -n "${UAV0_PLANNER_ROSBAG_PREFIX:-}" ]]; then
     mkdir -p -- "$(dirname -- "${UAV0_PLANNER_ROSBAG_PREFIX}")" || keep_pane_open
     recording_args+=(
@@ -330,14 +348,10 @@ run_planner_pane() {
     printf '[录包] 通道回放包：%s_时间戳_分卷.bag；在本屏 Ctrl+C 正常结束录制。\n' \
       "${UAV0_PLANNER_ROSBAG_PREFIX}"
   fi
-  printf '[FAPP] 模式=%s，动态避障=%s，规划优先=%s\n' "${UAV0_FAPP_DYNAMIC_MODE:-swing-only}" "${UAV0_FAPP_DYNAMIC_AVOIDANCE:-true}" "${UAV0_FAPP_PLANNER_PRIORITY:-true}"
   printf '[启动] UAV0 FUEL 规划器和 RViz\n'
   roslaunch "${planner_launch}" \
     odom_topic:="${ODOM_TOPIC}" "${recording_args[@]}" \
-    enable_fapp_detection:=true \
-    dynamic_mode:="${UAV0_FAPP_DYNAMIC_MODE:-swing-only}" \
-    enable_fapp_dynamic_avoidance:="${UAV0_FAPP_DYNAMIC_AVOIDANCE:-true}" \
-    fapp_planner_priority:="${UAV0_FAPP_PLANNER_PRIORITY:-true}"
+    "${fapp_args[@]}"
   printf '[退出] FUEL 规划器分屏，返回码=%s\n' "$?"
   keep_pane_open
 }
