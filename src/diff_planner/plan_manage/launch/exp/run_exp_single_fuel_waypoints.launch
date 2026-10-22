@@ -6,7 +6,7 @@
   <!-- 常用开关可直接改成 true/false；动态避障依赖上面的FAPP检测也开启。 -->
   <arg name="enable_fapp_detection" default="true"/>
   <arg name="enable_fapp_dynamic_avoidance" default="true"/>
-  <!-- true保留动态软代价并跳过动态硬拒绝；false启用动态碰撞硬检查。 -->
+  <!-- true保留动态软代价，常规轨迹跳过动态硬拒绝；false启用动态碰撞硬检查。 -->
   <arg name="fapp_planner_priority" default="true"/>
 
   <arg name="waypoints_file" default="$(find diff_planner)/launch/exp/fuel_waypoints.yaml"/>
