@@ -3474,8 +3474,9 @@ int FastExplorationManager::planManualWaypointMotion(
     external_selected_yaw_ = target_yaw;
     return SUCCEED;
   }
+  bool dynamic_crossing_length_exempt = false;
   const auto trajectory_within_limit = [&]() {
-    if (manual_path_max_segment_length_ <= 0.0) return true;
+    if (dynamic_crossing_length_exempt || manual_path_max_segment_length_ <= 0.0) return true;
     // 控制多边形长度是B样条弧长上界，包含优化后的实际曲线。
     const auto controls = planner_manager_->local_data_.position_traj_.getControlPoint();
     double bound = 0.0;
@@ -3596,13 +3597,17 @@ int FastExplorationManager::planManualWaypointMotion(
       return FAIL;
     }
   }
+  // 动态穿越完整覆盖障碍区域；普通航点、出口和静态绕行仍遵守局部段上限。
+  dynamic_crossing_length_exempt = !exit_motion && manual_fapp_active_ &&
+      ((underpass_motion && manual_fapp_curve_active_) || bypass_motion);
   const auto full_path = ed_->path_next_goal_;
-  double budget = manual_path_max_segment_length_ > 0.0
+  double budget = !dynamic_crossing_length_exempt && manual_path_max_segment_length_ > 0.0
       ? std::min(manual_path_max_segment_length_, Astar::pathLength(full_path))
       : Astar::pathLength(full_path);
   bool planned = false;
   for (int attempt = 0; attempt < 3; ++attempt) {
-    ed_->path_next_goal_ = manualPathPrefix(full_path, budget);
+    ed_->path_next_goal_ = dynamic_crossing_length_exempt
+        ? full_path : manualPathPrefix(full_path, budget);
     if (ed_->path_next_goal_.size() < 2) break;
     // 曲线按弧长截取时，末点可能离前一点不足毫米，合并以满足样条输入要求。
     if (ed_->path_next_goal_.size() > 2 &&
@@ -3623,7 +3628,7 @@ int FastExplorationManager::planManualWaypointMotion(
       }
     }
     // 同探索的短前缀重规划：不发布切墙曲线，缩短后仍走同一条已知路径。
-    if (manual_path_max_segment_length_ <= 0.0) break;
+    if (dynamic_crossing_length_exempt || manual_path_max_segment_length_ <= 0.0) break;
     budget *= 2.0 / 3.0;
   }
   if (!planned) {

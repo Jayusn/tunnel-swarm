@@ -181,7 +181,7 @@ public:
     manager.manual_path_enabled_ = true;
     manager.manual_path_use_astar_ = true;
     manager.manual_path_exploration_style_ = true;
-    manager.manual_path_max_segment_length_ = 1.2;
+    manager.manual_path_max_segment_length_ = scenario == "memory_left" ? 0.15 : 1.2;
     manager.ep_->mission_use_forward_fallback_ = true;
     manager.task_search_manager_->setMap(manager.sdf_map_);
     manager.task_search_manager_->exit_detection_enabled_ = false;
@@ -302,11 +302,13 @@ public:
         EXPECT_TRUE(manager.manual_fapp_curve_active_);
         EXPECT_NEAR(0.20, std::fabs(manager.manual_fapp_curve_side_), 1e-9);
         if (scenario == "memory_curve_right") EXPECT_LT(manager.manual_fapp_curve_side_, 0.0);
-        EXPECT_GT(manager.ed_->next_goal_.x(), start.x() + 0.10);
+        EXPECT_GT(manager.ed_->next_goal_.x(), manager.low_probe_exit_progress_);
+        EXPECT_GT((manager.ed_->next_goal_ - start).norm(), 1.2);
+        EXPECT_NEAR(manager.ed_->next_goal_.z(), start.z(), 0.01);
       } else {
         EXPECT_NEAR(0.0, (manager.ed_->next_goal_ - start).head<2>().norm(), 1e-9);
       }
-      EXPECT_LT(manager.ed_->next_goal_.z(), start.z() - 0.25);
+      if (!memory) EXPECT_LT(manager.ed_->next_goal_.z(), start.z() - 0.25);
       if (!mapped) { EXPECT_NEAR(0.640, manager.low_probe_height_, 0.001); }
       EXPECT_DOUBLE_EQ(start.z(), manager.low_probe_return_height_);
       EXPECT_FALSE(manager.recovery_side_latched_);
@@ -380,7 +382,11 @@ public:
         double length = 0.0;
         for (int i = 1; i < control.rows(); ++i)
           length += (control.row(i) - control.row(i - 1)).norm();
-        EXPECT_LE(length, 1.2 + 1e-6);
+        if (!memory || !manager.manual_fapp_active_) {
+          EXPECT_LE(length, manager.manual_path_max_segment_length_ + 1e-6);
+        } else if (step == 0) {
+          EXPECT_GT(length, manager.manual_path_max_segment_length_);
+        }
         std::vector<Vector3d> flown_path;
         for (int i = 0; i <= 50; ++i)
           flown_path.push_back(trajectory.evaluateDeBoorT(trajectory.getTimeSum() * i / 50.0));
@@ -391,9 +397,16 @@ public:
           saw_low_advance = true;
         if (memory && expected_underpass) {
           EXPECT_GT(end.x(), current.x() + 0.01);
-          for (const auto& point : flown_path)
+          for (const auto& point : flown_path) {
             EXPECT_TRUE(manager.planner_manager_->isWatchedFappPositionSafe(point));
-          if (saw_low_advance && end.z() > current.z() + 0.02) saw_ascent = true;
+            if (point.x() > start.x()+0.10 && point.z() < start.z()-0.20)
+              saw_low_advance = true;
+            if (saw_low_advance && point.x() > manager.low_probe_exit_progress_ &&
+                point.z() > manager.low_probe_height_+0.20)
+              saw_ascent = true;
+          }
+          EXPECT_GT(end.x(), manager.low_probe_exit_progress_);
+          EXPECT_NEAR(end.z(), start.z(), 0.01);
         }
         if (saw_low_advance && manager.currentPlanIsVerticalDetour() && end.z() > current.z()) {
           EXPECT_GE(current.x(), manager.low_probe_exit_progress_ - 1e-6);
@@ -421,6 +434,17 @@ public:
       EXPECT_TRUE(saw_low_advance);
       EXPECT_TRUE(saw_ascent);
       EXPECT_FALSE(manager.suspended_underpass_active_);
+      if (memory) {
+        // 完成穿越后立即恢复普通航点长度上限。
+        manager.manual_path_.points.push_back(Vector3d(current.x(), -1.425, current.z()));
+        ASSERT_EQ(SUCCEED, manager.planExploreMotion(current, zero, zero, zero));
+        const auto controls = manager.planner_manager_->local_data_.position_traj_.getControlPoint();
+        double ordinary_length = 0.0;
+        for (int i=1; i<controls.rows(); ++i)
+          ordinary_length += (controls.row(i)-controls.row(i-1)).norm();
+        EXPECT_LE(ordinary_length, manager.manual_path_max_segment_length_+1e-6);
+        EXPECT_FALSE(manager.manual_fapp_active_);
+      }
     } else {
       EXPECT_TRUE(saw_side_pass);
       EXPECT_LT(std::fabs(current.y() - goal.y()), manager.manual_path_arrive_distance_);
