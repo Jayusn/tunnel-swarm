@@ -48,6 +48,18 @@ public:
   bool explorationFappCrossingActive() const {
     return fapp_exploration_crossing_enabled_ && manual_fapp_active_;
   }
+  bool needsExplorationFappRetry(const Vector3d& actual_pos) const {
+    return explorationFappCrossingActive() && !manual_path_enabled_ &&
+        fapp_crossing_retry_needed_ && pointInsideWorkspaceLock(actual_pos);
+  }
+  bool planExplorationFappCrossing(const Vector3d& pos, const Vector3d& vel,
+                                   const Vector3d& acc, const Vector3d& yaw);
+  void discardExplorationFappRetry() {
+    fapp_crossing_retry_needed_ = true;
+    manual_fapp_curve_active_ = false;
+    suspended_underpass_active_ = false;
+    fapp_rush_pending_ = false;
+  }
   // 只有真实里程计可释放未越过的动态障碍；预测规划起点不能提前解除等待。
   bool manualFappObservationMissing(const Vector3d& pos, double yaw,
                                      bool actual_odometry = false);
@@ -146,6 +158,7 @@ private:
   bool planFappOpeningCrossing(const Vector3d& pos, const Vector3d& vel,
                                const Vector3d& acc, const Vector3d& yaw);
   bool fapp_exploration_crossing_enabled_{false};
+  bool fapp_crossing_retry_needed_{false};
   Vector3d manual_fapp_forward_{Vector3d::UnitX()};
   double manual_fapp_exit_progress_{0.0};
   // 一次锁定穿越高度，不随掉高或可疑历史最低框逐轮降低。
@@ -157,8 +170,6 @@ private:
   double manual_fapp_curve_side_{0.0};
   bool buildManualFappUnderpassPath(const Vector3d& pos, const Vector3d& waypoint,
                                    std::vector<Vector3d>& path);
-  bool planExplorationFappCrossing(const Vector3d& pos, const Vector3d& vel,
-                                   const Vector3d& acc, const Vector3d& yaw);
   ManualWaypointPath manual_path_;
   int planManualWaypointMotion(const Vector3d& pos, const Vector3d& vel,
                                const Vector3d& acc, const Vector3d& yaw);

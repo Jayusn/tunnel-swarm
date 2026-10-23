@@ -3607,7 +3607,12 @@ bool FastExplorationManager::planExplorationFappCrossing(
     return false;
   manualFappObservationMissing(pos, yaw[0]);
   if (!manual_fapp_active_) return false;
-  if (planFappOpeningCrossing(pos, vel, acc, yaw)) return true;
+  // 临时失败不消费穿越机会；执行普通入口/前进段时，FSM 仍可重新尝试。
+  fapp_crossing_retry_needed_ = true;
+  if (planFappOpeningCrossing(pos, vel, acc, yaw)) {
+    fapp_crossing_retry_needed_ = false;
+    return true;
+  }
   Vector3d lower, upper;
   double age;
   if (!planner_manager_->watchedFappBounds(lower, upper, age)) return false;
@@ -3647,6 +3652,7 @@ bool FastExplorationManager::planExplorationFappCrossing(
   has_last_requested_goal_ = true;
   pending_reference_height_ = path.back().z();
   recovery_side_continuation_pending_ = false;
+  fapp_crossing_retry_needed_ = false;
   ROS_WARN("[exploration_fapp] continuous crossing target=(%.2f,%.2f,%.2f) "
            "curve=%d side=%d; complete crossing is exempt from route length limit.",
            path.back().x(), path.back().y(), path.back().z(),

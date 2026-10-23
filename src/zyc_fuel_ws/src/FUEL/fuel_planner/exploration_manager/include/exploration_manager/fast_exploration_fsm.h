@@ -109,6 +109,9 @@ private:
   bool active_traj_valid_{false};
   bool active_traj_braked_{false};
   bool width_replan_pending_{false};
+  bool fapp_replan_pending_{false};
+  ros::Time next_fapp_retry_;
+  bool checkFappExecutionRetry();
   ros::Time next_width_check_;
   Vector3d last_width_target_{Vector3d::Zero()};
   bool width_candidate_seen_{false};

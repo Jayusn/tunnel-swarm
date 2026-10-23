@@ -254,10 +254,11 @@ public:
     const bool prior_side = scenario == "exploration_prior_side";
     const bool prior_right_side = scenario == "exploration_prior_right_side";
     const bool low_minimum = scenario == "exploration_low_minimum";
+    const bool entry_retry = scenario == "exploration_entry_retry";
     const bool exploration = scenario == "exploration_low" || scenario == "exploration_side" ||
-        recovery_roof || prior_side || prior_right_side || low_minimum;
+        recovery_roof || prior_side || prior_right_side || low_minimum || entry_retry;
     const bool asymmetric_side = scenario == "asymmetric_side" || scenario == "exploration_side" || prior_right_side;
-    const bool asymmetric = scenario == "asymmetric_low" || scenario == "exploration_low" || asymmetric_side || recovery_roof || prior_side || low_minimum;
+    const bool asymmetric = scenario == "asymmetric_low" || scenario == "exploration_low" || asymmetric_side || recovery_roof || prior_side || low_minimum || entry_retry;
     const bool memory = scenario == "memory_below" || scenario == "memory_left" ||
         scenario == "memory_curve_right" || recorded || approach || asymmetric;
     const bool stale = scenario == "stale";
@@ -433,6 +434,75 @@ public:
       manager.manual_path_enabled_ = false;
       manager.fapp_exploration_crossing_enabled_ = true;
       manager.manual_path_.points.clear(); // 自主探索不能依赖人工航点列表。
+    }
+    if (entry_retry) {
+      manager.ep_->mission_use_workspace_lock_ = true;
+      manager.ep_->mission_global_no_return_ = true;
+      manager.ep_->mission_door_back_margin_ = 0.0;
+      manager.mission_workspace_lock_received_ = true;
+      manager.mission_workspace_origin_ = start + Vector3d(0.04,0,0);
+      manager.mission_workspace_dir_ = Vector3d::UnitX();
+      ASSERT_FALSE(manager.planExplorationFappCrossing(start, zero, zero, zero));
+      ASSERT_TRUE(manager.fapp_crossing_retry_needed_);
+      auto& planner = *manager.planner_manager_;
+      ASSERT_TRUE(planner.planExploreTraj({start, start + Vector3d(0.4,0,0),
+                                          start + Vector3d(0.8,0,0)},
+                                        zero, zero, 0.0, true));
+      FastExplorationFSM fsm;
+      fsm.expl_manager_ = std::shared_ptr<FastExplorationManager>(&manager, [](FastExplorationManager*) {});
+      fsm.planner_manager_ = manager.planner_manager_;
+      fsm.fd_ = std::make_shared<FSMData>();
+      fsm.fp_ = std::make_shared<FSMParam>();
+      fsm.fp_->replan_time_ = 0.2;
+      fsm.fd_->state_str_ = {"INIT", "WAIT", "PLAN", "PUB", "EXEC", "FINISH"};
+      fsm.active_traj_ = planner.local_data_;
+      fsm.active_traj_.start_time_ = ros::Time::now();
+      fsm.active_traj_valid_ = true;
+      fsm.narrow_corridor_stage_ = true;
+      fsm.fd_->odom_pos_ = start;
+      fsm.fd_->static_state_ = false;
+      fsm.state_ = EXEC_TRAJ;
+      const auto published_points = fsm.active_traj_.position_traj_.getControlPoint();
+      EXPECT_FALSE(fsm.checkFappExecutionRetry()); // 门外仍沿普通入口路线走。
+      fsm.fd_->odom_pos_ = start + Vector3d(0.15,0,0);
+      manager.manual_fapp_active_ = false;
+      EXPECT_FALSE(fsm.checkFappExecutionRetry()); // 无动态会话不触发。
+      manager.manual_fapp_active_ = true;
+      manager.fapp_crossing_retry_needed_ = false;
+      EXPECT_FALSE(fsm.checkFappExecutionRetry()); // 已成功的穿越不周期换轨。
+      manager.fapp_crossing_retry_needed_ = true;
+      ASSERT_TRUE(fsm.checkFappExecutionRetry());
+      EXPECT_FALSE(fsm.checkFappExecutionRetry()); // 非100Hz连续重算。
+      // 预测起点尚在门外时再次失败，仍保留真实已发布的普通轨迹。
+      fsm.fapp_replan_pending_ = true;
+      fsm.fd_->start_pt_ = start;
+      fsm.fd_->start_vel_ = fsm.fd_->start_acc_ = fsm.fd_->start_yaw_ = zero;
+      EXPECT_EQ(FAIL, fsm.callExplorationPlanner());
+      ASSERT_TRUE(fsm.resumeAfterWidthAttempt("test temporary crossing rejection"));
+      EXPECT_EQ(EXEC_TRAJ, fsm.state_);
+      EXPECT_FALSE(fsm.active_traj_braked_);
+      EXPECT_TRUE(published_points.isApprox(fsm.active_traj_.position_traj_.getControlPoint()));
+      // 入口内重新生成，终点应低位且完全越过障碍；失败未永久封死候选。
+      fsm.fapp_replan_pending_ = true;
+      fsm.fd_->start_pt_ = fsm.fd_->odom_pos_;
+      ASSERT_EQ(SUCCEED, fsm.callExplorationPlanner());
+      EXPECT_LT(manager.ed_->next_goal_.z(), start.z()-0.10);
+      EXPECT_GT(manager.ed_->next_goal_.x(), upper.x()+0.10);
+      EXPECT_TRUE(published_points.isApprox(fsm.active_traj_.position_traj_.getControlPoint()));
+      ASSERT_TRUE(fsm.resumeAfterWidthAttempt("test replacement rejected before publish"));
+      EXPECT_TRUE(manager.needsExplorationFappRetry(fsm.fd_->odom_pos_));
+      EXPECT_FALSE(manager.manual_fapp_curve_active_);
+      EXPECT_FALSE(fsm.active_traj_braked_);
+      fsm.fapp_replan_pending_ = true;
+      ASSERT_EQ(SUCCEED, fsm.callExplorationPlanner());
+      manager.recordPublishedTrajectoryHeight();
+      EXPECT_FALSE(manager.needsExplorationFappRetry(fsm.fd_->odom_pos_));
+      EXPECT_NEAR(manager.manual_fapp_hold_height_, manager.ed_->next_goal_.z(), 0.01);
+      fsm.fapp_replan_pending_ = true;
+      fsm.fd_->static_state_ = true; // 正常跟踪纠偏重规划抢占动态试探。
+      ASSERT_EQ(SUCCEED, fsm.callExplorationPlanner());
+      EXPECT_FALSE(fsm.fapp_replan_pending_);
+      return;
     }
     const int result = manager.planExploreMotion(start, zero, zero, zero);
     if (result == SUCCEED) manager.recordPublishedTrajectoryHeight();
@@ -2839,6 +2909,9 @@ TEST(FappExploration, OrdinarySidePreferenceDoesNotSuppressUnderpass) {
 }
 TEST(FappExploration, ConfiguredTenCentimetreMinimumAllowsTwelveCentimetreCrossing) {
   fast_planner::TurnEscapeTest::runManualSuspended("exploration_low_minimum");
+}
+TEST(FappExploration, EntranceRejectionRetriesInsideWithoutReplacingValidRouteOnFailure) {
+  fast_planner::TurnEscapeTest::runManualSuspended("exploration_entry_retry");
 }
 
 TEST(FappExploration, CommittedSideAdvancesWithoutRecenteringOrHistorySidePush) {

@@ -494,12 +494,12 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
         odom_review_after_ = ros::Time::now();
         transitState(PUB_TRAJ, "FSM");
       } else if (res == NO_FRONTIER) {
-        if (resumeAfterWidthAttempt("width alternative unavailable")) break;
+        if (resumeAfterWidthAttempt("alternative unavailable")) break;
         transitState(FINISH, "FSM");
         fd_->static_state_ = true;
         clearVisMarker();
       } else if (res == FAIL) {
-        if (resumeAfterWidthAttempt("width alternative planning failed")) break;
+        if (resumeAfterWidthAttempt("alternative planning failed")) break;
         // Still in PLAN_TRAJ state, keep replanning
         // 转弯可能恰好在普通重规划阶段确认，此时安全定时器不在EXEC分支，必须在这里
         // 主动截断旧平移轨迹；随后只等待静止确认和原地转向候选，不能继续向旧轴推进。
@@ -640,7 +640,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
         const bool release_safe = raw_start_safe && clears_inflation &&
                                   release_state_continuous && trajectory_safe;
         if (!release_safe) {
-          if (resumeAfterWidthAttempt("width alternative failed release checks")) break;
+          if (resumeAfterWidthAttempt("alternative failed release checks")) break;
           // 首条轨迹的速度只要尚未连续稳定就继续悬停审核，不销毁已经通过位置和地图
           // 检查的候选；这样单帧尖峰不会触发无休止的“规划-拒绝”循环。
           if (!active_traj_valid_ && position_continuous && acceleration_continuous &&
@@ -706,6 +706,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
         active_traj_valid_ = true;
         active_traj_braked_ = false;
         width_replan_pending_ = false;
+        fapp_replan_pending_ = false;
         width_candidate_seen_ = false;
         next_width_check_ = now + ros::Duration(0.5);
         active_turn_in_place_ = pending_turn_in_place_;
@@ -821,6 +822,16 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
         }
         return;
       }
+      // 动态穿越的临时拒绝不能等入口等高段飞完才重试。保留普通路线，
+      // 进门后单独尝试穿越；候选通过完整发布检查后再替换。
+      if (checkFappExecutionRetry()) {
+        fapp_replan_pending_ = true;
+        fd_->static_state_ = false;
+        transitState(PLAN_TRAJ, "retry-dynamic-crossing");
+        ROS_WARN("[fapp_retry] retry crossing during forward execution at (%.2f,%.2f,%.2f).",
+                 fd_->odom_pos_.x(), fd_->odom_pos_.y(), fd_->odom_pos_.z());
+        return;
+      }
       // 覆盖、周期和临近终点仍不能任意换边；只有连续新地图证实前方整段
       // 明显更宽时才准备替代轨迹。碰撞与跟踪检查继续由 safetyCallback 负责。
       if (keepExecutingCorridorTrajectory()) {
@@ -890,8 +901,20 @@ bool FastExplorationFSM::checkWiderExecutionRoute() {
   return confirmed;
 }
 
+bool FastExplorationFSM::checkFappExecutionRetry() {
+  const ros::Time now = ros::Time::now();
+  if (!keepExecutingCorridorTrajectory() ||
+      !expl_manager_->needsExplorationFappRetry(fd_->odom_pos_) ||
+      (!next_fapp_retry_.isZero() && now < next_fapp_retry_)) return false;
+  next_fapp_retry_ = now + ros::Duration(0.5);
+  return true;
+}
+
 bool FastExplorationFSM::resumeAfterWidthAttempt(const string& reason) {
-  if (!width_replan_pending_) return false;
+  if (!width_replan_pending_ && !fapp_replan_pending_) return false;
+  const bool fapp_retry = fapp_replan_pending_;
+  if (fapp_retry) expl_manager_->discardExplorationFappRetry();
+  fapp_replan_pending_ = false;
   width_replan_pending_ = false;
   width_candidate_seen_ = false;
   expl_manager_->clearWiderRoute();
@@ -906,8 +929,10 @@ bool FastExplorationFSM::resumeAfterWidthAttempt(const string& reason) {
   next_plan_retry_time_ = ros::Time(0);
   pending_traj_safe_since_ = ros::Time(0);
   next_width_check_ = ros::Time::now() + ros::Duration(0.5);
-  transitState(EXEC_TRAJ, "keep-valid-route-after-width-attempt");
-  ROS_WARN("[route_width] %s; continue the checked published trajectory.", reason.c_str());
+  next_fapp_retry_ = ros::Time::now() + ros::Duration(0.5);
+  transitState(EXEC_TRAJ, "keep-valid-route-after-alternative-attempt");
+  ROS_WARN("[%s] %s; continue the checked published trajectory.",
+           fapp_retry ? "fapp_retry" : "route_width", reason.c_str());
   return true;
 }
 
@@ -924,8 +949,18 @@ bool FastExplorationFSM::keepExecutingCorridorTrajectory() const {
 int FastExplorationFSM::callExplorationPlanner() {
   ros::Time time_r = ros::Time::now() + ros::Duration(fp_->replan_time_);
 
-  int res = expl_manager_->planExploreMotion(fd_->start_pt_, fd_->start_vel_, fd_->start_acc_,
-                                             fd_->start_yaw_);
+  // 跟踪纠偏、碰撞或旧轨迹结束要求正常重规划时，动态试探必须让出执行权。
+  if (fapp_replan_pending_ && (fd_->static_state_ || !keepExecutingCorridorTrajectory())) {
+    expl_manager_->discardExplorationFappRetry();
+    fapp_replan_pending_ = false;
+  }
+  // 执行中重试只检查动态穿越，失败时不重新选普通目标、不抢占原前进轨迹。
+  int res = fapp_replan_pending_
+      ? (expl_manager_->planExplorationFappCrossing(fd_->start_pt_, fd_->start_vel_,
+                                                   fd_->start_acc_, fd_->start_yaw_)
+             ? SUCCEED : FAIL)
+      : expl_manager_->planExploreMotion(fd_->start_pt_, fd_->start_vel_, fd_->start_acc_,
+                                          fd_->start_yaw_);
   pending_turn_in_place_ =
       res == SUCCEED && expl_manager_->currentPlanIsTurnInPlace();
   pending_ground_ascent_ =
