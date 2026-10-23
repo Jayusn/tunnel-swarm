@@ -118,6 +118,29 @@ namespace diff_planner
     return ploy_traj_opt_->getDynamicObstacleConfig().enabled;
   }
 
+  bool DiffPlannerManager::inDynamicPassage(const Eigen::Vector3d &position,
+                                           double now) const
+  {
+    if (!dynamicAvoidanceEnabled() || !position.allFinite()) return false;
+    const auto &config = ploy_traj_opt_->getDynamicObstacleConfig();
+    const double top = config.vehicle_top_height >= 0.0
+        ? config.vehicle_top_height : config.vehicle_half_height;
+    const double bottom = config.vehicle_bottom_height >= 0.0
+        ? config.vehicle_bottom_height : config.vehicle_half_height;
+    for (const auto &obstacle : ploy_traj_opt_->getDynamicObstacles())
+    {
+      // 下穿时也属于动态通行区域。仅用包络的XY覆盖范围选择恢复流程，
+      // 不改变地图占据或正常轨迹的碰撞检查。
+      Eigen::Vector3d projected = position;
+      projected.z() = obstacle.position.z() + 0.5 * (bottom - top);
+      double clearance;
+      if (evaluateDynamicObstacle(projected, obstacle, obstacle.stamp, now,
+                                  config, &clearance) && clearance <= 0.0)
+        return true;
+    }
+    return false;
+  }
+
   bool DiffPlannerManager::dynamicTrajectoryBlocked(
       const std::vector<std::pair<double, Eigen::Vector3d>> &samples,
       double now, SwingCollisionResult *result) const

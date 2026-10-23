@@ -130,7 +130,7 @@ def test_uav1_relay_uses_traj_server_heartbeat_safety_only():
     assert '<remap from="~heartbeat" to="/drone_1_planning/heartbeat"/>' in relay
     assert '<arg name="planning_timeout" value="2.0"/>' in relay
     assert '<remap from="~safety_hold" to="/UAV1/planning/safety_hold"/>' in relay
-    assert '<param name="traj_server/heartbeat_timeout" value="2.0" type="double"/>' in relay
+    assert '<param name="traj_server/heartbeat_timeout" value="180.0" type="double"/>' in relay
     assert '#include <std_msgs/Bool.h>' in traj_server
     assert 'nh.advertise<std_msgs::Bool>("safety_hold"' in traj_server
     assert 'publishSafetyHold(true)' in traj_server
@@ -184,7 +184,7 @@ def test_uav1_relay_prefers_history_but_allows_fallback_recovery():
     assert '<arg name="enable_occupied_recovery" value="true"/>' in launch
     assert '<arg name="escape_max_distance" value="0.45"/>' in launch
     assert '<arg name="escape_history_time" value="0.0"/>' in launch
-    assert '<arg name="escape_speed" value="0.10"/>' in launch
+    assert '<arg name="escape_speed" value="0.20"/>' in launch
     assert '<arg name="history_only_occupied_recovery" value="false"/>' in launch
     assert "未经用户明确确认" in launch
     assert "不得把 history_only_occupied_recovery 重新设为 true" in launch
@@ -194,7 +194,8 @@ def test_uav1_relay_prefers_history_but_allows_fallback_recovery():
     history = source.split("bool DiffReplanFSM::selectHistoryRecoveryTarget", 1)[1]
     history = history.split("bool DiffReplanFSM::selectVerticalRecoveryTarget", 1)[0]
     assert "history_distance += std::hypot" in history
-    assert "Eigen::Vector3d candidate(it->x, it->y, escape_recovery_height_)" in history
+    assert "std::min(it->z, height_limit)" in history
+    assert "std::max(odom_pos_.z(), final_goal_.z())" in history
     assert "history_distance - escape_max_distance_" in history
     assert "estimateInflatedClearance(candidate)" not in history
     assert "validateRecoverySegment(odom_pos_, candidate" not in history

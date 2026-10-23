@@ -58,11 +58,12 @@ def test_recovery_trajectory_is_slow_and_zero_velocity_at_both_ends():
     assert "tail_state << target_pos, zero, zero" in recovery
 
 
-def test_run_swarm_enables_recovery_with_conservative_defaults():
+def test_run_swarm_keeps_recovery_opt_in_with_configured_defaults():
     advanced = ADVANCED_LAUNCH.read_text(encoding="utf-8")
     run_swarm = RUN_SWARM.read_text(encoding="utf-8")
     assert 'name="enable_occupied_recovery" default="false"' in advanced
-    assert 'name="enable_occupied_recovery" default="true"' in run_swarm
+    assert 'name="enable_occupied_recovery" default="false"' in run_swarm
+    assert 'name="enable_occupied_recovery" value="$(arg enable_occupied_recovery)"' in run_swarm
     assert 'name="escape_speed" value="0.10"' in run_swarm
     assert 'name="escape_max_distance" value="0.40"' in run_swarm
     assert 'name="escape_max_occupied_prefix" value="0.20"' in run_swarm

@@ -301,7 +301,7 @@ namespace diff_planner
         target_type_ == TARGET_TYPE::MANUAL_TARGET &&
         active_external_goal_stamp_ns_ != 0ULL &&
         planner_manager_->traj_.local_traj.traj_id > 0 && !mandatory_stop_;
-    if (enable_occupied_recovery_ && have_odom_ &&
+    if (useOccupiedRecovery() && have_odom_ &&
         (normal_planning_state || waiting_after_manual_goal))
     {
       const int current_occ =
@@ -728,12 +728,12 @@ namespace diff_planner
         }
 
         const int current_occ = planner_manager_->grid_map_->getInflateOccupancy(odom_pos_);
-        if (enable_occupied_recovery_ && current_occ != 0)
+        if (useOccupiedRecovery() && current_occ != 0)
         {
           beginOccupiedRecoveryEpisode();
         }
         // 占据事件持续到退让完成；单帧清空不能恢复原目标、再按漂移位置急停。
-        if (enable_occupied_recovery_ && occupied_recovery_episode_ &&
+        if (useOccupiedRecovery() && occupied_recovery_episode_ &&
             ((have_target_ && have_trigger_) ||
              (wait_new_target_after_occupied_recovery_ &&
               active_external_goal_stamp_ns_ != 0ULL)) && !mandatory_stop_)
@@ -793,6 +793,15 @@ namespace diff_planner
 
     case OCCUPIED_RECOVERY:
     {
+      if (enable_occupied_recovery_ && !mandatory_stop_ && have_target_ &&
+          !useOccupiedRecovery())
+      {
+        cancelOccupiedRecovery("OCCUPIED_RECOVERY_CANCELLED");
+        occupied_recovery_episode_ = false;
+        need_hover_stop_ = false;
+        changeFSMExecState(GEN_NEW_TRAJ, "DYNAMIC_PASSAGE_REPLAN");
+        break;
+      }
       if (!enable_occupied_recovery_ || mandatory_stop_ || !occupied_recovery_active_)
       {
         abortOccupiedRecovery("脱障被禁用、收到强制停止，或脱障状态无效");
@@ -1027,7 +1036,7 @@ namespace diff_planner
       return;
     }
 
-    if (enable_occupied_recovery_ &&
+    if (useOccupiedRecovery() &&
         map->getInflateOccupancy(odom_pos_) != 0)
     {
       need_hover_stop_ = true;
@@ -1342,6 +1351,13 @@ namespace diff_planner
     return true;
   }
 
+  bool DiffReplanFSM::useOccupiedRecovery() const
+  {
+    // 动态穿越保留当前前进目标，由普通/FAPP重规划处理，不能切成后退抬高。
+    return enable_occupied_recovery_ &&
+        !planner_manager_->inDynamicPassage(odom_pos_, ros::Time::now().toSec());
+  }
+
   void DiffReplanFSM::updateFreeOdomHistory(double now)
   {
     if (!enable_occupied_recovery_)
@@ -1473,9 +1489,14 @@ namespace diff_planner
     Eigen::Vector3d previous = odom_pos_;
     std::vector<Eigen::Vector3d> reverse_path{odom_pos_};
     std::size_t selected_path_size = 0;
+    const double height_limit = target_type_ == TARGET_TYPE::MANUAL_TARGET &&
+        (have_target_ || active_external_goal_stamp_ns_ != 0ULL)
+        ? std::max(odom_pos_.z(), final_goal_.z())
+        : std::numeric_limits<double>::infinity();
     for (auto it = free_odom_history_.rbegin(); it != free_odom_history_.rend(); ++it)
     {
-      const Eigen::Vector3d candidate(it->x, it->y, escape_recovery_height_);
+      // 保留历史高度；低目标接力时不因更早的高历史点提前抬高。
+      const Eigen::Vector3d candidate(it->x, it->y, std::min(it->z, height_limit));
       if (!candidate.allFinite())
         continue;
       history_distance += std::hypot(candidate.x() - previous.x(),
@@ -1518,11 +1539,14 @@ namespace diff_planner
   bool DiffReplanFSM::selectVerticalRecoveryTarget(Eigen::Vector3d &target,
                                                    double &clearance)
   {
-    if (odom_pos_.z() >= escape_recovery_height_ - escape_reach_tolerance_)
+    const double recovery_height = target_type_ == TARGET_TYPE::MANUAL_TARGET &&
+        (have_target_ || active_external_goal_stamp_ns_ != 0ULL)
+        ? final_goal_.z() : escape_recovery_height_;
+    if (odom_pos_.z() >= recovery_height - escape_reach_tolerance_)
       return false;
 
     Eigen::Vector3d candidate = odom_pos_;
-    candidate.z() = escape_recovery_height_;
+    candidate.z() = recovery_height;
     double occupied_prefix = 0.0;
     if (!validateRecoverySegment(odom_pos_, candidate, true, &occupied_prefix))
       return false;
@@ -1533,9 +1557,9 @@ namespace diff_planner
 
     target = candidate;
     clearance = candidate_clearance;
-    ROS_WARN("[局部脱障] 当前低于名义高度，优先固定XY上升至 %.3f m；"
+    ROS_WARN("[局部脱障] 当前低于恢复目标高度，固定XY上升至 %.3f m；"
              "占据前缀 %.3f m，终点净空 %.3f m。",
-             escape_recovery_height_, occupied_prefix, clearance);
+             recovery_height, occupied_prefix, clearance);
     return true;
   }
 
@@ -1670,6 +1694,7 @@ namespace diff_planner
 
   bool DiffReplanFSM::startOccupiedRecovery(double now)
   {
+    if (!useOccupiedRecovery()) return false;
     beginOccupiedRecoveryEpisode();
     Eigen::Vector3d target;
     double clearance = 0.0;
@@ -1716,7 +1741,7 @@ namespace diff_planner
              "来源=%s，净空=%.3f m，截止时间=%.3f。",
              occupied_recovery_attempt_count_, escape_max_attempts_, target.x(),
              target.y(), target.z(), occupied_recovery_vertical_
-                                           ? "固定XY恢复名义高度"
+                                           ? "固定XY恢复目标高度"
                                            : (from_history ? "历史自由轨迹"
                                                            : "实时侧向搜索"),
              clearance, occupied_recovery_deadline_);
@@ -2153,7 +2178,8 @@ namespace diff_planner
     last_target_change_time_ = now;
     stuck_detect_ignore_until_ = now + stuck_detect_grace_time_;
 
-    if (planner_manager_->grid_map_->getInflateOccupancy(odom_pos_) != 0)
+    if (useOccupiedRecovery() &&
+        planner_manager_->grid_map_->getInflateOccupancy(odom_pos_) != 0)
     {
       need_hover_stop_ = true;
       flag_escape_emergency_ = true;

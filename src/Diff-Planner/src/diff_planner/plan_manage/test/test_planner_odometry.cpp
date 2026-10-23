@@ -275,6 +275,104 @@ TEST_F(FappRollingEndpoint, CrossingKeepsReleasedRelayEndpointAndHistoryThroughD
   EXPECT_FALSE(m.dynamicTrajectoryBlocked({{0.0,goal-Eigen::Vector3d(0.9,0,0)}},1020));
 }
 
+TEST_F(FappRollingEndpoint, LowDynamicPassageKeepsGoalWithoutStartingRetreat)
+{
+  planner.odom_pos_ = Eigen::Vector3d(4.23084, -0.06418, 0.03674);
+  planner.final_goal_ = Eigen::Vector3d(4.84524, -0.09443, 0.10333);
+  const auto expected_goal = planner.final_goal_;
+  obj_state_msgs::ObjectsStates message;
+  message.header.stamp = ros::Time::now();
+  message.states.resize(1);
+  auto &ball = message.states.front();
+  ball.position.x = 4.268; ball.position.y = -0.136; ball.position.z = 0.598;
+  ball.size.x = 0.352; ball.size.y = 1.315; ball.size.z = 0.375;
+  auto &manager = *planner.planner_manager_;
+  manager.updateDynamicObjects(message);
+  // Low altitude is clear in 3D but still below the dynamic passage in XY.
+  EXPECT_FALSE(manager.dynamicTrajectoryBlocked({{0.0, planner.odom_pos_}}, 1000));
+  ASSERT_TRUE(manager.inDynamicPassage(planner.odom_pos_, 1000));
+  EXPECT_FALSE(planner.startOccupiedRecovery(1000));
+  EXPECT_FALSE(planner.occupied_recovery_episode_);
+
+  planner.exec_state_ = FSM::EMERGENCY_STOP;
+  planner.flag_escape_emergency_ = false;
+  planner.need_hover_stop_ = true;
+  exec();
+  EXPECT_EQ(planner.exec_state_, FSM::GEN_NEW_TRAJ);
+  EXPECT_LT((planner.final_goal_ - expected_goal).norm(), 1e-9);
+  EXPECT_FALSE(planner.occupied_recovery_active_);
+  expectNoReplacement();
+
+  message.states.clear();
+  ros::Time::setNow(ros::Time(1001));
+  manager.updateDynamicObjects(message);
+  EXPECT_FALSE(planner.useOccupiedRecovery()); // Empty detection keeps history.
+  planner.odom_pos_.x() = 5.1;
+  EXPECT_TRUE(planner.useOccupiedRecovery()); // Static recovery outside passage.
+  planner.odom_pos_.x() = 4.23;
+  ros::Time::setNow(ros::Time(1011));
+  manager.updateDynamicObjects(message);
+  EXPECT_TRUE(planner.useOccupiedRecovery()); // No indefinite stale suppression.
+}
+
+TEST_F(FappRollingEndpoint, DynamicPassageCancelsRetreatWithoutDiscardingGoal)
+{
+  obj_state_msgs::ObjectsStates message;
+  message.header.stamp = ros::Time::now();
+  message.states.resize(1);
+  auto &ball = message.states.front();
+  ball.position.x = planner.odom_pos_.x();
+  ball.position.y = planner.odom_pos_.y();
+  ball.position.z = 0.8;
+  ball.size.x = ball.size.y = ball.size.z = 0.2;
+  planner.planner_manager_->updateDynamicObjects(message);
+  planner.exec_state_ = FSM::OCCUPIED_RECOVERY;
+  planner.occupied_recovery_active_ = planner.occupied_recovery_episode_ = true;
+  exec();
+  EXPECT_EQ(planner.exec_state_, FSM::GEN_NEW_TRAJ);
+  EXPECT_FALSE(planner.occupied_recovery_active_);
+  EXPECT_FALSE(planner.occupied_recovery_episode_);
+  EXPECT_TRUE(planner.have_target_);
+  EXPECT_LT((planner.final_goal_ - goal).norm(), 1e-9);
+  expectNoReplacement();
+}
+
+TEST_F(PlannerEndpoint, LowRelayRecoveryPreservesHeightUntilHigherGoalArrives)
+{
+  planner.odom_pos_ = Eigen::Vector3d(4.23, -0.06, 0.037);
+  planner.final_goal_ = Eigen::Vector3d(4.85, -0.09, 0.103);
+  planner.escape_max_distance_ = 0.45;
+  planner.free_odom_history_.clear();
+  planner.free_odom_history_.push_back(FSM::FreeOdomSample{998, 3.78, -0.06, 0.60});
+  planner.free_odom_history_.push_back(FSM::FreeOdomSample{999, 4.16, -0.06, 0.08});
+  std::vector<Eigen::Vector3d> path;
+  Eigen::Vector3d selected;
+  double clearance;
+  ASSERT_TRUE(planner.selectHistoryRecoveryTarget(selected, clearance, &path));
+  ASSERT_EQ(path.size(), 3U);
+  EXPECT_NEAR(path[1].z(), 0.08, 1e-9);
+  EXPECT_NEAR(selected.z(), 0.103, 1e-9);
+  for (const auto &p : path) EXPECT_LE(p.z(), planner.final_goal_.z());
+  ASSERT_TRUE(planner.selectVerticalRecoveryTarget(selected, clearance));
+  EXPECT_NEAR(selected.z(), 0.103, 1e-9);
+
+  planner.have_target_ = false; // Arrived at a low point, waiting for the next one.
+  planner.active_external_goal_stamp_ns_ = 123;
+  ASSERT_TRUE(planner.selectHistoryRecoveryTarget(selected, clearance, &path));
+  EXPECT_NEAR(selected.z(), 0.103, 1e-9);
+  ASSERT_TRUE(planner.selectVerticalRecoveryTarget(selected, clearance));
+  EXPECT_NEAR(selected.z(), 0.103, 1e-9);
+
+  // The next higher relay goal, rather than the 0.60 m fallback, permits climbing.
+  planner.have_target_ = true;
+  planner.final_goal_.z() = 0.45;
+  ASSERT_TRUE(planner.selectHistoryRecoveryTarget(selected, clearance, &path));
+  EXPECT_NEAR(path[1].z(), 0.08, 1e-9);
+  EXPECT_NEAR(selected.z(), 0.45, 1e-9);
+  ASSERT_TRUE(planner.selectVerticalRecoveryTarget(selected, clearance));
+  EXPECT_NEAR(selected.z(), 0.45, 1e-9);
+}
+
 TEST_F(RollingPlannerEndpoint, RollingSegmentsRetainGoalAndNonzeroIntermediateVelocity)
 {
   auto& m = *planner.planner_manager_;

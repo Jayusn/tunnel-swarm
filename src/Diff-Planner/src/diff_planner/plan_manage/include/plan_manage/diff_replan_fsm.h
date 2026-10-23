@@ -218,6 +218,7 @@ namespace diff_planner
     bool callOccupiedRecovery(const Eigen::Vector3d &target,
                               const std::vector<Eigen::Vector3d> &history_path = {});
     void updateFreeOdomHistory(double now);
+    bool useOccupiedRecovery() const;
     void beginOccupiedRecoveryEpisode();
     bool startOccupiedRecovery(double now);
     bool selectOccupiedRecoveryTarget(Eigen::Vector3d &target,

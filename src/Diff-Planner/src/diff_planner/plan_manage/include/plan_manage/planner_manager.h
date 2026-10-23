@@ -73,6 +73,7 @@ namespace diff_planner
         const std::vector<std::pair<double, Eigen::Vector3d>> &samples,
         double now, SwingCollisionResult *result = nullptr) const;
     bool dynamicAvoidanceEnabled() const;
+    bool inDynamicPassage(const Eigen::Vector3d &position, double now) const;
     void observeDynamicPosition(const Eigen::Vector3d& actual);
     bool dynamicCandidatesFailed(SwingCollisionResult *result) const {
       if (result != nullptr) *result = dynamic_candidate_failure_;

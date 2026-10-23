@@ -133,7 +133,7 @@
         <arg name="require_pre_agent_trajectory" value="false"/>
         <!-- 2026-07-28: 后机规划失败由safe_follower改发已验证短子目标，禁用会阻塞FSM并导致Lost heartbeat的随机初始化。 -->
         <arg name="enable_random_global_init" value="true"/>
-        <!-- 自身位置被判占据时优先沿实飞历史后退约0.45m；历史不可用时允许垂直/侧向脱障。 -->
+        <!-- 静态占据沿历史低空路径退让；动态包络通行区域继续跟随当前前机目标重规划，不启动后退脱障。 -->
         <arg name="enable_occupied_recovery" value="true"/>
         <arg name="preserve_modified_goal_height" value="true"/>
         <arg name="mondify_final_goal" value="false"/>
@@ -142,6 +142,7 @@
         <arg name="escape_history_time" value="0.0"/>
         <arg name="escape_speed" value="0.20"/>
         <arg name="escape_reach_tolerance" value="0.10"/>
+        <!-- 仅无外部目标时使用此备用高度；接力恢复高度跟随当前前机目标，不提前抬到0.60m。 -->
         <arg name="escape_recovery_height" value="0.60"/>
         <!-- 用户规则：未经用户明确确认，永远不得把 history_only_occupied_recovery 重新设为 true。 -->
         <arg name="history_only_occupied_recovery" value="false"/>
