@@ -123,6 +123,53 @@ public:
     EXPECT_EQ(2u, planner.fapp_states_.size());
   }
 
+  static void runLateHistoricalOutlier() {
+    FastPlannerManager planner;
+    planner.fapp_config_.enabled = true;
+    planner.fapp_config_.vehicle_top_height = 0.05;
+    planner.fapp_memory_enabled_ = true;
+    planner.fapp_frame_ = "UAV0/camera_init";
+    auto message = boost::make_shared<obj_state_msgs::ObjectsStates>();
+    message->header.frame_id = planner.fapp_frame_;
+    obj_state_msgs::State ball;
+    // 14:23:56录包：尺寸证据不足时收入的旧异常框。
+    ball.position.x = 3.473151; ball.position.y = 0.582865; ball.position.z = 0.382162;
+    ball.size.x = 0.171854; ball.size.y = 0.013825; ball.size.z = 0.421173;
+    const double now = ros::Time::now().toSec();
+    message->header.stamp.fromSec(now - 0.5);
+    message->states = {ball};
+    planner.fappCallback(message);
+    ASSERT_EQ(1u, planner.fapp_history_.size()); // 不能靠新帧过滤掩盖旧帧合并漏洞。
+    ball.position.x = 3.30; ball.position.y = 0.20; ball.position.z = 0.62;
+    ball.size.x = 0.08; ball.size.y = 0.16; ball.size.z = 0.158;
+    for (int i=0; i<4; ++i) {
+      message->header.stamp.fromSec(now - 0.4 + i*0.05);
+      message->states = {ball};
+      planner.fappCallback(message);
+    }
+    auto initial = planner.fapp_history_.back();
+    initial.position = Vector3d(3.09,-0.02,0.62); // 起初旧异常框还不在关联范围。
+    planner.watchFappObstacle(&initial);
+    const Vector3d confirmed_lower = planner.fapp_watched_lower_;
+    ball.position.y = 0.30; // 摆动后，旧异常框进入新位置的历史关联范围。
+    message->header.stamp.fromSec(now-0.1);
+    message->states = {ball};
+    planner.fappCallback(message);
+    EXPECT_NEAR(confirmed_lower.z(), planner.fapp_watched_lower_.z(), 1e-9);
+    EXPECT_GT(planner.fapp_watched_lower_.z()-0.06, 0.25);
+    // 尺寸正常的低点照常记忆，不因较低位置被误删。
+    ball.position.z = 0.44;
+    message->header.stamp.fromSec(now);
+    message->states = {ball};
+    planner.fappCallback(message);
+    EXPECT_NEAR(0.44-0.158/2-0.05-0.10, planner.fapp_watched_lower_.z(), 1e-6);
+    const double real_low = planner.fapp_watched_lower_.z();
+    planner.fapp_history_.clear();
+    message->states.clear();
+    planner.fappCallback(message);
+    EXPECT_DOUBLE_EQ(real_low, planner.fapp_watched_lower_.z());
+  }
+
   static void checkManualFappExecution(FastExplorationManager& manager, const Vector3d& start) {
     FastExplorationFSM fsm;
     fsm.expl_manager_ = std::shared_ptr<FastExplorationManager>(
@@ -527,6 +574,19 @@ public:
       EXPECT_GT(manager.ed_->next_goal_.x(), upper.x() + 0.1);
       auto preceding = manager.planner_manager_->local_data_.position_traj_;
       const Vector3d endpoint = preceding.evaluateDeBoorT(preceding.getTimeSum());
+      if (!asymmetric_side) {
+        Vector3d lower_bound, upper_bound;
+        double age;
+        ASSERT_TRUE(manager.planner_manager_->watchedFappBounds(lower_bound, upper_bound, age));
+        const double descent_start = lower_bound.x()-map.getResolution()-0.50;
+        for (const auto& point : manager.ed_->path_next_goal_)
+          if (point.x() < descent_start) EXPECT_NEAR(start.z(), point.z(), 1e-9);
+        // 同时检查最终B样条，不能只有折线等高、优化后又提前下降。
+        for (double t=0; t<preceding.getTimeSum(); t+=0.02) {
+          const auto point = preceding.evaluateDeBoorT(t);
+          if (point.x() < descent_start-0.10) EXPECT_NEAR(start.z(), point.z(), 0.02);
+        }
+      }
       EXPECT_GT(endpoint.x(), upper.x() + 0.1);
       EXPECT_GT((endpoint-start).norm(), 1.2);
       EXPECT_NEAR(endpoint.z(), asymmetric_side ? start.z() : manager.low_probe_height_, 0.01);
@@ -2671,6 +2731,9 @@ TEST(FappMemory, EmptyPartialInvalidAndExpiredObservationsUseSpatialMemory) {
 }
 TEST(FappMemory, ConfirmedRegionRejectsSingleTallBoxButKeepsRealLowerObservation) {
   fast_planner::TurnEscapeTest::runFappTallOutlier();
+}
+TEST(FappMemory, OldSparseTallBoxIsRecheckedBeforeJoiningConfirmedEnvelope) {
+  fast_planner::TurnEscapeTest::runLateHistoricalOutlier();
 }
 TEST(FappMemory, PlannerPriorityAdvancesFromInsideHistoricalEnvelope) {
   fast_planner::TurnEscapeTest::runManualSuspended("inside_history");

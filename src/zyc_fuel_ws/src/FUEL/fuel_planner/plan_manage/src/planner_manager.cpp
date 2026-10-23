@@ -181,19 +181,7 @@ void FastPlannerManager::fappCallback(const obj_state_msgs::ObjectsStates::Const
     // 将已确认的摆球底部拉到地面；正常尺寸的更低观测仍保留。
     observations.erase(std::remove_if(observations.begin(), observations.end(),
         [&](const fuel_fapp::DynamicObstacleState& fresh) {
-          std::vector<double> heights;
-          for (const auto& old : fapp_history_)
-            if (old.stamp < fresh.stamp && old.size.allFinite() && old.size.z() > 0.0 &&
-                (old.position - fresh.position).norm() <= fapp_association_distance_)
-              heights.push_back(old.size.z());
-          if (heights.size() < 3) return false;
-          auto middle = heights.begin() + heights.size() / 2;
-          std::nth_element(heights.begin(), middle, heights.end());
-          if (fresh.size.z() <= 2.0 * *middle + 0.05) return false;
-          ROS_WARN_THROTTLE(1.0, "[FAPP memory] ignore isolated tall box z_size=%.3f "
-              "historical_median=%.3f samples=%zu; retain confirmed region.",
-              fresh.size.z(), *middle, heights.size());
-          return true;
+          return fappSizeOutlier(fresh);
         }), observations.end());
     for (const auto& fresh : observations) {
       const bool duplicate = std::any_of(fapp_history_.begin(), fapp_history_.end(),
@@ -257,10 +245,33 @@ void FastPlannerManager::fappCallback(const obj_state_msgs::ObjectsStates::Const
     optimizer->setFappObstacles(fapp_states_, fapp_config_);
 }
 
+bool FastPlannerManager::fappSizeOutlier(
+    const fuel_fapp::DynamicObstacleState& candidate) const {
+  std::vector<double> heights;
+  for (const auto& reference : fapp_history_)
+    if (!(reference.stamp == candidate.stamp &&
+          reference.position.isApprox(candidate.position)) &&
+        ros::Time::now().toSec() - reference.stamp <= fapp_history_duration_ &&
+        reference.size.allFinite() && reference.size.z() > 0.0 &&
+        (reference.position - candidate.position).norm() <= fapp_association_distance_)
+      heights.push_back(reference.size.z());
+  if (heights.size() < 3) return false;
+  auto middle = heights.begin() + heights.size() / 2;
+  std::nth_element(heights.begin(), middle, heights.end());
+  if (candidate.size.z() <= 2.0 * *middle + 0.05) return false;
+  ROS_WARN_THROTTLE(1.0, "[FAPP memory] ignore isolated tall box z_size=%.3f "
+      "historical_median=%.3f samples=%zu; retain confirmed region.",
+      candidate.size.z(), *middle, heights.size());
+  return true;
+}
+
 void FastPlannerManager::includeFappHistory(
     const fuel_fapp::DynamicObstacleState& observation,
     Eigen::Vector3d& lower, Eigen::Vector3d& upper) const {
   const auto include = [&](const fuel_fapp::DynamicObstacleState& state) {
+    // 旧帧进入历史时可能尚无足够尺寸证据；合并时必须用后来确认的尺寸复核。
+    // 同尺寸的真实低点仍保留，不能因旧竖直大框永久拉低锁定包络。
+    if (fappSizeOutlier(state)) return;
     Eigen::Vector3d half = Eigen::Vector3d::Constant(fapp_config_.ball_radius);
     if (state.size.allFinite() && (state.size.array() >= 0.0).all() &&
         (state.size.array() > 0.0).any()) half = 0.5 * state.size;

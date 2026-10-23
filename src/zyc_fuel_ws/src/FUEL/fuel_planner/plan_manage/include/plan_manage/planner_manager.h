@@ -131,6 +131,7 @@ private:
   std::vector<fuel_fapp::DynamicObstacleState> fapp_memory_, fapp_history_;
   double fapp_history_duration_{10.0};
   Eigen::Vector3d fapp_watched_lower_, fapp_watched_upper_;
+  bool fappSizeOutlier(const fuel_fapp::DynamicObstacleState& candidate) const;
   void includeFappHistory(const fuel_fapp::DynamicObstacleState& observation,
                           Eigen::Vector3d& lower, Eigen::Vector3d& upper) const;
   ros::Publisher fapp_memory_pub_, fapp_memory_status_pub_;

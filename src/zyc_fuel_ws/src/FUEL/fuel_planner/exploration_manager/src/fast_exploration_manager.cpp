@@ -3482,6 +3482,8 @@ bool FastExplorationManager::buildManualFappUnderpassPath(
     u = std::max(0.0, std::min(1.0, u));
     return u*u*u*(10.0 + u*(-15.0 + 6.0*u));
   };
+  // 先等高接近，在已扣除机体净空的障碍前沿约0.5m开始前进下降。
+  const double descent_begin = std::max(begin, near - 0.50);
   const Vector3d lateral(-forward.y(), forward.x(), 0.0);
   const int count = std::max(2, static_cast<int>(std::ceil((end-current)/0.10)));
   const auto side_path = [&](double side, std::vector<Vector3d>& candidate) {
@@ -3489,7 +3491,7 @@ bool FastExplorationManager::buildManualFappUnderpassPath(
     for (int i = 1; i <= count; ++i) {
       const double progress = current + (end-current)*i/count;
       double dip = 1.0;
-      if (progress < near) dip = smooth((progress-begin)/(near-begin));
+      if (progress < near) dip = smooth((progress-descent_begin)/(near-descent_begin));
       // 左下/右下穿越：接近时同时向侧下方移动，保持侧下方直到实际通过。
       Vector3d point = origin + (progress-begin)*forward + side*dip*lateral;
       point.z() = origin.z() + (low-origin.z())*dip;
@@ -3528,8 +3530,8 @@ bool FastExplorationManager::buildManualFappUnderpassPath(
   }
   if (!manual_fapp_curve_active_)
     ROS_WARN("[manual_fapp] continuous underpass from=(%.2f,%.2f,%.2f) "
-             "clearance_z=%.2f low=%.2f near=%.2f far=%.2f side=%.2f age=%.2f",
-        pos.x(), pos.y(), pos.z(), lower.z(), low, near, far, side, age);
+             "clearance_z=%.2f low=%.2f near=%.2f far=%.2f side=%.2f age=%.2f descent_begin=%.2f",
+        pos.x(), pos.y(), pos.z(), lower.z(), low, near, far, side, age, descent_begin);
   manual_fapp_curve_active_ = true;
   manual_fapp_curve_origin_ = origin;
   manual_fapp_curve_end_ = end;
