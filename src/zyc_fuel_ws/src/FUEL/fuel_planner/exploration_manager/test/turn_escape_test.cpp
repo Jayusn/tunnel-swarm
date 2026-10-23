@@ -252,10 +252,11 @@ public:
     const bool approach = scenario == "distant_blocked" || committed || inside;
     const bool recovery_roof = scenario == "exploration_recovery_roof";
     const bool prior_side = scenario == "exploration_prior_side";
+    const bool prior_right_side = scenario == "exploration_prior_right_side";
     const bool low_minimum = scenario == "exploration_low_minimum";
     const bool exploration = scenario == "exploration_low" || scenario == "exploration_side" ||
-        recovery_roof || prior_side || low_minimum;
-    const bool asymmetric_side = scenario == "asymmetric_side" || scenario == "exploration_side";
+        recovery_roof || prior_side || prior_right_side || low_minimum;
+    const bool asymmetric_side = scenario == "asymmetric_side" || scenario == "exploration_side" || prior_right_side;
     const bool asymmetric = scenario == "asymmetric_low" || scenario == "exploration_low" || asymmetric_side || recovery_roof || prior_side || low_minimum;
     const bool memory = scenario == "memory_below" || scenario == "memory_left" ||
         scenario == "memory_curve_right" || recorded || approach || asymmetric;
@@ -295,9 +296,9 @@ public:
       manager.underpass_min_height_ = 0.10;
       manager.task_search_manager_->min_search_height_ = 0.10;
     }
-    if (prior_side) {
+    if (prior_side || prior_right_side) {
       manager.recovery_side_latched_ = true;
-      manager.recovery_side_dir_ = Vector3d::UnitY();
+      manager.recovery_side_dir_ = (prior_right_side ? -1.0 : 1.0) * Vector3d::UnitY();
     }
     if (committed) {
       manager.recovery_side_latched_ = true;
@@ -442,7 +443,7 @@ public:
       EXPECT_FALSE(manager.currentPlanIsVerticalDetour());
       EXPECT_EQ(vertical_detour::LowProbePhase::IDLE, manager.low_probe_phase_);
       EXPECT_EQ(!asymmetric_side, manager.manual_fapp_curve_active_);
-      EXPECT_EQ(asymmetric_side, manager.recovery_side_latched_);
+      EXPECT_TRUE(manager.recovery_side_latched_);
       if (!asymmetric_side) {
         EXPECT_GT(manager.ed_->next_goal_.x(), upper.x() + 0.1);
         EXPECT_GT(Astar::pathLength(manager.ed_->path_next_goal_), 1.2);
@@ -486,7 +487,8 @@ public:
           preceding.getDerivative().getDerivative().evaluateDeBoorT(time), zero));
       EXPECT_GT(manager.ed_->next_goal_.x(), upper.x() + 0.1);
       EXPECT_NEAR(endpoint.z(), manager.ed_->next_goal_.z(), 0.01);
-      if (asymmetric_side) EXPECT_GT(manager.ed_->next_goal_.y(), start.y());
+      if (asymmetric_side) EXPECT_GT((manager.ed_->next_goal_.y() - start.y()) *
+          (prior_right_side ? -1.0 : 1.0), 0.0);
       {
         const Vector3d end = manager.ed_->next_goal_;
         EXPECT_FALSE(manager.manualFappObservationMissing(end, 0.0));
@@ -576,7 +578,7 @@ public:
       if (!memory) EXPECT_LT(manager.ed_->next_goal_.z(), start.z() - 0.25);
       if (!mapped) { EXPECT_NEAR(0.640, manager.low_probe_height_, 0.001); }
       EXPECT_DOUBLE_EQ(start.z(), manager.low_probe_return_height_);
-      EXPECT_FALSE(manager.recovery_side_latched_);
+      EXPECT_EQ(memory, manager.recovery_side_latched_);
     } else {
       EXPECT_TRUE(manager.recovery_side_latched_);
       EXPECT_NEAR(start.z(), manager.ed_->next_goal_.z(), 1e-6);
@@ -722,7 +724,7 @@ public:
     }
   }
 
-  static void runPassageCentre() {
+  static void runPassageCentre(bool dynamic_side = false) {
     ros::NodeHandle nh("~passage_centre");
     FastExplorationManager manager;
     initialize(nh, manager);
@@ -742,6 +744,46 @@ public:
     map.updateESDF3d();
     std::vector<Vector3d> path{{-1.0, -0.35, 0.30}, {0.0, -0.35, 0.30}, {1.0, -0.35, 0.30}};
     ASSERT_TRUE(manager.planner_manager_->isPathSafe(path));
+    if (dynamic_side) {
+      manager.manual_fapp_active_ = true;
+      manager.manual_fapp_hold_height_ = path.front().z();
+      manager.task_search_manager_->min_search_height_ = 0.10;
+      manager.fapp_exploration_crossing_enabled_ = true;
+      manager.recovery_side_latched_ = true;
+      manager.recovery_side_dir_ = -Vector3d::UnitY();
+      manager.recovery_side_origin_ = path.front();
+      manager.ep_->mission_use_forward_fallback_ = true;
+      manager.task_search_manager_->enabled_ = true;
+      manager.task_search_manager_->setMap(manager.sdf_map_);
+      manager.task_search_manager_->stable_progress_direction_ = Eigen::Vector2d::UnitX();
+      manager.task_search_manager_->stable_progress_direction_valid_ = true;
+      manager.task_search_manager_->exit_detection_enabled_ = false;
+      manager.task_search_manager_->global_no_return_ = false;
+      manager.task_search_manager_->updateRobotPose(path.front(), 0.0);
+      auto& planner = *manager.planner_manager_;
+      planner.fapp_config_.enabled = true;
+      planner.fapp_memory_enabled_ = true;
+      planner.fapp_planner_priority_ = true;
+      planner.fapp_watched_valid_ = true;
+      planner.fapp_watched_lower_ = Vector3d(-0.9, -0.7, 0.1);
+      planner.fapp_watched_upper_ = Vector3d(0.5, 0.7, 0.8);
+      ASSERT_FALSE(planner.isFappPathSafe(path)); // 历史摆幅曾覆盖右侧，当前静态通路畅通。
+      for (bool wide_side : {false, true}) {
+        manager.wide_side_bypass_active_ = wide_side;
+        const auto original = path;
+        EXPECT_FALSE(manager.centrePassagePath(path, 3.0));
+        ASSERT_EQ(original.size(), path.size());
+        for (size_t i=0; i<path.size(); ++i) EXPECT_TRUE(path[i].isApprox(original[i]));
+        Vector3d next; double yaw = 0.0;
+        ASSERT_TRUE(manager.buildSideRecoveryContinuation(path.front(), 0.0, next, yaw));
+        EXPECT_GT(next.x(), path.front().x() + 0.3);
+        EXPECT_NEAR(path.front().y(), next.y(), 1e-6);
+      }
+      manager.width_route_plan_ = true;
+      manager.recordPublishedTrajectoryHeight();
+      EXPECT_TRUE(manager.recovery_side_latched_);
+      manager.manual_fapp_active_ = false; // 结束动态穿越后恢复通常的居中。
+    }
     ASSERT_TRUE(manager.centrePassagePath(path, 3.0));
     EXPECT_TRUE(path.front().isApprox(Vector3d(-1, -0.35, 0.3)));
     EXPECT_TRUE(path.back().isApprox(Vector3d(1, -0.35, 0.3)));
@@ -852,6 +894,12 @@ public:
     EXPECT_LT((target.y() - start.y()) * side, -.15);
     // The same physical fixture must offer a quality replan from the executing
     // straight path, and the selected path must retain the original hard checks.
+    manager.manual_fapp_active_ = true;
+    manager.recovery_side_latched_ = true;
+    manager.recovery_side_dir_ = side * Vector3d::UnitY();
+    EXPECT_FALSE(manager.prepareWiderRoute(straight, 0));
+    EXPECT_TRUE(manager.pending_wider_route_.empty());
+    manager.manual_fapp_active_ = false;
     manager.recovery_side_latched_ = false;
     ASSERT_TRUE(manager.prepareWiderRoute(straight, 0));
     EXPECT_LT((manager.widerRouteTarget().y() - start.y()) * side, -.15);
@@ -2697,4 +2745,12 @@ TEST(FappExploration, OrdinarySidePreferenceDoesNotSuppressUnderpass) {
 }
 TEST(FappExploration, ConfiguredTenCentimetreMinimumAllowsTwelveCentimetreCrossing) {
   fast_planner::TurnEscapeTest::runManualSuspended("exploration_low_minimum");
+}
+
+TEST(FappExploration, CommittedSideAdvancesWithoutRecenteringOrHistorySidePush) {
+  fast_planner::TurnEscapeTest::runPassageCentre(true);
+}
+
+TEST(FappExploration, CommittedRightSideSurvivesFullCrossingReplans) {
+  fast_planner::TurnEscapeTest::runManualSuspended("exploration_prior_right_side");
 }

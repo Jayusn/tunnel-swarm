@@ -54,14 +54,22 @@ void FastExplorationManager::recordPublishedTrajectoryHeight() {
   if (width_route_plan_) {
     // Only a published replacement releases the old side. A rejected width
     // probe must not change the commitment of the still-executing trajectory.
-    recovery_side_latched_ = false;
-    wide_side_bypass_active_ = false;
-    recovery_side_continuation_pending_ = false;
+    if (!manual_fapp_active_) {
+      recovery_side_latched_ = false;
+      wide_side_bypass_active_ = false;
+      recovery_side_continuation_pending_ = false;
+    }
     width_route_plan_ = false;
   }
   if (manual_fapp_active_ && manual_fapp_curve_active_ &&
-      std::isfinite(pending_reference_height_))
+      std::isfinite(pending_reference_height_)) {
     manual_fapp_hold_height_ = low_probe_height_; // 仅已发布的下穿轨迹可更新低位参考。
+    // 下穿回退为普通规划时仍保留已发布曲线的侧向，不能重新默认选左侧。
+    if (!recovery_side_latched_) recovery_side_origin_ = manual_fapp_curve_origin_;
+    recovery_side_latched_ = true;
+    recovery_side_dir_ = (manual_fapp_curve_side_ < 0.0 ? -1.0 : 1.0) *
+        Vector3d(-manual_fapp_forward_.y(), manual_fapp_forward_.x(), 0.0);
+  }
   if (std::isfinite(pending_reference_height_))
     horizontal_reference_height_ = pending_reference_height_;
   pending_reference_height_ = std::numeric_limits<double>::quiet_NaN();
@@ -1607,6 +1615,8 @@ bool FastExplorationManager::widthReplacementImproves(
 bool FastExplorationManager::prepareWiderRoute(
     const vector<Vector3d>& current_path, double yaw) {
   pending_wider_route_.clear();
+  // 动态穿越原侧由续接检查决定是否可行，不用宽度评分反复换边。
+  if (manual_fapp_active_ && recovery_side_latched_) return false;
   // Entry owns the first metre after the doorway; open approach and entry
   // advancement are explicitly exempt from width reranking and early switching.
   if (!mission_workspace_lock_received_ || !entry_forward_complete_ ||
@@ -1829,8 +1839,11 @@ bool FastExplorationManager::buildWideSideBypass(
   // 纯横移只在前进候选不可用时采用，避免净空评分持续选中零前进量。
   const double remembered_sign = recovery_side_latched_ &&
       recovery_side_dir_.dot(lateral) < -0.5 ? -1.0 : 1.0;
-  const double first_sign = split.right_width > split.left_width + 1e-6 ? -1.0 :
-      (split.left_width > split.right_width + 1e-6 ? 1.0 : remembered_sign);
+  const bool keep_dynamic_side = manual_fapp_active_ && recovery_side_latched_ &&
+      std::fabs(recovery_side_dir_.dot(lateral)) > 0.5;
+  const double first_sign = keep_dynamic_side ? remembered_sign :
+      (split.right_width > split.left_width + 1e-6 ? -1.0 :
+       (split.left_width > split.right_width + 1e-6 ? 1.0 : remembered_sign));
   for (const double side_sign : {first_sign, -first_sign}) {
     const bool right_side = side_sign < 0.0;
     const double lane_width = right_side ? split.right_width : split.left_width;
@@ -1893,6 +1906,8 @@ bool FastExplorationManager::buildWideSideBypass(
         }
       }
     }
+    // 0.4m 续接失败不代表原侧彻底不可走；原侧还有可行小步就不改选另一侧。
+    if (keep_dynamic_side && best.valid) break;
   }
 
   if (!best.valid) {
@@ -1963,9 +1978,10 @@ bool FastExplorationManager::buildFappSideBypass(
   double best_shift = 0.0;
   double best_sign = 0.0;
   vector<Vector3d> best_route;
-  for (double sign : {1.0, -1.0}) {
-    if (crossing_path && recovery_side_latched_ &&
-        sign * recovery_side_dir_.dot(lateral) < -0.5) continue;
+  const bool keep_side = manual_fapp_active_ && recovery_side_latched_ &&
+      std::fabs(recovery_side_dir_.dot(lateral)) > 0.5;
+  const double first_sign = keep_side && recovery_side_dir_.dot(lateral) < 0.0 ? -1.0 : 1.0;
+  for (double sign : {first_sign, -first_sign}) {
     double shift = (center - pos).dot(lateral) + sign * side_extent;
     if (crossing_path) shift = sign * std::max(0.0, sign * shift);
     if ((!crossing_path && sign * shift <= 0.0) ||
@@ -2010,6 +2026,7 @@ bool FastExplorationManager::buildFappSideBypass(
       best_sign = sign;
       best_route = route;
     }
+    if (keep_side && found) break; // 原侧完整路线不可行时才尝试另一侧。
   }
   if (!found) return false;
   const double sign = best_sign;
@@ -2172,8 +2189,11 @@ bool FastExplorationManager::buildSideRecoveryContinuation(
   const bool manual_side = ((manual_path_enabled_ && manual_path_exploration_style_) ||
       explorationFappCrossingActive()) &&
       wide_side_bypass_active_;
+  // 普通规划优先模式仍交给动态代价和最终轨迹检查；历史整段包络不能
+  // 单独把已经可行的同侧前进改成继续往墙上横移。
   const bool forward_clear = isLowProbeCorridorSafe(pos, forward, 0.40) &&
-      (!manual_side || planner_manager_->isFappPathSafe({pos, pos + remaining * forward}));
+      (!manual_side || (manual_fapp_active_ && planner_manager_->fappPlannerPriority()) ||
+       planner_manager_->isFappPathSafe({pos, pos + remaining * forward}));
   if (!manual_fapp_active_ && forward_clear && (pos - recovery_side_origin_).dot(forward) >=
                            release_distance) {
     recovery_side_latched_ = false;
@@ -2195,7 +2215,7 @@ bool FastExplorationManager::buildSideRecoveryContinuation(
           pathInsideWorkspaceLock(path) &&
           task_search_manager_->isRecoveryPathAllowed(path, false);
     };
-    if (passage_centering_enabled_ && forward_clear && !manual_side) {
+    if (passage_centering_enabled_ && forward_clear && !manual_side && !manual_fapp_active_) {
       passage_centering::Config cfg;
       cfg.step = std::min(0.05, 0.5 * sdf_map_->getResolution());
       cfg.search_radius = passage_centering_search_radius_;
@@ -2341,9 +2361,9 @@ bool FastExplorationManager::buildMissionForwardFallback(const Vector3d& pos, do
     next_yaw = (!choice.short_backtrack && straight_forward)
                    ? std::atan2(choice.direction.y(), choice.direction.x())
                    : cur_yaw;
-    if (!choice.short_backtrack && straight_forward) {
+    if (!choice.short_backtrack && straight_forward && !manual_fapp_active_) {
       recovery_side_latched_ = false;
-    } else if (!choice.short_backtrack && !recovery_side_latched_) {
+    } else if (!choice.short_backtrack && !straight_forward && !recovery_side_latched_) {
       recovery_side_latched_ = true;
       recovery_side_origin_ = pos;
       recovery_side_dir_ = choice.direction.normalized();
@@ -3400,6 +3420,9 @@ bool FastExplorationManager::manualFappObservationMissing(
         manual_fapp_exit_progress_);
     planner_manager_->watchFappObstacle(nullptr);
     manual_fapp_active_ = false;
+    recovery_side_latched_ = false;
+    wide_side_bypass_active_ = false;
+    recovery_side_continuation_pending_ = false;
     manual_fapp_hold_height_ = std::numeric_limits<double>::quiet_NaN();
     if (manual_fapp_curve_active_) {
       manual_fapp_curve_active_ = false;
@@ -3544,7 +3567,6 @@ bool FastExplorationManager::planExplorationFappCrossing(
     suspended_underpass_active_ = false;
     return false;
   }
-  if (manual_fapp_curve_active_) recovery_side_latched_ = false;
   // 完整动态穿越沿用航点版长度豁免，不进入普通探索的1.2m截断。
   ed_->path_next_goal_ = path;
   ed_->global_tour_ = {pos, path.back()};
@@ -3767,7 +3789,6 @@ int FastExplorationManager::planManualWaypointMotion(
     ROS_ERROR_THROTTLE(1.0, "[manual_path] trajectory rejected; keep the specified waypoint.");
     return FAIL;
   }
-  if (underpass_motion && manual_fapp_curve_active_) recovery_side_latched_ = false;
   ed_->next_goal_ = target;
   pending_reference_height_ = target.z();
   // 恒定航向复用插值器，避免全零控制点进入旧航向优化器的归一化计算。
@@ -4576,6 +4597,7 @@ int FastExplorationManager::planExploreMotion(
   // 避免刚穿门就发布跨越数米未知/窄区的整条轨迹，并让新点云在每段之间更新地图。
   const double route_horizon = std::max(0.20, ep_->mission_max_route_segment_length_);
   const bool centre_guidance = passage_centering_enabled_ &&
+      !(manual_fapp_active_ && recovery_side_latched_) &&
       !use_forced_entry_target && !use_stage3_target && !exit_transit_active && !use_entry_forward_target &&
       !use_vertical_detour_target &&
       (!use_center_gate_target || recovery_side_continuation_pending_);
@@ -5027,6 +5049,7 @@ bool FastExplorationManager::shouldStartInflationHistoryEscape(
 }
 
 bool FastExplorationManager::centrePassagePath(vector<Vector3d>& path, double horizon) {
+  if (manual_fapp_active_ && recovery_side_latched_) return false;
   passage_centering::Config cfg;
   cfg.step = std::min(0.05, 0.5 * sdf_map_->getResolution());
   cfg.search_radius = passage_centering_search_radius_;
