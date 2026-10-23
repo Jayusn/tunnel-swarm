@@ -892,10 +892,10 @@
         args="-d $(find plan_manage)/config/traj.rviz" required="true">
         <!-- 2026-07-13: RViz 工具栏仍发布标准目标话题，在节点边界转发给 iris_0 的比赛开始触发。 -->
         <remap from="/move_base_simple/goal" to="$(arg rviz_goal_topic)"/>
-        <!-- 通用 traj.rviz 保留 LDOP 显示名；启用 FAPP 时接到实际检测输出。 -->
-        <remap if="$(arg enable_fapp_detection)" from="/UAV0/ldop/dynamic_cloud" to="/UAV0/fapp/dynamic_cloud"/>
-        <remap if="$(arg enable_fapp_detection)" from="/UAV0/ldop/dynamic_object_markers" to="/UAV0/fapp/dynamic_object_markers"/>
-        <remap if="$(arg enable_fapp_detection)" from="/UAV0/ldop/dynamic_track_markers" to="/UAV0/fapp/dynamic_track_markers"/>
+        <!-- RViz默认显示FAPP；显式关闭FAPP时仍兼容原LDOP输出。 -->
+        <remap unless="$(arg enable_fapp_detection)" from="/UAV0/fapp/dynamic_cloud" to="/UAV0/ldop/dynamic_cloud"/>
+        <remap unless="$(arg enable_fapp_detection)" from="/UAV0/fapp/dynamic_object_markers" to="/UAV0/ldop/dynamic_object_markers"/>
+        <remap unless="$(arg enable_fapp_detection)" from="/UAV0/fapp/dynamic_track_markers" to="/UAV0/ldop/dynamic_track_markers"/>
     </node>
 
     <!-- 仅为规划器 RViz 提供检测目标显示，不发布规划目标或控制指令。 -->
