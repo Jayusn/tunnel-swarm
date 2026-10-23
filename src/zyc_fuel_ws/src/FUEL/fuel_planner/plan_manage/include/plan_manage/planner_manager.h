@@ -35,7 +35,8 @@ public:
                          const Eigen::Vector3d& end_vel, const double& time_lb = -1);
   // 2026-07-14: 返回轨迹生成是否成功，拒绝少于三点或含零长度分段的非法 waypoint 输入。
   bool planExploreTraj(const vector<Eigen::Vector3d>& tour, const Eigen::Vector3d& cur_vel,
-                       const Eigen::Vector3d& cur_acc, const double& time_lb = -1);
+                       const Eigen::Vector3d& cur_acc, const double& time_lb = -1,
+                       bool preserve_height_profile = false);
   // 地图确认真实转弯后，位置保持不动，只执行yaw对准。
   bool planStationaryTraj(const Eigen::Vector3d& position, double duration);
   // 地面/下方障碍恢复专用：保持 XY 不变，以零端点速度直升。

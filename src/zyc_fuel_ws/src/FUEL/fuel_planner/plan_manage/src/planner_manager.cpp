@@ -999,7 +999,8 @@ bool FastPlannerManager::kinodynamicReplan(const Eigen::Vector3d& start_pt,
 }
 
 bool FastPlannerManager::planExploreTraj(const vector<Eigen::Vector3d>& input_tour,
-    const Eigen::Vector3d& cur_vel, const Eigen::Vector3d& cur_acc, const double& time_lb) {
+    const Eigen::Vector3d& cur_vel, const Eigen::Vector3d& cur_acc, const double& time_lb,
+    bool preserve_height_profile) {
   std::vector<Eigen::Vector3d> tour=input_tour;
 
   // 2026-07-14: PolynomialTraj 至少需要两个有效分段；单点/两点及重复点会构造零维矩阵并触发 Eigen 越界。
@@ -1123,6 +1124,9 @@ bool FastPlannerManager::planExploreTraj(const vector<Eigen::Vector3d>& input_to
     ctrl_pts.row(ctrl_pts.rows() - 1 - i) =
         boundary_ctrl_pts.row(boundary_ctrl_pts.rows() - 1 - i);
   }
+  // 保留引导曲线的高度与初始竖直速度/加速度，优化器仅调整水平绕行；
+  // 防止自由Z优化将已锁定的低位路线重新拱到摆球区域。
+  if (preserve_height_profile) ctrl_pts.col(2) = boundary_ctrl_pts.col(2);
   local_data_.position_traj_.setUniformBspline(ctrl_pts, pp_.bspline_degree_, dt);
 
   // 2026-07-20: 发布链路增加终点一致性兜底；若数值异常仍破坏目标，恢复未经优化但严格经过

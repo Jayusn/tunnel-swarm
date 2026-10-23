@@ -922,6 +922,7 @@ public:
     if (mode == 2)
       check(map.getOccupancy(Vector3d(end + Vector3d(0, 0, 0.275))) == SDFMap::UNKNOWN,
             "unknown overhead fixture was accidentally observed");
+    if (mode == 6) manager.manual_fapp_active_ = true;
     if (mode == 3) manager.low_probe_phase_ = vertical_detour::LowProbePhase::ADVANCING;
     Vector3d velocity = Vector3d::Zero();
     if (mode == 4) velocity.x() = std::numeric_limits<double>::quiet_NaN();
@@ -937,6 +938,10 @@ public:
             planner.local_data_.duration_ == original.duration_ &&
             manager.ed_->next_goal_.isApprox(end),
             "rejected climb changed the validated horizontal trajectory");
+      if (mode == 6) {
+        manager.manual_fapp_active_ = false;
+        EXPECT_TRUE(manager.tryCruiseHeightRecovery(start, Vector3d::Zero(), Vector3d::Zero(), 0.0));
+      }
       return;
     }
     const double rise = mode == 5 ? 0.06 : 0.275;
@@ -1843,7 +1848,7 @@ public:
   }
 
   static void runSideRecovery(double side, bool block_side, bool climb = false,
-                              bool height_drift = false) {
+                              bool height_drift = false, bool fapp_hold = false) {
     ros::NodeHandle nh("~");
     nh.setParam("manager/use_geometric_path", true);
     nh.setParam("astar/resolution_astar", 0.05);
@@ -1960,6 +1965,23 @@ public:
       return;
     }
 
+    if (fapp_hold) {
+      manager.fapp_exploration_crossing_enabled_ = true;
+      planner.fapp_config_.enabled = true;
+      planner.fapp_memory_enabled_ = true;
+      planner.fapp_planner_priority_ = true;
+      planner.fapp_watched_valid_ = true;
+      planner.fapp_watched_state_.stamp = ros::Time::now().toSec() - 20.0;
+      // 模拟低框污染、失观且完整侧绕不可用，强制实际普通规划接管。
+      planner.fapp_watched_lower_ = Vector3d(0.30, -1.50, 0.17);
+      planner.fapp_watched_upper_ = Vector3d(1.40, 1.50, 1.43);
+      manager.manual_fapp_active_ = true;
+      manager.manual_fapp_hold_height_ = origin.z();
+      manager.manual_fapp_forward_ = Vector3d::UnitX();
+      ASSERT_FALSE(manager.planExplorationFappCrossing(displaced, Vector3d::Zero(),
+                                                       Vector3d::Zero(), Vector3d::Zero()));
+    }
+
     check(manager.planExploreMotion(displaced, Vector3d::Zero(), Vector3d::Zero(),
                                    Vector3d(0.10, 0, 0)) == SUCCEED,
           "same-side continuation failed to generate a trajectory");
@@ -1967,6 +1989,37 @@ public:
           "0.22m lateral progress released the side or successful plan stayed pending");
     const double duration = planner.local_data_.duration_;
     const Vector3d end = planner.local_data_.position_traj_.evaluateDeBoorT(duration);
+    if (fapp_hold) {
+      EXPECT_GT((end-displaced).y()*side, 0.10);
+      EXPECT_NEAR(end.z(), origin.z(), 0.01);
+      for (double t=0; t<=duration; t+=0.01)
+        EXPECT_NEAR(planner.local_data_.position_traj_.evaluateDeBoorT(t).z(), origin.z(), 0.01);
+      manager.recordPublishedTrajectoryHeight();
+      for (double error : {0.04, 0.06, 0.03}) {
+        displaced.z() = origin.z() - error;
+        task.updateRobotPose(displaced, 0.0);
+        ASSERT_EQ(SUCCEED, manager.planExploreMotion(displaced, Vector3d::Zero(),
+                                                    Vector3d::Zero(), Vector3d(0.10,0,0)));
+        EXPECT_NEAR(manager.manual_fapp_hold_height_, origin.z(), 1e-9);
+        auto& traj = planner.local_data_.position_traj_;
+        for (double t=0; t<=traj.getTimeSum(); t+=0.01)
+          EXPECT_LT(traj.evaluateDeBoorT(t).z(), origin.z()+0.02);
+        EXPECT_GT((traj.evaluateDeBoorT(traj.getTimeSum())-displaced).head<2>().norm(), 0.10);
+        manager.recordPublishedTrajectoryHeight();
+      }
+      Vector3d passed = displaced;
+      passed.x() = manager.manual_fapp_exit_progress_ + 0.01;
+      EXPECT_FALSE(manager.manualFappObservationMissing(passed, 0.0));
+      EXPECT_TRUE(manager.manual_fapp_active_); // 未来规划端点不等于实际通过。
+      Vector3d before = passed;
+      before.x() -= 0.02;
+      manager.manualFappObservationMissing(before, 0.0, true);
+      EXPECT_TRUE(manager.manual_fapp_active_);
+      manager.manualFappObservationMissing(passed, 0.0, true);
+      EXPECT_FALSE(manager.manual_fapp_active_);
+      EXPECT_FALSE(std::isfinite(manager.manual_fapp_hold_height_));
+      return;
+    }
     if (height_drift) {
       // A* 短段可能在到达最终高度前截断；保持的是发布段所继承的目标，
       // 不能把截断处高度或下一次偏低里程计重新提交为目标。
@@ -2592,4 +2645,14 @@ TEST(FappMemory, UnavailableCommittedSideStillAllowsForwardApproach) {
 }
 TEST(FappMemory, AsymmetricBodyFallsBackToSideBelowMinimum) {
   fast_planner::TurnEscapeTest::runManualSuspended("asymmetric_side");
+}
+
+TEST(FappHeightHold, OrdinaryFallbackKeepsLowRightRouteDespiteBadFrameAndDropout) {
+  fast_planner::TurnEscapeTest::runSideRecovery(-1.0, false, true, false, true);
+}
+TEST(FappHeightHold, OrdinaryFallbackKeepsLowLeftRouteDespiteBadFrameAndDropout) {
+  fast_planner::TurnEscapeTest::runSideRecovery(1.0, false, true, false, true);
+}
+TEST(FappHeightHold, CruiseRecoveryWaitsForActualClearance) {
+  fast_planner::TurnEscapeTest::runMovingClimb(6);
 }

@@ -143,6 +143,8 @@ private:
   bool fapp_exploration_crossing_enabled_{false};
   Vector3d manual_fapp_forward_{Vector3d::UnitX()};
   double manual_fapp_exit_progress_{0.0};
+  // 一次锁定穿越高度，不随掉高或可疑历史最低框逐轮降低。
+  double manual_fapp_hold_height_{std::numeric_limits<double>::quiet_NaN()};
   ros::Time manual_fapp_wait_since_;
   bool manual_fapp_curve_active_{false};
   Vector3d manual_fapp_curve_origin_{Vector3d::Zero()};

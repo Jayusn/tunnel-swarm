@@ -67,7 +67,8 @@ void Astar::clearProgressConstraint() {
   maximum_progress_regression_ = 0.0;
 }
 
-int Astar::search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt) {
+int Astar::search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt,
+                  bool hold_goal_height) {
   if (progress_constraint_enabled_ &&
       !directional_progress::isAllowed(start_pt, end_pt, progress_direction_,
                                        maximum_progress_regression_)) {
@@ -141,9 +142,11 @@ int Astar::search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt
     for (double dx = -resolution_; dx <= resolution_ + 1e-3; dx += resolution_)
       for (double dy = -resolution_; dy <= resolution_ + 1e-3; dy += resolution_)
         for (double dz = -resolution_; dz <= resolution_ + 1e-3; dz += resolution_) {
+          if (hold_goal_height && std::fabs(dz) > 1e-3) continue;
           step << dx, dy, dz;
           if (step.norm() < 1e-3) continue;
           nbr_pos = cur_pos + step;
+          if (hold_goal_height) nbr_pos.z() = end_pt.z();
           // 多机通道的禁回头约束必须在搜索阶段生效。纯横移(dot=0)和斜前绕障
           // 正常展开，旧通道方向上的负进度节点不进入open set。
           if (progress_constraint_enabled_ &&

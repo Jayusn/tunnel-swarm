@@ -59,6 +59,9 @@ void FastExplorationManager::recordPublishedTrajectoryHeight() {
     recovery_side_continuation_pending_ = false;
     width_route_plan_ = false;
   }
+  if (manual_fapp_active_ && manual_fapp_curve_active_ &&
+      std::isfinite(pending_reference_height_))
+    manual_fapp_hold_height_ = low_probe_height_; // 仅已发布的下穿轨迹可更新低位参考。
   if (std::isfinite(pending_reference_height_))
     horizontal_reference_height_ = pending_reference_height_;
   pending_reference_height_ = std::numeric_limits<double>::quiet_NaN();
@@ -68,6 +71,8 @@ double FastExplorationManager::horizontalGoalHeight(double current_height) const
   // 下穿会话拥有专用低位目标，不能被旧巡航参考抬回障碍物内。
   if (low_probe_phase_ != vertical_detour::LowProbePhase::IDLE)
     return low_probe_height_;
+  if (!manual_path_enabled_ && manual_fapp_active_ && std::isfinite(manual_fapp_hold_height_))
+    return manual_fapp_hold_height_;
   const double height = std::isfinite(horizontal_reference_height_)
       ? horizontal_reference_height_ : current_height;
   return task_search_manager_ ? task_search_manager_->clampSearchHeight(height) : height;
@@ -435,7 +440,7 @@ bool FastExplorationManager::hasSafeCruiseContinuation(
 
 bool FastExplorationManager::tryCruiseHeightRecovery(
     const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, double time_lb) {
-  if (!ground_ascent_enabled_ || !mission_entered_search_region_ ||
+  if (manual_fapp_active_ || !ground_ascent_enabled_ || !mission_entered_search_region_ ||
       !task_search_manager_ || !planner_manager_ || ground_ascent_active_ ||
       low_probe_phase_ != vertical_detour::LowProbePhase::IDLE ||
       suspended_underpass_active_ || ed_->path_next_goal_.size() < 2)
@@ -3345,6 +3350,8 @@ bool FastExplorationManager::manualFappObservationMissing(
     if (distance <= 0.15 || !planner_manager_->fappBlockingBounds(
             {pos, pos + distance * forward}, lower, upper, &observation))
       return false;
+    manual_fapp_hold_height_ = task_search_manager_->clampSearchHeight(
+        std::min(pos.z(), horizontalGoalHeight(pos.z())));
     manual_fapp_active_ = true;
     planner_manager_->watchFappObstacle(&observation);
     manual_fapp_forward_ = forward;
@@ -3394,6 +3401,7 @@ bool FastExplorationManager::manualFappObservationMissing(
         manual_fapp_exit_progress_);
     planner_manager_->watchFappObstacle(nullptr);
     manual_fapp_active_ = false;
+    manual_fapp_hold_height_ = std::numeric_limits<double>::quiet_NaN();
     if (manual_fapp_curve_active_) {
       manual_fapp_curve_active_ = false;
       suspended_underpass_active_ = false;
@@ -3787,8 +3795,13 @@ int FastExplorationManager::planExploreMotion(
   }
   planner_manager_->path_finder_->clearProgressConstraint();
   if (planExplorationFappCrossing(pos, vel, acc, yaw)) return SUCCEED;
+  const bool hold_fapp_height = manual_fapp_active_ && std::isfinite(manual_fapp_hold_height_);
+  if (hold_fapp_height)
+    ROS_WARN_THROTTLE(1.0, "[exploration_fapp] ordinary fallback holds z=%.3f until actual "
+        "progress clears %.3f; continue forward/side planning.",
+        manual_fapp_hold_height_, manual_fapp_exit_progress_);
   // 已确认的悬挂障碍优先于普通前沿选点、地面恢复和远目标 A*。
-  if (low_probe_phase_ == vertical_detour::LowProbePhase::IDLE &&
+  if (!hold_fapp_height && low_probe_phase_ == vertical_detour::LowProbePhase::IDLE &&
       beginSuspendedUnderpass(pos, yaw[0]) && suspended_underpass_blocked_)
     return FAIL;
   // 地图确认的转弯拥有最高运动优先级。若此前刚启动低位探测，立即撤销其
@@ -3814,13 +3827,13 @@ int FastExplorationManager::planExploreMotion(
     use_center_gate_target = true;
   // 有安全前进/同侧短路时先沿路恢复高度；不可继续水平推进时保留原地上升。
   // 已经启动的竖直会话仍执行完，不在中途重新抢占位置目标。
-  if (!use_vertical_detour_target && !low_probe_active &&
+  if (!hold_fapp_height && !use_vertical_detour_target && !low_probe_active &&
       (ground_ascent_active_ || (shouldStartGroundAscent(pos) &&
                                 !hasSafeCruiseContinuation(pos, yaw[0])))) {
     if (buildGroundAscentPlan(pos, vel, yaw)) return SUCCEED;
     if (ground_ascent_active_) return FAIL;
   }
-  if (!external_selection_only_ && !use_vertical_detour_target && !low_probe_active &&
+  if (!hold_fapp_height && !external_selection_only_ && !use_vertical_detour_target && !low_probe_active &&
       vertical_detour::inflationEscapeAllowed(low_probe_phase_) &&
       planInflationHistoryEscape(pos, vel, acc, yaw))
     return SUCCEED;
@@ -4216,6 +4229,8 @@ int FastExplorationManager::planExploreMotion(
   } else if (!use_forced_entry_target)
     ROS_ERROR("Empty destination.");
 
+  if (hold_fapp_height) next_pos.z() = manual_fapp_hold_height_;
+
   // 2026-07-16: 比赛使用360度Mid360时航向直接对准运动方向；相机模式保留原始viewpoint航向接口。
   const Eigen::Vector2d motion_delta = next_pos.head<2>() - pos.head<2>();
   // 出口候选观察、确认后的接近/穿越均保持出口朝向，横向修正不能带着机头转。
@@ -4426,7 +4441,7 @@ int FastExplorationManager::planExploreMotion(
     planner_manager_->path_finder_->reset();
   }
   if (width_selected_path.empty() && !use_center_gate_target &&
-      planner_manager_->path_finder_->search(pos, next_pos) != Astar::REACH_END) {
+      planner_manager_->path_finder_->search(pos, next_pos, hold_fapp_height) != Astar::REACH_END) {
     // 2026-07-27: 远frontier跨越尚未建成的已知连通域时，先在当前前向扇区找安全短步；
     // 不再立即切换另一个远目标并触发长时间safety hold，让雷达随局部推进逐段补齐拐弯地图。
     Vector3d local_recovery_pos;
@@ -4440,11 +4455,12 @@ int FastExplorationManager::planExploreMotion(
                next_pos.x(), next_pos.y(), next_pos.z(), local_recovery_pos.x(),
                local_recovery_pos.y(), local_recovery_pos.z());
       next_pos = local_recovery_pos;
+      if (hold_fapp_height) next_pos.z() = manual_fapp_hold_height_;
       next_yaw = local_recovery_yaw;
       // 2026-07-27: 碰撞反馈必须冷却实际发布的局部目标，不能继续指向已被替换的远frontier。
       last_requested_goal_ = next_pos;
       planner_manager_->path_finder_->reset();
-      if (planner_manager_->path_finder_->search(pos, next_pos) != Astar::REACH_END) {
+      if (planner_manager_->path_finder_->search(pos, next_pos, hold_fapp_height) != Astar::REACH_END) {
         ROS_ERROR_THROTTLE(
             1.0, "Connected local recovery became unavailable before trajectory generation");
         if (task_search_manager_) task_search_manager_->reportGoalFailure(next_pos);
@@ -4473,6 +4489,10 @@ int FastExplorationManager::planExploreMotion(
     normalized_path.insert(normalized_path.begin(), pos);
   if ((next_pos - normalized_path.back()).norm() >= 1e-3) normalized_path.push_back(next_pos);
   ed_->path_next_goal_.swap(normalized_path);
+  if (hold_fapp_height) {
+    for (size_t i = 1; i < ed_->path_next_goal_.size(); ++i)
+      ed_->path_next_goal_[i].z() = manual_fapp_hold_height_;
+  }
 
   const bool stationary_vertical_path =
       stationary_vertical_detour &&
@@ -4618,16 +4638,20 @@ int FastExplorationManager::planExploreMotion(
     return FAIL;
   }
 
+  // 低位普通回退截断后可能只剩两个端点；补共线中点，避免可行侧路因样条输入不足而停住。
+  if (hold_fapp_height && ed_->path_next_goal_.size() == 2)
+    ed_->path_next_goal_.insert(ed_->path_next_goal_.begin()+1,
+        0.5*(ed_->path_next_goal_.front()+ed_->path_next_goal_.back()));
   const double radius_far = 5.0;
   const double radius_close = 1.5;
   const double len = Astar::pathLength(ed_->path_next_goal_);
   if (use_entry_forward_target) {
     if (!planner_manager_->planStraightTraj(pos, next_pos)) return FAIL;
     ed_->next_goal_ = next_pos;
-  } else if (len < radius_close || (has_central_guides && len <= radius_far)) {
+  } else if (hold_fapp_height || len < radius_close || (has_central_guides && len <= radius_far)) {
     // Next viewpoint is very close, no need to search kinodynamic path, just use waypoints-based
     // optimization
-    if (!planner_manager_->planExploreTraj(ed_->path_next_goal_, vel, acc, time_lb)) {
+    if (!planner_manager_->planExploreTraj(ed_->path_next_goal_, vel, acc, time_lb, hold_fapp_height)) {
       if (task_search_manager_) task_search_manager_->reportGoalFailure(next_pos);
       return FAIL;
     }
@@ -4693,7 +4717,7 @@ int FastExplorationManager::planExploreMotion(
 
     const bool prefix_generated = safe_prefix.size() >= 3 &&
                                   planner_manager_->isPathSafe(safe_prefix) &&
-                                  planner_manager_->planExploreTraj(safe_prefix, vel, acc, 0.0);
+                                  planner_manager_->planExploreTraj(safe_prefix, vel, acc, 0.0, hold_fapp_height);
     if (!prefix_generated || !planner_manager_->isTrajectorySafe()) {
       ROS_ERROR_THROTTLE(1.0,
                          "[stuck_recovery] full trajectory and 0.8m safe-prefix trajectory both failed.");

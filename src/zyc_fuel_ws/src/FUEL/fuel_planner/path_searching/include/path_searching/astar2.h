@@ -44,7 +44,9 @@ public:
 
   void init(ros::NodeHandle& nh, const EDTEnvironment::Ptr& env);
   void reset();
-  int search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt);
+  // 动态穿越回退可沿目标高度搜索侧路，选项只作用于当前调用。
+  int search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt,
+             bool hold_goal_height = false);
   void setResolution(const double& res);
   void setProgressConstraint(const Eigen::Vector3d& forward_direction,
                              double maximum_regression = 0.0);
