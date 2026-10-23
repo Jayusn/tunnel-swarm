@@ -446,6 +446,50 @@ TEST_F(RollingPlannerEndpoint, RollingSegmentSearchRejectsOccupiedGoal)
   EXPECT_EQ(m.traj_.local_traj.traj_id, initial_id);
 }
 
+TEST_F(RollingPlannerEndpoint, RecordedDescendingGoalAdvancesXYZTogether)
+{
+  auto& m = *planner.planner_manager_;
+  const Eigen::Vector3d start(2.28443, -0.0399136, 0.511114);
+  const Eigen::Vector3d recorded_goal(3.710437157, -0.081747157, 0.163605022);
+  Eigen::Vector3d target, velocity;
+  bool final = true;
+  ASSERT_TRUE(m.prepareLocalSegment(start, recorded_goal, target, velocity, final));
+  EXPECT_FALSE(final);
+  const Eigen::Vector3d direction = (recorded_goal - start).normalized();
+  EXPECT_LT((target - start - 0.6 * direction).norm(), 1e-8);
+  EXPECT_GT(target.z(), 0.36); // 旧栅格导引在第一段已经降到 0.18736。
+  EXPECT_LT((velocity.normalized() - direction).norm(), 1e-8);
+  planner.start_pt_ = start;
+  planner.start_vel_.setZero();
+  planner.start_acc_.setZero();
+  planner.final_goal_ = recorded_goal;
+  ASSERT_TRUE(planner.callReboundReplan(true, false, false));
+  const auto& trajectory = m.traj_.local_traj.traj;
+  for (int i = 0; i <= 200; ++i) {
+    const auto point = trajectory.getPos(trajectory.getTotalDuration() * i / 200.0);
+    const double progress = (point.x() - start.x()) / (recorded_goal.x() - start.x());
+    const double expected_z = start.z() + progress * (recorded_goal.z() - start.z());
+    EXPECT_NEAR(point.z(), expected_z, 0.02);
+    EXPECT_GT(point.z(), 0.35);
+  }
+}
+
+TEST_F(RollingPlannerEndpoint, DescendingGuideChecksBottomObstacleBeyondFirstSegment)
+{
+  auto& m = *planner.planner_manager_;
+  const Eigen::Vector3d start(2.28443, -0.0399136, 0.511114);
+  const Eigen::Vector3d end(3.710437157, -0.081747157, 0.163605022);
+  const Eigen::Vector3d obstacle = start + 0.72 * (end - start);
+  publishPoint(obstacle);
+  ASSERT_NE(m.grid_map_->getInflateOccupancy(obstacle), 0);
+  Eigen::Vector3d target, velocity;
+  bool final;
+  ASSERT_TRUE(m.prepareLocalSegment(start, end, target, velocity, final));
+  // 后续段的底部占据也必须触发原有绕障搜索，不能只检查眼前 0.6m。
+  EXPECT_GT((target - start - 0.6 * (end - start).normalized()).norm(), 0.01);
+  EXPECT_EQ(m.grid_map_->getInflateOccupancy(target), 0);
+}
+
 TEST_F(RollingPlannerEndpoint, OptimizedSegmentPreservesMovingStartAndDoesNotStopAtBoundary)
 {
   auto& m = *planner.planner_manager_;
@@ -1119,6 +1163,37 @@ TEST_F(PlannerEndpoint, WaitingGoalRecoveryStillAcceptsControllerTrackingRequest
   EXPECT_FALSE(planner.have_target_);
   ASSERT_EQ(tracking_results.size(), 1U);
   EXPECT_EQ(tracking_results.back().request_id, 30U);
+}
+
+TEST_F(PlannerEndpoint, CompletedGoalEmergencyStopAcceptsRequestBeforeRecoveryStarts) {
+  const Eigen::Vector3d retreat = planner.odom_pos_ - Eigen::Vector3d(0.4, 0, 0);
+  planner.free_odom_history_.clear();
+  planner.free_odom_history_.push_back(FSM::FreeOdomSample{
+      999.0, retreat.x(), retreat.y(), retreat.z()});
+  planner.active_external_goal_stamp_ns_ = 999000000000ULL;
+  planner.wait_new_target_after_occupied_recovery_ = true;
+  planner.enable_fail_safe_ = true;
+  planner.have_target_ = planner.have_trigger_ = false;
+  planner.beginOccupiedRecoveryEpisode();
+  planner.exec_state_ = FSM::EMERGENCY_STOP;
+  planner.flag_escape_emergency_ = false; // 停车轨迹已发出，脱障尚未开始。
+  planner.need_hover_stop_ = true;
+  auto request = boost::make_shared<traj_utils::TrackingReplan>();
+  request->header.stamp = ros::Time(1000, 100000000);
+  request->request_id = 3;
+  planner.trackingReplanCallback(request);
+  ASSERT_TRUE(planner.tracking_replan_pending_);
+  ros::Time::setNow(ros::Time(1000, 200000000));
+  exec();
+  drain();
+  EXPECT_EQ(planner.exec_state_, FSM::OCCUPIED_RECOVERY);
+  EXPECT_FALSE(planner.tracking_replan_pending_);
+  EXPECT_FALSE(planner.have_target_);
+  ASSERT_EQ(tracking_results.size(), 1U);
+  EXPECT_EQ(tracking_results.back().request_id, 3U);
+  EXPECT_EQ(tracking_results.back().header.stamp, request->header.stamp);
+  EXPECT_EQ(tracking_results.back().trajectory.traj_id,
+            planner.planner_manager_->traj_.local_traj.traj_id);
 }
 
 TEST_F(PlannerEndpoint, RecoveryTrackingFailureAcknowledgesStopAndUsesExistingRetry) {

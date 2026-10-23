@@ -261,7 +261,8 @@ namespace diff_planner
         request->header.stamp <= tracking_request_.header.stamp ||
         mandatory_stop_ ||
         ((!have_target_ || !have_trigger_) &&
-         !(exec_state_ == OCCUPIED_RECOVERY && occupied_recovery_active_))) return;
+         !(exec_state_ == OCCUPIED_RECOVERY && occupied_recovery_active_) &&
+         !(exec_state_ == EMERGENCY_STOP && occupied_recovery_episode_))) return;
     tracking_request_ = *request;
     tracking_replan_pending_ = true;
     tracking_retry_after_ = 0.0;

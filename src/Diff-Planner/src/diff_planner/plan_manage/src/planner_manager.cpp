@@ -866,8 +866,22 @@ namespace diff_planner
     std::vector<Eigen::Vector3d> path;
     if (!start.allFinite() || !goal.allFinite() ||
         grid_map_->getInflateOccupancy(start) != 0 ||
-        grid_map_->getInflateOccupancy(goal) != 0 ||
-        !ploy_traj_opt_->searchRouteGuide(start, goal, path) || path.empty()) return false;
+        grid_map_->getInflateOccupancy(goal) != 0) return false;
+    // 空闲空间沿完整 XYZ 连线分段，避免等代价栅格路径先完成下降、
+    // 再长距离低飞。整条斜线（包括后续段）都检查占据；被挡时仍走原搜索。
+    // 保留密集采样，供下面的动态穿越检测使用。
+    const int direct_samples = std::max(1, int(std::ceil(
+        (goal - start).norm() / (0.5 * grid_map_->getResolution()))));
+    for (int i = 0; i <= direct_samples; ++i) {
+      const Eigen::Vector3d point = start + (goal - start) * (double(i) / direct_samples);
+      if (ploy_traj_opt_->staticPositionOccupied(point)) {
+        path.clear();
+        break;
+      }
+      path.push_back(point);
+    }
+    if (path.empty() &&
+        (!ploy_traj_opt_->searchRouteGuide(start, goal, path) || path.empty())) return false;
     // A* grid-center endpoints may differ from the requested endpoints.
     path.insert(path.begin(), start);
     path.push_back(goal);
