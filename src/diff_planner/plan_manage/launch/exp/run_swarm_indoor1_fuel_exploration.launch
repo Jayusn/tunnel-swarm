@@ -36,7 +36,7 @@
     <param name="/exploration_node/fapp/vehicle_bottom_height" value="0.20" type="double"/>
     <!-- 自主选点保持原流程；摆球走连续侧下穿/侧绕，不能原地下降或因旧包络封死前进。 -->
     <param name="/exploration_node/fapp/exploration_crossing_enabled" value="true" type="bool"/>
-    <param name="/exploration_node/mission/vertical_detour/underpass/min_height" value="0.15" type="double"/>
+    <param name="/exploration_node/mission/vertical_detour/underpass/min_height" value="0.10" type="double"/>
 
     <!-- 2026-07-07: 这是给 indoor1 雷达未知环境做验证的混合探索入口，保留当前 /Odometry + /cloud_registered 链路，但上层任务从固定 waypoint 改成 FUEL exploration_manager。 -->
     <!-- 2026-07-07: 该 launch 依赖 /home/togan/老张/zyc_fuel_ws 已经 source 且其中的 exploration_manager、plan_manage、waypoint_generator 已编译可用。 -->
