@@ -102,10 +102,10 @@ target_link_libraries(mpc_controller_node
 )
 
 if(CATKIN_ENABLE_TESTING)
-  # 使用与实机相同的 ACADO/qpOASES，回归旋转矩阵转四元数的符号边界。
+  # 使用与实机相同的控制器和 ACADO/qpOASES，回归四元数符号边界与动态限速恢复。
   get_target_property(quaternion_test_sources mpc_controller_node SOURCES)
   list(REMOVE_ITEM quaternion_test_sources
-    src/mpc_controller_node.cpp src/mpc_controller.cpp src/mpc_input.cpp src/mpc_fsm.cpp)
+    src/mpc_controller_node.cpp src/mpc_input.cpp src/mpc_fsm.cpp)
   catkin_add_gtest(test_quaternion_reference
     test/test_quaternion_reference.cpp ${quaternion_test_sources})
   if(TARGET test_quaternion_reference)

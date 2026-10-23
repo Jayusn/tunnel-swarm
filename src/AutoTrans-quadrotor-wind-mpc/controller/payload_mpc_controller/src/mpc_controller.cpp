@@ -7,7 +7,7 @@
 namespace PayloadMPC
 {
 
-  MpcController::MpcController(MpcParams &params) : params_(params), mpc_time_step_(params_.step_T_)
+  MpcController::MpcController(MpcParams &params) : params_(params), nominal_velocity_xy_(params.max_velocity_xy_), mpc_time_step_(params_.step_T_)
   {
     auto & q_gain_ = params_.q_gain_;
     auto & r_gain_ = params_.r_gain_;
@@ -226,6 +226,26 @@ namespace PayloadMPC
     preparation_thread_ = std::thread(&MpcController::preparationThread, this);
     ROS_WARN("[NMPC恢复] 已基于当前状态完整重置 ACADO 求解器。");
     return limits_ok && reference_ok;
+  }
+
+  bool MpcController::setDynamicCrossing(bool active)
+  {
+    const real_t limit = active ? real_t(1.0) : nominal_velocity_xy_;
+    if (std::abs(params_.max_velocity_xy_ - limit) < 1.0e-6) return true;
+    waitForPreparation();
+    const bool ok = mpc_wrapper_.setLimits(
+        params_.min_thrust_, params_.max_thrust_, params_.max_bodyrate_xy_,
+        params_.max_bodyrate_z_, limit, params_.max_velocity_z_,
+        params_.max_velocity_slack_xy_, params_.max_velocity_slack_z_);
+    if (ok) {
+      params_.max_velocity_xy_ = limit;
+      recovery_velocity_limits_relaxed_ = false;
+      last_mpc_solve_success_ = false;
+      ROS_WARN("[动态穿越] 水平速度软约束阈值=%.2fm/s，模式=%s。",
+               double(limit), active ? "同侧通过" : "恢复普通飞行");
+    }
+    preparation_thread_ = std::thread(&MpcController::preparationThread, this);
+    return ok;
   }
 
   bool MpcController::restoreNominalVelocityLimits()

@@ -724,6 +724,100 @@ public:
     }
   }
 
+  static void runDynamicOpening(double side) {
+    ros::NodeHandle nh(side > 0 ? "~opening_left" : "~opening_right");
+    nh.setParam("fapp/enabled", true);
+    nh.setParam("fapp/memory_enabled", true);
+    nh.setParam("fapp/planner_priority", true);
+    FastExplorationManager manager;
+    initialize(nh, manager, true);
+    auto& map = *manager.sdf_map_;
+    for (double y = -1.5; y < 1.5; y += .05)
+      for (double z = .60; z < 1.5; z += .05) {
+        pcl::PointCloud<pcl::PointXYZ> cloud;
+        cloud.push_back(pcl::PointXYZ(1.9, y, z));
+        map.inputPointCloud(cloud, 1, Vector3d(-1.9, y, z));
+        cloud.front().x = -1.9;
+        map.inputPointCloud(cloud, 1, Vector3d(1.9, y, z));
+      }
+    map.updateESDF3d();
+    auto& planner = *manager.planner_manager_;
+    const Vector3d start(-1.0, side*.60, 1.0), zero = Vector3d::Zero();
+    manager.task_search_manager_->setMap(manager.sdf_map_);
+    manager.task_search_manager_->global_no_return_ = false;
+    manager.task_search_manager_->exit_detection_enabled_ = false;
+    manager.task_search_manager_->updateRobotPose(start, 0.0);
+    manager.manual_fapp_active_ = true;
+    manager.manual_fapp_forward_ = Vector3d::UnitX();
+    manager.manual_fapp_exit_progress_ = .65;
+    manager.manual_fapp_hold_height_ = start.z();
+    manager.recovery_side_latched_ = true;
+    manager.recovery_side_dir_ = side * Vector3d::UnitY();
+    planner.fapp_watched_valid_ = true;
+    auto& ball = planner.fapp_watched_state_;
+    ball.position = Vector3d(.2, 0, 1);
+    ball.velocity = Vector3d(0, -side*.3, 0);
+    ball.size = Vector3d::Constant(.2);
+    ball.stamp = ros::Time::now().toSec();
+    planner.fapp_watched_lower_ = Vector3d(-.2,-.9,.7);
+    planner.fapp_watched_upper_ = Vector3d(.6,.9,1.4);
+    planner.fapp_states_ = {ball};
+    ASSERT_TRUE(planner.fappSideOpening(start, manager.recovery_side_dir_));
+    ball.velocity *= -1;
+    EXPECT_FALSE(manager.planFappOpeningCrossing(start, zero, zero, zero));
+    ball.velocity *= -1;
+    ball.stamp -= 2.0;
+    EXPECT_FALSE(manager.planFappOpeningCrossing(start, zero, zero, zero));
+    ball.stamp = ros::Time::now().toSec();
+    planner.fapp_states_ = {ball};
+    ASSERT_TRUE(manager.planFappOpeningCrossing(start, zero, zero, zero));
+    EXPECT_TRUE(manager.fapp_rush_pending_);
+    EXPECT_FALSE(manager.fapp_rush_active_);
+    EXPECT_DOUBLE_EQ(.4, planner.pp_.max_vel_);
+    EXPECT_DOUBLE_EQ(.5, planner.pp_.max_acc_);
+    EXPECT_GT(manager.ed_->next_goal_.x(), manager.manual_fapp_exit_progress_ + .1);
+    EXPECT_NEAR(start.y(), manager.ed_->next_goal_.y(), 1e-6);
+    ASSERT_FALSE(planner.isFappPathSafe(manager.ed_->path_next_goal_)); // 历史摆幅覆盖该侧。
+    ASSERT_TRUE(planner.isFappCrossingTrajectorySafe());
+    const Vector3d observed_position = ball.position;
+    planner.fapp_states_.clear();
+    ball.position = start;
+    EXPECT_FALSE(planner.isFappCrossingTrajectorySafe()); // 空帧仍检查尚新鲜的锁定目标。
+    ball.position = observed_position;
+    planner.fapp_states_ = {ball};
+    auto fast = planner.local_data_.position_traj_;
+    auto velocity = fast.getDerivative();
+    auto acceleration = velocity.getDerivative();
+    double vmax=0, amax=0;
+    for (double t=0; t<=fast.getTimeSum(); t+=.01) {
+      vmax = std::max(vmax, velocity.evaluateDeBoorT(t).cwiseAbs().maxCoeff());
+      amax = std::max(amax, acceleration.evaluateDeBoorT(t).cwiseAbs().maxCoeff());
+    }
+    EXPECT_GT(vmax, .40);
+    EXPECT_LE(vmax, 1.001);
+    EXPECT_LE(amax, 1.001);
+    EXPECT_FALSE(manager.keepsDynamicSide({start, start - .3*manager.recovery_side_dir_}));
+    manager.recordPublishedTrajectoryHeight();
+    EXPECT_TRUE(manager.fapp_rush_active_);
+    const Vector3d end = manager.ed_->next_goal_;
+    EXPECT_FALSE(manager.manualFappObservationMissing(end, 0.0));
+    EXPECT_TRUE(manager.fapp_rush_active_); // 预测终点不提前恢复。
+    manager.fapp_exploration_crossing_enabled_ = true;
+    EXPECT_FALSE(manager.manualFappObservationMissing(end, 0.0, true));
+    EXPECT_FALSE(manager.fapp_rush_active_);
+    EXPECT_FALSE(manager.manual_fapp_active_);
+    EXPECT_TRUE(manager.keepsDynamicSide({start, start - .3*side*Vector3d::UnitY()}));
+    ASSERT_TRUE(planner.planExploreTraj({start, .5*(start+end), end}, zero, zero, 0.0));
+    auto ordinary = planner.local_data_.position_traj_;
+    EXPECT_GT(ordinary.getTimeSum(), fast.getTimeSum());
+    velocity = ordinary.getDerivative(); acceleration = velocity.getDerivative();
+    for (double t=0; t<=ordinary.getTimeSum(); t+=.02) {
+      EXPECT_LE(velocity.evaluateDeBoorT(t).cwiseAbs().maxCoeff(), .401);
+      EXPECT_LE(acceleration.evaluateDeBoorT(t).cwiseAbs().maxCoeff(), .501);
+    }
+    EXPECT_FALSE(manager.planFappOpeningCrossing(start, zero, zero, zero));
+  }
+
   static void runPassageCentre(bool dynamic_side = false) {
     ros::NodeHandle nh("~passage_centre");
     FastExplorationManager manager;
@@ -2753,4 +2847,11 @@ TEST(FappExploration, CommittedSideAdvancesWithoutRecenteringOrHistorySidePush) 
 
 TEST(FappExploration, CommittedRightSideSurvivesFullCrossingReplans) {
   fast_planner::TurnEscapeTest::runManualSuspended("exploration_prior_right_side");
+}
+
+TEST(FappOpening, RightLaneUsesOpeningAndRestoresNominalLimitsAfterActualPassage) {
+  fast_planner::TurnEscapeTest::runDynamicOpening(-1.0);
+}
+TEST(FappOpening, LeftLaneUsesOpeningAndRestoresNominalLimitsAfterActualPassage) {
+  fast_planner::TurnEscapeTest::runDynamicOpening(1.0);
 }

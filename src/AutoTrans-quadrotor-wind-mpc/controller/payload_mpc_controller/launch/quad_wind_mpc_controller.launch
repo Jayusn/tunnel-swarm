@@ -23,6 +23,7 @@
   <arg name="set_mode_service" default="/UAV0/mavros/set_mode"/>
   <arg name="cmd_trigger_topic" default="/UAV0/hummingbird/goal"/>
   <!-- bridge 输出的完整 FUEL/规划器多项式轨迹，保持与雷达 Odometry 同一世界坐标语义。 -->
+  <arg name="dynamic_crossing_topic" default="/unused_dynamic_crossing"/>
   <arg name="trajectory_topic" default="/UAV0/planning/autotrans_trajectory"/>
   <!-- FUEL 入口点阶段的 PositionCommand；完整 PolynomialTraj 到达后优先级更高。 -->
   <arg name="position_cmd_topic" default="/UAV0/planning/pos_cmd"/>
@@ -87,6 +88,7 @@
     <remap from="/mavros/set_mode" to="$(arg set_mode_service)"/>
 
     <!-- Optional planner/CMD_CTRL inputs; AUTO_HOVER does not use them. -->
+    <remap from="~dynamic_crossing" to="$(arg dynamic_crossing_topic)"/>
     <remap from="~traj" to="$(arg trajectory_topic)"/>
     <remap from="~cmd" to="$(arg position_cmd_topic)"/>
     <remap from="~landing_search_state" to="$(arg landing_search_state_topic)"/>

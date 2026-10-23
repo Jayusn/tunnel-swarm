@@ -17,14 +17,17 @@ class InputCallbackPriorityTest(unittest.TestCase):
         preamble = r'''
 #include <ros/ros.h>
 #include <ros/callback_queue.h>
+#include <std_msgs/Bool.h>
 #include <memory>
 #include <thread>
 #include <cassert>
 namespace PayloadMPC {
 struct MPCFSM {
     int last_input=0, solved_input=0, observer_input=0;
+    bool crossing=false, solved_crossing=false;
+    void setDynamicCrossing(bool active) { crossing=active; }
     std::thread::id owner=std::this_thread::get_id();
-    void process() { assert(owner==std::this_thread::get_id()); solved_input=last_input; }
+    void process() { assert(owner==std::this_thread::get_id()); solved_input=last_input; solved_crossing=crossing; }
     void addNewForceObseverState() {
         assert(owner==std::this_thread::get_id()); observer_input=last_input;
     }
@@ -36,6 +39,14 @@ struct Input : ros::CallbackInterface {
     int value;
     explicit Input(int v):value(v) {}
     CallResult call() override { fsm_ptr->last_input=value; return Success; }
+};
+struct CrossingInput : ros::CallbackInterface {
+    bool active;
+    explicit CrossingInput(bool value):active(value) {}
+    CallResult call() override {
+        auto msg=boost::make_shared<std_msgs::Bool>(); msg->data=active;
+        dynamicCrossingCallback(msg); return Success;
+    }
 };
 struct ControlTimer : ros::CallbackInterface {
     CallResult call() override { MPC_controller_main(ros::TimerEvent{}); return Success; }
@@ -49,16 +60,19 @@ int main() {
     timers.addCallback(ros::CallbackInterfacePtr(new ControlTimer));
     input_callback_queue.addCallback(ros::CallbackInterfacePtr(new Input(1)));
     input_callback_queue.addCallback(ros::CallbackInterfacePtr(new Input(2)));
+    input_callback_queue.addCallback(ros::CallbackInterfacePtr(new CrossingInput(true)));
     assert(timers.callOne()==ros::CallbackQueue::Called);
+    assert(fsm_ptr->solved_crossing);
     assert(fsm_ptr->solved_input==2 && input_callback_queue.isEmpty());
     // New input waiting after an observer calculation must be seen by the next solve.
     system_state_update_main(ros::TimerEvent{});
     assert(fsm_ptr->observer_input==2);
     input_callback_queue.addCallback(ros::CallbackInterfacePtr(new Input(3)));
+    input_callback_queue.addCallback(ros::CallbackInterfacePtr(new CrossingInput(false)));
     MPC_controller_main(ros::TimerEvent{});
-    assert(fsm_ptr->solved_input==3);
+    assert(fsm_ptr->solved_input==3 && !fsm_ptr->solved_crossing);
     MPC_controller_main(ros::TimerEvent{});
-    assert(fsm_ptr->solved_input==3);
+    assert(fsm_ptr->solved_input==3 && !fsm_ptr->solved_crossing);
 }
 '''
         flags = shlex.split(subprocess.check_output(

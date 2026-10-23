@@ -102,6 +102,7 @@ namespace PayloadMPC
       const Eigen::Ref<const Eigen::Vector3d> hover_position,
       double hover_yaw);
     bool restoreNominalVelocityLimits();
+    bool setDynamicCrossing(bool active);
     bool recoveryVelocityLimitsRelaxed() const
       { return recovery_velocity_limits_relaxed_; }
     void waitForPreparation();
@@ -156,6 +157,7 @@ namespace PayloadMPC
 
     // Parameters
     MpcParams& params_;
+    const real_t nominal_velocity_xy_;
 
     Eigen::Vector3d fq_{Eigen::Vector3d::Zero()};
     mutable std::mutex external_force_mutex_;

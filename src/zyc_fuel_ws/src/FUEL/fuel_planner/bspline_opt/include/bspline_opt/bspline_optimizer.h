@@ -50,6 +50,8 @@ public:
   void setCostFunction(const int& cost_function);
   void setBoundaryStates(const vector<Eigen::Vector3d>& start, const vector<Eigen::Vector3d>& end);
   void setTimeLowerBound(const double& lb);
+  double setAccelerationLimit(double limit) { const double previous = max_acc_; max_acc_ = limit; return previous; }
+  double setVelocityLimit(double limit) { const double previous = max_vel_; max_vel_ = limit; return previous; }
 
   // optional inputs
   void setGuidePath(const vector<Eigen::Vector3d>& guide_pt);

@@ -445,6 +445,40 @@ bool FastPlannerManager::fappBlockingBounds(
   return false;
 }
 
+bool FastPlannerManager::fappSideOpening(
+    const Eigen::Vector3d& position, const Eigen::Vector3d& side) const {
+  if (!fappMemoryEnabled() || !fapp_watched_valid_ || side.head<2>().norm() < 0.5)
+    return false;
+  const auto& ball = fapp_watched_state_;
+  const double age = ros::Time::now().toSec() - ball.stamp;
+  if (age < -0.05 || age > fapp_config_.observation_retention ||
+      !ball.velocity.allFinite() || ball.velocity.dot(side) >= -1e-3) return false;
+  const double half = ball.size.allFinite() && (ball.size.array() > 0.0).any()
+      ? 0.5 * ball.size.dot(side.cwiseAbs()) : fapp_config_.ball_radius;
+  // 已选右侧只认球向左摆且横向让出机体净空；历史摆幅仍用于确定通过终点。
+  return (position - ball.position).dot(side) >
+      half + fapp_config_.vehicle_radius + fapp_config_.margin;
+}
+
+bool FastPlannerManager::isFappCrossingTrajectorySafe() const {
+  auto trajectory = local_data_.position_traj_;
+  const double duration = trajectory.getTimeSum();
+  if (!(duration > 0.0)) return false;
+  const double now = ros::Time::now().toSec();
+  const int samples = std::max(1, static_cast<int>(std::ceil(duration / 0.02)));
+  for (int i = 0; i <= samples; ++i) {
+    const double t = duration * i / samples;
+    const auto point = trajectory.evaluateDeBoorT(t);
+    // 此分支按新鲜观测和实际样条到达时间验球，不能用整段历史摆幅封死空隙。
+    if (!fappPositionSafe(point, now + t, now)) return false;
+    double clearance;
+    if (fapp_watched_valid_ && fuel_fapp::evaluateDynamicObstacle(
+        point, fapp_watched_state_, now + t, now, fapp_config_, &clearance) &&
+        clearance < 0.0) return false;
+  }
+  return true;
+}
+
 bool FastPlannerManager::isFappPathSafe(const vector<Eigen::Vector3d>& path) const {
   Eigen::Vector3d lower, upper;
   return !fappBlockingBounds(path, lower, upper);
@@ -1000,7 +1034,11 @@ bool FastPlannerManager::kinodynamicReplan(const Eigen::Vector3d& start_pt,
 
 bool FastPlannerManager::planExploreTraj(const vector<Eigen::Vector3d>& input_tour,
     const Eigen::Vector3d& cur_vel, const Eigen::Vector3d& cur_acc, const double& time_lb,
-    bool preserve_height_profile) {
+    bool preserve_height_profile, double crossing_max_velocity, double crossing_max_acceleration) {
+  const double plan_max_velocity = crossing_max_velocity > 0.0
+      ? crossing_max_velocity : pp_.max_vel_;
+  const double plan_max_acceleration = crossing_max_acceleration > 0.0
+      ? crossing_max_acceleration : pp_.max_acc_;
   std::vector<Eigen::Vector3d> tour=input_tour;
 
   // 2026-07-14: PolynomialTraj 至少需要两个有效分段；单点/两点及重复点会构造零维矩阵并触发 Eigen 越界。
@@ -1029,7 +1067,7 @@ bool FastPlannerManager::planExploreTraj(const vector<Eigen::Vector3d>& input_to
   Eigen::Vector3d zero(0, 0, 0);
   Eigen::VectorXd times(pt_num - 1);
   for (int i = 0; i < pt_num - 1; ++i)
-    times(i) = (pos.row(i + 1) - pos.row(i)).norm() / (pp_.max_vel_ * 0.5);
+    times(i) = (pos.row(i + 1) - pos.row(i)).norm() / (plan_max_velocity * 0.5);
 
   // 急弯两侧分段额外留时间，让简单控制器在进入横向段前先完成减速，
   // 避免参考点已经转弯而机体中后部仍在障碍物侧面的情况下斜切追点。
@@ -1117,7 +1155,13 @@ bool FastPlannerManager::planExploreTraj(const vector<Eigen::Vector3d>& input_to
   // 2026-07-20: START/END在原优化器中只是软代价；保存两端控制点并在优化后恢复，把起终点及其
   // 一、二阶边界状态变成硬约束，防止日志中轨迹末端从前方目标甩回(0,-3.5)附近。
   const Eigen::MatrixXd boundary_ctrl_pts = ctrl_pts;
+  const double optimizer_velocity = crossing_max_velocity > 0.0
+      ? bspline_optimizers_[0]->setVelocityLimit(plan_max_velocity) : 0.0;
+  const double optimizer_acceleration = crossing_max_acceleration > 0.0
+      ? bspline_optimizers_[0]->setAccelerationLimit(plan_max_acceleration) : 0.0;
   bspline_optimizers_[0]->optimize(ctrl_pts, dt, cost_func, 1, 1);
+  if (crossing_max_velocity > 0.0) bspline_optimizers_[0]->setVelocityLimit(optimizer_velocity);
+  if (crossing_max_acceleration > 0.0) bspline_optimizers_[0]->setAccelerationLimit(optimizer_acceleration);
   const int boundary_count = std::min(pp_.bspline_degree_, static_cast<int>(ctrl_pts.rows() / 2));
   for (int i = 0; i < boundary_count; ++i) {
     ctrl_pts.row(i) = boundary_ctrl_pts.row(i);
@@ -1185,9 +1229,9 @@ bool FastPlannerManager::planExploreTraj(const vector<Eigen::Vector3d>& input_to
   // 禁止轨迹内部在此基础上继续放大。
   auto& final_traj = local_data_.position_traj_;
   const double velocity_limit = std::max(
-      pp_.max_vel_, cur_vel.cwiseAbs().maxCoeff() + 1e-3);
+      plan_max_velocity, cur_vel.cwiseAbs().maxCoeff() + 1e-3);
   const double acceleration_limit = std::max(
-      pp_.max_acc_, cur_acc.cwiseAbs().maxCoeff() + 1e-3);
+      plan_max_acceleration, cur_acc.cwiseAbs().maxCoeff() + 1e-3);
   if (!(velocity_limit > 0.0) || !(acceleration_limit > 0.0) ||
       !std::isfinite(velocity_limit) || !std::isfinite(acceleration_limit)) {
     ROS_ERROR("[trajectory_dynamics] invalid limits velocity=%.3f acceleration=%.3f.",

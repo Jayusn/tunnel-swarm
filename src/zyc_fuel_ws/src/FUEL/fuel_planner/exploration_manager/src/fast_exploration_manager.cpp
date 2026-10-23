@@ -10,6 +10,7 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <std_msgs/Bool.h>
 #include <lkh_tsp_solver/lkh_interface.h>
 #include <active_perception/graph_node.h>
 #include <active_perception/graph_search.h>
@@ -51,6 +52,11 @@ FastExplorationManager::~FastExplorationManager() {
 }
 
 void FastExplorationManager::recordPublishedTrajectoryHeight() {
+  if (manual_fapp_active_ && fapp_rush_pending_) {
+    fapp_rush_active_ = true;
+    fapp_rush_pending_ = false;
+    if (fapp_rush_pub_) { std_msgs::Bool mode; mode.data = true; fapp_rush_pub_.publish(mode); }
+  }
   if (width_route_plan_) {
     // Only a published replacement releases the old side. A rejected width
     // probe must not change the commitment of the still-executing trajectory.
@@ -1845,6 +1851,7 @@ bool FastExplorationManager::buildWideSideBypass(
       (split.right_width > split.left_width + 1e-6 ? -1.0 :
        (split.left_width > split.right_width + 1e-6 ? 1.0 : remembered_sign));
   for (const double side_sign : {first_sign, -first_sign}) {
+    if (keep_dynamic_side && side_sign != first_sign) break;
     const bool right_side = side_sign < 0.0;
     const double lane_width = right_side ? split.right_width : split.left_width;
     if (lane_width < wide_side_bypass_min_lane_width_ && lane_width < 0.20) continue;
@@ -1906,7 +1913,7 @@ bool FastExplorationManager::buildWideSideBypass(
         }
       }
     }
-    // 0.4m 续接失败不代表原侧彻底不可走；原侧还有可行小步就不改选另一侧。
+    // 动态场景保持原侧，等球让开后前进；普通静态绕障仍可比较另一侧。
     if (keep_dynamic_side && best.valid) break;
   }
 
@@ -1982,6 +1989,7 @@ bool FastExplorationManager::buildFappSideBypass(
       std::fabs(recovery_side_dir_.dot(lateral)) > 0.5;
   const double first_sign = keep_side && recovery_side_dir_.dot(lateral) < 0.0 ? -1.0 : 1.0;
   for (double sign : {first_sign, -first_sign}) {
+    if (keep_side && sign != first_sign) break;
     double shift = (center - pos).dot(lateral) + sign * side_extent;
     if (crossing_path) shift = sign * std::max(0.0, sign * shift);
     if ((!crossing_path && sign * shift <= 0.0) ||
@@ -2026,7 +2034,7 @@ bool FastExplorationManager::buildFappSideBypass(
       best_sign = sign;
       best_route = route;
     }
-    if (keep_side && found) break; // 原侧完整路线不可行时才尝试另一侧。
+    if (keep_side && found) break;
   }
   if (!found) return false;
   const double sign = best_sign;
@@ -2426,6 +2434,8 @@ bool FastExplorationManager::buildMissionForwardFallback(const Vector3d& pos, do
 
   bool entry_obstacle_checked = false;
   for (const auto& direction : directions) {
+    if (manual_fapp_active_ && recovery_side_latched_ &&
+        direction.dot(recovery_side_dir_) < -1e-3) continue;
     // Keep the original entry ordering; width ranking starts only after entry.
     if (!entry_forward_complete_ && !entry_obstacle_checked &&
         direction.normalized().dot(recovery_forward.normalized()) <
@@ -2920,6 +2930,8 @@ void FastExplorationManager::completeTurnInPlace(const Vector3d&) {
 
 void FastExplorationManager::initialize(ros::NodeHandle& nh) {
   nh.param("fapp/exploration_crossing_enabled", fapp_exploration_crossing_enabled_, false);
+  fapp_rush_pub_ = nh.advertise<std_msgs::Bool>("fapp/dynamic_crossing", 1, true);
+  std_msgs::Bool crossing_mode; crossing_mode.data = false; fapp_rush_pub_.publish(crossing_mode);
   nh.param("mission/manual_path/enabled", manual_path_enabled_, false);
   nh.param("mission/manual_path/use_astar", manual_path_use_astar_, false);
   nh.param("mission/manual_path/wait_for_trigger", manual_path_wait_for_trigger_, false);
@@ -3420,6 +3432,8 @@ bool FastExplorationManager::manualFappObservationMissing(
         manual_fapp_exit_progress_);
     planner_manager_->watchFappObstacle(nullptr);
     manual_fapp_active_ = false;
+    fapp_rush_active_ = fapp_rush_pending_ = false;
+    if (fapp_rush_pub_) { std_msgs::Bool mode; mode.data = false; fapp_rush_pub_.publish(mode); }
     recovery_side_latched_ = false;
     wide_side_bypass_active_ = false;
     recovery_side_continuation_pending_ = false;
@@ -3507,6 +3521,7 @@ bool FastExplorationManager::buildManualFappUnderpassPath(
     // 只尝试左右两个侧下方通路；选定后保持方向，不逐帧反复换边。
     side = recovery_side_latched_ && recovery_side_dir_.dot(lateral) < 0.0 ? -0.20 : 0.20;
     if (!side_path(side, path)) {
+      if (manual_fapp_active_ && recovery_side_latched_) return false;
       side = -side;
       if (!side_path(side, path)) return false;
     }
@@ -3527,6 +3542,62 @@ bool FastExplorationManager::buildManualFappUnderpassPath(
   return true;
 }
 
+bool FastExplorationManager::keepsDynamicSide(const std::vector<Vector3d>& path) const {
+  if (!manual_fapp_active_ || !recovery_side_latched_ || path.empty()) return true;
+  const Vector3d lateral(-manual_fapp_forward_.y(), manual_fapp_forward_.x(), 0.0);
+  if (std::fabs(recovery_side_dir_.dot(lateral)) < 0.5) return true;
+  const Vector3d side = (recovery_side_dir_.dot(lateral) < 0.0 ? -1.0 : 1.0) * lateral;
+  for (const auto& point : path)
+    if (point.dot(manual_fapp_forward_) <= manual_fapp_exit_progress_ &&
+        (point - path.front()).dot(side) < -sdf_map_->getResolution())
+      return false;
+  return true;
+}
+
+bool FastExplorationManager::planFappOpeningCrossing(
+    const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, const Vector3d& yaw) {
+  fapp_rush_pending_ = false;
+  if (!manual_fapp_active_ || !recovery_side_latched_) return false;
+  const Vector3d forward = manual_fapp_forward_;
+  const Vector3d lateral(-forward.y(), forward.x(), 0.0);
+  if (std::fabs(recovery_side_dir_.dot(lateral)) < 0.5) return false;
+  const Vector3d side = (recovery_side_dir_.dot(lateral) < 0.0 ? -1.0 : 1.0) * lateral;
+  if (!fapp_rush_active_ && !planner_manager_->fappSideOpening(pos, side)) return false;
+  Vector3d lower, upper; double age;
+  if (!planner_manager_->watchedFappBounds(lower, upper, age)) return false;
+  double end = manual_fapp_exit_progress_ + 0.20;
+  if (manual_path_enabled_) {
+    if (manual_path_.finished()) return false;
+    end = std::min(end, manual_path_.points[manual_path_.next].dot(forward));
+    if (end < manual_fapp_exit_progress_) return false;
+  }
+  if (end - pos.dot(forward) <= 0.10) return false;
+  Vector3d target = pos + (end - pos.dot(forward)) * forward;
+  target.z() = horizontalGoalHeight(pos.z());
+  vector<Vector3d> path{pos, 0.5 * (pos + target), target};
+  if (!pathInsideWorkspaceLock(path) || !task_search_manager_->isRecoveryPathAllowed(path, false) ||
+      !planner_manager_->isPathSafe(path)) return false;
+  // 同侧直穿到历史包络后方，保持高度；不用整段摆幅否决当前已让开的通路。
+  for (int sample=0; sample<=40; ++sample)
+    if (!planner_manager_->isKnownFreePosition(pos + (sample/40.0)*(target-pos))) return false;
+  if (!planner_manager_->planExploreTraj(path, vel, acc, 0.0, true, 1.0, 1.0) ||
+      !planner_manager_->isTrajectorySafe() || !planner_manager_->isFappCrossingTrajectorySafe() ||
+      !planner_manager_->planYawTurnInPlace(yaw, yaw[0])) return false;
+  manual_fapp_curve_active_ = false;
+  suspended_underpass_active_ = false;
+  ed_->path_next_goal_ = path;
+  ed_->global_tour_ = {pos, target};
+  ed_->next_goal_ = target;
+  last_requested_goal_ = target;
+  has_last_requested_goal_ = true;
+  pending_reference_height_ = target.z();
+  recovery_side_continuation_pending_ = false;
+  fapp_rush_pending_ = true; // 仅发布成功后通知执行端，候选失败不改变限速。
+  ROS_WARN("[fapp_rush] keep selected side and cross opening: target=(%.2f,%.2f,%.2f) "
+           "max_vel=1.00m/s max_acc=1.00m/s^2; restore after actual passage.", target.x(), target.y(), target.z());
+  return true;
+}
+
 bool FastExplorationManager::planExplorationFappCrossing(
     const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, const Vector3d& yaw) {
   if (!fapp_exploration_crossing_enabled_ || manual_path_enabled_ || external_selection_only_ ||
@@ -3536,6 +3607,7 @@ bool FastExplorationManager::planExplorationFappCrossing(
     return false;
   manualFappObservationMissing(pos, yaw[0]);
   if (!manual_fapp_active_) return false;
+  if (planFappOpeningCrossing(pos, vel, acc, yaw)) return true;
   Vector3d lower, upper;
   double age;
   if (!planner_manager_->watchedFappBounds(lower, upper, age)) return false;
@@ -3559,7 +3631,7 @@ bool FastExplorationManager::planExplorationFappCrossing(
       !task_search_manager_->isRecoveryPathAllowed(path, false) ||
       !planner_manager_->isPathSafe(path) ||
       !planner_manager_->isFappPathSafe(path) ||
-      !planner_manager_->planExploreTraj(path, vel, acc, 0.0) ||
+      !planner_manager_->planExploreTraj(path, vel, acc, 0.0, false, fapp_rush_active_ ? 1.0 : 0.0, fapp_rush_active_ ? 1.0 : 0.0) ||
       !planner_manager_->isTrajectorySafe() ||
       !planner_manager_->planYawTurnInPlace(yaw, target_yaw)) {
     // 避让候选不可用时继续原探索选路，不能封死普通前进规划。
@@ -3587,6 +3659,7 @@ int FastExplorationManager::planManualWaypointMotion(
   if (manual_path_wait_for_trigger_ && !manual_path_started_) return FAIL;
   if (task_search_manager_ && task_search_manager_->landingRequested()) return NO_FRONTIER;
   if (manualFappObservationMissing(pos, yaw[0])) return FAIL;
+  if (planFappOpeningCrossing(pos, vel, acc, yaw)) return SUCCEED;
   Vector3d target;
   double target_yaw = yaw[0];
   const bool exit_motion = manual_exit_enabled_ && manual_exit_latched_ && manual_path_.finished();
@@ -3752,6 +3825,7 @@ int FastExplorationManager::planManualWaypointMotion(
   // 动态穿越完整覆盖障碍区域；普通航点、出口和静态绕行仍遵守局部段上限。
   dynamic_crossing_length_exempt = !exit_motion && manual_fapp_active_ &&
       ((underpass_motion && manual_fapp_curve_active_) || bypass_motion);
+  if (!keepsDynamicSide(ed_->path_next_goal_)) return FAIL;
   const auto full_path = ed_->path_next_goal_;
   double budget = !dynamic_crossing_length_exempt && manual_path_max_segment_length_ > 0.0
       ? std::min(manual_path_max_segment_length_, Astar::pathLength(full_path))
@@ -3774,7 +3848,7 @@ int FastExplorationManager::planManualWaypointMotion(
          planner_manager_->fappPlannerPriority() ||
          planner_manager_->isFappPathSafe(ed_->path_next_goal_)) &&
         planner_manager_->planExploreTraj(ed_->path_next_goal_, vel, acc, 0.0,
-                                          hold_fapp_height && !underpass_motion) &&
+                                          hold_fapp_height && !underpass_motion, fapp_rush_active_ ? 1.0 : 0.0, fapp_rush_active_ ? 1.0 : 0.0) &&
         planner_manager_->isTrajectorySafe()) {
       if (trajectory_within_limit()) {
         planned = true;
@@ -3809,6 +3883,7 @@ int FastExplorationManager::planManualWaypointMotion(
 int FastExplorationManager::planExploreMotion(
     const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, const Vector3d& yaw) {
   width_route_plan_ = false;
+  fapp_rush_pending_ = false;
   pending_reference_height_ = std::numeric_limits<double>::quiet_NaN();
   // 上轮同侧短步若未生成成功，不在下一轮反复强选同一点。
   if (recovery_side_continuation_pending_ && !manual_fapp_active_) {
@@ -4696,6 +4771,7 @@ int FastExplorationManager::planExploreMotion(
   if (hold_fapp_height && ed_->path_next_goal_.size() == 2)
     ed_->path_next_goal_.insert(ed_->path_next_goal_.begin()+1,
         0.5*(ed_->path_next_goal_.front()+ed_->path_next_goal_.back()));
+  if (!keepsDynamicSide(ed_->path_next_goal_)) return FAIL;
   const double radius_far = 5.0;
   const double radius_close = 1.5;
   const double len = Astar::pathLength(ed_->path_next_goal_);
@@ -4705,7 +4781,7 @@ int FastExplorationManager::planExploreMotion(
   } else if (hold_fapp_height || len < radius_close || (has_central_guides && len <= radius_far)) {
     // Next viewpoint is very close, no need to search kinodynamic path, just use waypoints-based
     // optimization
-    if (!planner_manager_->planExploreTraj(ed_->path_next_goal_, vel, acc, time_lb, hold_fapp_height)) {
+    if (!planner_manager_->planExploreTraj(ed_->path_next_goal_, vel, acc, time_lb, hold_fapp_height, fapp_rush_active_ ? 1.0 : 0.0, fapp_rush_active_ ? 1.0 : 0.0)) {
       if (task_search_manager_) task_search_manager_->reportGoalFailure(next_pos);
       return FAIL;
     }
@@ -4771,7 +4847,7 @@ int FastExplorationManager::planExploreMotion(
 
     const bool prefix_generated = safe_prefix.size() >= 3 &&
                                   planner_manager_->isPathSafe(safe_prefix) &&
-                                  planner_manager_->planExploreTraj(safe_prefix, vel, acc, 0.0, hold_fapp_height);
+                                  planner_manager_->planExploreTraj(safe_prefix, vel, acc, 0.0, hold_fapp_height, fapp_rush_active_ ? 1.0 : 0.0, fapp_rush_active_ ? 1.0 : 0.0);
     if (!prefix_generated || !planner_manager_->isTrajectorySafe()) {
       ROS_ERROR_THROTTLE(1.0,
                          "[stuck_recovery] full trajectory and 0.8m safe-prefix trajectory both failed.");

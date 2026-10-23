@@ -140,6 +140,11 @@ private:
   double manual_path_max_segment_length_{0.0};
   bool manual_path_exploration_style_{false};
   bool manual_fapp_active_{false};
+  bool fapp_rush_active_{false}, fapp_rush_pending_{false};
+  ros::Publisher fapp_rush_pub_;
+  bool keepsDynamicSide(const std::vector<Vector3d>& path) const;
+  bool planFappOpeningCrossing(const Vector3d& pos, const Vector3d& vel,
+                               const Vector3d& acc, const Vector3d& yaw);
   bool fapp_exploration_crossing_enabled_{false};
   Vector3d manual_fapp_forward_{Vector3d::UnitX()};
   double manual_fapp_exit_progress_{0.0};

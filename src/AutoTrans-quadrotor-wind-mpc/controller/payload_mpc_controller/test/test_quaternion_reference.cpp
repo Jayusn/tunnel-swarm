@@ -1,4 +1,5 @@
 #include "mpc_wrapper.h"
+#include "mpc_controller.h"
 #include <gtest/gtest.h>
 using namespace PayloadMPC;
 Eigen::Vector4d qref(double deg) {
@@ -61,4 +62,29 @@ TEST(QuaternionReference, CrossesEigenSignBoundaryWithoutReverseControl) {
 int main(int argc, char **argv) {
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
+}
+
+TEST(DynamicCrossingLimits, TemporaryThresholdRestoresOriginalControllerSetting) {
+  ros::Time::init();
+  MpcParams params;
+  params.q_gain_ = {200, 200, 120, 120, 55, 0, 0, 0, 0, 0};
+  params.r_gain_ = {1.2, 20, 1.2, 5000, 5000};
+  params.dyn_params_.mass_q = 1.817;
+  params.gravity_ = 9.795;
+  params.step_T_ = .05;
+  params.min_thrust_ = 1;
+  params.max_thrust_ = 29.5;
+  params.max_bodyrate_xy_ = 1.5;
+  params.max_bodyrate_z_ = 1;
+  params.max_velocity_xy_ = .5;
+  params.max_velocity_z_ = 1;
+  params.max_velocity_slack_xy_ = 1.5;
+  params.max_velocity_slack_z_ = 1;
+  MpcController controller(params);
+  for (int i=0; i<3; ++i) {
+    ASSERT_TRUE(controller.setDynamicCrossing(true));
+    EXPECT_NEAR(1.0, params.max_velocity_xy_, 1e-6);
+    ASSERT_TRUE(controller.setDynamicCrossing(false));
+    EXPECT_NEAR(.5, params.max_velocity_xy_, 1e-6);
+  }
 }

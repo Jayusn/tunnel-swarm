@@ -36,7 +36,8 @@ public:
   // 2026-07-14: 返回轨迹生成是否成功，拒绝少于三点或含零长度分段的非法 waypoint 输入。
   bool planExploreTraj(const vector<Eigen::Vector3d>& tour, const Eigen::Vector3d& cur_vel,
                        const Eigen::Vector3d& cur_acc, const double& time_lb = -1,
-                       bool preserve_height_profile = false);
+                       bool preserve_height_profile = false, double crossing_max_velocity = 0.0,
+                       double crossing_max_acceleration = 0.0);
   // 地图确认真实转弯后，位置保持不动，只执行yaw对准。
   bool planStationaryTraj(const Eigen::Vector3d& position, double duration);
   // 地面/下方障碍恢复专用：保持 XY 不变，以零端点速度直升。
@@ -80,6 +81,8 @@ public:
   bool fappBlockingBounds(const vector<Eigen::Vector3d>& path,
                           Eigen::Vector3d& lower, Eigen::Vector3d& upper,
                           fuel_fapp::DynamicObstacleState* observation = nullptr) const;
+  bool fappSideOpening(const Eigen::Vector3d& position, const Eigen::Vector3d& side) const;
+  bool isFappCrossingTrajectorySafe() const;
   bool isFappPathSafe(const vector<Eigen::Vector3d>& path) const;
   bool fappPlannerPriority() const { return fapp_planner_priority_; }
   bool fappMemoryEnabled() const { return fapp_config_.enabled && fapp_memory_enabled_; }

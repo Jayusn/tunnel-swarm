@@ -93,6 +93,10 @@ namespace PayloadMPC
 		MPCFSM(const ros::NodeHandle &nh, MpcParams &params, MpcController &controller);
 
 		void process();
+        void setDynamicCrossing(bool active) {
+          controller_.setDynamicCrossing(active && fsm_state == CMD_CTRL &&
+              exec_traj_state_ != MPC_RECOVERY_HOVER && !precision_mission_active_);
+        }
 		void precisionTestTargetCallback(const mavros_msgs::PositionTarget::ConstPtr &msg);
 		void CMD_CTRL_process();
 

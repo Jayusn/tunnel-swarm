@@ -8,9 +8,14 @@
 // 输入回调和控制计算仍在同一线程执行；单独排队使每次求解优先消费最新输入。
 ros::CallbackQueue input_callback_queue;
 std::unique_ptr<PayloadMPC::MPCFSM> fsm_ptr;
+bool dynamic_crossing_requested = false;
+void dynamicCrossingCallback(const std_msgs::Bool::ConstPtr& msg) {
+    dynamic_crossing_requested = msg->data;
+}
 void MPC_controller_main(const ros::TimerEvent &)
 {
     input_callback_queue.callAvailable(ros::WallDuration(0.0));
+    fsm_ptr->setDynamicCrossing(dynamic_crossing_requested);
     fsm_ptr->process();
 }
 
@@ -35,6 +40,8 @@ int main(int argc, char **argv)
     PayloadMPC::MpcController controller(param);
     fsm_ptr.reset(new PayloadMPC::MPCFSM(nh, param, controller));
     PayloadMPC::MPCFSM &fsm = *fsm_ptr;
+    ros::Subscriber dynamic_crossing_sub = nh.subscribe(
+        "dynamic_crossing", 1, dynamicCrossingCallback);
     ros::Subscriber state_sub = nh.subscribe<mavros_msgs::State>("/mavros/state",
                                                                  10,
                                                                  boost::bind(&State_Data_t::feed, &fsm.state_data, _1));
