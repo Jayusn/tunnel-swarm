@@ -3370,8 +3370,7 @@ bool FastExplorationManager::manualFappObservationMissing(
   const bool passed = known && actual_odometry &&
       pos.dot(manual_fapp_forward_) >= manual_fapp_exit_progress_ &&
       (!manual_fapp_curve_active_ ||
-       (pos.dot(manual_fapp_forward_) >= manual_fapp_curve_end_ - manual_path_arrive_distance_ &&
-        std::fabs(pos.z() - manual_fapp_curve_origin_.z()) <= vertical_detour_height_tolerance_));
+       pos.dot(manual_fapp_forward_) >= manual_fapp_curve_end_ - 0.02);
   // 失去新鲜帧不等于失去历史障碍：保留历史位置与最低点用于选路。
   // 不再仅因观测超过0.8秒而刹停并无限等待。
   const bool missing = !passed && !known;
@@ -3428,11 +3427,20 @@ bool FastExplorationManager::buildManualFappUnderpassPath(
   const double far = center + extent + sdf_map_->getResolution();
   const double low = std::min(origin.z(), lower.z() - underpass_height_tracking_margin_);
   const double minimum = std::max(underpass_min_height_, task_search_manager_->clampSearchHeight(-1e3));
-  if (low < minimum || (near - begin < 0.10 && origin.z() > low + 0.02)) return false;
-  // 将高度变化分配在前向距离上。五次平滑插值在接近/离开包络处斜率和曲率为零。
-  const double recovery = std::max(0.50, 2.0 * (origin.z() - low));
-  const double end = std::min(far + recovery, waypoint.dot(forward));
-  if (end <= far + 0.10 || end <= current + 0.03) return false;
+  if (low < minimum || (near - begin < 0.10 && origin.z() > low + 0.02)) {
+    ROS_WARN_THROTTLE(1.0, "[fapp_underpass_check] reject geometry low=%.3f min=%.3f "
+        "start_z=%.3f approach=%.3f lower_z=%.3f age=%.2f",
+        low, minimum, origin.z(), near-begin, lower.z(), age);
+    return false;
+  }
+  // 只生成前进下降和低位穿越，末端仍低位且超过已膨胀远端0.20m。
+  // 回升交给实际越过后的下一次规划，后方回升受阻不能否决眼前可行的下穿。
+  const double end = std::min(far + 0.20, waypoint.dot(forward));
+  if (end <= far + 0.10 || end <= current + 0.03) {
+    ROS_WARN_THROTTLE(1.0, "[fapp_underpass_check] reject endpoint current=%.3f far=%.3f end=%.3f",
+        current, far, end);
+    return false;
+  }
   const auto smooth = [](double u) {
     u = std::max(0.0, std::min(1.0, u));
     return u*u*u*(10.0 + u*(-15.0 + 6.0*u));
@@ -3445,23 +3453,38 @@ bool FastExplorationManager::buildManualFappUnderpassPath(
       const double progress = current + (end-current)*i/count;
       double dip = 1.0;
       if (progress < near) dip = smooth((progress-begin)/(near-begin));
-      else if (progress > far) dip = 1.0-smooth((progress-far)/(end-far));
-      // 左下/右下穿越：接近时同时向侧下方移动，通过后平滑回到航线。
+      // 左下/右下穿越：接近时同时向侧下方移动，保持侧下方直到实际通过。
       Vector3d point = origin + (progress-begin)*forward + side*dip*lateral;
       point.z() = origin.z() + (low-origin.z())*dip;
-      if (!planner_manager_->isKnownFreePosition(point)) return false;
+      if (!planner_manager_->isKnownFreePosition(point)) {
+        ROS_WARN_THROTTLE(1.0, "[fapp_underpass_check] reject known-free side=%.2f "
+            "sample=%d/%d xyz=(%.3f,%.3f,%.3f) low=%.3f static_safe=%d center_occ=%d "
+            "near=%.3f far=%.3f end=%.3f",
+            side, i, count, point.x(), point.y(), point.z(), low,
+            static_cast<int>(planner_manager_->isPositionSafe(point)),
+            sdf_map_->getOccupancy(point), near, far, end);
+        return false;
+      }
       candidate.push_back(point);
     }
-    return planner_manager_->isPathSafe(candidate) && planner_manager_->isFappPathSafe(candidate);
+    if (!planner_manager_->isPathSafe(candidate)) {
+      ROS_WARN_THROTTLE(1.0, "[fapp_underpass_check] reject static path side=%.2f low=%.3f", side, low);
+      return false;
+    }
+    if (!planner_manager_->isFappPathSafe(candidate)) {
+      ROS_WARN_THROTTLE(1.0, "[fapp_underpass_check] reject dynamic path side=%.2f low=%.3f", side, low);
+      return false;
+    }
+    return true;
   };
   double side = manual_fapp_curve_side_;
   if (manual_fapp_curve_active_) {
     if (!side_path(side, path)) return false;
   } else {
     // 只尝试左右两个侧下方通路；选定后保持方向，不逐帧反复换边。
-    side = 0.20;
+    side = recovery_side_latched_ && recovery_side_dir_.dot(lateral) < 0.0 ? -0.20 : 0.20;
     if (!side_path(side, path)) {
-      side = -0.20;
+      side = -side;
       if (!side_path(side, path)) return false;
     }
   }
@@ -3496,14 +3519,13 @@ bool FastExplorationManager::planExplorationFappCrossing(
   const Vector3d forward = manual_fapp_forward_;
   const double far = (0.5 * (lower + upper)).dot(forward) +
       (0.5 * (upper - lower)).dot(forward.cwiseAbs()) + sdf_map_->getResolution();
-  const double low = lower.z() - underpass_height_tracking_margin_;
-  // 自动探索没有远端人工航点，以历史障碍远端加恢复距离作为完整穿越终点。
-  const double end = manual_fapp_curve_active_ ? manual_fapp_curve_end_ :
-      far + std::max(0.50, 2.0 * std::max(0.0, pos.z() - low)) + 0.10;
+  // 自动探索先低位越过历史障碍；无需提前把后方回升空间纳入同一条曲线。
+  const double end = far + 0.20;
   Vector3d target = pos + (end - pos.dot(forward)) * forward;
   std::vector<Vector3d> path;
   double target_yaw = yaw[0];
-  bool crossing = !recovery_side_latched_ && buildManualFappUnderpassPath(pos, target, path);
+  // 普通绕障的左右偏好不能封死下穿：每轮仍先检查侧下方通路。
+  bool crossing = buildManualFappUnderpassPath(pos, target, path);
   if (!crossing) {
     manual_fapp_curve_active_ = false;
     suspended_underpass_active_ = false;
@@ -3522,6 +3544,7 @@ bool FastExplorationManager::planExplorationFappCrossing(
     suspended_underpass_active_ = false;
     return false;
   }
+  if (manual_fapp_curve_active_) recovery_side_latched_ = false;
   // 完整动态穿越沿用航点版长度豁免，不进入普通探索的1.2m截断。
   ed_->path_next_goal_ = path;
   ed_->global_tour_ = {pos, path.back()};
@@ -3569,6 +3592,13 @@ int FastExplorationManager::planManualWaypointMotion(
     const Eigen::Vector2d direction = target.head<2>() - pos.head<2>();
     if (direction.norm() > 0.15) target_yaw = std::atan2(direction.y(), direction.x());
   }
+  const bool hold_fapp_height = !exit_motion && manual_fapp_active_ &&
+      std::isfinite(manual_fapp_hold_height_);
+  if (hold_fapp_height) {
+    target.z() = manual_fapp_hold_height_;
+    for (size_t i=1; i<ed_->path_next_goal_.size(); ++i)
+      ed_->path_next_goal_[i].z() = target.z();
+  }
   ed_->next_goal_ = target;
   last_requested_goal_ = target;
   has_last_requested_goal_ = true;
@@ -3590,7 +3620,7 @@ int FastExplorationManager::planManualWaypointMotion(
   const Vector3d waypoint = target;
   bool underpass_motion = false;
   if (manual_path_exploration_style_ && !exit_motion && task_search_manager_) {
-    if (manual_fapp_active_ && !recovery_side_latched_) {
+    if (manual_fapp_active_) {
       underpass_motion = buildManualFappUnderpassPath(pos, waypoint, ed_->path_next_goal_);
       if (!underpass_motion) {
         // 动态下穿不再退回原地竖直下探；沿用已有的侧绕选择。
@@ -3664,7 +3694,7 @@ int FastExplorationManager::planManualWaypointMotion(
     const auto find_path = [&](const Vector3d& goal) {
       if (!planner_manager_->isPositionSafe(goal)) return false;
       finder->reset();
-      if (finder->search(pos, goal) != Astar::REACH_END) return false;
+      if (finder->search(pos, goal, hold_fapp_height) != Astar::REACH_END) return false;
       // A*同栅格可能省略真实端点；保留精确XYZ并去除零长分段。
       ed_->path_next_goal_ = {pos};
       for (const auto& point : finder->getPath())
@@ -3721,7 +3751,8 @@ int FastExplorationManager::planManualWaypointMotion(
         (!(manual_path_exploration_style_ && !exit_motion) ||
          planner_manager_->fappPlannerPriority() ||
          planner_manager_->isFappPathSafe(ed_->path_next_goal_)) &&
-        planner_manager_->planExploreTraj(ed_->path_next_goal_, vel, acc, 0.0) &&
+        planner_manager_->planExploreTraj(ed_->path_next_goal_, vel, acc, 0.0,
+                                          hold_fapp_height && !underpass_motion) &&
         planner_manager_->isTrajectorySafe()) {
       if (trajectory_within_limit()) {
         planned = true;
@@ -3736,6 +3767,7 @@ int FastExplorationManager::planManualWaypointMotion(
     ROS_ERROR_THROTTLE(1.0, "[manual_path] trajectory rejected; keep the specified waypoint.");
     return FAIL;
   }
+  if (underpass_motion && manual_fapp_curve_active_) recovery_side_latched_ = false;
   ed_->next_goal_ = target;
   pending_reference_height_ = target.z();
   // 恒定航向复用插值器，避免全零控制点进入旧航向优化器的归一化计算。

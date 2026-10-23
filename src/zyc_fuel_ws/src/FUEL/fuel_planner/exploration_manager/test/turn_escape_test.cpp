@@ -250,9 +250,13 @@ public:
     const bool committed = scenario == "distant_committed";
     const bool inside = scenario == "inside_history" || scenario == "inside_history_strict";
     const bool approach = scenario == "distant_blocked" || committed || inside;
-    const bool exploration = scenario == "exploration_low" || scenario == "exploration_side";
+    const bool recovery_roof = scenario == "exploration_recovery_roof";
+    const bool prior_side = scenario == "exploration_prior_side";
+    const bool low_minimum = scenario == "exploration_low_minimum";
+    const bool exploration = scenario == "exploration_low" || scenario == "exploration_side" ||
+        recovery_roof || prior_side || low_minimum;
     const bool asymmetric_side = scenario == "asymmetric_side" || scenario == "exploration_side";
-    const bool asymmetric = scenario == "asymmetric_low" || scenario == "exploration_low" || asymmetric_side;
+    const bool asymmetric = scenario == "asymmetric_low" || scenario == "exploration_low" || asymmetric_side || recovery_roof || prior_side || low_minimum;
     const bool memory = scenario == "memory_below" || scenario == "memory_left" ||
         scenario == "memory_curve_right" || recorded || approach || asymmetric;
     const bool stale = scenario == "stale";
@@ -287,6 +291,14 @@ public:
     manager.manual_path_exploration_style_ = true;
     manager.manual_path_max_segment_length_ = scenario == "memory_left" ? 0.15 : 1.2;
     if (asymmetric) manager.underpass_min_height_ = 0.15;
+    if (low_minimum) {
+      manager.underpass_min_height_ = 0.10;
+      manager.task_search_manager_->min_search_height_ = 0.10;
+    }
+    if (prior_side) {
+      manager.recovery_side_latched_ = true;
+      manager.recovery_side_dir_ = Vector3d::UnitY();
+    }
     if (committed) {
       manager.recovery_side_latched_ = true;
       // 旧侧向已与当前前进方向不符，续接失败也不能提前否决正常规划。
@@ -355,7 +367,16 @@ public:
       for (int repeat=0; repeat<8; ++repeat)
         map.inputPointCloud(occupied, occupied.size(), start);
     }
+    if (recovery_roof) {
+      // 下穿区自由；只封住旧曲线在障碍后方强制回升的空间。
+      for (double x=0.925; x<=1.225; x+=0.05)
+        for (double y=-0.45; y<=0.45; y+=0.05)
+          for (double z=0.425; z<=1.4; z+=0.05)
+            map.setOccupied(Vector3d(x,y,z));
+    }
     map.updateESDF3d();
+    if (recovery_roof)
+      ASSERT_FALSE(manager.planner_manager_->isPositionSafe(Vector3d(1.025,0.025,0.525)));
     auto pub = nh.advertise<obj_state_msgs::ObjectsStates>(topic, 1, true);
     if (!disabled && !mapped) {
       for (int i = 0; i < 50 && pub.getNumSubscribers() == 0; ++i) {
@@ -378,7 +399,7 @@ public:
       ball.size.y = 2.0;
       ball.size.z = 1.20;
     }
-    if (asymmetric) ball.position.z = asymmetric_side ? 0.40 : 0.54;
+    if (asymmetric) ball.position.z = asymmetric_side ? 0.40 : (low_minimum ? 0.43 : 0.54);
     message.states.push_back(ball);
     const auto send = [&]() {
       message.header.stamp = ros::Time::now() - ros::Duration(stale ? 2.0 : 0.0);
@@ -413,6 +434,7 @@ public:
       manager.manual_path_.points.clear(); // 自主探索不能依赖人工航点列表。
     }
     const int result = manager.planExploreMotion(start, zero, zero, zero);
+    if (result == SUCCEED) manager.recordPublishedTrajectoryHeight();
     if (exploration) {
       ASSERT_EQ(SUCCEED, result);
       EXPECT_FALSE(manager.manualWaypointsEnabled());
@@ -424,7 +446,8 @@ public:
       if (!asymmetric_side) {
         EXPECT_GT(manager.ed_->next_goal_.x(), upper.x() + 0.1);
         EXPECT_GT(Astar::pathLength(manager.ed_->path_next_goal_), 1.2);
-        EXPECT_NEAR(start.z(), manager.ed_->next_goal_.z(), 1e-6);
+        EXPECT_NEAR(manager.low_probe_height_, manager.ed_->next_goal_.z(), 1e-6);
+        if (low_minimum) EXPECT_NEAR(0.12, manager.low_probe_height_, 1e-6);
       } else {
         EXPECT_GT(std::fabs(manager.ed_->next_goal_.y() - start.y()), 0.2);
         EXPECT_NEAR(start.z(), manager.ed_->next_goal_.z(), 1e-6);
@@ -435,11 +458,14 @@ public:
       const Vector3d endpoint = preceding.evaluateDeBoorT(preceding.getTimeSum());
       EXPECT_GT(endpoint.x(), upper.x() + 0.1);
       EXPECT_GT((endpoint-start).norm(), 1.2);
-      EXPECT_NEAR(endpoint.z(), start.z(), 0.01);
+      EXPECT_NEAR(endpoint.z(), asymmetric_side ? start.z() : manager.low_probe_height_, 0.01);
       for (double t = 0; t <= preceding.getTimeSum(); t += 0.02) {
         const Vector3d point = preceding.evaluateDeBoorT(t);
         EXPECT_TRUE(manager.planner_manager_->isPositionSafe(point));
         EXPECT_TRUE(manager.planner_manager_->isWatchedFappPositionSafe(point));
+        if (!asymmetric_side && point.x() >= upper.x())
+          EXPECT_NEAR(point.z(), manager.low_probe_height_, 0.02);
+        if (low_minimum) EXPECT_GE(point.z(), 0.10);
       }
       checkManualFappExecution(manager, start);
       ros::WallDuration(0.85).sleep();
@@ -494,7 +520,6 @@ public:
     }
     ASSERT_EQ(SUCCEED, result);
     if (approach || asymmetric) {
-      checkManualFappExecution(manager, start);
       double age = 0.0;
       ASSERT_TRUE(manager.planner_manager_->watchedFappBounds(lower, upper, age));
       EXPECT_EQ(0u, manager.manual_path_.next);
@@ -526,6 +551,7 @@ public:
         EXPECT_TRUE(manager.planner_manager_->isPositionSafe(p));
         EXPECT_GE(p.z(), 0.15);
       }
+      checkManualFappExecution(manager, start);
       return;
     }
     const bool expected_underpass = !floor_blocked && !unknown_below && !disabled && !stale && !recorded;
@@ -543,7 +569,7 @@ public:
         if (scenario == "memory_curve_right") EXPECT_LT(manager.manual_fapp_curve_side_, 0.0);
         EXPECT_GT(manager.ed_->next_goal_.x(), manager.low_probe_exit_progress_);
         EXPECT_GT((manager.ed_->next_goal_ - start).norm(), 1.2);
-        EXPECT_NEAR(manager.ed_->next_goal_.z(), start.z(), 0.01);
+        EXPECT_NEAR(manager.ed_->next_goal_.z(), manager.low_probe_height_, 0.01);
       } else {
         EXPECT_NEAR(0.0, (manager.ed_->next_goal_ - start).head<2>().norm(), 1e-9);
       }
@@ -616,6 +642,7 @@ public:
     int planned = result;
     for (int step = 0; step < 75 && !manager.manual_path_.finished(); ++step) {
       if (planned == SUCCEED) {
+        manager.recordPublishedTrajectoryHeight();
         auto& trajectory = manager.planner_manager_->local_data_.position_traj_;
         const auto control = trajectory.getControlPoint();
         double length = 0.0;
@@ -634,7 +661,7 @@ public:
         if (expected_underpass && end.x() > start.x() + 0.10 &&
             end.z() < start.z() - 0.20)
           saw_low_advance = true;
-        if (memory && expected_underpass) {
+        if (memory && expected_underpass && manager.manual_fapp_active_) {
           EXPECT_GT(end.x(), current.x() + 0.01);
           for (const auto& point : flown_path) {
             EXPECT_TRUE(manager.planner_manager_->isWatchedFappPositionSafe(point));
@@ -645,7 +672,12 @@ public:
               saw_ascent = true;
           }
           EXPECT_GT(end.x(), manager.low_probe_exit_progress_);
-          EXPECT_NEAR(end.z(), start.z(), 0.01);
+          EXPECT_NEAR(end.z(), manager.low_probe_height_, 0.01);
+        }
+        if (memory && expected_underpass && !manager.manual_fapp_active_ &&
+            saw_low_advance && end.z() > current.z() + 0.05) {
+          EXPECT_GT(current.x(), manager.low_probe_exit_progress_ + 0.15);
+          saw_ascent = true;
         }
         if (saw_low_advance && manager.currentPlanIsVerticalDetour() && end.z() > current.z()) {
           EXPECT_GE(current.x(), manager.low_probe_exit_progress_ - 1e-6);
@@ -2655,4 +2687,14 @@ TEST(FappHeightHold, OrdinaryFallbackKeepsLowLeftRouteDespiteBadFrameAndDropout)
 }
 TEST(FappHeightHold, CruiseRecoveryWaitsForActualClearance) {
   fast_planner::TurnEscapeTest::runMovingClimb(6);
+}
+
+TEST(FappExploration, BlockedRecoveryBeyondBallDoesNotRejectLowCrossing) {
+  fast_planner::TurnEscapeTest::runManualSuspended("exploration_recovery_roof");
+}
+TEST(FappExploration, OrdinarySidePreferenceDoesNotSuppressUnderpass) {
+  fast_planner::TurnEscapeTest::runManualSuspended("exploration_prior_side");
+}
+TEST(FappExploration, ConfiguredTenCentimetreMinimumAllowsTwelveCentimetreCrossing) {
+  fast_planner::TurnEscapeTest::runManualSuspended("exploration_low_minimum");
 }
