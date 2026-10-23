@@ -631,7 +631,7 @@ Visualization Manager:
               Value: true
             - Class: rviz/Image
               Enabled: true
-              Image Topic: /UAV1/landing/combined_debug_image
+              Image Topic: /UAV1/down_camera/image_raw
               Max Value: 1
               Median window: 5
               Min Value: 0
