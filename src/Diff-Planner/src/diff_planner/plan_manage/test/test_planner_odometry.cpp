@@ -161,10 +161,15 @@ protected:
         [this](const std_msgs::String::ConstPtr &message) {
           statuses.push_back(message->data);
         });
+    tracking_sub = nh.subscribe<traj_utils::TrackingReplanResult>("planning/tracking_result", 10,
+        [this](const traj_utils::TrackingReplanResult::ConstPtr &message) {
+          tracking_results.push_back(*message);
+        });
     const auto deadline = ros::WallTime::now() + ros::WallDuration(2.0);
     while ((odom_pub.getNumSubscribers() == 0 || cloud_pub.getNumSubscribers() == 0 ||
             planner.poly_traj_pub_.getNumSubscribers() == 0 ||
-            planner.planning_status_pub_.getNumSubscribers() == 0) &&
+            planner.planning_status_pub_.getNumSubscribers() == 0 ||
+            planner.tracking_result_pub_.getNumSubscribers() == 0) &&
            ros::WallTime::now() < deadline)
       ros::WallDuration(0.01).sleep();
     ASSERT_GT(odom_pub.getNumSubscribers(), 0U);
@@ -240,7 +245,8 @@ protected:
   FSM planner;
   Eigen::Vector3d goal{3.32939, 0.385744, 0.6};
   ros::Publisher cloud_pub;
-  ros::Subscriber trajectory_sub, status_sub;
+  ros::Subscriber trajectory_sub, status_sub, tracking_sub;
+  std::vector<traj_utils::TrackingReplanResult> tracking_results;
   std::vector<std::string> statuses;
   traj_utils::PolyTraj last_trajectory;
   int published{0}, initial_id{0};
@@ -1011,6 +1017,103 @@ TEST_F(PlannerEndpoint, NewGoalCannotRetagCurrentOccupiedRecovery) {
             std::string::npos);
   EXPECT_NE(statuses.back().find("recovery_stamp_ns=" + std::to_string(execution_stamp)),
             std::string::npos);
+}
+
+TEST_F(PlannerEndpoint, RecoveryTrackingRequestsReplaceStoppedTrajectoryFromActualPosition) {
+  planner.escape_max_attempts_ = 3; // 首次脱障以及两次跟踪请求。
+  const Eigen::Vector3d retreat = planner.odom_pos_ - Eigen::Vector3d(0.4, 0, 0);
+  planner.free_odom_history_.clear();
+  planner.free_odom_history_.push_back(FSM::FreeOdomSample{
+      999.0, retreat.x(), retreat.y(), retreat.z()});
+  planner.active_external_goal_stamp_ns_ = 999000000000ULL;
+  ASSERT_TRUE(planner.startOccupiedRecovery(1000.0));
+  planner.exec_state_ = FSM::OCCUPIED_RECOVERY;
+  const auto original_goal = planner.final_goal_;
+  const auto owner = planner.occupied_recovery_goal_stamp_ns_;
+  // 同时覆盖软重规划与控制器已停车；无需等待旧轨迹超时。
+  for (int i = 1; i <= 2; ++i) {
+    const int old_id = planner.planner_manager_->traj_.local_traj.traj_id;
+    const auto old_stamp = planner.occupied_recovery_stamp_ns_;
+    ros::Time::setNow(ros::Time(1000, i * 100000000));
+    planner.odom_pos_.y() += 0.03;
+    const auto actual = planner.odom_pos_;
+    auto request = boost::make_shared<traj_utils::TrackingReplan>();
+    request->header.stamp = ros::Time::now();
+    request->request_id = i;
+    request->trajectory_id = old_id;
+    request->stop_current = i == 2;
+    planner.trackingReplanCallback(request);
+    ASSERT_TRUE(planner.tracking_replan_pending_);
+    ros::Time::setNow(ros::Time::now() + ros::Duration(0.01));
+    exec();
+    drain();
+    EXPECT_EQ(planner.exec_state_, FSM::OCCUPIED_RECOVERY);
+    EXPECT_FALSE(planner.tracking_replan_pending_);
+    EXPECT_TRUE(planner.occupied_recovery_active_);
+    EXPECT_GT(planner.occupied_recovery_stamp_ns_, old_stamp);
+    EXPECT_EQ(planner.occupied_recovery_goal_stamp_ns_, owner);
+    EXPECT_LT((planner.final_goal_ - original_goal).norm(), 1e-9);
+    const auto &local = planner.planner_manager_->traj_.local_traj;
+    EXPECT_GT(local.traj_id, old_id);
+    EXPECT_LT((local.traj.getPos(0) - actual).norm(), 1e-9);
+    EXPECT_GT(planner.occupied_recovery_deadline_, ros::Time::now().toSec());
+    ASSERT_EQ(tracking_results.size(), static_cast<std::size_t>(i));
+    EXPECT_EQ(tracking_results.back().request_id, request->request_id);
+    EXPECT_EQ(tracking_results.back().header.stamp, request->header.stamp);
+    EXPECT_EQ(tracking_results.back().trajectory.traj_id, local.traj_id);
+    EXPECT_GT(tracking_results.back().trajectory.start_time, request->header.stamp);
+  }
+}
+
+TEST_F(PlannerEndpoint, WaitingGoalRecoveryStillAcceptsControllerTrackingRequest) {
+  const Eigen::Vector3d retreat = planner.odom_pos_ - Eigen::Vector3d(0.4, 0, 0);
+  planner.free_odom_history_.clear();
+  planner.free_odom_history_.push_back(FSM::FreeOdomSample{
+      999.0, retreat.x(), retreat.y(), retreat.z()});
+  planner.active_external_goal_stamp_ns_ = 999000000000ULL;
+  ASSERT_TRUE(planner.startOccupiedRecovery(1000.0));
+  planner.exec_state_ = FSM::OCCUPIED_RECOVERY;
+  planner.have_target_ = planner.have_trigger_ = false;
+  auto request = boost::make_shared<traj_utils::TrackingReplan>();
+  request->header.stamp = ros::Time(1000, 100000000);
+  request->request_id = 30;
+  request->stop_current = true;
+  planner.trackingReplanCallback(request);
+  ros::Time::setNow(ros::Time(1000, 200000000));
+  ASSERT_TRUE(planner.tracking_replan_pending_);
+  exec();
+  drain();
+  EXPECT_FALSE(planner.tracking_replan_pending_);
+  EXPECT_EQ(planner.exec_state_, FSM::OCCUPIED_RECOVERY);
+  EXPECT_FALSE(planner.have_target_);
+  ASSERT_EQ(tracking_results.size(), 1U);
+  EXPECT_EQ(tracking_results.back().request_id, 30U);
+}
+
+TEST_F(PlannerEndpoint, RecoveryTrackingFailureAcknowledgesStopAndUsesExistingRetry) {
+  const Eigen::Vector3d retreat = planner.odom_pos_ - Eigen::Vector3d(0.4, 0, 0);
+  planner.free_odom_history_.clear();
+  planner.free_odom_history_.push_back(FSM::FreeOdomSample{
+      999.0, retreat.x(), retreat.y(), retreat.z()});
+  ASSERT_TRUE(planner.startOccupiedRecovery(1000.0));
+  planner.exec_state_ = FSM::OCCUPIED_RECOVERY;
+  planner.occupied_recovery_attempt_count_ = planner.escape_max_attempts_;
+  auto request = boost::make_shared<traj_utils::TrackingReplan>();
+  request->header.stamp = ros::Time(1000, 100000000);
+  request->request_id = 30;
+  request->stop_current = true;
+  planner.trackingReplanCallback(request);
+  ros::Time::setNow(ros::Time(1000, 200000000));
+  exec();
+  drain();
+  EXPECT_EQ(planner.exec_state_, FSM::EMERGENCY_STOP);
+  EXPECT_FALSE(planner.occupied_recovery_active_);
+  EXPECT_TRUE(planner.occupied_recovery_episode_);
+  EXPECT_FALSE(planner.tracking_replan_pending_);
+  ASSERT_EQ(tracking_results.size(), 1U);
+  EXPECT_EQ(tracking_results.back().request_id, 30U);
+  ASSERT_FALSE(statuses.empty());
+  EXPECT_EQ(statuses.back().find("OCCUPIED_RECOVERY_ABORTED"), 0U);
 }
 
 TEST_F(PlannerEndpoint, ControllerRestartNotifiesRecoveryCancellation) {

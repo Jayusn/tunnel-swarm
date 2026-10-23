@@ -1862,6 +1862,32 @@ class LeaderSafePathFollower {
         status == "TRAJECTORY_PUBLISHED" &&
         static_cast<bool>(stream >> accepted.x >> accepted.y >> accepted.z);
 
+    // 脱障回执按执行时间戳和FIFO归属处理；确认点重试/暂时失效不能吞掉回执。
+    const bool recovery_started = status == "OCCUPIED_RECOVERY_VERTICAL" ||
+        status == "OCCUPIED_RECOVERY_HISTORY" ||
+        status == "OCCUPIED_RECOVERY_LATERAL";
+    const bool recovery_finished = status == "OCCUPIED_RECOVERY_ABORTED" ||
+        status == "OCCUPIED_RECOVERY_SUCCEEDED" ||
+        status == "OCCUPIED_RECOVERY_CANCELLED";
+    if (simple_segment_endpoint_following_ && response_goal_stamp_valid &&
+        (recovery_started || recovery_finished)) {
+      std::string recovery_token;
+      stream >> recovery_token;
+      const std::string prefix = "recovery_stamp_ns=";
+      if (recovery_token.compare(0, prefix.size(), prefix) == 0) {
+        std::istringstream recovery_stream(recovery_token.substr(prefix.size()));
+        uint64_t recovery_stamp_ns = 0ULL;
+        char trailing = '\0';
+        if ((recovery_stream >> recovery_stamp_ns) && !(recovery_stream >> trailing) &&
+            recovery_stamp_ns != 0ULL) {
+          handleSimpleOccupiedRecovery(status, response_goal_stamp_ns, recovery_stamp_ns);
+          return;
+        }
+        ROS_WARN("[safe_follower] reject invalid occupied recovery execution stamp.");
+        return;
+      }
+    }
+
     if (activeSafeRelay() && !diff_separation_hold_active_) {
       if (!response_goal_stamp_valid || !diff_goal_published_ ||
           diff_goal_index_ != active_relay_index_ ||
@@ -1897,30 +1923,6 @@ class LeaderSafePathFollower {
       return;  // 已确认停点不降级为其他短目标，也不因失败自动出队。
     }
 
-    const bool recovery_started = status == "OCCUPIED_RECOVERY_VERTICAL" ||
-        status == "OCCUPIED_RECOVERY_HISTORY" ||
-        status == "OCCUPIED_RECOVERY_LATERAL";
-    const bool recovery_finished = status == "OCCUPIED_RECOVERY_ABORTED" ||
-        status == "OCCUPIED_RECOVERY_SUCCEEDED" ||
-        status == "OCCUPIED_RECOVERY_CANCELLED";
-    if (simple_segment_endpoint_following_ && response_goal_stamp_valid &&
-        (recovery_started || recovery_finished)) {
-      std::string recovery_token;
-      stream >> recovery_token;
-      const std::string prefix = "recovery_stamp_ns=";
-      if (recovery_token.compare(0, prefix.size(), prefix) == 0) {
-        std::istringstream recovery_stream(recovery_token.substr(prefix.size()));
-        uint64_t recovery_stamp_ns = 0ULL;
-        char trailing = '\0';
-        if ((recovery_stream >> recovery_stamp_ns) && !(recovery_stream >> trailing) &&
-            recovery_stamp_ns != 0ULL) {
-          handleSimpleOccupiedRecovery(status, response_goal_stamp_ns, recovery_stamp_ns);
-          return;
-        }
-        ROS_WARN("[safe_follower] reject invalid occupied recovery execution stamp.");
-        return;
-      }
-    }
     // 普通航点可能已出队，但其末段轨迹仍在执行。只接续最后一次下发目标的
     // 脱障状态，结束时保持下一队首，不能将它当作旧故障航点再次消费。
     if (simple_segment_endpoint_following_ && response_goal_stamp_valid &&

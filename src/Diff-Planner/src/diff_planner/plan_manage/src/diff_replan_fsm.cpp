@@ -258,7 +258,9 @@ namespace diff_planner
   {
     if (request->header.stamp.isZero() ||
         request->header.stamp <= tracking_request_.header.stamp ||
-        !have_target_ || !have_trigger_ || mandatory_stop_) return;
+        mandatory_stop_ ||
+        ((!have_target_ || !have_trigger_) &&
+         !(exec_state_ == OCCUPIED_RECOVERY && occupied_recovery_active_))) return;
     tracking_request_ = *request;
     tracking_replan_pending_ = true;
     tracking_retry_after_ = 0.0;
@@ -805,6 +807,16 @@ namespace diff_planner
       if (!enable_occupied_recovery_ || mandatory_stop_ || !occupied_recovery_active_)
       {
         abortOccupiedRecovery("脱障被禁用、收到强制停止，或脱障状态无效");
+        break;
+      }
+
+      if (tracking_replan_pending_)
+      {
+        // 控制器可能已经停车，不能继续等待旧脱障轨迹到达或超时。
+        // 复用当前里程计下的脱障选点/限速与结果回执，保留原目标归属。
+        if (occupied_recovery_attempt_count_ >= escape_max_attempts_ ||
+            !startOccupiedRecovery(now_sec))
+          abortOccupiedRecovery("跟踪重规划无法生成新的脱障轨迹");
         break;
       }
 
