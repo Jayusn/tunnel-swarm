@@ -300,7 +300,7 @@
     </node>
 
     <!--
-      只录动态障碍诊断所需话题，-o 会自动追加时间戳，避免覆盖旧包。
+      录制动态障碍诊断与前机接力输入，-o 会自动追加时间戳，避免覆盖旧包。
       roslaunch 退出时向该进程发送 SIGINT，保证生成完整 .bag 而非 .bag.active。
     -->
     <node if="$(arg record_dynamic_debug)" pkg="rosbag" type="record"
@@ -308,6 +308,8 @@
           args="record -o $(arg dynamic_bag_prefix) --buffsize=1024
                 $(arg cloud_topic)
                 $(arg odom_topic)
+                /UAV0/mission/relay_waypoints
+                /UAV0/fast_lio/Odom_high_freq
                 /UAV1/fapp/cloud_registered_throttled
                 /UAV1/fapp/dynamic_cloud
                 /UAV1/fapp/map_cloud
