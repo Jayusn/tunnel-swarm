@@ -24,8 +24,9 @@ RUNTIME_CONFIG="${UAV1_SINGLE_RUNTIME_CONFIG:-/tmp/uav1_seven_terminator_${RUN_I
 ROSCORE_LOG="${UAV1_SINGLE_ROSCORE_LOG:-/tmp/uav1_single_roscore_${RUN_ID}.log}"
 WAIT_TIMEOUT="${UAV1_SINGLE_WAIT_TIMEOUT:-180}"
 THERMAL="${UAV1_SINGLE_THERMAL:-true}"
-DETECTOR="${UAV1_SINGLE_DETECTOR:-fapp}"
-DYNAMIC_AVOIDANCE="${UAV1_SINGLE_DYNAMIC_AVOIDANCE:-true}"
+# 留空时使用 run_swarm.launch 中的默认配置。
+DETECTOR="${UAV1_SINGLE_DETECTOR:-}"
+DYNAMIC_AVOIDANCE="${UAV1_SINGLE_DYNAMIC_AVOIDANCE:-}"
 DYNAMIC_MODE="${UAV1_SINGLE_DYNAMIC_MODE:-swing-only}"
 PLANNER_PRIORITY="${UAV1_SINGLE_PLANNER_PRIORITY:-true}"
 
@@ -65,16 +66,15 @@ usage() {
   - ROS master 默认使用 UAV1 本机 192.168.43.21:11311。
   - 第 6 屏执行 run_swarm.launch 中当前配置的单机预设航点。
   - 第 6 屏启动下视相机、单机 Diff/RViz 和动态检测复盘录包。
-  - FAPP 默认采用原始点云运动证据确认动态目标，保留历史范围，默认启用连续下穿／侧绕及规划优先。
-  - FAPP 默认只检测摆动目标，目标中心 Z 范围为定位坐标系中的 0.3～1.2 m。
-  - 动态障碍检测默认使用 FAPP；使用 --detector none 可关闭检测。
+  - 动态检测、动态避障和障碍物高度范围直接修改 run_swarm.launch 开头的参数。
+  - 正常运行本脚本即可使用上述配置，无需追加命令参数。
   - AutoTrans 直接向 /UAV1/mavros/setpoint_raw/attitude 发布控制量。
   - 不自动解锁、不切换 OFFBOARD、不额外发送目标点。
 
 选项：
-  --detector none|fapp|ldop  动态障碍检测算法，默认 fapp
+  --detector none|fapp|ldop  临时覆盖检测算法，默认跟随 launch
   --dynamic-mode swing-only|general  动态目标模式，默认 swing-only
-  --dynamic-avoidance        开启 FAPP 动态避障（默认）
+  --dynamic-avoidance        临时开启 FAPP 动态避障，默认跟随 launch
   --detection-only          关闭动态避障，只保留动态检测
   --planner-priority        保留 FAPP 优化代价，允许轨迹与动态预测重叠（默认）
   --strict-dynamic          恢复 FAPP 动态碰撞硬检查
@@ -439,9 +439,11 @@ run_planner_pane() {
   trap stop_owned_down_camera EXIT INT TERM
   printf '[说明] 下视相机为可选显示，不作为 Diff 启动条件\n'
   printf '[启动] diff_planner run_swarm.launch 及其原生 RViz 检测布局\n'
-  roslaunch diff_planner run_swarm.launch detector_backend:="${DETECTOR}" \
+  local dynamic_args=()
+  [[ -n "${DETECTOR}" ]] && dynamic_args+=("detector_backend:=${DETECTOR}")
+  [[ -n "${DYNAMIC_AVOIDANCE}" ]] && dynamic_args+=("enable_fapp_dynamic_avoidance:=${DYNAMIC_AVOIDANCE}")
+  roslaunch diff_planner run_swarm.launch "${dynamic_args[@]}" \
     fapp_verified_preset:=true object_motion_evidence_enabled:=true dynamic_mode:="${DYNAMIC_MODE}" \
-    enable_fapp_dynamic_avoidance:="${DYNAMIC_AVOIDANCE}" \
     fapp_planner_priority:="${PLANNER_PRIORITY}" \
     record_dynamic_debug:=true
   launch_status=$?
@@ -523,6 +525,7 @@ case "${DYNAMIC_MODE}" in
 esac
 
 case "${DETECTOR}" in
+  "") ;;
   none|fapp|ldop) ;;
   *) log '--detector 只能是 none、fapp 或 ldop'; exit 2 ;;
 esac
@@ -535,6 +538,7 @@ case "${PLANNER_PRIORITY,,}" in
   *) log "UAV1_SINGLE_PLANNER_PRIORITY 只能是 true 或 false，当前值：${PLANNER_PRIORITY}"; exit 2 ;;
 esac
 case "${DYNAMIC_AVOIDANCE,,}" in
+  "") ;;
   true|false) DYNAMIC_AVOIDANCE="${DYNAMIC_AVOIDANCE,,}" ;;
   *) log "UAV1_SINGLE_DYNAMIC_AVOIDANCE 只能是 true 或 false，当前值：${DYNAMIC_AVOIDANCE}"; exit 2 ;;
 esac
@@ -594,8 +598,8 @@ log '上排：1 本机Master/MAVROS | 2 MID360 | 3 FAST-LIO'
 log '下排：4 视觉位姿 | 5 检测/上报 | 6 run_swarm Diff/RViz | 7 AutoTrans'
 log "本机 ROS master：http://${LOCAL_MASTER_IP}:11311，ROS_IP=${LOCAL_ROS_IP}"
 log "检测参数：thermal=${THERMAL}, odom=${ODOM_TOPIC}"
-log "动态障碍检测：${DETECTOR}"
-log "FAPP 动态避障：${DYNAMIC_AVOIDANCE}，模式：${DYNAMIC_MODE}，规划优先：${PLANNER_PRIORITY}"
+log "动态障碍检测：${DETECTOR:-跟随 launch}"
+log "FAPP 动态避障：${DYNAMIC_AVOIDANCE:-跟随 launch}，模式：${DYNAMIC_MODE}，规划优先：${PLANNER_PRIORITY}"
 log "前级等待超时：${WAIT_TIMEOUT}s"
 log "Terminator 启动日志：${TERMINATOR_LOG}"
 

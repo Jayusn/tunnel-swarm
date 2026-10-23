@@ -9,14 +9,15 @@
          default="$(optenv UAV1_ENABLE_DYNAMIC_OBSTACLE_DETECTION false)"/>
     <!-- 六分屏入口默认同时打开 UAV1 Diff-Planner 的 RViz；可通过 launch 参数关闭。 -->
     <arg name="enable_diff_rviz" default="true"/>
-    <arg name="detector_backend" default="fapp"/>
+    <!-- 留空时继承 run_uav1_relay_diff.launch 开头的配置；仅显式传参时覆盖。 -->
+    <arg name="detector_backend" default=""/>
     <arg name="fapp_verified_preset" default="true"/>
     <arg name="object_motion_evidence_enabled" default="true"/>
-    <arg name="enable_fapp_dynamic_avoidance" default="true"/>
+    <arg name="enable_fapp_dynamic_avoidance" default=""/>
     <arg name="fapp_planner_priority" default="true"/>
     <!-- 与前机一致：定位坐标系中的目标中心Z范围，单位m。 -->
-    <arg name="fapp_detection_min_z" default="0.3"/>
-    <arg name="fapp_detection_max_z" default="1.2"/>
+    <arg name="fapp_detection_min_z" default=""/>
+    <arg name="fapp_detection_max_z" default=""/>
     <!-- six 第6屏独立录制检测复盘数据，不使用 AutoTrans 录包。 -->
     <arg name="record_dynamic_debug" default="true"/>
     <arg name="dynamic_bag_prefix" default="/home/oem/bags/corridor_debug"/>
@@ -24,13 +25,13 @@
     <include file="$(find diff_planner)/launch/exp/run_uav1_relay_diff.launch">
         <!-- 坐标对齐和后机本地可视化都由本入口各启动一份。 -->
         <arg name="publish_world_to_follower_tf" value="false"/>
-        <arg name="detector_backend" value="$(arg detector_backend)"/>
+        <arg if="$(eval arg('detector_backend') != '')" name="detector_backend" value="$(arg detector_backend)"/>
         <arg name="fapp_verified_preset" value="$(arg fapp_verified_preset)"/>
         <arg name="object_motion_evidence_enabled" value="$(arg object_motion_evidence_enabled)"/>
-        <arg name="enable_fapp_dynamic_avoidance" value="$(arg enable_fapp_dynamic_avoidance)"/>
+        <arg if="$(eval arg('enable_fapp_dynamic_avoidance') != '')" name="enable_fapp_dynamic_avoidance" value="$(arg enable_fapp_dynamic_avoidance)"/>
         <arg name="fapp_planner_priority" value="$(arg fapp_planner_priority)"/>
-        <arg name="fapp_detection_min_z" value="$(arg fapp_detection_min_z)"/>
-        <arg name="fapp_detection_max_z" value="$(arg fapp_detection_max_z)"/>
+        <arg if="$(eval arg('fapp_detection_min_z') != '')" name="fapp_detection_min_z" value="$(arg fapp_detection_min_z)"/>
+        <arg if="$(eval arg('fapp_detection_max_z') != '')" name="fapp_detection_max_z" value="$(arg fapp_detection_max_z)"/>
         <arg name="record_dynamic_debug" value="$(arg record_dynamic_debug)"/>
         <arg name="dynamic_bag_prefix" value="$(arg dynamic_bag_prefix)"/>
         <arg name="enable_rviz" value="false"/>

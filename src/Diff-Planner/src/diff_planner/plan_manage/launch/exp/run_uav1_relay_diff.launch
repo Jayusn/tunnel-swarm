@@ -1,6 +1,6 @@
 <launch>
-    <!-- 动态检测开关：fapp=开启新的 FAPP 检测，none=关闭动态检测；ldop=使用 LDOP。 -->
-    <arg name="detector_backend" default="fapp"/>
+    <!-- 动态检测开关：true=开启，false=关闭。默认运行 six/seven 脚本时直接使用此处配置。 -->
+    <arg name="enable_dynamic_detection" default="true"/>
     <!-- 动态避障开关：true=开启，false=仅检测、不参与 FAPP 动态避障。 -->
     <arg name="enable_fapp_dynamic_avoidance" default="true"/>
     <!-- 障碍物高度范围：定位坐标系中目标中心的 Z，单位 m；不是障碍物自身尺寸。 -->
@@ -24,10 +24,12 @@
     <arg name="dynamic_bag_prefix" default="/home/oem/bags/corridor_debug"/>
     <!-- UAV1 LDOP 动态检测只使用独立限频点云，不改变 Diff 原始建图输入。 -->
     <arg name="enable_ldop" default="true"/>
+    <!-- 检测算法选择；通常保持 fapp，检测启停使用文件开头的布尔开关。 -->
+    <arg name="detector_backend" default="fapp"/>
     <arg name="fapp_verified_preset" default="true"/>
     <arg name="object_motion_evidence_enabled" default="true"/>
     <arg name="fapp_planner_priority" default="true"/>
-    <arg name="start_ldop" default="$(eval arg('detector_backend') == 'ldop' or (arg('detector_backend') == 'legacy' and arg('enable_ldop')))"/>
+    <arg name="start_ldop" default="$(eval arg('enable_dynamic_detection') and (arg('detector_backend') == 'ldop' or (arg('detector_backend') == 'legacy' and arg('enable_ldop'))))"/>
     <arg name="ldop_input_rate" default="5.0"/>
     <!-- 垂地障碍物锁定一侧，避免重规划时在障碍物两侧来回换边。 -->
     <arg name="enable_vertical_obstacle_side_lock" default="true"/>
@@ -175,13 +177,13 @@
         <arg name="dynamic_cluster_detector_min_points" value="4"/>
     </include>
 
-    <include if="$(eval arg('detector_backend') == 'fapp' and not arg('fapp_verified_preset'))" file="$(find mot_mapping)/launch/uav1_detection.launch">
+    <include if="$(eval arg('enable_dynamic_detection') and arg('detector_backend') == 'fapp' and not arg('fapp_verified_preset'))" file="$(find mot_mapping)/launch/uav1_detection.launch">
         <arg name="cloud_topic" value="$(arg cloud_topic)"/>
         <arg name="odom_topic" value="$(arg odom_topic)"/>
         <arg name="input_rate" value="$(arg ldop_input_rate)"/>
     </include>
 
-    <include if="$(eval arg('detector_backend') == 'fapp' and arg('fapp_verified_preset'))"
+    <include if="$(eval arg('enable_dynamic_detection') and arg('detector_backend') == 'fapp' and arg('fapp_verified_preset'))"
              file="$(find mot_mapping)/launch/uav1_frame_event_verified.launch">
         <arg name="dynamic_mode" value="swing-only"/>
         <arg name="detection_min_z" value="$(arg fapp_detection_min_z)"/>

@@ -26,8 +26,9 @@ START_LOCK_FILE="${UAV1_SIX_START_LOCK_FILE:-/tmp/uav1_six_start.lock}"
 RUNTIME_CONFIG="${UAV1_SIX_RUNTIME_CONFIG:-/tmp/uav1_six_terminator_${RUN_ID}.conf}"
 WAIT_TIMEOUT="${UAV1_SIX_WAIT_TIMEOUT:-180}"
 THERMAL="${UAV1_SIX_THERMAL:-true}"
-DETECTOR="${UAV1_SIX_DETECTOR:-fapp}"
-DYNAMIC_AVOIDANCE="${UAV1_SIX_DYNAMIC_AVOIDANCE:-true}"
+# 留空时使用 run_uav1_relay_diff.launch 中的默认配置。
+DETECTOR="${UAV1_SIX_DETECTOR:-}"
+DYNAMIC_AVOIDANCE="${UAV1_SIX_DYNAMIC_AVOIDANCE:-}"
 PLANNER_PRIORITY="${UAV1_SIX_PLANNER_PRIORITY:-true}"
 
 MAVROS_STATE_TOPIC="/UAV1/mavros/state"
@@ -65,12 +66,13 @@ usage() {
   - 第 7 屏的 uav1_diff_autotrans.launch 默认 enable_planner=false，
     因此不会与第 6 屏重复启动 Diff-Planner。
   - 第 5 屏默认启动热成像检测和 D435 融合；未接设备时可加 --no-thermal。
-  - FAPP 默认采用原始点云运动证据确认动态目标，保留历史范围，默认启用连续下穿／侧绕及规划优先。
+  - 动态检测、动态避障和障碍物高度范围直接修改 run_uav1_relay_diff.launch 开头的参数。
+  - 正常运行本脚本即可使用上述配置，无需追加命令参数。
   - 可用环境变量 UAV1_SIX_WAIT_TIMEOUT 修改前级等待超时，默认按实际时间等待 180 秒。
 
 选项：
-  --detector fapp|ldop       动态障碍检测算法，默认 fapp
-  --dynamic-avoidance        开启 FAPP 动态避障（默认）
+  --detector fapp|ldop       临时覆盖检测算法，默认跟随 launch
+  --dynamic-avoidance        临时开启 FAPP 动态避障，默认跟随 launch
   --detection-only          关闭 FAPP 动态避障，只保留检测
   --planner-priority        开启 FAPP 规划优先（默认）
   --strict-dynamic          恢复 FAPP 动态碰撞硬检查
@@ -356,9 +358,11 @@ run_planner_pane() {
   fi
   printf '[启动] UAV1 航点接力管理器、坐标对齐、Diff-Planner、RViz与搜索降落节点\n'
   printf '[安全] 不执行预设航点，只接收前机满足0.70m放行门槛后发布的接力目标。\n'
-  roslaunch exploration_control leader_safe_path_follower.launch detector_backend:="${DETECTOR}" \
+  local dynamic_args=()
+  [[ -n "${DETECTOR}" ]] && dynamic_args+=("detector_backend:=${DETECTOR}")
+  [[ -n "${DYNAMIC_AVOIDANCE}" ]] && dynamic_args+=("enable_fapp_dynamic_avoidance:=${DYNAMIC_AVOIDANCE}")
+  roslaunch exploration_control leader_safe_path_follower.launch "${dynamic_args[@]}" \
     fapp_verified_preset:=true object_motion_evidence_enabled:=true use_nmpc_landing:=true \
-    enable_fapp_dynamic_avoidance:="${DYNAMIC_AVOIDANCE}" \
     fapp_planner_priority:="${PLANNER_PRIORITY}"
   local launch_status=$?
   stop_owned_down_camera
@@ -448,10 +452,12 @@ if [[ "${SHOW_HELP}" == true ]]; then
   exit 0
 fi
 case "${DETECTOR}" in
+  "") ;;
   fapp|ldop) ;;
   *) log '--detector 只能是 fapp 或 ldop'; exit 2 ;;
 esac
 case "${DYNAMIC_AVOIDANCE,,}" in
+  "") ;;
   true|false) DYNAMIC_AVOIDANCE="${DYNAMIC_AVOIDANCE,,}" ;;
   *) log 'UAV1_SIX_DYNAMIC_AVOIDANCE 只能是 true 或 false'; exit 2 ;;
 esac
@@ -521,7 +527,7 @@ log '打开 UAV1 Terminator 七分屏'
 log '上排：1 MAVROS | 2 MID360 | 3 FAST-LIO'
 log '下排：4 视觉位姿 | 5 检测/上报 | 6 Diff/RViz | 7 AutoTrans/日志/rosbag'
 log "检测参数：thermal=${THERMAL}, odom=${ODOM_TOPIC}"
-log "动态障碍检测：${DETECTOR}，FAPP 动态避障：${DYNAMIC_AVOIDANCE}，规划优先：${PLANNER_PRIORITY}"
+log "动态障碍检测：${DETECTOR:-跟随 launch}，FAPP 动态避障：${DYNAMIC_AVOIDANCE:-跟随 launch}，规划优先：${PLANNER_PRIORITY}"
 log "前级等待超时：${WAIT_TIMEOUT}s"
 log "Terminator 启动日志：${TERMINATOR_LOG}"
 
