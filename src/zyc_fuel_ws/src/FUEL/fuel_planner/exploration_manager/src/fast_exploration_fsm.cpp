@@ -332,6 +332,24 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
     transitState(PLAN_TRAJ, "manual-exit-handoff");
   }
 
+  // 出口正式接管后撤销尚未完成的普通探索目标，包括门外旧终点。
+  // 已生成/发布的出口专用轨迹不重复打断，普通转弯也不走此分支。
+  if ((state_ == PLAN_TRAJ || state_ == PUB_TRAJ || state_ == EXEC_TRAJ) &&
+      expl_manager_->exitTransitActive() &&
+      ((state_ == PUB_TRAJ && !pending_exit_transit_) ||
+       (state_ != PUB_TRAJ && active_traj_valid_ && !active_traj_braked_ &&
+        !active_exit_transit_))) {
+    requestActiveTrajectoryBrake("confirmed exit replaces ordinary exploration target");
+    width_replan_pending_ = false;
+    fapp_replan_pending_ = false;
+    expl_manager_->clearWiderRoute();
+    fd_->static_state_ = true;
+    next_plan_retry_time_ = ros::Time(0);
+    pending_traj_safe_since_ = ros::Time(0);
+    transitState(PLAN_TRAJ, "confirmed-exit-target");
+    return;
+  }
+
   // 航点和启用连续动态穿越的探索模式由traj_server持续发布原轨迹终点，保留高度修正目标。
   // 不能仅因等待下一段就刹车并将偏低的实测Z重新锁成目标。
   // 其他模式仍在等待时结束旧轨迹并锁住实时位置。
@@ -709,6 +727,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
         fapp_replan_pending_ = false;
         width_candidate_seen_ = false;
         next_width_check_ = now + ros::Duration(0.5);
+        active_exit_transit_ = pending_exit_transit_;
         active_turn_in_place_ = pending_turn_in_place_;
         active_ground_ascent_ = pending_ground_ascent_;
         active_vertical_detour_ = pending_vertical_detour_;
@@ -961,6 +980,7 @@ int FastExplorationFSM::callExplorationPlanner() {
              ? SUCCEED : FAIL)
       : expl_manager_->planExploreMotion(fd_->start_pt_, fd_->start_vel_, fd_->start_acc_,
                                           fd_->start_yaw_);
+  pending_exit_transit_ = res == SUCCEED && expl_manager_->exitTransitActive();
   pending_turn_in_place_ =
       res == SUCCEED && expl_manager_->currentPlanIsTurnInPlace();
   pending_ground_ascent_ =
@@ -1151,23 +1171,7 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
     }
   }
 
-  // 正常平移执行期间同步累计地图转弯证据。配置的确认次数满足后立刻短制动并切换到
-  // 原地yaw轨迹，不再等当前平移轨迹接近终点才发现拐角。
-  if (state_ == EXPL_STATE::EXEC_TRAJ && !active_turn_in_place_ &&
-      !inflation_escape_active_) {
-    Eigen::Vector3d turn_direction;
-    if (expl_manager_->detectMappedTurnDuringExecution(
-            fd_->odom_yaw_, turn_direction)) {
-      requestActiveTrajectoryBrake("mapped turn confirmed; stop before yaw alignment");
-      fd_->static_state_ = true;
-      transitState(PLAN_TRAJ, "safetyCallback-turn-in-place");
-      ROS_ERROR("[turn_in_place] mapped turn confirmed during execution; brake translation "
-                "and rotate toward %.1fdeg.",
-                std::atan2(turn_direction.y(), turn_direction.x()) * 180.0 / M_PI);
-      return;
-    }
-  }
-
+  // 地图转弯只在当前段执行结束后的正常规划中确认，不能截断正在执行的平移。
   // 通道内有效路线不因墙体航向变化而重新选位置目标；待该段完成后更新航向。
   if (!expl_manager_->manualWaypointsEnabled() &&
       state_ == EXPL_STATE::EXEC_TRAJ && !active_turn_in_place_ &&

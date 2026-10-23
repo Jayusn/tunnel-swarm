@@ -85,7 +85,7 @@ public:
                              const ros::Time& stamp = ros::Time(0));
   bool consumeRcSearchLandingStartRequest();
   bool shouldStartInflationHistoryEscape(const Vector3d& odom_pos) const;
-  bool detectMappedTurnDuringExecution(double yaw, Vector3d& direction);
+  bool exitTransitActive() const;
   bool shouldReplanCurveHeading(const Vector3d& position, double reference_yaw) const;
   bool prepareWiderRoute(const vector<Vector3d>& current_path, double yaw);
   bool widthReplacementImproves(const vector<Vector3d>& current_path,

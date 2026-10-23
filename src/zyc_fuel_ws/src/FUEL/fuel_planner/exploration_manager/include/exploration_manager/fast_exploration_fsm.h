@@ -116,6 +116,8 @@ private:
   Vector3d last_width_target_{Vector3d::Zero()};
   bool width_candidate_seen_{false};
   std::uint64_t width_check_map_sequence_{0};
+  bool pending_exit_transit_{false};
+  bool active_exit_transit_{false};
   bool pending_turn_in_place_{false};
   bool active_turn_in_place_{false};
   bool pending_ground_ascent_{false};

@@ -2388,23 +2388,23 @@ bool TaskSearchManager::buildStage3Goal(const Eigen::Vector3d& cur_pos, double c
   if (mission_stage_ == EXIT_APPROACH_INSIDE) {
     const double signed_side =
         (cur_pos.head<2>() - exit_portal_center_.head<2>()).dot(exit_outward_direction_);
-    // 外部Diff必须到出口截面附近才接管，不能在门内候选接近点提前前飞。
-    // 人工已飞到出口外再拨CH9时，不返回门内接近点。
+    // 外部Diff必须到锁定门心附近才接管；越过门平面但偏离门心时仍返回门心。
     Eigen::Vector3d approach =
         external_landing_planner_ ? exit_portal_center_ : exit_candidate_;
-    if (external_landing_planner_) {
-      approach.z() = cruise_height_;
-      // 已在门外时先在当前位置恢复巡航高度，不返回门口。
-      if (signed_side >= 0.0) approach.head<2>() = cur_pos.head<2>();
-    }
+    if (external_landing_planner_) approach.z() = cruise_height_;
     const double arrive_distance =
         external_landing_planner_ ? exit_portal_arrive_distance_ : exit_arrive_distance_;
-    const double handoff_side = external_landing_planner_ ? 0.0 : exit_cross_confirm_distance_;
+    Eigen::Vector3d arrival_pos = cur_pos;
+    if (external_landing_planner_) {
+      // 预测规划起点不能代替真实里程计完成出口交接。
+      std::lock_guard<std::mutex> lock(body_cloud_mutex_);
+      if (latest_robot_pose_valid_) arrival_pos = latest_robot_pos_;
+    }
     const bool height_ready = !external_landing_planner_ ||
-        std::fabs(cur_pos.z() - cruise_height_) <= exit_portal_arrive_distance_;
+        std::fabs(arrival_pos.z() - cruise_height_) <= exit_portal_arrive_distance_;
     if (height_ready &&
-        ((cur_pos.head<2>() - approach.head<2>()).norm() <= arrive_distance ||
-         signed_side >= handoff_side)) {
+        ((arrival_pos.head<2>() - approach.head<2>()).norm() <= arrive_distance ||
+         (!external_landing_planner_ && signed_side >= exit_cross_confirm_distance_))) {
       if (external_landing_planner_) {
         mission_stage_ = SEARCH_OUTSIDE_LANDING;
         mission_stage_start_ = ros::Time::now();
@@ -2414,7 +2414,7 @@ bool TaskSearchManager::buildStage3Goal(const Eigen::Vector3d& cur_pos, double c
         search_exhausted_since_ = ros::Time(0);
         publishSearchState();
         ROS_ERROR("[exit_mission] EXIT_APPROACH_INSIDE -> SEARCH_OUTSIDE_LANDING: "
-                  "exit plane reached; Diff owns the 1m outward crossing.");
+                  "actual exit center reached; Diff owns the 1m outward crossing.");
         return false;
       }
       mission_stage_ = CROSS_EXIT;
@@ -2428,7 +2428,9 @@ bool TaskSearchManager::buildStage3Goal(const Eigen::Vector3d& cur_pos, double c
         ROS_WARN_THROTTLE(1.0, "[exit_mission] verified exit approach temporarily blocked.");
         return false;
       }
-      goal_yaw = std::atan2(exit_outward_direction_.y(), exit_outward_direction_.x());
+      // 回到门心只修正位置，不因门法向或倒退方向而改变当前机头朝向。
+      goal_yaw = external_landing_planner_ ? cur_yaw :
+          std::atan2(exit_outward_direction_.y(), exit_outward_direction_.x());
       return true;
     }
   }

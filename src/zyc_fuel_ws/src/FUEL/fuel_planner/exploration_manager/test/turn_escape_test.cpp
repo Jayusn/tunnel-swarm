@@ -1134,33 +1134,6 @@ public:
     EXPECT_EQ(SDFMap::UNKNOWN, manager.widthColumnState(Vector3d(1, 1, 1)));
   }
 
-  static void runExecutionTurnEntryScope() {
-    ros::NodeHandle nh("~execution_turn_entry");
-    FastExplorationManager manager;
-    initialize(nh, manager);
-    auto& task = *manager.task_search_manager_;
-    task.enabled_ = true;
-    task.setCorridorFrame(Vector3d(-1, -1, 1), Vector3d::UnitX());
-    task.updateRobotPose(Vector3d(1.2, -1, 1), 0.0);
-    task.turn_yaw_follow_latch_.arm(Eigen::Vector2d::UnitY());
-    manager.turn_in_place_enabled_ = true;
-    manager.mission_entered_search_region_ = false; // 负Y通道不在旧静态搜索框内。
-    Vector3d direction;
-    EXPECT_FALSE(manager.detectMappedTurnDuringExecution(0, direction));
-    manager.mission_workspace_lock_received_ = true;
-    EXPECT_FALSE(manager.detectMappedTurnDuringExecution(0, direction));
-    manager.entry_forward_complete_ = true;
-    EXPECT_TRUE(manager.detectMappedTurnDuringExecution(0, direction));
-    EXPECT_TRUE(direction.isApprox(Vector3d::UnitY()));
-    manager.fapp_exploration_crossing_enabled_ = true;
-    manager.manual_fapp_active_ = true;
-    EXPECT_FALSE(manager.detectMappedTurnDuringExecution(0, direction));
-    EXPECT_TRUE(task.turnYawAlignmentPending());
-    manager.manual_fapp_active_ = false;
-    task.mission_stage_ = TaskSearchManager::SEARCH_OUTSIDE_LANDING;
-    EXPECT_FALSE(manager.detectMappedTurnDuringExecution(0, direction));
-  }
-
   static void runStraightWidth(bool mirror) {
     ros::NodeHandle nh("~straight_width");
     nh.setParam("manager/use_geometric_path", true);
@@ -1430,6 +1403,13 @@ public:
     task.curve_geometry_.center.setZero();
     check(manager.shouldReplanCurveHeading(fsm.fd_->odom_pos_, reference_yaw),
           "fixture did not request a new corridor heading");
+    // 即使已有待转航向，执行中的安全回调也不能以转弯为由结束平移。
+    manager.turn_in_place_enabled_ = true;
+    manager.mission_workspace_lock_received_ = true;
+    manager.entry_forward_complete_ = true;
+    task.setCorridorFrame(Vector3d(-3, 0, 1), Vector3d::UnitX());
+    task.updateRobotPose(fsm.fd_->odom_pos_, 0.0);
+    task.turn_yaw_follow_latch_.arm(Eigen::Vector2d::UnitY());
     fsm.last_suspended_underpass_check_ = ros::Time::now() + ros::Duration(30.0);
     fsm.safetyCallback(ros::TimerEvent());
     check(fsm.state_ == EXEC_TRAJ && !fsm.active_traj_braked_,
@@ -1439,6 +1419,10 @@ public:
         ros::Duration(fsm.active_traj_.duration_ - 0.02);
     fsm.FSMCallback(ros::TimerEvent());
     check(fsm.state_ == PLAN_TRAJ, "completed corridor route never resumed planning");
+    Vector3d turn_direction;
+    EXPECT_TRUE(task.mappedCorridorDirection(0.0, turn_direction));
+    EXPECT_TRUE(turn_direction.isApprox(Vector3d::UnitY()));
+    task.completeTurnYawAlignment();
 
     // 路线保持不能屏蔽新出现的占据：安全回调必须立刻刹停并交回规划。
     fsm.state_ = EXEC_TRAJ;
@@ -1981,7 +1965,8 @@ public:
   }
 
   static void runPendingExitApproach(double exit_yaw, double lateral_offset,
-                                     bool block_center) {
+                                     bool block_center, bool confirmed_return = false,
+                                     double heading_offset = 0.0) {
     ros::NodeHandle nh("~");
     nh.setParam("manager/use_geometric_path", true);
     nh.setParam("astar/resolution_astar", 0.05);
@@ -2035,6 +2020,76 @@ public:
     task.pending_exit_portal_center_ = point(0.9, 0, 1);
     task.stable_progress_direction_ = forward.head<2>();
     task.stable_progress_direction_valid_ = true;
+    if (confirmed_return) {
+      const double body_yaw = exit_yaw + heading_offset;
+      const Vector3d portal = point(0, 0, 1);
+      const Vector3d outside = point(0.65, lateral_offset, 1);
+      task.external_landing_planner_ = true;
+      task.cruise_height_ = portal.z();
+      task.exit_portal_center_ = portal;
+      task.exit_candidate_confirmed_ = task.exit_portal_outside_verified_ = true;
+      task.exit_outward_direction_ = forward.head<2>();
+      task.setCorridorFrame(point(-1, 0, 1), forward);
+      task.global_no_return_ = true;
+      task.beginExitCrossing(ros::Time::now());
+      manager.updateMissionOdometry(outside, body_yaw);
+      Vector3d goal; double goal_yaw;
+      // 预测起点已到门心但实际机体仍在外侧，不能提前交接。
+      ASSERT_TRUE(task.buildStage3Goal(portal, body_yaw, false, goal, goal_yaw));
+      EXPECT_TRUE(goal.isApprox(portal));
+      EXPECT_DOUBLE_EQ(body_yaw, goal_yaw);
+      ASSERT_TRUE(task.exitTransitActive());
+      ASSERT_EQ(SUCCEED, manager.planExploreMotion(outside, Vector3d::Zero(),
+                      Vector3d::Zero(), Vector3d(body_yaw, 0, 0)));
+      EXPECT_TRUE(manager.ed_->next_goal_.isApprox(portal, 0.03));
+      EXPECT_TRUE(planner.isTrajectorySafe());
+      const Vector3d end = planner.local_data_.position_traj_.evaluateDeBoorT(
+          planner.local_data_.duration_);
+      EXPECT_LT((end - outside).dot(forward), -0.4);
+      EXPECT_LT((end - portal).norm(), 0.05);
+      for (int i = 0; i <= 100; ++i) {
+        const double heading = planner.local_data_.yaw_traj_.evaluateDeBoorT(
+            planner.local_data_.duration_ * i / 100.0)[0];
+        EXPECT_NEAR(0.0, std::atan2(std::sin(heading - body_yaw),
+                                   std::cos(heading - body_yaw)), 0.02);
+      }
+
+      // 出口接管立即撤销旧探索段；已发布的出口段持续执行。
+      FastExplorationFSM fsm;
+      fsm.expl_manager_ = std::shared_ptr<FastExplorationManager>(&manager,
+                                                 [](FastExplorationManager*) {});
+      fsm.planner_manager_ = manager.planner_manager_;
+      fsm.fd_ = std::make_shared<FSMData>();
+      fsm.fp_ = std::make_shared<FSMParam>();
+      fsm.fd_->state_str_ = {"INIT", "WAIT", "PLAN", "PUB", "EXEC", "FINISH"};
+      fsm.fp_->emergency_brake_horizon_ = 0.12;
+      fsm.active_traj_ = planner.local_data_;
+      fsm.active_traj_.start_time_ = ros::Time::now();
+      fsm.active_traj_valid_ = true;
+      fsm.narrow_corridor_stage_ = true;
+      fsm.state_ = EXEC_TRAJ;
+      fsm.emergency_brake_pub_ = nh.advertise<std_msgs::Int32>("exit_brake", 1);
+      fsm.FSMCallback(ros::TimerEvent());
+      EXPECT_EQ(PLAN_TRAJ, fsm.state_);
+      EXPECT_TRUE(fsm.active_traj_braked_);
+      fsm.state_ = EXEC_TRAJ;
+      fsm.active_traj_braked_ = false;
+      fsm.active_exit_transit_ = true;
+      fsm.next_width_check_ = ros::Time::now() + ros::Duration(60.0);
+      fsm.FSMCallback(ros::TimerEvent());
+      EXPECT_EQ(EXEC_TRAJ, fsm.state_);
+      EXPECT_FALSE(fsm.active_traj_braked_);
+      // 旧候选等待发布期间锁门，也必须撤销，不能漏发门外终点。
+      fsm.state_ = PUB_TRAJ;
+      fsm.pending_exit_transit_ = false;
+      fsm.FSMCallback(ros::TimerEvent());
+      EXPECT_EQ(PLAN_TRAJ, fsm.state_);
+      EXPECT_TRUE(fsm.active_traj_braked_);
+      manager.updateMissionOdometry(portal, body_yaw);
+      EXPECT_FALSE(task.buildStage3Goal(portal, body_yaw, false, goal, goal_yaw));
+      EXPECT_EQ(TaskSearchManager::SEARCH_OUTSIDE_LANDING, task.mission_stage_);
+      return;
+    }
     if (block_center) {
       task.failed_goal_radius_ = 0.05;
       task.failed_goals_.push_back({point(0.4, 0, 1), ros::Time::now()});
@@ -3058,9 +3113,6 @@ TEST(FappMemory, IsolatedBottomNeedsDistinctObservationsAndConfirmedLowSurvivesD
 TEST(FappMemory, LaterEvidenceRevokesAlreadyMergedIsolatedBottom) {
   fast_planner::TurnEscapeTest::runBottomConfirmation(true);
 }
-TEST(TurnInPlace, ExecutionUsesDoorProgressAndPreservesDynamicAndExitOwnership) {
-  fast_planner::TurnEscapeTest::runExecutionTurnEntryScope();
-}
 TEST(RouteWidth, FeasibleStraightCompetesWithWiderRightRoute) {
   fast_planner::TurnEscapeTest::runStraightWidth(false);
 }
@@ -3124,4 +3176,11 @@ TEST(FappOpening, RightLaneUsesOpeningAndRestoresNominalLimitsAfterActualPassage
 }
 TEST(FappOpening, LeftLaneUsesOpeningAndRestoresNominalLimitsAfterActualPassage) {
   fast_planner::TurnEscapeTest::runDynamicOpening(1.0);
+}
+
+TEST(ExitPortal, OvershootReturnsToCenterAndReplacesOrdinaryTarget) {
+  fast_planner::TurnEscapeTest::runPendingExitApproach(0.0, 0.25, false, true);
+}
+TEST(ExitPortal, RotatedOvershootReturnsWithoutForwardAstarConstraint) {
+  fast_planner::TurnEscapeTest::runPendingExitApproach(2.8, -0.25, false, true, 0.35);
 }

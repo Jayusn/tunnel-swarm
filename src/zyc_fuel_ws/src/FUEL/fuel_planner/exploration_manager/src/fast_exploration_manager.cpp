@@ -3910,6 +3910,7 @@ int FastExplorationManager::planManualWaypointMotion(
 
 int FastExplorationManager::planExploreMotion(
     const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, const Vector3d& yaw) {
+  const bool replacing_width_route = !pending_wider_route_.empty();
   width_route_plan_ = false;
   fapp_rush_pending_ = false;
   pending_reference_height_ = std::numeric_limits<double>::quiet_NaN();
@@ -4389,7 +4390,7 @@ int FastExplorationManager::planExploreMotion(
 
   // 2026-07-16: 比赛使用360度Mid360时航向直接对准运动方向；相机模式保留原始viewpoint航向接口。
   const Eigen::Vector2d motion_delta = next_pos.head<2>() - pos.head<2>();
-  // 出口候选观察、确认后的接近/穿越均保持出口朝向，横向修正不能带着机头转。
+  // 出口目标保持任务指定航向；确认后回门心保持当前机头，不随平移方向转头。
   const bool use_locked_exit_yaw = use_stage3_target && task_search_manager_ &&
       (task_search_manager_->exitTransitActive() ||
        task_search_manager_->exitVerificationActive());
@@ -4414,7 +4415,8 @@ int FastExplorationManager::planExploreMotion(
   const bool corridor_yaw_lock_scope =
       !use_forced_entry_target && !use_stage3_target && task_search_manager_ &&
       task_search_manager_->enabled() && !task_search_manager_->stage3Active();
-  const bool mapped_turn_yaw_eligible = corridor_yaw_lock_scope;
+  // 执行中的宽路替换只能调整平移，不能顺带确认新转弯并抢占当前段。
+  const bool mapped_turn_yaw_eligible = corridor_yaw_lock_scope && !replacing_width_route;
   double camera_rotation_rate =
       camera_head_scan_direction_ * 2.0 * M_PI / camera_head_sweep_period_;
   if (corridor_yaw_lock_scope) {
@@ -4555,8 +4557,9 @@ int FastExplorationManager::planExploreMotion(
   // Generate trajectory of x,y,z
   // 2026-07-23: 已验证出口的门内观察/穿门目标由任务状态机沿锁定门法向生成，不能再被
   // 面向普通FUEL frontier的“旧航迹禁回头”过滤器误杀；占据、A*和机体足迹安全检查仍完整保留。
-  const bool exit_transit_active =
-      task_search_manager_ && task_search_manager_->exitTransitActive();
+  const bool exit_transit_active = exitTransitActive();
+  // 出口允许飞过后回门心；此前普通探索设置的A*前进约束也必须一起撤销。
+  if (exit_transit_active) planner_manager_->path_finder_->clearProgressConstraint();
   // 低位探测原地只改高度，不应被“最近拐角禁止退回旧通道”的XY半平面误杀。
   // 这里只豁免最近拐角规则，入口/最终出口单向边界、占据、A*和机体足迹仍保留。
   const bool stationary_vertical_detour =
@@ -4997,9 +5000,14 @@ int FastExplorationManager::planExploreMotion(
       return heading;
     };
   }
-  planner_manager_->planYawExplore(
-      yaw, next_yaw, look_forward_along_trajectory, ep_->relax_time_,
-      camera_continuous_rotation_active, camera_rotation_rate, channel_yaw);
+  if (exit_transit_active && use_locked_exit_yaw) {
+    // 回门心保持任务指定的当前朝向，复用确定性插值，恒定零航向无需再次优化。
+    if (!planner_manager_->planYawTurnInPlace(yaw, next_yaw)) return FAIL;
+  } else {
+    planner_manager_->planYawExplore(
+        yaw, next_yaw, look_forward_along_trajectory, ep_->relax_time_,
+        camera_continuous_rotation_active, camera_rotation_rate, channel_yaw);
+  }
 
   double traj_plan_time = (ros::Time::now() - t1).toSec();
   t1 = ros::Time::now();
@@ -5126,21 +5134,8 @@ bool FastExplorationManager::consumeRcSearchLandingStartRequest() {
          task_search_manager_->consumeRcSearchLandingStartRequest();
 }
 
-bool FastExplorationManager::detectMappedTurnDuringExecution(
-    double yaw, Vector3d& direction) {
-  // 门后任务以实际入口推进为准，不能再依赖旧场地固定坐标的搜索区。
-  // 动态穿越保持自身轨迹所有权，不由普通通道转向抢占。
-  if (suspended_underpass_active_ || explorationFappCrossingActive() ||
-      !turn_in_place_enabled_ ||
-      (!manual_path_enabled_ &&
-       (!mission_workspace_lock_received_ || !entry_forward_complete_)) ||
-      (manual_path_enabled_ && (!manual_path_exploration_style_ ||
-       (manual_path_wait_for_trigger_ && !manual_path_started_))) || !task_search_manager_ ||
-      !task_search_manager_->enabled() || task_search_manager_->stage3Active())
-    return false;
-  if (!task_search_manager_->mappedCorridorDirection(yaw, direction, !manual_path_enabled_))
-    return false;
-  return task_search_manager_->turnYawAlignmentPending();
+bool FastExplorationManager::exitTransitActive() const {
+  return task_search_manager_ && task_search_manager_->exitTransitActive();
 }
 
 bool FastExplorationManager::shouldReplanCurveHeading(

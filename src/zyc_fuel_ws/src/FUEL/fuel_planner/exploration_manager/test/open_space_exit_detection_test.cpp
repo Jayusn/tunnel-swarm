@@ -438,13 +438,14 @@ public:
           !manual_diff.landingRequested(),
           "CH9 handed off before reaching the locked exit plane");
     manual_goal = Eigen::Vector3d(7,8,9);
+    manual_diff.updateRobotPose(manual_portal, 0.0);
     check(!manual_diff.buildStage3Goal(manual_portal, 0, false, manual_goal, manual_yaw) &&
           manual_diff.mission_stage_ == TaskSearchManager::SEARCH_OUTSIDE_LANDING &&
           (manual_goal - Eigen::Vector3d(7,8,9)).norm() == 0,
           "CH9 did not hand off at the exit plane");
     TaskSearchManager already_outside;
     already_outside.initialize(nh);
-    const Eigen::Vector3d outside_pose = manual_portal + Eigen::Vector3d(0.1,0,0);
+    const Eigen::Vector3d outside_pose = manual_portal + Eigen::Vector3d(0.5,0.2,0);
     already_outside.updateRobotPose(outside_pose, 0.0);
     already_outside.exit_candidate_confirmed_ = true;
     already_outside.exit_portal_outside_verified_ = true;
@@ -456,11 +457,11 @@ public:
     already_outside.activateRcSearchLanding(ros::Time(114));
     manual_goal = Eigen::Vector3d(7,8,9);
     check(!already_outside.buildStage3Goal(outside_pose, 0, false, manual_goal, manual_yaw) &&
-          already_outside.mission_stage_ == TaskSearchManager::SEARCH_OUTSIDE_LANDING &&
-          (manual_goal - Eigen::Vector3d(7,8,9)).norm() == 0 &&
+          already_outside.mission_stage_ == TaskSearchManager::EXIT_APPROACH_INSIDE &&
+          (manual_goal - manual_portal).norm() < 1e-6 &&
           (already_outside.exit_portal_center_ - manual_portal).norm() < 1e-6,
-          "RC at an already-crossed confirmed exit commanded a return inside");
-    // 有确认出口的CH9在低高度时先恢复0.6m；已在门外不能被拉回门口。
+          "overshot exit did not retain the locked portal center as target");
+    // 有确认出口的CH9在低高度时回门心并恢复0.6m，到达前不能交接。
     TaskSearchManager low_outside;
     low_outside.initialize(nh);
     low_outside.external_landing_planner_ = true;
@@ -475,10 +476,12 @@ public:
     low_outside.activateRcSearchLanding(ros::Time(115));
     check(!low_outside.buildStage3Goal(low_pose, 0, false, manual_goal, manual_yaw) &&
           low_outside.mission_stage_ == TaskSearchManager::EXIT_APPROACH_INSIDE &&
-          (manual_goal.head<2>() - low_pose.head<2>()).norm() < 1e-6 &&
+          (manual_goal.head<2>() - manual_portal.head<2>()).norm() < 1e-6 &&
           std::fabs(manual_goal.z() - 0.6) < 1e-6,
-          "low CH9 handoff inherited low height or returned to the exit");
+          "low CH9 approach lost the portal center or cruise height");
+    low_pose = manual_portal;
     low_pose.z() = 0.6;
+    low_outside.updateRobotPose(low_pose, 0.0);
     check(!low_outside.buildStage3Goal(low_pose, 0, false, manual_goal, manual_yaw) &&
           low_outside.mission_stage_ == TaskSearchManager::SEARCH_OUTSIDE_LANDING,
           "CH9 did not hand off after recovering 0.6m height");
