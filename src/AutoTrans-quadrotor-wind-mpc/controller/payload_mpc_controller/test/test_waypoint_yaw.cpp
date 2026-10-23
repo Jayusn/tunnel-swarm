@@ -203,6 +203,74 @@ TEST_F(WaypointYaw, NormalFinishKeepsEndpointYawWhileAbortKeepsActualYaw) {
   EXPECT_TRUE(controller->lastMpcSolveSuccessful());
 }
 
+TEST_F(WaypointYaw, TrackingWaitKeepsLowWaypointHeightAndActualXY) {
+  // 17:47:26 录包：前机目标 z=0.129884，错误悬停参考曾被锁为 z=0.016495。
+  auto info = trajectoryInfo();
+  Piece::CoefficientMat coefficients = Piece::CoefficientMat::Zero(3, 6);
+  const Eigen::Vector3d endpoint(4.811481, -0.169411, 0.129884);
+  coefficients.col(5) = endpoint;
+  info.traj.clear();
+  info.traj.emplace_back(8.0, coefficients);
+  fsm->waypointGoalCallback(goal(endpoint, 1.2));
+  prepareStop(info);
+  fsm->fsm_state = MPCFSM::CMD_CTRL;
+  fsm->trajectory_data.beginTrackingReplan(ros::Time(1008), false);
+  const Eigen::Vector3d actual(4.760111, -0.185800, 0.016495);
+  fsm->odom_data.p = actual;
+  fsm->est_state_.head<3>() = actual.cast<real_t>();
+  ros::Time::setNow(ros::Time(1010));
+
+  fsm->CMD_CTRL_process();
+
+  EXPECT_EQ(fsm->exec_traj_state_, MPCFSM::HOVER);
+  EXPECT_TRUE(fsm->trajectory_data.replan_pending);
+  EXPECT_NEAR(fsm->hover_pose_.x(), actual.x(), 1e-9);
+  EXPECT_NEAR(fsm->hover_pose_.y(), actual.y(), 1e-9);
+  EXPECT_NEAR(fsm->hover_pose_.z(), endpoint.z(), 1e-9);
+  EXPECT_NEAR(controller->reference_states_(kPosZ, 0), endpoint.z(), 1e-6);
+  EXPECT_NEAR(fsm->hover_yaw_, 0.0, 1e-9);
+  EXPECT_TRUE(controller->lastMpcSolveSuccessful());
+  // 等待期间实际高度继续偏低，也不能重新锁低；拿到新轨迹后正常恢复。
+  fsm->odom_data.p.z() = -0.01;
+  ros::Time::setNow(ros::Time(1011));
+  fsm->CMD_CTRL_process();
+  EXPECT_NEAR(controller->reference_states_(kPosZ, 0), endpoint.z(), 1e-6);
+  fsm->trajectory_data.traj_queue.clear();
+  info.traj_start_time = ros::Time(1012);
+  info.traj_end_time = ros::Time(1020);
+  prepareStop(info);
+  fsm->trajectory_data.replan_pending = false;
+  fsm->exec_traj_state_ = MPCFSM::HOVER;
+  ros::Time::setNow(ros::Time(1013));
+  fsm->CMD_CTRL_process();
+  EXPECT_EQ(fsm->exec_traj_state_, MPCFSM::POLY_TRAJ);
+}
+
+TEST_F(WaypointYaw, TrackingWaitDoesNotApplyUnmatchedEntryOrLandingHeight) {
+  const auto info = trajectoryInfo();
+  const Eigen::Vector3d endpoint = info.traj.getJuncPos(info.traj.getPieceNum());
+  for (int scenario = 0; scenario < 7; ++scenario) {
+    fsm->trajectory_data.traj_queue.clear();
+    fsm->waypointGoalCallback(goal(endpoint, 1.2));
+    prepareStop(info);
+    fsm->fsm_state = MPCFSM::CMD_CTRL;
+    fsm->rc_land_active_ = fsm->precision_landing_active_ = fsm->mpc_recovery_active_ = false;
+    fsm->params_.use_trajectory_ending_pos_ = true;
+    fsm->trajectory_data.beginTrackingReplan(ros::Time(1008), false);
+    if (scenario == 0) fsm->entryWaypointGoalCallback(goal(endpoint, 1.2));
+    if (scenario == 1) fsm->trajectory_data.traj_queue.back().traj = line(Eigen::Vector3d(0, 0, 0.05));
+    if (scenario == 2) fsm->trajectory_data.exec_traj = -1;
+    if (scenario == 3) fsm->rc_land_active_ = true;
+    if (scenario == 4) fsm->precision_landing_active_ = true;
+    if (scenario == 5) fsm->mpc_recovery_active_ = true;
+    if (scenario == 6) fsm->params_.use_trajectory_ending_pos_ = false;
+    fsm->odom_data.p = Eigen::Vector3d(2.2, 0.1, 0.2);
+    ros::Time::setNow(ros::Time(1010));
+    fsm->CMD_CTRL_process();
+    EXPECT_TRUE(fsm->hover_pose_.isApprox(fsm->odom_data.p)) << scenario;
+  }
+}
+
 TEST_F(WaypointYaw, PendingNextGoalRetainsOldEndpointAndYawUntilNewTrajectoryArrives) {
   const auto info = trajectoryInfo();
   const Eigen::Vector3d endpoint = info.traj.getJuncPos(info.traj.getPieceNum());

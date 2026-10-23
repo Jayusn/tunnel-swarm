@@ -1118,7 +1118,20 @@ namespace PayloadMPC
 				}
 				else
 				{
+					// 普通航点末段到期但重规划尚未返回时，XY停在实际位置，
+					// Z继续使用该轨迹对应的前机目标，不能把跟踪下沉量锁成新高度。
+					const bool keep_waypoint_height = params_.use_trajectory_ending_pos_ &&
+						normal_end && trajectory_data.replan_pending && fsm_state == CMD_CTRL &&
+						!rc_land_active_ && !precision_landing_active_ && !mpc_recovery_active_ &&
+						!waypoint_is_entry_ &&
+						currentWaypointMatchesTrajectory(trajectory_data.traj_queue.back());
 					update_hover_pose();
+					if (keep_waypoint_height)
+					{
+						hover_pose_.z() = waypoint_position_.z();
+						ROS_WARN("[跟踪重规划等待] 保持当前XY，目标高度 %.3fm，实际高度 %.3fm。",
+							hover_pose_.z(), odom_data.p.z());
+					}
 				}
 				controller_.setHoverReference(hover_pose_, hover_yaw_);
 				controller_.execMPC(est_state_, mpc_predicted_states_, mpc_predicted_inputs_);
