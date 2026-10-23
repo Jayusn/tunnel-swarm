@@ -175,6 +175,7 @@
         <remap from="~planning/tracking_replan" to="/drone_$(arg drone_id)_planning/tracking_replan"/>
         <remap from="~planning/tracking_result" to="/drone_$(arg drone_id)_planning/tracking_result"/>
         <remap from="~planning/status" to = "/drone_$(arg drone_id)_planning/status"/>
+        <remap from="~planning/dynamic_passage" to="/drone_$(arg drone_id)_planning/dynamic_passage"/>
         <remap from="~grid_map/odom" to="$(arg odom_topic)"/>
         <remap from="~grid_map/cloud" to="$(arg cloud_topic)"/>
         <remap from="~grid_map/pose"   to = "$(arg camera_pose_topic)"/>

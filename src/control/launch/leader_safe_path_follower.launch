@@ -207,6 +207,8 @@
         <param name="task_separation" value="1.50"/>
         <!-- UAV0当前位置离当前普通FIFO目标的XY距离达到1.20m后，才向UAV1释放该点。 -->
         <param name="waypoint_release_min_separation" value="1.20"/>
+        <!-- 动态区域及离开后到下一个有效点之前用0.60m，到点后恢复普通间距等待。 -->
+        <param name="dynamic_passage_separation" value="0.60"/>
         <!-- 门点等任务交接仍用本机巡航高度；前机安全接力点保留原XYZ。 -->
         <param name="fixed_follow_height" value="0.60"/>
         <param name="follow_height_min" value="0.60"/>

@@ -321,6 +321,37 @@ TEST_F(FappRollingEndpoint, LowDynamicPassageKeepsGoalWithoutStartingRetreat)
   EXPECT_TRUE(planner.useOccupiedRecovery()); // No indefinite stale suppression.
 }
 
+TEST_F(FappRollingEndpoint, PublishesDynamicPassageForLowFlightAndExit) {
+  std::vector<bool> received;
+  auto sub = nh.subscribe<std_msgs::Bool>("planning/dynamic_passage", 10,
+      [&received](const std_msgs::Bool::ConstPtr& msg) { received.push_back(msg->data); });
+  const auto deadline = ros::WallTime::now() + ros::WallDuration(2.0);
+  while (planner.dynamic_passage_pub_.getNumSubscribers() == 0 &&
+         ros::WallTime::now() < deadline) ros::WallDuration(0.01).sleep();
+  ASSERT_GT(planner.dynamic_passage_pub_.getNumSubscribers(), 0U);
+  planner.exec_state_ = FSM::WAIT_TARGET;
+  planner.have_target_ = false;
+  planner.odom_pos_ = Eigen::Vector3d(4.23, -0.06, 0.04);
+  obj_state_msgs::ObjectsStates message;
+  message.header.stamp = ros::Time::now();
+  message.states.resize(1);
+  auto &ball = message.states.front();
+  ball.position.x = 4.268; ball.position.y = -0.136; ball.position.z = 0.598;
+  ball.size.x = 0.352; ball.size.y = 1.315; ball.size.z = 0.375;
+  planner.planner_manager_->updateDynamicObjects(message);
+  exec(); drain();
+  ASSERT_FALSE(received.empty());
+  EXPECT_TRUE(received.back()); // 从球下方通过，也必须通知跟随器降低间距。
+  message.states.clear();
+  ros::Time::setNow(ros::Time(1001));
+  planner.planner_manager_->updateDynamicObjects(message);
+  exec(); drain();
+  EXPECT_TRUE(received.back()); // 检测空帧不提前退出记忆包络。
+  planner.odom_pos_.x() = 5.1;
+  exec(); drain();
+  EXPECT_FALSE(received.back());
+}
+
 TEST_F(FappRollingEndpoint, DynamicPassageCancelsRetreatWithoutDiscardingGoal)
 {
   obj_state_msgs::ObjectsStates message;

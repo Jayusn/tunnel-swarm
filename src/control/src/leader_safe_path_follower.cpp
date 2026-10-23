@@ -231,6 +231,9 @@ class LeaderSafePathFollower {
     // 航点路径进度只证明前机走过该段；发布前还必须用两机对齐后的实时XY验证水平净距。
     pnh_.param("waypoint_release_min_separation",
                waypoint_release_min_separation_, 0.70);
+    pnh_.param("dynamic_passage_separation", dynamic_passage_separation_, 0.60);
+    pnh_.param<std::string>("diff_dynamic_passage_topic", diff_dynamic_passage_topic_,
+                           "/drone_1_planning/dynamic_passage");
     pnh_.param("fixed_follow_height", fixed_follow_height_, 0.60);
     pnh_.param("follow_height_min", follow_height_min_, 0.60);
     pnh_.param("follow_height_max", follow_height_max_, 0.70);
@@ -253,7 +256,8 @@ class LeaderSafePathFollower {
     pnh_.param("separation_release_distance", separation_release_distance_, 0.80);
     pnh_.param("emergency_retreat_step", emergency_retreat_step_, 0.35);
     pnh_.param("emergency_retreat_speed", emergency_retreat_speed_, 0.30);
-    if (!std::isfinite(min_separation_) || !std::isfinite(separation_recovery_distance_) ||
+    if (!std::isfinite(dynamic_passage_separation_) || dynamic_passage_separation_ <= 0.0 ||
+        !std::isfinite(min_separation_) || !std::isfinite(separation_recovery_distance_) ||
         !std::isfinite(separation_release_distance_) || min_separation_ <= 0.0 ||
         separation_recovery_distance_ <= 0.0 ||
         separation_recovery_distance_ > min_separation_ ||
@@ -401,6 +405,8 @@ class LeaderSafePathFollower {
                                        &LeaderSafePathFollower::followerOdomCallback, this);
     follower_cloud_sub_ = nh_.subscribe(follower_cloud_topic_, 1,
                                         &LeaderSafePathFollower::cloudCallback, this);
+    diff_dynamic_passage_sub_ = nh_.subscribe(diff_dynamic_passage_topic_, 1,
+        &LeaderSafePathFollower::dynamicPassageCallback, this);
     if (enable_dynamic_obstacle_detection_) {
       dynamic_obstacle_sub_ = nh_.subscribe(
           dynamic_obstacle_topic_, 5,
@@ -566,7 +572,7 @@ class LeaderSafePathFollower {
     const bool task_point = std::string(label) == "EXIT" ||
         std::string(label) == "OUTSIDE_WAIT" || std::string(label) == "DOOR";
     const double required = task_point
-        ? task_separation_ : waypoint_release_min_separation_;
+        ? task_separation_ : ordinarySpacing(waypoint_release_min_separation_);
     if (separation + 1e-6 < required) {
       ROS_WARN_THROTTLE(
           0.5,
@@ -2158,6 +2164,30 @@ class LeaderSafePathFollower {
         i != terminal_waypoint_index_;
   }
 
+  void dynamicPassageCallback(const std_msgs::Bool::ConstPtr& msg) {
+    in_dynamic_passage_ = msg->data;
+    if (in_dynamic_passage_ && simple_segment_endpoint_following_ &&
+        door_waypoint_released_ && !simple_door_hover_active_ &&
+        (isOrdinaryRelayPoint(active_relay_index_) ||
+         (active_relay_index_ >= relay_waypoints_.size() &&
+          !exit_waypoint_released_ && !terminal_mode_active_)))
+      dynamic_spacing_until_waypoint_ = true;
+    // 离开包络只更新区域标志；到达区域外的有效普通点后才恢复正常间距。
+  }
+
+  bool dynamicSpacingActive() const {
+    return simple_segment_endpoint_following_ && dynamic_spacing_until_waypoint_ &&
+        door_waypoint_released_ && !simple_door_hover_active_ &&
+        (isOrdinaryRelayPoint(active_relay_index_) ||
+         (active_relay_index_ >= relay_waypoints_.size() &&
+          !exit_waypoint_released_ && !terminal_mode_active_));
+  }
+
+  double ordinarySpacing(double normal_distance) const {
+    return dynamicSpacingActive() ? std::min(normal_distance, dynamic_passage_separation_)
+                                  : normal_distance;
+  }
+
   bool handleSimpleDiffPlannerExecution(const ros::Time& now) {
     if (activeSafeRelay() && !use_diff_planner_) {
       setDiffWaitPositionHold(true, "qualified relay stale/invalid or Diff disabled");
@@ -2171,7 +2201,7 @@ class LeaderSafePathFollower {
       return true;
     }
 
-    // 入口及入口等待只在0.60m内退让；普通点继续保持1m间距。
+    // 动态穿越及出区后的接续段使用0.60m，普通区域保留配置的间距。
     if (handleDiffSeparationSafety(now)) return true;
 
     if (active_relay_index_ >= relay_waypoints_.size()) {
@@ -2187,7 +2217,7 @@ class LeaderSafePathFollower {
 
     const RoutePoint desired_world = relay_waypoints_[active_relay_index_];
     const double release_distance = desired_world.is_door
-        ? door_release_inside_distance_ : waypoint_release_min_separation_;
+        ? door_release_inside_distance_ : ordinarySpacing(waypoint_release_min_separation_);
     const double effective_release_distance =
         !desired_world.is_door && !isOrdinaryRelayPoint(active_relay_index_)
         ? task_separation_ : release_distance;
@@ -2250,7 +2280,7 @@ class LeaderSafePathFollower {
           leader_world.x - desired_world.position.x,
           leader_world.y - desired_world.position.y);
       skip_occupied_point =
-          leader_to_point + 1e-6 >= waypoint_release_min_separation_ &&
+          leader_to_point + 1e-6 >= ordinarySpacing(waypoint_release_min_separation_) &&
           relayPointOccupied(desired_local, &occupied_hits) &&
           occupied_hits >= relay_point_occupied_min_points_;
     }
@@ -2308,7 +2338,7 @@ class LeaderSafePathFollower {
           std::hypot(leader_world.x - current_world.x,
                      leader_world.y - current_world.y) <
               (!isOrdinaryRelayPoint(active_relay_index_)
-                   ? task_separation_ : min_separation_)) {
+                   ? task_separation_ : ordinarySpacing(min_separation_))) {
         setDiffWaitPositionHold(true, "waiting at door for normal FIFO spacing");
         diff_goal_published_ = false;
         publishState("DIFF_FIFO_SPACING_HOLD", 1.0, 0.3, 0.0);
@@ -2325,6 +2355,15 @@ class LeaderSafePathFollower {
         follower_horizontal_speed_ <= relay_arrive_max_horizontal_speed_ &&
         follower_vertical_speed_ <= relay_arrive_max_vertical_speed_;
     if (waypoint_arrival || ordinary_dwell_started || terminal_arrival || skip_occupied_point) {
+      if (ordinary_relay && waypoint_arrival && !skip_occupied_point &&
+          dynamicSpacingActive() && !in_dynamic_passage_) {
+        dynamic_spacing_until_waypoint_ = false;
+        ROS_WARN("[safe_follower] 已到达动态区域外接力点，恢复普通间距 %.2fm。",
+                 separation_release_distance_);
+        // 留在已到达的有效点等待前机拉开间距，不在出区边缘截断当前航段。
+        // 保留队首，后续周期复用普通间距等待，恢复后再消费并接续下一点。
+        if (handleDiffSeparationSafety(now)) return true;
+      }
       // 显式配置驻留时，从普通点首次达到容差开始计时；偏出容差不重计时。
       // 期间保留完整终点和航向参考继续收敛。
       // 入口、出口、门外等待及最终降落保留各自原有到达规则。
@@ -3425,9 +3464,12 @@ class LeaderSafePathFollower {
           relay_waypoints_[active_relay_index_].is_door));
     const bool task_stage = !isOrdinaryRelayPoint(active_relay_index_);
     const double hold_distance = simple_door_stage
-        ? separation_recovery_distance_ : (task_stage ? task_separation_ : min_separation_);
+        ? separation_recovery_distance_ : (dynamicSpacingActive()
+            ? ordinarySpacing(min_separation_) : (task_stage ? task_separation_ : min_separation_));
     const double release_distance = simple_door_stage
-        ? door_release_inside_distance_ : (task_stage ? task_separation_ : separation_release_distance_);
+        ? door_release_inside_distance_ : (dynamicSpacingActive()
+            ? ordinarySpacing(separation_release_distance_)
+            : (task_stage ? task_separation_ : separation_release_distance_));
     const bool terminal_relay_active = terminal_mode_active_ &&
         active_relay_index_ == terminal_waypoint_index_;
     const bool leader_fresh = leaderOdomFresh(now);
@@ -3456,9 +3498,14 @@ class LeaderSafePathFollower {
 
     if (!diff_separation_hold_active_ && separation >= hold_distance) return false;
 
-    const bool retreat_allowed = simple_segment_endpoint_following_
-        ? separation < separation_recovery_distance_
-        : separation <= separation_recovery_distance_ && relay_route_paused_;
+    const bool retreat_allowed = !dynamicSpacingActive() &&
+        (simple_segment_endpoint_following_
+            ? separation < separation_recovery_distance_
+            : separation <= separation_recovery_distance_ && relay_route_paused_);
+    if (dynamicSpacingActive()) {
+      separation_recovery_active_ = false;
+      separation_recovery_goal_valid_ = false;
+    }
 
     if (!diff_separation_hold_active_) {
       diff_separation_hold_active_ = true;
@@ -4443,6 +4490,7 @@ class LeaderSafePathFollower {
   ros::Subscriber leader_task_status_sub_, landing_search_state_sub_,
       front_scan_anchor_sub_;
   ros::Subscriber diff_status_sub_;  // 2026-07-28: UAV1 Diff轨迹成功/失败反馈。
+  ros::Subscriber diff_dynamic_passage_sub_;
   ros::Publisher command_pub_, traj_started_pub_, diff_goal_pub_, diff_entry_goal_pub_, route_pub_, relay_path_pub_, target_pub_, state_pub_;
   ros::Publisher diff_yaw_pub_;
   ros::Publisher follower_landing_target_pub_, follower_landing_request_pub_;
@@ -4476,6 +4524,9 @@ class LeaderSafePathFollower {
       follower_odom_topic_, follower_cloud_topic_;
   std::string command_topic_, diff_goal_topic_, diff_yaw_topic_;
   std::string diff_status_topic_;  // 2026-07-28: 默认/drone_1_planning/status。
+  std::string diff_dynamic_passage_topic_;
+  bool in_dynamic_passage_{false}, dynamic_spacing_until_waypoint_{false};
+  double dynamic_passage_separation_{0.60};
   std::string traj_started_topic_, world_frame_;
   std::string leader_landing_target_topic_, leader_landing_request_topic_;
   std::string release_uav1_topic_;

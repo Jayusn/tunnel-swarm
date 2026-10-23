@@ -216,6 +216,7 @@ namespace diff_planner
     heartbeat_pub_ = nh.advertise<std_msgs::Empty>("planning/heartbeat", 10);
     // 2026-07-28: 后机接力不能仅凭目标已发布判断Diff正在执行，增加锁存状态反馈。
     planning_status_pub_ = nh.advertise<std_msgs::String>("planning/status", 10, true);
+    dynamic_passage_pub_ = nh.advertise<std_msgs::Bool>("planning/dynamic_passage", 1, true);
     ground_height_pub_ = nh.advertise<std_msgs::Float64>("/ground_height_measurement", 10);
 
     if (target_type_ == TARGET_TYPE::MANUAL_TARGET)
@@ -288,6 +289,11 @@ namespace diff_planner
     heartbeat_pub_.publish(heartbeat_msg);
 
     const double now_sec = ros::Time::now().toSec();
+    if (dynamic_passage_pub_) {
+      std_msgs::Bool passage;
+      passage.data = have_odom_ && planner_manager_->inDynamicPassage(odom_pos_, now_sec);
+      dynamic_passage_pub_.publish(passage);
+    }
     if (have_odom_)
       updateFreeOdomHistory(now_sec);
 

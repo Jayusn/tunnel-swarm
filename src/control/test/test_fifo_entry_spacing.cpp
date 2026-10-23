@@ -1539,6 +1539,121 @@ TEST_F(FifoEntrySpacing, OrdinarySpacingChangePreservesExitAndEntryThresholds) {
   EXPECT_FALSE(follower->handleDiffSeparationSafety(ros::Time::now()));
 }
 
+TEST_F(FifoEntrySpacing, DynamicPassageReleasesBothActualAndEndpointSpacingAtSixTenths) {
+  prepareQualifiedPoints();
+  auto passage = boost::make_shared<std_msgs::Bool>();
+  passage->data = true;
+  follower->dynamicPassageCallback(passage);
+  // 两机仅0.65m、前机离目标仅0.60m，均不足普通1.20m门槛。
+  follower->follower_odom_.pose.pose.position.x = 0.95;
+  follower->relay_arrive_radius_ = 0.01;
+  setLeader(1.60);
+  EXPECT_TRUE(follower->relayWaypointSeparationReady("INTERNAL"));
+  EXPECT_FALSE(follower->handleDiffSeparationSafety(ros::Time::now()));
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->diff_goal_published_);
+  EXPECT_TRUE(follower->dynamicSpacingActive());
+  EXPECT_FALSE(follower->separation_recovery_active_);
+}
+
+TEST_F(FifoEntrySpacing, DynamicPassageStillWaitsBelowSixTenthsWithoutRetreat) {
+  prepareQualifiedPoints();
+  auto passage = boost::make_shared<std_msgs::Bool>();
+  passage->data = true;
+  follower->dynamicPassageCallback(passage);
+  setLeader(0.59);
+  EXPECT_FALSE(follower->relayWaypointSeparationReady("INTERNAL"));
+  EXPECT_TRUE(follower->handleDiffSeparationSafety(ros::Time::now()));
+  EXPECT_TRUE(follower->diff_wait_hold_active_);
+  EXPECT_FALSE(follower->separation_recovery_active_);
+  setLeader(1.59); // 双机间距够，但离当前目标只有0.59m。
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->simple_waypoint_clearance_hold_active_);
+  EXPECT_FALSE(follower->diff_goal_published_);
+  setLeader(1.60);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->diff_goal_published_);
+}
+
+TEST_F(FifoEntrySpacing, DynamicExitContinuesToValidPointThenWaitsForNormalSpacing) {
+  prepareQualifiedPoints();
+  auto passage = boost::make_shared<std_msgs::Bool>();
+  passage->data = true;
+  follower->dynamicPassageCallback(passage);
+  setLeader(1.8);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_TRUE(follower->diff_goal_published_);
+  reportDiffStatus("TRAJECTORY_PUBLISHED", follower->diff_active_goal_stamp_ns_, " 1 0 0.6");
+  ASSERT_FALSE(follower->diff_wait_hold_active_);
+  // 实际已出区但尚未到点：双机0.9m，不得恢复1.2m导致途中锁点。
+  passage->data = false;
+  follower->dynamicPassageCallback(passage);
+  follower->follower_odom_.pose.pose.position.x = 0.9;
+  follower->relay_arrive_radius_ = 0.05;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->dynamicSpacingActive());
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+  // 到区域外合适点后，原地等待前机；队首保留，不能提前放行下一个点。
+  follower->follower_odom_.pose.pose.position.x = 1.0;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_FALSE(follower->dynamicSpacingActive());
+  EXPECT_TRUE(follower->diff_wait_hold_active_);
+  EXPECT_TRUE(follower->diff_separation_hold_active_);
+  ASSERT_EQ(2U, follower->relay_waypoints_.size());
+  setLeader(2.19);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_EQ(2U, follower->relay_waypoints_.size());
+  setLeader(2.21);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(1U, follower->relay_waypoints_.size());
+  EXPECT_DOUBLE_EQ(2.0, follower->relay_waypoints_.front().position.x);
+  EXPECT_FALSE(follower->diff_separation_hold_active_);
+  // 下一个点重新执行1.20m放行条件。
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_FALSE(follower->diff_goal_published_);
+  setLeader(3.21);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->diff_goal_published_);
+}
+
+TEST_F(FifoEntrySpacing, DynamicSpacingSurvivesInsideArrivalAndInvalidOutsidePoint) {
+  prepareQualifiedPoints();
+  auto passage = boost::make_shared<std_msgs::Bool>();
+  passage->data = true;
+  follower->dynamicPassageCallback(passage);
+  setLeader(2.8);
+  follower->follower_odom_.pose.pose.position.x = 1.0;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(1U, follower->relay_waypoints_.size());
+  EXPECT_TRUE(follower->dynamicSpacingActive()); // 区域内到点不能恢复大间距。
+  passage->data = false;
+  follower->dynamicPassageCallback(passage);
+  follower->safe_relay_valid_ids_.erase(2);
+  follower->follower_odom_.pose.pose.position.x = 2.0;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->dynamicSpacingActive()); // 无效前机点不能充当出区等待点。
+  EXPECT_TRUE(follower->diff_wait_hold_active_);
+  follower->safe_relay_valid_ids_.insert(2);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_FALSE(follower->dynamicSpacingActive());
+  EXPECT_TRUE(follower->diff_separation_hold_active_);
+}
+
+TEST_F(FifoEntrySpacing, DynamicSpacingPreservesEntryExitAndDisabledSimpleMode) {
+  prepareQualifiedPoints();
+  auto passage = boost::make_shared<std_msgs::Bool>();
+  passage->data = true;
+  follower->dynamicPassageCallback(passage);
+  follower->relay_waypoints_.front().is_door = true;
+  EXPECT_FALSE(follower->dynamicSpacingActive());
+  follower->relay_waypoints_.front().is_door = false;
+  follower->exit_waypoint_index_ = 0;
+  EXPECT_FALSE(follower->dynamicSpacingActive());
+  follower->exit_waypoint_index_ = std::numeric_limits<std::size_t>::max();
+  follower->simple_segment_endpoint_following_ = false;
+  EXPECT_FALSE(follower->dynamicSpacingActive());
+}
+
 int main(int argc, char** argv) {
   ros::init(argc, argv, "test_fifo_entry_spacing",
             ros::init_options::AnonymousName | ros::init_options::NoSigintHandler);

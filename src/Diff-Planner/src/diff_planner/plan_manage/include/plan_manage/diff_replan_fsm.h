@@ -12,6 +12,7 @@
 #include <ros/callback_queue.h>
 #include <sstream>  // 2026-07-28: 规划成功状态附带Diff修正后的实际目标坐标。
 #include <std_msgs/Empty.h>
+#include <std_msgs/Bool.h>
 #include <std_msgs/Float64.h>
 #include <std_msgs/String.h>
 #include <vector>
@@ -192,6 +193,7 @@ namespace diff_planner
     void trackingReplanCallback(const traj_utils::TrackingReplan::ConstPtr& request);
     void publishTrackingResult(const traj_utils::PolyTraj& trajectory);
     ros::Publisher planning_status_pub_;  // 2026-07-28: 向接力管理器反馈Diff规划成功/连续失败。
+    ros::Publisher dynamic_passage_pub_;
     SwingObstacleGuard swing_obstacle_guard_;
 
     /* state machine functions */
