@@ -1609,10 +1609,29 @@ route_width::Score FastExplorationManager::evaluateRouteWidth(
       });
 }
 
+bool FastExplorationManager::widthEndpointHasRoom(const vector<Vector3d>& path) const {
+  if (path.size() < 2) return false;
+  // 仅用于更宽路线的替换候选：横向净宽不代表终点前方还有停留余量。
+  // 沿末段方向多看15cm，不修改原路线或普通/动态轨迹的可行性判据。
+  for (size_t i = path.size() - 1; i > 0; --i) {
+    Vector3d forward = path.back() - path[i - 1];
+    forward.z() = 0.0;
+    if (forward.norm() < 1e-6) continue;
+    forward.normalize();
+    for (int sample = 0; sample <= 6; ++sample) {
+      const Vector3d probe = path.back() + (0.025 * sample) * forward;
+      if (!pointInsideWorkspaceLock(probe) ||
+          !planner_manager_->isKnownFreePosition(probe)) return false;
+    }
+    return true;
+  }
+  return false;
+}
+
 bool FastExplorationManager::widthReplacementImproves(
     const vector<Vector3d>& current_path, const vector<Vector3d>& replacement,
     double yaw) const {
-  if (!task_search_manager_) return false;
+  if (!task_search_manager_ || !widthEndpointHasRoom(replacement)) return false;
   const Vector3d forward = task_search_manager_->recoveryForwardDirection(yaw);
   return route_width::materiallyWider(evaluateRouteWidth(replacement, forward),
       evaluateRouteWidth(current_path, forward), route_width_replan_gain_);
@@ -1666,6 +1685,7 @@ bool FastExplorationManager::prepareWiderRoute(
       }
     }
     for (const auto& path : paths) {
+      if (!widthEndpointHasRoom(path)) continue;
       const auto score = evaluateRouteWidth(path, forward);
       if (route_width::materiallyWider(score, current, route_width_replan_gain_) &&
           route_width::prefer(score, best)) {
@@ -5108,8 +5128,12 @@ bool FastExplorationManager::consumeRcSearchLandingStartRequest() {
 
 bool FastExplorationManager::detectMappedTurnDuringExecution(
     double yaw, Vector3d& direction) {
-  if (suspended_underpass_active_ || !turn_in_place_enabled_ ||
-      (!manual_path_enabled_ && !mission_entered_search_region_) ||
+  // 门后任务以实际入口推进为准，不能再依赖旧场地固定坐标的搜索区。
+  // 动态穿越保持自身轨迹所有权，不由普通通道转向抢占。
+  if (suspended_underpass_active_ || explorationFappCrossingActive() ||
+      !turn_in_place_enabled_ ||
+      (!manual_path_enabled_ &&
+       (!mission_workspace_lock_received_ || !entry_forward_complete_)) ||
       (manual_path_enabled_ && (!manual_path_exploration_style_ ||
        (manual_path_wait_for_trigger_ && !manual_path_started_))) || !task_search_manager_ ||
       !task_search_manager_->enabled() || task_search_manager_->stage3Active())

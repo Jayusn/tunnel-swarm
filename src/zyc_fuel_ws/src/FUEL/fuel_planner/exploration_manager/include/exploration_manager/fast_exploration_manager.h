@@ -233,6 +233,7 @@ private:
   vector<Vector3d> pending_wider_route_;
   bool width_route_plan_{false};
   int widthColumnState(const Vector3d& point) const;
+  bool widthEndpointHasRoom(const vector<Vector3d>& path) const;
   route_width::Score evaluateRouteWidth(const vector<Vector3d>& path,
                                        const Vector3d& forward) const;
   // 前方竖直障碍把通道横向分开时，优先横移到占据地图中净宽更大的一侧。

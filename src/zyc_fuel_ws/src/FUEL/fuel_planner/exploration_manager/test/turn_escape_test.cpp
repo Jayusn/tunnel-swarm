@@ -1057,6 +1057,33 @@ public:
     EXPECT_EQ(SDFMap::UNKNOWN, manager.widthColumnState(Vector3d(1, 1, 1)));
   }
 
+  static void runExecutionTurnEntryScope() {
+    ros::NodeHandle nh("~execution_turn_entry");
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    auto& task = *manager.task_search_manager_;
+    task.enabled_ = true;
+    task.setCorridorFrame(Vector3d(-1, -1, 1), Vector3d::UnitX());
+    task.updateRobotPose(Vector3d(1.2, -1, 1), 0.0);
+    task.turn_yaw_follow_latch_.arm(Eigen::Vector2d::UnitY());
+    manager.turn_in_place_enabled_ = true;
+    manager.mission_entered_search_region_ = false; // 负Y通道不在旧静态搜索框内。
+    Vector3d direction;
+    EXPECT_FALSE(manager.detectMappedTurnDuringExecution(0, direction));
+    manager.mission_workspace_lock_received_ = true;
+    EXPECT_FALSE(manager.detectMappedTurnDuringExecution(0, direction));
+    manager.entry_forward_complete_ = true;
+    EXPECT_TRUE(manager.detectMappedTurnDuringExecution(0, direction));
+    EXPECT_TRUE(direction.isApprox(Vector3d::UnitY()));
+    manager.fapp_exploration_crossing_enabled_ = true;
+    manager.manual_fapp_active_ = true;
+    EXPECT_FALSE(manager.detectMappedTurnDuringExecution(0, direction));
+    EXPECT_TRUE(task.turnYawAlignmentPending());
+    manager.manual_fapp_active_ = false;
+    task.mission_stage_ = TaskSearchManager::SEARCH_OUTSIDE_LANDING;
+    EXPECT_FALSE(manager.detectMappedTurnDuringExecution(0, direction));
+  }
+
   static void runStraightWidth(bool mirror) {
     ros::NodeHandle nh("~straight_width");
     nh.setParam("manager/use_geometric_path", true);
@@ -1128,6 +1155,27 @@ public:
     ASSERT_TRUE(manager.prepareWiderRoute(straight, 0));
     EXPECT_LT((manager.widerRouteTarget().y() - start.y()) * side, -.15);
     EXPECT_TRUE(manager.planner_manager_->isPathSafe(manager.pending_wider_route_));
+    const auto chosen = manager.pending_wider_route_;
+    ASSERT_TRUE(manager.widthEndpointHasRoom(chosen));
+    Vector3d terminal_direction = chosen.back() - chosen[chosen.size() - 2];
+    terminal_direction.z() = 0;
+    ASSERT_GT(terminal_direction.norm(), 1e-6);
+    terminal_direction.normalize();
+    // 终点本身足迹可行，但前方不到30cm有障碍；宽度优化不得把它当作好终点。
+    const Vector3d obstacle = chosen.back() + .28 * terminal_direction;
+    cloud.clear();
+    for (double z = .825; z <= 1.225; z += .025)
+      for (double y = -.075; y <= .075; y += .025)
+        cloud.push_back(pcl::PointXYZ(obstacle.x(), obstacle.y() + y, z));
+    for (int i = 0; i < 8; ++i) map.inputPointCloud(cloud, cloud.size(), start);
+    ASSERT_TRUE(manager.planner_manager_->isPathSafe(chosen));
+    EXPECT_FALSE(manager.widthEndpointHasRoom(chosen));
+    EXPECT_FALSE(manager.widthReplacementImproves(straight, chosen, 0));
+    if (manager.prepareWiderRoute(straight, 0)) {
+      EXPECT_TRUE(manager.widthEndpointHasRoom(manager.pending_wider_route_));
+    } else {
+      EXPECT_TRUE(manager.pending_wider_route_.empty());
+    }
   }
 
   static void runHeightReferenceOwnership() {
@@ -2926,6 +2974,9 @@ TEST(PassageCentre, LowCorridorGuidesActualSpline) { fast_planner::TurnEscapeTes
 
 TEST(RouteWidth, OccupiedLayerBetweenOldColumnSamplesIsNotMissed) {
   fast_planner::TurnEscapeTest::runWidthColumn();
+}
+TEST(TurnInPlace, ExecutionUsesDoorProgressAndPreservesDynamicAndExitOwnership) {
+  fast_planner::TurnEscapeTest::runExecutionTurnEntryScope();
 }
 TEST(RouteWidth, FeasibleStraightCompetesWithWiderRightRoute) {
   fast_planner::TurnEscapeTest::runStraightWidth(false);
