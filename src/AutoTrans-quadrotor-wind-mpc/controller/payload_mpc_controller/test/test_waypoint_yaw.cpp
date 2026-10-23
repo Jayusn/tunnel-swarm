@@ -203,6 +203,103 @@ TEST_F(WaypointYaw, NormalFinishKeepsEndpointYawWhileAbortKeepsActualYaw) {
   EXPECT_TRUE(controller->lastMpcSolveSuccessful());
 }
 
+TEST_F(WaypointYaw, RecoveryAbortHoldRaisesRecordedLowHeightAbovePlannerGround) {
+  // 18:36:04 录包：恢复轨迹与当前航点不匹配，原锁点Z为0.0358489。
+  nh.setParam("test_virtual_ground", 0.05);
+  fsm->hover_virtual_ground_param_ = nh.resolveName("test_virtual_ground");
+  prepareStop(trajectoryInfo());
+  fsm->waypointGoalCallback(goal(Eigen::Vector3d(4.879109, -0.282169, 0.143639), 0.0));
+  fsm->fsm_state = MPCFSM::CMD_CTRL;
+  ros::Time::setNow(ros::Time(1010));
+  fsm->odom_data.rcv_stamp = ros::Time::now();
+  const Eigen::Vector3d actual(3.47769451, -0.0162512, 0.0358489);
+  fsm->odom_data.p = actual;
+  fsm->est_state_.head<3>() = actual.cast<real_t>();
+  auto hold = boost::make_shared<std_msgs::Bool>();
+  hold->data = true;
+  fsm->safetyHoldCallback(hold);
+  EXPECT_FALSE(fsm->safety_hold_keep_waypoint_height_);
+  EXPECT_DOUBLE_EQ(fsm->hover_pose_.x(), actual.x());
+  EXPECT_DOUBLE_EQ(fsm->hover_pose_.y(), actual.y());
+  EXPECT_NEAR(fsm->hover_pose_.z(), 0.10, 1e-9);
+  fsm->CMD_CTRL_process();
+  EXPECT_NEAR(controller->reference_states_(kPosZ, 0), 0.10, 1e-6);
+  EXPECT_TRUE(controller->lastMpcSolveSuccessful());
+  fsm->odom_data.p.z() = -0.01;
+  fsm->safetyHoldCallback(hold); // 重复锁点不能重新取低于地面的实际高度。
+  fsm->CMD_CTRL_process();
+  EXPECT_NEAR(controller->reference_states_(kPosZ, 0), 0.10, 1e-6);
+}
+
+TEST_F(WaypointYaw, HoverFloorCoversCompletionPendingAbortAndExistingHover) {
+  nh.setParam("test_virtual_ground", 0.05);
+  fsm->hover_virtual_ground_param_ = nh.resolveName("test_virtual_ground");
+  for (int scenario = 0; scenario < 4; ++scenario) {
+    fsm->trajectory_data.traj_queue.clear();
+    auto info = trajectoryInfo();
+    Piece::CoefficientMat coefficients = Piece::CoefficientMat::Zero(3, 6);
+    coefficients.col(5) = Eigen::Vector3d(1.0, 0.0, 0.04);
+    info.traj.clear(); info.traj.emplace_back(8.0, coefficients);
+    prepareStop(info);
+    fsm->fsm_state = MPCFSM::CMD_CTRL;
+    fsm->trajectory_data.replan_pending = false;
+    fsm->odom_data.p = Eigen::Vector3d(0.9, 0.0, 0.036);
+    if (scenario == 1) fsm->trajectory_data.beginTrackingReplan(ros::Time(1008), false);
+    if (scenario == 2) fsm->trajectory_data.exec_traj = -1;
+    if (scenario == 3) {
+      fsm->trajectory_data.traj_queue.clear();
+      fsm->trajectory_data.exec_traj = 0;
+      fsm->exec_traj_state_ = MPCFSM::HOVER;
+      fsm->hover_pose_ = fsm->odom_data.p;
+    }
+    ros::Time::setNow(ros::Time(1010));
+    fsm->CMD_CTRL_process();
+    EXPECT_NEAR(controller->reference_states_(kPosZ, 0), 0.10, 1e-6) << scenario;
+    EXPECT_TRUE(controller->lastMpcSolveSuccessful()) << scenario;
+  }
+}
+
+TEST_F(WaypointYaw, HoverReadsPlannerGroundAndPreservesHigherReference) {
+  nh.setParam("test_changed_virtual_ground", 0.20);
+  fsm->hover_virtual_ground_param_ = nh.resolveName("test_changed_virtual_ground");
+  fsm->fsm_state = MPCFSM::CMD_CTRL;
+  fsm->hover_pose_ = Eigen::Vector3d(1, 2, 0.036);
+  fsm->keepHoverAboveVirtualGround();
+  EXPECT_NEAR(fsm->hover_pose_.z(), 0.25, 1e-9);
+  fsm->hover_pose_.z() = 0.6;
+  fsm->keepHoverAboveVirtualGround();
+  EXPECT_DOUBLE_EQ(fsm->hover_pose_.z(), 0.6);
+}
+
+TEST_F(WaypointYaw, HoverFloorDoesNotAlterFlightTrajectoryTakeoffOrLanding) {
+  nh.setParam("test_virtual_ground", 0.05);
+  fsm->hover_virtual_ground_param_ = nh.resolveName("test_virtual_ground");
+  auto info = trajectoryInfo();
+  Piece::CoefficientMat coefficients = Piece::CoefficientMat::Zero(3, 6);
+  coefficients.col(5) = Eigen::Vector3d(1.0, 0.0, 0.08);
+  info.traj.clear(); info.traj.emplace_back(8.0, coefficients);
+  prepareStop(info);
+  fsm->fsm_state = MPCFSM::CMD_CTRL;
+  ros::Time::setNow(ros::Time(1005));
+  fsm->CMD_CTRL_process();
+  EXPECT_EQ(fsm->exec_traj_state_, MPCFSM::POLY_TRAJ);
+  EXPECT_NEAR(controller->reference_states_(kPosZ, 0), 0.08, 1e-6);
+  for (int scenario = 0; scenario < 6; ++scenario) {
+    fsm->fsm_state = MPCFSM::CMD_CTRL;
+    fsm->rc_land_active_ = fsm->precision_landing_active_ = false;
+    fsm->mpc_recovery_active_ = fsm->direct_auto_land_active_ = false;
+    if (scenario == 0) fsm->fsm_state = MPCFSM::AUTO_TAKEOFF;
+    if (scenario == 1) fsm->fsm_state = MPCFSM::AUTO_LAND;
+    if (scenario == 2) fsm->rc_land_active_ = true;
+    if (scenario == 3) fsm->precision_landing_active_ = true;
+    if (scenario == 4) fsm->mpc_recovery_active_ = true;
+    if (scenario == 5) fsm->direct_auto_land_active_ = true;
+    fsm->hover_pose_ = Eigen::Vector3d(1, 2, 0.036);
+    fsm->keepHoverAboveVirtualGround();
+    EXPECT_DOUBLE_EQ(fsm->hover_pose_.z(), 0.036) << scenario;
+  }
+}
+
 TEST_F(WaypointYaw, TrackingWaitKeepsLowWaypointHeightAndActualXY) {
   // 17:47:26 录包：前机目标 z=0.129884，错误悬停参考曾被锁为 z=0.016495。
   auto info = trajectoryInfo();

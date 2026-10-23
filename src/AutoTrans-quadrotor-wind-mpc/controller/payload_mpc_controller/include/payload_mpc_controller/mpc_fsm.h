@@ -300,6 +300,9 @@ namespace PayloadMPC
 		void printandresetRMSE();
 		void addRMSE();
 		void update_hover_pose();
+		void keepHoverAboveVirtualGround();
+		std::string hover_virtual_ground_param_;
+		double hover_virtual_ground_{0.05};
 		void update_mode_hover_pose();
 		void update_hover_with_rc();
 		bool takeoffPreconditions(const ros::Time &now, const char *&reason) const;

@@ -36,6 +36,7 @@ namespace PayloadMPC
 																							  odom_spike_guard_(makeOdomSpikeGuardConfig(params))
 	{
         odom_data.v.setZero();
+        nh_.param<std::string>("hover_virtual_ground_param", hover_virtual_ground_param_, "");
         nh_.param("tracking_replan/enabled", tracking_replan_enabled_, false);
         nh_.param("tracking_replan/error", tracking_replan_error_, 0.10);
         nh_.param("tracking_replan/stop_error", tracking_stop_error_, 0.15);
@@ -300,6 +301,7 @@ namespace PayloadMPC
                 hover_pose_.z(), odom_data.p.z(),
                 std::min(normal_velocity_z_, safety_hold_vertical_speed_));
         }
+        keepHoverAboveVirtualGround();
     }
 
 	void MPCFSM::safetyHoldCallback(const std_msgs::Bool::ConstPtr &msg)
@@ -1059,6 +1061,7 @@ namespace PayloadMPC
             controller_.setVerticalVelocityLimit(safety_hold_keep_waypoint_height_
                 ? std::min(normal_velocity_z_, safety_hold_vertical_speed_)
                 : normal_velocity_z_);
+			keepHoverAboveVirtualGround();
 			controller_.setHoverReference(hover_pose_, hover_yaw_);
 			controller_.execMPC(est_state_, mpc_predicted_states_, mpc_predicted_inputs_);
 			exec_traj_state_ = HOVER;
@@ -1088,6 +1091,7 @@ namespace PayloadMPC
 			}
 			else
 			{
+				keepHoverAboveVirtualGround();
 				controller_.setHoverReference(hover_pose_, hover_yaw_);
 				controller_.execMPC(est_state_, mpc_predicted_states_, mpc_predicted_inputs_);
 			}
@@ -1133,6 +1137,7 @@ namespace PayloadMPC
 							hover_pose_.z(), odom_data.p.z());
 					}
 				}
+				keepHoverAboveVirtualGround();
 				controller_.setHoverReference(hover_pose_, hover_yaw_);
 				controller_.execMPC(est_state_, mpc_predicted_states_, mpc_predicted_inputs_);
 				exec_traj_state_ = HOVER;
@@ -1148,6 +1153,7 @@ namespace PayloadMPC
 				if (now_time < (traj_info->traj_start_time))
 				{ // the start time of first trajectory should be whole trajectory start time
 					trajectory_data.total_traj_start_time = traj_info->traj_start_time;
+					keepHoverAboveVirtualGround();
 					controller_.setHoverReference(hover_pose_, hover_yaw_);
 					controller_.execMPC(est_state_, mpc_predicted_states_, mpc_predicted_inputs_);
 				}
@@ -1162,6 +1168,7 @@ namespace PayloadMPC
 							if (trajectory_data.traj_queue.empty())
 							{
 								update_hover_pose();
+								keepHoverAboveVirtualGround();
 								controller_.setHoverReference(hover_pose_, hover_yaw_);
 								controller_.execMPC(est_state_, mpc_predicted_states_, mpc_predicted_inputs_);
 								exec_traj_state_ = HOVER;
@@ -1981,6 +1988,23 @@ namespace PayloadMPC
 		ROS_INFO("[AUTO_TAKEOFF] 开始起飞：目标高度=%.3f m，上升速度=%.3f m/s。",
 				takeoff_target_z_, params_.takeoff_.climb_rate);
 	}
+
+    void MPCFSM::keepHoverAboveVirtualGround()
+    {
+        // 只修正正常任务的悬停参考；轨迹跟踪、起降和PX4恢复使用各自的参考/坐标系。
+        if (hover_virtual_ground_param_.empty() || fsm_state != CMD_CTRL ||
+            rc_land_active_ || precision_landing_active_ || mpc_recovery_active_ ||
+            direct_auto_land_active_) return;
+        double ground;
+        if (nh_.getParamCached(hover_virtual_ground_param_, ground) && std::isfinite(ground))
+            hover_virtual_ground_ = ground;
+        const double minimum_z = hover_virtual_ground_ + 0.05;
+        if (hover_pose_.z() < minimum_z) {
+            ROS_WARN("[悬停高度修正] 参考Z %.3fm低于地面净空，改为 %.3fm（虚拟地面 %.3fm + 0.05m）。",
+                     hover_pose_.z(), minimum_z, hover_virtual_ground_);
+            hover_pose_.z() = minimum_z;
+        }
+    }
 
 	void MPCFSM::update_hover_pose()
 	{
