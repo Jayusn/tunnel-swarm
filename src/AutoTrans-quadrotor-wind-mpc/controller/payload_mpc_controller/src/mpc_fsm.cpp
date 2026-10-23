@@ -931,7 +931,7 @@ namespace PayloadMPC
 				{
 					auto_land_request_sent_ = true;
 					last_auto_land_request_time_ = now_time;
-					ROS_INFO("[AUTO_LAND] 已请求 PX4 AUTO.LAND，等待 PX4 状态确认。");
+					ROS_INFO("[AUTO_LAND] 已异步提交 PX4 AUTO.LAND 请求，继续控制并等待状态确认。");
 				}
 			}
 
@@ -1672,12 +1672,12 @@ namespace PayloadMPC
 		if (!retry_allowed)
 			return;
 
-		// Record every attempt, including rejected calls, so a failed service does
-		// not get hammered at the 100 Hz controller rate.
-		last_auto_land_request_time_ = now;
-		auto_land_request_sent_ = request_px4_auto_land();
-		if (auto_land_request_sent_)
-			ROS_WARN("[AUTO_LAND] PX4 已接受 AUTO.LAND 请求，等待状态确认。");
+		if (request_px4_auto_land())
+		{
+			last_auto_land_request_time_ = now;
+			auto_land_request_sent_ = true;
+			ROS_WARN("[AUTO_LAND] 已异步提交 PX4 AUTO.LAND 请求，等待状态确认。");
+		}
 	}
 
 	void MPCFSM::enter_odom_failsafe(const char *reason)
@@ -2315,14 +2315,24 @@ namespace PayloadMPC
 
 	bool MPCFSM::request_px4_auto_land()
 	{
-		mavros_msgs::SetMode land_set_mode;
-		// PX4 AUTO.LAND 由飞控接管最终降落；本函数不负责解锁或起飞。
-		land_set_mode.request.custom_mode = "AUTO.LAND";
-		if (!(set_FCU_mode_srv.call(land_set_mode) && land_set_mode.response.mode_sent))
+		// 服务响应可能等待近一秒，不能占用发布角速度指令的控制线程。
+		// 仅回收已经完成的调用；等待期间沿用同一个请求，不重复排队。
+		if (auto_land_request_future_.valid())
 		{
-			ROS_ERROR_THROTTLE(5.0, "[AUTO_LAND] PX4 未接受 AUTO.LAND，请求将继续重试。");
-			return false;
+			if (auto_land_request_future_.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+				return false;
+			auto_land_request_future_.get();
 		}
+		auto_land_request_future_ = std::async(std::launch::async,
+			[client = set_FCU_mode_srv]() mutable {
+				mavros_msgs::SetMode land_set_mode;
+				land_set_mode.request.custom_mode = "AUTO.LAND";
+				if (client.call(land_set_mode) && land_set_mode.response.mode_sent)
+					ROS_INFO("[AUTO_LAND] PX4 已接受 AUTO.LAND 请求，等待状态确认。");
+				else
+					ROS_ERROR_THROTTLE(5.0, "[AUTO_LAND] PX4 未接受 AUTO.LAND，请求将继续重试。");
+			});
+		// true 只表示已提交请求；停发控制量仍由 process() 中的 PX4 状态确认决定。
 		return true;
 	}
 

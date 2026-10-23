@@ -4,6 +4,7 @@
 #include <ros/ros.h>
 #include <payload_mpc_controller/InputDiagnostics.h>
 #include <ros/assert.h>
+#include <future>
 
 #include <geometry_msgs/PoseStamped.h>
 #include <nav_msgs/Odometry.h>
@@ -120,6 +121,7 @@ namespace PayloadMPC
 	private:
         friend class ForceEstimatorTestAccess;
         friend class LioStateInputTestAccess;
+        friend class AutoLandRequestTestAccess;
         void landingTargetCallback(const mavros_msgs::PositionTarget::ConstPtr &msg);
         void landingStateCallback(const std_msgs::String::ConstPtr &msg);
         void processPrecisionLanding(const ros::Time &now);
@@ -183,6 +185,8 @@ namespace PayloadMPC
 		bool suppress_manual_setpoint_{false};
 		bool auto_land_request_sent_{false};
 		ros::Time last_auto_land_request_time_{0};
+		// 后台仅持有 ServiceClient 副本，不读写 FSM；future 随 FSM 析构回收。
+		std::future<void> auto_land_request_future_;
 		Eigen::Vector3d last_safe_body_rate_{Eigen::Vector3d::Zero()};
 		double last_safe_normalized_thrust_{0.0};
 		bool last_safe_setpoint_valid_{false};
