@@ -388,7 +388,8 @@ private:
                            double& next_yaw, bool& split_obstacle_detected);
   bool buildFappSideBypass(const Vector3d& pos, double cur_yaw,
                            const Vector3d& forward, Vector3d& next_pos,
-                           double& next_yaw, bool& obstacle_detected);
+                           double& next_yaw, bool& obstacle_detected,
+                           std::vector<Vector3d>* crossing_path = nullptr);
   bool buildCenterGatePassage(const Vector3d& pos, double cur_yaw,
                               const Vector3d& forward, Vector3d& next_pos,
                               double& next_yaw, bool& gate_detected);

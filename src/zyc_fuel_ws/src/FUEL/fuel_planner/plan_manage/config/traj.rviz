@@ -250,14 +250,14 @@ Visualization Manager:
           Size (Pixels): 5
           Size (m): 0.05999999865889549
           Style: Flat Squares
-          Topic: /UAV0/ldop/dynamic_cloud
+          Topic: /UAV0/fapp/dynamic_cloud
           Unreliable: false
           Use Fixed Frame: true
           Use rainbow: false
           Value: true
         - Class: rviz/MarkerArray
           Enabled: true
-          Marker Topic: /UAV0/ldop/dynamic_object_markers
+          Marker Topic: /UAV0/fapp/dynamic_object_markers
           Name: dynamic_bboxes
           Namespaces:
             {}
@@ -265,22 +265,14 @@ Visualization Manager:
           Value: true
         - Class: rviz/MarkerArray
           Enabled: true
-          Marker Topic: /UAV0/ldop/dynamic_track_markers
+          Marker Topic: /UAV0/fapp/dynamic_track_markers
           Name: dynamic_tracks
           Namespaces:
             {}
           Queue Size: 20
           Value: true
-        - Class: rviz/MarkerArray
-          Enabled: true
-          Marker Topic: /UAV0/ldop/dynamic_prediction_markers
-          Name: dynamic_predictions
-          Namespaces:
-            {}
-          Queue Size: 20
-          Value: true
       Enabled: true
-      Name: LDOP_Dynamic
+      Name: UAV0_FAPP_Dynamic
     - Class: rviz/Group
       Displays:
         - Alpha: 1
@@ -306,14 +298,14 @@ Visualization Manager:
           Size (Pixels): 5
           Size (m): 0.05999999865889549
           Style: Flat Squares
-          Topic: /UAV1/ldop/dynamic_cloud
+          Topic: /UAV1/fapp/dynamic_cloud
           Unreliable: false
           Use Fixed Frame: true
           Use rainbow: false
           Value: true
         - Class: rviz/MarkerArray
           Enabled: true
-          Marker Topic: /UAV1/ldop/dynamic_object_markers
+          Marker Topic: /UAV1/fapp/dynamic_object_markers
           Name: UAV1_dynamic_bboxes
           Namespaces:
             {}
@@ -321,14 +313,14 @@ Visualization Manager:
           Value: true
         - Class: rviz/MarkerArray
           Enabled: true
-          Marker Topic: /UAV1/ldop/dynamic_prediction_markers
-          Name: UAV1_dynamic_predictions
+          Marker Topic: /UAV1/fapp/dynamic_track_markers
+          Name: UAV1_dynamic_tracks
           Namespaces:
             {}
           Queue Size: 20
           Value: true
       Enabled: true
-      Name: UAV1_LDOP_Dynamic
+      Name: UAV1_FAPP_Dynamic
     - Class: rviz/Group
       Displays:
         - Class: rviz/Marker

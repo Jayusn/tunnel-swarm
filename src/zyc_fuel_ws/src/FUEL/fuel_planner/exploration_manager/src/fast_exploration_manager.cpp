@@ -1924,7 +1924,8 @@ bool FastExplorationManager::buildWideSideBypass(
 
 bool FastExplorationManager::buildFappSideBypass(
     const Vector3d& pos, double cur_yaw, const Vector3d& forward,
-    Vector3d& next_pos, double& next_yaw, bool& obstacle_detected) {
+    Vector3d& next_pos, double& next_yaw, bool& obstacle_detected,
+    std::vector<Vector3d>* crossing_path) {
   obstacle_detected = false;
   const bool manual = manual_path_enabled_ && manual_path_exploration_style_;
   if ((!manual && !fapp_exploration_crossing_enabled_) ||
@@ -1937,28 +1938,52 @@ bool FastExplorationManager::buildFappSideBypass(
       (manual_path_.points[manual_path_.next] - pos).dot(travel)) : underpass_lookahead_;
   if (horizon <= 0.15) return false;
   Vector3d lower, upper;
-  obstacle_detected = planner_manager_->fappBlockingBounds(
-      {pos, pos + horizon * travel}, lower, upper);
+  double age;
+  // 已经横移到侧面时前向线可能不再撞框，仍需沿锁定历史范围完成穿越。
+  obstacle_detected = crossing_path &&
+      planner_manager_->watchedFappBounds(lower, upper, age);
+  if (!obstacle_detected)
+    obstacle_detected = planner_manager_->fappBlockingBounds(
+        {pos, pos + horizon * travel}, lower, upper);
   if (!obstacle_detected) return false;
   const Vector3d center = 0.5 * (lower + upper);
   const Vector3d half = 0.5 * (upper - lower);
   const double margin = sdf_map_->getResolution();
   const double pass_distance = (center - pos).dot(travel) +
-      half.dot(travel.cwiseAbs()) + margin;
+      half.dot(travel.cwiseAbs()) + (crossing_path ? std::max(0.15, margin) : margin);
+  if (crossing_path && pass_distance <= 0.03) return false;
   const double side_extent = half.dot(lateral.cwiseAbs()) + margin;
   bool found = false;
   double best_clearance = -1.0;
   double best_shift = 0.0;
+  double best_sign = 0.0;
+  vector<Vector3d> best_route;
   for (double sign : {1.0, -1.0}) {
-    const double shift = (center - pos).dot(lateral) + sign * side_extent;
-    if (sign * shift <= 0.0 || std::fabs(shift) > wide_side_bypass_lateral_range_)
+    if (crossing_path && recovery_side_latched_ &&
+        sign * recovery_side_dir_.dot(lateral) < -0.5) continue;
+    double shift = (center - pos).dot(lateral) + sign * side_extent;
+    if (crossing_path) shift = sign * std::max(0.0, sign * shift);
+    if ((!crossing_path && sign * shift <= 0.0) ||
+        std::fabs(shift) > wide_side_bypass_lateral_range_)
       continue;
-    const Vector3d side = pos + shift * lateral;
-    const Vector3d passed = side + std::max(0.0, pass_distance) * travel;
-    const vector<Vector3d> route{pos, side, passed};
-    // 先确认横移后确实能从该侧通过，再分短段执行，不能只选一个旁边的空点。
-    if (!isLowProbeCorridorSafe(pos, side - pos, std::fabs(shift)) ||
-        !isLowProbeCorridorSafe(side, travel, std::max(margin, pass_distance)) ||
+    const double approach = crossing_path ? std::max(0.0,
+        (center - pos).dot(travel) - half.dot(travel.cwiseAbs()) - margin) : 0.0;
+    Vector3d side = pos + approach * travel + shift * lateral;
+    Vector3d passed = pos + shift * lateral + std::max(0.0, pass_distance) * travel;
+    if (crossing_path) {
+      // 延用已发布目标高度，不能把重规划时的实际掉高逐次写成新目标。
+      passed.z() = horizontalGoalHeight(pos.z());
+      side.z() += (passed.z() - pos.z()) * approach / pass_distance;
+    }
+    vector<Vector3d> route{pos};
+    if ((side - pos).norm() > 1e-3) route.push_back(side);
+    route.push_back(passed);
+    if (route.size() == 2) route.insert(route.begin() + 1, 0.5 * (pos + passed));
+    // 完整穿越直接保留到包络后方的路径；普通恢复调用仍沿用原短步。
+    if (((side - pos).norm() > 1e-3 &&
+         !isLowProbeCorridorSafe(pos, side - pos, (side - pos).head<2>().norm())) ||
+        !isLowProbeCorridorSafe(side, passed - side,
+            std::max(margin, (passed - side).head<2>().norm())) ||
         !pathInsideWorkspaceLock(route) || !planner_manager_->isFappPathSafe(route))
       continue;
     double clearance = std::numeric_limits<double>::infinity();
@@ -1977,19 +2002,25 @@ bool FastExplorationManager::buildFappSideBypass(
       found = true;
       best_clearance = clearance;
       best_shift = shift;
+      best_sign = sign;
+      best_route = route;
     }
   }
   if (!found) return false;
-  const double sign = best_shift > 0.0 ? 1.0 : -1.0;
-  next_pos = pos + sign * std::min(std::fabs(best_shift),
-                                  wide_side_bypass_max_lateral_step_) * lateral;
+  const double sign = best_sign;
+  next_pos = crossing_path ? best_route.back() : Vector3d(pos + sign *
+      std::min(std::fabs(best_shift), wide_side_bypass_max_lateral_step_) * lateral);
+  if (crossing_path) *crossing_path = best_route;
   next_yaw = cur_yaw;
   recovery_side_latched_ = true;
   recovery_side_origin_ = pos;
   recovery_side_dir_ = sign * lateral;
   wide_side_bypass_active_ = true;
   wide_side_bypass_release_distance_ = pass_distance;
-  ROS_WARN("[manual_path] FAPP lower passage unavailable; choose %s side, "
+  if (crossing_path)
+    ROS_WARN("[exploration_fapp] complete %s side path: forward=%.2fm lateral=%.2fm",
+        sign > 0.0 ? "left" : "right", pass_distance, best_shift);
+  else ROS_WARN("[manual_path] FAPP lower passage unavailable; choose %s side, "
            "translate %.2fm then pass %.2fm before returning to waypoint.",
            sign > 0.0 ? "left" : "right", (next_pos - pos).norm(), pass_distance);
   return true;
@@ -3469,11 +3500,7 @@ bool FastExplorationManager::planExplorationFappCrossing(
     manual_fapp_curve_active_ = false;
     suspended_underpass_active_ = false;
     bool obstacle = false;
-    crossing = recovery_side_latched_ &&
-        buildSideRecoveryContinuation(pos, yaw[0], target, target_yaw);
-    if (!crossing)
-      crossing = buildFappSideBypass(pos, yaw[0], forward, target, target_yaw, obstacle);
-    if (crossing) path = {pos, 0.5 * (pos + target), target};
+    crossing = buildFappSideBypass(pos, yaw[0], forward, target, target_yaw, obstacle, &path);
   }
   if (!crossing || !pathInsideWorkspaceLock(path) ||
       !task_search_manager_->isRecoveryPathAllowed(path, false) ||

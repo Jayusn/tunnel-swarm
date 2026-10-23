@@ -429,13 +429,39 @@ public:
         EXPECT_GT(std::fabs(manager.ed_->next_goal_.y() - start.y()), 0.2);
         EXPECT_NEAR(start.z(), manager.ed_->next_goal_.z(), 1e-6);
       }
+      // 侧绕也必须一次越过包络，不能把0.4m短步误报为完整穿越。
+      EXPECT_GT(manager.ed_->next_goal_.x(), upper.x() + 0.1);
+      auto preceding = manager.planner_manager_->local_data_.position_traj_;
+      const Vector3d endpoint = preceding.evaluateDeBoorT(preceding.getTimeSum());
+      EXPECT_GT(endpoint.x(), upper.x() + 0.1);
+      EXPECT_GT((endpoint-start).norm(), 1.2);
+      EXPECT_NEAR(endpoint.z(), start.z(), 0.01);
+      for (double t = 0; t <= preceding.getTimeSum(); t += 0.02) {
+        const Vector3d point = preceding.evaluateDeBoorT(t);
+        EXPECT_TRUE(manager.planner_manager_->isPositionSafe(point));
+        EXPECT_TRUE(manager.planner_manager_->isWatchedFappPositionSafe(point));
+      }
       checkManualFappExecution(manager, start);
+      ros::WallDuration(0.85).sleep();
       message.states.clear();
       send();
       EXPECT_FALSE(manager.manualFappObservationMissing(start, 0.0));
       EXPECT_TRUE(manager.manual_fapp_active_);
       EXPECT_FALSE(manager.beginSuspendedUnderpass(start, 0.0));
-      if (!asymmetric_side) {
+      // 已横移到侧面且检测停发后，续接终点仍在同一历史包络后方。
+      const double time = preceding.getTimeSum() * 0.4;
+      Vector3d replanning_start = preceding.evaluateDeBoorT(time);
+      if (asymmetric_side) {
+        manager.horizontal_reference_height_ = endpoint.z();
+        replanning_start.z() -= 0.08;
+      }
+      ASSERT_TRUE(manager.planExplorationFappCrossing(replanning_start,
+          preceding.getDerivative().evaluateDeBoorT(time),
+          preceding.getDerivative().getDerivative().evaluateDeBoorT(time), zero));
+      EXPECT_GT(manager.ed_->next_goal_.x(), upper.x() + 0.1);
+      EXPECT_NEAR(endpoint.z(), manager.ed_->next_goal_.z(), 0.01);
+      if (asymmetric_side) EXPECT_GT(manager.ed_->next_goal_.y(), start.y());
+      {
         const Vector3d end = manager.ed_->next_goal_;
         EXPECT_FALSE(manager.manualFappObservationMissing(end, 0.0));
         EXPECT_TRUE(manager.manual_fapp_active_); // 预测端点不能释放历史。
