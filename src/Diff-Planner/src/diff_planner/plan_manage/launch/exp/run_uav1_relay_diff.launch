@@ -1,4 +1,12 @@
 <launch>
+    <!-- 动态检测开关：fapp=开启新的 FAPP 检测，none=关闭动态检测；ldop=使用 LDOP。 -->
+    <arg name="detector_backend" default="fapp"/>
+    <!-- 动态避障开关：true=开启，false=仅检测、不参与 FAPP 动态避障。 -->
+    <arg name="enable_fapp_dynamic_avoidance" default="true"/>
+    <!-- 障碍物高度范围：定位坐标系中目标中心的 Z，单位 m；不是障碍物自身尺寸。 -->
+    <arg name="fapp_detection_min_z" default="0.3"/>
+    <arg name="fapp_detection_max_z" default="1.2"/>
+
     <!-- 2026-07-28: 后机新增独立Diff接力规划器；接收前机释放的离散目标，使用UAV1自身里程计和点云避障。 -->
     <!-- CAV1 为单机工作区，Diff-Planner 与 AutoTrans 共用 FAST-LIO 的雷达状态。 -->
     <arg name="odom_topic" default="/UAV1/fast_lio/Odom_high_freq"/>
@@ -16,14 +24,9 @@
     <arg name="dynamic_bag_prefix" default="/home/oem/bags/corridor_debug"/>
     <!-- UAV1 LDOP 动态检测只使用独立限频点云，不改变 Diff 原始建图输入。 -->
     <arg name="enable_ldop" default="true"/>
-    <arg name="detector_backend" default="fapp"/>
     <arg name="fapp_verified_preset" default="true"/>
     <arg name="object_motion_evidence_enabled" default="true"/>
-    <arg name="enable_fapp_dynamic_avoidance" default="true"/>
     <arg name="fapp_planner_priority" default="true"/>
-    <!-- 与前机一致：定位坐标系中的目标中心Z范围，单位m。 -->
-    <arg name="fapp_detection_min_z" default="0.3"/>
-    <arg name="fapp_detection_max_z" default="1.2"/>
     <arg name="start_ldop" default="$(eval arg('detector_backend') == 'ldop' or (arg('detector_backend') == 'legacy' and arg('enable_ldop')))"/>
     <arg name="ldop_input_rate" default="5.0"/>
     <!-- 垂地障碍物锁定一侧，避免重规划时在障碍物两侧来回换边。 -->

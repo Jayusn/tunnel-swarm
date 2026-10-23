@@ -1,4 +1,12 @@
 <launch>
+    <!-- 动态检测开关：fapp=开启新的 FAPP 检测，none=关闭动态检测；ldop=使用 LDOP。 -->
+    <arg name="detector_backend" default="fapp"/>
+    <!-- 动态避障开关：true=开启，false=仅检测、不参与 FAPP 动态避障。 -->
+    <arg name="enable_fapp_dynamic_avoidance" default="true"/>
+    <!-- 障碍物高度范围：定位坐标系中目标中心的 Z，单位 m；不是障碍物自身尺寸。 -->
+    <arg name="fapp_detection_min_z" default="0.3"/>
+    <arg name="fapp_detection_max_z" default="1.2"/>
+
     <arg name="dynamic_mode" default="swing-only"/>
     <!-- 与 run_uav1_relay_diff.launch 对齐：使用 UAV1 的 FAST-LIO 输入和规划输出话题。 -->
     <arg name="odom_topic" default="/UAV1/fast_lio/Odom_high_freq"/>
@@ -8,14 +16,9 @@
     <arg name="drone_id" default="1"/>
     <arg name="enable_rviz" default="true"/>
     <arg name="enable_ldop" default="false"/>
-    <arg name="detector_backend" default="fapp"/>
     <arg name="fapp_verified_preset" default="true"/>
     <arg name="object_motion_evidence_enabled" default="true"/>
-    <arg name="enable_fapp_dynamic_avoidance" default="true"/>
     <arg name="fapp_planner_priority" default="true"/>
-    <!-- 与前机一致：定位坐标系中的目标中心Z范围，单位m。 -->
-    <arg name="fapp_detection_min_z" default="0.3"/>
-    <arg name="fapp_detection_max_z" default="1.2"/>
     <arg name="start_ldop" default="$(eval arg('detector_backend') == 'ldop' or (arg('detector_backend') == 'legacy' and arg('enable_ldop')))"/>
     <arg name="ldop_input_rate" default="5.0"/>
     <arg name="flight_type" default="2"/>
