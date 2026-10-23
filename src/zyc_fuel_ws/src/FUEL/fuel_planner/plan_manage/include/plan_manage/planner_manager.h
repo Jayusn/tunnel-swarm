@@ -129,11 +129,14 @@ private:
   bool fapp_watched_valid_{false};
   fuel_fapp::DynamicObstacleState fapp_watched_state_;
   std::vector<fuel_fapp::DynamicObstacleState> fapp_memory_, fapp_history_;
+  // 本次穿越已纳入的底部观测来源，供复核孤立低点；通过后清空。
+  std::vector<fuel_fapp::DynamicObstacleState> fapp_watched_bottom_history_;
   double fapp_history_duration_{10.0};
   Eigen::Vector3d fapp_watched_lower_, fapp_watched_upper_;
   bool fappSizeOutlier(const fuel_fapp::DynamicObstacleState& candidate) const;
   void includeFappHistory(const fuel_fapp::DynamicObstacleState& observation,
-                          Eigen::Vector3d& lower, Eigen::Vector3d& upper) const;
+                          Eigen::Vector3d& lower, Eigen::Vector3d& upper,
+                          std::vector<fuel_fapp::DynamicObstacleState>* bottom_history = nullptr) const;
   ros::Publisher fapp_memory_pub_, fapp_memory_status_pub_;
   ros::Timer fapp_memory_timer_;
   void publishFappMemory(const ros::TimerEvent& event);

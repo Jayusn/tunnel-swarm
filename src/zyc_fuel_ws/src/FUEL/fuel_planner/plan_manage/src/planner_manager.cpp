@@ -13,6 +13,7 @@
 
 #include <cmath>
 #include <limits>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 
@@ -214,7 +215,8 @@ void FastPlannerManager::fappCallback(const obj_state_msgs::ObjectsStates::Const
       }
       if (update) {
         fapp_watched_state_ = *update;
-        includeFappHistory(*update, fapp_watched_lower_, fapp_watched_upper_);
+        includeFappHistory(*update, fapp_watched_lower_, fapp_watched_upper_,
+                           &fapp_watched_bottom_history_);
       }
     }
     // 每个已有区域每帧最多更新一次，避免不同位置的障碍互相覆盖。
@@ -267,11 +269,17 @@ bool FastPlannerManager::fappSizeOutlier(
 
 void FastPlannerManager::includeFappHistory(
     const fuel_fapp::DynamicObstacleState& observation,
-    Eigen::Vector3d& lower, Eigen::Vector3d& upper) const {
+    Eigen::Vector3d& lower, Eigen::Vector3d& upper,
+    std::vector<fuel_fapp::DynamicObstacleState>* bottom_history) const {
+  std::vector<fuel_fapp::DynamicObstacleState> local_bottom_history;
+  auto& sources = bottom_history ? *bottom_history : local_bottom_history;
   const auto include = [&](const fuel_fapp::DynamicObstacleState& state) {
     // 旧帧进入历史时可能尚无足够尺寸证据；合并时必须用后来确认的尺寸复核。
     // 同尺寸的真实低点仍保留，不能因旧竖直大框永久拉低锁定包络。
     if (fappSizeOutlier(state)) return;
+    if (std::none_of(sources.begin(), sources.end(), [&](const auto& old) {
+          return old.stamp == state.stamp && old.position.isApprox(state.position);
+        })) sources.push_back(state);
     Eigen::Vector3d half = Eigen::Vector3d::Constant(fapp_config_.ball_radius);
     if (state.size.allFinite() && (state.size.array() >= 0.0).all() &&
         (state.size.array() > 0.0).any()) half = 0.5 * state.size;
@@ -288,23 +296,73 @@ void FastPlannerManager::includeFappHistory(
     if (ros::Time::now().toSec() - state.stamp <= fapp_history_duration_ &&
         (state.position - observation.position).norm() <= fapp_association_distance_)
       include(state);
+
+  // 仅重算下沿；XY包络、上沿和当前运动状态保持原合并逻辑。
+  // 保留来源而非只保存min，后续正常证据才能撤销早期混入的孤立低点。
+  std::map<double, double> frame_bottoms;
+  for (const auto& state : sources) {
+    if (fappSizeOutlier(state)) continue;
+    double half_z = fapp_config_.ball_radius;
+    if (state.size.allFinite() && (state.size.array() >= 0.0).all() &&
+        (state.size.array() > 0.0).any()) half_z = 0.5 * state.size.z();
+    const double bottom = state.position.z() - half_z;
+    auto inserted = frame_bottoms.emplace(state.stamp, bottom);
+    if (!inserted.second) inserted.first->second = std::min(inserted.first->second, bottom);
+  }
+  if (frame_bottoms.empty()) return;
+  std::vector<double> sorted;
+  double median_stamp = -std::numeric_limits<double>::infinity();
+  for (const auto& frame : frame_bottoms) {
+    if (frame.first - median_stamp < 0.05 - 1e-6) continue;
+    sorted.push_back(frame.second);
+    median_stamp = frame.first;
+  }
+  std::sort(sorted.begin(), sorted.end());
+  const double median = sorted[sorted.size() / 2];
+  // 初始证据不足时不靠一帧更高观测抬高包络；有足够独立观测才复核异常。
+  double trusted = sorted.size() < 3 ? sorted.front() : median;
+  for (const auto& candidate : frame_bottoms) {
+    const double bottom = candidate.second;
+    if (bottom >= trusted) continue;
+    if (bottom < median - 0.10) {
+      int support = 0;
+      double last_stamp = -std::numeric_limits<double>::infinity();
+      for (const auto& frame : frame_bottoms) {
+        if (std::fabs(frame.second - bottom) <= 0.05 + 1e-6 &&
+            frame.first - last_stamp >= 0.05 - 1e-6) {
+          ++support;
+          last_stamp = frame.first;
+        }
+      }
+      if (support < 3) {
+        ROS_WARN_THROTTLE(1.0, "[FAPP bottom] defer isolated low bottom=%.3f "
+            "median=%.3f support=%d/3; keep historical observations for confirmation.",
+            bottom, median, support);
+        continue;
+      }
+    }
+    trusted = bottom;
+  }
+  lower.z() = trusted - fapp_config_.vehicle_top_height - fapp_config_.margin;
 }
 
 void FastPlannerManager::watchFappObstacle(
     const fuel_fapp::DynamicObstacleState* observation) {
   fapp_watched_valid_ = observation != nullptr;
+  fapp_watched_bottom_history_.clear();
   if (!observation) return;
   fapp_watched_state_ = *observation;
   fapp_watched_lower_.setConstant(std::numeric_limits<double>::infinity());
   fapp_watched_upper_.setConstant(-std::numeric_limits<double>::infinity());
-  includeFappHistory(*observation, fapp_watched_lower_, fapp_watched_upper_);
+  includeFappHistory(*observation, fapp_watched_lower_, fapp_watched_upper_,
+                     &fapp_watched_bottom_history_);
 }
 
 bool FastPlannerManager::watchedFappBounds(
     Eigen::Vector3d& lower, Eigen::Vector3d& upper, double& age) const {
   if (!fappMemoryEnabled() || !fapp_watched_valid_) return false;
   age = std::max(0.0, ros::Time::now().toSec() - fapp_watched_state_.stamp);
-  // 历史包络只会扩展，直到真实里程计确认通过；不把旧速度无限外推。
+  // XY/上沿保持历史包络；下沿可撤销无重复观测支持的孤立低点。
   lower = fapp_watched_lower_;
   upper = fapp_watched_upper_;
   return true;

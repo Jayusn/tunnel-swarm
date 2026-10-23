@@ -101,19 +101,24 @@ public:
     ball.position.y = 0.468733;
     ball.position.z = 0.476641;
     ball.size.z = 0.757740;
-    message->header.stamp.fromSec(now - 0.05);
+    message->header.stamp.fromSec(now - 0.15);
     message->states = {ball};
     planner.fappCallback(message);
     ASSERT_EQ(1u, planner.fapp_states_.size());
     EXPECT_EQ(4u, planner.fapp_history_.size());
     EXPECT_TRUE(planner.fapp_watched_lower_.isApprox(lower));
     EXPECT_NEAR(0.158, planner.fapp_states_.front().size.z(), 1e-9);
-    // 正常尺寸的真实低点照常更新，不把球的下降误当作尺寸异常。
+    // 尺寸正常但明显更低的点保留原始观测，三次独立观测后更新下沿。
     ball.size.z = 0.158;
-    message->header.stamp.fromSec(now);
+    message->header.stamp.fromSec(now - 0.10);
     message->states = {ball};
     planner.fappCallback(message);
     EXPECT_EQ(5u, planner.fapp_history_.size());
+    EXPECT_NEAR(lower.z(), planner.fapp_watched_lower_.z(), 1e-9);
+    for (double dt : {-0.05, 0.0}) {
+      message->header.stamp.fromSec(now + dt);
+      planner.fappCallback(message);
+    }
     EXPECT_LT(planner.fapp_watched_lower_.z(), lower.z() - 0.10);
     // 其他位置的目标不受这个区域的尺寸约束。
     ball.position.x = 5.0;
@@ -152,22 +157,90 @@ public:
     planner.watchFappObstacle(&initial);
     const Vector3d confirmed_lower = planner.fapp_watched_lower_;
     ball.position.y = 0.30; // 摆动后，旧异常框进入新位置的历史关联范围。
-    message->header.stamp.fromSec(now-0.1);
+    message->header.stamp.fromSec(now-0.15);
     message->states = {ball};
     planner.fappCallback(message);
     EXPECT_NEAR(confirmed_lower.z(), planner.fapp_watched_lower_.z(), 1e-9);
     EXPECT_GT(planner.fapp_watched_lower_.z()-0.06, 0.25);
-    // 尺寸正常的低点照常记忆，不因较低位置被误删。
+    // 尺寸正常的低点保留，确认后仍记住真实最低点。
     ball.position.z = 0.44;
-    message->header.stamp.fromSec(now);
+    message->header.stamp.fromSec(now-0.10);
     message->states = {ball};
     planner.fappCallback(message);
+    EXPECT_NEAR(confirmed_lower.z(), planner.fapp_watched_lower_.z(), 1e-9);
+    for (double dt : {-0.05, 0.0}) {
+      message->header.stamp.fromSec(now + dt);
+      planner.fappCallback(message);
+    }
     EXPECT_NEAR(0.44-0.158/2-0.05-0.10, planner.fapp_watched_lower_.z(), 1e-6);
     const double real_low = planner.fapp_watched_lower_.z();
     planner.fapp_history_.clear();
     message->states.clear();
     planner.fappCallback(message);
     EXPECT_DOUBLE_EQ(real_low, planner.fapp_watched_lower_.z());
+  }
+
+  static void runBottomConfirmation(bool low_first) {
+    FastPlannerManager planner;
+    planner.fapp_config_.enabled = true;
+    planner.fapp_config_.vehicle_top_height = 0.05;
+    planner.fapp_memory_enabled_ = true;
+    planner.fapp_frame_ = "UAV0/camera_init";
+    auto message = boost::make_shared<obj_state_msgs::ObjectsStates>();
+    message->header.frame_id = planner.fapp_frame_;
+    obj_state_msgs::State normal, low;
+    normal.position.x = 3.2169; normal.position.y = 0.2567; normal.position.z = 0.5385;
+    normal.size.x = 0.08; normal.size.y = 0.16; normal.size.z = 0.1432;
+    // 17:04录包中尺寸未超大框阈值、却将下穿目标拉至0.009m的旧框。
+    low.position.x = 3.664521; low.position.y = 0.590193; low.position.z = 0.358428;
+    low.size.x = 0.195341; low.size.y = 0.014231; low.size.z = 0.278143;
+    const double now = ros::Time::now().toSec();
+    const auto feed = [&](const obj_state_msgs::State& state, double dt) {
+      message->header.stamp.fromSec(now + dt);
+      message->states = {state};
+      planner.fappCallback(message);
+    };
+    const double normal_lower = normal.position.z - normal.size.z/2 - .15;
+    const double low_lower = low.position.z - low.size.z/2 - .15;
+    if (low_first) {
+      feed(low, -.7);
+      planner.watchFappObstacle(&planner.fapp_states_.front());
+      ASSERT_NEAR(low_lower, planner.fapp_watched_lower_.z(), 1e-6);
+      feed(normal, -.65);
+      EXPECT_NEAR(low_lower, planner.fapp_watched_lower_.z(), 1e-6);
+    }
+    for (int i=0; i<6; ++i) feed(normal, -.6 + .05*i);
+    if (!low_first) planner.watchFappObstacle(&planner.fapp_states_.front());
+    // 已合入的孤立低点也能撤销，而不是永远保留旧cwiseMin。
+    ASSERT_NEAR(normal_lower, planner.fapp_watched_lower_.z(), 1e-6);
+    if (low_first) {
+      planner.watchFappObstacle(nullptr);
+      EXPECT_TRUE(planner.fapp_watched_bottom_history_.empty());
+      return;
+    }
+    feed(low, -.25);
+    const size_t source_count = planner.fapp_watched_bottom_history_.size();
+    ASSERT_NEAR(normal_lower, planner.fapp_watched_lower_.z(), 1e-6);
+    ASSERT_EQ(7u, planner.fapp_history_.size()); // 仍保留该原始观测。
+    for (int i=0; i<10; ++i) feed(low, -.25);
+    EXPECT_EQ(source_count, planner.fapp_watched_bottom_history_.size());
+    EXPECT_NEAR(normal_lower, planner.fapp_watched_lower_.z(), 1e-6);
+    feed(low, -.24);
+    feed(low, -.23);
+    EXPECT_NEAR(normal_lower, planner.fapp_watched_lower_.z(), 1e-6);
+    feed(low, -.15);
+    EXPECT_NEAR(normal_lower, planner.fapp_watched_lower_.z(), 1e-6);
+    feed(low, -.05);
+    EXPECT_NEAR(low_lower, planner.fapp_watched_lower_.z(), 1e-6);
+    // 已确认的最低点不能因活动历史清空、失观或重新摆高而丢失。
+    planner.fapp_history_.clear();
+    message->states.clear();
+    planner.fappCallback(message);
+    feed(normal, 0.0);
+    EXPECT_NEAR(low_lower, planner.fapp_watched_lower_.z(), 1e-6);
+    auto unrelated = low; unrelated.position.x = 8.0; unrelated.position.z = .1;
+    feed(unrelated, .01);
+    EXPECT_NEAR(low_lower, planner.fapp_watched_lower_.z(), 1e-6);
   }
 
   static void checkManualFappExecution(FastExplorationManager& manager, const Vector3d& start) {
@@ -463,6 +536,10 @@ public:
       message.states[0].position.z = 0.5756615251302719;
       message.states[0].size.z = 0.30854132771492004;
       send();
+      for (int i=0; i<2; ++i) {
+        ros::WallDuration(0.03).sleep();
+        send(); // 用独立时间的低点证据验证真实底部不足时仍走侧绕。
+      }
       message.states[0].position.z = 0.60;
       message.states[0].size.z = 0.10;
     }
@@ -2974,6 +3051,12 @@ TEST(PassageCentre, LowCorridorGuidesActualSpline) { fast_planner::TurnEscapeTes
 
 TEST(RouteWidth, OccupiedLayerBetweenOldColumnSamplesIsNotMissed) {
   fast_planner::TurnEscapeTest::runWidthColumn();
+}
+TEST(FappMemory, IsolatedBottomNeedsDistinctObservationsAndConfirmedLowSurvivesDropout) {
+  fast_planner::TurnEscapeTest::runBottomConfirmation(false);
+}
+TEST(FappMemory, LaterEvidenceRevokesAlreadyMergedIsolatedBottom) {
+  fast_planner::TurnEscapeTest::runBottomConfirmation(true);
 }
 TEST(TurnInPlace, ExecutionUsesDoorProgressAndPreservesDynamicAndExitOwnership) {
   fast_planner::TurnEscapeTest::runExecutionTurnEntryScope();
