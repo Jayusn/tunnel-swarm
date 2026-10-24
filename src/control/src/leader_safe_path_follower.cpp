@@ -978,8 +978,32 @@ class LeaderSafePathFollower {
       auto existing = safe_relay_points_.find(id);
       if (existing != safe_relay_points_.end() &&
           distance3d(existing->second.pose.position, p) > 1e-6) {
-        safe_relay_fault_ = true;
-        return;
+        // 只有8号点允许一次60cm内、带更新发布时刻的优化；编号仍为8。
+        if (id != 8 || safe_relay_eighth_revised_ ||
+            pose.header.stamp <= existing->second.header.stamp ||
+            distance3d(existing->second.pose.position, p) > 0.60 + 1e-6) {
+          safe_relay_fault_ = true;
+          return;
+        }
+        safe_relay_eighth_revised_ = true;
+        for (std::size_t i = active_relay_index_; i < relay_waypoints_.size(); ++i) {
+          auto& point = relay_waypoints_[i];
+          if (point.safe_relay_id != id) continue;
+          point.position = p;
+          point.yaw = yawFromQuaternion(pose.pose.orientation);
+          point.progress = nearestRouteProgress(p);
+          if (i == active_relay_index_) {
+            diff_goal_published_ = false;
+            diff_plan_response_received_ = false;
+            diff_accepted_goal_valid_ = false;
+            diff_recovery_goal_valid_ = false;
+            relay_arrival_stamp_ = ros::Time(0);
+            diff_endpoint_capture_stamp_ = ros::Time(0);
+            diff_failure_count_ = 0;
+          }
+        }
+        ROS_WARN("[safe_follower] REPLACE SAFE_RELAY 8.1 target=(%.2f,%.2f,%.2f); "
+                 "keep queue index, completed goals are not revisited.", p.x, p.y, p.z);
       }
       safe_relay_points_[id] = pose;
       valid.insert(id);
@@ -2595,6 +2619,7 @@ class LeaderSafePathFollower {
   std::deque<RoutePoint> turn_candidate_route_;
   // 2026-07-16: relay_waypoints_ 是实际下发给后机的门点、滚动内部点和真实终点。
   std::vector<RoutePoint> relay_waypoints_;
+  bool safe_relay_eighth_revised_{false};
   std::map<uint32_t, geometry_msgs::PoseStamped> safe_relay_points_;
   std::set<uint32_t> safe_relay_valid_ids_;
   ros::Time safe_relay_session_, safe_relay_received_;

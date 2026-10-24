@@ -36,6 +36,6 @@ export UAV0_FIRST_SEVEN_ENABLE_TARGET_REPORTING=false
 export UAV0_PLANNER_ROSBAG_PREFIX="${UAV0_PLANNER_ROSBAG_PREFIX:-${HOME}/.ros/corridor_replay/uav0_corridor}"
 export UAV0_PLANNER_ROSBAG_EXTRA_TOPICS="${UAV0_PLANNER_ROSBAG_EXTRA_TOPICS:-/UAV0/fast_lio/cloud_registered /UAV1/fast_lio/cloud_registered /UAV1/fast_lio/Odom_high_freq /UAV0/move_base_simple/goal /UAV0/mavros/state /UAV0/mavros/rc/in /UAV0/mavros/local_position/odom /UAV1/mavros/state /UAV1/mavros/rc/in /mission/rc_land_active}"
 # 同时记录接力点快照、有效性状态和实飞参考路线；保留外部自定义的附加话题。
-export UAV0_PLANNER_ROSBAG_EXTRA_TOPICS="${UAV0_PLANNER_ROSBAG_EXTRA_TOPICS} /UAV0/mission/relay_waypoints /UAV0/mission/relay_status /UAV0/mission/reference_route"
+export UAV0_PLANNER_ROSBAG_EXTRA_TOPICS="${UAV0_PLANNER_ROSBAG_EXTRA_TOPICS} /UAV0/mission/relay_waypoints /UAV0/mission/relay_status /UAV0/mission/reference_route /UAV0/mission/relay_labels"
 
 exec "${UAV0_LAUNCHER}" "$@"

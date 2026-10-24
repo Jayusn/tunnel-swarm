@@ -2,6 +2,7 @@
 #include <plan_env/sdf_map.h>
 #include <plan_manage/planner_manager.h>
 #include <stdexcept>
+#include <visualization_msgs/MarkerArray.h>
 
 namespace fast_planner {
 void SafeRelayPublisher::initialize(ros::NodeHandle& nh, std::shared_ptr<SDFMap> map,
@@ -49,6 +50,7 @@ void SafeRelayPublisher::initialize(ros::NodeHandle& nh, std::shared_ptr<SDFMap>
   const auto wall = ros::WallTime::now();
   session_ = ros::Time(wall.sec, wall.nsec);
   goals_pub_ = nh.advertise<nav_msgs::Path>(prefix + "/relay_waypoints", 1, true);
+  labels_pub_ = nh.advertise<visualization_msgs::MarkerArray>(prefix + "/relay_labels", 1, true);
   route_pub_ = nh.advertise<nav_msgs::Path>(prefix + "/reference_route", 1, true);
   status_pub_ = nh.advertise<std_msgs::String>(prefix + "/relay_status", 1, true);
   mission_sub_ = nh.subscribe(prefix + "/task_status", 1,
@@ -200,19 +202,20 @@ double SafeRelayPublisher::routeHeight(const Record& reference,
 }
 
 void SafeRelayPublisher::qualifyCandidate(
-    Record& record, bool new_map, const Eigen::Vector2d& forward) {
+    Record& record, bool new_map, const Eigen::Vector2d& forward, double search_radius) {
+  if (search_radius < 0.0) search_radius = candidate_search_radius_;
   const auto& reference = record.sample.position;
   const auto boundaries = horizontalBoundaries(
-      reference, candidate_search_radius_ + clearance_search_radius_);
+      reference, search_radius + clearance_search_radius_);
   const double half_cell = 0.5 * map_->getResolution();
   struct Option { Eigen::Vector3d position; double clearance; double offset; };
   std::vector<Option> options;
   const double step = std::max(0.10, map_->getResolution());
-  const int cells = static_cast<int>(std::floor(candidate_search_radius_ / step + 1e-6));
+  const int cells = static_cast<int>(std::floor(search_radius / step + 1e-6));
   for (int x = -cells; x <= cells; ++x)
     for (int y = -cells; y <= cells; ++y) {
       const double offset = step * std::hypot(x, y);
-      if (offset > candidate_search_radius_ + 1e-6) continue;
+      if (offset > search_radius + 1e-6) continue;
       const Eigen::Vector3d p = reference + Eigen::Vector3d(x * step, y * step, 0.0);
       const double gap = clearanceToBoxes(p, boundaries, half_cell, clearance_search_radius_);
       if (gap + 1e-9 >= hold_radius_) options.push_back({p, gap, offset});
@@ -250,11 +253,11 @@ void SafeRelayPublisher::qualifyCandidate(
     }
     // 同等水平净空下，前方已知空地若能容忍更大的Z误差，优先把悬停点
     // 放过去。以原始实飞样本为搜索基准，避免每帧从上次候选继续前移。
-    if (forward.norm() > 0.5 && candidate_search_radius_ >= 0.30) {
+    if (forward.norm() > 0.5 && search_radius >= 0.30) {
       double best_height = verticalClearance(selected);
       const double original_gap = gap;
       const double minimum_gain = std::max(0.05, map_->getResolution());
-      for (double distance = 0.30; distance <= candidate_search_radius_ + 1e-6;
+      for (double distance = 0.30; distance <= search_radius + 1e-6;
            distance += step) {
         Eigen::Vector3d p = reference;
         p.head<2>() += distance * forward;
@@ -305,6 +308,46 @@ void SafeRelayPublisher::qualifyCandidate(
   candidate.clearance = 0.0;
 }
 
+void SafeRelayPublisher::improveEighthGoal(bool new_map) {
+  if (!new_map || exited_) return;
+  for (auto& goal : goals_) {
+    if (goal.id != 8 || goal.revised || odom_stamp_ <= goal.pose.header.stamp) continue;
+    const auto& old = goal.pose.pose.position;
+    const Eigen::Vector3d original(old.x, old.y, old.z);
+    auto& record = goal.revision;
+    // 固定在首次下发的8号点60cm以内，不能随着候选逐帧漂移。
+    if (record.stamp.isZero()) {
+      record = history_[goal.route_index];
+      record.sample.position = original;
+      record.candidate = record.sample;
+      record.confirmations = 0;
+      record.stamp = goal.pose.header.stamp;
+    }
+    Eigen::Vector2d forward = leader_.head<2>() - original.head<2>();
+    if (forward.norm() > 0.1) forward.normalize();
+    else forward.setZero();
+    qualifyCandidate(record, true, forward, std::min(0.60, candidate_search_radius_));
+    const auto& candidate = record.candidate;
+    const double offset = (candidate.position - original).norm();
+    if (!candidate.confirmed || offset < 0.05 || offset > 0.60 + 1e-6) continue;
+    const double old_gap = horizontalClearance(original);
+    const double gain = std::max(0.05, map_->getResolution());
+    const bool better = candidate.clearance >= old_gap + gain - 1e-6 ||
+        (candidate.clearance + 0.02 >= old_gap &&
+         verticalClearance(candidate.position) >= verticalClearance(original) + gain - 1e-6);
+    if (!better) continue;
+    goal.pose.pose.position.x = candidate.position.x();
+    goal.pose.pose.position.y = candidate.position.y();
+    goal.pose.pose.position.z = candidate.position.z();
+    goal.pose.header.stamp = ros::Time::now();
+    goal.revised = true;
+    ROS_WARN("[safe_relay] REPLACE id=8 label=8.1 target=(%.2f,%.2f,%.2f) "
+             "offset=%.3fm clearance=%.3f->%.3fm; replacement consumed, next ID unchanged.",
+             candidate.position.x(), candidate.position.y(), candidate.position.z(),
+             offset, old_gap, candidate.clearance);
+  }
+}
+
 void SafeRelayPublisher::timerCallback(const ros::TimerEvent&) {
   const ros::Time now = ros::Time::now();
   const uint64_t sequence = map_->getUpdateSequence();
@@ -317,6 +360,7 @@ void SafeRelayPublisher::timerCallback(const ros::TimerEvent&) {
   if (map_seen_at_.isZero() || (now - map_seen_at_).toSec() > map_timeout_) {
     publish("STALE_MAP"); return;
   }
+  improveEighthGoal(new_map);
   // Issued points are history, not live validity certificates. Never move the
   // spacing origin backwards when a follower or obstacle occupies an old point.
   anchor_ = goals_.empty() ? 0 : goals_.back().route_index;
@@ -400,17 +444,33 @@ void SafeRelayPublisher::publish(const std::string& status) {
   nav_msgs::Path goals;
   goals.header.frame_id = frame_;
   goals.header.stamp = session_;
-  // Keep all issued IDs/XYZ even if map or odometry evidence is now stale.
+  // Keep issued IDs and their last accepted XYZ even if input is now stale.
   // Freshness gates new releases; the follower owns reuse, planning and discard.
+  visualization_msgs::MarkerArray labels;
   for (const auto& goal : goals_) {
     auto pose = goal.pose;
     pose.header.seq = goal.id;
     goals.poses.push_back(pose);
+    visualization_msgs::Marker label;
+    label.header.frame_id = frame_;
+    label.ns = "safe_relay_ids";
+    label.id = goal.id;
+    label.type = visualization_msgs::Marker::TEXT_VIEW_FACING;
+    label.action = visualization_msgs::Marker::ADD;
+    label.pose = pose.pose;
+    label.pose.position.z += 0.20;
+    label.scale.z = 0.16;
+    label.color.r = 1.0; label.color.g = 0.6; label.color.a = 1.0;
+    label.text = std::to_string(goal.id) + (goal.revised ? ".1" : "");
+    labels.markers.push_back(label);
   }
   goals_pub_.publish(goals);
+  labels_pub_.publish(labels);
   std_msgs::String message;
   message.data = status + " released=" + std::to_string(goals_.size()) +
                  " published=" + std::to_string(goals.poses.size());
+  for (const auto& goal : goals_)
+    if (goal.revised) message.data += " revised=" + std::to_string(goal.id) + ".1";
   status_pub_.publish(message);
   if (status != last_status_) {
     ROS_INFO("[safe_relay] %s", message.data.c_str());

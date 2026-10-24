@@ -2,6 +2,7 @@
 #include <plan_env/sdf_map.h>
 #include <plan_manage/planner_manager.h>
 #include <gtest/gtest.h>
+#include <visualization_msgs/MarkerArray.h>
 
 namespace fast_planner {
 class SafeRelayPublisherTest {
@@ -482,7 +483,7 @@ class SafeRelayPublisherTest {
     EXPECT_TRUE(reference.isApprox(record.sample.position));
   }
 
-  static void unflownPocketAndGap() {
+  static void unflownPocketAndGap(bool revision = false, bool no_gain = false) {
     ros::NodeHandle nh("~unflown_pocket");
     nh.setParam("sdf_map/resolution", 0.1);
     nh.setParam("sdf_map/map_size_x", 4.0);
@@ -548,6 +549,41 @@ class SafeRelayPublisherTest {
     for (const auto& pose : route.poses) EXPECT_DOUBLE_EQ(0.0, pose.pose.position.y);
     EXPECT_DOUBLE_EQ(p.y, goals.poses.front().pose.position.y);
     EXPECT_EQ(ros::Time(300), goals.poses.front().header.stamp);
+    if (revision) {
+      auto& goal = publisher.goals_.front();
+      goal.id = 8;
+      goal.pose.pose.position.y = no_gain ? p.y : 0.0;
+      publisher.next_id_ = 9;
+      const Eigen::Vector3d original(goal.pose.pose.position.x, goal.pose.pose.position.y, p.z);
+      publisher.observe(Eigen::Vector3d(1.0, 0, .45), 0, ros::Time(301));
+      ros::Time::setNow(ros::Time(301));
+      publisher.improveEighthGoal(false);
+      EXPECT_FALSE(goal.revised);
+      map_frame(); publisher.improveEighthGoal(true);
+      EXPECT_FALSE(goal.revised); // 两次地图确认之前不改已下发坐标。
+      map_frame(); publisher.improveEighthGoal(true);
+      EXPECT_EQ(!no_gain, goal.revised);
+      const auto revised = goal.pose;
+      if (!no_gain) {
+        EXPECT_GT(revised.pose.position.y, .20);
+        EXPECT_LE((Eigen::Vector3d(revised.pose.position.x, revised.pose.position.y,
+                                  revised.pose.position.z) - original).norm(), .60 + 1e-6);
+      }
+      for (int i = 0; i < 3; ++i) { map_frame(); publisher.improveEighthGoal(true); }
+      EXPECT_DOUBLE_EQ(revised.pose.position.x, goal.pose.pose.position.x);
+      EXPECT_DOUBLE_EQ(revised.pose.position.y, goal.pose.pose.position.y);
+      EXPECT_EQ(9U, publisher.next_id_);
+      visualization_msgs::MarkerArray labels;
+      auto label_sub = nh.subscribe<visualization_msgs::MarkerArray>(
+          "/safe_relay_pocket_test/relay_labels", 1,
+          [&](const visualization_msgs::MarkerArray::ConstPtr& msg) { labels = *msg; });
+      spin(); publisher.publish("TEST_REPLACEMENT"); spin();
+      ASSERT_EQ(1U, goals.poses.size());
+      EXPECT_EQ(8U, goals.poses.front().header.seq);
+      ASSERT_EQ(1U, labels.markers.size());
+      EXPECT_EQ(no_gain ? "8" : "8.1", labels.markers.front().text);
+      return;
+    }
     // The immutable goal has its own coordinates; it is not reconstructed from
     // the measured reference route when that endpoint is later occupied.
     map->setOccupied(Eigen::Vector3d(p.x, p.y, p.z));
@@ -567,6 +603,12 @@ TEST(SafeRelayPublisher, RawVoxelBoxesAndLowHeightClearance) {
 }
 TEST(SafeRelayPublisher, UnflownKnownFreePocketAndCurrentPositionGapFallback) {
   SafeRelayPublisherTest::unflownPocketAndGap();
+}
+TEST(SafeRelayPublisher, EighthPointImprovesOnceWithinSixtyCentimetresWithoutNewId) {
+  SafeRelayPublisherTest::unflownPocketAndGap(true);
+}
+TEST(SafeRelayPublisher, EighthPointWithoutImprovementKeepsOriginalPoint) {
+  SafeRelayPublisherTest::unflownPocketAndGap(true, true);
 }
 TEST(SafeRelayPublisher, BetterForwardVerticalPocketKeepsHeightAndDoesNotDrift) {
   SafeRelayPublisherTest::forwardVerticalPocket(false, false, false);

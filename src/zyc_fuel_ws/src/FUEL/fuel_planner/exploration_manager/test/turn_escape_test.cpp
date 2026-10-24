@@ -1141,7 +1141,8 @@ public:
     EXPECT_EQ(SDFMap::UNKNOWN, manager.widthColumnState(Vector3d(1, 1, 1)));
   }
 
-  static void runEarlySplit(bool mirror, bool stepped = false) {
+  static void runEarlySplit(bool mirror, bool stepped = false, bool dead_end = false,
+                            int generic = 0) {
     ros::NodeHandle nh("~early_split");
     nh.setParam("manager/use_geometric_path", true);
     nh.setParam("astar/resolution_astar", 0.05);
@@ -1171,6 +1172,13 @@ public:
             cloud.push_back(pcl::PointXYZ(x, (.4 + y) * sign, z));
       }
     for (int i = 0; i < 8; ++i) map.inputPointCloud(cloud, cloud.size(), start);
+    if (dead_end) {
+      // 宽侧入口1m，但障碍后段被横墙封死；窄侧仍连通。
+      for (double x = .70; x <= 1.05; x += .025)
+        for (double y = -.70; y <= .22; y += .025)
+          for (double z = .725; z <= 1.325; z += .025)
+            map.setOccupied(Vector3d(x, y * sign, z));
+    }
     map.updateESDF3d();
     manager.ep_->mission_use_forward_fallback_ = true;
     manager.ep_->mission_use_workspace_lock_ = true;
@@ -1187,6 +1195,43 @@ public:
     task.stable_progress_direction_ = Eigen::Vector2d::UnitX();
     task.stable_progress_direction_valid_ = true;
     task.updateRobotPose(start, 0.0);
+    if (dead_end) {
+      const auto split = manager.findWideSideSplit(start, Vector3d::UnitX());
+      ASSERT_TRUE(split.valid);
+      const auto wide = manager.makeSplitLane(start, Vector3d::UnitX(), split, -sign);
+      const auto narrow = manager.makeSplitLane(start, Vector3d::UnitX(), split, sign);
+      vector<Vector3d> path;
+      ASSERT_TRUE(wide.rear_known);
+      EXPECT_FALSE(manager.splitPassagePath(start, wide, path));
+      ASSERT_TRUE(manager.splitPassagePath(start, narrow, path));
+      Vector3d target; double yaw = 0; bool detected = false;
+      ASSERT_TRUE(manager.buildWideSideBypass(start, 0, Vector3d::UnitX(), target, yaw, detected));
+      EXPECT_GT(sign * (target.y() - start.y()), .1);
+      EXPECT_EQ(sign, manager.active_split_lane_.side);
+      return;
+    }
+    if (generic) {
+      // 普通规划也必须记住同侧后沿，前进0.20m不能解锁。
+      manager.rememberSideRecovery(start, 0, {start, start + Vector3d(.2, -.4 * sign, 0)});
+      ASSERT_TRUE(manager.committedSplitRoute());
+      const auto lane = manager.active_split_lane_;
+      const Vector3d pos = generic == 2 ? start :
+          Vector3d(start + Vector3d(.25, -sign*(lane.offset+.08), 0));
+      if (generic == 2) {
+        // 先有普通横移记录，直到接近障碍才看清后沿，不能先按20cm释放。
+        manager.split_route_committed_ = false;
+        manager.wide_side_bypass_active_ = false;
+        manager.recovery_side_origin_ = start - Vector3d(.30, 0, 0);
+      }
+      task.updateRobotPose(pos, 0);
+      manager.recovery_odom_history_.push_back(pos);
+      Vector3d target; double yaw = 0;
+      ASSERT_TRUE(manager.buildSideRecoveryContinuation(pos, 0, target, yaw));
+      EXPECT_TRUE(manager.committedSplitRoute());
+      if (generic != 2) EXPECT_TRUE(route_width::insideLane(target, lane));
+      EXPECT_GT(manager.wide_side_bypass_release_distance_, .30);
+      return;
+    }
     if (stepped) {
       Vector3d target; double yaw = 0; bool split = false;
       ASSERT_TRUE(manager.buildWideSideBypass(start, 0, Vector3d::UnitX(), target, yaw, split));
@@ -3016,7 +3061,9 @@ public:
       EXPECT_GE(next.y(), observed_pos.y() - .05);
       Vector3d legacy; double legacy_yaw;
       manager.split_route_committed_ = false; // 同一地图、位置与右侧标记，复现旧的全通道居中。
+      manager.entry_forward_complete_ = false; // 仅此对照禁用新增的接近后补认，真正复现旧行为。
       ASSERT_TRUE(manager.buildSideRecoveryContinuation(observed_pos, yaw, legacy, legacy_yaw));
+      manager.entry_forward_complete_ = true;
       manager.split_route_committed_ = true;
       std::cout << "recorded legacy target=" << legacy.transpose() << std::endl;
       EXPECT_GT(next.y(), legacy.y()+.10);
@@ -3401,6 +3448,18 @@ TEST(RouteWidth, MirroredWiderLeftRouteUsesSameRanking) {
   fast_planner::TurnEscapeTest::runStraightWidth(true);
 }
 
+TEST(SideSelection, WiderDeadEndLosesToConnectedLeft) {
+  fast_planner::TurnEscapeTest::runEarlySplit(false, false, true);
+}
+TEST(SideSelection, WiderDeadEndLosesToConnectedRight) {
+  fast_planner::TurnEscapeTest::runEarlySplit(true, false, true);
+}
+TEST(SideSelection, NewlyObservedDividerIsAdoptedBeforeShortRecoveryRelease) {
+  fast_planner::TurnEscapeTest::runEarlySplit(false, false, false, 2);
+}
+TEST(SideSelection, GenericBypassKeepsSideBeyondTwentyCentimetres) {
+  fast_planner::TurnEscapeTest::runEarlySplit(false, false, false, true);
+}
 int main(int argc,char** argv) {
   ros::init(argc,argv,"turn_escape_test");
   testing::InitGoogleTest(&argc, argv);

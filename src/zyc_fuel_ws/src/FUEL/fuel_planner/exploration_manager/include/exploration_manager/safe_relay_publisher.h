@@ -13,7 +13,7 @@ class SDFMap;
 class FastPlannerManager;
 
 // Front vehicle owns waypoint qualification; the follower owns execution.
-// Path snapshots retain immutable, spatially selected goals qualified on release.
+// Path snapshots retain qualified goals; goal 8 permits one local improvement (8.1).
 // Later obstacle changes and route planning belong to the follower.
 // header.stamp identifies the producer session; pose.header.seq is the goal ID.
 class SafeRelayPublisher {
@@ -32,7 +32,13 @@ class SafeRelayPublisher {
     double yaw{0.0};
     int confirmations{0};
   };
-  struct Goal { std::size_t route_index; uint32_t id; geometry_msgs::PoseStamped pose; };
+  struct Goal {
+    std::size_t route_index;
+    uint32_t id;
+    geometry_msgs::PoseStamped pose;
+    bool revised{false};
+    Record revision;
+  };
   void timerCallback(const ros::TimerEvent&);
   void missionCallback(const std_msgs::String::ConstPtr& message);
   bool volumeFree(const Eigen::Vector3d& point, double radius, double height) const;
@@ -41,12 +47,14 @@ class SafeRelayPublisher {
                                                   double radius) const;
   double verticalClearance(const Eigen::Vector3d& point) const;
   double routeHeight(const Record& reference, const Eigen::Vector3d& point) const;
-  void qualifyCandidate(Record& record, bool new_map, const Eigen::Vector2d& forward);
+  void qualifyCandidate(Record& record, bool new_map, const Eigen::Vector2d& forward,
+                         double search_radius = -1.0);
+  void improveEighthGoal(bool new_map);
   void publish(const std::string& status);
 
   std::shared_ptr<SDFMap> map_;
   std::shared_ptr<FastPlannerManager> planner_;
-  ros::Publisher goals_pub_, route_pub_, status_pub_;
+  ros::Publisher goals_pub_, route_pub_, status_pub_, labels_pub_;
   ros::Subscriber mission_sub_;
   ros::Timer timer_;
   safe_relay::Config config_;

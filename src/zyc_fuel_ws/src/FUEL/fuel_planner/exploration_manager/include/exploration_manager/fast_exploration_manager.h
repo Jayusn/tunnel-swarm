@@ -249,6 +249,11 @@ private:
            wide_side_bypass_active_ && !manual_fapp_active_;
   }
   bool prepareSplitRoute(const Vector3d& start, const Vector3d& forward);
+  bool splitPassagePath(const Vector3d& start, const route_width::SplitRoute& lane,
+                        vector<Vector3d>& path) const;
+  bool splitPassageBlocked(const route_width::SplitRoute& lane) const;
+  void latchSplitRecovery(const Vector3d& pos, const Vector3d& forward,
+                          const Vector3d& side_direction);
   bool insideRecoveryLane(const Vector3d& point) const;
   void updateSplitRear(route_width::SplitRoute& lane) const;
   int widthColumnState(const Vector3d& point) const;
