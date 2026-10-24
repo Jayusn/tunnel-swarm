@@ -729,6 +729,14 @@ Visualization Manager:
           Topic: /UAV0/mission/relay_waypoints
           Unreliable: false
           Value: true
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /UAV0/mission/relay_labels
+          Name: relay_point_numbers
+          Namespaces:
+            {}
+          Queue Size: 10
+          Value: true
         - Class: rviz/Marker
           Enabled: true
           Marker Topic: /leader_safe_path_follower/target_marker
