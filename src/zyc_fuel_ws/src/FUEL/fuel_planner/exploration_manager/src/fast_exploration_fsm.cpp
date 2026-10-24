@@ -650,7 +650,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
         const bool raw_start_safe = planner_manager_->isRawPositionSafe(reviewed_position) ||
                                     controlled_escape_start;
         const bool clears_inflation =
-            !controlled_escape_start ||
+            !controlled_escape_start || expl_manager_->incrementalEscapePlanSafe() ||
             planner_manager_->trajectoryClearsInflation(
                 0.80, 0.02, controlled_escape_start);
         const bool trajectory_safe = planner_manager_->isTrajectorySafe(
@@ -730,6 +730,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
         active_exit_transit_ = pending_exit_transit_;
         active_turn_in_place_ = pending_turn_in_place_;
         active_ground_ascent_ = pending_ground_ascent_;
+        active_escape_step_ = pending_escape_step_;
         active_vertical_detour_ = pending_vertical_detour_;
         if (active_turn_in_place_) {
           turn_alignment_since_ = ros::Time(0);
@@ -839,6 +840,14 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
                     "replan translation from live odometry.",
                     tolerance * 180.0 / M_PI);
         }
+        return;
+      }
+      // 脱障小步必须实际执行；普通的临近终点/动态候选重试不能反复截断它。
+      if (active_escape_step_) {
+        if (time_to_end > 0.05) return;
+        active_escape_step_ = false;
+        fd_->static_state_ = true;
+        transitState(PLAN_TRAJ, "escape-step-complete");
         return;
       }
       // 动态穿越的临时拒绝不能等入口等高段飞完才重试。保留普通路线，
@@ -985,6 +994,14 @@ int FastExplorationFSM::callExplorationPlanner() {
              ? SUCCEED : FAIL)
       : expl_manager_->planExploreMotion(fd_->start_pt_, fd_->start_vel_, fd_->start_acc_,
                                           fd_->start_yaw_);
+  // 普通规划失败后，从实测位置尝试局部脱障；执行中比较替代路线不触发此回退。
+  if (res == FAIL && !fapp_replan_pending_ && !width_replan_pending_ &&
+      expl_manager_->planFailedMotionEscape(fd_->odom_pos_, fd_->odom_vel_,
+          Vector3d::Zero(), Vector3d(fd_->odom_yaw_,0,0))) {
+    fd_->static_state_ = true;
+    res = SUCCEED;
+  }
+  pending_escape_step_ = res == SUCCEED && expl_manager_->currentPlanIsEscapeStep();
   pending_exit_transit_ = res == SUCCEED && expl_manager_->exitTransitActive();
   pending_turn_in_place_ =
       res == SUCCEED && expl_manager_->currentPlanIsTurnInPlace();
@@ -1180,7 +1197,8 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
   // 通道内有效路线不因墙体航向变化而重新选位置目标；待该段完成后更新航向。
   if (!expl_manager_->manualWaypointsEnabled() &&
       state_ == EXPL_STATE::EXEC_TRAJ && !active_turn_in_place_ &&
-      !active_vertical_detour_ && !active_ground_ascent_ && !inflation_escape_active_) {
+      !active_vertical_detour_ && !active_ground_ascent_ && !inflation_escape_active_ &&
+      !active_escape_step_) {
     const double time=std::max(0.0,std::min(
         (ros::Time::now()-active_traj_.start_time_).toSec(),active_traj_.duration_));
     const double reference_yaw=active_traj_.yaw_traj_.evaluateDeBoorT(time)[0];

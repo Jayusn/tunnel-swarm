@@ -124,6 +124,8 @@ private:
   bool active_turn_in_place_{false};
   bool pending_ground_ascent_{false};
   bool active_ground_ascent_{false};
+  bool pending_escape_step_{false};
+  bool active_escape_step_{false};
   bool pending_vertical_detour_{false};
   bool pending_vertical_detour_reanchored_{false};
   bool pending_initial_traj_reanchored_{false};

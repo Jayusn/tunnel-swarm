@@ -80,6 +80,7 @@ private:
   unique_ptr<RayCaster> caster_;
 
   friend MapROS;
+  friend class TurnEscapeTest;  // 录包回归复用实际膨胀更新，不修改运行时地图接口。
 
 public:
   typedef std::shared_ptr<SDFMap> Ptr;

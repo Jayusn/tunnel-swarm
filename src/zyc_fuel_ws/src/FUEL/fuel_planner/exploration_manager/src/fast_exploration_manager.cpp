@@ -2801,14 +2801,41 @@ bool FastExplorationManager::buildMissionForwardFallback(const Vector3d& pos, do
   return false;
 }
 
+bool FastExplorationManager::planFailedMotionEscape(
+    const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, const Vector3d& yaw) {
+  if (external_selection_only_ || manual_path_enabled_ || turn_in_place_session_active_ ||
+      ground_ascent_active_ || suspended_underpass_active_ ||
+      low_probe_phase_ != vertical_detour::LowProbePhase::IDLE) return false;
+  return planInflationHistoryEscape(pos,vel,acc,yaw,true);
+}
+
+bool FastExplorationManager::incrementalEscapePlanSafe() const {
+  if (!incremental_escape_plan_) return false;
+  auto& curve = planner_manager_->local_data_.position_traj_;
+  const double duration = curve.getTimeSum();
+  if (duration <= 0.0) return false;
+  const Vector3d start = curve.evaluateDeBoorT(0.0), end = curve.evaluateDeBoorT(duration);
+  const int initial = planner_manager_->rawFootprintCollisionCount(start);
+  const int final = planner_manager_->rawFootprintCollisionCount(end);
+  // 仅小步脱障可以暂未完全出膨胀层；原始接触或净空必须确有改善。
+  return (end-start).norm() >= 0.03 && (end-start).norm() <= 0.25 &&
+      pointInsideWorkspaceLock(end) && sdf_map_->getOccupancy(end) == SDFMap::FREE &&
+      (final < initial || sdf_map_->getDistance(end) > sdf_map_->getDistance(start)+0.02) &&
+      planner_manager_->isTrajectorySafe(0.03, true);
+}
+
 bool FastExplorationManager::planInflationHistoryEscape(
     const Vector3d& pos, const Vector3d& vel, const Vector3d& acc,
-    const Vector3d& yaw) {
+    const Vector3d& yaw, bool after_failure) {
+  incremental_escape_plan_ = false;
+  escape_step_plan_ = false;
+  const bool controlled_start = planner_manager_->isControlledEscapePosition(pos);
   if (!inflation_history_escape_enabled_ || recovery_odom_history_.size() < 2 ||
-      !planner_manager_->isControlledEscapePosition(pos))
+      (!controlled_start && !(after_failure && planner_manager_->isPositionSafe(pos))))
     return false;
 
   const double max_distance = inflation_history_escape_max_distance_;
+  const double step_distance = std::min(0.20, max_distance);
   const double sample_step = inflation_history_escape_sample_step_;
   const double start_clearance = sdf_map_->getDistance(pos);
   const int start_contacts = planner_manager_->rawFootprintCollisionCount(pos);
@@ -2818,12 +2845,13 @@ bool FastExplorationManager::planInflationHistoryEscape(
     double end_clearance{-1.0};
     int priority{1};
     bool backward{false};
+    bool incremental{false};
     const char* label{"history-tangent"};
   };
   vector<EscapeCandidate> candidates;
 
   auto validateAndTruncate = [&](const vector<Vector3d>& source, bool backward,
-                                 int priority, const char* label) {
+                                 int priority, const char* label, double limit) {
     if (source.size() < 2) return;
     vector<Vector3d> checked{pos};
     double traveled = 0.0;
@@ -2831,7 +2859,7 @@ bool FastExplorationManager::planInflationHistoryEscape(
     double clear_run = 0.0;
     double previous_clearance = start_clearance;
     int previous_contacts = start_contacts;
-    for (size_t segment = 1; segment < source.size() && traveled < max_distance - 1e-6;
+    for (size_t segment = 1; segment < source.size() && traveled < limit - 1e-6;
          ++segment) {
       const Vector3d delta = source[segment] - source[segment - 1];
       const double segment_length = delta.norm();
@@ -2843,8 +2871,8 @@ bool FastExplorationManager::planInflationHistoryEscape(
                          delta * static_cast<double>(sample) /
                              static_cast<double>(samples);
         double advance = (point - checked.back()).norm();
-        if (traveled + advance > max_distance) {
-          const double remaining = max_distance - traveled;
+        if (traveled + advance > limit) {
+          const double remaining = limit - traveled;
           if (remaining <= 1e-6) break;
           point = checked.back() + (point - checked.back()).normalized() * remaining;
           advance = remaining;
@@ -2874,74 +2902,90 @@ bool FastExplorationManager::planInflationHistoryEscape(
           // 离开膨胀层后禁止为了凑路径长度再次擦回墙面。
           return;
         }
-        if (traveled >= max_distance - 1e-6) break;
+        if (traveled >= limit - 1e-6) break;
       }
       if ((reached_clear && clear_run + 1e-6 >= inflation_escape_clear_margin_) ||
-          traveled >= max_distance - 1e-6)
+          traveled >= limit - 1e-6)
         break;
     }
-    if (!reached_clear || traveled < 0.03) return;
+    if (traveled < 0.03) return;
+    if (!reached_clear && (sdf_map_->getOccupancy(checked.back()) != SDFMap::FREE ||
+        !(previous_contacts < start_contacts || previous_clearance > start_clearance+0.02))) return;
     EscapeCandidate candidate;
     candidate.path = std::move(checked);
     candidate.length = traveled;
     candidate.end_clearance = sdf_map_->getDistance(candidate.path.back());
     candidate.priority = priority;
     candidate.backward = backward;
+    candidate.incremental = !reached_clear;
     candidate.label = label;
     candidates.push_back(std::move(candidate));
   };
 
-  // 先从当前位置向16个水平方向探测，选择原始足迹占据采样减少最快、ESDF净空
-  // 增长最大的方向。它直接把受风贴墙的飞机横向拉回通道，而不是继续沿旧航迹蹭墙。
+  // 用已确认的通道方向区分前后，避免悬停抖动/最近一次侧移改变“前方”。
+  const Vector3d forward = task_search_manager_->recoveryForwardDirection(yaw[0]).normalized();
+  auto blocked = [&](const Vector3d& direction) {
+    int contacts = start_contacts; double clearance = start_clearance;
+    for (double d=sample_step; d<=step_distance+1e-6; d+=sample_step) {
+      const Vector3d p=pos+d*direction;
+      const int count=planner_manager_->rawFootprintCollisionCount(p);
+      const double distance=sdf_map_->getDistance(p);
+      if (!controlled_start) {
+        if (!pointInsideWorkspaceLock(p) || count>0 || planner_manager_->isPositionInflated(p))
+          return true;
+        continue;
+      }
+      if (!pointInsideWorkspaceLock(p) || !std::isfinite(distance) || count>contacts ||
+          distance+inflation_history_escape_clearance_tolerance_<clearance) return true;
+      contacts=std::min(contacts,count); clearance=std::max(clearance,distance);
+    }
+    return controlled_start && contacts >= start_contacts && clearance <= start_clearance+0.02 &&
+        planner_manager_->isPositionInflated(pos+step_distance*direction);
+  };
+  const bool front_blocked=blocked(forward), rear_blocked=blocked(-forward);
+  if (!controlled_start && !front_blocked && !rear_blocked) return false;
+  if (!front_blocked) {
+    validateAndTruncate(inflation_escape::buildDirectionalPath(pos,forward,max_distance,sample_step),
+                        false,0,"corridor-forward-step",step_distance);
+    validateAndTruncate(inflation_escape::buildDirectionalPath(pos,forward,max_distance,sample_step),
+                        false,0,"corridor-forward-exit",max_distance);
+  }
+  if (front_blocked) {
+    auto history=inflation_escape::buildBackwardHistoryPath(
+        pos,recovery_odom_history_,max_distance,recovery_history_spacing_);
+    // 动态穿越保持本次实际高度，不沿历史高度下降/抬升。
+    if (manual_fapp_active_) for (auto& p : history) p.z()=pos.z();
+    validateAndTruncate(history,true,0,"history-backtrack-step",step_distance);
+    validateAndTruncate(history,true,0,"history-backtrack",max_distance);
+  }
   if (inflation_wall_pull_enabled_) {
-    Vector3d recent_forward = recovery_odom_history_.back() -
-                              recovery_odom_history_[recovery_odom_history_.size() - 2];
-    recent_forward.z() = 0.0;
-    if (recent_forward.head<2>().norm() > 1e-3) recent_forward.normalize();
-    double best_score = -std::numeric_limits<double>::infinity();
-    Vector3d best_direction = Vector3d::Zero();
-    const double probe_distance = std::min(0.20, max_distance);
-    for (int sample = 0; sample < 16; ++sample) {
-      const double angle = 2.0 * M_PI * static_cast<double>(sample) / 16.0;
-      const Vector3d direction(std::cos(angle), std::sin(angle), 0.0);
-      if (recent_forward.head<2>().norm() > 1e-3 &&
-          direction.dot(recent_forward) < -0.10)
-        continue;
-      const Vector3d probe = pos + probe_distance * direction;
-      if (!pointInsideWorkspaceLock(probe)) continue;
-      const int contacts = planner_manager_->rawFootprintCollisionCount(probe);
-      const double clearance = sdf_map_->getDistance(probe);
-      if (!std::isfinite(clearance) || contacts > start_contacts ||
-          clearance + inflation_history_escape_clearance_tolerance_ < start_clearance)
-        continue;
-      const double lateral_bonus =
-          recent_forward.head<2>().norm() > 1e-3
-              ? 0.10 * (1.0 - std::fabs(direction.dot(recent_forward)))
-              : 0.0;
-      const double score = 2.0 * static_cast<double>(start_contacts - contacts) +
-                           clearance - start_clearance + lateral_bonus;
-      if (score > best_score) {
-        best_score = score;
-        best_direction = direction;
+    // 在累计地图内找可连通的侧方空地；比较所有可行方向，不能只试评分最高的一条。
+    // 路径仍逐点验接触/净空，未知区不会作为空地目标。
+    for (int sample=0; sample<16; ++sample) {
+      const double angle=2.0*M_PI*sample/16.0;
+      const Vector3d direction(std::cos(angle),std::sin(angle),0);
+      if (std::fabs(direction.dot(forward))>0.93) continue;
+      for (double d=step_distance; d<=std::max(max_distance,1.20)+1e-6; d+=0.10) {
+        const Vector3d target=pos+d*direction;
+        if (!pointInsideWorkspaceLock(target) ||
+            (!turn_in_place_session_active_ && !planner_manager_->isKnownFreePosition(target))) continue;
+        const auto route=inflation_escape::buildDirectionalPath(pos,direction,d,sample_step);
+        if (!planner_manager_->isPathSafe(route,true)) continue;
+        const size_t before=candidates.size();
+        validateAndTruncate(route,false,1,"mapped-side-step",step_distance);
+        validateAndTruncate(route,false,1,"mapped-side-exit",max_distance);
+        for (size_t i=before; i<candidates.size(); ++i)
+          candidates[i].end_clearance=sdf_map_->getDistance(target);
+        break;
       }
     }
-    if (best_direction.head<2>().norm() > 1e-3 && best_score > 1e-3) {
-      validateAndTruncate(inflation_escape::buildDirectionalPath(
-                              pos, best_direction, max_distance, sample_step),
-                          false, 0, "wall-normal");
-    }
   }
-
-  validateAndTruncate(inflation_escape::buildForwardTangentPath(
-                          pos, recovery_odom_history_, max_distance, sample_step),
-                      false, 1, "history-tangent");
-  validateAndTruncate(inflation_escape::buildBackwardHistoryPath(
-                          pos, recovery_odom_history_, max_distance,
-                          recovery_history_spacing_),
-                      true, 2, "history-backtrack");
+  ROS_WARN_THROTTLE(0.5,"[inflation_history_escape] front_blocked=%d rear_blocked=%d "
+      "candidates=%zu; prefer %s, then mapped side space.",
+      front_blocked,rear_blocked,candidates.size(),front_blocked?"history backtrack":"forward step");
   if (candidates.empty()) {
     ROS_WARN_THROTTLE(0.5,
-                      "[inflation_history_escape] no monotonic wall-pull/history exit "
+                      "[inflation_history_escape] no improving forward/history/mapped-side step "
                       "within %.2fm (start_contacts=%d).",
                       max_distance, start_contacts);
     return false;
@@ -2950,6 +2994,8 @@ bool FastExplorationManager::planInflationHistoryEscape(
   std::stable_sort(candidates.begin(), candidates.end(),
                    [](const EscapeCandidate& lhs, const EscapeCandidate& rhs) {
     if (lhs.priority != rhs.priority) return lhs.priority < rhs.priority;
+    if (lhs.priority == 1 && std::fabs(lhs.end_clearance-rhs.end_clearance)>0.02)
+      return lhs.end_clearance > rhs.end_clearance;
     if (std::fabs(lhs.length - rhs.length) > 0.02) return lhs.length < rhs.length;
     return lhs.end_clearance > rhs.end_clearance;
   });
@@ -2964,21 +3010,21 @@ bool FastExplorationManager::planInflationHistoryEscape(
     const double outward_speed = std::max(0.0, vel.dot(escape_direction));
     escape_vel = std::min(0.20, outward_speed) * escape_direction;
     if (!planner_manager_->planExploreTraj(candidate.path, escape_vel, acc, 0.0) ||
-        !planner_manager_->isTrajectorySafe(0.03, true) ||
-        !planner_manager_->trajectoryClearsInflation(max_distance, 0.02, true))
+        !planner_manager_->isTrajectorySafe(0.03, true)) continue;
+    incremental_escape_plan_ = candidate.incremental;
+    if (candidate.incremental ? !incrementalEscapePlanSafe() :
+        !planner_manager_->trajectoryClearsInflation(max_distance, 0.02, true)) {
+      incremental_escape_plan_ = false;
       continue;
+    }
 
     ed_->path_next_goal_ = candidate.path;
     ed_->next_goal_ = candidate.path.back();
     last_requested_goal_ = ed_->next_goal_;
     has_last_requested_goal_ = true;
-    // 转向前的脱困只保持当前航向，复用硬约束yaw样条，避免零航向常量
-    // 进入普通yaw优化器时产生退化问题；平移轨迹及其安全检查保持不变。
-    if (turn_in_place_session_active_) {
-      if (!planner_manager_->planYawTurnInPlace(yaw, yaw[0])) continue;
-    } else {
-      planner_manager_->planYawExplore(yaw, yaw[0], false, ep_->relax_time_);
-    }
+    // 脱障保持当前朝向，恒定零航向也使用确定性样条，避免普通优化器退化。
+    if (!planner_manager_->planYawTurnInPlace(yaw,yaw[0])) continue;
+    escape_step_plan_ = true;
     ROS_ERROR("[inflation_history_escape] publish %s %s escape %.2fm "
               "to (%.2f %.2f %.2f), yaw held at %.1fdeg, start_contacts=%d.",
               candidate.backward ? "BACKWARD" : "FORWARD", candidate.label,
@@ -2988,6 +3034,7 @@ bool FastExplorationManager::planInflationHistoryEscape(
     return true;
   }
 
+  incremental_escape_plan_ = false;
   ROS_WARN_THROTTLE(0.5,
                     "[inflation_history_escape] geometric exits exist but optimized "
                     "trajectories failed monotonic contact/inflation clearance validation.");
@@ -4059,6 +4106,8 @@ int FastExplorationManager::planExploreMotion(
     const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, const Vector3d& yaw) {
   const bool replacing_width_route = !pending_wider_route_.empty();
   width_route_plan_ = false;
+  incremental_escape_plan_ = false;
+  escape_step_plan_ = false;
   planned_split_route_ = {};
   fapp_rush_pending_ = false;
   pending_reference_height_ = std::numeric_limits<double>::quiet_NaN();
@@ -4138,7 +4187,7 @@ int FastExplorationManager::planExploreMotion(
     if (buildGroundAscentPlan(pos, vel, yaw)) return SUCCEED;
     if (ground_ascent_active_) return FAIL;
   }
-  if (!hold_fapp_height && !external_selection_only_ && !use_vertical_detour_target && !low_probe_active &&
+  if (!external_selection_only_ && !use_vertical_detour_target && !low_probe_active &&
       vertical_detour::inflationEscapeAllowed(low_probe_phase_) &&
       planInflationHistoryEscape(pos, vel, acc, yaw))
     return SUCCEED;

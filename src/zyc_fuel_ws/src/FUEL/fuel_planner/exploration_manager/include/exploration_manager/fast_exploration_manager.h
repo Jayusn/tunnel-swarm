@@ -96,6 +96,10 @@ public:
   void clearWiderRoute() { pending_wider_route_.clear(); pending_split_route_ = {}; planned_split_route_ = {}; }
   bool beginSuspendedUnderpass(const Vector3d& pos, double yaw);
   bool currentPlanIsTurnInPlace() const { return turn_in_place_plan_; }
+  bool incrementalEscapePlanSafe() const;
+  bool currentPlanIsEscapeStep() const { return escape_step_plan_; }
+  bool planFailedMotionEscape(const Vector3d& pos, const Vector3d& vel,
+                             const Vector3d& acc, const Vector3d& yaw);
   bool currentPlanIsGroundAscent() const { return ground_ascent_plan_; }
   bool currentPlanIsVerticalDetour() const { return vertical_detour_plan_; }
   void completeVerticalDetourReference();
@@ -238,6 +242,8 @@ private:
   route_width::SplitRoute pending_split_route_, planned_split_route_;
   route_width::SplitRoute active_split_lane_;
   bool split_route_committed_{false};
+  bool incremental_escape_plan_{false};
+  bool escape_step_plan_{false};
   bool committedSplitRoute() const {
     return split_route_committed_ && recovery_side_latched_ &&
            wide_side_bypass_active_ && !manual_fapp_active_;
@@ -442,7 +448,7 @@ private:
   bool hasKnownFreeSpaceBelowObstacle(const Vector3d& point,
                                       double bottom_z) const;
   bool planInflationHistoryEscape(const Vector3d& pos, const Vector3d& vel,
-                                  const Vector3d& acc, const Vector3d& yaw);
+                                  const Vector3d& acc, const Vector3d& yaw, bool after_failure = false);
   bool shouldStartGroundAscent(const Vector3d& pos) const;
   bool buildGroundAscentPlan(const Vector3d& pos, const Vector3d& vel,
                              const Vector3d& yaw);

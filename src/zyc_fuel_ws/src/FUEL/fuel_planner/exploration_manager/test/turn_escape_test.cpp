@@ -24,7 +24,7 @@ class TurnEscapeTest {
     if (!ok) { std::cerr << message << std::endl; std::exit(1); }
   }
   static void initialize(ros::NodeHandle& nh, FastExplorationManager& manager,
-                         bool production_weights = false) {
+                         bool production_weights = false, bool production_map = false) {
     nh.setParam("sdf_map/resolution", 0.05);
     nh.setParam("sdf_map/map_size_x", 4.0);
     nh.setParam("sdf_map/map_size_y", 4.0);
@@ -60,6 +60,13 @@ class TurnEscapeTest {
       nh.setParam("optimization/ld_guide", 12.0);
       nh.setParam("optimization/dist0", 0.27);
       nh.setParam("optimization/max_iteration_num2", 2000);
+    }
+    if (production_map) {
+      nh.setParam("sdf_map/ground_height", -1.0);
+      nh.setParam("sdf_map/map_size_z", 3.0);
+      nh.setParam("sdf_map/obstacles_inflation", 0.099);
+      nh.setParam("sdf_map/inflation_noise_filter_enabled", true);
+      nh.setParam("sdf_map/inflation_vertical_radius", 4);
     }
     manager.planner_manager_ = std::make_shared<FastPlannerManager>();
     auto& planner = *manager.planner_manager_;
@@ -2835,6 +2842,111 @@ public:
           "completed bypass constrained the next obstacle's lane selection");
   }
 
+  static void runDirectionalEscape(int scenario) {
+    ros::NodeHandle nh("~directional_escape");
+    nh.setParam("manager/use_geometric_path", true);
+    nh.setParam("astar/allocate_num", 100000);
+    nh.setParam("astar/resolution_astar", .05);
+    FastExplorationManager manager;
+    initialize(nh,manager);
+    auto& map=*manager.sdf_map_;
+    const Vector3d pos(.025,.025,1.025), zero=Vector3d::Zero();
+    for (double y=-1.5; y<=1.5; y+=.05)
+      for (double z=.7; z<=1.35; z+=.05) {
+        pcl::PointCloud<pcl::PointXYZ> cloud;
+        cloud.push_back(pcl::PointXYZ(1.9,y,z));
+        map.inputPointCloud(cloud,1,Vector3d(-1.9,y,z));
+        cloud.front().x=-1.9; map.inputPointCloud(cloud,1,Vector3d(1.9,y,z));
+      }
+    // 膨胀层在后方/前方/前后，原始足迹自由，复现方向不同的边缘受阻。
+    const double xmin=scenario==1?0.0:-.6, xmax=scenario==0?.05:.6;
+    for (double x=xmin; x<=xmax+1e-6; x+=.05)
+      for (double y=-.05; y<=.05+1e-6; y+=.05)
+        for (double z=.9; z<=1.1+1e-6; z+=.05) map.setOccupied(Vector3d(x+.025,y+.025,z+.025));
+    if (scenario==3) {
+      // 接触数可先减少，但20cm末端仍在膨胀层，验证分步发布复核。
+      for (double z=.90; z<=1.15; z+=.05) {
+        Eigen::Vector3i id; map.posToIndex(Vector3d(.225,.025,z+.025),id);
+        map.md_->occupancy_buffer_[map.toAddress(id)]=map.mp_->clamp_max_log_;
+      }
+    }
+    map.updateESDF3d();
+    manager.task_search_manager_->stable_progress_direction_=Eigen::Vector2d(scenario==3?-1:1,0);
+    manager.task_search_manager_->stable_progress_direction_valid_=true;
+    manager.recovery_odom_history_={pos-Vector3d(.5,0,0),pos};
+    manager.manual_fapp_active_=true;
+    manager.manual_fapp_hold_height_=pos.z();
+    ASSERT_TRUE(manager.planner_manager_->isControlledEscapePosition(pos));
+    ASSERT_TRUE(manager.planInflationHistoryEscape(pos,zero,zero,zero));
+    const Vector3d delta=manager.ed_->next_goal_-pos;
+    EXPECT_NEAR(delta.z(),0,1e-6);
+    if (scenario==0) { EXPECT_GT(delta.x(),.04); EXPECT_NEAR(delta.y(),0,1e-6); }
+    if (scenario==1) { EXPECT_LT(delta.x(),-.04); EXPECT_NEAR(delta.y(),0,1e-6); }
+    if (scenario==2) { EXPECT_GT(std::abs(delta.y()),.04); }
+    if (scenario==3) {
+      EXPECT_LT(delta.x(),-.04);
+      EXPECT_TRUE(manager.incremental_escape_plan_);
+      EXPECT_TRUE(manager.incrementalEscapePlanSafe());
+      EXPECT_TRUE(manager.planner_manager_->isPositionInflated(manager.ed_->next_goal_));
+      EXPECT_LT(manager.planner_manager_->rawFootprintCollisionCount(manager.ed_->next_goal_),
+                manager.planner_manager_->rawFootprintCollisionCount(pos));
+      manager.incremental_escape_plan_=false;
+      EXPECT_FALSE(manager.incrementalEscapePlanSafe()); // 普通轨迹不能借用小步发布例外。
+      manager.incremental_escape_plan_=true;
+    }
+    EXPECT_TRUE(manager.planner_manager_->isTrajectorySafe(.03,true));
+    EXPECT_TRUE(manager.incrementalEscapePlanSafe() ||
+        manager.planner_manager_->trajectoryClearsInflation(.45,.02,true));
+    const Vector3d end=manager.ed_->next_goal_;
+    if (manager.planner_manager_->isPositionSafe(end)) {
+      EXPECT_FALSE(manager.planInflationHistoryEscape(end,zero,zero,zero));
+    }
+  }
+
+  static void runRecordedEscape(const char* fixture) {
+    ros::NodeHandle nh("~recorded_escape");
+    nh.setParam("astar/allocate_num", 100000);
+    nh.setParam("astar/resolution_astar", 0.05);
+    nh.setParam("manager/use_geometric_path", true);
+    FastExplorationManager manager;
+    initialize(nh, manager, false, true);
+    std::ifstream input(fixture);
+    int frames, count; Vector3d pos; double yaw;
+    ASSERT_TRUE(bool(input >> frames >> pos.x() >> pos.y() >> pos.z() >> yaw >> count));
+    for (int i=0; i<count; ++i) {
+      Vector3d p; ASSERT_TRUE(bool(input >> p.x() >> p.y() >> p.z()));
+      manager.recovery_odom_history_.push_back(p);
+    }
+    for (int f=0; f<frames; ++f) {
+      Vector3d camera; ASSERT_TRUE(bool(input >> count >> camera.x() >> camera.y() >> camera.z()));
+      pcl::PointCloud<pcl::PointXYZ> cloud; cloud.resize(count);
+      for (auto& p : cloud) { ASSERT_TRUE(bool(input >> p.x >> p.y >> p.z)); }
+      manager.sdf_map_->inputPointCloud(cloud, cloud.size(), camera);
+      manager.sdf_map_->clearAndInflateLocalMap();
+    }
+    manager.sdf_map_->updateESDF3d();
+    auto& planner=*manager.planner_manager_;
+    for (double d : {-.4, -.2, 0., .1, .2, .4}) {
+      Vector3d probe=pos+Vector3d(-d,0,0);
+      std::cout << "escape recorded probe forward=" << d << " pos=" << probe.transpose()
+                << " contacts=" << planner.rawFootprintCollisionCount(probe)
+                << " inflated=" << planner.isPositionInflated(probe)
+                << " clearance=" << manager.sdf_map_->getDistance(probe) << std::endl;
+    }
+    manager.task_search_manager_->stable_progress_direction_=Eigen::Vector2d(-1,0);
+    manager.task_search_manager_->stable_progress_direction_valid_=true;
+    EXPECT_FALSE(manager.planInflationHistoryEscape(pos,Vector3d::Zero(),Vector3d::Zero(),Vector3d(yaw,0,0)));
+    manager.manual_fapp_active_=true;
+    manager.manual_fapp_hold_height_=0.316;
+    const bool planned=manager.planFailedMotionEscape(pos,Vector3d::Zero(),Vector3d::Zero(),Vector3d(yaw,0,0));
+    ASSERT_TRUE(planned);
+    EXPECT_LT(manager.ed_->next_goal_.x(),pos.x()-.04);
+    EXPECT_NEAR(manager.ed_->next_goal_.z(),pos.z(),1e-6);
+    EXPECT_TRUE(planner.isTrajectorySafe(.03,true));
+    std::cout << "recorded escape planned=" << planned << std::endl;
+    if (planned) std::cout << "recorded escape goal=" << manager.ed_->next_goal_.transpose() << std::endl;
+  }
+
   static void runRecordedBypass(const char* fixture, bool lane_center = false) {
     ros::NodeHandle nh("~");
     nh.setParam("manager/use_geometric_path", true);
@@ -3372,4 +3484,24 @@ TEST(SideBypassProgress, RecordedExitObstacleKeepsRightSubLane) {
   const char* fixture = std::getenv("LANE_CENTER_FIXTURE");
   if (!fixture) GTEST_SKIP() << "requires recorded exit-obstacle point clouds";
   fast_planner::TurnEscapeTest::runRecordedBypass(fixture, true);
+}
+
+TEST(InflationEscape, RecordedLatestExitContact) {
+  const char* fixture=std::getenv("ESCAPE_FIXTURE");
+  if (!fixture) GTEST_SKIP() << "requires latest exit point clouds";
+  fast_planner::TurnEscapeTest::runRecordedEscape(fixture);
+}
+
+TEST(InflationEscape, RearBlockedPrefersForwardStep) {
+  fast_planner::TurnEscapeTest::runDirectionalEscape(0);
+}
+TEST(InflationEscape, FrontBlockedUsesRecordedHistory) {
+  fast_planner::TurnEscapeTest::runDirectionalEscape(1);
+}
+TEST(InflationEscape, BothEndsBlockedUsesMappedSideSpace) {
+  fast_planner::TurnEscapeTest::runDirectionalEscape(2);
+}
+
+TEST(InflationEscape, ImprovingContactAllowsIncrementalInflatedEndpoint) {
+  fast_planner::TurnEscapeTest::runDirectionalEscape(3);
 }
