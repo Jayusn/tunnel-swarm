@@ -171,6 +171,7 @@
       - "/drone_1_planning/tracking_replan"
       - "/drone_1_planning/tracking_result"
       - "$(arg goal_topic)"
+      - "$(arg waypoint_goal_topic)/scan_yaw"
       - "$(arg reference_topic)"
       - "$(arg force_topic)"
       - "$(arg applied_force_topic)"

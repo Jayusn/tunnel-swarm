@@ -1654,6 +1654,95 @@ TEST_F(FifoEntrySpacing, DynamicSpacingPreservesEntryExitAndDisabledSimpleMode) 
   EXPECT_FALSE(follower->dynamicSpacingActive());
 }
 
+
+TEST_F(FifoEntrySpacing, OutsideRelayScanUsesRelayHeadingAndCompletesBeforeNextGoal) {
+  prepareQualifiedPoints();
+  follower->ordinary_scan_enabled_ = true;
+  // 非零对齐角；前机点的世界航向转换后为 170 度，而非当前机头的 160 度。
+  const double center = 170.0 * M_PI / 180.0;
+  follower->follower_alignment_yaw_ = 0.2;
+  follower->relay_waypoints_[0].yaw = center + 0.2;
+  follower->follower_odom_.pose.pose.position.x = 1.0;
+  auto setYaw = [&](double yaw) {
+    follower->follower_odom_.pose.pose.orientation.w = std::cos(yaw / 2.0);
+    follower->follower_odom_.pose.pose.orientation.z = std::sin(yaw / 2.0);
+  };
+  setYaw(center - 10.0 * M_PI / 180.0);
+  const ros::Time start = ros::Time::now();
+  follower->handleSimpleDiffPlannerExecution(start);
+  ASSERT_NE(0, follower->ordinary_scan_stage_);
+  EXPECT_NEAR(center, follower->ordinary_scan_center_, 1e-9);
+  EXPECT_TRUE(follower->diff_wait_hold_active_);
+  EXPECT_EQ(2U, follower->relay_waypoints_.size());
+  // 扫描已开始后，晚到的普通轨迹回执不能解除悬停。
+  reportDiffStatus("TRAJECTORY_PUBLISHED", follower->diff_active_goal_stamp_ns_, " 1 0 0.6");
+  EXPECT_TRUE(follower->diff_wait_hold_active_);
+  bool left = false, right = false, completed = false;
+  double finish_time = 0.0;
+  for (int i = 1; i <= 400; ++i) {
+    const ros::Time now = start + ros::Duration(i * 0.05);
+    follower->safe_relay_received_ = now;
+    follower->leader_odom_stamp_ = now;
+    const double previous = follower->ordinary_scan_yaw_;
+    const int phase = follower->ordinary_scan_stage_;
+    setYaw(previous); // 理想响应，仍通过实际里程计航向确认。
+    follower->handleSimpleDiffPlannerExecution(now);
+    const double delta = std::abs(std::remainder(follower->ordinary_scan_yaw_ - previous, 2*M_PI));
+    EXPECT_LE(delta, ((phase == 1 || phase == 4) ? 30.0 : 15.0) * M_PI/180.0 * 0.05 + 1e-8);
+    const double offset = std::remainder(follower->ordinary_scan_yaw_ - center, 2*M_PI);
+    left = left || std::abs(offset - M_PI/4) < 1e-8;
+    right = right || std::abs(offset + M_PI/4) < 1e-8;
+    if (follower->relay_waypoints_.size() == 1U) {
+      completed = true; finish_time = i * 0.05; break;
+    }
+    EXPECT_EQ(2U, follower->relay_waypoints_.size());
+  }
+  EXPECT_TRUE(left); EXPECT_TRUE(right); ASSERT_TRUE(completed);
+  EXPECT_GE(finish_time, 12.5); EXPECT_LT(finish_time, 14.0);
+  EXPECT_NEAR(0, std::remainder(follower->ordinary_scan_yaw_ - center, 2*M_PI), 1e-8);
+  EXPECT_TRUE(follower->diff_wait_hold_active_); // 仅下一条新轨迹解除 HOLD。
+  follower->handleSimpleDiffPlannerExecution(start + ros::Duration(finish_time + 0.05));
+  EXPECT_TRUE(follower->diff_goal_published_);
+  EXPECT_EQ(0, follower->ordinary_scan_stage_);
+  reportDiffStatus("TRAJECTORY_PUBLISHED", follower->diff_active_goal_stamp_ns_, " 2 0 0.6");
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+}
+
+TEST_F(FifoEntrySpacing, InsideDynamicPassageDoesNotScan) {
+  prepareQualifiedPoints();
+  follower->ordinary_scan_enabled_ = true;
+  follower->in_dynamic_passage_ = true;
+  follower->follower_odom_.pose.pose.position.x = 1;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_EQ(1U, follower->relay_waypoints_.size());
+  EXPECT_EQ(0, follower->ordinary_scan_stage_);
+}
+
+TEST_F(FifoEntrySpacing, ScanWaitsForActualHeadingAndDoesNotAdvanceOnElapsedTimeAlone) {
+  prepareQualifiedPoints();
+  follower->ordinary_scan_enabled_ = true;
+  follower->follower_odom_.pose.pose.position.x = 1;
+  const ros::Time start = ros::Time::now();
+  follower->handleSimpleDiffPlannerExecution(start);
+  for (int i = 1; i <= 500; ++i) {
+    const ros::Time now = start + ros::Duration(i * 0.05);
+    follower->safe_relay_received_ = follower->leader_odom_stamp_ = now;
+    follower->handleSimpleDiffPlannerExecution(now);
+  }
+  EXPECT_EQ(2, follower->ordinary_scan_stage_); // 参考到了左侧，但机体未转动。
+  EXPECT_EQ(2U, follower->relay_waypoints_.size());
+  EXPECT_NEAR(M_PI/4, follower->ordinary_scan_yaw_, 1e-8);
+}
+
+TEST_F(FifoEntrySpacing, ExitWaypointKeepsExistingArrivalWithoutScan) {
+  prepareQualifiedPoints();
+  follower->ordinary_scan_enabled_ = true;
+  follower->exit_waypoint_index_ = 0;
+  follower->follower_odom_.pose.pose.position.x = 1;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_EQ(0, follower->ordinary_scan_stage_);
+}
+
 int main(int argc, char** argv) {
   ros::init(argc, argv, "test_fifo_entry_spacing",
             ros::init_options::AnonymousName | ros::init_options::NoSigintHandler);

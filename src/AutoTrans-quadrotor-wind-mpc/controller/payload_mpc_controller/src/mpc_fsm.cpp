@@ -70,6 +70,8 @@ namespace PayloadMPC
         nh_.param<std::string>("waypoint_goal_topic", waypoint_goal_topic, "");
         if (!waypoint_goal_topic.empty())
         {
+            relay_scan_yaw_sub_ = nh_.subscribe(waypoint_goal_topic + "/scan_yaw", 1,
+                &MPCFSM::relayScanYawCallback, this, ros::TransportHints().tcpNoDelay());
             waypoint_goal_sub_ = nh_.subscribe(waypoint_goal_topic, 1,
                 &MPCFSM::waypointGoalCallback, this, ros::TransportHints().tcpNoDelay());
             waypoint_entry_goal_sub_ = nh_.subscribe(waypoint_goal_topic + "/entry", 1,
@@ -375,6 +377,17 @@ namespace PayloadMPC
     {
         if (controller_.lockYaw(msg->yaw))
             ROS_WARN("[exit_yaw] NMPC已锁存出口航向 %.3f rad；轨迹、悬停和精降持续沿用。", msg->yaw);
+    }
+
+    void MPCFSM::relayScanYawCallback(const quadrotor_msgs::PositionCommand::ConstPtr &msg)
+    {
+        // 扫描仅调整既有锁点的航向，位置/高度保持原参考；不使用永久出口锁向。
+        const double age = (ros::Time::now() - msg->header.stamp).toSec();
+        if (fsm_state != CMD_CTRL || !safety_hold_active_ || !safety_hold_pose_valid_ ||
+            rc_land_active_ || precision_landing_active_ || mpc_recovery_active_ ||
+            msg->header.stamp.isZero() || age < 0.0 || age > 0.5 ||
+            !std::isfinite(msg->yaw)) return;
+        hover_yaw_ = std::remainder(msg->yaw, 2.0 * M_PI);
     }
 
     void MPCFSM::waypointGoalCallback(const geometry_msgs::PoseStamped::ConstPtr &msg)

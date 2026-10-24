@@ -17,6 +17,8 @@ class LeaderSafeRelayTest {
     pnh.setParam("obstacle_check_enabled", false);
     pnh.setParam("use_diff_planner", true);
     pnh.setParam("simple_segment_endpoint_following", true);
+    // 本用例验证显式驻留；普通点默认驻留已经为 0，不能依赖旧默认值。
+    pnh.setParam("ordinary_waypoint_dwell", 2.0);
     LeaderSafePathFollower follower;
     follower.timer_.stop();
     follower.door_waypoint_released_ = true;

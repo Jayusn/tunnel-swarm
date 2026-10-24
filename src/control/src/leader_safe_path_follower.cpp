@@ -351,6 +351,17 @@ class LeaderSafePathFollower {
     pnh_.param("relay_arrive_z_tolerance", relay_arrive_z_tolerance_, 0.20);
     pnh_.param("ordinary_waypoint_z_tolerance", ordinary_waypoint_z_tolerance_, 0.15);
     pnh_.param("ordinary_waypoint_dwell", ordinary_waypoint_dwell_, 0.0);
+    pnh_.param("ordinary_scan_enabled", ordinary_scan_enabled_, false);
+    pnh_.param("ordinary_scan_angle_deg", ordinary_scan_angle_deg_, 45.0);
+    pnh_.param("ordinary_scan_rate_deg", ordinary_scan_rate_deg_, 15.0);
+    pnh_.param("ordinary_scan_return_rate_deg", ordinary_scan_return_rate_deg_, 30.0);
+    pnh_.param("ordinary_scan_side_dwell", ordinary_scan_side_dwell_, 1.0);
+    if (!std::isfinite(ordinary_scan_angle_deg_) || ordinary_scan_angle_deg_ <= 0.0 ||
+        ordinary_scan_angle_deg_ >= 180.0 || !std::isfinite(ordinary_scan_rate_deg_) ||
+        ordinary_scan_rate_deg_ <= 0.0 || !std::isfinite(ordinary_scan_return_rate_deg_) ||
+        ordinary_scan_return_rate_deg_ <= 0.0 || !std::isfinite(ordinary_scan_side_dwell_) ||
+        ordinary_scan_side_dwell_ < 0.0)
+      throw std::invalid_argument("ordinary_scan: invalid angle, rate or dwell");
     // 最终降落点保留停驻净空；普通接力点另用小体素检查，不能让侧墙否决狭窄通道。
     pnh_.param("relay_endpoint_clearance_radius", relay_endpoint_clearance_radius_, 0.38);
     pnh_.param("relay_endpoint_z_margin", relay_endpoint_z_margin_, 0.28);
@@ -454,6 +465,8 @@ class LeaderSafePathFollower {
     }
     diff_goal_pub_ = nh_.advertise<geometry_msgs::PoseStamped>(diff_goal_topic_, 1, true);
     diff_yaw_pub_ = nh_.advertise<quadrotor_msgs::PositionCommand>(diff_yaw_topic_, 1);
+    ordinary_scan_yaw_pub_ = nh_.advertise<quadrotor_msgs::PositionCommand>(
+        diff_goal_topic_ + "/scan_yaw", 1);
     diff_entry_goal_pub_ =
         nh_.advertise<geometry_msgs::PoseStamped>(diff_goal_topic_ + "/entry", 1, true);
     follower_landing_target_pub_ =
@@ -1801,6 +1814,7 @@ class LeaderSafePathFollower {
         status == "OCCUPIED_RECOVERY_HISTORY" ||
         status == "OCCUPIED_RECOVERY_LATERAL";
     if (started) {
+      resetOrdinaryScan();
       simple_active_recovery_stamp_ns_ = recovery_stamp_ns;
       simple_occupied_recovery_active_ = true;
       setDiffWaitPositionHold(false, "Diff occupied recovery owns current execution");
@@ -1893,6 +1907,11 @@ class LeaderSafePathFollower {
         return;
       }
     }
+
+    // 到点扫描拥有锁点；旧目标的普通规划回执不能提前解除扫描悬停。
+    // 带执行时间戳的脱障回执已经由上面的分支处理。
+    if ((ordinary_scan_stage_ != 0 || ordinary_scan_done_) &&
+        !diff_separation_hold_active_) return;
 
     if (activeSafeRelay() && !diff_separation_hold_active_) {
       if (!response_goal_stamp_valid || !diff_goal_published_ ||
@@ -2141,6 +2160,7 @@ class LeaderSafePathFollower {
 
   void consumeSimpleRelayFront() {
     if (active_relay_index_ >= relay_waypoints_.size()) return;
+    resetOrdinaryScan();
     if (useLockedExitYaw()) exit_yaw_locked_ = true;
     const std::size_t consumed = active_relay_index_;
     relay_waypoints_.erase(relay_waypoints_.begin() + consumed);
@@ -2188,6 +2208,67 @@ class LeaderSafePathFollower {
                                   : normal_distance;
   }
 
+  void resetOrdinaryScan() {
+    ordinary_scan_stage_ = 0;
+    ordinary_scan_done_ = false;
+    ordinary_scan_reached_ = ros::Time(0);
+  }
+
+  void startOrdinaryScan(double center_yaw, const ros::Time& now) {
+    // 中心来自当前接力点的前机航向，转换为后机坐标系后锁存一次。
+    ordinary_scan_center_ = center_yaw;
+    ordinary_scan_yaw_ = yawFromQuaternion(follower_odom_.pose.pose.orientation);
+    ordinary_scan_last_update_ = now;
+    ordinary_scan_reached_ = ros::Time(0);
+    ordinary_scan_stage_ = 1; // 先对齐中心并停稳，再左扫、右扫、回正。
+    setDiffWaitPositionHold(true, "outside dynamic passage: relay observation scan");
+    ROS_WARN("[relay_scan] START center=%.1fdeg angle=+/-%.1fdeg side_rate=%.1fdeg/s "
+             "return_rate=%.1fdeg/s side_dwell=%.1fs.", center_yaw * 180.0 / M_PI,
+             ordinary_scan_angle_deg_, ordinary_scan_rate_deg_,
+             ordinary_scan_return_rate_deg_, ordinary_scan_side_dwell_);
+  }
+
+  bool stepOrdinaryScan(const ros::Time& now) {
+    const double offset = ordinary_scan_stage_ == 2 ? ordinary_scan_angle_deg_ :
+                          ordinary_scan_stage_ == 3 ? -ordinary_scan_angle_deg_ : 0.0;
+    const double target = ordinary_scan_center_ + offset * M_PI / 180.0;
+    const double error = std::remainder(target - ordinary_scan_yaw_, 2.0 * M_PI);
+    const double rate = (ordinary_scan_stage_ == 1 || ordinary_scan_stage_ == 4)
+        ? ordinary_scan_return_rate_deg_ : ordinary_scan_rate_deg_;
+    // 暂停或调度延迟后不一次补发大角度，保持连续的慢速扫描参考。
+    const double dt = std::max(0.0, std::min(0.1, (now - ordinary_scan_last_update_).toSec()));
+    ordinary_scan_last_update_ = now;
+    const double step = rate * M_PI / 180.0 * dt;
+    ordinary_scan_yaw_ = std::remainder(ordinary_scan_yaw_ +
+        std::max(-step, std::min(step, error)), 2.0 * M_PI);
+    quadrotor_msgs::PositionCommand command;
+    command.header.stamp = now;
+    command.header.frame_id = follower_odom_.header.frame_id;
+    command.yaw = ordinary_scan_yaw_;
+    ordinary_scan_yaw_pub_.publish(command);
+    publishState("RELAY_OBSERVATION_SCAN", 0.2, 0.8, 1.0);
+
+    const double actual_error = std::abs(std::remainder(target -
+        yawFromQuaternion(follower_odom_.pose.pose.orientation), 2.0 * M_PI));
+    const bool settled = follower_horizontal_speed_ <= relay_arrive_max_horizontal_speed_ &&
+                         follower_vertical_speed_ <= relay_arrive_max_vertical_speed_;
+    if (std::abs(error) > step + 1e-9 || actual_error > 5.0 * M_PI / 180.0 || !settled) {
+      ordinary_scan_reached_ = ros::Time(0);
+      return false;
+    }
+    if (ordinary_scan_reached_.isZero()) ordinary_scan_reached_ = now;
+    const double dwell = (ordinary_scan_stage_ == 2 || ordinary_scan_stage_ == 3)
+        ? ordinary_scan_side_dwell_ : 0.0;
+    if ((now - ordinary_scan_reached_).toSec() + 1e-9 < dwell) return false;
+    ordinary_scan_reached_ = ros::Time(0);
+    if (++ordinary_scan_stage_ <= 4) return false;
+    ordinary_scan_stage_ = 0;
+    ordinary_scan_done_ = true;
+    ROS_WARN("[relay_scan] DONE: returned to relay heading; continue FIFO route.");
+    // 保持锁点直到下一目标的新轨迹发布，不能重新执行扫描前的轨迹。
+    return true;
+  }
+
   bool handleSimpleDiffPlannerExecution(const ros::Time& now) {
     if (activeSafeRelay() && !use_diff_planner_) {
       setDiffWaitPositionHold(true, "qualified relay stale/invalid or Diff disabled");
@@ -2202,7 +2283,10 @@ class LeaderSafePathFollower {
     }
 
     // 动态穿越及出区后的接续段使用0.60m，普通区域保留配置的间距。
-    if (handleDiffSeparationSafety(now)) return true;
+    if (handleDiffSeparationSafety(now)) {
+      resetOrdinaryScan();
+      return true;
+    }
 
     if (active_relay_index_ >= relay_waypoints_.size()) {
       // Ordinary segments finish at their actual endpoint in the controller.
@@ -2295,8 +2379,10 @@ class LeaderSafePathFollower {
       return true;
     }
 
+    if (ordinary_scan_stage_ != 0 && !stepOrdinaryScan(now)) return true;
+
     // 已到达当前普通点时直接消费，不能再被旧点的间距保护拉回。
-    if (!terminal_relay && !waypoint_arrival && !ordinary_dwell_started &&
+    if (!terminal_relay && !waypoint_arrival && !ordinary_dwell_started && !ordinary_scan_done_ &&
         enable_diff_separation_safety_) {
       if (!leaderOdomFresh(now)) {
         simple_waypoint_clearance_hold_active_ = true;
@@ -2354,7 +2440,8 @@ class LeaderSafePathFollower {
         heading_arrived &&
         follower_horizontal_speed_ <= relay_arrive_max_horizontal_speed_ &&
         follower_vertical_speed_ <= relay_arrive_max_vertical_speed_;
-    if (waypoint_arrival || ordinary_dwell_started || terminal_arrival || skip_occupied_point) {
+    if (waypoint_arrival || ordinary_dwell_started || terminal_arrival || skip_occupied_point ||
+        ordinary_scan_done_) {
       if (ordinary_relay && waypoint_arrival && !skip_occupied_point &&
           dynamicSpacingActive() && !in_dynamic_passage_) {
         dynamic_spacing_until_waypoint_ = false;
@@ -2363,6 +2450,12 @@ class LeaderSafePathFollower {
         // 留在已到达的有效点等待前机拉开间距，不在出区边缘截断当前航段。
         // 保留队首，后续周期复用普通间距等待，恢复后再消费并接续下一点。
         if (handleDiffSeparationSafety(now)) return true;
+      }
+      if (ordinary_relay && ordinary_scan_enabled_ && !skip_occupied_point &&
+          !in_dynamic_passage_ && !ordinary_scan_done_) {
+        startOrdinaryScan(worldYawToFollower(desired_world.yaw), now);
+        stepOrdinaryScan(now);
+        return true;
       }
       // 显式配置驻留时，从普通点首次达到容差开始计时；偏出容差不重计时。
       // 期间保留完整终点和航向参考继续收敛。
@@ -4173,6 +4266,7 @@ class LeaderSafePathFollower {
 
   void timerCallback(const ros::TimerEvent&) {
     if (follower_precision_landing_active_) {
+      resetOrdinaryScan();
       publishState("UAV1_PRECISION_LANDING_OWNS_CONTROL", 0.2, 1.0, 0.2);
       return;
     }
@@ -4493,6 +4587,7 @@ class LeaderSafePathFollower {
   ros::Subscriber diff_dynamic_passage_sub_;
   ros::Publisher command_pub_, traj_started_pub_, diff_goal_pub_, diff_entry_goal_pub_, route_pub_, relay_path_pub_, target_pub_, state_pub_;
   ros::Publisher diff_yaw_pub_;
+  ros::Publisher ordinary_scan_yaw_pub_;
   ros::Publisher follower_landing_target_pub_, follower_landing_request_pub_;
   ros::Publisher follower_detection_enable_pub_;  // UAV1独立LDOP阶段状态。
   ros::Publisher follower_safety_hold_pub_;  // 2026-07-28: LIO跳变时请求控制器按MAVROS坐标锁点。
@@ -4656,6 +4751,12 @@ class LeaderSafePathFollower {
   double relay_arrive_radius_{0.25}, relay_arrive_z_tolerance_{0.20};
   double ordinary_waypoint_z_tolerance_{0.15};
   double ordinary_waypoint_dwell_{0.0};
+  bool ordinary_scan_enabled_{false}, ordinary_scan_done_{false};
+  int ordinary_scan_stage_{0};
+  double ordinary_scan_angle_deg_{45.0}, ordinary_scan_rate_deg_{15.0};
+  double ordinary_scan_return_rate_deg_{30.0}, ordinary_scan_side_dwell_{1.0};
+  double ordinary_scan_center_{0.0}, ordinary_scan_yaw_{0.0};
+  ros::Time ordinary_scan_last_update_, ordinary_scan_reached_;
   // 终点仍使用较大停驻净空；普通接力点只查落点小体素并允许安全附件到达。
   double relay_endpoint_clearance_radius_{0.38}, relay_endpoint_z_margin_{0.28};
   double relay_point_occupied_radius_{0.12}, relay_point_occupied_z_margin_{0.18};

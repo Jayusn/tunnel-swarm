@@ -1,5 +1,11 @@
 <launch>
     <arg name="use_nmpc_landing" default="false"/>
+    <!-- 区域外普通接力点：以前机随点发来的航向为中心，原地观察后再继续。 -->
+    <arg name="ordinary_scan_enabled" default="true"/>
+    <arg name="ordinary_scan_angle_deg" default="45.0"/>
+    <arg name="ordinary_scan_rate_deg" default="15.0"/>
+    <arg name="ordinary_scan_return_rate_deg" default="30.0"/>
+    <arg name="ordinary_scan_side_dwell" default="1.0"/>
     <!-- 后机搜索降落链路默认待命，只响应 UAV0 CH9 人工触发后发布的任务消息。
          维护时可设置 UAV1_ENABLE_SEARCH_LANDING=false 完全关闭。 -->
     <arg name="enable_search_landing"
@@ -274,11 +280,16 @@
         <param name="relay_arrive_dwell" value="0.50"/>
         <!-- 保留入口及旧执行分支的近点捕获参数；普通FIFO不使用停稳驻留条件。 -->
         <param name="diff_endpoint_capture_radius" value="0.15"/>
-        <!-- 普通点仍向原目标收敛，进入15cm且航向达标后即消费，不要求停稳驻留。
+        <!-- 普通点进入15cm且航向达标后确认到达；区域外随后原地扫描，区域内直接接续。
              入口、出口、门外等待及最终降落保留原有规则。 -->
         <param name="require_waypoint_yaw" value="true"/>
         <!-- 普通点允许左右20度朝向误差；入口、出口及降落仍沿用原容差。 -->
         <param name="ordinary_waypoint_yaw_tolerance_deg" value="20.0"/>
+        <param name="ordinary_scan_enabled" value="$(arg ordinary_scan_enabled)"/>
+        <param name="ordinary_scan_angle_deg" value="$(arg ordinary_scan_angle_deg)"/>
+        <param name="ordinary_scan_rate_deg" value="$(arg ordinary_scan_rate_deg)"/>
+        <param name="ordinary_scan_return_rate_deg" value="$(arg ordinary_scan_return_rate_deg)"/>
+        <param name="ordinary_scan_side_dwell" value="$(arg ordinary_scan_side_dwell)"/>
         <!-- 已尝试原目标后，新鲜点云确认队首占据且前机已清空1.20m时，
              才可换下一有效普通点；进入40cm邻域本身不能提前消费航点。 -->
         <param name="diff_endpoint_capture_dwell" value="0.45"/>

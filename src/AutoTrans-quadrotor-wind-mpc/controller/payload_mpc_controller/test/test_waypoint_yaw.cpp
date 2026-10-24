@@ -642,3 +642,45 @@ TEST_F(WaypointYaw, TrackingDeviationStopsWithoutWaitingForPlanner) {
   EXPECT_EQ(fsm->exec_traj_state_, MPCFSM::HOVER);
   EXPECT_LT((fsm->hover_pose_ - fsm->odom_data.p).norm(), 1e-9);
 }
+
+
+TEST_F(WaypointYaw, RelayScanYawChangesOnlyHeadingDuringHoldAndDoesNotLockExit) {
+  ros::Time::setNow(ros::Time(1000));
+  fsm->fsm_state = MPCFSM::CMD_CTRL;
+  fsm->safety_hold_active_ = fsm->safety_hold_pose_valid_ = true;
+  fsm->hover_pose_ = Eigen::Vector3d(2.0, -1.0, 0.3);
+  fsm->hover_yaw_ = 0.0;
+  auto command = boost::make_shared<quadrotor_msgs::PositionCommand>();
+  command->header.stamp = ros::Time::now();
+  command->yaw = M_PI/4;
+  fsm->relayScanYawCallback(command);
+  EXPECT_NEAR(M_PI/4, fsm->hover_yaw_, 1e-8);
+  EXPECT_LT((fsm->hover_pose_ - Eigen::Vector3d(2,-1,0.3)).norm(), 1e-9);
+  controller->setHoverReference(fsm->hover_pose_, fsm->hover_yaw_);
+  EXPECT_NEAR(M_PI/4, yaw(), 1e-5);
+  // 扫描不会永久锁住航向：后续普通参考和出口锁向都仍然可用。
+  controller->setHoverReference(fsm->hover_pose_, -0.4);
+  EXPECT_NEAR(-0.4, yaw(), 1e-5);
+  EXPECT_TRUE(controller->lockYaw(1.2));
+  controller->setHoverReference(fsm->hover_pose_, 0.0);
+  EXPECT_NEAR(1.2, yaw(), 1e-5);
+}
+
+TEST_F(WaypointYaw, RelayScanYawDoesNotOverrideFlightLandingOrRecovery) {
+  ros::Time::setNow(ros::Time(1000));
+  fsm->fsm_state = MPCFSM::CMD_CTRL;
+  fsm->hover_yaw_ = 0.0;
+  auto command = boost::make_shared<quadrotor_msgs::PositionCommand>();
+  command->header.stamp = ros::Time::now(); command->yaw = 0.7;
+  fsm->relayScanYawCallback(command);
+  EXPECT_DOUBLE_EQ(0.0, fsm->hover_yaw_); // 没有锁点时不能接管轨迹航向。
+  fsm->safety_hold_active_ = fsm->safety_hold_pose_valid_ = true;
+  fsm->rc_land_active_ = true; fsm->relayScanYawCallback(command);
+  EXPECT_DOUBLE_EQ(0.0, fsm->hover_yaw_);
+  fsm->rc_land_active_ = false; fsm->precision_landing_active_ = true;
+  fsm->relayScanYawCallback(command); EXPECT_DOUBLE_EQ(0.0, fsm->hover_yaw_);
+  fsm->precision_landing_active_ = false; fsm->mpc_recovery_active_ = true;
+  fsm->relayScanYawCallback(command); EXPECT_DOUBLE_EQ(0.0, fsm->hover_yaw_);
+  fsm->mpc_recovery_active_ = false; command->header.stamp = ros::Time(999);
+  fsm->relayScanYawCallback(command); EXPECT_DOUBLE_EQ(0.0, fsm->hover_yaw_);
+}
