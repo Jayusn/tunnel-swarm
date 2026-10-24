@@ -148,8 +148,78 @@ class LeaderSafeRelayTest {
     EXPECT_TRUE(follower.safe_relay_fault_); // Published endpoints are immutable within a session.
     EXPECT_FALSE(follower.safeRelayFresh());
   }
+  static void replacement(bool completed = false, bool too_far = false) {
+    ros::NodeHandle pnh("~");
+    pnh.setParam("obstacle_check_enabled", false);
+    LeaderSafePathFollower follower;
+    follower.timer_.stop();
+    ros::Time::setNow(ros::Time(200));
+    auto path = boost::make_shared<nav_msgs::Path>();
+    path->header.frame_id = "world";
+    path->header.stamp = ros::Time(150);
+    path->header.seq = 1;
+    geometry_msgs::PoseStamped pose;
+    pose.header.frame_id = "world";
+    pose.header.seq = 8;
+    pose.header.stamp = ros::Time(199);
+    pose.pose.position.x = 3;
+    pose.pose.position.z = .56;
+    pose.pose.orientation.w = 1;
+    path->poses.push_back(pose);
+    follower.safeRelayCallback(path);
+    RoutePoint point;
+    point.position = pose.pose.position;
+    point.safe_relay_id = 8;
+    point.diff_goal_owner_stamp_ns = 123ULL;
+    follower.relay_waypoints_.push_back(point);
+    point.safe_relay_id = 9;
+    point.position.x = 2;
+    follower.relay_waypoints_.push_back(point);
+    follower.active_relay_index_ = completed ? 1 : 0;
+    follower.safe_relay_next_id_ = 10;
+    follower.simple_diff_goal_owners_[123ULL] = 123ULL;
+    follower.simple_segment_endpoint_following_ = true;
+    follower.diff_goal_published_ = true;
+    follower.relay_arrival_stamp_ = ros::Time(199);
+    path->header.seq = 2;
+    path->poses.front().header.stamp = ros::Time(200);
+    path->poses.front().pose.position.x -= too_far ? .61 : .4;
+    follower.safeRelayCallback(path);
+    EXPECT_EQ(too_far, follower.safe_relay_fault_);
+    if (too_far) return;
+    EXPECT_TRUE(follower.safe_relay_eighth_revised_);
+    EXPECT_EQ(2U, follower.relay_waypoints_.size());
+    EXPECT_EQ(10U, follower.safe_relay_next_id_);
+    EXPECT_EQ(completed ? 1U : 0U, follower.active_relay_index_);
+    EXPECT_DOUBLE_EQ(completed ? 3.0 : 2.6, follower.relay_waypoints_[0].position.x);
+    EXPECT_EQ(completed, follower.diff_goal_published_);
+    if (!completed) {
+      EXPECT_TRUE(follower.relay_arrival_stamp_.isZero());
+      EXPECT_EQ(0ULL, follower.relay_waypoints_[0].diff_goal_owner_stamp_ns);
+      follower.handleSimpleOccupiedRecovery("OCCUPIED_RECOVERY_SUCCEEDED", 123ULL, 200ULL);
+      EXPECT_EQ(2U, follower.relay_waypoints_.size()); // 原8号回执不得删除8.1。
+    }
+    path->header.seq = 3;
+    follower.safeRelayCallback(path); // 重复8.1快照不重复消耗或产生故障。
+    EXPECT_FALSE(follower.safe_relay_fault_);
+    path->header.seq = 4;
+    path->poses.front().header.stamp = ros::Time(201);
+    path->poses.front().pose.position.x -= .1;
+    follower.safeRelayCallback(path);
+    EXPECT_TRUE(follower.safe_relay_fault_); // 不允许8.2。
+  }
+
 };
 TEST(LeaderSafeRelay, SnapshotValidityExactCoordinatesAndNoUnsafeFallback) { LeaderSafeRelayTest::run(); }
+TEST(LeaderSafeRelay, EighthRevisionUpdatesActiveGoalWithoutAppending) {
+  LeaderSafeRelayTest::replacement();
+}
+TEST(LeaderSafeRelay, CompletedEighthGoalIsNotRevisited) {
+  LeaderSafeRelayTest::replacement(true);
+}
+TEST(LeaderSafeRelay, EighthRevisionCannotExceedSixtyCentimetres) {
+  LeaderSafeRelayTest::replacement(false, true);
+}
 int main(int argc, char** argv) {
   ros::init(argc, argv, "leader_safe_relay_test");
   testing::InitGoogleTest(&argc, argv);

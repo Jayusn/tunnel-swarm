@@ -1431,8 +1431,43 @@ class LeaderSafePathFollower {
       auto existing = safe_relay_points_.find(id);
       if (existing != safe_relay_points_.end() &&
           distance3d(existing->second.pose.position, p) > 1e-6) {
-        safe_relay_fault_ = true;
-        return;
+        // 只有8号点允许一次60cm内、带更新发布时刻的优化；编号仍为8。
+        if (id != 8 || safe_relay_eighth_revised_ ||
+            pose.header.stamp <= existing->second.header.stamp ||
+            distance3d(existing->second.pose.position, p) > 0.60 + 1e-6) {
+          safe_relay_fault_ = true;
+          return;
+        }
+        safe_relay_eighth_revised_ = true;
+        for (std::size_t i = active_relay_index_; i < relay_waypoints_.size(); ++i) {
+          auto& point = relay_waypoints_[i];
+          if (point.safe_relay_id != id) continue;
+          point.position = p;
+          point.yaw = yawFromQuaternion(pose.pose.orientation);
+          point.progress = nearestRouteProgress(p);
+          // 新终点重新取得规划回执归属，旧点的脱障完成不能消费8.1。
+          point.diff_goal_owner_stamp_ns = 0ULL;
+          if (i == active_relay_index_) {
+            diff_goal_published_ = false;
+            diff_plan_response_received_ = false;
+            diff_accepted_goal_valid_ = false;
+            diff_recovery_goal_valid_ = false;
+            relay_arrival_stamp_ = ros::Time(0);
+            diff_endpoint_capture_stamp_ = ros::Time(0);
+            diff_planning_failure_events_ = 0;
+            diff_goal_index_ = std::numeric_limits<std::size_t>::max();
+            diff_command_seen_for_goal_ = false;
+            diff_goal_first_publish_stamp_ = ros::Time(0);
+            diff_trajectory_response_stamp_ = ros::Time(0);
+            diff_route_subgoal_valid_ = false;
+            diff_recovery_requested_ = false;
+            simple_diff_retry_not_before_ = ros::Time::now();
+            resetOrdinaryScan();
+          }
+        }
+        publishRelayPath();
+        ROS_WARN("[safe_follower] REPLACE SAFE_RELAY 8.1 target=(%.2f,%.2f,%.2f); "
+                 "keep queue index, completed goals are not revisited.", p.x, p.y, p.z);
       }
       safe_relay_points_[id] = pose;
       valid.insert(id);
@@ -4575,6 +4610,7 @@ class LeaderSafePathFollower {
   int safe_relay_live_messages_{0};
   bool safe_relay_fault_{false};
   double safe_relay_timeout_{1.0};
+  bool safe_relay_eighth_revised_{false};
   std::map<uint32_t, geometry_msgs::PoseStamped> safe_relay_points_;
   std::set<uint32_t> safe_relay_valid_ids_;
 
