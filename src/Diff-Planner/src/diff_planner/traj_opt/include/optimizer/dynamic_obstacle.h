@@ -48,6 +48,13 @@ bool evaluateDynamicObstacle(
     Eigen::Vector3d *obstacle_position = nullptr,
     Eigen::Vector3d *obstacle_velocity = nullptr);
 
+// Vehicle-reference height that clears the observed obstacle from below.
+// Call after validating/predicting the obstacle with evaluateDynamicObstacle.
+// The physical top and safety margin are each counted once, without seed padding.
+double dynamicObstacleSafeHeight(const DynamicObstacleState &state,
+                                const Eigen::Vector3d &predicted_center,
+                                const DynamicObstacleConfig &config);
+
 } // namespace diff_planner
 
 #endif

@@ -7,6 +7,18 @@
 namespace diff_planner
 {
 
+double dynamicObstacleSafeHeight(const DynamicObstacleState &state,
+                                const Eigen::Vector3d &predicted_center,
+                                const DynamicObstacleConfig &config)
+{
+  const bool measured_box = state.size.allFinite() &&
+      (state.size.array() >= 0.0).all() && (state.size.array() > 0.0).any();
+  const double half_height = measured_box ? 0.5 * state.size.z() : config.ball_radius;
+  const double top = config.vehicle_top_height >= 0.0
+      ? config.vehicle_top_height : config.vehicle_half_height;
+  return predicted_center.z() - half_height - top - config.margin;
+}
+
 bool evaluateDynamicObstacle(
     const Eigen::Vector3d &vehicle_position,
     const DynamicObstacleState &state, const double query_time,

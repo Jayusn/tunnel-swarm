@@ -875,8 +875,8 @@ TEST_F(StaticSidePlanning, DynamicCrossingUsesForwardSideDipAndReturnsToGoalHeig
   bool dipped=false,side=false;
   for(size_t i=1;i<path.size();++i) {
     EXPECT_GT(path[i].x(),path[i-1].x());
-    EXPECT_GE(path[i].z(),0.15);
-    dipped |= path[i].z()<0.55; side |= std::abs(path[i].y())>0.1;
+    EXPECT_GE(path[i].z(),0.575-1e-6); // Bottom .725 - top .05 - margin .10, counted once.
+    dipped |= path[i].z()<0.59; side |= std::abs(path[i].y())>0.1;
   }
   EXPECT_TRUE(dipped);EXPECT_TRUE(side);
 }
@@ -895,4 +895,94 @@ TEST_F(StaticSidePlanning, DynamicLowBallRejectsUnderpassButAllowsSide) {
   optimizer.endDynamicCandidate();
   EXPECT_TRUE(optimizer.searchDynamicCandidate(start,end,ball,0,1,path));
   ASSERT_FALSE(path.empty());EXPECT_NEAR(0.6,path.back().z(),1e-6);
+}
+
+TEST_F(StaticSidePlanning, BallHeightCostStopsAtPhysicalSafeHeightInOrdinaryPlanning) {
+  PolyTrajOptimizer optimizer; configure(optimizer,true);
+  auto& config=optimizer.dynamic_obstacle_config_;
+  config.vehicle_top_height=0.05; config.vehicle_bottom_height=0.20;
+  diff_planner::DynamicObstacleState ball;
+  ball.position=Vector3d(0,0,0.496346786618233);
+  ball.size=Vector3d(0.447088241577148,1.29816943407059,0.361912578344345);
+  ball.stamp=optimizer.t_now_=ros::Time::now().toSec();
+  optimizer.setDynamicObstacles({ball});
+  const double safe=diff_planner::dynamicObstacleSafeHeight(ball,ball.position,config);
+  EXPECT_NEAR(0.1653904974460605,safe,1e-12);
+  Vector3d gradient; double time_gradient,previous_gradient,cost;
+  for(double z : {0.10,0.15,safe}) {
+    EXPECT_FALSE(optimizer.dynamicObstacleGradCostP(0,Vector3d(0,0,z),Vector3d::Zero(),
+        gradient,time_gradient,previous_gradient,cost));
+    EXPECT_DOUBLE_EQ(0,cost); EXPECT_DOUBLE_EQ(0,gradient.norm());
+  }
+  ASSERT_TRUE(optimizer.dynamicObstacleGradCostP(0,Vector3d(0,0,safe+0.01),Vector3d::Zero(),
+      gradient,time_gradient,previous_gradient,cost));
+  EXPECT_NEAR(optimizer.wei_dynamic_obstacle_*1e-6,cost,1e-10);
+  EXPECT_GT(gradient.z(),0); // Gradient descent lowers Z only above the safe height.
+  ball.leader_body=true; optimizer.setDynamicObstacles({ball});
+  EXPECT_TRUE(optimizer.dynamicObstacleGradCostP(0,Vector3d(0,0,safe-0.01),Vector3d::Zero(),
+      gradient,time_gradient,previous_gradient,cost)); // Preserve front-drone collision buffer.
+}
+
+TEST_F(StaticSidePlanning, SafeHeightCostRetainsOtherObstacleAndLateralCollision) {
+  PolyTrajOptimizer optimizer; configure(optimizer,true);
+  auto& config=optimizer.dynamic_obstacle_config_;
+  config.vehicle_top_height=0.05; config.vehicle_bottom_height=0.20;
+  diff_planner::DynamicObstacleState high,low;
+  high.position=Vector3d(0,0,0.8);high.size=Vector3d::Constant(0.15);
+  high.stamp=optimizer.t_now_=ros::Time::now().toSec();
+  low=high;low.position.z()=0.2;
+  optimizer.setDynamicObstacles({high,low});
+  Vector3d gradient;double gt,gp,cost;
+  EXPECT_TRUE(optimizer.dynamicObstacleGradCostP(0,Vector3d(0,0,0.2),Vector3d::Zero(),gradient,gt,gp,cost));
+  EXPECT_GT(cost,0);
+  optimizer.setDynamicObstacles({high});
+  EXPECT_TRUE(optimizer.dynamicObstacleGradCostP(0,Vector3d(0.43,0,0.8),Vector3d::Zero(),gradient,gt,gp,cost));
+  EXPECT_LT(gradient.x(),0); EXPECT_NEAR(0,gradient.z(),1e-12);
+}
+
+TEST_F(StaticSidePlanning, SafeHeightCostGradientsMatchPositionAndMovingBallTime) {
+  PolyTrajOptimizer optimizer;configure(optimizer,true);
+  optimizer.dynamic_obstacle_config_.vehicle_top_height=0.05;
+  optimizer.dynamic_obstacle_config_.vehicle_bottom_height=0.20;
+  diff_planner::DynamicObstacleState ball;
+  ball.position=Vector3d(0,0,0.5);ball.size=Vector3d::Constant(0.2);
+  // Use a small reference time: epoch-sized doubles quantize a 10 us difference.
+  ball.velocity=Vector3d(0.02,0,0.03);ball.stamp=optimizer.t_now_=10.0;
+  optimizer.setDynamicObstacles({ball});
+  const Vector3d point(0,0,0.27);Vector3d gradient;double gt,gp,cost;
+  ASSERT_TRUE(optimizer.dynamicObstacleGradCostP(.2,point,Vector3d::Zero(),gradient,gt,gp,cost));
+  auto value=[&](const Vector3d& p,double t) {
+    Vector3d g;double a,b,c;optimizer.dynamicObstacleGradCostP(t,p,Vector3d::Zero(),g,a,b,c);return c;
+  };
+  const double epsilon=1e-5;
+  for(int axis=0;axis<3;++axis) {
+    Vector3d offset=epsilon*Vector3d::Unit(axis);
+    EXPECT_NEAR(gradient[axis],(value(point+offset,.2)-value(point-offset,.2))/(2*epsilon),1e-4);
+  }
+  EXPECT_NEAR(gt,(value(point,.2+epsilon)-value(point,.2-epsilon))/(2*epsilon),1e-4);
+  EXPECT_NEAR(gp,gt,1e-12);
+}
+
+TEST_F(StaticSidePlanning, AlreadyLowInsideBallRegionCrossesDirectlyAtSameHeight) {
+  fillCorridor(2,3);
+  PolyTrajOptimizer optimizer;configure(optimizer,true);
+  optimizer.dynamic_continuous_crossing_=true;
+  optimizer.dynamic_obstacle_config_.vehicle_top_height=0.05;
+  optimizer.dynamic_obstacle_config_.vehicle_bottom_height=0.20;
+  diff_planner::DynamicObstacleState ball;
+  ball.position=Vector3d(.1,0,.49);ball.size=Vector3d(.2,.2,.35);
+  ball.stamp=ros::Time::now().toSec();optimizer.setDynamicObstacles({ball});
+  optimizer.beginPlanningCycle();
+  const double safe=diff_planner::dynamicObstacleSafeHeight(ball,ball.position,optimizer.dynamic_obstacle_config_);
+  std::vector<Vector3d> path;
+  ASSERT_TRUE(optimizer.searchDynamicCandidate(Vector3d(0,0,safe),Vector3d(1,0,safe),ball,0,0,path));
+  EXPECT_NEAR(safe,optimizer.dynamic_candidate_region_.max_z,1e-12);
+  for(const auto& p:path) { EXPECT_NEAR(safe,p.z(),1e-12);EXPECT_NEAR(0,p.y(),1e-12); }
+  Vector3d gradient;double gt,gp,cost;
+  optimizer.t_now_=ros::Time::now().toSec();
+  EXPECT_FALSE(optimizer.dynamicObstacleGradCostP(0,Vector3d(.1,0,safe),Vector3d::Zero(),gradient,gt,gp,cost));
+  EXPECT_FALSE(optimizer.candidatePointInside(Vector3d(.1,0,safe+.01)));
+  // A real static obstruction still prevents the direct crossing.
+  fillCorridor(-.1,.1);optimizer.endDynamicCandidate();
+  EXPECT_FALSE(optimizer.searchDynamicCandidate(Vector3d(0,0,safe),Vector3d(1,0,safe),ball,0,0,path));
 }

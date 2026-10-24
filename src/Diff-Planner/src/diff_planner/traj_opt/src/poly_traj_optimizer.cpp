@@ -1866,7 +1866,7 @@ namespace diff_planner
       if (region.limit_local_max_z &&
           std::abs((position - region.height_origin).dot(region.height_axis)) <= region.height_half_length)
       {
-        error = 0.5 * grid_map_->getResolution() + position.z() - region.max_z;
+        error = position.z() - region.max_z;
         error_gradient = Eigen::Vector3d::UnitZ();
       }
       else if (region.limit_side &&
@@ -1887,15 +1887,29 @@ namespace diff_planner
     for (const auto &obstacle : getDynamicObstacles())
     {
       double clearance;
-      Eigen::Vector3d clearance_gradient, obstacle_velocity;
+      Eigen::Vector3d clearance_gradient, obstacle_velocity, obstacle_center;
       if (!evaluateDynamicObstacle(position, obstacle, t_now_ + time, t_now_,
                                    dynamic_obstacle_config_, &clearance,
-                                   &clearance_gradient, nullptr, &obstacle_velocity))
+                                   &clearance_gradient, &obstacle_center, &obstacle_velocity))
         continue;
       // Start the smooth penalty before the required physical clearance, as
       // finite-weight optimization can otherwise converge just inside it.
       const double cost_buffer = 0.5 * grid_map_->getResolution();
-      const double error = cost_buffer - clearance;
+      double error = cost_buffer - clearance;
+      if (!obstacle.leader_body)
+      {
+        // Below the ball's safe passage height there is no downward cost.
+        // Cap the padded 3D penalty by the actual vertical overlap, retaining
+        // the nearer lateral escape when its cost is smaller. Differentiate
+        // the selected branch so position/time gradients match this cost.
+        const double height_error = position.z() -
+            dynamicObstacleSafeHeight(obstacle, obstacle_center, dynamic_obstacle_config_);
+        if (height_error < error)
+        {
+          error = height_error;
+          clearance_gradient = -Eigen::Vector3d::UnitZ();
+        }
+      }
       if (error <= 0.0)
         continue;
       active = true;
@@ -2211,10 +2225,16 @@ namespace diff_planner
           for (const auto &obstacle : getDynamicObstacles())
           {
             double clearance;
+            Eigen::Vector3d center;
             if (evaluateDynamicObstacle(position, obstacle, dynamic_candidate_query_time_,
                                         planning_reference_time_, dynamic_obstacle_config_,
-                                        &clearance) && clearance < 0.5 * grid_map_->getResolution())
-              return true;
+                                        &clearance, nullptr, &center))
+            {
+              const bool below_safe_height = !obstacle.leader_body && position.z() <=
+                  dynamicObstacleSafeHeight(obstacle, center, dynamic_obstacle_config_) + 1.0e-6;
+              if (clearance < (below_safe_height ? -1.0e-6 : 0.5 * grid_map_->getResolution()))
+                return true;
+            }
           }
         return false;
       });
@@ -2310,9 +2330,8 @@ namespace diff_planner
   {
     const auto &region = dynamic_candidate_region_;
     if (dynamic_continuous_crossing_ && point.z() < dynamic_min_height_) return false;
-    // Search seeds reserve half a voxel beyond the required physical margin.
-    // Accept the optimized route against the physical passage boundary; the
-    // common collision evaluator separately checks every rounded corner.
+    // Height search and cost share the physical safe-height boundary.
+    // Lateral seeds retain their half-voxel padding.
     const double seed_buffer = 0.5 * grid_map_->getResolution();
     const double vehicle_extension = dynamic_obstacle_config_.vehicle_radius +
         dynamic_obstacle_config_.margin;
@@ -2320,7 +2339,7 @@ namespace diff_planner
     if (region.limit_local_max_z &&
         std::abs((point - region.height_origin).dot(region.height_axis)) <=
             region.height_half_length - vehicle_extension &&
-        point.z() > region.max_z + seed_buffer + 1.0e-6) return false;
+        point.z() > region.max_z + 1.0e-6) return false;
     if (region.limit_side &&
         std::abs((point - region.side_origin).dot(region.side_axis)) <=
             region.side_half_length - vehicle_extension &&
@@ -2357,9 +2376,7 @@ namespace diff_planner
     if (direction == 0)
     {
       region.limit_local_max_z = true;
-      const double top = config.vehicle_top_height >= 0.0 ? config.vehicle_top_height : config.vehicle_half_height;
-      region.max_z = center.z() - half_size.z() - top -
-          config.margin - 0.5 * resolution;
+      region.max_z = dynamicObstacleSafeHeight(obstacle, center, config);
       region.height_origin = center;
       region.height_axis = axis;
       region.height_half_length = half_size.dot(axis.cwiseAbs()) +
@@ -2381,11 +2398,29 @@ namespace diff_planner
     dynamic_candidate_region_ = region;
     dynamic_candidate_active_ = true;
     if (dynamic_continuous_crossing_ && direction == 0) {
+      // Already below the safe height: use a clear direct crossing without
+      // introducing another dip or side excursion just to leave the region.
+      if (std::max(start.z(), end.z()) <= region.max_z) {
+        std::vector<Eigen::Vector3d> direct;
+        const int count = std::max(2, int(std::ceil((end-start).norm() / (0.5*resolution))));
+        bool safe = true;
+        for (int i = 0; i <= count && safe; ++i) {
+          const Eigen::Vector3d point = start + (double(i)/count)*(end-start);
+          safe = !staticPositionOccupied(point) && candidatePointInside(point);
+          for (const auto& other : getDynamicObstacles()) {
+            double gap;
+            if (evaluateDynamicObstacle(point, other, dynamic_candidate_query_time_,
+                  planning_reference_time_, config, &gap) && gap < -1.0e-6) safe = false;
+          }
+          direct.push_back(point);
+        }
+        if (safe) { path.swap(direct); return true; }
+      }
       // 将前机五次平滑侧下穿作为连续初始路径，终点仍是已放行的接力目标。
       const double near = (center-start).dot(axis) - region.height_half_length - resolution;
       const double far = (center-start).dot(axis) + region.height_half_length + resolution;
       const double distance = (end-start).dot(axis);
-      const double low = std::min(std::min(start.z(), end.z()), region.max_z - 0.06);
+      const double low = std::min(std::min(start.z(), end.z()), region.max_z);
       if (low < dynamic_min_height_ || near < 0.10 || distance < far + 0.50) return false;
       const auto smooth = [](double u) { u = std::max(0.0, std::min(1.0, u)); return u*u*u*(10.0+u*(-15.0+6.0*u)); };
       const int count = std::max(2, int(std::ceil(distance / (0.5*resolution))));
@@ -2402,7 +2437,7 @@ namespace diff_planner
           for (const auto& other : getDynamicObstacles()) {
             double gap;
             if (evaluateDynamicObstacle(point, other, dynamic_candidate_query_time_,
-                  planning_reference_time_, config, &gap) && gap < 0.0) safe = false;
+                  planning_reference_time_, config, &gap) && gap < -1.0e-6) safe = false;
           }
           candidate.push_back(point);
         }
