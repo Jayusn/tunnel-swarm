@@ -1718,20 +1718,54 @@ TEST_F(FifoEntrySpacing, InsideDynamicPassageDoesNotScan) {
   EXPECT_EQ(0, follower->ordinary_scan_stage_);
 }
 
-TEST_F(FifoEntrySpacing, ScanWaitsForActualHeadingAndDoesNotAdvanceOnElapsedTimeAlone) {
+TEST_F(FifoEntrySpacing, ScanHeadingLagAndVelocityNoiseCannotBlockNextGoal) {
   prepareQualifiedPoints();
   follower->ordinary_scan_enabled_ = true;
   follower->follower_odom_.pose.pose.position.x = 1;
+  follower->follower_horizontal_speed_ = 0.4;
+  follower->follower_vertical_speed_ = 0.2;
   const ros::Time start = ros::Time::now();
   follower->handleSimpleDiffPlannerExecution(start);
-  for (int i = 1; i <= 500; ++i) {
+  double finish_time = 0;
+  for (int i = 1; i <= 350; ++i) {
     const ros::Time now = start + ros::Duration(i * 0.05);
     follower->safe_relay_received_ = follower->leader_odom_stamp_ = now;
     follower->handleSimpleDiffPlannerExecution(now);
+    if (follower->relay_waypoints_.size() == 1U) {
+      finish_time = i * 0.05;
+      break;
+    }
   }
-  EXPECT_EQ(2, follower->ordinary_scan_stage_); // 参考到了左侧，但机体未转动。
-  EXPECT_EQ(2U, follower->relay_waypoints_.size());
-  EXPECT_NEAR(M_PI/4, follower->ordinary_scan_yaw_, 1e-8);
+  // 实际航向始终不动：两侧各额外等1秒，但不无限卡住当前接力点。
+  ASSERT_EQ(1U, follower->relay_waypoints_.size());
+  EXPECT_GE(finish_time, 14.5);
+  EXPECT_LT(finish_time, 15.0);
+  EXPECT_EQ(0, follower->ordinary_scan_stage_);
+  EXPECT_NEAR(0.0, follower->ordinary_scan_yaw_, 1e-8);
+  follower->handleSimpleDiffPlannerExecution(start + ros::Duration(finish_time + 0.05));
+  EXPECT_TRUE(follower->diff_goal_published_);
+  reportDiffStatus("TRAJECTORY_PUBLISHED", follower->diff_active_goal_stamp_ns_, " 2 0 0.6");
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+}
+
+TEST_F(FifoEntrySpacing, ScanYawJitterDoesNotRestartSideDwell) {
+  follower->ordinary_scan_stage_ = 2;
+  follower->ordinary_scan_yaw_ = M_PI/4;
+  const ros::Time now = ros::Time::now();
+  follower->ordinary_scan_last_update_ = now;
+  auto setYaw = [&](double degrees) {
+    const double half = degrees * M_PI/360.0;
+    follower->follower_odom_.pose.pose.orientation.w = std::cos(half);
+    follower->follower_odom_.pose.pose.orientation.z = std::sin(half);
+  };
+  setYaw(37); // 8度误差在放宽后的10度容差内。
+  EXPECT_FALSE(follower->stepOrdinaryScan(now));
+  setYaw(32); // 中间一帧超过容差也不能把驻留计时清零。
+  EXPECT_FALSE(follower->stepOrdinaryScan(now + ros::Duration(0.5)));
+  EXPECT_EQ(now, follower->ordinary_scan_reached_);
+  setYaw(37);
+  EXPECT_FALSE(follower->stepOrdinaryScan(now + ros::Duration(1.0)));
+  EXPECT_EQ(3, follower->ordinary_scan_stage_);
 }
 
 TEST_F(FifoEntrySpacing, ExitWaypointKeepsExistingArrivalWithoutScan) {

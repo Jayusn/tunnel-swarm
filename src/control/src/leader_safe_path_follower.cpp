@@ -2220,7 +2220,7 @@ class LeaderSafePathFollower {
     ordinary_scan_yaw_ = yawFromQuaternion(follower_odom_.pose.pose.orientation);
     ordinary_scan_last_update_ = now;
     ordinary_scan_reached_ = ros::Time(0);
-    ordinary_scan_stage_ = 1; // 先对齐中心并停稳，再左扫、右扫、回正。
+    ordinary_scan_stage_ = 1; // 先对齐中心，再左扫、右扫、回正。
     setDiffWaitPositionHold(true, "outside dynamic passage: relay observation scan");
     ROS_WARN("[relay_scan] START center=%.1fdeg angle=+/-%.1fdeg side_rate=%.1fdeg/s "
              "return_rate=%.1fdeg/s side_dwell=%.1fs.", center_yaw * 180.0 / M_PI,
@@ -2250,21 +2250,29 @@ class LeaderSafePathFollower {
 
     const double actual_error = std::abs(std::remainder(target -
         yawFromQuaternion(follower_odom_.pose.pose.orientation), 2.0 * M_PI));
-    const bool settled = follower_horizontal_speed_ <= relay_arrive_max_horizontal_speed_ &&
-                         follower_vertical_speed_ <= relay_arrive_max_vertical_speed_;
-    if (std::abs(error) > step + 1e-9 || actual_error > 5.0 * M_PI / 180.0 || !settled) {
+    if (std::abs(error) > step + 1e-9) {
       ordinary_scan_reached_ = ros::Time(0);
       return false;
     }
+    // 参考到位后只启动一次计时；速度估计和航向抖动不能反复清零驻留。
+    // 到位容差放宽到10度，完成侧向驻留后最多再等1秒，随后继续下一阶段。
     if (ordinary_scan_reached_.isZero()) ordinary_scan_reached_ = now;
     const double dwell = (ordinary_scan_stage_ == 2 || ordinary_scan_stage_ == 3)
         ? ordinary_scan_side_dwell_ : 0.0;
-    if ((now - ordinary_scan_reached_).toSec() + 1e-9 < dwell) return false;
+    const double elapsed = (now - ordinary_scan_reached_).toSec();
+    if (elapsed + 1e-9 < dwell) return false;
+    if (actual_error > 10.0 * M_PI / 180.0) {
+      if (elapsed + 1e-9 < dwell + 1.0) return false;
+      ROS_WARN("[relay_scan] stage=%d heading error=%.1fdeg; extra wait reached 1s, "
+               "continue scan/FIFO without blocking.", ordinary_scan_stage_,
+               actual_error * 180.0 / M_PI);
+    }
     ordinary_scan_reached_ = ros::Time(0);
     if (++ordinary_scan_stage_ <= 4) return false;
     ordinary_scan_stage_ = 0;
     ordinary_scan_done_ = true;
-    ROS_WARN("[relay_scan] DONE: returned to relay heading; continue FIFO route.");
+    ROS_WARN("[relay_scan] DONE: center reference restored, actual heading error=%.1fdeg; "
+             "continue FIFO route.", actual_error * 180.0 / M_PI);
     // 保持锁点直到下一目标的新轨迹发布，不能重新执行扫描前的轨迹。
     return true;
   }
