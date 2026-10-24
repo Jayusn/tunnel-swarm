@@ -257,6 +257,130 @@ class RollingPlannerEndpoint : public PlannerEndpoint {
   int routeSegments() const override { return 3; }
 };
 
+class GroundHeightRecovery : public PlannerEndpoint {
+  void SetUp() override {
+    nh.setParam("grid_map/enable_virtual_wall", true);
+    nh.setParam("grid_map/virtual_ground", 0.05);
+    nh.setParam("grid_map/virtual_ceil", 2.25);
+    PlannerEndpoint::SetUp();
+    // 15:46:23日志的越界高度和当前接力点高度；XY平移到测试地图中。
+    planner.odom_pos_.z() = 0.044;
+    planner.final_goal_.z() = 0.169302949;
+    planner.escape_reach_tolerance_ = 0.10;
+    planner.escape_speed_ = 0.20;
+    planner.wait_new_target_after_occupied_recovery_ = true;
+    planner.active_external_goal_stamp_ns_ = 999000000000ULL;
+    const auto &p = planner.odom_pos_;
+    planner.free_odom_history_.push_back(
+        FSM::FreeOdomSample{999.0, p.x() - 0.45, p.y(), 0.13});
+  }
+  void TearDown() override {
+    PlannerEndpoint::TearDown();
+    nh.deleteParam("grid_map/enable_virtual_wall");
+    nh.deleteParam("grid_map/virtual_ground");
+    nh.deleteParam("grid_map/virtual_ceil");
+  }
+};
+
+TEST_F(GroundHeightRecovery, RecordedLowHeightClimbsWithoutHistoryOrSideClearance) {
+  const auto start = planner.odom_pos_;
+  const Eigen::Vector3d top(start.x(), start.y(), planner.final_goal_.z());
+  publishPoint(top + Eigen::Vector3d(0.0, 0.15, 0.0));
+  ASSERT_EQ(planner.planner_manager_->grid_map_->getInflateOccupancy(top), 0);
+  ASSERT_LT(planner.estimateInflatedClearance(top), planner.escape_min_clearance_);
+  planner.history_only_occupied_recovery_ = true;
+
+  ASSERT_TRUE(planner.startOccupiedRecovery(1000.0));
+  EXPECT_TRUE(planner.occupied_recovery_ground_);
+  EXPECT_TRUE(planner.occupied_recovery_vertical_);
+  EXPECT_FALSE(planner.occupied_recovery_from_history_);
+  EXPECT_LT((planner.occupied_recovery_target_ - top).norm(), 1e-9);
+  const auto &trajectory = planner.planner_manager_->traj_.local_traj.traj;
+  for (int i = 0; i <= 100; ++i) {
+    const double t = trajectory.getTotalDuration() * i / 100.0;
+    const auto point = trajectory.getPos(t);
+    EXPECT_LT((point.head<2>() - start.head<2>()).norm(), 1e-9);
+    EXPECT_GE(point.z(), start.z() - 1e-9);
+    EXPECT_LE(point.z(), top.z() + 1e-9);
+    EXPECT_GE(trajectory.getVel(t).z(), -1e-9);
+    EXPECT_LE(trajectory.getVel(t).norm(), 0.20 + 1e-9);
+  }
+  drain();
+  ASSERT_FALSE(statuses.empty());
+  EXPECT_EQ(statuses.back().find("OCCUPIED_RECOVERY_VERTICAL "), 0U);
+}
+
+TEST_F(GroundHeightRecovery, HeightArrivalResumesSameRelayWithoutConsumingIt) {
+  const auto original_goal = planner.final_goal_;
+  ASSERT_TRUE(planner.startOccupiedRecovery(1000.0));
+  planner.exec_state_ = FSM::OCCUPIED_RECOVERY;
+  planner.odom_pos_.z() = 0.07;  // 已越过地面线，但不能用10厘米容差过早结束抬升。
+  ros::Time::setNow(ros::Time(1000.2));
+  exec();
+  EXPECT_EQ(planner.exec_state_, FSM::OCCUPIED_RECOVERY);
+  planner.odom_pos_.z() = original_goal.z() + 0.04;  // 上冲也表示已纠正“过低”。
+  planner.tracking_replan_pending_ = true;  // 高度已到达时应接续原目标，不生成零长度抬升。
+  ros::Time::setNow(ros::Time(1001.2));
+  exec();
+  EXPECT_EQ(planner.exec_state_, FSM::GEN_NEW_TRAJ);
+  EXPECT_TRUE(planner.have_target_);
+  EXPECT_TRUE(planner.have_trigger_);
+  EXPECT_FALSE(planner.occupied_recovery_episode_);
+  EXPECT_FALSE(planner.occupied_recovery_ground_);
+  EXPECT_LT((planner.final_goal_ - original_goal).norm(), 1e-9);
+  drain();
+  ASSERT_FALSE(statuses.empty());
+  EXPECT_EQ(statuses.back().find("OCCUPIED_RECOVERY_CANCELLED "), 0U);
+  for (const auto &status : statuses)
+    EXPECT_EQ(status.find("OCCUPIED_RECOVERY_SUCCEEDED"), std::string::npos);
+}
+
+TEST_F(GroundHeightRecovery, TrackingReplanContinuesClimbAfterCrossingGround) {
+  ASSERT_TRUE(planner.startOccupiedRecovery(1000.0));
+  planner.exec_state_ = FSM::OCCUPIED_RECOVERY;
+  planner.odom_pos_.z() = 0.08;
+  planner.occupied_recovery_attempt_count_ = planner.escape_max_attempts_;
+  planner.occupied_recovery_history_failed_ = true;
+  planner.tracking_replan_pending_ = true;
+  ros::Time::setNow(ros::Time(1000.2));
+  exec();
+  EXPECT_EQ(planner.exec_state_, FSM::OCCUPIED_RECOVERY);
+  EXPECT_TRUE(planner.occupied_recovery_active_);
+  EXPECT_TRUE(planner.occupied_recovery_vertical_);
+  EXPECT_FALSE(planner.occupied_recovery_from_history_);
+  EXPECT_NEAR(planner.occupied_recovery_target_.z(), 0.169302949, 1e-9);
+}
+
+TEST_F(GroundHeightRecovery, AlreadyRestoredHeightLeavesEmergencyWait) {
+  planner.beginOccupiedRecoveryEpisode();
+  planner.exec_state_ = FSM::EMERGENCY_STOP;
+  planner.flag_escape_emergency_ = false;
+  planner.need_hover_stop_ = true;
+  planner.odom_pos_.z() = planner.final_goal_.z();
+  exec();
+  EXPECT_EQ(planner.exec_state_, FSM::GEN_NEW_TRAJ);
+  EXPECT_FALSE(planner.occupied_recovery_episode_);
+  EXPECT_FALSE(planner.occupied_recovery_ground_);
+  EXPECT_TRUE(planner.have_target_);
+  expectNoReplacement();
+}
+
+TEST_F(GroundHeightRecovery, DeepVirtualGroundIsNotLimitedByObstaclePrefixLength) {
+  planner.odom_pos_.z() = -0.25;
+  ASSERT_TRUE(planner.startOccupiedRecovery(1000.0));
+  EXPECT_TRUE(planner.occupied_recovery_vertical_);
+  EXPECT_NEAR(planner.occupied_recovery_target_.z(), 0.169302949, 1e-9);
+}
+
+TEST_F(GroundHeightRecovery, OccupiedAscentDoesNotFallBackToHorizontalRetreat) {
+  planner.final_goal_.z() = 0.6;
+  publishPoint(planner.odom_pos_ + Eigen::Vector3d(0.0, 0.0, 0.3));
+  EXPECT_FALSE(planner.startOccupiedRecovery(1000.0));
+  EXPECT_TRUE(planner.occupied_recovery_ground_);
+  EXPECT_FALSE(planner.occupied_recovery_active_);
+  expectNoReplacement();
+}
+
 class FappRollingEndpoint : public PlannerEndpoint {
   int routeSegments() const override { return 3; }
   bool fappMemory() const override { return true; }

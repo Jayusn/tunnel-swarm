@@ -318,8 +318,11 @@ namespace diff_planner
       if (current_occ != 0)
       {
         ROS_ERROR("[局部脱障] 实际里程计位置进入膨胀占据区：occ=%d, "
-                  "pos=(%.3f, %.3f, %.3f)。停止重规划并沿历史轨迹后退。",
-                  current_occ, odom_pos_.x(), odom_pos_.y(), odom_pos_.z());
+                  "pos=(%.3f, %.3f, %.3f)。%s",
+                  current_occ, odom_pos_.x(), odom_pos_.y(), odom_pos_.z(),
+                  planner_manager_->grid_map_->isBelowVirtualGround(odom_pos_)
+                      ? "低于虚拟地面，固定XY回升到目标高度。"
+                      : "停止重规划并沿历史轨迹后退。");
         need_hover_stop_ = true;
         flag_escape_emergency_ = true;
         occupied_recovery_active_ = false;
@@ -752,7 +755,22 @@ namespace diff_planner
              (wait_new_target_after_occupied_recovery_ &&
               active_external_goal_stamp_ns_ != 0ULL)) && !mandatory_stop_)
         {
-          if (occupied_recovery_attempt_count_ >= escape_max_attempts_)
+          const double recovery_height = target_type_ == TARGET_TYPE::MANUAL_TARGET &&
+              (have_target_ || active_external_goal_stamp_ns_ != 0ULL)
+              ? final_goal_.z() : escape_recovery_height_;
+          // 等待回升期间高度已恢复，无需继续寻找一条向上的零长度轨迹。
+          if (occupied_recovery_ground_ && current_occ == 0 &&
+              odom_pos_.z() >= recovery_height -
+                  std::min(escape_reach_tolerance_, 0.5 * planner_manager_->grid_map_->getResolution()))
+          {
+            occupied_recovery_episode_ = occupied_recovery_ground_ = false;
+            need_hover_stop_ = false;
+            replan_fail_count_ = 0;
+            changeFSMExecState(GEN_NEW_TRAJ, "GROUND_HEIGHT_RESTORED");
+            break;
+          }
+          if (!occupied_recovery_ground_ &&
+              occupied_recovery_attempt_count_ >= escape_max_attempts_)
           {
             if (now_sec - last_escape_target_search_time_ >= 1.0)
             {
@@ -823,21 +841,27 @@ namespace diff_planner
         break;
       }
 
-      if (tracking_replan_pending_)
+      const int current_occ = planner_manager_->grid_map_->getInflateOccupancy(odom_pos_);
+      const Eigen::Vector3d remaining = occupied_recovery_target_ - odom_pos_;
+      const double height_tolerance = occupied_recovery_ground_
+          ? std::min(escape_reach_tolerance_, 0.5 * planner_manager_->grid_map_->getResolution())
+          : escape_reach_tolerance_;
+      const bool reached_target = occupied_recovery_ground_
+          ? remaining.z() <= height_tolerance
+          : (occupied_recovery_vertical_ ? std::abs(remaining.z()) <= height_tolerance
+                                        : remaining.head<2>().norm() <= escape_reach_tolerance_);
+      if (tracking_replan_pending_ &&
+          !(occupied_recovery_ground_ && current_occ == 0 && reached_target))
       {
         // 控制器可能已经停车，不能继续等待旧脱障轨迹到达或超时。
         // 复用当前里程计下的脱障选点/限速与结果回执，保留原目标归属。
-        if (occupied_recovery_attempt_count_ >= escape_max_attempts_ ||
+        if ((!occupied_recovery_ground_ &&
+             occupied_recovery_attempt_count_ >= escape_max_attempts_) ||
             !startOccupiedRecovery(now_sec))
           abortOccupiedRecovery("跟踪重规划无法生成新的脱障轨迹");
         break;
       }
 
-      const int current_occ = planner_manager_->grid_map_->getInflateOccupancy(odom_pos_);
-      const Eigen::Vector3d remaining = occupied_recovery_target_ - odom_pos_;
-      const bool reached_target = occupied_recovery_vertical_
-                                      ? std::abs(remaining.z()) <= escape_reach_tolerance_
-                                      : remaining.head<2>().norm() <= escape_reach_tolerance_;
       const auto &local = planner_manager_->traj_.local_traj;
       // 回环/近邻折线可能提前经过终点附近，至少执行到最后一段再判到达。
       const int piece_count = local.traj.getPieceNum();
@@ -848,7 +872,9 @@ namespace diff_planner
       {
         ROS_INFO("[局部脱障] 已到达退让点并离开膨胀占据区：pos=(%.3f, %.3f, %.3f)。",
                  odom_pos_.x(), odom_pos_.y(), odom_pos_.z());
-        publishPlanningStatus("OCCUPIED_RECOVERY_SUCCEEDED");
+        // 高度修正不是绕过/放弃当前FIFO点。复用结束恢复并保留原目标的回执。
+        publishPlanningStatus(occupied_recovery_ground_
+            ? "OCCUPIED_RECOVERY_CANCELLED" : "OCCUPIED_RECOVERY_SUCCEEDED");
         occupied_recovery_active_ = false;
         occupied_recovery_episode_ = false;
         occupied_recovery_attempt_count_ = 0;
@@ -856,7 +882,7 @@ namespace diff_planner
         replan_fail_count_ = 0;
         last_target_change_time_ = now_sec;
         stuck_detect_ignore_until_ = now_sec + stuck_detect_grace_time_;
-        if (wait_new_target_after_occupied_recovery_)
+        if (wait_new_target_after_occupied_recovery_ && !occupied_recovery_ground_)
         {
           // Relay mode discards the unsafe FIFO endpoint in the follower. Do not
           // immediately drive back to the same point before that status is handled.
@@ -870,6 +896,7 @@ namespace diff_planner
           need_hover_stop_ = false;
           changeFSMExecState(GEN_NEW_TRAJ, "OCCUPIED_RECOVERY_DONE");
         }
+        occupied_recovery_ground_ = false;
         break;
       }
 
@@ -1386,9 +1413,11 @@ namespace diff_planner
 
   bool DiffReplanFSM::useOccupiedRecovery() const
   {
-    // 动态穿越保留当前前进目标，由普通/FAPP重规划处理，不能切成后退抬高。
+    // 动态穿越仍由普通/FAPP规划处理；虚拟地面越界单独纠正高度。
     return enable_occupied_recovery_ && !planner_manager_->two_piece_entry_ &&
-        !planner_manager_->inDynamicPassage(odom_pos_, ros::Time::now().toSec());
+        (planner_manager_->grid_map_->isBelowVirtualGround(odom_pos_) ||
+         (occupied_recovery_episode_ && occupied_recovery_ground_) ||
+         !planner_manager_->inDynamicPassage(odom_pos_, ros::Time::now().toSec()));
   }
 
   void DiffReplanFSM::updateFreeOdomHistory(double now)
@@ -1483,12 +1512,16 @@ namespace diff_planner
 
     const double step = std::max(0.5 * map->getResolution(), 0.02);
     const int sample_count = std::max(1, static_cast<int>(std::ceil(distance / step)));
+    const bool ground_recovery = occupied_recovery_ground_ && occupied_recovery_episode_;
     bool reached_free_space = false;
     double prefix = 0.0;
     for (int i = 0; i <= sample_count; ++i)
     {
       const double ratio = static_cast<double>(i) / static_cast<double>(sample_count);
       const Eigen::Vector3d sample = start + ratio * (end - start);
+      // 纠正虚拟地面越界时允许向上离开边界；边界以上仍检查上升段本身。
+      if (ground_recovery && map->isBelowVirtualGround(sample))
+        continue;
       const bool occupied = map->getInflateOccupancy(sample) != 0;
       if (!occupied)
       {
@@ -1496,7 +1529,7 @@ namespace diff_planner
         continue;
       }
 
-      if (!allow_initial_occupied || reached_free_space)
+      if (ground_recovery || !allow_initial_occupied || reached_free_space)
         return false;
       prefix = ratio * distance;
       if (prefix > escape_max_occupied_prefix_ + 1.0e-6)
@@ -1575,7 +1608,8 @@ namespace diff_planner
     const double recovery_height = target_type_ == TARGET_TYPE::MANUAL_TARGET &&
         (have_target_ || active_external_goal_stamp_ns_ != 0ULL)
         ? final_goal_.z() : escape_recovery_height_;
-    if (odom_pos_.z() >= recovery_height - escape_reach_tolerance_)
+    const bool ground_recovery = occupied_recovery_episode_ && occupied_recovery_ground_;
+    if (odom_pos_.z() >= recovery_height - (ground_recovery ? 1.0e-3 : escape_reach_tolerance_))
       return false;
 
     Eigen::Vector3d candidate = odom_pos_;
@@ -1584,8 +1618,9 @@ namespace diff_planner
     if (!validateRecoverySegment(odom_pos_, candidate, true, &occupied_prefix))
       return false;
 
-    const double candidate_clearance = estimateInflatedClearance(candidate);
-    if (candidate_clearance + 1.0e-6 < escape_min_clearance_)
+    // 虚拟地面修正只沿Z轴回到目标高度，不以四周球形净空否决低空目标。
+    const double candidate_clearance = ground_recovery ? 0.0 : estimateInflatedClearance(candidate);
+    if (!ground_recovery && candidate_clearance + 1.0e-6 < escape_min_clearance_)
       return false;
 
     target = candidate;
@@ -1679,6 +1714,12 @@ namespace diff_planner
     if (history_path != nullptr)
       history_path->clear();
     occupied_recovery_vertical_ = false;
+    if (occupied_recovery_episode_ && occupied_recovery_ground_)
+    {
+      from_history = false;
+      occupied_recovery_vertical_ = true;
+      return selectVerticalRecoveryTarget(target, clearance);
+    }
     if (!occupied_recovery_history_failed_ &&
         selectHistoryRecoveryTarget(target, clearance, history_path))
     {
@@ -1707,7 +1748,9 @@ namespace diff_planner
   {
     const bool success = history_path.empty()
         ? planner_manager_->OccupiedStartRecovery(
-              odom_pos_, target, escape_speed_, escape_max_occupied_prefix_)
+              odom_pos_, target, escape_speed_,
+              occupied_recovery_ground_ && occupied_recovery_episode_
+                  ? (target - odom_pos_).norm() : escape_max_occupied_prefix_)
         : planner_manager_->OccupiedHistoryRecovery(
               history_path, escape_speed_, escape_max_occupied_prefix_);
     if (!success)
@@ -1801,7 +1844,10 @@ namespace diff_planner
     {
       occupied_recovery_goal_stamp_ns_ = active_external_goal_stamp_ns_;
       occupied_recovery_history_failed_ = false;
+      occupied_recovery_ground_ = false;
     }
+    occupied_recovery_ground_ = occupied_recovery_ground_ ||
+        planner_manager_->grid_map_->isBelowVirtualGround(odom_pos_);
     occupied_recovery_episode_ = true;
   }
 

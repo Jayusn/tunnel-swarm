@@ -172,6 +172,8 @@ namespace diff_planner
     bool occupied_recovery_episode_;
     bool occupied_recovery_from_history_;
     bool occupied_recovery_vertical_;
+    // 高度越界沿固定XY回升，不使用普通障碍的历史/侧向退让。
+    bool occupied_recovery_ground_{false};
     bool occupied_recovery_failure_reported_;
     // 脱障的归属不随途中收到的重试/下一航点改变；执行编号区分同一航点的多次退让。
     uint64_t occupied_recovery_goal_stamp_ns_{0ULL};

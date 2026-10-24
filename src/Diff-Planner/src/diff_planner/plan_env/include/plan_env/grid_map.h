@@ -161,6 +161,9 @@ public:
   void initMap(ros::NodeHandle &nh);
   inline int getOccupancy(Eigen::Vector3d pos);
   inline int getInflateOccupancy(Eigen::Vector3d pos);
+  bool isBelowVirtualGround(const Eigen::Vector3d &pos) const {
+    return mp_.enable_virtual_wall_ && pos.z() <= mp_.virtual_ground_;
+  }
   bool isVehicleOccupied(const Eigen::Vector3d &pos, double radius,
                          double half_height, double margin);
   inline double getResolution();
