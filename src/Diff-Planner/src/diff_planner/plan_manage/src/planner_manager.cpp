@@ -21,6 +21,10 @@ namespace diff_planner
     nh.param("manager/fapp_memory_enabled", fapp_memory_enabled_, false);
     nh.param("manager/fapp_history_duration", fapp_history_.duration, 10.0);
     nh.param("manager/fapp_association_distance", fapp_history_.association, 0.6);
+    nh.param("manager/fapp_require_leader_confirmation", fapp_require_leader_confirmation_, false);
+    // The leader sees a swinging obstacle before the follower reaches it.
+    nh.param("manager/fapp_leader_history_duration", fapp_leader_history_.duration, 120.0);
+    fapp_leader_history_.association = fapp_history_.association;
 
     nh.param("manager/route_segment_count", route_segment_count_, 1);
     nh.param("manager/route_segment_min_length", route_segment_min_length_, 0.60);
@@ -133,6 +137,11 @@ namespace diff_planner
     if (fapp_memory_enabled_) fapp_history_.observePosition(actual);
   }
 
+  void DiffPlannerManager::updateLeaderDynamicObjects(
+      const std::vector<DynamicObstacleState>& observations) {
+    fapp_leader_history_.update(observations, ros::Time::now().toSec());
+  }
+
   bool DiffPlannerManager::dynamicAvoidanceEnabled() const
   {
     return ploy_traj_opt_->getDynamicObstacleConfig().enabled;
@@ -147,6 +156,8 @@ namespace diff_planner
         ? config.vehicle_top_height : config.vehicle_half_height;
     const double bottom = config.vehicle_bottom_height >= 0.0
         ? config.vehicle_bottom_height : config.vehicle_half_height;
+    const auto leader_regions = fapp_require_leader_confirmation_
+        ? fapp_leader_history_.regions(now) : std::vector<DynamicObstacleState>();
     for (const auto &obstacle : ploy_traj_opt_->getDynamicObstacles())
     {
       if (obstacle.leader_body) continue;
@@ -155,9 +166,22 @@ namespace diff_planner
       Eigen::Vector3d projected = position;
       projected.z() = obstacle.position.z() + 0.5 * (bottom - top);
       double clearance;
-      if (evaluateDynamicObstacle(projected, obstacle, obstacle.stamp, now,
-                                  config, &clearance) && clearance <= 0.0)
-        return true;
+      if (!evaluateDynamicObstacle(projected, obstacle, obstacle.stamp, now,
+                                   config, &clearance) || clearance > 0.0) continue;
+      if (!fapp_require_leader_confirmation_) return true;
+      // Confirm the same 3D obstacle, before vehicle-radius inflation. A nearby
+      // leader detection must not validate an unrelated part of a large local region.
+      for (const auto& leader : leader_regions) {
+        if (!obstacle.size.allFinite() || !leader.size.allFinite() ||
+            (obstacle.size.array() < 0.0).any() || (leader.size.array() < 0.0).any() ||
+            !(obstacle.size.array() > 0.0).any() || !(leader.size.array() > 0.0).any()) continue;
+        const Eigen::Vector3d gap = ((obstacle.position - leader.position).cwiseAbs() -
+            0.5 * (obstacle.size + leader.size)).cwiseMax(0.0);
+        if (gap.norm() > 0.15) continue;
+        projected.z() = leader.position.z() + 0.5 * (bottom - top);
+        if (evaluateDynamicObstacle(projected, leader, leader.stamp, now,
+                                    config, &clearance) && clearance <= 0.0) return true;
+      }
     }
     return false;
   }

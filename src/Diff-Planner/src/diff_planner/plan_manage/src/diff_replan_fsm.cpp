@@ -195,6 +195,13 @@ namespace diff_planner
     if (enable_fapp_dynamic_avoidance_)
     {
       nh.param("fsm/fapp_distinguish_leader", fapp_distinguish_leader_, false);
+      bool require_leader_confirmation = false;
+      nh.param("manager/fapp_require_leader_confirmation", require_leader_confirmation, false);
+      nh.param("fsm/fapp_obstacle_frame", fapp_obstacle_frame_, std::string("UAV1/camera_init"));
+      if (fapp_distinguish_leader_ || require_leader_confirmation) {
+        fapp_tf_buffer_.reset(new tf2_ros::Buffer);
+        fapp_tf_listener_.reset(new tf2_ros::TransformListener(*fapp_tf_buffer_));
+      }
       if (fapp_distinguish_leader_) {
         std::string leader_topic;
         nh.param("fsm/fapp_leader_odom_topic", leader_topic,
@@ -203,10 +210,15 @@ namespace diff_planner
         nh.param("optimization/fapp_vehicle_top_height", fapp_leader_identity_.top, 0.05);
         nh.param("optimization/fapp_vehicle_bottom_height", fapp_leader_identity_.bottom, 0.20);
         nh.param("fsm/fapp_leader_body_margin", fapp_leader_identity_.margin, 0.08);
-        fapp_tf_buffer_.reset(new tf2_ros::Buffer);
-        fapp_tf_listener_.reset(new tf2_ros::TransformListener(*fapp_tf_buffer_));
         fapp_leader_odom_sub_ = nh.subscribe(leader_topic, 2000,
             &DiffReplanFSM::fappLeaderOdometryCallback, this,
+            ros::TransportHints().tcpNoDelay());
+      }
+      if (require_leader_confirmation) {
+        std::string leader_topic;
+        nh.param("fsm/fapp_leader_obstacle_topic", leader_topic, std::string("/UAV0/fapp/states"));
+        fapp_leader_obstacle_sub_ = nh.subscribe(leader_topic, 100,
+            &DiffReplanFSM::fappLeaderObjectsCallback, this,
             ros::TransportHints().tcpNoDelay());
       }
       fapp_obstacle_sub_ = nh.subscribe(fapp_obstacle_topic_, 10,
@@ -1256,6 +1268,40 @@ namespace diff_planner
     const auto& p = msg->pose.pose.position;
     fapp_leader_identity_.observe({msg->header.stamp.toSec(),
         Eigen::Vector3d(p.x, p.y, p.z), msg->header.frame_id});
+  }
+
+  void DiffReplanFSM::fappLeaderObjectsCallback(const obj_state_msgs::ObjectsStatesConstPtr& msg)
+  {
+    std::vector<DynamicObstacleState> observations;
+    for (const auto& state : msg->states) {
+      const ros::Time stamp = state.header.stamp.isZero() ? msg->header.stamp : state.header.stamp;
+      const std::string frame = state.header.frame_id.empty() ? msg->header.frame_id : state.header.frame_id;
+      if (stamp.isZero() || frame.empty()) continue;
+      DynamicObstacleState observation;
+      observation.position = {state.position.x, state.position.y, state.position.z};
+      observation.size = {state.size.x, state.size.y, state.size.z};
+      observation.velocity = {state.velocity.x, state.velocity.y, state.velocity.z};
+      observation.stamp = stamp.toSec();
+      if (!observation.position.allFinite() || !observation.size.allFinite() ||
+          (observation.size.array() < 0.0).any()) continue;
+      if (frame != fapp_obstacle_frame_) {
+        if (!fapp_tf_buffer_) continue;
+        try {
+          const auto transform = fapp_tf_buffer_->lookupTransform(fapp_obstacle_frame_, frame, stamp);
+          const auto& q = transform.transform.rotation;
+          const auto& t = transform.transform.translation;
+          const Eigen::Matrix3d rotation = Eigen::Quaterniond(q.w, q.x, q.y, q.z).toRotationMatrix();
+          observation.position = rotation * observation.position + Eigen::Vector3d(t.x, t.y, t.z);
+          observation.size = rotation.cwiseAbs() * observation.size;
+          observation.velocity = rotation * observation.velocity;
+        } catch (const tf2::TransformException& ex) {
+          ROS_WARN_THROTTLE(2.0, "[FAPP双机确认] 前机检测缺少同刻TF，不作为区域确认：%s", ex.what());
+          continue;
+        }
+      }
+      observations.push_back(observation);
+    }
+    planner_manager_->updateLeaderDynamicObjects(observations);
   }
 
   bool DiffReplanFSM::fappObservationIsLeader(const obj_state_msgs::State& state,

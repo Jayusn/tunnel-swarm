@@ -106,10 +106,12 @@ protected:
   virtual int routeSegments() const { return 1; }
   virtual double normalAcceleration() const { return 1.0; }
   virtual bool fappMemory() const { return false; }
+  virtual bool requireLeaderConfirmation() const { return false; }
   void SetUp() override
   {
     nh.setParam("manager/route_segment_count", routeSegments());
     nh.setParam("manager/fapp_memory_enabled", fappMemory());
+    nh.setParam("manager/fapp_require_leader_confirmation", requireLeaderConfirmation());
     nh.setParam("optimization/fapp_continuous_crossing", fappMemory());
     nh.setParam("optimization/fapp_vehicle_top_height", fappMemory() ? 0.05 : 0.125);
     nh.setParam("optimization/fapp_vehicle_bottom_height", fappMemory() ? 0.20 : 0.125);
@@ -385,6 +387,104 @@ class FappRollingEndpoint : public PlannerEndpoint {
   int routeSegments() const override { return 3; }
   bool fappMemory() const override { return true; }
 };
+
+class FappConfirmedPassage : public FappRollingEndpoint {
+ protected:
+  bool requireLeaderConfirmation() const override { return true; }
+  obj_state_msgs::ObjectsStates localBall(double x = 2.0, double z = 0.8) {
+    obj_state_msgs::ObjectsStates msg;
+    msg.header.stamp = ros::Time::now(); msg.states.resize(1);
+    auto& ball = msg.states[0]; ball.position.x = x; ball.position.z = z;
+    ball.size.x = ball.size.y = ball.size.z = 0.15;
+    return msg;
+  }
+  diff_planner::DynamicObstacleState leaderBall(double x = 2.0, double z = 0.8) {
+    diff_planner::DynamicObstacleState ball;
+    ball.position = {x, 0, z}; ball.size = {0.15,0.15,0.15};
+    ball.stamp = ros::Time::now().toSec();
+    return ball;
+  }
+};
+
+TEST_F(FappConfirmedPassage, LocalOnlyStillBlocksCollisionButCannotRelaxSpacing) {
+  auto& m = *planner.planner_manager_;
+  m.updateDynamicObjects(localBall());
+  EXPECT_TRUE(m.dynamicTrajectoryBlocked({{0, {2,0,0.8}}}, 1000));
+  EXPECT_FALSE(m.inDynamicPassage({2,0,0.2}, 1000));
+  // A later front observation confirms the already observed local region.
+  m.updateLeaderDynamicObjects({leaderBall()});
+  EXPECT_TRUE(m.inDynamicPassage({2,0,0.2}, 1000));
+}
+
+TEST_F(FappConfirmedPassage, EarlierLeaderEvidenceSurvivesEmptyFramesButExpires) {
+  auto& m = *planner.planner_manager_;
+  auto ball = leaderBall(); ball.stamp = 950;
+  m.updateLeaderDynamicObjects({ball});
+  EXPECT_FALSE(m.inDynamicPassage({2,0,0.2}, 1000)); // Leader alone is insufficient.
+  m.updateDynamicObjects(localBall());
+  ASSERT_TRUE(m.inDynamicPassage({2,0,0.2}, 1000));
+  m.updateLeaderDynamicObjects({});
+  EXPECT_TRUE(m.inDynamicPassage({2,0,0.2}, 1000));
+  ros::Time::setNow(ros::Time(1071)); m.updateDynamicObjects(localBall());
+  EXPECT_FALSE(m.inDynamicPassage({2,0,0.2}, 1071));
+  EXPECT_TRUE(m.dynamicTrajectoryBlocked({{0, {2,0,0.8}}}, 1071));
+}
+
+TEST_F(FappConfirmedPassage, OtherHeightOrOnlyInflatedOverlapCannotConfirmRegion) {
+  auto& m = *planner.planner_manager_;
+  m.updateDynamicObjects(localBall());
+  m.updateLeaderDynamicObjects({leaderBall(2,1.4)});
+  EXPECT_FALSE(m.inDynamicPassage({2,0,0.2}, 1000));
+  // Both padded XY footprints cover this point, but the raw boxes are unrelated.
+  m.updateLeaderDynamicObjects({leaderBall(2.5,0.8)});
+  EXPECT_FALSE(m.inDynamicPassage({2.25,0,0.2}, 1000));
+}
+
+TEST_F(FappConfirmedPassage, LocalExpansionCannotAuthorizeUnobservedPartOfPassage) {
+  auto& m = *planner.planner_manager_;
+  m.updateLeaderDynamicObjects({leaderBall()});
+  m.updateDynamicObjects(localBall());
+  m.updateDynamicObjects(localBall(2.5));
+  EXPECT_TRUE(m.inDynamicPassage({2,0,0.2}, 1000));
+  EXPECT_TRUE(m.dynamicTrajectoryBlocked({{0, {2.65,0,0.8}}}, 1000));
+  EXPECT_FALSE(m.inDynamicPassage({2.65,0,0.2}, 1000));
+}
+
+TEST_F(FappConfirmedPassage, LeaderBodyInsideConfirmedObstacleDoesNotClearEvidence) {
+  auto& m = *planner.planner_manager_;
+  m.updateLeaderDynamicObjects({leaderBall()});
+  auto msg = localBall();
+  auto body = msg.states[0]; body.position.z = 0.5; body.size.z = 0.05;
+  msg.states.push_back(body);
+  m.updateDynamicObjects(msg, {false,true});
+  EXPECT_TRUE(m.inDynamicPassage({2,0,0.2}, 1000));
+  m.updateLeaderDynamicObjects({});
+  msg.states = {body}; m.updateDynamicObjects(msg, {true});
+  EXPECT_TRUE(m.inDynamicPassage({2,0,0.2}, 1000));
+}
+
+TEST_F(FappConfirmedPassage, LeaderCallbackTransformsBoxAndRejectsUnknownFrame) {
+  auto& m = *planner.planner_manager_;
+  auto local = localBall(2.2); local.states[0].position.y = 1;
+  local.states[0].size.x = 0.1; local.states[0].size.y = 0.6;
+  m.updateDynamicObjects(local);
+  auto front = boost::make_shared<obj_state_msgs::ObjectsStates>();
+  front->header.frame_id = "leader"; front->header.stamp = ros::Time(1000);
+  front->states.resize(1); auto& ball = front->states[0];
+  ball.position.x = 1; ball.position.z = 0.8;
+  ball.size.x = 0.6; ball.size.y = 0.1; ball.size.z = 0.15;
+  planner.fapp_tf_buffer_.reset(new tf2_ros::Buffer);
+  planner.fappLeaderObjectsCallback(front);
+  EXPECT_FALSE(m.inDynamicPassage({2.2,1,0.2}, 1000));
+  geometry_msgs::TransformStamped transform;
+  transform.header.frame_id = "UAV1/camera_init"; transform.child_frame_id = "leader";
+  transform.transform.translation.x = 2.2;
+  transform.transform.rotation.z = transform.transform.rotation.w = std::sqrt(0.5);
+  ASSERT_TRUE(planner.fapp_tf_buffer_->setTransform(transform, "test", true));
+  planner.fappLeaderObjectsCallback(front);
+  EXPECT_TRUE(m.inDynamicPassage({2.2,1.6,0.2}, 1000)); // Rotated AABB long side is Y.
+  EXPECT_FALSE(m.inDynamicPassage({2.8,1,0.2}, 1000));
+}
 
 TEST(FappLeaderIdentity, MatchesRecordedBodyBoxesButKeepsNearbyAndMixedObstacles) {
   diff_planner::FappLeaderIdentity identity;

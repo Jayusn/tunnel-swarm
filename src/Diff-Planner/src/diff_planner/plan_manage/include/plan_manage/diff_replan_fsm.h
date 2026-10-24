@@ -135,6 +135,8 @@ namespace diff_planner
     std::unique_ptr<tf2_ros::Buffer> fapp_tf_buffer_;
     std::unique_ptr<tf2_ros::TransformListener> fapp_tf_listener_;
     ros::Subscriber fapp_leader_odom_sub_;
+    ros::Subscriber fapp_leader_obstacle_sub_;
+    std::string fapp_obstacle_frame_{"UAV1/camera_init"};
     double swing_prediction_horizon_;
     double swing_prediction_dt_;
     double swing_release_clear_time_;
@@ -220,6 +222,7 @@ namespace diff_planner
     void dynamicObjectsCallback(const ldop::DynamicObjectArrayConstPtr &msg);
     void fappObjectsCallback(const obj_state_msgs::ObjectsStatesConstPtr &msg);
     void fappLeaderOdometryCallback(const nav_msgs::OdometryConstPtr& msg);
+    void fappLeaderObjectsCallback(const obj_state_msgs::ObjectsStatesConstPtr& msg);
     bool fappObservationIsLeader(const obj_state_msgs::State& state,
                                  const std_msgs::Header& header) const;
     std::vector<SwingTrajectorySample> sampleCurrentTrajectory(double now) const;

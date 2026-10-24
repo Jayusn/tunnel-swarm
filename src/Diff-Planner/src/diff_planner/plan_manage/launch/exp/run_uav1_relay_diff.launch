@@ -64,6 +64,8 @@
         <arg name="fapp_memory_enabled" value="true"/>
         <!-- 前机机体保留避碰，但不形成摆球通行区域；同区域的真实障碍仍保留。 -->
         <arg name="fapp_distinguish_leader" value="true"/>
+        <!-- 只有前后机都观测到的区域才允许动态通行（含0.60米间距规则）。 -->
+        <arg name="fapp_require_leader_confirmation" value="true"/>
         <arg name="fapp_vehicle_top_height" value="0.05"/>
         <arg name="fapp_vehicle_bottom_height" value="0.20"/>
         <arg name="planner_heartbeat_topic" value="/drone_1_planning/heartbeat"/>
@@ -261,6 +263,7 @@
                 $(arg odom_topic)
                 /UAV0/mission/relay_waypoints
                 /UAV0/fast_lio/Odom_high_freq
+                /UAV0/fapp/states
                 /UAV1/fapp/cloud_registered_throttled
                 /UAV1/fapp/dynamic_cloud
                 /UAV1/fapp/map_cloud

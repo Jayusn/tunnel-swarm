@@ -70,6 +70,7 @@ namespace diff_planner
     bool checkCollision(int drone_id);
     void updateDynamicObjects(const obj_state_msgs::ObjectsStates &msg,
                               const std::vector<bool>& leader_matches = {});
+    void updateLeaderDynamicObjects(const std::vector<DynamicObstacleState>& observations);
     bool dynamicTrajectoryBlocked(
         const std::vector<std::pair<double, Eigen::Vector3d>> &samples,
         double now, SwingCollisionResult *result = nullptr) const;
@@ -97,6 +98,8 @@ namespace diff_planner
 
   private:
     FappHistory fapp_history_;
+    FappHistory fapp_leader_history_;
+    bool fapp_require_leader_confirmation_{false};
     std::vector<DynamicObstacleState> fapp_leader_observations_;
     bool fapp_memory_enabled_{false};
     void refreshDynamicHistory();
