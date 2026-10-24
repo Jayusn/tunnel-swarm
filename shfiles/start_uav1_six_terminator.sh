@@ -55,7 +55,7 @@ usage() {
   bash shfiles/start_uav1_six_terminator.sh stop
 
 作用：
-  打开一个 Terminator 七分屏窗口并依次等待、启动：
+  打开一个 Terminator 七分屏窗口，按依赖启动，同阶段话题并行等待：
   1 MAVROS、2 MID360、3 FAST-LIO、4 高频视觉位姿回传、
   5 D435/颜色/二维码/前视ArUco/目标上报、
   6 下视相机/航点接力管理器/UAV1 Diff/RViz、
@@ -213,7 +213,8 @@ wait_for_topic_message() {
     check_timeout=$((deadline - SECONDS))
     if (( check_timeout <= 0 )); then break; fi
     if (( check_timeout > 5 )); then check_timeout=5; fi
-    if timeout --kill-after=1s "${check_timeout}s" rostopic echo -n 1 "${topic}" >/dev/null 2>&1; then
+    # 只确认消息到达，不展开点云数组和图像字节为文本。
+    if timeout --kill-after=1s "${check_timeout}s" rostopic echo --noarr --nostr -n 1 "${topic}" >/dev/null 2>&1; then
       printf '[就绪] 已收到话题数据：%s\n' "${topic}"
       return 0
     fi
@@ -221,6 +222,20 @@ wait_for_topic_message() {
   done
   printf '[错误] 等待话题数据超时：%s\n' "${topic}"
   return 1
+}
+
+# 同一阶段的前置话题同时订阅；所有话题都收到数据才继续启动。
+wait_for_topic_messages() {
+  local topic pid status=0
+  local pids=()
+  for topic in "$@"; do
+    wait_for_topic_message "${topic}" &
+    pids+=("$!")
+  done
+  for pid in "${pids[@]}"; do
+    wait "${pid}" || status=1
+  done
+  return "${status}"
 }
 
 wait_for_mavros_connected() {
@@ -293,8 +308,7 @@ run_mid360_pane() {
 
 run_fastlio_pane() {
   pane_init 3 FAST-LIO
-  wait_for_topic_message "${LIDAR_TOPIC}" || keep_pane_open
-  wait_for_topic_message "${LIDAR_IMU_TOPIC}" || keep_pane_open
+  wait_for_topic_messages "${LIDAR_TOPIC}" "${LIDAR_IMU_TOPIC}" || keep_pane_open
   printf '[启动] UAV1 FAST-LIO\n'
   sh "${MATCH_WS}/shfiles/run_uav1_sensor_stack.sh" fastlio
   printf '[退出] FAST-LIO 分屏，返回码=%s\n' "$?"
@@ -340,10 +354,12 @@ run_planner_pane() {
 
   pane_init 6 双机航点接力与UAV1 Diff
   verify_follower_binary_fresh || keep_pane_open
-  wait_for_topic_message "${ODOM_TOPIC}" || keep_pane_open
-  wait_for_topic_message "${CLOUD_TOPIC}" || keep_pane_open
-  wait_for_topic_message /UAV0/fast_lio/Odom_high_freq || keep_pane_open
-  if timeout --kill-after=1s 5s rostopic echo -n 1 "${DOWN_CAMERA_TOPIC}" >/dev/null 2>&1; then
+  wait_for_topic_messages "${ODOM_TOPIC}" "${CLOUD_TOPIC}" \
+    /UAV0/fast_lio/Odom_high_freq || keep_pane_open
+  # 没有发布者时直接启动相机，避免首次启动必等 5 秒。
+  if timeout --kill-after=1s 5s rostopic list -p "${DOWN_CAMERA_TOPIC}" 2>/dev/null |
+      grep -Fx "${DOWN_CAMERA_TOPIC}" >/dev/null &&
+      timeout --kill-after=1s 5s rostopic echo --noarr --nostr -n 1 "${DOWN_CAMERA_TOPIC}" >/dev/null 2>&1; then
     printf '[复用] UAV1 下视相机已经发布：%s\n' "${DOWN_CAMERA_TOPIC}"
   else
     printf '[启动] UAV1 下视相机；合并标注画面将在 Diff RViz 中显示\n'
@@ -374,9 +390,8 @@ run_planner_pane() {
 run_controller_pane() {
   pane_init 7 AutoTrans控制器
   wait_for_mavros_connected || keep_pane_open
-  wait_for_topic_message "${HIGH_FREQ_ODOM_TOPIC}" || keep_pane_open
-  wait_for_topic_message "${VISION_POSE_TOPIC}" || keep_pane_open
-  wait_for_topic_message /UAV1/landing/control_owner || keep_pane_open
+  wait_for_topic_messages "${HIGH_FREQ_ODOM_TOPIC}" "${VISION_POSE_TOPIC}" \
+    /UAV1/landing/control_owner || keep_pane_open
   printf '[启动] UAV1 轨迹桥接、AutoTrans、日志和自动 rosbag\n'
   printf '[说明] uav1_diff_autotrans.launch 默认不重复启动 Diff-Planner\n'
   roslaunch autotrans_reference_bridge uav1_diff_autotrans.launch \
