@@ -178,6 +178,27 @@ double SafeRelayPublisher::verticalClearance(const Eigen::Vector3d& point) const
   return height;
 }
 
+double SafeRelayPublisher::routeHeight(const Record& reference,
+                                      const Eigen::Vector3d& point) const {
+  // XY移动后重新匹配同一小段实飞路线的高度，不能把另一位置的下降Z搬过来。
+  // 以原样本累计路程限定范围，避免折返/相邻通道在XY靠近时串用高度。
+  const double window = candidate_search_radius_ + sample_spacing_;
+  double best_distance = (point.head<2>() - reference.sample.position.head<2>()).squaredNorm();
+  double height = reference.sample.position.z();
+  auto first = std::lower_bound(history_.begin(), history_.end(),
+      reference.sample.progress - window, [](const Record& r, double progress) {
+        return r.sample.progress < progress;
+      });
+  for (auto it = first; it != history_.end() &&
+       it->sample.progress <= reference.sample.progress + window; ++it) {
+    const double distance = (point.head<2>() - it->sample.position.head<2>()).squaredNorm();
+    if (distance + 1e-9 >= best_distance) continue;
+    best_distance = distance;
+    height = it->sample.position.z();
+  }
+  return height;
+}
+
 void SafeRelayPublisher::qualifyCandidate(
     Record& record, bool new_map, const Eigen::Vector2d& forward) {
   const auto& reference = record.sample.position;
@@ -204,19 +225,27 @@ void SafeRelayPublisher::qualifyCandidate(
     return volumeFree(p, hold_radius_, hold_half_height_) &&
         planner_->isRelayHoldDynamicallySafe(p, hold_radius_, hold_half_height_, dynamic_wait_horizon_);
   };
+  const auto paired = [&](Eigen::Vector3d p) {
+    p.z() = routeHeight(record, p);
+    return p;
+  };
+  const auto clearance = [&](const Eigen::Vector3d& p) {
+    return std::fabs(p.z() - reference.z()) < 1e-6
+        ? clearanceToBoxes(p, boundaries, half_cell, clearance_search_radius_)
+        : horizontalClearance(p);
+  };
   auto& candidate = record.candidate;
   candidate.hold_free = candidate.confirmed = false;
   for (const auto& option : options) {
-    if (!safe(option.position)) continue;
-    Eigen::Vector3d selected = option.position;
-    double gap = option.clearance;
-    const double previous_gap = std::fabs(candidate.position.z() - reference.z()) < 1e-6
-        ? clearanceToBoxes(candidate.position, boundaries, half_cell, clearance_search_radius_)
-        : horizontalClearance(candidate.position);
+    Eigen::Vector3d selected = paired(option.position);
+    if (!safe(selected)) continue;
+    double gap = clearance(selected);
+    const Eigen::Vector3d previous = paired(candidate.position);
+    const double previous_gap = clearance(previous);
     // Keep a still-valid choice within 2cm of the best clearance, so map-cell
     // ties do not repeatedly restart the two-map confirmation.
-    if (previous_gap + 0.02 + 1e-9 >= gap && safe(candidate.position)) {
-      selected = candidate.position;
+    if (previous_gap + 0.02 + 1e-9 >= gap && safe(previous)) {
+      selected = previous;
       gap = previous_gap;
     }
     // 同等水平净空下，前方已知空地若能容忍更大的Z误差，优先把悬停点
@@ -229,8 +258,8 @@ void SafeRelayPublisher::qualifyCandidate(
            distance += step) {
         Eigen::Vector3d p = reference;
         p.head<2>() += distance * forward;
-        const double forward_gap = clearanceToBoxes(
-            p, boundaries, half_cell, clearance_search_radius_);
+        p = paired(p);
+        const double forward_gap = clearance(p);
         if (forward_gap + 1e-9 < hold_radius_ || forward_gap + 0.02 + 1e-9 < original_gap ||
             !safe(p)) continue;
         const double height = verticalClearance(p);
@@ -244,6 +273,7 @@ void SafeRelayPublisher::qualifyCandidate(
     // 只在下方余量不足时尝试最小幅度抬高；受限位置保留原合格点，
     // 不改变普通规划/下穿，也不把所有历史点统一抬到固定高度。
     const double below = std::max(hold_half_height_, 0.15 + 0.05);
+    const double paired_height = selected.z();
     const auto bottom_free = [&](const Eigen::Vector3d& p) {
       Eigen::Vector3d centre = p;
       centre.z() += 0.5 * (hold_half_height_ - below);
@@ -251,7 +281,7 @@ void SafeRelayPublisher::qualifyCandidate(
     };
     if (!bottom_free(selected)) {
       const double height_step = std::max(0.05, map_->getResolution());
-      for (double z = selected.z() + height_step; z <= reference.z() + 0.20 + 1e-6;
+      for (double z = selected.z() + height_step; z <= paired_height + 0.20 + 1e-6;
            z += height_step) {
         Eigen::Vector3d p = selected;
         p.z() = z;

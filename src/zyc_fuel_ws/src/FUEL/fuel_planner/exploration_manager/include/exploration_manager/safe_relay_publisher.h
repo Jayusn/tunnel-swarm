@@ -40,6 +40,7 @@ class SafeRelayPublisher {
   std::vector<Eigen::Vector2d> horizontalBoundaries(const Eigen::Vector3d& point,
                                                   double radius) const;
   double verticalClearance(const Eigen::Vector3d& point) const;
+  double routeHeight(const Record& reference, const Eigen::Vector3d& point) const;
   void qualifyCandidate(Record& record, bool new_map, const Eigen::Vector2d& forward);
   void publish(const std::string& status);
 

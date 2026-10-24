@@ -293,7 +293,8 @@ class SafeRelayPublisherTest {
     EXPECT_LT(publisher.horizontalClearance(Eigen::Vector3d(1.85, 0.05, 0.35)), 0.3);
   }
 
-  static void forwardVerticalPocket(bool mirror, bool uniform_floor, bool unknown_ahead) {
+  static void forwardVerticalPocket(bool mirror, bool uniform_floor, bool unknown_ahead,
+                                    bool pair_height = false, bool block_paired_height = false) {
     ros::NodeHandle nh("~forward_height_pocket");
     nh.setParam("sdf_map/resolution", 0.05);
     nh.setParam("sdf_map/map_size_x", 4.0);
@@ -351,12 +352,29 @@ class SafeRelayPublisherTest {
     SafeRelayPublisher::Record record;
     record.sample.position = reference;
     record.candidate = record.sample;
+    if (pair_height) {
+      publisher.history_.push_back(record);
+      auto ahead = record;
+      ahead.sample.position += Eigen::Vector3d(0.40, 0.0, 0.10);
+      ahead.sample.progress = 0.42;
+      publisher.history_.push_back(ahead);
+      if (block_paired_height) {
+        for (int x = 5; x <= 20; ++x)
+          for (int y = -6; y <= 6; ++y) {
+            pcl::PointCloud<pcl::PointXYZ> cloud;
+            cloud.push_back(pcl::PointXYZ(0.05*x + 0.025, 0.05*y + 0.025, 0.675));
+            for (int repeat = 0; repeat < 10; ++repeat)
+              map->inputPointCloud(cloud, 1, Eigen::Vector3d(cloud[0].x, cloud[0].y, 0.825));
+          }
+      }
+    }
     publisher.qualifyCandidate(record, true, forward);
     ASSERT_TRUE(record.candidate.hold_free);
     EXPECT_FALSE(record.candidate.confirmed);
     const Eigen::Vector3d selected = record.candidate.position;
-    EXPECT_DOUBLE_EQ(reference.z(), selected.z());
-    if (uniform_floor || unknown_ahead) {
+    EXPECT_NEAR(reference.z() + (pair_height && !block_paired_height ? 0.10 : 0.0),
+                selected.z(), 1e-6);
+    if (uniform_floor || unknown_ahead || block_paired_height) {
       EXPECT_TRUE(selected.isApprox(reference)) << selected.transpose();
     } else {
       EXPECT_GE((selected.head<2>() - reference.head<2>()).dot(forward), 0.30);
@@ -371,7 +389,38 @@ class SafeRelayPublisherTest {
     for (int i = 0; i < 5; ++i) publisher.qualifyCandidate(record, true, forward);
     EXPECT_TRUE(record.candidate.confirmed);
     EXPECT_TRUE(record.candidate.position.isApprox(selected));
-    EXPECT_DOUBLE_EQ(reference.z(), record.candidate.position.z());
+    EXPECT_DOUBLE_EQ(selected.z(), record.candidate.position.z());
+  }
+
+  static void routeHeightPairing() {
+    SafeRelayPublisher publisher;
+    const auto append = [&](double progress, double x, double y, double z) {
+      SafeRelayPublisher::Record r;
+      r.sample.progress = progress;
+      r.sample.position = Eigen::Vector3d(x, y, z);
+      r.candidate = r.sample;
+      publisher.history_.push_back(r);
+    };
+    // 本次2号点：后方低样本的XY移回已飞过的较高区域。
+    append(2.37, 3.605, 0.088, 0.263);
+    append(2.87, 3.976, -0.271, 0.213);
+    EXPECT_DOUBLE_EQ(0.263, publisher.routeHeight(publisher.history_[1],
+        Eigen::Vector3d(3.576, -0.171, 0.213)));
+    // 本次3号点：同路段前方已有实飞证据，不能保留原位置的下降高度。
+    append(3.78, 4.726, -0.345, 0.193);
+    append(4.16, 5.013, -0.134, 0.301);
+    EXPECT_DOUBLE_EQ(0.301, publisher.routeHeight(publisher.history_[2],
+        Eigen::Vector3d(5.026, -0.145, 0.193)));
+    // 折返的另一段路线即使XY完全重合，也不能借来高度。
+    append(8.0, 5.026, -0.145, 1.20);
+    EXPECT_DOUBLE_EQ(0.301, publisher.routeHeight(publisher.history_[2],
+        Eigen::Vector3d(5.026, -0.145, 0.193)));
+    EXPECT_DOUBLE_EQ(0.193, publisher.routeHeight(publisher.history_[2],
+        publisher.history_[2].sample.position));
+    // 真实低位穿越仍取低高度，不应用统一最低高度。
+    EXPECT_DOUBLE_EQ(0.193, publisher.routeHeight(publisher.history_[3],
+        Eigen::Vector3d(4.726, -0.345, 0.301)));
+    EXPECT_DOUBLE_EQ(0.193, publisher.history_[2].sample.position.z());
   }
 
   static void lowObstacleHeight(bool ceiling, bool unknown_above, bool obstacle) {
@@ -530,6 +579,15 @@ TEST(SafeRelayPublisher, NoBetterVerticalSpaceKeepsOriginalPoint) {
 }
 TEST(SafeRelayPublisher, UnknownForwardSpaceCannotMoveHoldPoint) {
   SafeRelayPublisherTest::forwardVerticalPocket(false, false, true);
+}
+TEST(SafeRelayPublisher, OffsetXYUsesLocalFlownHeightAndIgnoresOtherRouteLeg) {
+  SafeRelayPublisherTest::routeHeightPairing();
+}
+TEST(SafeRelayPublisher, ForwardCandidateUsesPairedHeightAndRemainsConfirmed) {
+  SafeRelayPublisherTest::forwardVerticalPocket(false, false, false, true, false);
+}
+TEST(SafeRelayPublisher, BlockedPairedHeightCannotFallBackToOldLowZAtSameXY) {
+  SafeRelayPublisherTest::forwardVerticalPocket(false, false, false, true, true);
 }
 TEST(SafeRelayPublisher, LowObstacleRaisesOnlyEnoughForBodyAndMargin) {
   SafeRelayPublisherTest::lowObstacleHeight(false, false, true);
