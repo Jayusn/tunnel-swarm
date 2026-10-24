@@ -757,6 +757,51 @@ TEST_F(PlannerEndpoint, EntryPublishesTwoContinuousDirectPieces)
   EXPECT_GT(published, 0);
 }
 
+TEST_F(PlannerEndpoint, EntryReachesHighSpeedWithoutPeriodicReplacement)
+{
+  auto message = boost::make_shared<geometry_msgs::PoseStamped>();
+  message->header.stamp = ros::Time::now();
+  message->pose.position.x = planner.odom_pos_.x() + 2.87;
+  message->pose.position.y = planner.odom_pos_.y();
+  message->pose.position.z = planner.odom_pos_.z();
+  planner.entryWaypointCallback(message);
+  exec(); exec();
+  ASSERT_EQ(planner.exec_state_, FSM::EXEC_TRAJ);
+  ASSERT_TRUE(planner.enable_periodic_replan_);
+  const auto local = planner.planner_manager_->traj_.local_traj;
+  double peak_speed = 0.0;
+  // 覆盖本次实飞的2.87m入口及多个1秒周期，实际执行到原轨迹高速段。
+  for (double elapsed = 0.05; elapsed < local.duration; elapsed += 0.05) {
+    ros::Time::setNow(ros::Time(local.start_time + elapsed));
+    planner.odom_pos_ = local.traj.getPos(elapsed);
+    planner.odom_vel_ = local.traj.getVel(elapsed);
+    exec();
+    ASSERT_EQ(planner.exec_state_, FSM::EXEC_TRAJ);
+    ASSERT_EQ(planner.planner_manager_->traj_.local_traj.traj_id, local.traj_id);
+    EXPECT_FALSE(planner.periodic_replan_pending_);
+    peak_speed = std::max(peak_speed, planner.odom_vel_.norm());
+  }
+  EXPECT_GT(peak_speed, 0.9);
+  EXPECT_LE(peak_speed, 1.0);
+  ros::Time::setNow(ros::Time(local.start_time + local.duration + 0.01));
+  planner.odom_pos_ = local.traj.getPos(local.duration);
+  planner.odom_vel_.setZero();
+  exec();
+  EXPECT_EQ(planner.exec_state_, FSM::WAIT_TARGET);
+}
+
+TEST_F(PlannerEndpoint, OrdinaryGoalStillTriggersPeriodicReplanning)
+{
+  auto& local = planner.planner_manager_->traj_.local_traj;
+  local.start_time = ros::Time::now().toSec() - 1.1;
+  planner.odom_pos_ = local.traj.getPos(1.1);
+  planner.odom_vel_ = local.traj.getVel(1.1);
+  ASSERT_FALSE(planner.planner_manager_->two_piece_entry_);
+  exec();
+  EXPECT_EQ(planner.exec_state_, FSM::REPLAN_TRAJ);
+  EXPECT_TRUE(planner.periodic_replan_pending_);
+}
+
 TEST_F(PlannerEndpoint, EntryRemainsStraightThroughStaticAndDynamicDetections)
 {
   const Eigen::Vector3d start = planner.odom_pos_;

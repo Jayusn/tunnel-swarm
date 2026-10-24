@@ -569,7 +569,9 @@ namespace diff_planner
         /* The navigation task completed */
         changeFSMExecState(WAIT_TARGET, "FSM");
       }
-      else if (!holding_manual_endpoint && enable_periodic_replan_ && t_cur > replan_thresh_ &&
+      // 入口直达完整执行两段加减速，避免周期重规划在到达高速段前反复替换轨迹。
+      else if (!planner_manager_->two_piece_entry_ &&
+               !holding_manual_endpoint && enable_periodic_replan_ && t_cur > replan_thresh_ &&
                now_sec - last_periodic_replan_attempt_time_ > replan_thresh_)
       {
         periodic_replan_pending_ = true;
