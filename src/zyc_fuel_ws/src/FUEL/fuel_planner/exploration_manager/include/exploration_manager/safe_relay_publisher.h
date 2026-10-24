@@ -39,7 +39,8 @@ class SafeRelayPublisher {
   double horizontalClearance(const Eigen::Vector3d& point) const;
   std::vector<Eigen::Vector2d> horizontalBoundaries(const Eigen::Vector3d& point,
                                                   double radius) const;
-  void qualifyCandidate(Record& record, bool new_map);
+  double verticalClearance(const Eigen::Vector3d& point) const;
+  void qualifyCandidate(Record& record, bool new_map, const Eigen::Vector2d& forward);
   void publish(const std::string& status);
 
   std::shared_ptr<SDFMap> map_;

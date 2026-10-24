@@ -166,7 +166,20 @@ double SafeRelayPublisher::horizontalClearance(const Eigen::Vector3d& point) con
                           0.5 * map_->getResolution(), clearance_search_radius_);
 }
 
-void SafeRelayPublisher::qualifyCandidate(Record& record, bool new_map) {
+double SafeRelayPublisher::verticalClearance(const Eigen::Vector3d& point) const {
+  // 只用于合格悬停点的优选，不扩大原有硬性停留包络，也不改变目标高度。
+  // 在既有上下余量外最多比较0.20m，未知空间不算可用高度余量。
+  double height = hold_half_height_;
+  const double step = std::max(0.05, map_->getResolution());
+  for (double extra = step; extra <= 0.20 + 1e-6; extra += step) {
+    if (!volumeFree(point, hold_radius_, hold_half_height_ + extra)) break;
+    height = hold_half_height_ + extra;
+  }
+  return height;
+}
+
+void SafeRelayPublisher::qualifyCandidate(
+    Record& record, bool new_map, const Eigen::Vector2d& forward) {
   const auto& reference = record.sample.position;
   const auto boundaries = horizontalBoundaries(
       reference, candidate_search_radius_ + clearance_search_radius_);
@@ -197,13 +210,58 @@ void SafeRelayPublisher::qualifyCandidate(Record& record, bool new_map) {
     if (!safe(option.position)) continue;
     Eigen::Vector3d selected = option.position;
     double gap = option.clearance;
-    const double previous_gap = clearanceToBoxes(
-        candidate.position, boundaries, half_cell, clearance_search_radius_);
+    const double previous_gap = std::fabs(candidate.position.z() - reference.z()) < 1e-6
+        ? clearanceToBoxes(candidate.position, boundaries, half_cell, clearance_search_radius_)
+        : horizontalClearance(candidate.position);
     // Keep a still-valid choice within 2cm of the best clearance, so map-cell
     // ties do not repeatedly restart the two-map confirmation.
     if (previous_gap + 0.02 + 1e-9 >= gap && safe(candidate.position)) {
       selected = candidate.position;
       gap = previous_gap;
+    }
+    // 同等水平净空下，前方已知空地若能容忍更大的Z误差，优先把悬停点
+    // 放过去。以原始实飞样本为搜索基准，避免每帧从上次候选继续前移。
+    if (forward.norm() > 0.5 && candidate_search_radius_ >= 0.30) {
+      double best_height = verticalClearance(selected);
+      const double original_gap = gap;
+      const double minimum_gain = std::max(0.05, map_->getResolution());
+      for (double distance = 0.30; distance <= candidate_search_radius_ + 1e-6;
+           distance += step) {
+        Eigen::Vector3d p = reference;
+        p.head<2>() += distance * forward;
+        const double forward_gap = clearanceToBoxes(
+            p, boundaries, half_cell, clearance_search_radius_);
+        if (forward_gap + 1e-9 < hold_radius_ || forward_gap + 0.02 + 1e-9 < original_gap ||
+            !safe(p)) continue;
+        const double height = verticalClearance(p);
+        if (height + 1e-9 < best_height + minimum_gain) continue;
+        selected = p;
+        gap = forward_gap;
+        best_height = height;
+      }
+    }
+    // 定位原点到机体底部约0.15m，悬停优选再留0.05m余量。
+    // 只在下方余量不足时尝试最小幅度抬高；受限位置保留原合格点，
+    // 不改变普通规划/下穿，也不把所有历史点统一抬到固定高度。
+    const double below = std::max(hold_half_height_, 0.15 + 0.05);
+    const auto bottom_free = [&](const Eigen::Vector3d& p) {
+      Eigen::Vector3d centre = p;
+      centre.z() += 0.5 * (hold_half_height_ - below);
+      return volumeFree(centre, hold_radius_, 0.5 * (hold_half_height_ + below));
+    };
+    if (!bottom_free(selected)) {
+      const double height_step = std::max(0.05, map_->getResolution());
+      for (double z = selected.z() + height_step; z <= reference.z() + 0.20 + 1e-6;
+           z += height_step) {
+        Eigen::Vector3d p = selected;
+        p.z() = z;
+        if (!bottom_free(p) || !safe(p)) continue;
+        const double raised_gap = horizontalClearance(p);
+        if (raised_gap + 0.02 + 1e-9 < gap) continue;
+        selected = p;
+        gap = raised_gap;
+        break;
+      }
     }
     if ((selected - candidate.position).norm() > 1e-6) record.confirmations = 0;
     candidate.position = selected;
@@ -241,7 +299,15 @@ void SafeRelayPublisher::timerCallback(const ros::TimerEvent&) {
       samples.push_back(sample);
       continue;  // Neither the entrance nor issued points need requalification.
     }
-    qualifyCandidate(record, new_map);
+    // 沿实飞路线前进方向寻找空地，不用可能仍保持旧通道朝向的机头yaw。
+    std::size_t previous = i - 1;
+    while (previous > 0 &&
+           sample.progress - history_[previous].sample.progress < 0.30) --previous;
+    Eigen::Vector2d forward = sample.position.head<2>() -
+        history_[previous].sample.position.head<2>();
+    if (forward.norm() >= 0.10) forward.normalize();
+    else forward.setZero();
+    qualifyCandidate(record, new_map, forward);
     samples.push_back(record.candidate);
   }
   if (!goals_.empty()) {
@@ -274,9 +340,11 @@ void SafeRelayPublisher::timerCallback(const ros::TimerEvent&) {
     pose.pose.orientation.w = std::cos(0.5 * record.yaw);
     pose.pose.orientation.z = std::sin(0.5 * record.yaw);
     goals_.push_back({anchor_, next_id_++, pose});
-    ROS_WARN("[safe_relay] RELEASE id=%u type=%s target=(%.2f,%.2f,%.2f) s=%.2f horizontal_clearance=%.3fm offset=%.3fm",
+    ROS_WARN("[safe_relay] RELEASE id=%u type=%s target=(%.2f,%.2f,%.2f) s=%.2f horizontal_clearance=%.3fm offset=%.3fm vertical_half_clearance=%.3fm reference=(%.2f,%.2f,%.2f)",
              goals_.back().id, safe_relay::name(selected.kind), p.x(), p.y(), p.z(),
-             record.sample.progress, record.candidate.clearance, (p - record.sample.position).norm());
+             record.sample.progress, record.candidate.clearance, (p - record.sample.position).norm(),
+             verticalClearance(p), record.sample.position.x(), record.sample.position.y(),
+             record.sample.position.z());
   }
   publish(safe_relay::name(selected.kind));
 }

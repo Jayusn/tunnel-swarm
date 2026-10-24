@@ -293,6 +293,146 @@ class SafeRelayPublisherTest {
     EXPECT_LT(publisher.horizontalClearance(Eigen::Vector3d(1.85, 0.05, 0.35)), 0.3);
   }
 
+  static void forwardVerticalPocket(bool mirror, bool uniform_floor, bool unknown_ahead) {
+    ros::NodeHandle nh("~forward_height_pocket");
+    nh.setParam("sdf_map/resolution", 0.05);
+    nh.setParam("sdf_map/map_size_x", 4.0);
+    nh.setParam("sdf_map/map_size_y", 4.0);
+    nh.setParam("sdf_map/map_size_z", 2.0);
+    nh.setParam("sdf_map/ground_height", 0.0);
+    nh.setParam("sdf_map/max_ray_length", 20.0);
+    nh.setParam("sdf_map/obstacles_inflation", 0.05);
+    auto map = std::make_shared<SDFMap>();
+    map->initMap(nh);
+    SafeRelayPublisher publisher;
+    publisher.map_ = map;
+    publisher.planner_ = std::make_shared<FastPlannerManager>();
+    publisher.hold_radius_ = 0.30;
+    publisher.hold_half_height_ = 0.10;
+    const double sign = mirror ? -1.0 : 1.0;
+    const Eigen::Vector3d reference(0.025, 0.025, 0.475);
+    const Eigen::Vector2d forward(sign, 0.0);
+    // 填充真实射线已知空间；未知前方用例只观测参考点及其原停留包络。
+    for (int x = -25; x <= 25; ++x)
+      for (int z = 0; z <= 23; ++z) {
+        if (unknown_ahead && x > 6 && (z < 7 || z > 11)) continue;
+        pcl::PointCloud<pcl::PointXYZ> cloud;
+        const pcl::PointXYZ end(0.05*x + 0.025, 20.0, 0.05*z + 0.025);
+        cloud.push_back(end);
+        // 连续观测两次，避免地图char帧计数回绕与未观测初值相同而漏射线。
+        for (int repeat = 0; repeat < 2; ++repeat)
+          map->inputPointCloud(cloud, 1, Eigen::Vector3d(end.x, -1.9, end.z));
+      }
+    const auto occupy = [&](double x) {
+      pcl::PointCloud<pcl::PointXYZ> cloud;
+      cloud.push_back(pcl::PointXYZ(x, reference.y(), 0.225));
+      for (int repeat = 0; repeat < 10; ++repeat)
+        map->inputPointCloud(cloud, 1, reference);
+    };
+    // 障碍低于原上下0.1m的检测带，但落在高度漂移余量中。
+    occupy(reference.x());
+    if (uniform_floor) {
+      pcl::PointCloud<pcl::PointXYZ> floor;
+      for (int x = -6; x <= 20; ++x)
+        for (int y = -6; y <= 6; ++y)
+          floor.push_back(pcl::PointXYZ(reference.x() + sign*0.05*x,
+                                       reference.y() + 0.05*y, 0.225));
+      // 对每个低面体素竖直入射，避免大量斜射线把相邻端点计为MISS。
+      for (const auto& hit : floor) {
+        pcl::PointCloud<pcl::PointXYZ> column;
+        column.push_back(hit);
+        for (int repeat = 0; repeat < 10; ++repeat)
+          map->inputPointCloud(column, 1, Eigen::Vector3d(hit.x, hit.y, reference.z()));
+        ASSERT_EQ(SDFMap::OCCUPIED, map->getOccupancy(Eigen::Vector3d(hit.x,hit.y,hit.z)));
+      }
+    }
+    ASSERT_TRUE(publisher.volumeFree(reference, 0.30, 0.10));
+    ASSERT_NEAR(0.60, publisher.horizontalClearance(reference), 1e-6);
+    SafeRelayPublisher::Record record;
+    record.sample.position = reference;
+    record.candidate = record.sample;
+    publisher.qualifyCandidate(record, true, forward);
+    ASSERT_TRUE(record.candidate.hold_free);
+    EXPECT_FALSE(record.candidate.confirmed);
+    const Eigen::Vector3d selected = record.candidate.position;
+    EXPECT_DOUBLE_EQ(reference.z(), selected.z());
+    if (uniform_floor || unknown_ahead) {
+      EXPECT_TRUE(selected.isApprox(reference)) << selected.transpose();
+    } else {
+      EXPECT_GE((selected.head<2>() - reference.head<2>()).dot(forward), 0.30);
+      EXPECT_LE((selected - reference).norm(), 0.60 + 1e-6);
+      EXPECT_GT(publisher.verticalClearance(selected), publisher.verticalClearance(reference));
+      EXPECT_NEAR(reference.y(), selected.y(), 1e-6);
+    }
+    // 同一帧不能增加确认；重复更新不从上次候选继续前移。
+    publisher.qualifyCandidate(record, false, forward);
+    EXPECT_FALSE(record.candidate.confirmed);
+    EXPECT_TRUE(record.candidate.position.isApprox(selected));
+    for (int i = 0; i < 5; ++i) publisher.qualifyCandidate(record, true, forward);
+    EXPECT_TRUE(record.candidate.confirmed);
+    EXPECT_TRUE(record.candidate.position.isApprox(selected));
+    EXPECT_DOUBLE_EQ(reference.z(), record.candidate.position.z());
+  }
+
+  static void lowObstacleHeight(bool ceiling, bool unknown_above, bool obstacle) {
+    ros::NodeHandle nh("~low_obstacle_height");
+    nh.setParam("sdf_map/resolution", 0.05);
+    nh.setParam("sdf_map/map_size_x", 4.0);
+    nh.setParam("sdf_map/map_size_y", 4.0);
+    nh.setParam("sdf_map/map_size_z", 2.0);
+    nh.setParam("sdf_map/ground_height", 0.0);
+    nh.setParam("sdf_map/max_ray_length", 20.0);
+    nh.setParam("sdf_map/obstacles_inflation", 0.05);
+    auto map = std::make_shared<SDFMap>();
+    map->initMap(nh);
+    SafeRelayPublisher publisher;
+    publisher.map_ = map;
+    publisher.planner_ = std::make_shared<FastPlannerManager>();
+    publisher.hold_radius_ = 0.30;
+    publisher.hold_half_height_ = 0.10;
+    publisher.candidate_search_radius_ = 0.01;
+    const Eigen::Vector3d reference(0.025, 0.025, 0.475);
+    for (int x = -25; x <= 25; ++x)
+      for (int z = 0; z <= (unknown_above ? 11 : 23); ++z) {
+        pcl::PointCloud<pcl::PointXYZ> cloud;
+        const pcl::PointXYZ end(0.05*x + 0.025, 20.0, 0.05*z + 0.025);
+        cloud.push_back(end);
+        // 连续观测两次，避免地图char帧计数回绕与未观测初值相同而漏射线。
+        for (int repeat = 0; repeat < 2; ++repeat)
+          map->inputPointCloud(cloud, 1, Eigen::Vector3d(end.x, -1.9, end.z));
+      }
+    const auto occupy = [&](double z) {
+      pcl::PointCloud<pcl::PointXYZ> cloud;
+      cloud.push_back(pcl::PointXYZ(reference.x(), reference.y(), z));
+      for (int repeat = 0; repeat < 10; ++repeat)
+        map->inputPointCloud(cloud, 1, reference);
+    };
+    if (obstacle) occupy(0.325);  // 体素顶面0.35，原高度的底部余量不足。
+    if (ceiling) occupy(0.625);
+    ASSERT_TRUE(publisher.volumeFree(reference, 0.30, 0.10));
+    SafeRelayPublisher::Record record;
+    record.sample.position = reference;
+    record.candidate = record.sample;
+    publisher.qualifyCandidate(record, true, Eigen::Vector2d::Zero());
+    ASSERT_TRUE(record.candidate.hold_free);
+    const Eigen::Vector3d selected = record.candidate.position;
+    EXPECT_TRUE(selected.head<2>().isApprox(reference.head<2>()));
+    if (obstacle && !ceiling && !unknown_above) {
+      EXPECT_NEAR(0.575, selected.z(), 1e-6);  // 最小抬高，不一律抬到上限。
+      EXPECT_GE(selected.z() - 0.15 - 0.35, 0.05);
+    } else {
+      EXPECT_DOUBLE_EQ(reference.z(), selected.z());
+    }
+    EXPECT_FALSE(record.candidate.confirmed);
+    publisher.qualifyCandidate(record, false, Eigen::Vector2d::Zero());
+    EXPECT_FALSE(record.candidate.confirmed);
+    for (int i = 0; i < 5; ++i)
+      publisher.qualifyCandidate(record, true, Eigen::Vector2d::Zero());
+    EXPECT_TRUE(record.candidate.confirmed);
+    EXPECT_TRUE(selected.isApprox(record.candidate.position));
+    EXPECT_TRUE(reference.isApprox(record.sample.position));
+  }
+
   static void unflownPocketAndGap() {
     ros::NodeHandle nh("~unflown_pocket");
     nh.setParam("sdf_map/resolution", 0.1);
@@ -378,6 +518,30 @@ TEST(SafeRelayPublisher, RawVoxelBoxesAndLowHeightClearance) {
 }
 TEST(SafeRelayPublisher, UnflownKnownFreePocketAndCurrentPositionGapFallback) {
   SafeRelayPublisherTest::unflownPocketAndGap();
+}
+TEST(SafeRelayPublisher, BetterForwardVerticalPocketKeepsHeightAndDoesNotDrift) {
+  SafeRelayPublisherTest::forwardVerticalPocket(false, false, false);
+}
+TEST(SafeRelayPublisher, NegativeXProgressUsesForwardPocketInsteadOfBodyYaw) {
+  SafeRelayPublisherTest::forwardVerticalPocket(true, false, false);
+}
+TEST(SafeRelayPublisher, NoBetterVerticalSpaceKeepsOriginalPoint) {
+  SafeRelayPublisherTest::forwardVerticalPocket(false, true, false);
+}
+TEST(SafeRelayPublisher, UnknownForwardSpaceCannotMoveHoldPoint) {
+  SafeRelayPublisherTest::forwardVerticalPocket(false, false, true);
+}
+TEST(SafeRelayPublisher, LowObstacleRaisesOnlyEnoughForBodyAndMargin) {
+  SafeRelayPublisherTest::lowObstacleHeight(false, false, true);
+}
+TEST(SafeRelayPublisher, LowCeilingKeepsOriginalQualifiedHeight) {
+  SafeRelayPublisherTest::lowObstacleHeight(true, false, true);
+}
+TEST(SafeRelayPublisher, UnknownAboveCannotRaiseHoldPoint) {
+  SafeRelayPublisherTest::lowObstacleHeight(false, true, true);
+}
+TEST(SafeRelayPublisher, OpenSpaceDoesNotRaiseHoldPoint) {
+  SafeRelayPublisherTest::lowObstacleHeight(false, false, false);
 }
 }  // namespace fast_planner
 int main(int argc, char** argv) {
