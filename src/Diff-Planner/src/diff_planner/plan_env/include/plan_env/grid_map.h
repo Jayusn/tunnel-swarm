@@ -4,6 +4,7 @@
 #include <Eigen/Eigen>
 #include <Eigen/StdVector>
 #include <cv_bridge/cv_bridge.h>
+#include <cstdint>
 #include <geometry_msgs/PoseStamped.h>
 #include <iostream>
 #include <random>
@@ -164,6 +165,8 @@ public:
                          double half_height, double margin);
   inline double getResolution();
   bool getOdomDepthTimeout() { return md_.flag_depth_odom_timeout_; }
+  // 仅传感器融合完成后递增；同一地图上的规划重试不是新观测。
+  uint64_t getObservationRevision() const { return observation_revision_; }
 
   typedef std::shared_ptr<GridMap> Ptr;
 
@@ -172,6 +175,7 @@ public:
 private:
   MappingParameters mp_;
   MappingData md_;
+  uint64_t observation_revision_{0};
 
   enum
   {

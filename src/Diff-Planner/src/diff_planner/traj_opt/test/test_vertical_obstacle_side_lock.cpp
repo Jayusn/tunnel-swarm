@@ -143,11 +143,46 @@ TEST(VerticalObstacleSideLock, MultipleDividersCreateThreePassages)
   EXPECT_NEAR(passages[2].max_offset - passages[2].min_offset, 0.48, 1.0e-6);
 }
 
-TEST(VerticalObstacleSideLock, BendWallConnectedToOuterWallDoesNotActivate)
+TEST(VerticalObstacleSideLock, WallConnectedDividerKeepsOppositeThroughPassage)
 {
   auto plane = corridorPlane();
   addDivider(plane, 9, 11, 15, 32);
-  EXPECT_TRUE(VerticalObstacleSideLock::findSplitPassages(plane, 0.05, 0.20).empty());
+  std::pair<int, int> rows;
+  const auto passages = VerticalObstacleSideLock::findSplitPassages(plane, 0.05, 0.20, &rows);
+  ASSERT_EQ(passages.size(), 1U);
+  EXPECT_GT(passages.front().min_offset, 0.0);
+  EXPECT_NEAR(passages.front().max_offset - passages.front().min_offset, 0.60, 1e-6);
+  EXPECT_EQ(rows, std::make_pair(9, 11));
+}
+
+TEST(VerticalObstacleSideLock, RightWallConnectedDividerKeepsLeftPassage)
+{
+  auto plane = corridorPlane();
+  addDivider(plane, 7, 13, 28, 45);
+  const auto passages = VerticalObstacleSideLock::findSplitPassages(plane, 0.05, 0.20);
+  ASSERT_EQ(passages.size(), 1U);
+  EXPECT_LT(passages.front().max_offset, 0.0);
+}
+
+TEST(VerticalObstacleSideLock, ChecksPassageBeyondCenterlineBlockedRows)
+{
+  auto plane = corridorPlane();
+  addDivider(plane, 7, 13, 28, 32);
+  addDivider(plane, 2, 3, 15, 27);
+  const auto passages = VerticalObstacleSideLock::findSplitPassages(plane, 0.05, 0.20);
+  ASSERT_EQ(passages.size(), 1U);
+  EXPECT_GT(passages.front().min_offset, 0.0);
+}
+
+TEST(VerticalObstacleSideLock, PassageBoundariesCanComeFromDifferentCrossSections)
+{
+  auto plane = corridorPlane();
+  addDivider(plane, 7, 13, 28, 32);
+  addDivider(plane, 0, 4, 15, 20); // 斜墙最窄处在前方，中间截面尚未收窄。
+  const auto passages = VerticalObstacleSideLock::findSplitPassages(plane, 0.05, 0.20);
+  ASSERT_EQ(passages.size(), 2U);
+  EXPECT_NEAR(passages.front().max_offset - passages.front().min_offset, 0.35, 1e-6);
+  EXPECT_LT(passages.front().max_offset, 0.0);
 }
 
 TEST(VerticalObstacleSideLock, UShapedWallDoesNotActivate)

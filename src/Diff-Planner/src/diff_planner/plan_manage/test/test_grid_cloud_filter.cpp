@@ -114,6 +114,20 @@ TEST_F(GridCloudFilter, RejectedReturnDoesNotClearAnExistingObstacle)
   EXPECT_GT(map->getInflateOccupancy(obstacle), 0);
 }
 
+TEST_F(GridCloudFilter, OnlyFusedObservationsAdvancePassageConfirmationRevision)
+{
+  const auto initial = map->getObservationRevision();
+  fuse({}, 2);
+  fuse({Vector3d(0.515, 0.115, 0.515)}, 3);
+  EXPECT_EQ(map->getObservationRevision(), initial);
+  fuse(supported_patch, 1);
+  EXPECT_EQ(map->getObservationRevision(), initial + 1);
+  setOrigin(Vector3d(0.0, 0.0, 0.5));
+  EXPECT_EQ(map->getObservationRevision(), initial + 1);
+  fuse(supported_patch, 1);
+  EXPECT_EQ(map->getObservationRevision(), initial + 2);
+}
+
 TEST_F(GridCloudFilter, ThreeOtherPointsAreRequired)
 {
   fuse({supported_patch[0], supported_patch[1], supported_patch[2]});

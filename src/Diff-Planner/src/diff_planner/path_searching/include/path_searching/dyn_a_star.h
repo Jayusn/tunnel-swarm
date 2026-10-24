@@ -120,6 +120,7 @@ private:
 	std::priority_queue<GridNodePtr, std::vector<GridNodePtr>, NodeComparator> openSet_;
 
 	int rounds_{0};
+	bool last_search_exhausted_{false};
 
 public:
 	typedef std::shared_ptr<AStar> Ptr;
@@ -139,6 +140,8 @@ public:
 						  const AStarSearchRegion *region = nullptr);
 
 	std::vector<Eigen::Vector3d> getPath();
+	// 超时、起终点错误均不能作为通路无解的证据。
+	bool lastSearchExhausted() const { return last_search_exhausted_; }
 };
 
 inline double AStar::getHeu(GridNodePtr node1, GridNodePtr node2)

@@ -241,6 +241,7 @@ void GridMap::updateOccupancyCallback(const ros::TimerEvent & /*event*/)
     t4 = ros::Time::now();
 
     clearAndInflateLocalMap();
+    ++observation_revision_;
     t5 = ros::Time::now();
 
     if (mp_.show_occ_time_)
@@ -491,6 +492,7 @@ void GridMap::cloudCallback(const sensor_msgs::PointCloud2ConstPtr &msg)
   md_.use_lidar_prob_for_update_ = true;
   raycastFromCloud();// TODO by glq        
   clearAndInflateLocalMap(); 
+  if (md_.proj_points_cnt_ > 0) ++observation_revision_;
   md_.occ_need_update_ = true; 
 }
 

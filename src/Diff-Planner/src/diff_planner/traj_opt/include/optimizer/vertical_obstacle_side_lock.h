@@ -35,7 +35,7 @@ public:
     double max_offset;
   };
 
-  // 平面采样的行沿通道方向，列沿横向；只返回与外墙分离的障碍形成的贯通间隙。
+  // 平面采样的行沿通道方向，列沿横向；允许挡路障碍与侧墙相连。
   static std::vector<Passage> findSplitPassages(
       const std::vector<std::vector<int>> &occupancy,
       double step_size, double min_width,
@@ -47,6 +47,7 @@ public:
                  std::vector<Eigen::Vector3d> &path);
   bool passageCenterError(const Eigen::Vector3d &position,
                           double &error, Eigen::Vector3d &direction) const;
+  bool allowsDirectRoute(const Eigen::Vector3d &start, const Eigen::Vector3d &end) const;
 
   static bool widthsAreComparable(double left_width, double right_width,
                                   double min_width, double tolerance);
@@ -87,7 +88,11 @@ private:
     double passage_center_offset{0.0};
     double passage_min_offset{0.0};
     double passage_max_offset{0.0};
+    int blocked_observations{0};
+    uint64_t last_blocked_revision{0};
   };
+
+  bool lockAppliesToSegment(const Eigen::Vector3d &start, const Eigen::Vector3d &end) const;
 
   bool detectCandidate(const GridMap::Ptr &grid_map, double step_size,
                        const Eigen::Vector3d &start,

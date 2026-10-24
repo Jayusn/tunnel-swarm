@@ -29,6 +29,7 @@ TEST_F(AStarVehicleOccupancy, RejectsOccupiedActualEndpoint)
     return (position - start).norm() < 0.04;
   });
   EXPECT_EQ(search.AstarSearch(0.5, start, end, &region), ASTAR_RET::INIT_ERR);
+  EXPECT_FALSE(search.lastSearchExhausted());
 }
 
 TEST_F(AStarVehicleOccupancy, NegativeRelativeCoordinateKeepsFreeEndpoint)
@@ -64,6 +65,16 @@ TEST_F(AStarVehicleOccupancy, SamplesBetweenNeighborNodes)
     return std::abs(position.x() - 0.25) < 0.08;
   });
   EXPECT_EQ(search.AstarSearch(0.5, start, end, &region), ASTAR_RET::SEARCH_ERR);
+  EXPECT_TRUE(search.lastSearchExhausted());
+}
+
+TEST_F(AStarVehicleOccupancy, TimeoutDoesNotConfirmBlockedPassage)
+{
+  search.setOccupancyChecker([](const Vector3d &) { return false; });
+  region.time_limit = -1.0;
+  EXPECT_EQ(search.AstarSearch(0.5, Vector3d(-1.0, 0.0, 1.0),
+      Vector3d(1.0, 0.0, 1.0), &region), ASTAR_RET::SEARCH_ERR);
+  EXPECT_FALSE(search.lastSearchExhausted());
 }
 
 TEST_F(AStarVehicleOccupancy, FindsAvailableSidePassage)

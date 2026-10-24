@@ -886,7 +886,9 @@ namespace diff_planner
     // 保留密集采样，供下面的动态穿越检测使用。
     const int direct_samples = std::max(1, int(std::ceil(
         (goal - start).norm() / (0.5 * grid_map_->getResolution()))));
-    for (int i = 0; i <= direct_samples; ++i) {
+    // 单帧漏观测不能通过直线快捷路径绕过同一障碍的已确认通路。
+    const bool direct_allowed = ploy_traj_opt_->allowsDirectRoute(start, goal);
+    for (int i = 0; direct_allowed && i <= direct_samples; ++i) {
       const Eigen::Vector3d point = start + (goal - start) * (double(i) / direct_samples);
       if (ploy_traj_opt_->staticPositionOccupied(point)) {
         path.clear();

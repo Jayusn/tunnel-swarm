@@ -178,6 +178,9 @@ namespace diff_planner
     bool searchRouteGuide(const Eigen::Vector3d& start, const Eigen::Vector3d& end,
                           std::vector<Eigen::Vector3d>& path);
     bool staticPositionOccupied(const Eigen::Vector3d &position) const;
+    bool allowsDirectRoute(const Eigen::Vector3d &start, const Eigen::Vector3d &end) const {
+      return vertical_obstacle_side_lock_.allowsDirectRoute(start, end);
+    }
     bool trajectoryCollisionFree(const poly_traj::Trajectory &trajectory,
                                  double start_time, double reference_time,
                                  double max_initial_occupied_prefix = 0.0);

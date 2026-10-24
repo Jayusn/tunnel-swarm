@@ -223,6 +223,7 @@ ASTAR_RET AStar::AstarSearch(const double step_size, Vector3d start_pt,
                              Vector3d end_pt,
                              const AStarSearchRegion *region)
 {
+    last_search_exhausted_ = false;
     ros::Time time_1 = ros::Time::now();
     const ros::WallTime wall_time_1 = occupancy_checker_
         ? ros::WallTime::now() : ros::WallTime();
@@ -385,6 +386,7 @@ ASTAR_RET AStar::AstarSearch(const double step_size, Vector3d start_pt,
     if ((time_2 - time_1).toSec() > 0.1)
         ROS_WARN("Time consume in A star path finding is %.3fs, iter=%d", (time_2 - time_1).toSec(), num_iter);
 
+    last_search_exhausted_ = true;
     return ASTAR_RET::SEARCH_ERR;
 }
 
