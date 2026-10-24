@@ -236,12 +236,15 @@ private:
   vector<Vector3d> pending_wider_route_;
   bool width_route_plan_{false};
   route_width::SplitRoute pending_split_route_, planned_split_route_;
+  route_width::SplitRoute active_split_lane_;
   bool split_route_committed_{false};
   bool committedSplitRoute() const {
     return split_route_committed_ && recovery_side_latched_ &&
            wide_side_bypass_active_ && !manual_fapp_active_;
   }
   bool prepareSplitRoute(const Vector3d& start, const Vector3d& forward);
+  bool insideRecoveryLane(const Vector3d& point) const;
+  void updateSplitRear(route_width::SplitRoute& lane) const;
   int widthColumnState(const Vector3d& point) const;
   bool widthEndpointHasRoom(const vector<Vector3d>& path) const;
   route_width::Score evaluateRouteWidth(const vector<Vector3d>& path,
@@ -410,6 +413,8 @@ private:
   };
   SplitEvidence findWideSideSplit(const Vector3d& pos, const Vector3d& forward,
                                   bool entry_exempt = false) const;
+  route_width::SplitRoute makeSplitLane(const Vector3d& pos, const Vector3d& forward,
+                                        const SplitEvidence& split, int side) const;
   bool selectEntryForwardGoal(const Vector3d& pos, const Vector3d& forward,
                               double remaining, entry_forward::Goal& selected);
   bool buildWideSideBypass(const Vector3d& pos, double cur_yaw,

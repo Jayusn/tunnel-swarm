@@ -1134,11 +1134,13 @@ public:
     EXPECT_EQ(SDFMap::UNKNOWN, manager.widthColumnState(Vector3d(1, 1, 1)));
   }
 
-  static void runEarlySplit(bool mirror) {
+  static void runEarlySplit(bool mirror, bool stepped = false) {
     ros::NodeHandle nh("~early_split");
     nh.setParam("manager/use_geometric_path", true);
     nh.setParam("astar/resolution_astar", 0.05);
     nh.setParam("astar/allocate_num", 100000);
+    nh.setParam("astar/lambda_heu", 1.0);
+    nh.setParam("astar/max_search_time", 1.0);
     FastExplorationManager manager;
     initialize(nh, manager, true);
     auto& map = *manager.sdf_map_;
@@ -1178,6 +1180,41 @@ public:
     task.stable_progress_direction_ = Eigen::Vector2d::UnitX();
     task.stable_progress_direction_valid_ = true;
     task.updateRobotPose(start, 0.0);
+    if (stepped) {
+      Vector3d target; double yaw = 0; bool split = false;
+      ASSERT_TRUE(manager.buildWideSideBypass(start, 0, Vector3d::UnitX(), target, yaw, split));
+      ASSERT_TRUE(manager.committedSplitRoute());
+      EXPECT_EQ(-sign, manager.active_split_lane_.side);
+      const auto lane = manager.active_split_lane_;
+      ASSERT_GT(lane.outer_offset, lane.offset);
+      // 已经横移到右/左侧，但当前截面还在柱子之前，整个走廊依然连通。
+      Vector3d pos = start + Vector3d(.20, -sign*(lane.offset+.08), 0);
+      task.updateRobotPose(pos, 0);
+      manager.recovery_odom_history_.push_back(pos);
+      ASSERT_TRUE(manager.buildSideRecoveryContinuation(pos, 0, target, yaw));
+      EXPECT_GT(target.x(), pos.x()+.19);
+      EXPECT_TRUE(route_width::insideLane(target, lane));
+      vector<Vector3d> path{pos, target};
+      manager.centrePassagePath(path, 2.0);
+      for (const auto& p : path) EXPECT_TRUE(route_width::insideLane(p, lane));
+      EXPECT_TRUE(manager.planner_manager_->isPathSafe(path));
+      if (path.size() == 2) path.insert(path.begin()+1, .5*(path.front()+path.back()));
+      ASSERT_TRUE(manager.planner_manager_->planExploreTraj(path, Vector3d::Zero(), Vector3d::Zero(), 0));
+      ASSERT_TRUE(manager.planner_manager_->isTrajectorySafe());
+      auto& curve = manager.planner_manager_->local_data_.position_traj_;
+      for (double t = 0; t <= curve.getTimeSum(); t += .05) {
+        const Vector3d p = curve.evaluateDeBoorT(t);
+        const double offset = lane.side*(p-lane.origin).y();
+        EXPECT_GE(offset, lane.offset-.02); // 样条数值容差，不允许回到整条通道中心。
+      }
+      const Vector3d beyond = start + Vector3d(lane.exit+.1, -sign*(lane.offset+.08), 0);
+      task.updateRobotPose(beyond, 0);
+      manager.recovery_odom_history_.push_back(beyond);
+      EXPECT_FALSE(manager.buildSideRecoveryContinuation(beyond, 0, target, yaw));
+      EXPECT_FALSE(manager.committedSplitRoute());
+      EXPECT_TRUE(manager.insideRecoveryLane(start));
+      return;
+    }
     const vector<Vector3d> approach{start, start + Vector3d(.45, 0, 0)};
     // The current short trajectory is safe, but ends BEFORE a divider 0.8m away.
     ASSERT_TRUE(manager.planner_manager_->isPathSafe(approach));
@@ -1208,8 +1245,8 @@ public:
     EXPECT_GT(manager.wide_side_bypass_release_distance_, 1.1);
     EXPECT_FALSE(manager.prepareWiderRoute(approach, 0)); // no reranking across the divider
     auto centered = path;
-    EXPECT_FALSE(manager.centrePassagePath(centered, 2.0));
-    EXPECT_EQ(path, centered);
+    manager.centrePassagePath(centered, 2.0);
+    EXPECT_TRUE(route_width::followsSplit(centered, lane));
     Vector3d target; double yaw = 0;
     const Vector3d beyond = start + Vector3d(lane.exit + .1, -sign*.5, 0);
     // Predicted start beyond the rear is insufficient: actual aircraft is still alongside it.
@@ -2798,7 +2835,7 @@ public:
           "completed bypass constrained the next obstacle's lane selection");
   }
 
-  static void runRecordedBypass(const char* fixture) {
+  static void runRecordedBypass(const char* fixture, bool lane_center = false) {
     ros::NodeHandle nh("~");
     nh.setParam("manager/use_geometric_path", true);
     nh.setParam("astar/resolution_astar", 0.05);
@@ -2816,6 +2853,10 @@ public:
     double yaw;
     check(bool(input >> frames >> pos.x() >> pos.y() >> pos.z() >> yaw),
           "recorded bypass fixture header is invalid");
+    Vector3d observed_pos;
+    if (lane_center) {
+      ASSERT_TRUE(bool(input >> observed_pos.x() >> observed_pos.y() >> observed_pos.z()));
+    }
     const Vector3d origin = pos;
     const Vector3d forward(std::cos(yaw), std::sin(yaw), 0.0);
     manager.task_search_manager_->stable_progress_direction_ = forward.head<2>();
@@ -2838,6 +2879,40 @@ public:
     ViewNode::caster_->setParams(manager.sdf_map_->getResolution(), map_origin);
     const auto obstacle = manager.findWideSideSplit(pos, forward);
     check(obstacle.valid, "recorded map did not reproduce the blocking obstacle");
+    if (lane_center) {
+      manager.entry_forward_complete_ = true;
+      manager.task_search_manager_->exit_detection_enabled_ = false;
+      manager.task_search_manager_->cruise_height_ = .60;
+      manager.horizontal_reference_height_ = .60;
+      manager.task_search_manager_->updateRobotPose(pos, yaw);
+      Vector3d next; double next_yaw;
+      // 点云覆盖横移前后；恢复日志中已经发布的右侧承诺，不用后续地图重选左右。
+      manager.active_split_lane_ = manager.makeSplitLane(pos, forward, obstacle, -1);
+      manager.split_route_committed_ = true;
+      manager.recovery_side_latched_ = true;
+      manager.wide_side_bypass_active_ = true;
+      manager.recovery_side_origin_ = pos;
+      manager.wide_side_bypass_forward_ = forward;
+      manager.recovery_side_dir_ = Vector3d(forward.y(), -forward.x(), 0);
+      manager.wide_side_bypass_release_distance_ = manager.active_split_lane_.exit;
+      manager.task_search_manager_->updateRobotPose(observed_pos, yaw);
+      manager.recovery_odom_history_.push_back(observed_pos);
+      ASSERT_TRUE(manager.buildSideRecoveryContinuation(observed_pos, yaw, next, next_yaw));
+      std::cout << "recorded lane observed=" << observed_pos.transpose()
+                << " next=" << next.transpose() << std::endl;
+      EXPECT_GT((next-observed_pos).dot(forward), .19);
+      EXPECT_GE(next.y(), observed_pos.y() - .05);
+      Vector3d legacy; double legacy_yaw;
+      manager.split_route_committed_ = false; // 同一地图、位置与右侧标记，复现旧的全通道居中。
+      ASSERT_TRUE(manager.buildSideRecoveryContinuation(observed_pos, yaw, legacy, legacy_yaw));
+      manager.split_route_committed_ = true;
+      std::cout << "recorded legacy target=" << legacy.transpose() << std::endl;
+      EXPECT_GT(next.y(), legacy.y()+.10);
+      vector<Vector3d> path{observed_pos, next};
+      manager.centrePassagePath(path, 1.0);
+      for (const auto& p : path) EXPECT_GE(p.y(), observed_pos.y()-.05);
+      return;
+    }
     const double required_progress = obstacle.forward_distance +
         manager.vertical_detour_footprint_radius_ + manager.sdf_map_->getResolution();
     for (int step=0; step<24 && (pos-origin).dot(forward)<required_progress; ++step) {
@@ -3284,4 +3359,17 @@ TEST(RouteWidth, EarlyRightPassageKeepsSideUntilActualRearClearance) {
 }
 TEST(RouteWidth, EarlyLeftPassageMirrorsRight) {
   fast_planner::TurnEscapeTest::runEarlySplit(true);
+}
+
+TEST(RouteWidth, SteppedRightBypassCentersOnlyInsideRightLane) {
+  fast_planner::TurnEscapeTest::runEarlySplit(false, true);
+}
+TEST(RouteWidth, SteppedLeftBypassCentersOnlyInsideLeftLane) {
+  fast_planner::TurnEscapeTest::runEarlySplit(true, true);
+}
+
+TEST(SideBypassProgress, RecordedExitObstacleKeepsRightSubLane) {
+  const char* fixture = std::getenv("LANE_CENTER_FIXTURE");
+  if (!fixture) GTEST_SKIP() << "requires recorded exit-obstacle point clouds";
+  fast_planner::TurnEscapeTest::runRecordedBypass(fixture, true);
 }

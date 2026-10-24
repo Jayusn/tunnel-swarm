@@ -15,7 +15,17 @@ struct SplitRoute {
   Eigen::Vector3d origin{Eigen::Vector3d::Zero()};
   Eigen::Vector3d forward{Eigen::Vector3d::UnitX()};
   double entry{0.0}, exit{0.0}, offset{0.0};
+  double outer_offset{std::numeric_limits<double>::infinity()};
+  double obstacle_min{0.0}, obstacle_max{0.0}, obstacle_front{0.0};
+  bool rear_known{false};
 };
+
+inline bool insideLane(const Eigen::Vector3d& point, const SplitRoute& lane) {
+  if (!lane.side) return true;
+  const double offset = lane.side * (point - lane.origin).dot(
+      Eigen::Vector3d(-lane.forward.y(), lane.forward.x(), 0));
+  return offset >= lane.offset - 1e-6 && offset <= lane.outer_offset + 1e-6;
+}
 
 inline int routeSide(const Eigen::Vector3d& delta, const Eigen::Vector3d& forward) {
   const double offset = delta.dot(Eigen::Vector3d(-forward.y(), forward.x(), 0));

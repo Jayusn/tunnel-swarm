@@ -11,6 +11,11 @@ static void require(bool condition, const char* message) {
 
 int main() {
   const Vector3d forward(1, 0, 0);
+  route_width::SplitRoute bounded;
+  bounded.side = -1; bounded.offset = .30; bounded.outer_offset = .75;
+  require(route_width::insideLane({0,-.5,.6}, bounded), "selected sub-lane must be available before the obstacle");
+  require(!route_width::insideLane({0,0,.6}, bounded), "open approach must not merge the selected lane with the corridor center");
+  require(!route_width::insideLane({0,-.9,.6}, bounded), "centering must respect the outer lane boundary too");
   const Vector3d west(-1, 0, 0);
   require(!route_width::sameAlternative({4.43,-3.13,.52}, -1, west,
                                       {4.45,-3.45,.52}, 0, west),

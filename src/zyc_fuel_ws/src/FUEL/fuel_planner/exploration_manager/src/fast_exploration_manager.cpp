@@ -62,6 +62,7 @@ void FastExplorationManager::recordPublishedTrajectoryHeight() {
     // probe must not change the commitment of the still-executing trajectory.
     if (planned_split_route_.side && !manual_fapp_active_) {
       split_route_committed_ = true;
+      active_split_lane_ = planned_split_route_;
       recovery_side_latched_ = true;
       wide_side_bypass_active_ = true;
       recovery_side_origin_ = planned_split_route_.origin;
@@ -1664,42 +1665,64 @@ int FastExplorationManager::widerRouteSide(double yaw) const {
                             widerRouteForward(yaw));
 }
 
+bool FastExplorationManager::insideRecoveryLane(const Vector3d& point) const {
+  return !committedSplitRoute() || route_width::insideLane(point, active_split_lane_);
+}
+
+void FastExplorationManager::updateSplitRear(route_width::SplitRoute& lane) const {
+  const double step = sdf_map_->getResolution();
+  const Vector3d lateral(-lane.forward.y(), lane.forward.x(), 0);
+  double far_edge = lane.obstacle_front;
+  bool rear_known = false;
+  for (double d = far_edge + step;
+       d <= route_width_horizon_ + wide_side_bypass_lateral_range_; d += step) {
+    bool occupied = false, known = true;
+    for (double offset = lane.obstacle_min;
+         offset <= lane.obstacle_max + 1e-6; offset += step) {
+      const int state = widthColumnState(lane.origin + d * lane.forward + offset * lateral);
+      occupied |= state == SDFMap::OCCUPIED;
+      known &= state != SDFMap::UNKNOWN;
+    }
+    if (!occupied) { rear_known = known; break; }
+    far_edge = d;
+  }
+  const double observed_exit = far_edge + vertical_detour_footprint_radius_ + step;
+  lane.rear_known = rear_known || (lane.rear_known && observed_exit <= lane.exit + 1e-6);
+  lane.exit = std::max(lane.exit, observed_exit);
+}
+
+route_width::SplitRoute FastExplorationManager::makeSplitLane(
+    const Vector3d& pos, const Vector3d& forward, const SplitEvidence& split, int side) const {
+  route_width::SplitRoute lane;
+  lane.side = side; lane.origin = pos; lane.forward = forward;
+  lane.obstacle_front = split.forward_distance;
+  lane.obstacle_min = split.obstacle_min_offset;
+  lane.obstacle_max = split.obstacle_max_offset;
+  lane.entry = std::max(0.0, split.forward_distance -
+      vertical_detour_footprint_radius_ - sdf_map_->getResolution());
+  lane.offset = (side > 0 ? split.obstacle_max_offset : -split.obstacle_min_offset) +
+      vertical_detour_footprint_radius_;
+  lane.outer_offset = (side > 0 ? split.left_free_max : -split.right_free_min) -
+      vertical_detour_footprint_radius_;
+  updateSplitRear(lane);
+  return lane;
+}
+
 bool FastExplorationManager::prepareSplitRoute(const Vector3d& start,
                                                const Vector3d& forward) {
   const SplitEvidence split = findWideSideSplit(start, forward);
   if (!split.valid) return false;
   const Vector3d lateral(-forward.y(), forward.x(), 0);
   const double step = sdf_map_->getResolution();
-  // 记录障碍的后缘，而不是把首次命中的前缘当成已经通过。
-  double far_edge = split.forward_distance;
-  bool rear_observed = false;
-  for (double d = far_edge + step;
-       d <= route_width_horizon_ + wide_side_bypass_lateral_range_; d += step) {
-    bool occupied = false, known = true;
-    for (double offset = split.obstacle_min_offset;
-         offset <= split.obstacle_max_offset + 1e-6; offset += step) {
-      const int state = widthColumnState(start + d * forward + offset * lateral);
-      occupied |= state == SDFMap::OCCUPIED;
-      known &= state != SDFMap::UNKNOWN;
-    }
-    if (!occupied) { rear_observed = known; break; }
-    far_edge = d;
-  }
-  if (!rear_observed) return false;
-  const double margin = vertical_detour_footprint_radius_ + step;
-  const double exit = far_edge + margin;
-  const double distance = std::max(route_width_horizon_, exit + 0.05);
   const int first_side = split.right_width > split.left_width ? -1 : 1;
   for (int side : {first_side, -first_side}) {
     const double width = side > 0 ? split.left_width : split.right_width;
     if (width < wide_side_bypass_min_lane_width_) continue;
-    const double edge = side > 0 ? split.obstacle_max_offset : -split.obstacle_min_offset;
     const double center = side > 0 ? 0.5*(split.left_free_min + split.left_free_max)
                                    : -0.5*(split.right_free_min + split.right_free_max);
-    route_width::SplitRoute lane;
-    lane.side = side; lane.origin = start; lane.forward = forward;
-    lane.entry = std::max(0.0, split.forward_distance - margin);
-    lane.exit = exit; lane.offset = edge + vertical_detour_footprint_radius_;
+    const auto lane = makeSplitLane(start, forward, split, side);
+    if (!lane.rear_known) continue;
+    const double distance = std::max(route_width_horizon_, lane.exit + 0.05);
     for (double offset = center; offset >= lane.offset - 1e-6; offset -= step) {
       Vector3d target = start + distance * forward + side * offset * lateral;
       target.z() = horizontalGoalHeight(start.z());
@@ -1720,7 +1743,7 @@ bool FastExplorationManager::prepareSplitRoute(const Vector3d& start,
         pending_wider_route_ = path;
         pending_split_route_ = lane;
         ROS_WARN("[split_route] obstacle %.2fm ahead, rear %.2fm; choose %s known passage "
-                 "width=%.2fm target=(%.2f,%.2f,%.2f).", split.forward_distance, far_edge,
+                 "width=%.2fm target=(%.2f,%.2f,%.2f).", split.forward_distance, lane.exit - vertical_detour_footprint_radius_ - step,
                  side > 0 ? "left" : "right", width, target.x(), target.y(), target.z());
         return true;
       }
@@ -2044,7 +2067,14 @@ bool FastExplorationManager::buildWideSideBypass(
 
   next_pos = best.target;
   next_yaw = cur_yaw;
-  split_route_committed_ = false;
+  // 仅接管明确分成左右两路的普通绕障；单侧墙面/拐角仍使用原有续接规则。
+  split_route_committed_ = split.left_width >= wide_side_bypass_min_lane_width_ &&
+      split.right_width >= wide_side_bypass_min_lane_width_ &&
+      !manual_fapp_active_ && entry_forward_complete_ &&
+      !(manual_path_enabled_ && manual_path_exploration_style_);
+  active_split_lane_ = split_route_committed_
+      ? makeSplitLane(pos, travel, split, best.lateral_offset < 0 ? -1 : 1)
+      : route_width::SplitRoute{};
   recovery_side_latched_ = true;
   recovery_side_origin_ = pos;
   wide_side_bypass_active_ = true;
@@ -2052,6 +2082,14 @@ bool FastExplorationManager::buildWideSideBypass(
   // 从首次选侧的位置累计通过障碍截面及机体半径，不能每次重规划重置进度。
   wide_side_bypass_release_distance_ = split.forward_distance +
       vertical_detour_footprint_radius_ + sdf_map_->getResolution();
+  if (split_route_committed_)
+    wide_side_bypass_release_distance_ = active_split_lane_.exit;
+  if (split_route_committed_)
+    ROS_WARN("[side_lane] retain %s sub-passage offsets=[%.2f,%.2f] rear=%.2f known=%d; "
+             "target and path centering use the same bounds.",
+             active_split_lane_.side > 0 ? "left" : "right", active_split_lane_.offset,
+             active_split_lane_.outer_offset, active_split_lane_.exit,
+             static_cast<int>(active_split_lane_.rear_known));
   const bool choose_right = best.lateral_offset < 0.0;
   recovery_side_dir_ = (choose_right ? -1.0 : 1.0) * lateral;
   if (task_search_manager_) task_search_manager_->recordSelectedGoal(next_pos);
@@ -2311,6 +2349,10 @@ bool FastExplorationManager::buildSideRecoveryContinuation(
     wide_side_bypass_active_ = false;
     return false;
   }
+  if (committedSplitRoute()) {
+    updateSplitRear(active_split_lane_);
+    wide_side_bypass_release_distance_ = active_split_lane_.exit;
+  }
   const double release_distance = wide_side_bypass_active_
       ? wide_side_bypass_release_distance_ : recovery_side_release_distance_;
   const double remaining = std::max(0.40,
@@ -2325,7 +2367,8 @@ bool FastExplorationManager::buildSideRecoveryContinuation(
        planner_manager_->isFappPathSafe({pos, pos + remaining * forward}));
   const Vector3d actual_pos = !committedSplitRoute() || recovery_odom_history_.empty()
       ? pos : recovery_odom_history_.back();
-  if (!manual_fapp_active_ && forward_clear && (actual_pos - recovery_side_origin_).dot(forward) >=
+  if (!manual_fapp_active_ && forward_clear &&
+      (!committedSplitRoute() || active_split_lane_.rear_known) && (actual_pos - recovery_side_origin_).dot(forward) >=
                            release_distance) {
     recovery_side_latched_ = false;
     wide_side_bypass_active_ = false;
@@ -2346,15 +2389,15 @@ bool FastExplorationManager::buildSideRecoveryContinuation(
           pathInsideWorkspaceLock(path) &&
           task_search_manager_->isRecoveryPathAllowed(path, false);
     };
-    if (passage_centering_enabled_ && forward_clear && !manual_side && !manual_fapp_active_ &&
-        !committedSplitRoute()) {
+    if (passage_centering_enabled_ && forward_clear && !manual_side && !manual_fapp_active_) {
       passage_centering::Config cfg;
       cfg.step = std::min(0.05, 0.5 * sdf_map_->getResolution());
       cfg.search_radius = passage_centering_search_radius_;
       const Vector3d centred = passage_centering::sectionCentre(
           candidate, forward, std::min(passage_centering_maximum_shift_, 0.6 * distance),
           cfg, [&](const Vector3d& p) {
-            return pointInsideWorkspaceLock(p) && planner_manager_->isKnownFreePosition(p);
+            return insideRecoveryLane(p) && pointInsideWorkspaceLock(p) &&
+                planner_manager_->isKnownFreePosition(p);
           });
       if (usable(centred)) candidate = centred;
     }
@@ -4810,7 +4853,7 @@ int FastExplorationManager::planExploreMotion(
   // 避免刚穿门就发布跨越数米未知/窄区的整条轨迹，并让新点云在每段之间更新地图。
   const double route_horizon = std::max(0.20, ep_->mission_max_route_segment_length_);
   const bool centre_guidance = passage_centering_enabled_ &&
-      !planned_split_route_.side && !committedSplitRoute() &&
+      !planned_split_route_.side &&
       !(manual_fapp_active_ && recovery_side_latched_) &&
       !use_forced_entry_target && !use_stage3_target && !exit_transit_active && !use_entry_forward_target &&
       !use_vertical_detour_target &&
@@ -4907,8 +4950,8 @@ int FastExplorationManager::planExploreMotion(
     return FAIL;
   }
 
-  // 低位普通回退截断后可能只剩两个端点；补共线中点，避免可行侧路因样条输入不足而停住。
-  if (hold_fapp_height && ed_->path_next_goal_.size() == 2)
+  // 子通道内无需横向修正时居中不会增加引导点，短步仍需满足样条的两个分段输入。
+  if ((hold_fapp_height || committedSplitRoute()) && ed_->path_next_goal_.size() == 2)
     ed_->path_next_goal_.insert(ed_->path_next_goal_.begin()+1,
         0.5*(ed_->path_next_goal_.front()+ed_->path_next_goal_.back()));
   if (!keepsDynamicSide(ed_->path_next_goal_)) return FAIL;
@@ -5273,7 +5316,7 @@ bool FastExplorationManager::shouldStartInflationHistoryEscape(
 }
 
 bool FastExplorationManager::centrePassagePath(vector<Vector3d>& path, double horizon) {
-  if (planned_split_route_.side || committedSplitRoute()) return false;
+  if (planned_split_route_.side) return false;
   if (manual_fapp_active_ && recovery_side_latched_) return false;
   passage_centering::Config cfg;
   cfg.step = std::min(0.05, 0.5 * sdf_map_->getResolution());
@@ -5281,7 +5324,8 @@ bool FastExplorationManager::centrePassagePath(vector<Vector3d>& path, double ho
   cfg.maximum_shift = passage_centering_maximum_shift_;
   const bool changed = passage_centering::centrePath(path, horizon, cfg,
       [&](const Vector3d& p) {
-        return pointInsideWorkspaceLock(p) && planner_manager_->isKnownFreePosition(p);
+        return insideRecoveryLane(p) && pointInsideWorkspaceLock(p) &&
+               planner_manager_->isKnownFreePosition(p);
       }, [&](const vector<Vector3d>& candidate) {
         return planner_manager_->isPathSafe(candidate) &&
             pathInsideWorkspaceLock(candidate) &&
