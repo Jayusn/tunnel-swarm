@@ -58,6 +58,7 @@
     <arg name="fapp_vehicle_top_height" default="$(arg fapp_vehicle_half_height)"/>
     <arg name="fapp_vehicle_bottom_height" default="$(arg fapp_vehicle_half_height)"/>
     <arg name="fapp_memory_enabled" default="false"/>
+    <arg name="fapp_distinguish_leader" default="false"/>
     <arg name="fapp_ball_radius" default="0.10"/>
     <arg name="fapp_margin" default="0.10"/>
     <arg name="fapp_minimum_ball_bottom" default="0.80"/>
@@ -220,6 +221,7 @@
         <param name="fsm/swing_release_speed" value="$(arg swing_release_speed)" type="double"/>
         <param name="fsm/enable_fapp_dynamic_avoidance" value="$(arg enable_fapp_dynamic_avoidance)" type="bool"/>
         <param name="fsm/fapp_obstacle_topic" value="$(arg fapp_obstacle_topic)"/>
+        <param name="fsm/fapp_distinguish_leader" value="$(arg fapp_distinguish_leader)" type="bool"/>
         <param name="fsm/enable_occupied_recovery" value="$(arg enable_occupied_recovery)" type="bool"/>
         <param name="fsm/escape_max_distance" value="$(arg escape_max_distance)" type="double"/>
         <param name="fsm/escape_history_time" value="$(arg escape_history_time)" type="double"/>

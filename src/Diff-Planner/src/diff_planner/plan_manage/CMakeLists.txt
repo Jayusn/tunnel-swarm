@@ -25,13 +25,14 @@ find_package(catkin REQUIRED COMPONENTS
   message_generation
   cv_bridge
   pcl_conversions
+  tf2_ros
 )
 
 # catkin_package(CATKIN_DEPENDS message_runtime)
 catkin_package(
  INCLUDE_DIRS include
  LIBRARIES diff_planner
- CATKIN_DEPENDS ldop obj_state_msgs plan_env path_searching traj_opt traj_utils
+ CATKIN_DEPENDS ldop obj_state_msgs plan_env path_searching traj_opt traj_utils tf2_ros
 #  DEPENDS system_lib
 )
 

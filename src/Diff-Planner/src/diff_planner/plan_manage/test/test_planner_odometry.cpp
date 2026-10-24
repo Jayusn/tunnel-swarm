@@ -386,6 +386,139 @@ class FappRollingEndpoint : public PlannerEndpoint {
   bool fappMemory() const override { return true; }
 };
 
+TEST(FappLeaderIdentity, MatchesRecordedBodyBoxesButKeepsNearbyAndMixedObstacles) {
+  diff_planner::FappLeaderIdentity identity;
+  // Same-time, common-frame observations from the 2026-10-24 bag.
+  EXPECT_TRUE(identity.contains({1.314, -0.186, 0.583}, {0.101, 0.333, 0.067},
+                               {1.505, -0.123, 0.601}));
+  EXPECT_TRUE(identity.contains({5.538, -3.069, 0.412}, {0.109, 0.322, 0.049},
+                               {5.462, -3.147, 0.487}));
+  EXPECT_FALSE(identity.contains({3.826, -2.624, 0.588}, {0.178, 0.176, 0.121},
+                                {2.432, -2.831, 0.505}));
+  const Eigen::Vector3d leader(0, 0, 0.5);
+  EXPECT_FALSE(identity.contains({0, 0, 0.8}, {0.15, 0.15, 0.15}, leader));
+  EXPECT_FALSE(identity.contains({0.3, 0, 0.5}, {0.2, 0.2, 0.2}, leader));
+  // Center proximity alone must never erase a merged leader + obstacle box.
+  EXPECT_FALSE(identity.contains(leader, {0.8, 0.2, 0.1}, leader));
+  EXPECT_FALSE(identity.contains(leader, {0, 0, 0}, leader));
+}
+
+TEST(FappLeaderIdentity, UsesDetectionTimeAndRejectsMissingOrStaleOdometry) {
+  diff_planner::FappLeaderIdentity identity;
+  Eigen::Vector3d position; std::string frame;
+  EXPECT_FALSE(identity.positionAt(10, position, frame));
+  identity.observe({10.02, {0.02, 0, 0.5}, "leader"});
+  identity.observe({9.98, {-0.02, 0, 0.5}, "leader"}); // Out-of-order delivery.
+  ASSERT_TRUE(identity.positionAt(10, position, frame));
+  EXPECT_LT((position - Eigen::Vector3d(0, 0, 0.5)).norm(), 1e-9);
+  EXPECT_EQ(frame, "leader");
+  identity.observe({11, {1, 0, 0.5}, "leader"});
+  ASSERT_TRUE(identity.positionAt(10, position, frame));
+  EXPECT_NEAR(position.x(), 0, 1e-9); // Not the most recent leader position.
+  EXPECT_FALSE(identity.positionAt(11.1, position, frame));
+  EXPECT_FALSE(identity.positionAt(10.5, position, frame));
+  EXPECT_FALSE(identity.positionAt(0, position, frame));
+  identity.observe({9.98, {-0.02, 0, 0.5}, "different_frame"});
+  EXPECT_FALSE(identity.positionAt(10, position, frame));
+}
+
+TEST_F(FappRollingEndpoint, LeaderBodyRetainsCollisionWithoutPassageOrLongHistory) {
+  auto& manager = *planner.planner_manager_;
+  obj_state_msgs::ObjectsStates message;
+  message.header.stamp = ros::Time(1000); message.states.resize(1);
+  auto& body = message.states[0];
+  body.position.x = goal.x(); body.position.y = goal.y(); body.position.z = goal.z();
+  body.size.x = 0.2; body.size.y = 0.3; body.size.z = 0.05;
+  manager.updateDynamicObjects(message, {true});
+  EXPECT_FALSE(manager.inDynamicPassage(goal, 1000));
+  EXPECT_TRUE(manager.dynamicTrajectoryBlocked({{0, goal}}, 1000));
+  message.states.clear(); ros::Time::setNow(ros::Time(1000.2));
+  manager.updateDynamicObjects(message);
+  EXPECT_TRUE(manager.dynamicTrajectoryBlocked({{0, goal}}, 1000.2));
+  EXPECT_FALSE(manager.inDynamicPassage(goal, 1000.2));
+  ros::Time::setNow(ros::Time(1001)); manager.updateDynamicObjects(message);
+  EXPECT_FALSE(manager.dynamicTrajectoryBlocked({{0, goal}}, 1001));
+  // Small sensor-clock lead must retain the original collision-check semantics.
+  message.states.resize(1);
+  auto& future_body = message.states[0];
+  future_body.position.x = goal.x(); future_body.position.y = goal.y(); future_body.position.z = goal.z();
+  future_body.size.x = future_body.size.y = future_body.size.z = 0.1;
+  message.header.stamp = ros::Time(1001.01);
+  manager.updateDynamicObjects(message, {true});
+  EXPECT_TRUE(manager.dynamicTrajectoryBlocked({{0, goal}}, 1001));
+  EXPECT_FALSE(manager.inDynamicPassage(goal, 1001));
+}
+
+TEST_F(FappRollingEndpoint, LeaderInsideRealPassageDoesNotEraseNewOrWatchedObstacle) {
+  auto& manager = *planner.planner_manager_;
+  obj_state_msgs::ObjectsStates message;
+  message.header.stamp = ros::Time(1000); message.states.resize(1);
+  auto& ball = message.states[0];
+  ball.position.x = goal.x() - 0.9; ball.position.y = goal.y(); ball.position.z = 0.8;
+  ball.size.x = ball.size.y = ball.size.z = 0.15;
+  manager.updateDynamicObjects(message);
+  Eigen::Vector3d target, velocity; bool final = false;
+  ASSERT_TRUE(manager.prepareLocalSegment(goal - Eigen::Vector3d(1.8,0,0),
+                                          goal, target, velocity, final));
+  ASSERT_TRUE(final); // Real region is now watched through the crossing.
+  auto body = ball; body.position.z = 0.5; body.size.z = 0.05;
+  message.states.push_back(body);
+  manager.updateDynamicObjects(message, {false, true});
+  const Eigen::Vector3d below_ball(body.position.x, body.position.y, 0.2);
+  EXPECT_TRUE(manager.inDynamicPassage(below_ball, 1000));
+  // Leader enters the same XY area later; its observation cannot clear the old region.
+  message.states = {body}; message.header.stamp = ros::Time(1020);
+  ros::Time::setNow(ros::Time(1020)); manager.updateDynamicObjects(message, {true});
+  EXPECT_TRUE(manager.inDynamicPassage(below_ball, 1020));
+  EXPECT_TRUE(manager.dynamicTrajectoryBlocked({{0, {below_ball.x(), below_ball.y(), 0.8}}}, 1020));
+}
+
+TEST_F(FappRollingEndpoint, LeaderIdentityTransformsSameTimeOdometryAndKeepsUnknownFrames) {
+  planner.fapp_distinguish_leader_ = true;
+  planner.fapp_tf_buffer_.reset(new tf2_ros::Buffer);
+  geometry_msgs::TransformStamped transform;
+  transform.header.frame_id = "follower"; transform.child_frame_id = "leader";
+  transform.transform.translation.x = 1.2;
+  transform.transform.rotation.z = std::sqrt(0.5);
+  transform.transform.rotation.w = std::sqrt(0.5);
+  ASSERT_TRUE(planner.fapp_tf_buffer_->setTransform(transform, "test", true));
+  auto odom = boost::make_shared<nav_msgs::Odometry>();
+  odom->header.frame_id = "leader"; odom->header.stamp = ros::Time(1000);
+  odom->pose.pose.position.x = 1; odom->pose.pose.position.z = 0.5;
+  planner.fappLeaderOdometryCallback(odom);
+  auto message = boost::make_shared<obj_state_msgs::ObjectsStates>();
+  message->header.frame_id = "follower"; message->header.stamp = ros::Time(1000);
+  message->states.resize(1); auto& body = message->states[0];
+  body.position.x = 1.2; body.position.y = 1; body.position.z = 0.5;
+  body.size.x = body.size.y = 0.15; body.size.z = 0.05;
+  EXPECT_TRUE(planner.fappObservationIsLeader(body, message->header));
+  planner.fappObjectsCallback(message);
+  EXPECT_FALSE(planner.planner_manager_->inDynamicPassage({1.2,1,0.5}, 1000));
+  EXPECT_TRUE(planner.planner_manager_->dynamicTrajectoryBlocked({{0, {1.2,1,0.5}}}, 1000));
+  body.header.frame_id = "missing_tf";
+  EXPECT_FALSE(planner.fappObservationIsLeader(body, message->header));
+  body.header.frame_id.clear(); body.header.stamp = ros::Time(999);
+  EXPECT_FALSE(planner.fappObservationIsLeader(body, message->header));
+}
+
+TEST(FappHistory, LeaderBodyCannotCreateOrExpandWatchedPassage) {
+  diff_planner::FappHistory history;
+  diff_planner::DynamicObstacleState body;
+  body.position = {1,0,0.5}; body.size = {0.2,0.3,0.05}; body.stamp = 10;
+  body.leader_body = true;
+  history.update({body}, 10);
+  history.watch(body, {0,0,0.5}, {2,0,0.5}, 0.412);
+  EXPECT_TRUE(history.regions(10).empty());
+  EXPECT_FALSE(history.active());
+  auto ball = body; ball.leader_body = false; ball.size = {0.15,0.15,0.15};
+  history.update({ball}, 10); history.watch(ball, {0,0,0.5}, {2,0,0.5}, 0.412);
+  body.position.x() = 1.4; history.update({body}, 10.1);
+  auto regions = history.regions(30);
+  ASSERT_EQ(regions.size(), 1U);
+  EXPECT_LT((regions[0].position - ball.position).norm(), 1e-9);
+  EXPECT_LT((regions[0].size - ball.size).norm(), 1e-9);
+}
+
 TEST_F(FappRollingEndpoint, CrossingKeepsReleasedRelayEndpointAndHistoryThroughDropout) {
   auto& m = *planner.planner_manager_;
   const Eigen::Vector3d start = goal - Eigen::Vector3d(1.8,0,0);

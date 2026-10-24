@@ -15,6 +15,7 @@ class FappHistory {
     while (!samples_.empty() && now - samples_.front().stamp > duration)
       samples_.pop_front();
     for (const auto& sample : observations) {
+      if (sample.leader_body) continue;
       if (!sample.position.allFinite() || !sample.size.allFinite() ||
           (sample.size.array() < 0.0).any() || !std::isfinite(sample.stamp) ||
           now - sample.stamp > duration) continue;
@@ -46,7 +47,7 @@ class FappHistory {
   }
   void watch(const DynamicObstacleState& region, const Eigen::Vector3d& start,
              const Eigen::Vector3d& end, double padding) {
-    if (active_) return;
+    if (active_ || region.leader_body) return;
     direction_ = end - start; direction_.z() = 0.0;
     if (direction_.norm() < 0.05) return;
     direction_.normalize(); watched_ = region; padding_ = padding; active_ = true;

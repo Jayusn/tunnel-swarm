@@ -68,7 +68,8 @@ namespace diff_planner
                                  double max_speed,
                                  double max_initial_occupied_prefix = 0.20);
     bool checkCollision(int drone_id);
-    void updateDynamicObjects(const obj_state_msgs::ObjectsStates &msg);
+    void updateDynamicObjects(const obj_state_msgs::ObjectsStates &msg,
+                              const std::vector<bool>& leader_matches = {});
     bool dynamicTrajectoryBlocked(
         const std::vector<std::pair<double, Eigen::Vector3d>> &samples,
         double now, SwingCollisionResult *result = nullptr) const;
@@ -96,6 +97,7 @@ namespace diff_planner
 
   private:
     FappHistory fapp_history_;
+    std::vector<DynamicObstacleState> fapp_leader_observations_;
     bool fapp_memory_enabled_{false};
     void refreshDynamicHistory();
     int route_segment_count_{1};

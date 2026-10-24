@@ -32,6 +32,8 @@
 #include <traj_utils/TrackingReplanResult.h>
 #include <traj_utils/MINCOTraj.h>
 #include <plan_manage/swing_obstacle_guard.h>
+#include <plan_manage/fapp_leader_identity.h>
+#include <tf2_ros/transform_listener.h>
 
 using std::vector;
 
@@ -128,6 +130,11 @@ namespace diff_planner
     std::string swing_obstacle_topic_;
     bool enable_fapp_dynamic_avoidance_;
     std::string fapp_obstacle_topic_;
+    bool fapp_distinguish_leader_{false};
+    FappLeaderIdentity fapp_leader_identity_;
+    std::unique_ptr<tf2_ros::Buffer> fapp_tf_buffer_;
+    std::unique_ptr<tf2_ros::TransformListener> fapp_tf_listener_;
+    ros::Subscriber fapp_leader_odom_sub_;
     double swing_prediction_horizon_;
     double swing_prediction_dt_;
     double swing_release_clear_time_;
@@ -212,6 +219,9 @@ namespace diff_planner
     bool callEmergencyStop(Eigen::Vector3d stop_pos);
     void dynamicObjectsCallback(const ldop::DynamicObjectArrayConstPtr &msg);
     void fappObjectsCallback(const obj_state_msgs::ObjectsStatesConstPtr &msg);
+    void fappLeaderOdometryCallback(const nav_msgs::OdometryConstPtr& msg);
+    bool fappObservationIsLeader(const obj_state_msgs::State& state,
+                                 const std_msgs::Header& header) const;
     std::vector<SwingTrajectorySample> sampleCurrentTrajectory(double now) const;
     std::vector<SwingTrajectorySample> sampleReleaseTrajectory() const;
     bool swingTrajectoryBlocked(const std::vector<SwingTrajectorySample> &samples,

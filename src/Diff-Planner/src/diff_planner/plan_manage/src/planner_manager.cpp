@@ -90,28 +90,43 @@ namespace diff_planner
     ploy_traj_opt_->setMaxVelocity(enabled ? entry_max_vel_ : normal_optimizer_max_vel_);
   }
 
-  void DiffPlannerManager::updateDynamicObjects(const obj_state_msgs::ObjectsStates &msg)
+  void DiffPlannerManager::updateDynamicObjects(const obj_state_msgs::ObjectsStates &msg,
+                                                const std::vector<bool>& leader_matches)
   {
     std::vector<DynamicObstacleState> obstacles;
-    for (const auto &state : msg.states)
+    std::vector<DynamicObstacleState> leader_observations;
+    for (size_t i = 0; i < msg.states.size(); ++i)
     {
+      const auto& state = msg.states[i];
       DynamicObstacleState obstacle;
       obstacle.position = Eigen::Vector3d(state.position.x, state.position.y, state.position.z);
       obstacle.velocity = Eigen::Vector3d(state.velocity.x, state.velocity.y, state.velocity.z);
       obstacle.size = Eigen::Vector3d(state.size.x, state.size.y, state.size.z);
       const ros::Time stamp = state.header.stamp.isZero() ? msg.header.stamp : state.header.stamp;
       obstacle.stamp = stamp.isZero() ? ros::Time::now().toSec() : stamp.toSec();
+      obstacle.leader_body = i < leader_matches.size() && leader_matches[i];
+      if (obstacle.leader_body) leader_observations.push_back(obstacle);
       obstacles.push_back(obstacle);
     }
     if (fapp_memory_enabled_) {
+      // Keep a short-lived collision observation, not a stationary 10 s / watched trail.
+      if (!leader_observations.empty()) fapp_leader_observations_ = leader_observations;
       fapp_history_.update(obstacles, ros::Time::now().toSec());
       refreshDynamicHistory();
     } else ploy_traj_opt_->setDynamicObstacles(obstacles);
   }
 
   void DiffPlannerManager::refreshDynamicHistory() {
-    if (fapp_memory_enabled_)
-      ploy_traj_opt_->setDynamicObstacles(fapp_history_.regions(ros::Time::now().toSec()), true);
+    if (!fapp_memory_enabled_) return;
+    const double now = ros::Time::now().toSec();
+    const double retention = ploy_traj_opt_->getDynamicObstacleConfig().observation_retention;
+    fapp_leader_observations_.erase(std::remove_if(fapp_leader_observations_.begin(),
+        fapp_leader_observations_.end(), [now, retention](const DynamicObstacleState& s) {
+          return now - s.stamp > retention;
+        }), fapp_leader_observations_.end());
+    auto regions = fapp_history_.regions(now);
+    regions.insert(regions.end(), fapp_leader_observations_.begin(), fapp_leader_observations_.end());
+    ploy_traj_opt_->setDynamicObstacles(regions, true);
   }
 
   void DiffPlannerManager::observeDynamicPosition(const Eigen::Vector3d& actual) {
@@ -134,6 +149,7 @@ namespace diff_planner
         ? config.vehicle_bottom_height : config.vehicle_half_height;
     for (const auto &obstacle : ploy_traj_opt_->getDynamicObstacles())
     {
+      if (obstacle.leader_body) continue;
       // 下穿时也属于动态通行区域。仅用包络的XY覆盖范围选择恢复流程，
       // 不改变地图占据或正常轨迹的碰撞检查。
       Eigen::Vector3d projected = position;
@@ -912,6 +928,7 @@ namespace diff_planner
     if (fapp_memory_enabled_ && dynamicAvoidanceEnabled()) {
       const auto& config = ploy_traj_opt_->getDynamicObstacleConfig();
       for (const auto& obstacle : ploy_traj_opt_->getDynamicObstacles()) {
+        if (obstacle.leader_body) continue;
         for (size_t i = 1; i < path.size(); ++i) {
           double clearance;
           const double now = ros::Time::now().toSec();

@@ -13,6 +13,8 @@ struct DynamicObstacleState
   // Measured full AABB extents; all-zero or invalid extents use the sphere fallback.
   Eigen::Vector3d size{Eigen::Vector3d::Zero()};
   double stamp{0.0};
+  // Leader-body observations retain collision cost, but must not create swing passages.
+  bool leader_body{false};
 };
 
 struct DynamicObstacleConfig

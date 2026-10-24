@@ -62,6 +62,8 @@
         <arg name="enable_fapp_dynamic_avoidance" value="$(arg enable_fapp_dynamic_avoidance)"/>
         <arg name="fapp_planner_priority" value="$(arg fapp_planner_priority)"/>
         <arg name="fapp_memory_enabled" value="true"/>
+        <!-- 前机机体保留避碰，但不形成摆球通行区域；同区域的真实障碍仍保留。 -->
+        <arg name="fapp_distinguish_leader" value="true"/>
         <arg name="fapp_vehicle_top_height" value="0.05"/>
         <arg name="fapp_vehicle_bottom_height" value="0.20"/>
         <arg name="planner_heartbeat_topic" value="/drone_1_planning/heartbeat"/>
