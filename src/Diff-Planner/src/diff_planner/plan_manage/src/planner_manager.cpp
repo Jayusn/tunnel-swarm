@@ -33,6 +33,10 @@ namespace diff_planner
     if (!std::isfinite(entry_max_vel_) || entry_max_vel_ <= 0.0)
       entry_max_vel_ = normal_max_vel_;
     nh.param("manager/max_acc", pp_.max_acc_, -1.0);
+    normal_max_acc_ = pp_.max_acc_;
+    nh.param("manager/entry_max_acc", entry_max_acc_, normal_max_acc_);
+    if (!std::isfinite(entry_max_acc_) || entry_max_acc_ <= 0.0)
+      entry_max_acc_ = normal_max_acc_;
     nh.param("manager/feasibility_tolerance", pp_.feasibility_tolerance_, 0.0);
     nh.param("manager/polyTraj_piece_length", pp_.polyTraj_piece_length, -1.0);
     nh.param("manager/planning_horizon", pp_.planning_horizen_, 5.0);
@@ -82,6 +86,7 @@ namespace diff_planner
   {
     two_piece_entry_ = enabled;
     pp_.max_vel_ = enabled ? entry_max_vel_ : normal_max_vel_;
+    pp_.max_acc_ = enabled ? entry_max_acc_ : normal_max_acc_;
     ploy_traj_opt_->setMaxVelocity(enabled ? entry_max_vel_ : normal_optimizer_max_vel_);
   }
 

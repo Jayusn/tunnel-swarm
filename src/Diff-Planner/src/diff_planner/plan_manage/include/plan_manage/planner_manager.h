@@ -105,6 +105,7 @@ namespace diff_planner
         std::numeric_limits<double>::quiet_NaN())};
     std::vector<Eigen::Vector3d> route_segment_guide_;
     double normal_max_vel_{0.0}, normal_optimizer_max_vel_{0.0}, entry_max_vel_{0.0};
+    double normal_max_acc_{0.0}, entry_max_acc_{0.0};
     bool setLocalTrajFromTrajectory(poly_traj::Trajectory traj, int constraint_end,
                                     bool check_dynamic_obstacles,
                                     double max_initial_occupied_prefix);

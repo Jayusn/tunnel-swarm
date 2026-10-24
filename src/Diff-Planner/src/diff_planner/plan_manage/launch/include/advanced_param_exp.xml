@@ -13,6 +13,7 @@
     <arg name="max_vel"/>
     <arg name="entry_max_vel" default="$(arg max_vel)"/>
     <arg name="max_acc"/>
+    <arg name="entry_max_acc" default="$(arg max_acc)"/>
     <arg name="max_jer"/>
     <!-- 轨迹发布前动态可行性检查允许超过 max_vel 的余量。 -->
     <arg name="vel_tolerance" default="1.0"/>
@@ -321,6 +322,7 @@
         <param name="manager/max_vel" value="$(arg max_vel)" type="double"/>
         <param name="manager/entry_max_vel" value="$(arg entry_max_vel)" type="double"/>
         <param name="manager/max_acc" value="$(arg max_acc)" type="double"/>
+        <param name="manager/entry_max_acc" value="$(arg entry_max_acc)" type="double"/>
         <param name="manager/max_jer" value="$(arg max_jer)" type="double"/>
         <param name="manager/polyTraj_piece_length" value="1.5" type="double"/>
         <param name="manager/feasibility_tolerance" value="0.05" type="double"/>

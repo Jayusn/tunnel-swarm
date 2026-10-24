@@ -15,9 +15,10 @@
     <arg name="position_cmd_topic" default="/UAV1/planning/pos_cmd"/>
     <arg name="route_segment_count" default="3"/>
     <arg name="route_segment_min_length" default="0.60"/>
-    <arg name="max_vel" default="0.10"/>
-    <!-- 入口门点单独提速，普通目标仍使用max_vel。 -->
-    <arg name="entry_max_vel" default="0.70"/>
+    <arg name="max_vel" default="0.30"/>
+    <!-- 入口直达使用独立速度/加速度，普通目标恢复 max_vel/max_acc。 -->
+    <arg name="entry_max_vel" default="1.00"/>
+    <arg name="entry_max_acc" default="1.00"/>
     <arg name="max_acc" default="0.50"/>
     <arg name="enable_rviz" default="true"/>
     <arg name="record_dynamic_debug" default="false"/>
@@ -88,9 +89,10 @@
         <arg name="cy" value="239.09725952148438"/>
         <arg name="fx" value="386.2706298828125"/>
         <arg name="fy" value="386.2706298828125"/>
-        <!-- 后机普通段规划速度设为0.1m/s、加速度上限0.5m/s²，沿用规划器原有的可行性检查容差。 -->
+        <!-- 后机普通段规划速度设为0.3m/s、加速度上限0.5m/s²，沿用规划器原有的可行性检查容差。 -->
         <arg name="max_vel" value="$(arg max_vel)"/>
         <arg name="entry_max_vel" value="$(arg entry_max_vel)"/>
+        <arg name="entry_max_acc" value="$(arg entry_max_acc)"/>
         <arg name="max_acc" value="$(arg max_acc)"/>
         <arg name="max_jer" value="8.0"/>
         <!-- 后机点云建图与优化共享单线程回调，给一次困难目标留出完整的规划窗口。 -->
