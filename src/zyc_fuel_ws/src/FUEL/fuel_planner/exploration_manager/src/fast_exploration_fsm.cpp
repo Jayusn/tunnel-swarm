@@ -912,9 +912,14 @@ bool FastExplorationFSM::checkWiderExecutionRoute() {
   // Two consecutive evaluations must agree on the alternative. Tiny width
   // fluctuations cannot switch sides on each callback.
   const Vector3d target = expl_manager_->widerRouteTarget();
+  const Vector3d forward = expl_manager_->widerRouteForward(fd_->odom_yaw_);
+  const int side = expl_manager_->widerRouteSide(fd_->odom_yaw_);
   const bool confirmed = width_candidate_seen_ &&
-      (target - last_width_target_).head<2>().norm() <= 0.35;
+      route_width::sameAlternative(last_width_target_, last_width_side_,
+                                   last_width_forward_, target, side, forward);
   last_width_target_ = target;
+  last_width_side_ = side;
+  last_width_forward_ = forward;
   width_candidate_seen_ = true;
   if (!confirmed) expl_manager_->clearWiderRoute();
   return confirmed;

@@ -1134,6 +1134,100 @@ public:
     EXPECT_EQ(SDFMap::UNKNOWN, manager.widthColumnState(Vector3d(1, 1, 1)));
   }
 
+  static void runEarlySplit(bool mirror) {
+    ros::NodeHandle nh("~early_split");
+    nh.setParam("manager/use_geometric_path", true);
+    nh.setParam("astar/resolution_astar", 0.05);
+    nh.setParam("astar/allocate_num", 100000);
+    FastExplorationManager manager;
+    initialize(nh, manager, true);
+    auto& map = *manager.sdf_map_;
+    const double sign = mirror ? -1.0 : 1.0;
+    const Vector3d start(-.4, .4 * sign, 1.025);
+    for (double y = -1.7; y <= 1.7; y += .05)
+      for (double z = .725; z <= 1.325; z += .05) {
+        pcl::PointCloud<pcl::PointXYZ> cloud;
+        cloud.push_back(pcl::PointXYZ(1.9, y, z));
+        map.inputPointCloud(cloud, 1, Vector3d(-1.9, y, z));
+        cloud.front().x = -1.9;
+        map.inputPointCloud(cloud, 1, Vector3d(1.9, y, z));
+      }
+    pcl::PointCloud<pcl::PointXYZ> cloud;
+    for (double x = -.3; x <= 1.6; x += .025)
+      for (double z = .725; z <= 1.325; z += .025) {
+        cloud.push_back(pcl::PointXYZ(x, 1.20 * sign, z));
+        cloud.push_back(pcl::PointXYZ(x, -.70 * sign, z));
+        if (x >= .4 && x <= .6)
+          for (double y = -.15; y <= .15; y += .025)
+            cloud.push_back(pcl::PointXYZ(x, (.4 + y) * sign, z));
+      }
+    for (int i = 0; i < 8; ++i) map.inputPointCloud(cloud, cloud.size(), start);
+    map.updateESDF3d();
+    manager.ep_->mission_use_forward_fallback_ = true;
+    manager.ep_->mission_use_workspace_lock_ = true;
+    manager.mission_workspace_lock_received_ = true;
+    manager.mission_workspace_origin_ = start - Vector3d(1, 0, 0);
+    manager.mission_workspace_dir_ = Vector3d::UnitX();
+    manager.entry_forward_complete_ = true;
+    auto& task = *manager.task_search_manager_;
+    task.setMap(manager.sdf_map_);
+    task.enabled_ = true;
+    task.global_no_return_ = false;
+    task.exit_detection_enabled_ = false;
+    task.cruise_height_ = start.z();
+    task.stable_progress_direction_ = Eigen::Vector2d::UnitX();
+    task.stable_progress_direction_valid_ = true;
+    task.updateRobotPose(start, 0.0);
+    const vector<Vector3d> approach{start, start + Vector3d(.45, 0, 0)};
+    // The current short trajectory is safe, but ends BEFORE a divider 0.8m away.
+    ASSERT_TRUE(manager.planner_manager_->isPathSafe(approach));
+    ASSERT_TRUE(manager.prepareWiderRoute(approach, 0));
+    EXPECT_GT(manager.pending_split_route_.entry, .4);
+    EXPECT_EQ(-sign, manager.pending_split_route_.side);
+    EXPECT_FALSE(manager.recovery_side_latched_); // probes must not alter the live route
+    EXPECT_TRUE(route_width::followsSplit(manager.pending_wider_route_, manager.pending_split_route_));
+    EXPECT_TRUE(manager.planner_manager_->isPathSafe(manager.pending_wider_route_));
+    const auto path = manager.pending_wider_route_;
+    const auto lane = manager.pending_split_route_;
+    ASSERT_TRUE(manager.planner_manager_->planExploreTraj(
+        path, Vector3d(.3, 0, 0), Vector3d::Zero(), 0));
+    ASSERT_TRUE(manager.planner_manager_->isTrajectorySafe());
+    auto& trajectory = manager.planner_manager_->local_data_.position_traj_;
+    vector<Vector3d> samples;
+    for (double t = 0; t < trajectory.getTimeSum(); t += .05)
+      samples.push_back(trajectory.evaluateDeBoorT(t));
+    samples.push_back(trajectory.evaluateDeBoorT(trajectory.getTimeSum()));
+    EXPECT_TRUE(route_width::followsSplit(samples, lane));
+    manager.clearWiderRoute(); // rejected/unconfirmed attempt leaves no commitment
+    EXPECT_FALSE(manager.recovery_side_latched_);
+    manager.planned_split_route_ = lane;
+    manager.width_route_plan_ = true;
+    manager.recordPublishedTrajectoryHeight();
+    ASSERT_TRUE(manager.recovery_side_latched_);
+    EXPECT_TRUE(manager.wide_side_bypass_active_);
+    EXPECT_GT(manager.wide_side_bypass_release_distance_, 1.1);
+    EXPECT_FALSE(manager.prepareWiderRoute(approach, 0)); // no reranking across the divider
+    auto centered = path;
+    EXPECT_FALSE(manager.centrePassagePath(centered, 2.0));
+    EXPECT_EQ(path, centered);
+    Vector3d target; double yaw = 0;
+    const Vector3d beyond = start + Vector3d(lane.exit + .1, -sign*.5, 0);
+    // Predicted start beyond the rear is insufficient: actual aircraft is still alongside it.
+    manager.recovery_odom_history_.push_back(start + Vector3d(lane.exit-.1, -sign*.5, 0));
+    manager.buildSideRecoveryContinuation(beyond, 0, target, yaw);
+    EXPECT_TRUE(manager.recovery_side_latched_);
+    manager.recovery_odom_history_.push_back(beyond);
+    EXPECT_FALSE(manager.buildSideRecoveryContinuation(beyond, 0, target, yaw));
+    EXPECT_FALSE(manager.recovery_side_latched_);
+    // 新通道轴已经转弯时，旧障碍的固定通过轴不能阻止正常转弯。
+    manager.planned_split_route_ = lane;
+    manager.width_route_plan_ = true;
+    manager.recordPublishedTrajectoryHeight();
+    task.stable_progress_direction_ = Eigen::Vector2d::UnitY();
+    EXPECT_FALSE(manager.buildSideRecoveryContinuation(start, 0, target, yaw));
+    EXPECT_FALSE(manager.recovery_side_latched_);
+  }
+
   static void runStraightWidth(bool mirror) {
     ros::NodeHandle nh("~straight_width");
     nh.setParam("manager/use_geometric_path", true);
@@ -3183,4 +3277,11 @@ TEST(ExitPortal, OvershootReturnsToCenterAndReplacesOrdinaryTarget) {
 }
 TEST(ExitPortal, RotatedOvershootReturnsWithoutForwardAstarConstraint) {
   fast_planner::TurnEscapeTest::runPendingExitApproach(2.8, -0.25, false, true, 0.35);
+}
+
+TEST(RouteWidth, EarlyRightPassageKeepsSideUntilActualRearClearance) {
+  fast_planner::TurnEscapeTest::runEarlySplit(false);
+}
+TEST(RouteWidth, EarlyLeftPassageMirrorsRight) {
+  fast_planner::TurnEscapeTest::runEarlySplit(true);
 }

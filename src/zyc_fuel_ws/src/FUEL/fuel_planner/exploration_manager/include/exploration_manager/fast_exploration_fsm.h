@@ -114,6 +114,8 @@ private:
   bool checkFappExecutionRetry();
   ros::Time next_width_check_;
   Vector3d last_width_target_{Vector3d::Zero()};
+  Vector3d last_width_forward_{Vector3d::UnitX()};
+  int last_width_side_{0};
   bool width_candidate_seen_{false};
   std::uint64_t width_check_map_sequence_{0};
   bool pending_exit_transit_{false};

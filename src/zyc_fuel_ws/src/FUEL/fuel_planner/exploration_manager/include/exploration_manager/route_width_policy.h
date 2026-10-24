@@ -9,6 +9,44 @@
 namespace fast_planner {
 namespace route_width {
 
+// 分流路线的候选信息；只在轨迹发布后转为现有的绕行侧承诺。
+struct SplitRoute {
+  int side{0};
+  Eigen::Vector3d origin{Eigen::Vector3d::Zero()};
+  Eigen::Vector3d forward{Eigen::Vector3d::UnitX()};
+  double entry{0.0}, exit{0.0}, offset{0.0};
+};
+
+inline int routeSide(const Eigen::Vector3d& delta, const Eigen::Vector3d& forward) {
+  const double offset = delta.dot(Eigen::Vector3d(-forward.y(), forward.x(), 0));
+  return offset > 0.10 ? 1 : (offset < -0.10 ? -1 : 0);
+}
+
+inline bool sameAlternative(const Eigen::Vector3d& previous, int previous_side,
+                            const Eigen::Vector3d& previous_forward,
+                            const Eigen::Vector3d& target, int side,
+                            const Eigen::Vector3d& forward) {
+  return previous_side == side && previous_forward.dot(forward) > 0.95 &&
+         (target - previous).head<2>().norm() <= 0.35;
+}
+
+inline bool followsSplit(const std::vector<Eigen::Vector3d>& path,
+                         const SplitRoute& lane) {
+  if (!lane.side || path.size() < 2 ||
+      (path.back() - lane.origin).dot(lane.forward) < lane.exit) return false;
+  const Eigen::Vector3d lateral(-lane.forward.y(), lane.forward.x(), 0);
+  for (std::size_t i = 1; i < path.size(); ++i) {
+    const int n = std::max(1, static_cast<int>(std::ceil((path[i]-path[i-1]).norm()/0.025)));
+    for (int j = 0; j <= n; ++j) {
+      const Eigen::Vector3d p = path[i-1] + (path[i]-path[i-1])*(double(j)/n) - lane.origin;
+      const double progress = p.dot(lane.forward);
+      if (progress >= lane.entry && progress <= lane.exit &&
+          lane.side * p.dot(lateral) < lane.offset - 1e-6) return false;
+    }
+  }
+  return true;
+}
+
 // Width is horizontal known-free space at the flight height, not 3-D ESDF
 // (which can be dominated by the floor). All routes use the same forward axis.
 struct Score {

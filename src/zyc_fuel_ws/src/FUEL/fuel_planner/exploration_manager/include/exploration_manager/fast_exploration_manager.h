@@ -91,7 +91,9 @@ public:
   bool widthReplacementImproves(const vector<Vector3d>& current_path,
                                 const vector<Vector3d>& replacement, double yaw) const;
   Vector3d widerRouteTarget() const { return pending_wider_route_.back(); }
-  void clearWiderRoute() { pending_wider_route_.clear(); }
+  Vector3d widerRouteForward(double yaw) const;
+  int widerRouteSide(double yaw) const;
+  void clearWiderRoute() { pending_wider_route_.clear(); pending_split_route_ = {}; planned_split_route_ = {}; }
   bool beginSuspendedUnderpass(const Vector3d& pos, double yaw);
   bool currentPlanIsTurnInPlace() const { return turn_in_place_plan_; }
   bool currentPlanIsGroundAscent() const { return ground_ascent_plan_; }
@@ -217,6 +219,7 @@ private:
   bool recovery_side_latched_{false};
   bool wide_side_bypass_active_{false};
   double wide_side_bypass_release_distance_{0.0};
+  Vector3d wide_side_bypass_forward_{Vector3d::UnitX()};
   bool recovery_side_continuation_pending_{false};
   Vector3d recovery_side_origin_{0.0, 0.0, 0.0};
   Vector3d recovery_side_dir_{1.0, 0.0, 0.0};
@@ -232,6 +235,13 @@ private:
   double route_width_replan_gain_{0.10};
   vector<Vector3d> pending_wider_route_;
   bool width_route_plan_{false};
+  route_width::SplitRoute pending_split_route_, planned_split_route_;
+  bool split_route_committed_{false};
+  bool committedSplitRoute() const {
+    return split_route_committed_ && recovery_side_latched_ &&
+           wide_side_bypass_active_ && !manual_fapp_active_;
+  }
+  bool prepareSplitRoute(const Vector3d& start, const Vector3d& forward);
   int widthColumnState(const Vector3d& point) const;
   bool widthEndpointHasRoom(const vector<Vector3d>& path) const;
   route_width::Score evaluateRouteWidth(const vector<Vector3d>& path,

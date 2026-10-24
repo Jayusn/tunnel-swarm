@@ -11,6 +11,24 @@ static void require(bool condition, const char* message) {
 
 int main() {
   const Vector3d forward(1, 0, 0);
+  const Vector3d west(-1, 0, 0);
+  require(!route_width::sameAlternative({4.43,-3.13,.52}, -1, west,
+                                      {4.45,-3.45,.52}, 0, west),
+          "recorded right-to-center switch cannot count as two agreeing observations");
+  require(route_width::sameAlternative({4.43,-3.13,.52}, -1, west,
+                                     {4.40,-3.10,.52}, -1, west),
+          "same-side map updates should confirm a passage");
+  require(!route_width::sameAlternative({4.43,-3.13,.52}, -1, west,
+                                      {4.43,-3.13,.52}, -1, forward),
+          "a changed corridor axis cannot reuse old side confirmation");
+  route_width::SplitRoute lane;
+  lane.side = -1; lane.entry = .5; lane.exit = 1.1; lane.offset = .3;
+  require(route_width::followsSplit({{0,0,.5},{.3,-.5,.5},{1.2,-.5,.5}}, lane),
+          "right route must retain the lane through the obstacle rear");
+  require(!route_width::followsSplit({{0,0,.5},{.3,-.5,.5},{1.2,0,.5}}, lane),
+          "centering before the obstacle rear must not be accepted");
+  require(!route_width::followsSplit({{0,0,.5},{.3,-.5,.5},{.9,-.5,.5}}, lane),
+          "truncating before the rear cannot count as a complete bypass");
   // A central obstacle separates a narrow straight lane and a wider right
   // lane. Both routes are feasible; enumeration order must not pick straight.
   const auto free = [](const Vector3d& p) {

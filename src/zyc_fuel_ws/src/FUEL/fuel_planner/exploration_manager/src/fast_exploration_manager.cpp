@@ -60,12 +60,26 @@ void FastExplorationManager::recordPublishedTrajectoryHeight() {
   if (width_route_plan_) {
     // Only a published replacement releases the old side. A rejected width
     // probe must not change the commitment of the still-executing trajectory.
-    if (!manual_fapp_active_) {
+    if (planned_split_route_.side && !manual_fapp_active_) {
+      split_route_committed_ = true;
+      recovery_side_latched_ = true;
+      wide_side_bypass_active_ = true;
+      recovery_side_origin_ = planned_split_route_.origin;
+      wide_side_bypass_forward_ = planned_split_route_.forward;
+      recovery_side_dir_ = planned_split_route_.side *
+          Vector3d(-wide_side_bypass_forward_.y(), wide_side_bypass_forward_.x(), 0);
+      wide_side_bypass_release_distance_ = planned_split_route_.exit;
+      recovery_side_continuation_pending_ = false;
+      ROS_WARN("[split_route] published %s passage; retain side until actual progress %.2fm.",
+               planned_split_route_.side > 0 ? "left" : "right",
+               wide_side_bypass_release_distance_);
+    } else if (!manual_fapp_active_ && !committedSplitRoute()) {
       recovery_side_latched_ = false;
       wide_side_bypass_active_ = false;
       recovery_side_continuation_pending_ = false;
     }
     width_route_plan_ = false;
+    planned_split_route_ = {};
   }
   if (manual_fapp_active_ && manual_fapp_curve_active_ &&
       std::isfinite(pending_reference_height_)) {
@@ -1632,16 +1646,95 @@ bool FastExplorationManager::widthReplacementImproves(
     const vector<Vector3d>& current_path, const vector<Vector3d>& replacement,
     double yaw) const {
   if (!task_search_manager_ || !widthEndpointHasRoom(replacement)) return false;
+  // 明确分流的替换按同侧通过检查，不再要求比障碍前的开阔区更宽。
+  if (planned_split_route_.side)
+    return route_width::followsSplit(replacement, planned_split_route_);
   const Vector3d forward = task_search_manager_->recoveryForwardDirection(yaw);
   return route_width::materiallyWider(evaluateRouteWidth(replacement, forward),
       evaluateRouteWidth(current_path, forward), route_width_replan_gain_);
 }
 
+Vector3d FastExplorationManager::widerRouteForward(double yaw) const {
+  return task_search_manager_->recoveryForwardDirection(yaw).normalized();
+}
+
+int FastExplorationManager::widerRouteSide(double yaw) const {
+  return pending_split_route_.side ? pending_split_route_.side :
+      route_width::routeSide(pending_wider_route_.back() - pending_wider_route_.front(),
+                            widerRouteForward(yaw));
+}
+
+bool FastExplorationManager::prepareSplitRoute(const Vector3d& start,
+                                               const Vector3d& forward) {
+  const SplitEvidence split = findWideSideSplit(start, forward);
+  if (!split.valid) return false;
+  const Vector3d lateral(-forward.y(), forward.x(), 0);
+  const double step = sdf_map_->getResolution();
+  // 记录障碍的后缘，而不是把首次命中的前缘当成已经通过。
+  double far_edge = split.forward_distance;
+  bool rear_observed = false;
+  for (double d = far_edge + step;
+       d <= route_width_horizon_ + wide_side_bypass_lateral_range_; d += step) {
+    bool occupied = false, known = true;
+    for (double offset = split.obstacle_min_offset;
+         offset <= split.obstacle_max_offset + 1e-6; offset += step) {
+      const int state = widthColumnState(start + d * forward + offset * lateral);
+      occupied |= state == SDFMap::OCCUPIED;
+      known &= state != SDFMap::UNKNOWN;
+    }
+    if (!occupied) { rear_observed = known; break; }
+    far_edge = d;
+  }
+  if (!rear_observed) return false;
+  const double margin = vertical_detour_footprint_radius_ + step;
+  const double exit = far_edge + margin;
+  const double distance = std::max(route_width_horizon_, exit + 0.05);
+  const int first_side = split.right_width > split.left_width ? -1 : 1;
+  for (int side : {first_side, -first_side}) {
+    const double width = side > 0 ? split.left_width : split.right_width;
+    if (width < wide_side_bypass_min_lane_width_) continue;
+    const double edge = side > 0 ? split.obstacle_max_offset : -split.obstacle_min_offset;
+    const double center = side > 0 ? 0.5*(split.left_free_min + split.left_free_max)
+                                   : -0.5*(split.right_free_min + split.right_free_max);
+    route_width::SplitRoute lane;
+    lane.side = side; lane.origin = start; lane.forward = forward;
+    lane.entry = std::max(0.0, split.forward_distance - margin);
+    lane.exit = exit; lane.offset = edge + vertical_detour_footprint_radius_;
+    for (double offset = center; offset >= lane.offset - 1e-6; offset -= step) {
+      Vector3d target = start + distance * forward + side * offset * lateral;
+      target.z() = horizontalGoalHeight(start.z());
+      if (!pointInsideWorkspaceLock(target) || !planner_manager_->isKnownFreePosition(target) ||
+          !task_search_manager_->isRecoveryCandidateUseful(target)) continue;
+      for (double advance : {std::max(0.0, lane.entry - 0.15), 0.0}) {
+        Vector3d via = start + advance * forward + side * offset * lateral;
+        via.z() = target.z();
+        vector<Vector3d> path{start, via, target};
+        if (!pathInsideWorkspaceLock(path) || !planner_manager_->isPathSafe(path) ||
+            !task_search_manager_->isRecoveryPathAllowed(path, false) ||
+            !widthEndpointHasRoom(path) || !route_width::followsSplit(path, lane)) continue;
+        bool known = true;
+        for (size_t i = 1; i < path.size(); ++i)
+          known &= passage_centering::knownSegment(path[i-1], path[i], 0.025,
+              [&](const Vector3d& p) { return planner_manager_->isKnownFreePosition(p); });
+        if (!known) continue;
+        pending_wider_route_ = path;
+        pending_split_route_ = lane;
+        ROS_WARN("[split_route] obstacle %.2fm ahead, rear %.2fm; choose %s known passage "
+                 "width=%.2fm target=(%.2f,%.2f,%.2f).", split.forward_distance, far_edge,
+                 side > 0 ? "left" : "right", width, target.x(), target.y(), target.z());
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 bool FastExplorationManager::prepareWiderRoute(
     const vector<Vector3d>& current_path, double yaw) {
   pending_wider_route_.clear();
+  pending_split_route_ = {};
   // 动态穿越原侧由续接检查决定是否可行，不用宽度评分反复换边。
-  if (manual_fapp_active_ && recovery_side_latched_) return false;
+  if (recovery_side_latched_ && (manual_fapp_active_ || wide_side_bypass_active_)) return false;
   // Entry owns the first metre after the doorway; open approach and entry
   // advancement are explicitly exempt from width reranking and early switching.
   if (!mission_workspace_lock_received_ || !entry_forward_complete_ ||
@@ -1654,6 +1747,9 @@ bool FastExplorationManager::prepareWiderRoute(
   const Vector3d forward = task_search_manager_->recoveryForwardDirection(yaw).normalized();
   const Vector3d side(-forward.y(), forward.x(), 0.0);
   const Vector3d start = current_path.front();
+  // 分流场景先选能真正穿过障碍的路线；不能让障碍前的宽度评分抢占绕行。
+  if (!manual_fapp_active_ && findWideSideSplit(start, forward).valid)
+    return prepareSplitRoute(start, forward);
   const auto current = evaluateRouteWidth(current_path, forward);
   if (!current.complete) return false;
   route_width::Score best = current;
@@ -1948,9 +2044,11 @@ bool FastExplorationManager::buildWideSideBypass(
 
   next_pos = best.target;
   next_yaw = cur_yaw;
+  split_route_committed_ = false;
   recovery_side_latched_ = true;
   recovery_side_origin_ = pos;
   wide_side_bypass_active_ = true;
+  wide_side_bypass_forward_ = travel;
   // 从首次选侧的位置累计通过障碍截面及机体半径，不能每次重规划重置进度。
   wide_side_bypass_release_distance_ = split.forward_distance +
       vertical_detour_footprint_radius_ + sdf_map_->getResolution();
@@ -2199,12 +2297,15 @@ bool FastExplorationManager::buildSideRecoveryContinuation(
       task_search_manager_->finalExitFrontierGuardActive() ||
       low_probe_phase_ != vertical_detour::LowProbePhase::IDLE)
     return false;
-  const Vector3d forward =
-      task_search_manager_->recoveryForwardDirection(cur_yaw).normalized();
+  const Vector3d corridor_forward = task_search_manager_->recoveryForwardDirection(cur_yaw).normalized();
+  const Vector3d forward = committedSplitRoute()
+      ? wide_side_bypass_forward_
+      : corridor_forward;
   const Vector3d lateral(-forward.y(), forward.x(), 0.0);
   const double side = recovery_side_dir_.dot(lateral);
   // 确认新通道后旧侧向不再有效，不让旧绕柱偏好约束正常转弯。
-  if (std::fabs(side) < 0.5) {
+  if (std::fabs(recovery_side_dir_.dot(
+          Vector3d(-corridor_forward.y(), corridor_forward.x(), 0))) < 0.5) {
     if (manual_fapp_active_) return false;
     recovery_side_latched_ = false;
     wide_side_bypass_active_ = false;
@@ -2222,7 +2323,9 @@ bool FastExplorationManager::buildSideRecoveryContinuation(
   const bool forward_clear = isLowProbeCorridorSafe(pos, forward, 0.40) &&
       (!manual_side || (manual_fapp_active_ && planner_manager_->fappPlannerPriority()) ||
        planner_manager_->isFappPathSafe({pos, pos + remaining * forward}));
-  if (!manual_fapp_active_ && forward_clear && (pos - recovery_side_origin_).dot(forward) >=
+  const Vector3d actual_pos = !committedSplitRoute() || recovery_odom_history_.empty()
+      ? pos : recovery_odom_history_.back();
+  if (!manual_fapp_active_ && forward_clear && (actual_pos - recovery_side_origin_).dot(forward) >=
                            release_distance) {
     recovery_side_latched_ = false;
     wide_side_bypass_active_ = false;
@@ -2243,7 +2346,8 @@ bool FastExplorationManager::buildSideRecoveryContinuation(
           pathInsideWorkspaceLock(path) &&
           task_search_manager_->isRecoveryPathAllowed(path, false);
     };
-    if (passage_centering_enabled_ && forward_clear && !manual_side && !manual_fapp_active_) {
+    if (passage_centering_enabled_ && forward_clear && !manual_side && !manual_fapp_active_ &&
+        !committedSplitRoute()) {
       passage_centering::Config cfg;
       cfg.step = std::min(0.05, 0.5 * sdf_map_->getResolution());
       cfg.search_radius = passage_centering_search_radius_;
@@ -3912,6 +4016,7 @@ int FastExplorationManager::planExploreMotion(
     const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, const Vector3d& yaw) {
   const bool replacing_width_route = !pending_wider_route_.empty();
   width_route_plan_ = false;
+  planned_split_route_ = {};
   fapp_rush_pending_ = false;
   pending_reference_height_ = std::numeric_limits<double>::quiet_NaN();
   // 上轮同侧短步若未生成成功，不在下一轮反复强选同一点。
@@ -4064,6 +4169,7 @@ int FastExplorationManager::planExploreMotion(
           !task_search_manager_->isRecoveryPathAllowed(width_selected_path, false)) return FAIL;
       next_pos = width_selected_path.back();
       width_route_plan_ = true;
+      planned_split_route_ = pending_split_route_;
       next_yaw = yaw[0];
       use_mission_forward_fallback = true;
       ed_->global_tour_ = {pos, next_pos};
@@ -4690,6 +4796,7 @@ int FastExplorationManager::planExploreMotion(
     ed_->path_next_goal_.swap(pending_wider_route_);
     pending_wider_route_.clear();
     width_route_plan_ = true;
+    planned_split_route_ = pending_split_route_;
     next_pos = ed_->path_next_goal_.back();
     next_yaw = yaw[0];
     last_requested_goal_ = next_pos;
@@ -4703,6 +4810,7 @@ int FastExplorationManager::planExploreMotion(
   // 避免刚穿门就发布跨越数米未知/窄区的整条轨迹，并让新点云在每段之间更新地图。
   const double route_horizon = std::max(0.20, ep_->mission_max_route_segment_length_);
   const bool centre_guidance = passage_centering_enabled_ &&
+      !planned_split_route_.side && !committedSplitRoute() &&
       !(manual_fapp_active_ && recovery_side_latched_) &&
       !use_forced_entry_target && !use_stage3_target && !exit_transit_active && !use_entry_forward_target &&
       !use_vertical_detour_target &&
@@ -4720,7 +4828,8 @@ int FastExplorationManager::planExploreMotion(
   const bool far_frontier_goal =
       !use_forced_entry_target && !use_stage3_target &&
       (next_pos - pos).norm() > route_horizon + 1e-6;
-  if (far_frontier_goal && Astar::pathLength(ed_->path_next_goal_) > route_horizon) {
+  if (far_frontier_goal && !planned_split_route_.side &&
+      Astar::pathLength(ed_->path_next_goal_) > route_horizon) {
     vector<Vector3d> local_segment{ed_->path_next_goal_.front()};
     double accumulated = 0.0;
     for (size_t i = 1; i < ed_->path_next_goal_.size(); ++i) {
@@ -4766,7 +4875,7 @@ int FastExplorationManager::planExploreMotion(
     return FAIL;
   }
   // 固定入口、出口、上下穿以及关闭居中时仍按原顺序先截断再缩短。
-  if (!centre_guidance) {
+  if (!centre_guidance && !planned_split_route_.side) {
     shortenPath(ed_->path_next_goal_);
     extendSafeStraightRuns(ed_->path_next_goal_);
     if (!planner_manager_->isPathSafe(ed_->path_next_goal_)) {
@@ -4809,7 +4918,7 @@ int FastExplorationManager::planExploreMotion(
   if (use_entry_forward_target) {
     if (!planner_manager_->planStraightTraj(pos, next_pos)) return FAIL;
     ed_->next_goal_ = next_pos;
-  } else if (hold_fapp_height || len < radius_close || (has_central_guides && len <= radius_far)) {
+  } else if (planned_split_route_.side || hold_fapp_height || len < radius_close || (has_central_guides && len <= radius_far)) {
     // Next viewpoint is very close, no need to search kinodynamic path, just use waypoints-based
     // optimization
     if (!planner_manager_->planExploreTraj(ed_->path_next_goal_, vel, acc, time_lb, hold_fapp_height, fapp_rush_active_ ? 1.0 : 0.0, fapp_rush_active_ ? 1.0 : 0.0)) {
@@ -4888,6 +4997,18 @@ int FastExplorationManager::planExploreMotion(
     ed_->next_goal_ = safe_prefix.back();
     ROS_WARN("[stuck_recovery] full trajectory unsafe; publish %.2fm A* safe prefix to (%.2f %.2f %.2f).",
              prefix_length, ed_->next_goal_.x(), ed_->next_goal_.y(), ed_->next_goal_.z());
+  }
+
+  if (planned_split_route_.side) {
+    vector<Vector3d> samples;
+    auto& trajectory = planner_manager_->local_data_.position_traj_;
+    for (double t = 0; t < trajectory.getTimeSum(); t += 0.05)
+      samples.push_back(trajectory.evaluateDeBoorT(t));
+    samples.push_back(trajectory.evaluateDeBoorT(trajectory.getTimeSum()));
+    if (!route_width::followsSplit(samples, planned_split_route_)) {
+      ROS_WARN("[split_route] optimized trajectory did not retain the selected passage; keep existing route.");
+      return FAIL;
+    }
   }
 
   // 入口后第一米按实际轨迹终点的门法向位移累计，不能用弧长或侧向绕圈凑数。
@@ -5033,7 +5154,7 @@ int FastExplorationManager::planExploreMotion(
   }
 
   if (!use_forced_entry_target && !use_stage3_target &&
-      !use_vertical_detour_target && !pending_short_backtrack_ &&
+      !use_vertical_detour_target && !pending_short_backtrack_ && !planned_split_route_.side &&
       mission_entered_search_region_ && task_search_manager_ &&
       task_search_manager_->enabled())
     rememberSideRecovery(pos, yaw[0], ed_->path_next_goal_);
@@ -5152,6 +5273,7 @@ bool FastExplorationManager::shouldStartInflationHistoryEscape(
 }
 
 bool FastExplorationManager::centrePassagePath(vector<Vector3d>& path, double horizon) {
+  if (planned_split_route_.side || committedSplitRoute()) return false;
   if (manual_fapp_active_ && recovery_side_latched_) return false;
   passage_centering::Config cfg;
   cfg.step = std::min(0.05, 0.5 * sdf_map_->getResolution());
