@@ -328,7 +328,8 @@ namespace diff_planner
       }
     }
 
-    if (tracking_replan_pending_ && have_target_ && normal_planning_state &&
+    if (!planner_manager_->two_piece_entry_ &&
+        tracking_replan_pending_ && have_target_ && normal_planning_state &&
         exec_state_ != EMERGENCY_STOP &&
         planner_manager_->grid_map_->getInflateOccupancy(final_goal_) != 0)
     {
@@ -352,7 +353,8 @@ namespace diff_planner
       {
         tracking_retry_after_ = now_sec + std::max(0.1, replan_thresh_);
         // Occupied goals must not be retried as if they were executable.
-        if (planner_manager_->grid_map_->getInflateOccupancy(final_goal_) == 0 &&
+        if ((planner_manager_->two_piece_entry_ ||
+             planner_manager_->grid_map_->getInflateOccupancy(final_goal_) == 0) &&
             planFromGlobalTraj(1)) {
           periodic_replan_pending_ = false;
           changeFSMExecState(EXEC_TRAJ, "CONTROLLER_TRACKING_REPLAN");
@@ -392,7 +394,8 @@ namespace diff_planner
       if (!require_pre_agent_trajectory_ || planner_manager_->pp_.drone_id <= 0 ||
           (planner_manager_->pp_.drone_id >= 1 && have_recv_pre_agent_))
       {
-        if (!mondify_final_goal_ && planner_manager_->grid_map_->getInflateOccupancy(final_goal_))
+        if (!planner_manager_->two_piece_entry_ && !mondify_final_goal_ &&
+            planner_manager_->grid_map_->getInflateOccupancy(final_goal_))
         {
           ROS_WARN("Final goal in obstacle, unsafe. Emergency stop.");
           need_hover_stop_ = true;
@@ -431,7 +434,8 @@ namespace diff_planner
 
     case GEN_NEW_TRAJ:
     {
-      if (!mondify_final_goal_ && planner_manager_->grid_map_->getInflateOccupancy(final_goal_))
+      if (!planner_manager_->two_piece_entry_ && !mondify_final_goal_ &&
+          planner_manager_->grid_map_->getInflateOccupancy(final_goal_))
       {
         ROS_WARN("Final goal in obstacle, unsafe. Emergency stop.");
         need_hover_stop_ = true;
@@ -520,7 +524,8 @@ namespace diff_planner
       const PtsChk_t *chk_ptr = &planner_manager_->traj_.local_traj.pts_chk;
       bool close_to_current_traj_end = (chk_ptr->size() >= 1 && chk_ptr->back().size() >= 1) ? chk_ptr->back().back().first - t_cur < emergency_time_ : 0; // In case of empty vector
 
-      if (planner_manager_->grid_map_->getInflateOccupancy(final_goal_))
+      if (!planner_manager_->two_piece_entry_ &&
+          planner_manager_->grid_map_->getInflateOccupancy(final_goal_))
       {
         if (!mondify_final_goal_)
         {
@@ -777,7 +782,8 @@ namespace diff_planner
           // 2026-07-07: 对非 mandatory stop 的中途急停优先尝试自动恢复规划，避免录像里那种停住后直接丢失当前任务。
           if (have_target_ && have_trigger_ && !mandatory_stop_)
           {
-            if (planner_manager_->grid_map_->getInflateOccupancy(final_goal_) != 0)
+            if (!planner_manager_->two_piece_entry_ &&
+                planner_manager_->grid_map_->getInflateOccupancy(final_goal_) != 0)
               break; // Keep stopped while the same goal is still occupied.
             ROS_INFO("Exiting EMERGENCY_STOP. Resume current target with GEN_NEW_TRAJ.");
             need_hover_stop_ = false;
@@ -987,7 +993,8 @@ namespace diff_planner
 
     // 终点收敛也执行原有目标占据处理，不能先判完成或直接跳过检查。
     // 三个调用入口（执行、重规划、碰撞定时器）沿用同一处理。
-    if (planner_manager_->grid_map_->getInflateOccupancy(final_goal_))
+    if (!planner_manager_->two_piece_entry_ &&
+        planner_manager_->grid_map_->getInflateOccupancy(final_goal_))
     {
       if (!mondify_final_goal_)
       {
@@ -1052,6 +1059,13 @@ namespace diff_planner
       depth_timeout_emergency_ = true;
       need_hover_stop_ = true;
       changeFSMExecState(EMERGENCY_STOP, "SAFETY");
+      return;
+    }
+
+    // 入口直达仅跳过避障；上面的数据超时检查及控制器强停保持原语义。
+    if (planner_manager_->two_piece_entry_)
+    {
+      handleManualTrajectoryEnd(ros::Time::now().toSec());
       return;
     }
 
@@ -1373,7 +1387,7 @@ namespace diff_planner
   bool DiffReplanFSM::useOccupiedRecovery() const
   {
     // 动态穿越保留当前前进目标，由普通/FAPP重规划处理，不能切成后退抬高。
-    return enable_occupied_recovery_ &&
+    return enable_occupied_recovery_ && !planner_manager_->two_piece_entry_ &&
         !planner_manager_->inDynamicPassage(odom_pos_, ros::Time::now().toSec());
   }
 
@@ -1803,7 +1817,7 @@ namespace diff_planner
                                         bool flag_randomPolyTraj,
                                         bool require_improvement)
   {
-    if (mondify_final_goal_ && mondifyInCollisionFinalGoal()) 
+    if (!planner_manager_->two_piece_entry_ && mondify_final_goal_ && mondifyInCollisionFinalGoal())
     {
       ROS_WARN("Successfully modified final_goal in callReboundReplan !!!");
     }
@@ -1815,7 +1829,11 @@ namespace diff_planner
         ? previous_traj.getVel(previous_traj.getTotalDuration()) : start_vel_;
     const bool previous_final = has_previous && (previous_target - final_goal_).norm() < 1e-2;
     const bool segmented = planner_manager_->segmentedPlanning();
-    if (segmented) {
+    if (planner_manager_->two_piece_entry_) {
+      local_target_pt_ = final_goal_;
+      local_target_vel_.setZero();
+      touch_goal_ = true;
+    } else if (segmented) {
       Eigen::Vector3d target, velocity;
       bool final_segment;
       if (!planner_manager_->prepareLocalSegment(start_pt_, final_goal_,

@@ -403,6 +403,15 @@ namespace diff_planner
       return finish_planning_cycle(false);
     }
 
+    // 入口目标使用两段连续直达轨迹，不让残留点云或动态目标改变其形状。
+    // 普通接力点由 setEntryMode(false) 恢复下面的完整避障优化。
+    if (two_piece_entry_)
+    {
+      const bool stored = setLocalTrajFromOpt(initMJO, touch_goal, false);
+      if (trajectory_replaced != nullptr) *trajectory_replaced = stored;
+      return finish_planning_cycle(stored);
+    }
+
     Eigen::MatrixXd cstr_pts = initMJO.getInitConstraintPoints(ploy_traj_opt_->get_cps_num_prePiece_());
     vector<std::pair<int, int>> segments;
     bool has_dynamic_conflict = false;

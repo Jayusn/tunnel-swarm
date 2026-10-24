@@ -600,7 +600,7 @@ TEST_F(PlannerEndpoint, EntryGoalUsesTwoPiecesAndNormalGoalRestoresDefault)
   EXPECT_EQ(planner.planner_manager_->traj_.global_traj.traj.getPieceNum(), 1);
 }
 
-TEST_F(PlannerEndpoint, EntryPublishesTwoContinuousOptimizedPieces)
+TEST_F(PlannerEndpoint, EntryPublishesTwoContinuousDirectPieces)
 {
   auto message = boost::make_shared<geometry_msgs::PoseStamped>();
   message->header.stamp = ros::Time::now();
@@ -614,7 +614,7 @@ TEST_F(PlannerEndpoint, EntryPublishesTwoContinuousOptimizedPieces)
   const auto& trajectory = planner.planner_manager_->traj_.local_traj.traj;
   ASSERT_EQ(trajectory.getPieceNum(), 2);
   EXPECT_DOUBLE_EQ(planner.planner_manager_->pp_.max_vel_, 0.7);
-  // 保留测试配置的0.2m/s可行性容差，门点优化也必须使用独立速度。
+  // 入口直达仍使用独立速度和连续两段轨迹。
   EXPECT_LE(trajectory.getMaxVelRate(), 0.7 + 0.2 + 1e-6);
   const double half = trajectory.getDurations()(0);
   EXPECT_LT((trajectory[0].getPos(half) - trajectory[1].getPos(0.0)).norm(), 1e-8);
@@ -622,6 +622,91 @@ TEST_F(PlannerEndpoint, EntryPublishesTwoContinuousOptimizedPieces)
   EXPECT_LT((trajectory[0].getAcc(half) - trajectory[1].getAcc(0.0)).norm(), 1e-8);
   drain();
   EXPECT_GT(published, 0);
+}
+
+TEST_F(PlannerEndpoint, EntryRemainsStraightThroughStaticAndDynamicDetections)
+{
+  const Eigen::Vector3d start = planner.odom_pos_;
+  const Eigen::Vector3d end = start + Eigen::Vector3d(1.5, -0.1, 0.03);
+  const Eigen::Vector3d middle = 0.5 * (start + end);
+  publishPoint(middle);
+  auto& manager = *planner.planner_manager_;
+  ASSERT_NE(manager.grid_map_->getInflateOccupancy(middle), 0);
+  obj_state_msgs::ObjectsStates balls;
+  balls.header.stamp = ros::Time::now(); balls.states.resize(1);
+  auto& ball = balls.states.front();
+  ball.position.x = middle.x(); ball.position.y = middle.y(); ball.position.z = middle.z();
+  ball.size.x = ball.size.y = ball.size.z = 0.3;
+  manager.updateDynamicObjects(balls);
+  auto message = boost::make_shared<geometry_msgs::PoseStamped>();
+  message->header.stamp = ros::Time::now();
+  message->pose.position.x = end.x(); message->pose.position.y = end.y();
+  message->pose.position.z = end.z();
+  planner.entryWaypointCallback(message);
+  exec(); exec();
+  ASSERT_EQ(planner.exec_state_, FSM::EXEC_TRAJ);
+  EXPECT_FALSE(planner.useOccupiedRecovery());
+  const auto& local = manager.traj_.local_traj;
+  const int id = local.traj_id;
+  for (int i = 0; i <= 200; ++i) {
+    const auto p = local.traj.getPos(local.duration * i / 200.0);
+    EXPECT_LT((p - start).cross(end - start).norm(), 1e-8);
+    EXPECT_GE(p.z(), start.z() - 1e-8);
+    EXPECT_LE(p.z(), end.z() + 1e-8);
+  }
+  planner.checkCollisionCallback(ros::TimerEvent());
+  EXPECT_EQ(planner.exec_state_, FSM::EXEC_TRAJ);
+  EXPECT_EQ(manager.traj_.local_traj.traj_id, id);
+}
+
+TEST_F(PlannerEndpoint, EntryIgnoresOccupiedGoalAndNormalGoalRestoresAvoidance)
+{
+  const Eigen::Vector3d end = goal + Eigen::Vector3d(0.8, 0, 0);
+  const Eigen::Vector3d next = end + Eigen::Vector3d(0.5, 0, 0);
+  // 在推进模拟时钟前装入两处点云；本夹具不提供深度图输入。
+  publishPoint(next);
+  publishPoint(end);
+  ASSERT_NE(planner.planner_manager_->grid_map_->getInflateOccupancy(next), 0);
+  ASSERT_NE(planner.planner_manager_->grid_map_->getInflateOccupancy(end), 0);
+  auto message = boost::make_shared<geometry_msgs::PoseStamped>();
+  message->header.stamp = ros::Time::now();
+  message->pose.position.x = end.x(); message->pose.position.y = end.y();
+  message->pose.position.z = end.z();
+  planner.entryWaypointCallback(message);
+  exec(); exec();
+  ASSERT_EQ(planner.exec_state_, FSM::EXEC_TRAJ);
+  auto request = boost::make_shared<traj_utils::TrackingReplan>();
+  request->header.stamp = ros::Time(1000, 100000000);
+  request->request_id = 1;
+  planner.trackingReplanCallback(request);
+  ros::Time::setNow(ros::Time(1000, 200000000));
+  exec(); drain();
+  ASSERT_EQ(tracking_results.size(), 1U);
+  EXPECT_FALSE(planner.tracking_replan_pending_);
+  const auto& local = planner.planner_manager_->traj_.local_traj;
+  ros::Time::setNow(ros::Time(local.start_time + local.duration + 0.01));
+  planner.odom_pos_ = end;
+  exec();
+  EXPECT_EQ(planner.exec_state_, FSM::WAIT_TARGET);
+  // 下一普通接力点位于入口之后，避免构造起终点完全重合的零长度全局轨迹。
+  ASSERT_NE(planner.planner_manager_->grid_map_->getInflateOccupancy(next), 0);
+  message->header.stamp = ros::Time::now();
+  message->pose.position.x = next.x();
+  planner.waypointCallback(message);
+  EXPECT_FALSE(planner.planner_manager_->two_piece_entry_);
+  EXPECT_TRUE(planner.useOccupiedRecovery());
+  exec(); exec();
+  EXPECT_EQ(planner.exec_state_, FSM::EMERGENCY_STOP);
+}
+
+TEST_F(PlannerEndpoint, EntryStillHonorsControllerMandatoryStop)
+{
+  planner.planner_manager_->setEntryMode(true);
+  planner.mandatoryStopCallback(std_msgs::Empty());
+  EXPECT_TRUE(planner.mandatory_stop_);
+  EXPECT_EQ(planner.exec_state_, FSM::EMERGENCY_STOP);
+  exec();
+  EXPECT_EQ(planner.exec_state_, FSM::EMERGENCY_STOP);
 }
 
 TEST_F(PlannerEndpoint, MainTimerAlsoFinishesUsingMeasuredArrival)
