@@ -212,10 +212,11 @@ wait_for_topic_message() {
     fi
     check_timeout=$((deadline - SECONDS))
     if (( check_timeout <= 0 )); then break; fi
-    if (( check_timeout > 5 )); then check_timeout=5; fi
+    # rostopic 会等待发布者和首帧消息。沿用总超时持续订阅，避免每 5 秒
+    # 重启，以及已收到消息却在退出清理时被短超时打断、误判为失败。
     # 只确认消息到达，不展开点云数组和图像字节为文本。
     if timeout --kill-after=1s "${check_timeout}s" rostopic echo --noarr --nostr -n 1 "${topic}" >/dev/null 2>&1; then
-      printf '[就绪] 已收到话题数据：%s\n' "${topic}"
+      printf '[就绪] 已收到话题数据：%s（等待 %ss）\n' "${topic}" "$((SECONDS - started))"
       return 0
     fi
     if (( SECONDS < deadline )); then sleep 1; fi
