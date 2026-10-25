@@ -3,7 +3,7 @@
 
 The planner does not subscribe to this topic.  It is deliberately a display
 adapter only: target_reporting has already transformed detector points into
-the configured report frame, and this node renders those coordinates.  The
+the localization frame, and this node renders those coordinates.  The
 filtered PointCloud2 and 3D wire boxes are optional diagnostics and are off by
 default because the planner occupancy cloud can hide them in RViz.
 """
@@ -50,9 +50,9 @@ class TargetRvizMarkerNode:
         self.marker_topic = rospy.get_param(
             "~marker_topic", "/UAV0/target_reporting/markers"
         )
-        # The competition setup uses identical world/channel coordinates.  A
-        # separate parameter keeps the display adapter usable if the RViz
-        # fixed frame is renamed later.
+        # Local observations retain lidar-world coordinates even when final
+        # reports use a calibrated channel frame. Match this to localization_frame
+        # (or its identical world alias in the UAV0 competition setup).
         self.marker_frame = rospy.get_param("~marker_frame", "world")
         self.sphere_scale = max(0.05, float(rospy.get_param("~sphere_scale", 0.36)))
         # Point-cloud cells can surround the actual target center.  These

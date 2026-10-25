@@ -35,6 +35,13 @@ class TargetReporterNode:
         self.drone_id = rospy.get_param("~drone_id", "uav1")
         self.localization_frame = rospy.get_param("~localization_frame", "camera_init")
         self.report_frame = rospy.get_param("~report_frame", "channel")
+        # p_channel = R_channel_world * p_world + t_channel_world (metres).
+        self.world_to_channel_rotation = rospy.get_param(
+            "~world_to_channel/rotation", [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+        )
+        self.world_to_channel_translation = rospy.get_param(
+            "~world_to_channel/translation", [0.0, 0.0, 0.0]
+        )
         self.use_detector_candidates = bool(
             rospy.get_param("~use_detector_candidates", True)
         )
@@ -545,7 +552,7 @@ class TargetReporterNode:
             "source_timestamp": event_stamp,
             "target_id": "{}-{}-{:03d}".format(self.drone_id, target_type, candidate_number),
             "result": result,
-            "position": {"frame_id": self.report_frame, "unit": "m", **position},
+            "position": {"frame_id": self.localization_frame, "unit": "m", **position},
             "hits": candidate_hits,
             "candidate": not confirmed,
             "confirmed": confirmed,
@@ -559,13 +566,14 @@ class TargetReporterNode:
         # so JSON and evidence cannot get out of sync.
         if not confirmed:
             return
+        report_position = self._world_to_channel(position)
         target_id = observation["target_id"]
         image = self._wait_for_matching_image(source, event_stamp)
         image_id = "{}_seq{:06d}_{}.jpg".format(self.drone_id, event_seq, target_type)
         event = TargetEvent(
             seq=event_seq, timestamp=event_stamp, drone_id=self.drone_id,
             message_type="confirmed_target", target_id=target_id, target_type=target_type,
-            result=result, position=Position(self.report_frame, world.point.x, world.point.y, world.point.z),
+            result=result, position=report_position,
             confidence=confidence,
         ).to_dict()
         jpeg = None
@@ -605,7 +613,7 @@ class TargetReporterNode:
         # Only confirmed detector output is sent remotely.  This happens
         # after same-frame image matching, never before it.
         if self.enable_remote_upload:
-            self.realtime_client.publish(observation)
+            self.realtime_client.publish({**observation, "position": report_position.to_dict()})
         if self.store.append_event(event):
             if self.enable_remote_upload:
                 self.json_client.enqueue(event)
@@ -613,8 +621,25 @@ class TargetReporterNode:
                     self.image_client.enqueue((image_id, jpeg))
                 if d435_jpeg is not None:
                     self.image_client.enqueue((d435_image_id, d435_jpeg))
-            rospy.loginfo("Confirmed %s %s at channel [%.3f %.3f %.3f]", target_type,
-                          target_id, world.point.x, world.point.y, world.point.z)
+            rospy.loginfo("Confirmed %s %s at %s [%.3f %.3f %.3f]", target_type,
+                          target_id, self.report_frame,
+                          report_position.x, report_position.y, report_position.z)
+
+    def _world_to_channel(self, position):
+        """Convert a lidar-world point to the channel frame for final reporting.
+
+        Rotation is a row-major 3x3 matrix; translation is the lidar-world
+        origin expressed in channel coordinates, in metres.  Defaults reserve
+        an identity transform until the measured calibration is supplied.
+        """
+        xyz = [position[axis] for axis in ("x", "y", "z")]
+        rotation = self.world_to_channel_rotation
+        translation = self.world_to_channel_translation
+        converted = [
+            sum(rotation[3 * row + col] * xyz[col] for col in range(3)) + translation[row]
+            for row in range(3)
+        ]
+        return Position(self.report_frame, *converted)
 
     def shutdown(self):
         if self.retry_timer is not None:

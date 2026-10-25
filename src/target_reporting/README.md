@@ -23,8 +23,37 @@ D435 映射图都保留证据信息栏；D435 映射图本身已有的状态、�
 ```
 
 FAST-LIO 在整场任务中不得重启或重置。UAV0 统一启动配置使用
-`UAV0/camera_init` 作为 ROS 内部定位帧；上报 JSON 中使用业务名称
-`channel`（当前数值坐标与比赛 `world` 坐标一致）。
+`UAV0/camera_init` 作为 ROS 内部定位帧，后机使用 `UAV1/camera_init`。
+本机 observation 的 `position.frame_id` 使用该定位帧；最终记录和远程上报
+使用 `channel`，通过下面的旋转和平移接口计算。
+
+### 后机雷达世界坐标到通道坐标的预留接口
+
+后机 `uav1_detection_stack.launch` 自动加载
+`config/uav1_channel_transform.yaml`，也可通过 launch 参数
+`channel_transform_config:=/绝对路径/标定.yaml` 指定文件。
+节点私有参数 `world_to_channel/rotation` 是按行展开的 3×3 旋转矩阵，
+`world_to_channel/translation` 是三维平移向量（米）：
+
+```text
+p_channel = R_channel_world * p_world + t_channel_world
+```
+
+其中 `p_world` 属于 launch 的 `world_frame`（默认 `UAV1/camera_init`）；
+`t_channel_world` 表示雷达世界原点在通道系中的位置。
+例如绕 Z 轴正向旋转 90° 再平移 `[10,20,30]`：
+
+```yaml
+world_to_channel:
+  rotation: [0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+  translation: [10.0, 20.0, 30.0]
+```
+
+这会把世界点 `[1,2,3]` 转为通道点 `[8,21,33]`。默认文件为单位旋转、零平移，
+仅作接口占位，不表示已完成通道标定；填入实际标定值后重启检测入口生效。
+转换统一作用于颜色标签、二维码和热源的确认 JSONL、证据图坐标及远程 JSON。
+本机 observation、RViz、空间去重和热源过滤继续使用雷达世界坐标。
+转换不会发布或修改 TF，不改变飞行控制；历史记录不重算。
 
 ## 输入话题
 
@@ -94,7 +123,7 @@ RViz 标记输出：
 /UAV0/target_reporting/detected_object_boxes  visualization_msgs/MarkerArray
 ```
 
-标记使用 `world` 坐标系；当前比赛配置中 `world` 与 `channel` 的数值坐标一致。候选球和文字使用半透明颜色，已确认目标使用不透明颜色；三个检测器尚未稳定时文字统一显示“候选(待检测器确认)”，约 0.8 秒没有新观测后自动消失。
+标记使用本机定位坐标：UAV0 比赛配置为数值一致的 `world`，UAV1 为 `UAV1/camera_init`，不使用最终上报的通道坐标。候选球和文字使用半透明颜色，已确认目标使用不透明颜色；三个检测器尚未稳定时文字统一显示“候选(待检测器确认)”，约 0.8 秒没有新观测后自动消失。
 包围盒使用 D435 点云坐标系发布并由 RViz TF 转到固定坐标系：颜色标签为橙色、二维码为绿色、热源为品红色。
 包围盒是目标附近点云的三维轴对齐包围盒；点云稀疏时使用以检测位置为中心的最小尺寸盒，
 因此它不是二维图像像素级分割轮廓。

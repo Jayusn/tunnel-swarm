@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -16,16 +17,21 @@ SPEC.loader.exec_module(MODULE)
 
 
 @pytest.mark.parametrize("source", ["color", "qr", "thermal"])
+@pytest.mark.parametrize("calibrated", [False, True])
 def test_local_evidence_without_network_and_upload_after_reenable(
-    monkeypatch, tmp_path, source
+    monkeypatch, tmp_path, source, calibrated
 ):
     params = {
         "~enable_remote_upload": False,
         "~record_root": str(tmp_path),
         "~mission_id": "local_test",
+        "~localization_frame": "UAV1/camera_init",
         "~thermal_confirm_hits": 1,
         "~thermal_confirmation_duration_s": 0.0,
     }
+    if calibrated:
+        params["~world_to_channel/rotation"] = [0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+        params["~world_to_channel/translation"] = [10.0, 20.0, 30.0]
     monkeypatch.setattr(
         MODULE.rospy, "get_param", lambda key, default=None: params.get(key, default)
     )
@@ -42,6 +48,10 @@ def test_local_evidence_without_network_and_upload_after_reenable(
         monkeypatch.setattr(MODULE, name, clients[name])
 
     reporter = MODULE.TargetReporterNode()
+    reporter._is_leader_thermal_source = MagicMock(return_value=False)
+    reporter._is_ground_thermal_source = MagicMock(return_value=False)
+    evidence_builder = MagicMock(wraps=MODULE.build_evidence_jpeg)
+    monkeypatch.setattr(MODULE, "build_evidence_jpeg", evidence_builder)
     point = PointStamped()
     point.header.frame_id = "camera_optical"
     point.header.stamp = rospy.Time.from_sec(10.0)
@@ -62,11 +72,24 @@ def test_local_evidence_without_network_and_upload_after_reenable(
     events = reporter.store.all_events()
     assert len(events) == 1
     assert events[0]["message_type"] == "confirmed_target"
+    expected_xyz = (8.0, 21.0, 33.0) if calibrated else (1.0, 2.0, 3.0)
+    expected_position = dict(zip(("x", "y", "z"), expected_xyz))
+    expected_position.update(frame_id="channel", unit="m")
+    assert events[0]["position"] == expected_position
+    assert evidence_builder.call_args.args[1]["position"] == expected_position
+    world_position = {"x": 1.0, "y": 2.0, "z": 3.0}
+    if source == "thermal":
+        reporter._is_leader_thermal_source.assert_called_once_with(world_position, 10.0)
+        reporter._is_ground_thermal_source.assert_called_once_with(world_position)
     expected_images = 2 if source == "thermal" else 1
     images = list(Path(reporter.store.image_dir).glob("*.jpg"))
     assert len(images) == expected_images
     assert all(cv2.imread(str(path)) is not None for path in images)
     reporter.observation_pub.publish.assert_called_once()
+    local_observation = json.loads(reporter.observation_pub.publish.call_args.args[0].data)
+    assert local_observation["position"] == {
+        "frame_id": "UAV1/camera_init", "unit": "m", **world_position
+    }
     reporter.shutdown()
     for client in clients.values():
         client.assert_not_called()
@@ -86,6 +109,26 @@ def test_local_evidence_without_network_and_upload_after_reenable(
         client.return_value.start.assert_called_once()
     clients["JsonAckClient"].return_value.enqueue.assert_called_once_with(events[0])
     assert clients["ImageAckClient"].return_value.enqueue.call_count == expected_images
+    # A newly confirmed target uses channel coordinates on both remote paths,
+    # while local RViz still receives the lidar-world point.
+    enabled.latest_point[source] = point
+    enabled.point_history[source].append(point)
+    enabled.point_version[source] = 1
+    enabled.status_version[source] = 1
+    enabled.latest_status[source] = (
+        {"_detector_confirmable": True, "_detector_stable": True}, 1.0
+    )
+    enabled.images.add(source, 10.0, frame)
+    if source == "thermal":
+        enabled.images.add("thermal_d435", 10.0, frame)
+    enabled._try_process(source)
+    remote_observation = clients["LatestJsonClient"].return_value.publish.call_args.args[0]
+    remote_event = clients["JsonAckClient"].return_value.enqueue.call_args.args[0]
+    assert remote_observation["position"] == expected_position
+    assert remote_event["position"] == expected_position
+    assert json.loads(enabled.observation_pub.publish.call_args.args[0].data)["position"] == {
+        "frame_id": "UAV1/camera_init", "unit": "m", **world_position
+    }
     enabled.shutdown()
     for client in clients.values():
         client.return_value.stop.assert_called_once()

@@ -12,6 +12,8 @@
   <arg name="enable_thermal_d435_fusion" default="true" />
   <arg name="enable_target_reporting" default="true" />
   <arg name="target_reporting_mission_id" default="" />
+  <arg name="channel_transform_config"
+       default="$(find target_reporting)/config/uav1_channel_transform.yaml" />
 
   <arg name="odom_topic" default="/UAV1/fast_lio/Odom_high_freq" />
   <arg name="world_frame" default="UAV1/camera_init" />
@@ -196,6 +198,7 @@
         type="target_reporter_node.py" name="uav1_target_reporter" output="screen">
     <rosparam command="load"
               file="$(find target_reporting)/config/target_reporting.yaml" />
+    <rosparam command="load" file="$(arg channel_transform_config)" />
     <param name="drone_id" value="uav1" />
     <param name="localization_frame" value="$(arg world_frame)" />
     <param name="record_root" value="~/match_ws/target_reports/uav1" />

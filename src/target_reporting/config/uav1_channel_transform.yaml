@@ -1,0 +1,10 @@
+# 后机雷达世界坐标系（launch 中的 world_frame，默认 UAV1/camera_init）到通道坐标系。
+# p_channel = R_channel_world * p_world + t_channel_world
+# rotation: 3x3 旋转矩阵，按行展开；translation: 雷达世界原点在通道系中的 [x,y,z]，单位米。
+# 当前仅为单位变换占位，尚未标定；填入实际 R、t 后重启后机检测入口生效。
+# 仅用于最终记录、证据图坐标和远程上报；本机 RViz、去重、热源过滤仍使用雷达世界坐标。
+world_to_channel:
+  rotation: [1.0, 0.0, 0.0,
+             0.0, 1.0, 0.0,
+             0.0, 0.0, 1.0]
+  translation: [0.0, 0.0, 0.0]
