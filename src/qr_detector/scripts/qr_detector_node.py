@@ -526,7 +526,7 @@ class QRDetectorNode(object):
                 continue
             tried_modes.append(mode)
             processed, scale = self.preprocess_for_qr(gray, mode)
-            detection = self.run_qr_detector(processed)
+            detection = self.run_qr_detector(processed, scale=scale, offset=offset)
             points = self.normalize_points(detection.get("points"), scale)
             decoded_points = self.normalize_points(
                 detection.get("decoded_points"), scale
@@ -640,21 +640,7 @@ class QRDetectorNode(object):
             self.last_decoded_data = decoded_data
             return True, "decoded", decoded_data
 
-        verified_time = getattr(self, "last_decode_verification_time", None)
-        verified_center = getattr(self, "last_decode_center", None)
-        if verified_time is None or verified_center is None:
-            return False, "decode_not_verified", ""
-
-        age = current_time - float(verified_time)
-        max_age = float(getattr(self, "decode_verification_hold_seconds", 0.0))
-        shift_limit = float(
-            getattr(self, "decode_verification_max_center_shift_px", 1.0)
-        )
-        center_shift = math.hypot(
-            current_center[0] - float(verified_center[0]),
-            current_center[1] - float(verified_center[1]),
-        )
-        if 0.0 <= age <= max_age and center_shift <= shift_limit:
+        if not self.decode_refresh_needed(current_center, now=current_time):
             # Keep the decoded track reference moving with consecutive
             # geometrically valid frames. The decode expiry remains fixed, so
             # a moving QR still has to decode again after the hold period.
@@ -698,10 +684,11 @@ class QRDetectorNode(object):
 
         return work, scale
 
-    def run_qr_detector(self, image):
+    def run_qr_detector(self, image, scale=1.0, offset=(0, 0)):
         detected_points = None
         decoded_data = ""
         decoded_points = None
+        refresh_needed = False
 
         # Locate corners first. Decoding is substantially more expensive than
         # localization, so do not decode frames without a QR quadrilateral.
@@ -710,7 +697,13 @@ class QRDetectorNode(object):
                 ok, candidate_points = self.qr_detector.detect(image)
                 if ok:
                     detected_points = candidate_points
-                    if self.decode_refresh_needed():
+                    # Cache centers use original full-image pixels, including
+                    # when detecting in an enlarged local search crop.
+                    points = self.normalize_points(candidate_points, scale)
+                    if points is not None:
+                        center = np.mean(points, axis=0) + np.asarray(offset)
+                        refresh_needed = self.decode_refresh_needed(center)
+                    if refresh_needed:
                         decoded_data, _ = self.qr_detector.decode(
                             image, candidate_points
                         )
@@ -728,7 +721,7 @@ class QRDetectorNode(object):
             if (
                 detected_points is not None
                 and not decoded_data
-                and self.decode_refresh_needed()
+                and refresh_needed
                 and zbar_decoder is not None
             ):
                 try:
@@ -758,15 +751,23 @@ class QRDetectorNode(object):
             "decoded_valid": bool(decoded_data and decoded_points is not None),
         }
 
-    def decode_refresh_needed(self):
-        """Avoid re-decoding every frame while the same QR is authenticated."""
+    def decode_refresh_needed(self, current_center, now=None):
+        """Decode whenever the candidate cannot reuse the authenticated track."""
         verified_time = getattr(self, "last_decode_verification_time", None)
-        if verified_time is None:
+        verified_center = getattr(self, "last_decode_center", None)
+        if verified_time is None or verified_center is None:
             return True
-        return (
-            time.monotonic() - float(verified_time)
-            > float(getattr(self, "decode_verification_hold_seconds", 0.0))
+        current_time = time.monotonic() if now is None else float(now)
+        age = current_time - float(verified_time)
+        max_age = float(getattr(self, "decode_verification_hold_seconds", 0.0))
+        shift_limit = float(
+            getattr(self, "decode_verification_max_center_shift_px", 1.0)
         )
+        center_shift = math.hypot(
+            float(current_center[0]) - float(verified_center[0]),
+            float(current_center[1]) - float(verified_center[1]),
+        )
+        return not (0.0 <= age <= max_age and center_shift <= shift_limit)
 
     @staticmethod
     def qr_crop(image, points):

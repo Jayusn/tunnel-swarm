@@ -92,9 +92,11 @@ roslaunch qr_detector qr_detector.launch
   为 `2.0` 秒。
 - `decode_verification_max_center_shift_px`：复用单帧解码验证时允许的图像中心
   位移，当前为 `120` 像素，避免将验证结果误用于远处的其他四边形。
+  超过该位移时立即尝试重新解码，无需等待 `2.0` 秒有效期结束；局部搜索和
+  放大图像均换算到原始整图坐标后判断位移。
 - `preprocess_mode`：预处理方式，当前为 `gray`。
 - `upscale_factor`：检测前图像放大倍数，当前为 `1.5`。
-- `confirm_frames`：连续通过真实性和深度校验多少帧后确认 `detected=true`，当前为 `5`。
+- `confirm_frames`：连续通过真实性和深度校验多少帧后确认 `detected=true`，当前为 `2`。
 - `startup_warmup_seconds`：D435 首帧后的曝光预热时间，默认 `5.0` 秒；预热期间
   候选仍可在机载 RViz 观察，但不会进入稳定确认和远程上报。
 - `draw_raw_candidates`：是否在二维码调试图像中绘制单帧原始候选，当前为 `false`；RViz 候选标记仍由 target_reporting 单独显示。

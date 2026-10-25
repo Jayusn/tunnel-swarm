@@ -3,6 +3,7 @@ import glob
 import os
 import sys
 import unittest
+from unittest.mock import Mock, patch
 
 import cv2
 import numpy as np
@@ -109,6 +110,66 @@ class QRDetectorValidationTests(unittest.TestCase):
             undecoded, 520.0, 310.0, now=102.1
         )
         self.assertFalse(valid)
+
+    def test_decode_refresh_uses_full_image_position_and_expiry(self):
+        # The same candidate is tested in a full frame and an enlarged ROI.
+        # Its original-image center is (614.6, 243.83), matching the flight
+        # frame that moved about 309 pixels within the two-second cache.
+        full_points = np.asarray(
+            [[584.6, 213.83], [644.6, 213.83],
+             [644.6, 273.83], [584.6, 273.83]], dtype=np.float32
+        )
+        for scale, offset in ((1.0, (0, 0)), (1.5, (500, 150))):
+            for last_center, now, refresh in (
+                ((922.67, 265.0), 100.68, True),
+                ((610.0, 240.0), 100.68, False),
+                ((610.0, 240.0), 102.1, True),
+            ):
+                for opencv_payload, fallback_payload in (
+                    ("new-qr", ""), ("", "new-qr"), ("", "")
+                ):
+                    with self.subTest(scale=scale, offset=offset,
+                                      last_center=last_center, now=now,
+                                      payloads=(opencv_payload, fallback_payload)):
+                        detector = self.make_detector()
+                        detector.upscale_factor = scale
+                        detector.last_decode_verification_time = 100.0
+                        detector.last_decode_center = last_center
+                        detector.last_decoded_data = "old-qr"
+                        points = (full_points - np.asarray(offset)) * scale
+                        detector.qr_detector = Mock()
+                        detector.qr_detector.detect.return_value = (True, points)
+                        detector.qr_detector.decode.return_value = (
+                            opencv_payload, None
+                        )
+                        gray = np.zeros((720, 1280), dtype=np.uint8)
+                        processed, _ = detector.preprocess_for_qr(gray, "gray")
+                        _, crop_offset = detector.qr_crop(processed, points)
+                        detector.zbar_decoder = Mock()
+                        detector.zbar_decoder.decode.return_value = (
+                            fallback_payload, points - np.asarray(crop_offset)
+                        )
+                        with patch("qr_detector_node.time.monotonic", return_value=now):
+                            result = detector.detect_qr_in_image(
+                                gray, offset=offset, image_shape=(720, 1280)
+                            )
+                        self.assertIsNotNone(result)
+                        self.assertAlmostEqual(result["center_u"], 614.6, places=3)
+                        self.assertAlmostEqual(result["center_v"], 243.83, places=3)
+                        self.assertEqual(detector.qr_detector.decode.call_count, int(refresh))
+                        self.assertEqual(detector.zbar_decoder.decode.call_count,
+                                         int(refresh and not opencv_payload))
+                        if not refresh:
+                            self.assertEqual(result["validation_reason"], "recent_decode")
+                            self.assertEqual(result["data"], "old-qr")
+                            self.assertEqual(detector.last_decode_verification_time, 100.0)
+                        elif opencv_payload or fallback_payload:
+                            self.assertTrue(result["validated"])
+                            self.assertEqual(result["validation_reason"], "decoded")
+                            self.assertEqual(result["data"], "new-qr")
+                        else:
+                            self.assertFalse(result["validated"])
+                            self.assertEqual(result["data"], "")
 
     def test_recent_decode_tracks_gradual_motion_without_extending_expiry(self):
         detector = self.make_detector()
