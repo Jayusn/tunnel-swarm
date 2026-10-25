@@ -10,6 +10,10 @@
     <arg name="state_topic" value="$(arg topic_prefix)/mavros/state"/>
     <arg name="extended_state_topic" value="$(arg topic_prefix)/mavros/extended_state"/>
     <arg name="rc_topic" value="$(arg topic_prefix)/mavros/rc/in"/>
+    <arg name="sys_status_topic" value="$(arg topic_prefix)/mavros/sys_status"/>
+    <arg name="estimator_status_topic" value="$(arg topic_prefix)/mavros/estimator_status"/>
+    <arg name="statustext_topic" value="$(arg topic_prefix)/mavros/statustext/recv"/>
+    <arg name="mavlink_from_topic" value="$(arg topic_prefix)/mavlink/from"/>
     <arg name="battery_topic" value="$(arg topic_prefix)/mavros/battery"/>
     <arg name="esc_status_topic" value="$(arg topic_prefix)/mavros/esc_status"/>
     <arg name="mavros_local_pose_topic" value="$(arg topic_prefix)/mavros/local_position/pose"/>

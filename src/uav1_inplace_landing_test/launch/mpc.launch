@@ -15,6 +15,11 @@
   <arg name="state_topic" default="/UAV0/mavros/state"/>
   <arg name="extended_state_topic" default="/UAV0/mavros/extended_state"/>
   <arg name="rc_topic" default="/UAV0/mavros/rc/in"/>
+  <!-- 解锁诊断仅录制飞控反馈，不发送命令。 -->
+  <arg name="sys_status_topic" default="/UAV0/mavros/sys_status"/>
+  <arg name="estimator_status_topic" default="/UAV0/mavros/estimator_status"/>
+  <arg name="statustext_topic" default="/UAV0/mavros/statustext/recv"/>
+  <arg name="mavlink_from_topic" default="/UAV0/mavlink/from"/>
   <arg name="esc_status_topic" default="/UAV0/mavros/esc_status"/>
   <arg name="setpoint_topic" default="/UAV0/mavros/setpoint_raw/attitude"/>
   <arg name="mavros_local_pose_topic" default="/UAV0/mavros/local_position/pose"/>
@@ -149,6 +154,12 @@
       - "$(arg state_topic)"
       - "$(arg extended_state_topic)"
       - "$(arg rc_topic)"
+      - "$(arg sys_status_topic)"
+      - "$(arg estimator_status_topic)"
+      - "$(arg statustext_topic)"
+      - "$(arg mavlink_from_topic)"
+      - "/diagnostics"
+      - "/landing_test/status"
       - "$(arg battery_topic)"
       - "$(arg esc_status_topic)"
       - "$(arg setpoint_topic)"
