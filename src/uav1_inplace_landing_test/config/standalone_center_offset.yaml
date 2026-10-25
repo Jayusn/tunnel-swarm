@@ -1,5 +1,6 @@
 # 仅供单独降落测试使用，多机仍使用 center_offset_uav1.yaml 的标定值。
-# 实测向机头偏约 0.12 m；error_body = measured_body - bias_xy_m。
-# 在原 X 补偿 0.04000405 上加 0.12，使视觉对中目标向机尾移动 0.12 m。
+# error_body = measured_body - bias_xy_m。
+# 上轮落点向机尾偏约 0.10 m，X 从 0.16000405 减少 0.10，使目标向机头移 0.10 m。
+# 当前相对原标定值 0.04000405 仍保留 0.02 m 的后移补偿。
 center_alignment:
-  bias_xy_m: [0.16000405, -0.04328857]
+  bias_xy_m: [0.06000405, -0.04328857]
