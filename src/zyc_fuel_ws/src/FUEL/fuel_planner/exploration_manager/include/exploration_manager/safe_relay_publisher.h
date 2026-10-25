@@ -13,7 +13,7 @@ class SDFMap;
 class FastPlannerManager;
 
 // Front vehicle owns waypoint qualification; the follower owns execution.
-// Path snapshots retain qualified goals; goal 8 permits one local improvement (8.1).
+// Each internal goal permits one local improvement; entrance/exit are not in this list.
 // Later obstacle changes and route planning belong to the follower.
 // header.stamp identifies the producer session; pose.header.seq is the goal ID.
 class SafeRelayPublisher {
@@ -50,7 +50,7 @@ class SafeRelayPublisher {
   double routeHeight(const Record& reference, const Eigen::Vector3d& point) const;
   void qualifyCandidate(Record& record, bool new_map, const Eigen::Vector2d& forward,
                          double search_radius = -1.0);
-  void improveEighthGoal(bool new_map);
+  void improveInternalGoals(bool new_map);
   void publish(const std::string& status);
 
   std::shared_ptr<SDFMap> map_;

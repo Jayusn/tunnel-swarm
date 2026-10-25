@@ -534,7 +534,8 @@ class SafeRelayPublisherTest {
     EXPECT_TRUE(reference.isApprox(record.sample.position));
   }
 
-  static void unflownPocketAndGap(bool revision = false, bool no_gain = false) {
+  static void unflownPocketAndGap(bool revision = false, bool no_gain = false,
+                                  uint32_t id = 8, bool exited = false) {
     ros::NodeHandle nh("~unflown_pocket");
     nh.setParam("sdf_map/resolution", 0.1);
     nh.setParam("sdf_map/map_size_x", 4.0);
@@ -602,17 +603,18 @@ class SafeRelayPublisherTest {
     EXPECT_EQ(ros::Time(300), goals.poses.front().header.stamp);
     if (revision) {
       auto& goal = publisher.goals_.front();
-      goal.id = 8;
+      goal.id = id;
       goal.pose.pose.position.y = no_gain ? p.y : 0.0;
-      publisher.next_id_ = 9;
+      publisher.next_id_ = id + 1;
+      publisher.exited_ = exited;
       const Eigen::Vector3d original(goal.pose.pose.position.x, goal.pose.pose.position.y, p.z);
       publisher.observe(Eigen::Vector3d(1.0, 0, .45), 0, ros::Time(301));
       ros::Time::setNow(ros::Time(301));
-      publisher.improveEighthGoal(false);
+      publisher.improveInternalGoals(false);
       EXPECT_FALSE(goal.revised);
-      map_frame(); publisher.improveEighthGoal(true);
+      map_frame(); publisher.improveInternalGoals(true);
       EXPECT_FALSE(goal.revised); // 两次地图确认之前不改已下发坐标。
-      map_frame(); publisher.improveEighthGoal(true);
+      map_frame(); publisher.improveInternalGoals(true);
       EXPECT_EQ(!no_gain, goal.revised);
       const auto revised = goal.pose;
       if (!no_gain) {
@@ -620,19 +622,19 @@ class SafeRelayPublisherTest {
         EXPECT_LE((Eigen::Vector3d(revised.pose.position.x, revised.pose.position.y,
                                   revised.pose.position.z) - original).norm(), .60 + 1e-6);
       }
-      for (int i = 0; i < 3; ++i) { map_frame(); publisher.improveEighthGoal(true); }
+      for (int i = 0; i < 3; ++i) { map_frame(); publisher.improveInternalGoals(true); }
       EXPECT_DOUBLE_EQ(revised.pose.position.x, goal.pose.pose.position.x);
       EXPECT_DOUBLE_EQ(revised.pose.position.y, goal.pose.pose.position.y);
-      EXPECT_EQ(9U, publisher.next_id_);
+      EXPECT_EQ(id + 1, publisher.next_id_);
       visualization_msgs::MarkerArray labels;
       auto label_sub = nh.subscribe<visualization_msgs::MarkerArray>(
           "/safe_relay_pocket_test/relay_labels", 1,
           [&](const visualization_msgs::MarkerArray::ConstPtr& msg) { labels = *msg; });
       spin(); publisher.publish("TEST_REPLACEMENT"); spin();
       ASSERT_EQ(1U, goals.poses.size());
-      EXPECT_EQ(8U, goals.poses.front().header.seq);
+      EXPECT_EQ(id, goals.poses.front().header.seq);
       ASSERT_EQ(1U, labels.markers.size());
-      EXPECT_EQ(no_gain ? "8" : "8.1", labels.markers.front().text);
+      EXPECT_EQ(std::to_string(id) + (no_gain ? "" : ".1"), labels.markers.front().text);
       return;
     }
     // The immutable goal has its own coordinates; it is not reconstructed from
@@ -659,11 +661,15 @@ TEST(SafeRelayPublisher, RawVoxelBoxesAndLowHeightClearance) {
 TEST(SafeRelayPublisher, UnflownKnownFreePocketAndCurrentPositionGapFallback) {
   SafeRelayPublisherTest::unflownPocketAndGap();
 }
-TEST(SafeRelayPublisher, EighthPointImprovesOnceWithinSixtyCentimetresWithoutNewId) {
-  SafeRelayPublisherTest::unflownPocketAndGap(true);
+TEST(SafeRelayPublisher, InternalPointsImproveOnceWithinSixtyCentimetresWithoutNewId) {
+  for (uint32_t id : {1U, 7U, 8U, 9U})
+    SafeRelayPublisherTest::unflownPocketAndGap(true, false, id);
 }
-TEST(SafeRelayPublisher, EighthPointWithoutImprovementKeepsOriginalPoint) {
+TEST(SafeRelayPublisher, InternalPointWithoutImprovementKeepsOriginalPoint) {
   SafeRelayPublisherTest::unflownPocketAndGap(true, true);
+}
+TEST(SafeRelayPublisher, LastInternalPointCanImproveAfterExitHandoff) {
+  SafeRelayPublisherTest::unflownPocketAndGap(true, false, 9, true);
 }
 TEST(SafeRelayPublisher, BetterForwardVerticalPocketKeepsHeightAndDoesNotDrift) {
   SafeRelayPublisherTest::forwardVerticalPocket(false, false, false);

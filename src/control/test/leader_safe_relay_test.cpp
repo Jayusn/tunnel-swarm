@@ -112,10 +112,63 @@ class LeaderSafeRelayTest {
     path->header.seq = 8;
     path->poses[0].pose.position.x += 0.2;
     follower.safeRelayCallback(path);
-    EXPECT_TRUE(follower.safe_relay_fault_); // Published endpoints are immutable within a session.
+    EXPECT_TRUE(follower.safe_relay_fault_); // A coordinate change requires a newer timestamp.
     EXPECT_FALSE(follower.activeSafeRelayValid());
   }
-  static void replacement(bool completed = false, bool too_far = false) {
+  static void independentRevisions() {
+    ros::NodeHandle pnh("~");
+    pnh.setParam("obstacle_check_enabled", false);
+    LeaderSafePathFollower follower;
+    follower.timer_.stop();
+    ros::Time::setNow(ros::Time(300));
+    auto path = boost::make_shared<nav_msgs::Path>();
+    path->header.frame_id = "world";
+    path->header.stamp = ros::Time(250);
+    path->header.seq = 1;
+    RoutePoint entrance;
+    entrance.position.x = -1;
+    follower.relay_waypoints_.push_back(entrance);
+    for (uint32_t id : {1U, 7U, 8U, 9U}) {
+      geometry_msgs::PoseStamped pose;
+      pose.header.frame_id = "world";
+      pose.header.seq = id;
+      pose.header.stamp = ros::Time(299);
+      pose.pose.position.x = id;
+      pose.pose.position.z = .6;
+      pose.pose.orientation.w = 1;
+      path->poses.push_back(pose);
+      RoutePoint point;
+      point.safe_relay_id = id;
+      point.position = pose.pose.position;
+      follower.relay_waypoints_.push_back(point);
+    }
+    RoutePoint exit;
+    exit.position.x = 10;
+    follower.relay_waypoints_.push_back(exit);
+    follower.exit_waypoint_released_ = true;
+    follower.active_relay_index_ = 2; // 入口和1号点已完成；7号正在执行。
+    follower.safeRelayCallback(path);
+    path->header.seq = 2;
+    for (auto& pose : path->poses) {
+      pose.header.stamp = ros::Time(300);
+      pose.pose.position.y = .4;
+    }
+    follower.diff_goal_published_ = true;
+    follower.safeRelayCallback(path);
+    EXPECT_FALSE(follower.safe_relay_fault_);
+    EXPECT_EQ(4U, follower.safe_relay_revised_ids_.size());
+    ASSERT_EQ(6U, follower.relay_waypoints_.size());
+    EXPECT_EQ(2U, follower.active_relay_index_);
+    EXPECT_FALSE(follower.diff_goal_published_);
+    EXPECT_DOUBLE_EQ(-1, follower.relay_waypoints_.front().position.x);
+    EXPECT_DOUBLE_EQ(0, follower.relay_waypoints_.front().position.y);
+    EXPECT_DOUBLE_EQ(0, follower.relay_waypoints_[1].position.y);
+    for (std::size_t i = 2; i <= 4; ++i)
+      EXPECT_DOUBLE_EQ(.4, follower.relay_waypoints_[i].position.y);
+    EXPECT_DOUBLE_EQ(10, follower.relay_waypoints_.back().position.x);
+    EXPECT_DOUBLE_EQ(0, follower.relay_waypoints_.back().position.y);
+  }
+  static void replacement(bool completed = false, bool too_far = false, uint32_t id = 8) {
     ros::NodeHandle pnh("~");
     pnh.setParam("obstacle_check_enabled", false);
     LeaderSafePathFollower follower;
@@ -127,7 +180,7 @@ class LeaderSafeRelayTest {
     path->header.seq = 1;
     geometry_msgs::PoseStamped pose;
     pose.header.frame_id = "world";
-    pose.header.seq = 8;
+    pose.header.seq = id;
     pose.header.stamp = ros::Time(199);
     pose.pose.position.x = 3;
     pose.pose.position.z = .56;
@@ -136,13 +189,13 @@ class LeaderSafeRelayTest {
     follower.safeRelayCallback(path);
     RoutePoint point;
     point.position = pose.pose.position;
-    point.safe_relay_id = 8;
+    point.safe_relay_id = id;
     follower.relay_waypoints_.push_back(point);
-    point.safe_relay_id = 9;
+    point.safe_relay_id = id + 1;
     point.position.x = 2;
     follower.relay_waypoints_.push_back(point);
     follower.active_relay_index_ = completed ? 1 : 0;
-    follower.safe_relay_next_id_ = 10;
+    follower.safe_relay_next_id_ = id + 2;
     follower.diff_goal_published_ = true;
     follower.relay_arrival_stamp_ = ros::Time(199);
     path->header.seq = 2;
@@ -151,32 +204,37 @@ class LeaderSafeRelayTest {
     follower.safeRelayCallback(path);
     EXPECT_EQ(too_far, follower.safe_relay_fault_);
     if (too_far) return;
-    EXPECT_TRUE(follower.safe_relay_eighth_revised_);
+    EXPECT_EQ(1U, follower.safe_relay_revised_ids_.count(id));
     EXPECT_EQ(2U, follower.relay_waypoints_.size());
-    EXPECT_EQ(10U, follower.safe_relay_next_id_);
+    EXPECT_EQ(id + 2, follower.safe_relay_next_id_);
     EXPECT_EQ(completed ? 1U : 0U, follower.active_relay_index_);
     EXPECT_DOUBLE_EQ(completed ? 3.0 : 2.6, follower.relay_waypoints_[0].position.x);
     EXPECT_EQ(completed, follower.diff_goal_published_);
     if (!completed) EXPECT_TRUE(follower.relay_arrival_stamp_.isZero());
     path->header.seq = 3;
-    follower.safeRelayCallback(path); // 重复8.1快照不重复消耗或产生故障。
+    follower.safeRelayCallback(path); // 重复更新后的快照不重复消耗或产生故障。
     EXPECT_FALSE(follower.safe_relay_fault_);
     path->header.seq = 4;
     path->poses.front().header.stamp = ros::Time(201);
     path->poses.front().pose.position.x -= .1;
     follower.safeRelayCallback(path);
-    EXPECT_TRUE(follower.safe_relay_fault_); // 不允许8.2。
+    EXPECT_TRUE(follower.safe_relay_fault_); // 每个点仍只允许一次优化。
   }
 
 };
 TEST(LeaderSafeRelay, SnapshotValidityExactCoordinatesAndNoUnsafeFallback) { LeaderSafeRelayTest::run(); }
-TEST(LeaderSafeRelay, EighthRevisionUpdatesActiveGoalWithoutAppending) {
-  LeaderSafeRelayTest::replacement();
+TEST(LeaderSafeRelay, IndependentInternalUpdatesPreserveEntranceExitAndCompletedPoints) {
+  LeaderSafeRelayTest::independentRevisions();
 }
-TEST(LeaderSafeRelay, CompletedEighthGoalIsNotRevisited) {
-  LeaderSafeRelayTest::replacement(true);
+TEST(LeaderSafeRelay, InternalRevisionUpdatesActiveGoalWithoutAppending) {
+  for (uint32_t id : {1U, 7U, 8U, 9U})
+    LeaderSafeRelayTest::replacement(false, false, id);
 }
-TEST(LeaderSafeRelay, EighthRevisionCannotExceedSixtyCentimetres) {
+TEST(LeaderSafeRelay, CompletedInternalGoalsAreNotRevisited) {
+  for (uint32_t id : {1U, 7U, 8U, 9U})
+    LeaderSafeRelayTest::replacement(true, false, id);
+}
+TEST(LeaderSafeRelay, InternalRevisionCannotExceedSixtyCentimetres) {
   LeaderSafeRelayTest::replacement(false, true);
 }
 int main(int argc, char** argv) {

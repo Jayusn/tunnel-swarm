@@ -326,14 +326,15 @@ void SafeRelayPublisher::qualifyCandidate(
   candidate.clearance = 0.0;
 }
 
-void SafeRelayPublisher::improveEighthGoal(bool new_map) {
-  if (!new_map || exited_) return;
+void SafeRelayPublisher::improveInternalGoals(bool new_map) {
+  if (!new_map) return;
+  // 出口交接后仍可优化内部点；接收端只更新尚未执行完的队列项。
   for (auto& goal : goals_) {
-    if (goal.id != 8 || goal.revised || odom_stamp_ <= goal.pose.header.stamp) continue;
+    if (goal.revised || odom_stamp_ <= goal.pose.header.stamp) continue;
     const auto& old = goal.pose.pose.position;
     const Eigen::Vector3d original(old.x, old.y, old.z);
     auto& record = goal.revision;
-    // 固定在首次下发的8号点60cm以内，不能随着候选逐帧漂移。
+    // 固定在该点首次下发位置60cm以内，不能随着候选逐帧漂移。
     if (record.stamp.isZero()) {
       record = history_[goal.route_index];
       record.sample.position = original;
@@ -359,9 +360,9 @@ void SafeRelayPublisher::improveEighthGoal(bool new_map) {
     goal.pose.pose.position.z = candidate.position.z();
     goal.pose.header.stamp = ros::Time::now();
     goal.revised = true;
-    ROS_WARN("[safe_relay] REPLACE id=8 label=8.1 target=(%.2f,%.2f,%.2f) "
+    ROS_WARN("[safe_relay] REPLACE id=%u label=%u.1 target=(%.2f,%.2f,%.2f) "
              "offset=%.3fm clearance=%.3f->%.3fm; replacement consumed, next ID unchanged.",
-             candidate.position.x(), candidate.position.y(), candidate.position.z(),
+             goal.id, goal.id, candidate.position.x(), candidate.position.y(), candidate.position.z(),
              offset, old_gap, candidate.clearance);
   }
 }
@@ -395,7 +396,7 @@ void SafeRelayPublisher::timerCallback(const ros::TimerEvent&) {
   if (map_seen_at_.isZero() || (now - map_seen_at_).toSec() > map_timeout_) {
     publish("STALE_MAP"); return;
   }
-  improveEighthGoal(new_map);
+  improveInternalGoals(new_map);
   // Issued points are history, not live validity certificates. Never move the
   // spacing origin backwards when a follower or obstacle occupies an old point.
   anchor_ = goals_.empty() ? 0 : goals_.back().route_index;
