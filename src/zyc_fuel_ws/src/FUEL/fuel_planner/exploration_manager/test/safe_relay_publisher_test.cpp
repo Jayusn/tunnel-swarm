@@ -7,6 +7,57 @@
 namespace fast_planner {
 class SafeRelayPublisherTest {
  public:
+  static void runManualWaypoints() {
+    ros::NodeHandle nh("~manual_waypoint_relay");
+    nh.setParam("sdf_map/resolution", .1);
+    nh.setParam("sdf_map/map_size_x", 14.0);
+    nh.setParam("sdf_map/map_size_y", 4.0);
+    nh.setParam("sdf_map/map_size_z", 3.0);
+    nh.setParam("sdf_map/ground_height", 0.0);
+    nh.setParam("mission/safe_relay/enabled", true);
+    nh.setParam("mission/manual_path/enabled", true);
+    nh.setParam("mission/safe_relay/topic_prefix", std::string("/manual_waypoint_relay"));
+    auto map = std::make_shared<SDFMap>();
+    map->initMap(nh);
+    SafeRelayPublisher publisher;
+    publisher.initialize(nh, map, std::make_shared<FastPlannerManager>());
+    publisher.timer_.stop();
+    publisher.setEntrance(Eigen::Vector3d::Zero(), Eigen::Vector3d::UnitX());
+    double time = 100;
+    auto observe = [&](double x) {
+      ros::Time::setNow(ros::Time(time += .1));
+      publisher.observe(Eigen::Vector3d(x, 0, .27), 0, ros::Time::now());
+      publisher.timerCallback(ros::TimerEvent());
+    };
+    for (int i = 0; i <= 36; ++i) observe(i*.1);
+    EXPECT_TRUE(publisher.goals_.empty()); // 再长的实飞路线也不自动补探索点。
+    const Eigen::Vector3d first(3.8, 0, .27), second(5.6, -.3, .41);
+    publisher.recordManualWaypoint(first, .1, ros::Time::now());
+    observe(4.2);
+    EXPECT_TRUE(publisher.goals_.empty()); // 到达后仍等前机离开。
+    observe(4.9);
+    ASSERT_EQ(1U, publisher.goals_.size());
+    EXPECT_EQ(1U, publisher.goals_[0].id);
+    EXPECT_DOUBLE_EQ(3.8, publisher.goals_[0].pose.pose.position.x);
+    EXPECT_DOUBLE_EQ(.27, publisher.goals_[0].pose.pose.position.z);
+    for (int i = 0; i < 5; ++i) observe(4.9);
+    EXPECT_EQ(1U, publisher.goals_.size()); // 重复定时器不会重复发新编号。
+    observe(5.4);
+    publisher.recordManualWaypoint(second, 0, ros::Time::now());
+    auto state = boost::make_shared<std_msgs::String>();
+    state->data = "SEARCH_OUTSIDE_LANDING";
+    publisher.missionCallback(state);
+    publisher.recordManualWaypoint(Eigen::Vector3d(7, 0, .6), 0, ros::Time::now());
+    EXPECT_EQ(2U, publisher.manual_goals_.size()); // 出口交接后不接受门外普通航点。
+    observe(6.7);
+    ASSERT_EQ(2U, publisher.goals_.size()); // 已完成的最后门内点仍能释放。
+    EXPECT_EQ(2U, publisher.goals_[1].id);
+    EXPECT_DOUBLE_EQ(.41, publisher.goals_[1].pose.pose.position.z);
+    observe(9);
+    EXPECT_EQ(2U, publisher.goals_.size());
+    EXPECT_FALSE(publisher.goals_[0].revised);
+    EXPECT_EQ("MANUAL_WAYPOINT", publisher.last_status_);
+  }
   static void run() {
     ros::NodeHandle nh("~");
     nh.setParam("sdf_map/resolution", 0.1);
@@ -594,6 +645,10 @@ class SafeRelayPublisherTest {
     EXPECT_EQ(released.id, goals.poses.front().header.seq);
   }
 };
+TEST(SafeRelayPublisher, ManualModeReleasesOnlyCompletedWaypointsAtFlownHeight) {
+  SafeRelayPublisherTest::runManualWaypoints();
+}
+
 TEST(SafeRelayPublisher, NewEndpointsAndRetainedIssuedPoints) { SafeRelayPublisherTest::run(); }
 TEST(SafeRelayPublisher, EntranceFallbackUsesHalfMeterThenConfiguredSpacing) {
   SafeRelayPublisherTest::entranceSpacing();

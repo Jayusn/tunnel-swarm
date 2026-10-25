@@ -11,6 +11,7 @@ void SafeRelayPublisher::initialize(ros::NodeHandle& nh, std::shared_ptr<SDFMap>
   planner_ = std::move(planner);
   nh.param("mission/safe_relay/enabled", enabled_, false);
   if (!enabled_) return;
+  nh.param("mission/manual_path/enabled", manual_waypoints_only_, false);
   ros::NodeHandle params(nh, "mission/safe_relay");
   std::string prefix;
   params.param<std::string>("topic_prefix", prefix, "/UAV0/mission");
@@ -91,6 +92,23 @@ void SafeRelayPublisher::observe(const Eigen::Vector3d& position, double yaw,
   point.stamp = measured_at;
   point.yaw = yaw;
   history_.push_back(point);
+}
+
+// 手填模式只接收已由真实里程计完成的航点，不沿途自动增加探索接力点。
+void SafeRelayPublisher::recordManualWaypoint(
+    const Eigen::Vector3d& point, double yaw, const ros::Time& stamp) {
+  if (!enabled_ || !manual_waypoints_only_ || exited_ || history_.empty() ||
+      !point.allFinite() || !std::isfinite(yaw)) return;
+  geometry_msgs::PoseStamped pose;
+  pose.header.frame_id = frame_;
+  pose.header.stamp = stamp.isZero() ? odom_stamp_ : stamp;
+  pose.pose.position.x = point.x();
+  pose.pose.position.y = point.y();
+  pose.pose.position.z = point.z();
+  pose.pose.orientation.w = std::cos(0.5 * yaw);
+  pose.pose.orientation.z = std::sin(0.5 * yaw);
+  manual_goals_.push_back({history_.size()-1,
+                          static_cast<uint32_t>(manual_goals_.size()+1), pose});
 }
 
 void SafeRelayPublisher::missionCallback(const std_msgs::String::ConstPtr& message) {
@@ -356,6 +374,23 @@ void SafeRelayPublisher::timerCallback(const ros::TimerEvent&) {
   if (odom_stamp_.isZero() || (now - odom_stamp_).toSec() > odom_timeout_ ||
       odom_stamp_ > now + ros::Duration(0.1)) {
     publish("STALE_ODOMETRY"); return;
+  }
+  if (manual_waypoints_only_) {
+    // 已到达的门内点仍可在出口交接后释放；出口外航点由手填任务层剔除。
+    if (goals_.size() < manual_goals_.size()) {
+      const auto& goal = manual_goals_[goals_.size()];
+      const auto& p = goal.pose.pose.position;
+      const Eigen::Vector3d target(p.x, p.y, p.z);
+      if ((leader_ - target).head<2>().norm() >= config_.release_distance &&
+          history_.back().sample.progress - history_[goal.route_index].sample.progress >=
+              config_.release_distance) {
+        goals_.push_back(goal);
+        ROS_WARN("[safe_relay] RELEASE id=%u type=MANUAL_WAYPOINT target=(%.2f,%.2f,%.2f)",
+                 goal.id, p.x, p.y, p.z);
+      }
+    }
+    publish("MANUAL_WAYPOINT");
+    return;
   }
   if (map_seen_at_.isZero() || (now - map_seen_at_).toSec() > map_timeout_) {
     publish("STALE_MAP"); return;

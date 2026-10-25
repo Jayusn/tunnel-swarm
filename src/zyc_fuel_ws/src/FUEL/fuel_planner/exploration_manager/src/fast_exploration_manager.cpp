@@ -5511,6 +5511,7 @@ void FastExplorationManager::updateMissionOdometry(const Vector3d& pos, double y
       }
     }
     const bool was_finished = manual_path_.finished();
+    const auto first_pending_waypoint = manual_path_.next;
     // 动态低位通行使用正在执行的高度判定中间航点，避免等原高度而停在障碍内。
     // 只推进到后续航点，不解除穿越状态、不修改手填高度，也不提前完成整条路线。
     if (manual_fapp_active_ && std::isfinite(manual_fapp_hold_height_)) {
@@ -5527,6 +5528,13 @@ void FastExplorationManager::updateMissionOdometry(const Vector3d& pos, double y
       }
     }
     manual_path_.updateOdometry(pos, manual_path_arrive_distance_);
+    if (safe_relay_) {
+      for (auto i = first_pending_waypoint; i < manual_path_.next; ++i) {
+        Vector3d relay = manual_path_.points[i];
+        relay.z() = pos.z(); // 下穿时沿用实飞高度，不把未飞过的手填高度发给后机。
+        safe_relay_->recordManualWaypoint(relay, yaw, stamp);
+      }
+    }
     if (manual_exit_latched_ && !was_finished && manual_path_.finished())
       manual_exit_replan_pending_ = true;
   }

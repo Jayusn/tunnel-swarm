@@ -22,6 +22,7 @@ class SafeRelayPublisher {
                   std::shared_ptr<FastPlannerManager> planner);
   void setEntrance(const Eigen::Vector3d& origin, const Eigen::Vector3d& direction);
   void observe(const Eigen::Vector3d& position, double yaw, const ros::Time& stamp);
+  void recordManualWaypoint(const Eigen::Vector3d& point, double yaw, const ros::Time& stamp);
 
  private:
   friend class SafeRelayPublisherTest;
@@ -61,6 +62,8 @@ class SafeRelayPublisher {
   double entrance_minimum_progress_{0.50};
   std::vector<Record> history_;
   std::vector<Goal> goals_;
+  std::vector<Goal> manual_goals_;
+  bool manual_waypoints_only_{false};
   Eigen::Vector3d leader_{Eigen::Vector3d::Zero()};
   Eigen::Vector3d entrance_{Eigen::Vector3d::Zero()};
   Eigen::Vector3d entrance_direction_{Eigen::Vector3d::UnitX()};
