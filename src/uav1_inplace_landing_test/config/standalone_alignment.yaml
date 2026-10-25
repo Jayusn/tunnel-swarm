@@ -1,0 +1,6 @@
+# 仅由 landing_test.launch 加载；多机流程仍使用 precision_landing.yaml。
+# 首轮对中调参：收紧已有的锁 XY 条件，实测后再决定是否同步多机。
+stages:
+  auto_land:
+    error_m: 0.05
+    fine_stable_sec: 1.0

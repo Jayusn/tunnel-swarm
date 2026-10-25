@@ -19,17 +19,27 @@ bash /home/oem/match_ws/shfiles/start_uav1_inplace_landing_test.sh start
 目标起飞高度 1.7m，MPC 起飞目标用 5 秒爬升；50cm ArUco，任意 ID。
 起飞航向在已解锁且 OFFBOARD 接管时按当前 MAVROS 航向锁存，起飞期间保持；
 不沿用执行 start 时的旧航向，避免等待解锁期间航向重对齐导致突然转向。
-相对码高度不高于 1.2m 且水平误差不超过 12cm 连续 0.5 秒后锁 XY；
+相对码高度不高于 1.3m 且水平误差不超过 5cm 连续 1.0 秒后锁 XY；
 估计距码面 0.3m 时切 AUTO.LAND。CH10 可优先打断。
+
+单独测试的对中参数位于 `config/standalone_alignment.yaml`，由 `landing_test.launch`
+在公共精降配置之后加载；多机流程继续使用公共配置的 12cm / 0.5 秒。
+这次只收紧已有的锁 XY 条件，到达切换高度仍未满足时继续保持高度对中，
+对中等待可能变长。连续对准时间仍可在高位累计，不保证到达切换高度后额外停留 1 秒。
+重启单独测试流程后生效；这是首轮实测参数，5cm 是视觉误差门槛，不代表实际落点保证。
+每轮记录进入 `FIXED_XY_DESCENT` 时日志中的 `error` 和最终机身中心相对码中心的
+前后、左右偏差，结合下降段位置变化判断是锁定前残差还是锁定后漂移。
+实飞确认落点改善后再同步多机方案。
 
 独立 NMPC 收到 `FIXED_XY_DESCENT` 状态及该阶段的位置目标后，
 一次性锁存当前 FAST-LIO 的 XY 和 Z。后续保持该 XY，Z 只叠加精降目标的下降增量，
 避免起飞时保存的 MAVROS→FAST-LIO 变换在末段造成锁点偏移。
-该修正不改变视觉对准门槛；下降位置跟踪误差仍需实飞复核。
+该锁存修正不改变视觉对准门槛；下降位置跟踪误差仍需实飞复核。
 
 相机内参使用后机 ~/.ros/camera_info/down_camera.yaml，外参使用后机
 precision_landing/config/down_camera_extrinsic_uav1.yaml。
-不使用前机的机体中心补偿；后机 bias_xy_m 初始为零，需要后机重新测试标定。
+机体中心补偿使用 `config/center_offset_uav1.yaml` 中的后机标定值，
+本轮不调整该补偿。
 MPC 模型、推力和调参由后机原 payload_mpc_controller/config 覆盖默认值，
 保留后机质量 1.836kg 和已有调参。State 超时为 1.5 秒以兼容飞控 1Hz 状态。
 

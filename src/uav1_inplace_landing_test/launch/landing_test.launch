@@ -27,6 +27,10 @@
     <arg name="landing_setpoint_input" value="$(eval arg('topic_prefix') + ('/landing_test/precision_position' if arg('enable_nmpc_descent') else '/mavros/setpoint_raw/local'))"/>
   </include>
 
+  <!-- 在公共精降配置之后加载，仅覆盖单独测试的对中参数。 -->
+  <rosparam command="load" ns="$(arg vehicle_ns)/precision_landing_node"
+            file="$(find uav1_inplace_landing_test)/config/standalone_alignment.yaml"/>
+
   <include if="$(arg enable_nmpc_descent)" file="$(find uav1_inplace_landing_test)/launch/landing_nmpc_test.launch">
     <arg name="topic_prefix" value="$(arg topic_prefix)"/>
   </include>
