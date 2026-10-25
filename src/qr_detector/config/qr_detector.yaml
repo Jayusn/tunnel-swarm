@@ -48,7 +48,7 @@ startup_warmup_seconds: 5.0
 draw_raw_candidates: false
 
 # Temporal stability.
-confirm_frames: 5
+confirm_frames: 2
 lost_hold_time: 0.3
 ema_alpha: 0.35
 
