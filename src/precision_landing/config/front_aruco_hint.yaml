@@ -17,7 +17,7 @@ frames:
   camera_optical: camera_color_optical_frame
 
 marker:
-  size_m: 0.60
+  size_m: 0.50
   requested_id: -1
   stable_frames: 5
   max_reprojection_error_px: 5.0
