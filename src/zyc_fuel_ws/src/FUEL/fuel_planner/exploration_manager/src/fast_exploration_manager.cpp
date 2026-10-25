@@ -5547,11 +5547,11 @@ void FastExplorationManager::updateMissionOdometry(const Vector3d& pos, double y
         manual_progress_stamp_ = measured_at;
         manual_progress_position_ = pos;
       } else if ((measured_at-manual_progress_stamp_).toSec() >= manual_path_stuck_timeout_) {
-        ROS_WARN("[manual_path] skip waypoint %zu: XY movement below 0.10m for %.2fs; no relay.",
+        ROS_WARN("[manual_path] replan waypoint %zu: XY movement below 0.10m for %.2fs; keep target.",
                  manual_path_.next+1, manual_path_stuck_timeout_);
-        ++manual_path_.next;
+        manual_progress_stamp_ = measured_at;
+        manual_progress_position_ = pos;
         manual_exit_replan_pending_ = true;
-        continue;
       }
       break;
     }

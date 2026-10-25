@@ -1920,8 +1920,17 @@ public:
     manager.updateMissionOdometry(actual, 0, ros::Time(106.9));
     EXPECT_EQ(1U, manager.manual_path_.next);
     manager.updateMissionOdometry(actual, 0, ros::Time(107.1));
-    EXPECT_TRUE(manager.manual_path_.finished());
+    EXPECT_EQ(1U, manager.manual_path_.next);
+    EXPECT_FALSE(manager.manual_path_.finished());
     EXPECT_TRUE(manager.consumeManualExitReplanRequest());
+    ASSERT_EQ(SUCCEED, manager.planExploreMotion(actual, zero, zero, zero));
+    EXPECT_EQ(second, manager.ed_->next_goal_);
+    // 重规划后重新计时，连续卡住也不能被当成不可达而消耗航点。
+    manager.updateMissionOdometry(actual, 0, ros::Time(108));
+    EXPECT_FALSE(manager.consumeManualExitReplanRequest());
+    manager.updateMissionOdometry(actual, 0, ros::Time(112.2));
+    EXPECT_TRUE(manager.consumeManualExitReplanRequest());
+    EXPECT_EQ(1U, manager.manual_path_.next);
     // 正常移动及转向分别重置计时；Z变化不能被误认成XY前进。
     manager.manual_path_.points={second}; manager.manual_path_.next=0;
     manager.updateMissionOdometry(actual, 0, ros::Time(110));
@@ -1933,7 +1942,9 @@ public:
     EXPECT_FALSE(manager.manual_path_.finished());
     manager.turn_in_place_session_active_=false;
     manager.updateMissionOdometry(actual+Vector3d(.21,0,.1), 0, ros::Time(129.1));
-    EXPECT_TRUE(manager.manual_path_.finished());
+    EXPECT_FALSE(manager.manual_path_.finished());
+    EXPECT_EQ(0U, manager.manual_path_.next);
+    EXPECT_TRUE(manager.consumeManualExitReplanRequest());
     // 无动态障碍时同样只按实际XY到达，预测规划不消耗航点。
     manager.manual_path_.points={second}; manager.manual_path_.next=0;
     ASSERT_EQ(SUCCEED, manager.planExploreMotion(second, zero, zero, zero));
@@ -3352,7 +3363,7 @@ TEST(ManualWaypoints, LowCrossingAdvancesIntermediateGoalWithoutReleasingHeight)
   fast_planner::TurnEscapeTest::runManualLowWaypointProgress();
 }
 
-TEST(ManualWaypoints, SkipsOccupiedOrStalledGoalAndUsesActualXYArrival) {
+TEST(ManualWaypoints, SkipsOccupiedButReplansStalledGoalAndUsesActualXYArrival) {
   fast_planner::TurnEscapeTest::runManualWaypointSkip();
 }
 
