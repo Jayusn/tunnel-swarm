@@ -326,10 +326,10 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
 
   if ((state_ == PLAN_TRAJ || state_ == PUB_TRAJ || state_ == EXEC_TRAJ) &&
       expl_manager_->consumeManualExitReplanRequest()) {
-    requestActiveTrajectoryBrake("manual waypoint exit handoff");
+    requestActiveTrajectoryBrake("manual waypoint skipped or exit handoff");
     fd_->static_state_ = true;
     next_plan_retry_time_ = ros::Time(0);
-    transitState(PLAN_TRAJ, "manual-exit-handoff");
+    transitState(PLAN_TRAJ, "manual-target-change");
   }
 
   // 出口正式接管后撤销尚未完成的普通探索目标，包括门外旧终点。

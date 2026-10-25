@@ -154,6 +154,10 @@ private:
   bool manual_exit_replan_pending_{false};
   Vector3d manual_actual_pos_{Vector3d::Zero()};
   double manual_path_arrive_distance_{0.25};
+  double manual_path_stuck_timeout_{5.0};
+  std::size_t manual_progress_index_{std::numeric_limits<std::size_t>::max()};
+  ros::Time manual_progress_stamp_;
+  Vector3d manual_progress_position_{Vector3d::Zero()};
   // 仅独立航点入口开启，自动探索仍走原有局部规划流程。
   double manual_path_max_segment_length_{0.0};
   bool manual_path_exploration_style_{false};

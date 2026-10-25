@@ -1864,17 +1864,12 @@ public:
     const Vector3d first(3.8, 0, .6), next(5.6, -.3, .6);
     const Vector3d actual(3.775, -.025, .271), zero = Vector3d::Zero();
     manager.manual_path_.points = {first, next};
-    // 本次录包已到第一点XY，普通三维到达仍未满足。
-    manager.updateMissionOdometry(actual, 0);
-    EXPECT_EQ(0U, manager.manual_path_.next);
     manager.manual_fapp_active_ = true;
     manager.manual_fapp_hold_height_ = .32;
     manager.manual_fapp_exit_progress_ = 3.844;
     manager.manual_fapp_forward_ = Vector3d::UnitX();
-    // 预测起点不能推进；高度或水平位置未到也不能消耗航点。
+    // 预测起点不能推进；水平位置未到不能消耗航点。
     ASSERT_EQ(SUCCEED, manager.planExploreMotion(actual, zero, zero, zero));
-    EXPECT_EQ(0U, manager.manual_path_.next);
-    manager.updateMissionOdometry(Vector3d(3.8, 0, .02), 0);
     EXPECT_EQ(0U, manager.manual_path_.next);
     manager.updateMissionOdometry(Vector3d(3.4, 0, .32), 0);
     EXPECT_EQ(0U, manager.manual_path_.next);
@@ -1886,14 +1881,64 @@ public:
     EXPECT_DOUBLE_EQ(3.844, manager.manual_fapp_exit_progress_);
     EXPECT_EQ(first, manager.manual_path_.points.front());
     EXPECT_EQ(next, manager.manual_path_.points.back());
-    // 低位中间点推进不能把整条路线提前判完成。
-    manager.updateMissionOdometry(Vector3d(5.6, -.3, .32), 0);
-    EXPECT_FALSE(manager.manual_path_.finished());
     // 原有通过判定解除动态状态后，继续使用手填高度。
     manager.manual_fapp_active_ = false;
     ASSERT_EQ(SUCCEED, manager.planExploreMotion(actual, zero, zero, zero));
     EXPECT_EQ(next, manager.ed_->next_goal_);
-    manager.updateMissionOdometry(next, 0);
+    manager.updateMissionOdometry(Vector3d(5.6, -.3, .27), 0);
+    EXPECT_TRUE(manager.manual_path_.finished());
+  }
+
+  static void runManualWaypointSkip() {
+    ros::NodeHandle nh("~manual_xy_skip");
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    manager.task_search_manager_.reset();
+    manager.manual_path_enabled_ = true;
+    manager.external_selection_only_ = true;
+    manager.manual_path_wait_for_trigger_ = true;
+    const Vector3d first(.525, .025, 1.025), second(1.525, .025, 1.025);
+    const Vector3d actual(.025, .025, .325), zero=Vector3d::Zero();
+    manager.manual_path_.points = {first, second};
+    // 入口未交接不计时；开始后未知体素或仅膨胀层不跳点。
+    manager.updateMissionOdometry(actual, 0, ros::Time(100));
+    EXPECT_TRUE(manager.manual_progress_stamp_.isZero());
+    manager.startManualWaypointMission();
+    manager.sdf_map_->setOccupied(first);
+    manager.updateMissionOdometry(actual, 0, ros::Time(101));
+    EXPECT_EQ(0U, manager.manual_path_.next);
+    // 明确的目标原始占据立即跳过，并要求FSM撤销旧目标重规划。
+    Eigen::Vector3i id; manager.sdf_map_->posToIndex(first, id);
+    manager.sdf_map_->md_->occupancy_buffer_[manager.sdf_map_->toAddress(id)] =
+        manager.sdf_map_->mp_->clamp_max_log_;
+    manager.updateMissionOdometry(actual, 0, ros::Time(102));
+    ASSERT_EQ(1U, manager.manual_path_.next);
+    EXPECT_TRUE(manager.consumeManualExitReplanRequest());
+    ASSERT_EQ(SUCCEED, manager.planExploreMotion(actual, zero, zero, zero));
+    EXPECT_EQ(second, manager.ed_->next_goal_);
+    // 新点获得独立的5秒观察时间，短暂停留不跳点。
+    manager.updateMissionOdometry(actual, 0, ros::Time(106.9));
+    EXPECT_EQ(1U, manager.manual_path_.next);
+    manager.updateMissionOdometry(actual, 0, ros::Time(107.1));
+    EXPECT_TRUE(manager.manual_path_.finished());
+    EXPECT_TRUE(manager.consumeManualExitReplanRequest());
+    // 正常移动及转向分别重置计时；Z变化不能被误认成XY前进。
+    manager.manual_path_.points={second}; manager.manual_path_.next=0;
+    manager.updateMissionOdometry(actual, 0, ros::Time(110));
+    manager.updateMissionOdometry(actual+Vector3d(.2,0,0), 0, ros::Time(114));
+    manager.updateMissionOdometry(actual+Vector3d(.21,0,.5), 0, ros::Time(118));
+    EXPECT_FALSE(manager.manual_path_.finished());
+    manager.turn_in_place_session_active_=true;
+    manager.updateMissionOdometry(actual+Vector3d(.21,0,.5), 0, ros::Time(124));
+    EXPECT_FALSE(manager.manual_path_.finished());
+    manager.turn_in_place_session_active_=false;
+    manager.updateMissionOdometry(actual+Vector3d(.21,0,.1), 0, ros::Time(129.1));
+    EXPECT_TRUE(manager.manual_path_.finished());
+    // 无动态障碍时同样只按实际XY到达，预测规划不消耗航点。
+    manager.manual_path_.points={second}; manager.manual_path_.next=0;
+    ASSERT_EQ(SUCCEED, manager.planExploreMotion(second, zero, zero, zero));
+    EXPECT_FALSE(manager.manual_path_.finished());
+    manager.updateMissionOdometry(Vector3d(second.x(), second.y(), .2), 0, ros::Time(130));
     EXPECT_TRUE(manager.manual_path_.finished());
   }
 
@@ -3305,6 +3350,10 @@ TEST(UnderpassExit, TimeoutGeneratesFreshHorizontalTrajectoryInSamePlan) {
 
 TEST(ManualWaypoints, LowCrossingAdvancesIntermediateGoalWithoutReleasingHeight) {
   fast_planner::TurnEscapeTest::runManualLowWaypointProgress();
+}
+
+TEST(ManualWaypoints, SkipsOccupiedOrStalledGoalAndUsesActualXYArrival) {
+  fast_planner::TurnEscapeTest::runManualWaypointSkip();
 }
 
 TEST(ManualWaypoints, CompletesWithoutFrontierTargets) {

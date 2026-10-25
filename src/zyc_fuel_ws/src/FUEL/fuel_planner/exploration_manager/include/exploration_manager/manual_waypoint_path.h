@@ -32,10 +32,13 @@ struct ManualWaypointPath {
   std::vector<Eigen::Vector3d> points;
   std::size_t next{0};
 
+  bool reachedXY(const Eigen::Vector3d& position, double arrive_distance) const {
+    return next < points.size() &&
+        (position - points[next]).head<2>().norm() <= arrive_distance;
+  }
+
   void updateOdometry(const Eigen::Vector3d& position, double arrive_distance) {
-    while (next < points.size() &&
-           (position - points[next]).norm() <= arrive_distance)
-      ++next;
+    while (reachedXY(position, arrive_distance)) ++next;
   }
 
   bool finished() const { return next >= points.size(); }

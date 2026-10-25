@@ -3261,6 +3261,10 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
   nh.param("mission/manual_path/wait_for_trigger", manual_path_wait_for_trigger_, false);
   nh.param("mission/manual_path/exit_enabled", manual_exit_enabled_, false);
   nh.param("mission/manual_path/arrive_distance", manual_path_arrive_distance_, 0.25);
+  nh.param("mission/manual_path/stuck_timeout", manual_path_stuck_timeout_, 5.0);
+  if (manual_path_enabled_ && (!std::isfinite(manual_path_stuck_timeout_) ||
+      manual_path_stuck_timeout_ <= 0.0))
+    throw std::runtime_error("manual_path stuck_timeout must be finite and positive");
   nh.param("mission/manual_path/max_segment_length", manual_path_max_segment_length_, 0.0);
   nh.param("mission/manual_path/exploration_style", manual_path_exploration_style_, false);
   nh.param("mission/manual_path/local_goal_enabled", manual_local_goal_enabled_, false);
@@ -5511,29 +5515,45 @@ void FastExplorationManager::updateMissionOdometry(const Vector3d& pos, double y
       }
     }
     const bool was_finished = manual_path_.finished();
-    const auto first_pending_waypoint = manual_path_.next;
-    // 动态低位通行使用正在执行的高度判定中间航点，避免等原高度而停在障碍内。
-    // 只推进到后续航点，不解除穿越状态、不修改手填高度，也不提前完成整条路线。
-    if (manual_fapp_active_ && std::isfinite(manual_fapp_hold_height_)) {
-      while (manual_path_.next + 1 < manual_path_.points.size()) {
-        Vector3d arrival_goal = manual_path_.points[manual_path_.next];
-        if (manual_fapp_hold_height_ >= arrival_goal.z()) break;
-        arrival_goal.z() = manual_fapp_hold_height_;
-        if ((pos - arrival_goal).norm() > manual_path_arrive_distance_) break;
+    const ros::Time measured_at = stamp.isZero() ? ros::Time::now() : stamp;
+    while (!manual_path_.finished()) {
+      Vector3d target = manual_path_.points[manual_path_.next];
+      if (manual_fapp_active_ && std::isfinite(manual_fapp_hold_height_))
+        target.z() = manual_fapp_hold_height_;
+      // 只有目标本身的原始占据才能跳点，未知区域和膨胀层不算点在障碍内。
+      const bool occupied = sdf_map_ && sdf_map_->getOccupancy(target) == SDFMap::OCCUPIED;
+      if (occupied) {
+        ROS_WARN("[manual_path] skip waypoint %zu: occupied target=(%.2f,%.2f,%.2f); no relay.",
+                 manual_path_.next+1, target.x(), target.y(), target.z());
         ++manual_path_.next;
-        ROS_WARN("[manual_path] low crossing reached waypoint %zu at actual=(%.2f,%.2f,%.2f); "
-                 "continue waypoint %zu at hold_z=%.2f until obstacle passed.",
-                 manual_path_.next, pos.x(), pos.y(), pos.z(), manual_path_.next + 1,
-                 manual_fapp_hold_height_);
+        manual_exit_replan_pending_ = true;
+        continue;
       }
-    }
-    manual_path_.updateOdometry(pos, manual_path_arrive_distance_);
-    if (safe_relay_) {
-      for (auto i = first_pending_waypoint; i < manual_path_.next; ++i) {
-        Vector3d relay = manual_path_.points[i];
-        relay.z() = pos.z(); // 下穿时沿用实飞高度，不把未飞过的手填高度发给后机。
-        safe_relay_->recordManualWaypoint(relay, yaw, stamp);
+      if (manual_path_.reachedXY(pos, manual_path_arrive_distance_)) {
+        if (safe_relay_) {
+          target.z() = pos.z();
+          safe_relay_->recordManualWaypoint(target, yaw, stamp);
+        }
+        ROS_WARN("[manual_path] reached waypoint %zu by XY at actual=(%.2f,%.2f,%.2f); "
+                 "height remains a planning reference.",
+                 manual_path_.next+1, pos.x(), pos.y(), pos.z());
+        ++manual_path_.next;
+        continue;
       }
+      if (manual_progress_index_ != manual_path_.next || manual_progress_stamp_.isZero() ||
+          measured_at < manual_progress_stamp_ || turn_in_place_session_active_ ||
+          (pos-manual_progress_position_).head<2>().norm() >= 0.10) {
+        manual_progress_index_ = manual_path_.next;
+        manual_progress_stamp_ = measured_at;
+        manual_progress_position_ = pos;
+      } else if ((measured_at-manual_progress_stamp_).toSec() >= manual_path_stuck_timeout_) {
+        ROS_WARN("[manual_path] skip waypoint %zu: XY movement below 0.10m for %.2fs; no relay.",
+                 manual_path_.next+1, manual_path_stuck_timeout_);
+        ++manual_path_.next;
+        manual_exit_replan_pending_ = true;
+        continue;
+      }
+      break;
     }
     if (manual_exit_latched_ && !was_finished && manual_path_.finished())
       manual_exit_replan_pending_ = true;

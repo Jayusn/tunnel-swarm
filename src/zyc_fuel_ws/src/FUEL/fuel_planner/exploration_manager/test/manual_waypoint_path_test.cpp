@@ -22,7 +22,7 @@ int main() {
   route.updateOdometry(second, 0.25);
   require(route.next == 0);  // 必须按顺序到达。
   route.updateOdometry(first + Vector3d(0, 0, 0.3), 0.25);
-  require(route.next == 0);  // 高度也属于坐标。
+  require(route.next == 1);  // Z仅作参考，XY到达就推进。
   route.updateOdometry(first + Vector3d(0.1, 0, 0), 0.25);
   require(route.next == 1);
   path = route.path(first);
