@@ -109,8 +109,8 @@
   <param name="/exploration_node/mission/task_search/exit/enabled" value="$(arg enable_exit_recognition)" type="bool"/>
   <param name="/exploration_node/mission/task_search/exit/auto_crossing_enabled" value="$(arg enable_exit_recognition)" type="bool"/>
   <param name="/exploration_node/mission/task_search/exit/rc_trigger/enabled" value="false" type="bool"/>
-  <!-- 双机脚本启用接力发布；独立单机启动保持默认关闭。 -->
-  <param name="/exploration_node/mission/safe_relay/enabled" value="$(optenv UAV0_SAFE_RELAY_ENABLED false)" type="bool"/>
+  <!-- 默认发布后机接力点；可用 UAV0_SAFE_RELAY_ENABLED=false 显式关闭。 -->
+  <param name="/exploration_node/mission/safe_relay/enabled" value="$(optenv UAV0_SAFE_RELAY_ENABLED true)" type="bool"/>
   <param name="/exploration_node/mission/use_entry_transit" value="false" type="bool"/>
   <param name="/exploration_node/mission/use_workspace_lock" value="false" type="bool"/>
   <param name="/exploration_node/mission/global_no_return" value="false" type="bool"/>
