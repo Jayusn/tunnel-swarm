@@ -1,5 +1,6 @@
 #include <exploration_manager/safe_relay_publisher.h>
 #include <plan_env/sdf_map.h>
+#include <plan_env/raycast.h>
 #include <plan_manage/planner_manager.h>
 #include <stdexcept>
 #include <visualization_msgs/MarkerArray.h>
@@ -56,6 +57,8 @@ void SafeRelayPublisher::initialize(ros::NodeHandle& nh, std::shared_ptr<SDFMap>
   status_pub_ = nh.advertise<std_msgs::String>(prefix + "/relay_status", 1, true);
   mission_sub_ = nh.subscribe(prefix + "/task_status", 1,
                               &SafeRelayPublisher::missionCallback, this);
+  exit_sub_ = nh.subscribe(prefix + "/final_exit", 1,
+                           &SafeRelayPublisher::exitCallback, this);
   timer_ = nh.createTimer(ros::Duration(0.25), &SafeRelayPublisher::timerCallback, this);
   publish("WAIT_ENTRANCE");
 }
@@ -115,6 +118,49 @@ void SafeRelayPublisher::missionCallback(const std_msgs::String::ConstPtr& messa
   const auto& state = message->data;
   exited_ = state.find("SEARCH_OUTSIDE") == 0 || state.find("APPROACH_LANDING") == 0 ||
             state.find("LANDING") == 0;
+}
+
+void SafeRelayPublisher::exitCallback(const geometry_msgs::PoseStamped::ConstPtr& message) {
+  if (exit_received_ || message->header.frame_id != frame_) return;
+  const auto& p = message->pose.position;
+  const auto& q = message->pose.orientation;
+  const Eigen::Vector3d center(p.x, p.y, p.z);
+  const double norm = q.w*q.w + q.x*q.x + q.y*q.y + q.z*q.z;
+  if (!center.allFinite() || !std::isfinite(norm) || norm < 1e-12) return;
+  const double yaw = std::atan2(2.0 * (q.w*q.z + q.x*q.y),
+                                norm - 2.0 * (q.y*q.y + q.z*q.z));
+  exit_center_ = center;
+  exit_outward_ = Eigen::Vector2d(std::cos(yaw), std::sin(yaw));
+  exit_received_ = true;
+}
+
+bool SafeRelayPublisher::insideCorridor(
+    const Eigen::Vector3d& reference, const Eigen::Vector3d& point) const {
+  // 内部悬停包络必须留在入口内侧、已确认出口内侧，门外等待点不由这里生成。
+  if (!point.allFinite() || !reference.allFinite()) return false;
+  if (entrance_received_ &&
+      (point - entrance_).head<2>().dot(entrance_direction_.head<2>().normalized()) <
+          hold_radius_ - 1e-6) return false;
+  if (exit_received_ &&
+      (point - exit_center_).head<2>().dot(exit_outward_) > -hold_radius_ + 1e-6)
+    return false;
+
+  // 只检查这次局部偏移是否穿墙/未知体素，防止隔墙跳到另一侧空地。
+  // 接力点之间的实际连接路径仍由后机规划；目标本身另做完整悬停包络检查。
+  if (!map_->isInMap(reference) || !map_->isInMap(point) ||
+      map_->getOccupancy(reference) != SDFMap::FREE ||
+      map_->getOccupancy(point) != SDFMap::FREE) return false;
+  Eigen::Vector3d origin, size;
+  map_->getRegion(origin, size);
+  RayCaster ray;
+  ray.setInput((reference - origin) / map_->getResolution(),
+               (point - origin) / map_->getResolution());
+  Eigen::Vector3d cell;
+  while (ray.step(cell)) {
+    const Eigen::Vector3i index = cell.cast<int>();
+    if (!map_->isInMap(index) || map_->getOccupancy(index) != SDFMap::FREE) return false;
+  }
+  return true;
 }
 
 bool SafeRelayPublisher::volumeFree(const Eigen::Vector3d& point, double radius,
@@ -243,7 +289,7 @@ void SafeRelayPublisher::qualifyCandidate(
     return a.offset < b.offset;
   });
   const auto safe = [&](const Eigen::Vector3d& p) {
-    return volumeFree(p, hold_radius_, hold_half_height_) &&
+    return insideCorridor(reference, p) && volumeFree(p, hold_radius_, hold_half_height_) &&
         planner_->isRelayHoldDynamicallySafe(p, hold_radius_, hold_half_height_, dynamic_wait_horizon_);
   };
   const auto paired = [&](Eigen::Vector3d p) {

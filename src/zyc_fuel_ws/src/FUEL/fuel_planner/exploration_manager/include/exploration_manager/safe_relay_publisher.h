@@ -42,6 +42,8 @@ class SafeRelayPublisher {
   };
   void timerCallback(const ros::TimerEvent&);
   void missionCallback(const std_msgs::String::ConstPtr& message);
+  void exitCallback(const geometry_msgs::PoseStamped::ConstPtr& message);
+  bool insideCorridor(const Eigen::Vector3d& reference, const Eigen::Vector3d& point) const;
   bool volumeFree(const Eigen::Vector3d& point, double radius, double height) const;
   double horizontalClearance(const Eigen::Vector3d& point) const;
   std::vector<Eigen::Vector2d> horizontalBoundaries(const Eigen::Vector3d& point,
@@ -56,7 +58,7 @@ class SafeRelayPublisher {
   std::shared_ptr<SDFMap> map_;
   std::shared_ptr<FastPlannerManager> planner_;
   ros::Publisher goals_pub_, route_pub_, status_pub_, labels_pub_;
-  ros::Subscriber mission_sub_;
+  ros::Subscriber mission_sub_, exit_sub_;
   ros::Timer timer_;
   safe_relay::Config config_;
   double entrance_minimum_progress_{0.50};
@@ -67,6 +69,9 @@ class SafeRelayPublisher {
   Eigen::Vector3d leader_{Eigen::Vector3d::Zero()};
   Eigen::Vector3d entrance_{Eigen::Vector3d::Zero()};
   Eigen::Vector3d entrance_direction_{Eigen::Vector3d::UnitX()};
+  Eigen::Vector3d exit_center_{Eigen::Vector3d::Zero()};
+  Eigen::Vector2d exit_outward_{Eigen::Vector2d::UnitX()};
+  bool exit_received_{false};
   ros::Time session_, odom_stamp_, map_seen_at_;
   std::string frame_, last_status_;
   uint64_t map_sequence_{0};

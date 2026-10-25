@@ -7,6 +7,84 @@
 namespace fast_planner {
 class SafeRelayPublisherTest {
  public:
+  static void corridorBoundary(bool across_wall) {
+    ros::NodeHandle nh("~corridor_boundary");
+    nh.setParam("sdf_map/resolution", .1);
+    nh.setParam("sdf_map/map_size_x", 4.0);
+    nh.setParam("sdf_map/map_size_y", 4.0);
+    nh.setParam("sdf_map/map_size_z", 2.0);
+    nh.setParam("sdf_map/ground_height", 0.0);
+    nh.setParam("sdf_map/max_ray_length", 20.0);
+    nh.setParam("sdf_map/obstacles_inflation", .1);
+    nh.setParam("mission/safe_relay/enabled", true);
+    nh.setParam("mission/safe_relay/hold_radius", .1);
+    nh.setParam("mission/safe_relay/hold_half_height", .1);
+    nh.setParam("mission/safe_relay/topic_prefix", std::string("/relay_boundary_test"));
+    auto map = std::make_shared<SDFMap>();
+    map->initMap(nh);
+    SafeRelayPublisher publisher;
+    publisher.initialize(nh, map, std::make_shared<FastPlannerManager>());
+    publisher.timer_.stop();
+    for (int y = -10; y <= 10; ++y)
+      for (int z = 2; z <= 8; ++z) {
+        pcl::PointCloud<pcl::PointXYZ> cloud;
+        const pcl::PointXYZ end(20, .1*y + .05, .1*z + .05);
+        cloud.push_back(end);
+        map->inputPointCloud(cloud, 1,
+            Eigen::Vector3d(across_wall ? -.35 : -1.9, end.y, end.z));
+      }
+    if (across_wall) {
+      for (int y = -10; y <= 10; ++y)
+        for (int z = 2; z <= 8; ++z) {
+          pcl::PointCloud<pcl::PointXYZ> wall;
+          wall.push_back(pcl::PointXYZ(.05, .1*y + .05, .1*z + .05));
+          for (int frame = 0; frame < 10; ++frame)
+            map->inputPointCloud(wall, 1, Eigen::Vector3d(-.15, wall[0].y, wall[0].z));
+        }
+      ASSERT_EQ(SDFMap::OCCUPIED, map->getOccupancy(Eigen::Vector3d(.05, .05, .45)));
+      SafeRelayPublisher::Record record;
+      record.sample.position = Eigen::Vector3d(-.15, .05, .45);
+      record.candidate = record.sample;
+      const Eigen::Vector3d outside(.45, .05, .45);
+      ASSERT_TRUE(publisher.volumeFree(outside, .1, .1));
+      EXPECT_GT(publisher.horizontalClearance(outside),
+                publisher.horizontalClearance(record.sample.position));
+      EXPECT_FALSE(publisher.insideCorridor(record.sample.position, outside));
+      for (int i = 0; i < 2; ++i)
+        publisher.qualifyCandidate(record, true, Eigen::Vector2d::UnitX());
+      ASSERT_TRUE(record.candidate.confirmed);
+      EXPECT_LT(record.candidate.position.x(), 0.0); // 墙外更宽也不能隔墙选过去。
+      return;
+    }
+    // 同时验证正向、倒U返回方向以及旋转后的门平面，不写死世界坐标轴。
+    for (double yaw : {0.0, M_PI, .7}) {
+      const Eigen::Vector3d direction(std::cos(yaw), std::sin(yaw), 0);
+      publisher.entrance_received_ = publisher.exit_received_ = false;
+      publisher.setEntrance(Eigen::Vector3d(0, 0, .45) - direction, direction);
+      auto exit = boost::make_shared<geometry_msgs::PoseStamped>();
+      exit->header.frame_id = "world";
+      exit->pose.position.x = .2 * direction.x();
+      exit->pose.position.y = .2 * direction.y();
+      exit->pose.position.z = .45;
+      exit->pose.orientation.w = std::cos(.5*yaw);
+      exit->pose.orientation.z = std::sin(.5*yaw);
+      publisher.exitCallback(exit);
+      ASSERT_TRUE(publisher.exit_received_);
+      SafeRelayPublisher::Record record;
+      record.sample.position = Eigen::Vector3d(0, 0, .45);
+      record.candidate = record.sample;
+      // 上帧曾看中的门外空地不能被2cm净空保持逻辑重新选中。
+      record.candidate.position += .5 * direction;
+      EXPECT_FALSE(publisher.insideCorridor(record.sample.position, record.candidate.position));
+      EXPECT_FALSE(publisher.insideCorridor(record.sample.position,
+          publisher.entrance_ + .05 * direction));
+      for (int i = 0; i < 2; ++i)
+        publisher.qualifyCandidate(record, true, direction.head<2>());
+      ASSERT_TRUE(record.candidate.confirmed);
+      EXPECT_LE((record.candidate.position - publisher.exit_center_).dot(direction), -.1 + 1e-6);
+      EXPECT_GE((record.candidate.position - publisher.entrance_).dot(direction), .1 - 1e-6);
+    }
+  }
   static void runManualWaypoints() {
     ros::NodeHandle nh("~manual_waypoint_relay");
     nh.setParam("sdf_map/resolution", .1);
@@ -280,7 +358,8 @@ class SafeRelayPublisherTest {
     publisher.timerCallback(ros::TimerEvent());
     ASSERT_EQ(1U, publisher.goals_.size());
     EXPECT_EQ(5U, publisher.goals_.front().route_index); // Entrance -> first fallback: exactly 0.5m.
-    EXPECT_EQ("BEFORE_OBSTACLE_WAIT", publisher.last_status_);
+    // 入口门平面附近的样本因悬停包络越界被排除，首个合格点的位置仍为0.5m。
+    EXPECT_EQ("AFTER_OBSTACLE", publisher.last_status_);
     EXPECT_DOUBLE_EQ(0.70, publisher.config_.minimum_progress);
     EXPECT_DOUBLE_EQ(0.70, publisher.config_.minimum_xy_spacing); // The first-release override is local.
 
@@ -535,7 +614,7 @@ class SafeRelayPublisherTest {
   }
 
   static void unflownPocketAndGap(bool revision = false, bool no_gain = false,
-                                  uint32_t id = 8, bool exited = false) {
+                                  uint32_t id = 8, bool exited = false, bool bound_exit = false) {
     ros::NodeHandle nh("~unflown_pocket");
     nh.setParam("sdf_map/resolution", 0.1);
     nh.setParam("sdf_map/map_size_x", 4.0);
@@ -607,6 +686,14 @@ class SafeRelayPublisherTest {
       goal.pose.pose.position.y = no_gain ? p.y : 0.0;
       publisher.next_id_ = id + 1;
       publisher.exited_ = exited;
+      if (bound_exit) {
+        auto exit = boost::make_shared<geometry_msgs::PoseStamped>();
+        exit->header.frame_id = "world";
+        exit->pose.position.y = .45;
+        exit->pose.position.z = .45;
+        exit->pose.orientation.w = exit->pose.orientation.z = std::sqrt(.5);
+        publisher.exitCallback(exit);
+      }
       const Eigen::Vector3d original(goal.pose.pose.position.x, goal.pose.pose.position.y, p.z);
       publisher.observe(Eigen::Vector3d(1.0, 0, .45), 0, ros::Time(301));
       ros::Time::setNow(ros::Time(301));
@@ -618,7 +705,10 @@ class SafeRelayPublisherTest {
       EXPECT_EQ(!no_gain, goal.revised);
       const auto revised = goal.pose;
       if (!no_gain) {
-        EXPECT_GT(revised.pose.position.y, .20);
+        EXPECT_GT(revised.pose.position.y, bound_exit ? .05 : .20);
+        if (bound_exit) {
+          EXPECT_LE(revised.pose.position.y, .15 + 1e-6);
+        }
         EXPECT_LE((Eigen::Vector3d(revised.pose.position.x, revised.pose.position.y,
                                   revised.pose.position.z) - original).norm(), .60 + 1e-6);
       }
@@ -670,6 +760,15 @@ TEST(SafeRelayPublisher, InternalPointWithoutImprovementKeepsOriginalPoint) {
 }
 TEST(SafeRelayPublisher, LastInternalPointCanImproveAfterExitHandoff) {
   SafeRelayPublisherTest::unflownPocketAndGap(true, false, 9, true);
+}
+TEST(SafeRelayPublisher, InternalCandidatesStayInsideEntranceAndConfirmedExit) {
+  SafeRelayPublisherTest::corridorBoundary(false);
+}
+TEST(SafeRelayPublisher, WiderFreeSpaceAcrossWallCannotBecomeInternalGoal) {
+  SafeRelayPublisherTest::corridorBoundary(true);
+}
+TEST(SafeRelayPublisher, RevisedInternalPointStaysInsideConfirmedExit) {
+  SafeRelayPublisherTest::unflownPocketAndGap(true, false, 9, true, true);
 }
 TEST(SafeRelayPublisher, BetterForwardVerticalPocketKeepsHeightAndDoesNotDrift) {
   SafeRelayPublisherTest::forwardVerticalPocket(false, false, false);
