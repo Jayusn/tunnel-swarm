@@ -3,6 +3,7 @@
   <!-- 仅供手填航点入口使用：复用原入口检测、出口识别参数和降落节点；不修改原探索launch。 -->
   <arg name="enable_entry_recognition" />
   <arg name="enable_exit_recognition" />
+  <arg name="front_approach_distance" default="0.2" />
   <arg name="odom_topic" />
   <arg name="cloud_topic" />
   <arg name="rviz_goal_topic" />
@@ -166,7 +167,7 @@
       <param name="trigger_topic" value="/UAV0/landing_diff/trigger" />
       <param name="yaw_topic" value="/UAV0/landing_diff/yaw" />
       <param name="landing_request_topic" value="/UAV0/mission/landing_request" />
-      <param name="front_approach_distance" value="0.2" />
+      <param name="front_approach_distance" value="$(arg front_approach_distance)" />
       <param name="front_approach_height" value="0.60" />
       <param name="front_approach_arrive_xy" value="0.15" />
       <param name="front_scan_anchor_topic" value="/UAV0/landing/front_scan_anchor" />

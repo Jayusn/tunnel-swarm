@@ -1,4 +1,6 @@
 <launch>
+    <!-- 到出口后、搜索降落码前沿出口方向前进的距离，单位m。 -->
+    <arg name="front_approach_distance" default="0.2"/>
     <!-- 与单机航点入口共用已验证的检测、历史包络及连续穿越策略。 -->
     <arg name="enable_fapp_detection" default="true"/>
     <arg name="dynamic_mode" default="swing-only"/>
@@ -569,8 +571,8 @@
         <param name="trigger_topic" value="/UAV0/landing_diff/trigger"/>
         <param name="yaw_topic" value="/UAV0/landing_diff/yaw"/>
         <param name="landing_request_topic" value="/UAV0/mission/landing_request"/>
-        <!-- 有锁存出口时目标为出口外0.2m，门外人工触发则从当前位置前飞0.2m；保持航向、目标高度0.6m，到达后开始前视扫描。 -->
-        <param name="front_approach_distance" value="0.2"/>
+        <!-- 前进距离使用顶部 front_approach_distance；已在门外则从当前位置前进；保持航向、目标高度0.6m，到达后开始前视扫描。 -->
+        <param name="front_approach_distance" value="$(arg front_approach_distance)"/>
         <param name="front_approach_height" value="0.60"/>
         <param name="front_approach_arrive_xy" value="0.15"/>
         <param name="front_scan_anchor_topic" value="/UAV0/landing/front_scan_anchor"/>

@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <launch>
+  <!-- 到出口后、搜索降落码前沿出口方向前进的距离，单位m。 -->
+  <arg name="front_approach_distance" default="0.2"/>
   <!-- 入口/出口控制任务阶段；FAPP检测、动态避障和规划优先在下方单独开关。 -->
   <arg name="enable_entry_recognition" default="true"/>
   <arg name="enable_exit_recognition" default="true"/>
@@ -148,6 +150,7 @@
   <param name="/exploration_node/sdf_map/static_retention_enabled" value="$(arg retain_global_static_cloud)" type="bool"/>
   <!-- 入口接近和出口后的搜板降落使用原流程；航点与到出口的轨迹由FUEL规划。 -->
   <include file="$(find diff_planner)/launch/exp/fuel_waypoint_portals.xml">
+    <arg name="front_approach_distance" value="$(arg front_approach_distance)"/>
     <arg name="enable_entry_recognition" value="$(arg enable_entry_recognition)"/>
     <arg name="enable_exit_recognition" value="$(arg enable_exit_recognition)"/>
     <arg name="odom_topic" value="$(arg odom_topic)"/>
