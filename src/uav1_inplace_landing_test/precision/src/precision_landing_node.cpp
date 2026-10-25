@@ -19,6 +19,7 @@
 #include <geometry_msgs/PoseStamped.h>
 #include <image_transport/image_transport.h>
 #include <mavros_msgs/PositionTarget.h>
+#include <nav_msgs/Odometry.h>
 #include <mavros_msgs/SetMode.h>
 #include <mavros_msgs/State.h>
 #include <opencv2/imgproc.hpp>
@@ -492,8 +493,16 @@ class PrecisionLandingNode {
         image_topic, 1, &PrecisionLandingNode::imageCallback, this);
     camera_info_subscriber_ = node_.subscribe(
         camera_info_topic, 1, &PrecisionLandingNode::cameraInfoCallback, this);
-    pose_subscriber_ = node_.subscribe(
-        pose_topic, 1, &PrecisionLandingNode::poseCallback, this);
+    // 正式任务直接使用 FAST-LIO；未配置 odometry 的独立测试保留原位姿接口。
+    std::string odometry_topic;
+    private_node_.param<std::string>("topics/odometry", odometry_topic, "");
+    if (!odometry_topic.empty()) {
+      pose_subscriber_ = node_.subscribe(
+          odometry_topic, 1, &PrecisionLandingNode::odometryCallback, this);
+    } else {
+      pose_subscriber_ = node_.subscribe(
+          pose_topic, 1, &PrecisionLandingNode::poseCallback, this);
+    }
     mavros_state_subscriber_ = node_.subscribe(
         mavros_state_topic, 1, &PrecisionLandingNode::mavrosStateCallback, this);
     std::string rc_land_topic;
@@ -744,6 +753,13 @@ class PrecisionLandingNode {
       distortion_.at<double>(0, static_cast<int>(index)) =
           message->D[index];
     }
+  }
+
+  void odometryCallback(const nav_msgs::OdometryConstPtr& message) {
+    geometry_msgs::PoseStamped::Ptr pose(new geometry_msgs::PoseStamped);
+    pose->header = message->header;
+    pose->pose = message->pose.pose;
+    poseCallback(pose);
   }
 
   void poseCallback(const geometry_msgs::PoseStampedConstPtr& message) {

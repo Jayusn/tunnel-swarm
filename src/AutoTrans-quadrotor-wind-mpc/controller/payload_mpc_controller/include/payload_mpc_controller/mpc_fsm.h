@@ -149,10 +149,8 @@ namespace PayloadMPC
         bool rc_land_active_{false}, landing_fixed_stage_{false}, landing_fixed_latched_{false};
         ros::Time landing_target_time_{0}, local_pose_time_{0}, landing_fixed_stage_time_{0};
         mavros_msgs::PositionTarget landing_target_;
-        Eigen::Matrix3d landing_rotation_{Eigen::Matrix3d::Identity()};
-        Eigen::Vector3d landing_translation_{Eigen::Vector3d::Zero()};
         Eigen::Vector3d landing_fixed_origin_{Eigen::Vector3d::Zero()};
-        double landing_yaw_offset_{0.0}, landing_fixed_source_z_{0.0};
+        double landing_fixed_source_z_{0.0};
         unsigned landing_previous_mask_{0};
 		// Subscribers and publisher.
 		ros::Publisher pub_control_command, pub_predicted_trajectory_, pub_reference_trajectory_;

@@ -461,13 +461,8 @@ namespace PayloadMPC
         if (!precision_landing_active_)
         {
             if (!state_data.current_state.armed || state_data.current_state.mode != "OFFBOARD" ||
-                !mavros_local_pose_valid_ || local_pose_time_.isZero() ||
-                (now - local_pose_time_).toSec() > 0.3 ||
-                (now - local_pose_time_).toSec() < -0.05 ||
                 !odom_is_received(now) || !odom_state_valid()) return;
-            landing_yaw_offset_ = get_yaw_from_quaternion(force_attitude_odom_data.q) - latest_mavros_local_yaw_;
-            landing_rotation_ = Eigen::AngleAxisd(landing_yaw_offset_, Eigen::Vector3d::UnitZ()).toRotationMatrix();
-            landing_translation_ = odom_data.p - landing_rotation_ * latest_mavros_local_position_;
+            // 任务精降的位置、速度和航向与控制状态共用 FAST-LIO 世界系。
             update_hover_pose();
             trajectory_data.exec_traj = 0;
             exec_traj_state_ = HOVER;
@@ -495,7 +490,7 @@ namespace PayloadMPC
             const auto &target = landing_target_;
             const auto &p = target.position;
             const auto &v = target.velocity;
-            const Eigen::Vector3d position = landing_rotation_ * Eigen::Vector3d(p.x, p.y, p.z) + landing_translation_;
+            const Eigen::Vector3d position(p.x, p.y, p.z);
             if (target.type_mask == 2552)
             {
                 if (landing_fixed_stage_ && target.header.stamp >= landing_fixed_stage_time_)
@@ -514,13 +509,13 @@ namespace PayloadMPC
             }
             else
             {
-                velocity = landing_rotation_ * Eigen::Vector3d(v.x, v.y, v.z);
+                velocity = Eigen::Vector3d(v.x, v.y, v.z);
                 if (landing_previous_mask_ != target.type_mask) hover_pose_ = odom_data.p;
                 hover_pose_ += velocity * dt;
                 if (target.type_mask == 2531) { hover_pose_.z() = position.z(); velocity.z() = 0.0; }
             }
             landing_previous_mask_ = target.type_mask;
-            hover_yaw_ = target.yaw + landing_yaw_offset_;
+            hover_yaw_ = target.yaw;
         }
         else ROS_WARN_THROTTLE(1.0, "[精降NMPC] 目标超时，保持最后位置目标。");
         if (!controller_.setPositionCommandReference(hover_pose_, velocity,

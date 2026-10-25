@@ -19,6 +19,92 @@ from std_msgs.msg import Bool, String
 
 
 class MissionLandingTest(RcLandPriorityTest):
+    def test_precision_uses_fastlio_for_acquire_and_marker_loss(self):
+        import cv2
+        import numpy as np
+        from cv_bridge import CvBridge
+        from sensor_msgs.msg import CameraInfo, Image
+        from test_precision_landing_node import generate_aruco_marker
+
+        ns = self.prefix + '/precision'
+        for key, value in {
+            'topics/odometry': self.prefix + '/odom',
+            'topics/local_pose': self.prefix + '/px4_pose',
+            'topics/image': self.prefix + '/image',
+            'topics/camera_info': self.prefix + '/camera_info',
+            'topics/mavros_state': self.prefix + '/state',
+            'topics/trigger': self.prefix + '/trigger',
+            'topics/setpoint': self.prefix + '/setpoint',
+            'topics/landing_state': self.prefix + '/stage',
+            'topics/set_mode_service': self.prefix + '/set_mode',
+            'marker/size_m': 0.5,
+            'state_machine/acquire_stable_sec': 0.05,
+            'state_machine/align_stable_sec': 0.05,
+            'state_machine/high_height_m': 0.5,
+            'state_machine/auto_land_height_m': 0.5,
+        }.items():
+            rospy.set_param(ns + '/' + key, value)
+        self.launch('uav1_inplace_landing_test', 'uav1_test_precision_landing_node', 'precision')
+        self.subscribe('setpoint', PositionTarget)
+        self.subscribe('stage', String)
+        pubs = {t: self.publisher(t, k) for t, k in [
+            ('odom', Odometry), ('px4_pose', PoseStamped), ('image', Image),
+            ('camera_info', CameraInfo), ('state', State), ('trigger', Bool)]}
+        self.wait(lambda: all(pubs[t].get_num_connections() for t in
+                             ('odom', 'image', 'camera_info', 'state', 'trigger')),
+                  'FAST-LIO precision subscriptions')
+        self.assertEqual(pubs['px4_pose'].get_num_connections(), 0)
+        odom = Odometry()
+        odom.header.frame_id = 'UAV1/camera_init'
+        odom.pose.pose.position = Point(0.5, -2.5, 1.6)
+        odom.pose.pose.orientation.w = math.cos(0.2)
+        odom.pose.pose.orientation.z = math.sin(0.2)
+        local = PoseStamped()
+        local.pose.position = Point(3470, -925, 1.7)
+        local.pose.orientation.w = 1.0
+        state = State(connected=True, armed=True, mode='OFFBOARD')
+        info = CameraInfo(width=640, height=480)
+        info.K = [600., 0., 320., 0., 600., 240., 0., 0., 1.]
+        info.D = [0.] * 5
+        blank = np.full((480, 640), 255, dtype=np.uint8)
+        marked = blank.copy()
+        marked[140:340, 220:420] = generate_aruco_marker(
+            cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_250), 37, 200)
+        bridge = CvBridge()
+
+        def drive(frames, visible, trigger=True):
+            for _ in range(frames):
+                image = bridge.cv2_to_imgmsg(marked if visible else blank, encoding='mono8')
+                local.pose.position.x += 2.0
+                local.pose.position.y -= 1.0
+                for topic, msg in [('odom', odom), ('px4_pose', local), ('state', state),
+                                   ('camera_info', info), ('image', image)]:
+                    msg.header.stamp = rospy.Time.now()
+                    pubs[topic].publish(msg)
+                pubs['trigger'].publish(Bool(data=trigger))
+                time.sleep(0.05)
+
+        drive(4, False, False)
+        drive(8, False)
+        hold = self.last('setpoint')
+        self.assertIsNotNone(hold)
+        self.assertEqual(hold.type_mask, 2552)
+        self.assertAlmostEqual(hold.position.x, 0.5, places=4)
+        self.assertAlmostEqual(hold.position.y, -2.5, places=4)
+        self.assertAlmostEqual(hold.position.z, 1.6, places=4)
+        self.assertAlmostEqual(hold.yaw, 0.4, places=4)
+        drive(30, True)
+        self.assertTrue(any(m.data.startswith('DESCEND_HIGH') for m in self.messages['stage']))
+        odom.pose.pose.position = Point(0.3, -2.4, 1.5)
+        drive(16, False)
+        self.assertTrue(self.last('stage').data.startswith('REACQUIRE'))
+        hold = self.last('setpoint')
+        self.assertEqual(hold.type_mask, 2552)
+        self.assertAlmostEqual(hold.position.x, 0.3, places=4)
+        self.assertAlmostEqual(hold.position.y, -2.4, places=4)
+        self.assertAlmostEqual(hold.position.z, 1.5, places=4)
+        self.assertAlmostEqual(hold.yaw, 0.4, places=4)
+
     def test_ch10_stops_precision_mode_requests(self):
         import xml.etree.ElementTree as ET
         from test_precision_landing_node import PrecisionLandingNodeTest
@@ -86,19 +172,24 @@ class MissionLandingTest(RcLandPriorityTest):
                   pubs['visual_target'].get_num_connections()>0, 'subscriptions')
         odom=Odometry(); odom.pose.pose.position=Point(1.2,-.7,1.5)
         odom.pose.pose.orientation.w=math.cos(.2); odom.pose.pose.orientation.z=math.sin(.2)
-        local=PoseStamped(); local.pose.position=Point(4,2,1.5);local.pose.orientation.w=1
+        local=PoseStamped(); local.pose.position=Point(3470,-925,1.7);local.pose.orientation.w=1
         imu=Imu();imu.orientation=odom.pose.pose.orientation;imu.linear_acceleration.z=9.795
         state=State(connected=True,armed=False,mode='POSCTL')
         ext=ExtendedState(landed_state=ExtendedState.LANDED_STATE_IN_AIR)
         rc=RCIn(channels=[1500]*10);rc.channels[7]=2000;rc.channels[9]=1000
-        target=PositionTarget(coordinate_frame=1,type_mask=2552,yaw=0.)
-        target.position=Point(4,2,1.5)
+        target=PositionTarget(coordinate_frame=1,type_mask=2552,yaw=.4)
+        target.position=Point(1.2,-.7,1.5)
         trigger=False;stage='ALIGN'
-        def drive(seconds,targets=True):
+        def drive(seconds,targets=True,px4_pose=False):
             end=time.monotonic()+seconds
             while time.monotonic()<end:
                 now=rospy.Time.now()
-                for t,m in [('odom',odom),('local',local),('imu',imu),('state',state),('extended',ext),('rc',rc)]:
+                inputs=[('odom',odom),('imu',imu),('state',state),('extended',ext),('rc',rc)]
+                if px4_pose:
+                    local.pose.position.x += 1.0
+                    local.pose.position.y -= 0.5
+                    inputs.append(('local',local))
+                for t,m in inputs:
                     m.header.stamp=now;pubs[t].publish(m)
                 pubs['trigger'].publish(Bool(data=trigger));pubs['stage'].publish(String(data=stage))
                 if targets:
@@ -110,15 +201,26 @@ class MissionLandingTest(RcLandPriorityTest):
         state.armed=True;state.mode='OFFBOARD';drive(.8)
         self.assertIsNotNone(self.last('px4_attitude'), 'normal task control absent')
         self.assertEqual(self.last('owner').data,'CONTROLLER')
-        trigger=True;target.type_mask=2531;target.velocity.x=.06;drive(.5)
+        # 接管不需要 PX4 本地位姿；锁点直接使用 FAST-LIO 坐标。
+        trigger=True;drive(.4)
         self.assertEqual(self.last('owner').data,'LANDING')
         self.assertIsNotNone(self.last('nmpc_target'))
+        ref=self.last('controller/mpc/reference_trajectory').poses[0].pose
+        self.assertAlmostEqual(ref.position.x,1.2,places=4)
+        self.assertAlmostEqual(ref.position.y,-.7,places=4)
+        self.assertAlmostEqual(2*math.atan2(ref.orientation.z,ref.orientation.w),.4,places=4)
+        # 模拟丢码重新锁点，同时注入大幅漂移的 PX4 位姿。
+        stage='REACQUIRE';target.position=Point(1.25,-.72,1.5);drive(.3,px4_pose=True)
+        ref=self.last('controller/mpc/reference_trajectory').poses[0].pose
+        self.assertAlmostEqual(ref.position.x,1.25,places=4)
+        self.assertAlmostEqual(ref.position.y,-.72,places=4)
+        stage='ALIGN';target.type_mask=2531;target.velocity.x=.06;drive(.5,px4_pose=True)
         ref=self.last('controller/mpc/reference_trajectory').poses[0].pose
         self.assertGreater(ref.position.x,1.21)
         self.assertAlmostEqual(ref.position.z,1.5,places=4)
         stage='DESCEND_HIGH';target.type_mask=2503;target.velocity.z=-.1;drive(.4)
         self.assertLess(self.last('controller/mpc/reference_trajectory').poses[0].pose.position.z,1.48)
-        stage='FIXED_XY_DESCENT:STALE_IMAGE';target.type_mask=2552;target.position=Point(4.04,2.1,1.45);drive(.3)
+        stage='FIXED_XY_DESCENT:STALE_IMAGE';target.type_mask=2552;target.position=Point(1.24,-.6,1.45);drive(.3)
         ref=self.last('controller/mpc/reference_trajectory').poses[0].pose
         self.assertAlmostEqual(ref.position.x,1.2,places=4)
         self.assertAlmostEqual(ref.position.y,-.7,places=4)
@@ -141,5 +243,8 @@ class MissionLandingTest(RcLandPriorityTest):
 
 
 if __name__=='__main__':
-    suite=unittest.TestSuite([MissionLandingTest('test_mission_handoff'), MissionLandingTest('test_ch10_stops_precision_mode_requests')])
+    suite=unittest.TestSuite([
+        MissionLandingTest('test_precision_uses_fastlio_for_acquire_and_marker_loss'),
+        MissionLandingTest('test_mission_handoff'),
+        MissionLandingTest('test_ch10_stops_precision_mode_requests')])
     sys.exit(not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful())

@@ -4,7 +4,8 @@ topics:
   target_id: /landing/target_id
   image: /usb_cam/image_raw
   camera_info: /usb_cam/camera_info
-  local_pose: /mavros/local_position/pose
+  # 正式 NMPC 精降与控制器共用 FAST-LIO 世界系；不订阅 PX4 本地位姿。
+  odometry: /UAV1/fast_lio/Odom_high_freq
   mavros_state: /mavros/state
   setpoint: /mavros/setpoint_raw/local
   set_mode_service: /mavros/set_mode
