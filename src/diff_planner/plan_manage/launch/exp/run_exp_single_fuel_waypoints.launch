@@ -24,6 +24,9 @@
   <arg name="waypoints_file" default="$(find diff_planner)/launch/exp/fuel_waypoints.yaml"/>
   <arg name="entry_complete_topic" default="/UAV0/fuel_waypoints/entry_complete"/>
   <arg name="enable_rviz" default="true"/>
+  <arg name="follower_odom_topic" default="/UAV1/fast_lio/Odom_high_freq"/>
+  <arg name="follower_world_frame" default="UAV1/camera_init"/>
+  <arg name="follower_body_frame" default="UAV1/body"/>
   <arg name="dynamic_mode" default="swing-only"/>
   <arg name="fapp_object_motion_evidence_enabled" default="true"/>
   <arg name="fapp_object_motion_local_bidirectional_enabled" default="false"/>
@@ -219,6 +222,35 @@
     <param name="tf45" value="false"/>
     <param name="drone_id" value="$(arg drone_id)"/>
   </node>
+  <!-- 后机原点偏移沿用 exploration_control 的统一对齐配置。 -->
+  <node pkg="tf2_ros" type="static_transform_publisher" name="UAV1_body_to_base_link"
+        args="0 0 0 0 0 0 $(arg follower_body_frame) UAV1/base_link"/>
+    <node pkg="odom_visualization" name="uav1_shared_odom_visualization" type="odom_visualization" output="screen">
+        <remap from="~odom" to="$(arg follower_odom_topic)"/>
+        <!-- 2026-07-27: 后机开始跟随后，蓝色机头使用 /UAV1/planning/pos_cmd 航向。 -->
+        <!-- 2026-07-27: 后机 RViz 命令、marker 和轨迹话题统一切换到 UAV1。 -->
+        <remap from="~cmd" to="/UAV1/planning/pos_cmd"/>
+        <remap from="~pose" to="/UAV1/odom_visualization/pose"/>
+        <remap from="~path" to="/UAV1/odom_visualization/path"/>
+        <remap from="~velocity" to="/UAV1/odom_visualization/velocity"/>
+        <remap from="~covariance" to="/UAV1/odom_visualization/covariance"/>
+        <remap from="~covariance_velocity" to="/UAV1/odom_visualization/covariance_velocity"/>
+        <remap from="~trajectory" to="/UAV1/odom_visualization/trajectory"/>
+        <remap from="~sensor" to="/UAV1/odom_visualization/sensor"/>
+        <remap from="~robot" to="/UAV1/odom_visualization/robot"/>
+        <remap from="~height" to="/UAV1/odom_visualization/height"/>
+        <param name="color/a" value="1.0"/>
+        <param name="color/r" value="0.0"/>
+        <param name="color/g" value="0.35"/>
+        <param name="color/b" value="1.0"/>
+        <param name="covariance_scale" value="100.0"/>
+        <param name="robot_scale" value="0.35"/>
+        <param name="frame_id" value="$(arg follower_world_frame)"/>
+        <param name="use_cmd_yaw_for_mesh" value="true"/>
+        <param name="rotate_yaw_deg" value="90.0"/>
+        <param name="tf45" value="false"/>
+        <param name="drone_id" value="1"/>
+    </node>
   <!-- 航点入口使用独立FAPP显示配置：动态点云、包围框和速度方向。 -->
   <node if="$(arg enable_rviz)" name="rviz" pkg="rviz" type="rviz" args="-d $(find diff_planner)/launch/exp/fuel_waypoints.rviz" required="true">
     <remap from="/move_base_simple/goal" to="$(arg rviz_goal_topic)"/>

@@ -49,6 +49,13 @@ Toolbars:
 Visualization Manager:
   Class: ""
   Displays:
+    - Class: rviz/Marker
+      Enabled: true
+      Marker Topic: /UAV1/odom_visualization/robot
+      Name: UAV1_robot
+      Namespaces: {}
+      Queue Size: 100
+      Value: true
     - Alpha: 1
       Class: rviz/Axes
       Enabled: false
