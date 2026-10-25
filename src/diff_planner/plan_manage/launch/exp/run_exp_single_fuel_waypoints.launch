@@ -18,6 +18,9 @@
   <arg name="fapp_observation_retention" default="0.8"/>
   <arg name="fapp_association_distance" default="0.6"/>
 
+  <!-- 手填点保底：只在当前原点附近优选XY，保留高度和列表顺序。 -->
+  <arg name="waypoint_local_goal_enabled" default="true"/>
+  <arg name="waypoint_local_goal_radius" default="0.60"/>
   <arg name="waypoints_file" default="$(find diff_planner)/launch/exp/fuel_waypoints.yaml"/>
   <arg name="entry_complete_topic" default="/UAV0/fuel_waypoints/entry_complete"/>
   <arg name="enable_rviz" default="true"/>
@@ -85,6 +88,8 @@
   <rosparam command="load" ns="/exploration_node" file="$(arg waypoints_file)"/>
   <param name="/exploration_node/mission/manual_path/enabled" value="true" type="bool"/>
   <param name="/exploration_node/mission/manual_path/use_astar" value="true" type="bool"/>
+  <param name="/exploration_node/mission/manual_path/local_goal_enabled" value="$(arg waypoint_local_goal_enabled)" type="bool"/>
+  <param name="/exploration_node/mission/manual_path/local_goal_radius" value="$(arg waypoint_local_goal_radius)" type="double"/>
   <param name="/exploration_node/mission/manual_path/wait_for_trigger" value="true" type="bool"/>
   <!-- 航点只作远目标：每段最多1.2m，复用探索的停转、悬挂物下穿和三段侧绕。
        FAPP动态避障开启时摆球也参与下穿/侧绕选路；关闭时只处理静态地图障碍。 -->
