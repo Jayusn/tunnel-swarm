@@ -57,6 +57,17 @@ target_link_libraries(uav1_test_mpc_controller_node
 catkin_install_python(PROGRAMS scripts/landing_nmpc_test_router.py scripts/autotrans_mpc_logger.py DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 
 if(CATKIN_ENABLE_TESTING)
+  # 直接测试独立控制器的推力辨识，不启动 ROS 节点或连接飞控。
+  get_target_property(thrust_test_sources uav1_test_mpc_controller_node SOURCES)
+  list(REMOVE_ITEM thrust_test_sources
+    mpc/src/mpc_controller_node.cpp mpc/src/mpc_input.cpp mpc/src/mpc_fsm.cpp)
+  get_target_property(thrust_test_includes uav1_test_mpc_controller_node INCLUDE_DIRECTORIES)
+  catkin_add_gtest(test_uav1_thrust_mapping
+    test/test_thrust_mapping.cpp test/gtest_main.cpp ${thrust_test_sources})
+  if(TARGET test_uav1_thrust_mapping)
+    target_include_directories(test_uav1_thrust_mapping PRIVATE ${thrust_test_includes})
+    target_link_libraries(test_uav1_thrust_mapping ${catkin_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
+  endif()
   catkin_add_gtest(test_uav1_landing_state_machine
     test/test_landing_state_machine.cpp test/gtest_main.cpp)
   if(TARGET test_uav1_landing_state_machine)

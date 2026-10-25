@@ -751,9 +751,7 @@ namespace PayloadMPC
           candidate_thrustscale >= min_thrustscale &&
           candidate_thrustscale <= max_thrustscale &&
           candidate_hover_percentage >= 0.1 &&
-          candidate_hover_percentage <= 0.8 &&
-          std::abs(candidate_hover_percentage - previous_hover_percentage) <=
-              param.thr_map_.max_hover_percentage_step;
+          candidate_hover_percentage <= 0.8;
       if (!candidate_valid)
       {
         ROS_WARN_THROTTLE(
@@ -764,16 +762,24 @@ namespace PayloadMPC
         return false;
       }
 
-      // 候选值全部通过检查后再同时提交，拒绝更新时保留上一组有效 thrustscale/P。
+      // 有效候选值按既有步长逐步靠近，避免大偏差时反复拒绝、映射停在旧值。
+      // 未触发限步时保留原始 RLS 候选值；无效候选值仍在上方拒绝。
+      const double hover_step = candidate_hover_percentage - previous_hover_percentage;
       thrustscale_ = candidate_thrustscale;
+      if (std::abs(hover_step) > param.thr_map_.max_hover_percentage_step)
+      {
+        const double limited_hover_percentage = previous_hover_percentage +
+            std::copysign(param.thr_map_.max_hover_percentage_step, hover_step);
+        thrustscale_ = weight / limited_hover_percentage;
+      }
       P = candidate_P;
-      debug.hover_percentage = candidate_hover_percentage;
+      debug.hover_percentage = weight / thrustscale_;
       if (param.thr_map_.print_val)
       {
         ROS_INFO_THROTTLE(
             1.0,
-            "[推力映射] 在线映射已更新：thrustscale=%.3f N，悬停比例=%.4f，RPM 反算推力=%.3f N，归一化推力=%.4f。",
-            thrustscale_, debug.hover_percentage, thr_fb, normlized_thr);
+            "[推力映射] 在线映射已更新：thrustscale=%.3f N，悬停比例=%.4f，候选值=%.4f，RPM 反算推力=%.3f N，归一化推力=%.4f。",
+            thrustscale_, debug.hover_percentage, candidate_hover_percentage, thr_fb, normlized_thr);
       }
 
       return true;
