@@ -154,6 +154,12 @@ roslaunch target_reporting remote_server.launch
 
 ## 记录目录
 
+`~enable_remote_upload` 控制远端发送，默认 `true`。UAV1 的
+`uav1_detection_stack.launch` 当前设为 `false`：仍检测、确认、发布本机观测，
+并保存 JSONL 和证据图，但不创建网络客户端、不重试连接、不向发送队列入队。
+UAV1 保存到 `~/match_ws/target_reports/uav1/<任务编号>/`。
+修改此开关后需重启上报节点；重新开启时，仍会按原逻辑补发当前任务目录内未收到 ACK 的记录和图片。
+
 机载端默认写入：
 
 ```text

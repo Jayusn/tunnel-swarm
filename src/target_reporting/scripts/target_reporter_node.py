@@ -122,22 +122,26 @@ class TargetReporterNode:
             ),
         )
         self.images = TimestampedImageCache(rospy.get_param("~image_cache_items", 40))
-        host = rospy.get_param("~remote_host", "192.168.10.100")
-        remote_port = rospy.get_param("~remote_port", 5000)
-        self.json_client = JsonAckClient(
-            host, remote_port, ack_callback=self.store.mark_event_acked
+        self.enable_remote_upload = bool(
+            rospy.get_param("~enable_remote_upload", True)
         )
-        self.image_client = ImageAckClient(
-            host, rospy.get_param("~image_port", 5001),
-            ack_callback=self.store.mark_image_acked,
-        )
-        self.realtime_client = LatestJsonClient(host, remote_port)
-        self.json_client.start()
-        self.image_client.start()
-        self.realtime_client.start()
+        if self.enable_remote_upload:
+            host = rospy.get_param("~remote_host", "192.168.10.100")
+            remote_port = rospy.get_param("~remote_port", 5000)
+            self.json_client = JsonAckClient(
+                host, remote_port, ack_callback=self.store.mark_event_acked
+            )
+            self.image_client = ImageAckClient(
+                host, rospy.get_param("~image_port", 5001),
+                ack_callback=self.store.mark_image_acked,
+            )
+            self.realtime_client = LatestJsonClient(host, remote_port)
+            self.json_client.start()
+            self.image_client.start()
+            self.realtime_client.start()
         rospy.loginfo(
-            "target_reporter: mission_id=%s confirmed-only-remote-upload=true",
-            self.mission_id,
+            "target_reporter: mission_id=%s enable_remote_upload=%s confirmed-only=true",
+            self.mission_id, self.enable_remote_upload,
         )
         self.tf_buffer = tf2_ros.Buffer(cache_time=rospy.Duration(15.0))
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
@@ -155,10 +159,11 @@ class TargetReporterNode:
         existing = self.store.all_events()
         if existing:
             self.seq = max(int(event["seq"]) for event in existing)
-        for event in self.store.pending_events():
-            self.json_client.enqueue(event)
-        for image_item in self.store.pending_images():
-            self.image_client.enqueue(image_item)
+        if self.enable_remote_upload:
+            for event in self.store.pending_events():
+                self.json_client.enqueue(event)
+            for image_item in self.store.pending_images():
+                self.image_client.enqueue(image_item)
 
         if self.use_detector_candidates:
             self._subscribe(
@@ -587,22 +592,25 @@ class TargetReporterNode:
                 )
         # Only confirmed detector output is sent remotely.  This happens
         # after same-frame image matching, never before it.
-        self.realtime_client.publish(observation)
+        if self.enable_remote_upload:
+            self.realtime_client.publish(observation)
         if self.store.append_event(event):
-            self.json_client.enqueue(event)
-            if jpeg is not None:
-                self.image_client.enqueue((image_id, jpeg))
-            if d435_jpeg is not None:
-                self.image_client.enqueue((d435_image_id, d435_jpeg))
+            if self.enable_remote_upload:
+                self.json_client.enqueue(event)
+                if jpeg is not None:
+                    self.image_client.enqueue((image_id, jpeg))
+                if d435_jpeg is not None:
+                    self.image_client.enqueue((d435_image_id, d435_jpeg))
             rospy.loginfo("Confirmed %s %s at channel [%.3f %.3f %.3f]", target_type,
                           target_id, world.point.x, world.point.y, world.point.z)
 
     def shutdown(self):
         if self.retry_timer is not None:
             self.retry_timer.shutdown()
-        self.json_client.stop()
-        self.image_client.stop()
-        self.realtime_client.stop()
+        if self.enable_remote_upload:
+            self.json_client.stop()
+            self.image_client.stop()
+            self.realtime_client.stop()
 
 
 def main():
