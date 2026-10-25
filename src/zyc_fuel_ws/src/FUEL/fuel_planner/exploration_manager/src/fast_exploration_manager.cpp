@@ -5511,6 +5511,21 @@ void FastExplorationManager::updateMissionOdometry(const Vector3d& pos, double y
       }
     }
     const bool was_finished = manual_path_.finished();
+    // 动态低位通行使用正在执行的高度判定中间航点，避免等原高度而停在障碍内。
+    // 只推进到后续航点，不解除穿越状态、不修改手填高度，也不提前完成整条路线。
+    if (manual_fapp_active_ && std::isfinite(manual_fapp_hold_height_)) {
+      while (manual_path_.next + 1 < manual_path_.points.size()) {
+        Vector3d arrival_goal = manual_path_.points[manual_path_.next];
+        if (manual_fapp_hold_height_ >= arrival_goal.z()) break;
+        arrival_goal.z() = manual_fapp_hold_height_;
+        if ((pos - arrival_goal).norm() > manual_path_arrive_distance_) break;
+        ++manual_path_.next;
+        ROS_WARN("[manual_path] low crossing reached waypoint %zu at actual=(%.2f,%.2f,%.2f); "
+                 "continue waypoint %zu at hold_z=%.2f until obstacle passed.",
+                 manual_path_.next, pos.x(), pos.y(), pos.z(), manual_path_.next + 1,
+                 manual_fapp_hold_height_);
+      }
+    }
     manual_path_.updateOdometry(pos, manual_path_arrive_distance_);
     if (manual_exit_latched_ && !was_finished && manual_path_.finished())
       manual_exit_replan_pending_ = true;

@@ -1853,6 +1853,50 @@ public:
     EXPECT_EQ(second, manager.manual_local_goal_anchor_); // 下一点仍以其手填坐标为基准。
   }
 
+  static void runManualLowWaypointProgress() {
+    ros::NodeHandle nh("~manual_low_waypoint_progress");
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    manager.task_search_manager_.reset();
+    manager.manual_path_enabled_ = true;
+    manager.external_selection_only_ = true;
+    manager.manual_path_arrive_distance_ = .25;
+    const Vector3d first(3.8, 0, .6), next(5.6, -.3, .6);
+    const Vector3d actual(3.775, -.025, .271), zero = Vector3d::Zero();
+    manager.manual_path_.points = {first, next};
+    // 本次录包已到第一点XY，普通三维到达仍未满足。
+    manager.updateMissionOdometry(actual, 0);
+    EXPECT_EQ(0U, manager.manual_path_.next);
+    manager.manual_fapp_active_ = true;
+    manager.manual_fapp_hold_height_ = .32;
+    manager.manual_fapp_exit_progress_ = 3.844;
+    manager.manual_fapp_forward_ = Vector3d::UnitX();
+    // 预测起点不能推进；高度或水平位置未到也不能消耗航点。
+    ASSERT_EQ(SUCCEED, manager.planExploreMotion(actual, zero, zero, zero));
+    EXPECT_EQ(0U, manager.manual_path_.next);
+    manager.updateMissionOdometry(Vector3d(3.8, 0, .02), 0);
+    EXPECT_EQ(0U, manager.manual_path_.next);
+    manager.updateMissionOdometry(Vector3d(3.4, 0, .32), 0);
+    EXPECT_EQ(0U, manager.manual_path_.next);
+    manager.updateMissionOdometry(actual, 0);
+    ASSERT_EQ(1U, manager.manual_path_.next);
+    ASSERT_EQ(SUCCEED, manager.planExploreMotion(actual, zero, zero, zero));
+    EXPECT_EQ(Vector3d(5.6, -.3, .32), manager.ed_->next_goal_);
+    EXPECT_TRUE(manager.manual_fapp_active_);
+    EXPECT_DOUBLE_EQ(3.844, manager.manual_fapp_exit_progress_);
+    EXPECT_EQ(first, manager.manual_path_.points.front());
+    EXPECT_EQ(next, manager.manual_path_.points.back());
+    // 低位中间点推进不能把整条路线提前判完成。
+    manager.updateMissionOdometry(Vector3d(5.6, -.3, .32), 0);
+    EXPECT_FALSE(manager.manual_path_.finished());
+    // 原有通过判定解除动态状态后，继续使用手填高度。
+    manager.manual_fapp_active_ = false;
+    ASSERT_EQ(SUCCEED, manager.planExploreMotion(actual, zero, zero, zero));
+    EXPECT_EQ(next, manager.ed_->next_goal_);
+    manager.updateMissionOdometry(next, 0);
+    EXPECT_TRUE(manager.manual_path_.finished());
+  }
+
   static void runManualWaypoints(bool blocked) {
     ros::NodeHandle nh("~");
     FastExplorationManager manager;
@@ -3257,6 +3301,10 @@ TEST(UnderpassExit, ReachingTargetAtTimeoutStillStartsVerification) {
 
 TEST(UnderpassExit, TimeoutGeneratesFreshHorizontalTrajectoryInSamePlan) {
   fast_planner::TurnEscapeTest::runWiderSideRecovery(1.0, false, true, false, true);
+}
+
+TEST(ManualWaypoints, LowCrossingAdvancesIntermediateGoalWithoutReleasingHeight) {
+  fast_planner::TurnEscapeTest::runManualLowWaypointProgress();
 }
 
 TEST(ManualWaypoints, CompletesWithoutFrontierTargets) {
