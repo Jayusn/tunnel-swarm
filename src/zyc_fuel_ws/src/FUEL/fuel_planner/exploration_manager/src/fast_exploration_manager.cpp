@@ -5351,15 +5351,15 @@ int FastExplorationManager::planExploreMotion(
     camera_head_sweep_active=false;
     camera_continuous_rotation_active=false;
   } else if (mapped_turn_detected || corridor_yaw_correction) {
-    // 地图墙体轮廓独立于本次轨迹方向触发：yaw只朝向双墙确认的新通道轴线，
+    // 地图通路独立于本次轨迹方向触发：yaw只朝向整机可通行评分选出的新通道，
     // 不能跟随局部A*绕柱切线，否则一次普通侧绕也会带着机头误转。
     next_yaw = std::atan2(mapped_direction.y(), mapped_direction.x());
     look_forward_along_trajectory = false;
     camera_head_sweep_active = false;
     camera_continuous_rotation_active = false;
     if (mapped_turn_detected) {
-      ROS_WARN("[turn_yaw_follow] mapped bilateral-wall turn latched; hold "
-               "wall-parallel target yaw=%.1fdeg.",
+      ROS_WARN("[turn_yaw_follow] body-passable mapped turn latched; hold "
+               "selected passage yaw=%.1fdeg.",
                next_yaw * 180.0 / M_PI);
     } else {
       ROS_WARN("[corridor_yaw_correction] body yaw drifted from the current "

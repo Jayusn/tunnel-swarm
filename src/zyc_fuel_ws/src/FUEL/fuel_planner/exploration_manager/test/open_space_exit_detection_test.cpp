@@ -511,10 +511,14 @@ public:
               nearest = std::min(nearest, distance);
           }
           const Eigen::Vector2d hit = eye + nearest * direction;
-          for (int layer = -3; layer <= 3; ++layer)
+          // 转弯现在要求整机高度范围已观测；墙面射线需覆盖完整机体体积，
+          // 不能只给中心平面可见、上下仍UNKNOWN的旧射线夹具。
+          for (int layer = -6; layer <= 6; ++layer)
             cloud.push_back(pcl::PointXYZ(hit.x(), hit.y(), 1.0 + layer*0.10));
         }
-        corner_map->inputPointCloud(cloud, cloud.size(), Eigen::Vector3d(camera_x,0,1));
+        // 多高度观测补齐机体上下及内弯遮挡处的空闲证据。
+        for (double camera_z : {0.8, 1.0, 1.2})
+          corner_map->inputPointCloud(cloud, cloud.size(), Eigen::Vector3d(camera_x,0,camera_z));
       }
     }
     TaskSearchManager handheld;
@@ -623,17 +627,21 @@ public:
     check(deferred.buildStage3Goal(exit_eye, 0, false, deferred_goal, deferred_yaw) &&
           (deferred_goal - locked_portal).norm() < 1e-6 && deferred.exitTransitActive(),
           "deferred crossing did not target the confirmed portal");
+    // 交接使用真实里程计；只更改预测规划起点不能代表已经到达出口。
+    deferred.updateRobotPose(locked_portal, 0.0);
     check(!deferred.buildStage3Goal(locked_portal, 0, false, deferred_goal, deferred_yaw) &&
           deferred.mission_stage_ == TaskSearchManager::SEARCH_OUTSIDE_LANDING &&
           !deferred.landingRequested(), "deferred exit did not hand off to landing search");
     Eigen::Vector3d crossing_goal;
     double crossing_yaw = 0;
+    automatic.updateRobotPose(locked_portal - Eigen::Vector3d(1.1,0,0), 0.0);
     check(automatic.buildStage3Goal(locked_portal - Eigen::Vector3d(1.1,0,0),
                                    0, false, crossing_goal, crossing_yaw) &&
           automatic.mission_stage_ == TaskSearchManager::EXIT_APPROACH_INSIDE &&
           (crossing_goal - locked_portal).norm() < 1e-6,
           "FUEL approach did not target the locked exit plane");
     for (double remaining : {0.45, 0.11}) {
+      automatic.updateRobotPose(locked_portal - Eigen::Vector3d(remaining,0,0), 0.0);
       check(automatic.buildStage3Goal(locked_portal - Eigen::Vector3d(remaining,0,0),
                                      0, false, crossing_goal, crossing_yaw) &&
             automatic.mission_stage_ == TaskSearchManager::EXIT_APPROACH_INSIDE &&
@@ -642,11 +650,13 @@ public:
     }
     Eigen::Vector3d near_exit_low = locked_portal - Eigen::Vector3d(0.08,0,0);
     near_exit_low.z() = 0.12;
+    automatic.updateRobotPose(near_exit_low, 0.0);
     check(automatic.buildStage3Goal(near_exit_low, 0, false, crossing_goal, crossing_yaw) &&
           automatic.mission_stage_ == TaskSearchManager::EXIT_APPROACH_INSIDE &&
           (crossing_goal - locked_portal).norm() < 1e-6,
           "automatic handoff did not restore cruise height before Diff activation");
     crossing_goal = Eigen::Vector3d(7,8,9);
+    automatic.updateRobotPose(locked_portal - Eigen::Vector3d(0.08,0,0), 0.0);
     check(!automatic.buildStage3Goal(locked_portal - Eigen::Vector3d(0.08,0,0),
                                     0, false, crossing_goal, crossing_yaw) &&
           automatic.mission_stage_ == TaskSearchManager::SEARCH_OUTSIDE_LANDING &&

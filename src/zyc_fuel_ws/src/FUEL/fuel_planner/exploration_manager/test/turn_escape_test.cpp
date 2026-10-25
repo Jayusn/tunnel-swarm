@@ -80,6 +80,123 @@ class TurnEscapeTest {
     manager.task_search_manager_->initialize(nh);
   }
 public:
+  static void runRecordedTurn(const char* fixture) {
+    ros::NodeHandle nh("~");
+    // 与正式fuel_map.yaml的分辨率、融合概率和膨胀配置一致。
+    nh.setParam("sdf_map/resolution", 0.05);
+    nh.setParam("sdf_map/map_size_x", 8.0);
+    nh.setParam("sdf_map/map_size_y", 8.0);
+    nh.setParam("sdf_map/map_size_z", 3.0);
+    nh.setParam("sdf_map/ground_height", -1.0);
+    nh.setParam("sdf_map/obstacles_inflation", 0.099);
+    nh.setParam("sdf_map/max_ray_length", 8.0);
+    nh.setParam("sdf_map/local_bound_inflate", 0.5);
+    nh.setParam("sdf_map/local_map_margin", 100);
+    nh.setParam("sdf_map/p_hit", 0.65);
+    nh.setParam("sdf_map/p_max", 0.90);
+    nh.setParam("sdf_map/inflation_noise_filter_enabled", true);
+    nh.setParam("sdf_map/inflation_vertical_radius", 4);
+    nh.setParam("sdf_map/virtual_ceil_height", -10.0);
+    auto map = std::make_shared<SDFMap>();
+    map->initMap(nh);
+    std::ifstream input(fixture);
+    int frames; Vector3d pos;
+    ASSERT_TRUE(bool(input >> frames >> pos.x() >> pos.y() >> pos.z()));
+    for (int frame=0; frame<frames; ++frame) {
+      int count; Vector3d camera;
+      ASSERT_TRUE(bool(input >> count >> camera.x() >> camera.y() >> camera.z()));
+      pcl::PointCloud<pcl::PointXYZ> cloud; cloud.resize(count);
+      for (auto& p : cloud) ASSERT_TRUE(bool(input >> p.x >> p.y >> p.z));
+      map->inputPointCloud(cloud, cloud.size(), camera);
+    }
+    TaskSearchManager task;
+    task.initialize(nh); task.setMap(map);
+    task.exit_detection_enabled_ = false;
+    task.setCorridorFrame(Vector3d(-4.28,2.69,0.60), Vector3d::UnitX());
+    task.updateRobotPose(pos, -72.9*M_PI/180.0);
+    task.visited_positions_.clear(); task.visited_positions_.push_back(pos);
+    task.latest_turn_anchor_valid_ = true;
+    task.latest_turn_anchor_ = Eigen::Vector2d(-0.06,2.22);
+    task.latest_turn_incoming_direction_ = Eigen::Vector2d::UnitX();
+    const double axis = -66.0*M_PI/180.0;
+    const Vector3d travel(std::cos(axis),std::sin(axis),0);
+    task.turn_detection_direction_ = travel.head<2>();
+    task.segment_direction_ = travel.head<2>();
+    task.segment_origin_ = task.latest_turn_anchor_;
+    task.pending_turn_probe_origin_valid_ = true;
+    task.pending_turn_probe_origin_ = Vector3d(0.20,0.13,pos.z());
+    task.recovery_turn_min_angle_deg_ = 45.0;
+    Vector3d direction; double old_free, branch_free;
+    const bool found = task.inferOccupancyTurnDirection(travel,direction,old_free,branch_free);
+    std::cout << "recorded turn found=" << found << " position=" << pos.transpose()
+              << " old_free=" << old_free << " branch_free=" << branch_free
+              << " direction=" << direction.transpose() << std::endl;
+    ASSERT_TRUE(found);
+    EXPECT_LT(travel.x()*direction.y()-travel.y()*direction.x(), -0.5);
+    EXPECT_LT(direction.x(), -0.5);
+  }
+
+  static void runPassableTurn(int mode) {
+    ros::NodeHandle nh("~");
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    auto& map = *manager.sdf_map_;
+    auto& task = *manager.task_search_manager_;
+    task.setMap(manager.sdf_map_);
+    task.recovery_turn_min_angle_deg_ = 45.0;
+    task.recovery_turn_max_angle_deg_ = 120.0;
+    task.recovery_turn_probe_length_ = 1.5;
+    task.exit_footprint_extra_radius_ = 0.22;
+    task.exit_footprint_half_height_ = 0.15;
+    const bool mirror = mode == 1 || mode == 4;
+    // 从入口段沿+Y走到转角，再实飞沿+X推进；镜像场景自动得到反向绕行先验。
+    const Vector3d entry(0.0, mirror ? -1.0 : 1.0, 0.0);
+    task.setCorridorFrame(Vector3d(-1,-1,1), entry);
+    task.latest_turn_anchor_valid_ = mode != 9;
+    task.latest_turn_anchor_ = Eigen::Vector2d(-1.1,0);
+    task.latest_turn_incoming_direction_ = entry.head<2>();
+    task.turn_detection_direction_ = Eigen::Vector2d::UnitX();
+    task.segment_direction_ = Eigen::Vector2d::UnitX();
+    task.segment_origin_ = Eigen::Vector2d(-1.1,0);
+    task.updateRobotPose(Vector3d(-0.1,0,1),0.0);
+    task.visited_positions_.clear();
+    task.visited_positions_.push_back(Vector3d(-1.1,0,1));
+    task.visited_positions_.push_back(Vector3d(-0.1,0,1));
+    double right_width = (mode == 2 ? 0.65 : 0.90);
+    double left_width = (mode == 2 || mode == 3 || mode == 4 ? 0.90 : 0.20);
+    if (mode == 5) right_width = left_width = 0.20;
+    if (mirror) std::swap(right_width, left_width);
+    for (int x=0; x<map.mp_->map_voxel_num_.x(); ++x)
+      for (int y=0; y<map.mp_->map_voxel_num_.y(); ++y)
+        for (int z=0; z<map.mp_->map_voxel_num_.z(); ++z) {
+          const Eigen::Vector3i id(x,y,z);
+          Vector3d p; map.indexToPos(id,p);
+          const bool hall = p.x() < 0.90 && std::fabs(p.y()) < 0.55;
+          const double width = p.y() < 0 ? right_width : left_width;
+          bool branch = std::fabs(p.x()-0.45) < 0.5*width;
+          // 看得到远处宽阔区域，但连接处被墙/低顶/未知体素切断。
+          if (mode == 6 && p.y() < -0.50 && p.y() > -0.65) branch = false;
+          if (mode == 8 && p.y() < -0.55 && p.z() > 1.05) branch = false;
+          const int address = map.toAddress(id);
+          double occ = hall || branch ? map.mp_->clamp_min_log_ : map.mp_->clamp_max_log_;
+          if (mode == 7 && p.y() < -0.55) occ = map.mp_->clamp_min_log_ - map.mp_->unknown_flag_;
+          map.md_->occupancy_buffer_[address] = occ;
+          map.md_->occupancy_buffer_inflate_[address] = occ > map.mp_->min_occupancy_log_;
+        }
+    Vector3d selected; double old_free, branch_free;
+    const bool found = task.inferOccupancyTurnDirection(
+        Vector3d::UnitX(), selected, old_free, branch_free);
+    if (mode >= 5 && mode <= 8) {
+      EXPECT_FALSE(found) << "slit, disconnected, unknown or low-roof branch was accepted";
+      return;
+    }
+    ASSERT_TRUE(found);
+    const bool expect_left = mode == 1 || mode == 2 || mode == 4;
+    EXPECT_GT((expect_left ? 1.0 : -1.0)*selected.y(), 0.70)
+        << "direction=" << selected.transpose();
+    EXPECT_GE(branch_free, 1.0-1e-6);
+  }
+
   static void runFappTallOutlier() {
     FastPlannerManager planner;
     planner.fapp_config_.enabled = true;
@@ -3753,4 +3870,20 @@ TEST(InflationEscape, BothEndsBlockedUsesMappedSideSpace) {
 
 TEST(InflationEscape, ImprovingContactAllowsIncrementalInflatedEndpoint) {
   fast_planner::TurnEscapeTest::runDirectionalEscape(3);
+}
+
+TEST(PassableTurn, RightPassageBeatsLeftSlit) { fast_planner::TurnEscapeTest::runPassableTurn(0); }
+TEST(PassableTurn, MirroredPassageBeatsRightSlit) { fast_planner::TurnEscapeTest::runPassableTurn(1); }
+TEST(PassableTurn, WiderLeftPassageOverridesRightHistoryPrior) { fast_planner::TurnEscapeTest::runPassableTurn(2); }
+TEST(PassableTurn, ComparableBranchesUseActualUHistory) { fast_planner::TurnEscapeTest::runPassableTurn(3); }
+TEST(PassableTurn, MirroredHistoryReversesPrior) { fast_planner::TurnEscapeTest::runPassableTurn(4); }
+TEST(PassableTurn, TwoSlitsDoNotConfirmTurn) { fast_planner::TurnEscapeTest::runPassableTurn(5); }
+TEST(PassableTurn, WideButDisconnectedBranchIsRejected) { fast_planner::TurnEscapeTest::runPassableTurn(6); }
+TEST(PassableTurn, UnknownBranchIsRejected) { fast_planner::TurnEscapeTest::runPassableTurn(7); }
+TEST(PassableTurn, LowRoofBranchIsRejected) { fast_planner::TurnEscapeTest::runPassableTurn(8); }
+TEST(PassableTurn, FirstTurnUsesMapWithoutShapePrior) { fast_planner::TurnEscapeTest::runPassableTurn(9); }
+TEST(PassableTurn, RecordedOctober25CornerSelectsRight) {
+  const char* fixture = std::getenv("TURN_PASSABILITY_FIXTURE");
+  if (!fixture) GTEST_SKIP() << "requires October 25 pre-turn point clouds";
+  fast_planner::TurnEscapeTest::runRecordedTurn(fixture);
 }
