@@ -358,6 +358,8 @@ class LandingTestMissionNode {
       if (mavros_state_.armed) {
         phase_ = Phase::TAKEOFF;
         phase_started_ = now;
+        // 解锁前的等待不占用起飞和精降交接的时限。
+        operation_started_ = now;
         publishStatus();
       } else {
         requestArm(now);
