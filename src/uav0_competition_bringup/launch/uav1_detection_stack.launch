@@ -84,13 +84,7 @@
            value="/UAV1/vision/qr_candidate_pose_camera" />
     <param name="candidate_detected_topic"
            value="/UAV1/vision/qr_candidate_detected" />
-    <!-- 晃动时优先保持 QR 几何候选：依次尝试多种预处理，仍保留内容解码和深度门。 -->
-    <param name="enable_preprocess_fallbacks" value="true" />
-    <param name="qr_eps_x" value="0.22" />
-    <param name="qr_eps_y" value="0.22" />
-    <param name="enable_local_search" value="true" />
-    <param name="local_search_hold_seconds" value="2.0" />
-    <param name="local_search_margin_ratio" value="2.0" />
+    <!-- 检测阈值、预处理和局部搜索参数统一由 qr_detector.yaml 加载。 -->
     <remap from="/UAV0/vision/qr_pose_camera"
            to="/UAV1/vision/qr_pose_camera" />
     <remap from="/UAV0/vision/qr_detected"

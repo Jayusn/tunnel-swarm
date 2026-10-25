@@ -71,6 +71,8 @@ roslaunch qr_detector qr_detector.launch
 ## 参数
 
 参数文件位于 `config/qr_detector.yaml`。
+UAV1 检测入口直接加载该文件中的检测参数，不在 launch 中覆盖检测阈值、
+预处理或局部搜索设置；修改后重启二维码检测节点生效。
 
 - `image_topic`：彩色图像话题。
 - `depth_topic`：对齐到彩色图的深度图话题。
@@ -82,7 +84,7 @@ roslaunch qr_detector qr_detector.launch
 - `max_angle_cos`：角点直角约束阈值，当前为 `0.80`。
 - `max_quad_area_ratio`、`max_quad_width_ratio`、`max_quad_height_ratio`：
   限制候选四边形不能占据整幅背景图。
-- `qr_eps_x`、`qr_eps_y`：OpenCV QR 角点扫描容差，当前均为 `0.15`。
+- `qr_eps_x`、`qr_eps_y`：OpenCV QR 角点扫描容差，当前均为 `0.22`。
 - `require_decode_for_confirmation`：是否将内部解码成功作为确认门槛，当前为
   `true`。同一空间连续目标只需成功解码一帧，随后可在短时缓存内依靠角点、
   深度和连续帧完成确认。
@@ -96,7 +98,11 @@ roslaunch qr_detector qr_detector.launch
   放大图像均换算到原始整图坐标后判断位移。
 - `preprocess_mode`：预处理方式，当前为 `gray`。
 - `upscale_factor`：检测前图像放大倍数，当前为 `1.5`。
-- `confirm_frames`：连续通过真实性和深度校验多少帧后确认 `detected=true`，当前为 `2`。
+- `enable_preprocess_fallbacks`：局部搜索中尝试其他预处理方式，当前为 `true`。
+- `enable_local_search`：优先搜索最近二维码附近区域，当前为 `true`；
+  `local_search_hold_seconds` 为 `2.0` 秒，`local_search_margin_ratio` 为 `2.0`。
+- `confirm_frames`：连续通过真实性和深度校验多少帧后确认 `detected=true`，当前为 `1`；
+  首帧满足条件即可确认，仍需通过解码验证和深度校验。
 - `startup_warmup_seconds`：D435 首帧后的曝光预热时间，默认 `5.0` 秒；预热期间
   候选仍可在机载 RViz 观察，但不会进入稳定确认和远程上报。
 - `draw_raw_candidates`：是否在二维码调试图像中绘制单帧原始候选，当前为 `false`；RViz 候选标记仍由 target_reporting 单独显示。

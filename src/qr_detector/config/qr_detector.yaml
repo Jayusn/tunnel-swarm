@@ -21,9 +21,9 @@ max_angle_cos: 0.80
 max_quad_area_ratio: 0.35
 max_quad_width_ratio: 0.90
 max_quad_height_ratio: 0.90
-# Lower tolerance reduces finder-pattern matches on nets and floor textures.
-qr_eps_x: 0.15
-qr_eps_y: 0.15
+# UAV1 flight setting; detection tuning is loaded from this YAML.
+qr_eps_x: 0.22
+qr_eps_y: 0.22
 depth_min: 0.15
 depth_max: 8.0
 
@@ -33,7 +33,7 @@ depth_max: 8.0
 # get soft, change preprocess_mode to sharpen first before increasing upscale.
 preprocess_mode: gray
 upscale_factor: 1.5
-enable_preprocess_fallbacks: false
+enable_preprocess_fallbacks: true
 decode_qr_data: true
 # One successful non-empty decode authenticates the same nearby QR track. The
 # following frames still require valid corners and depth, but may finish the
@@ -41,6 +41,10 @@ decode_qr_data: true
 require_decode_for_confirmation: true
 decode_verification_hold_seconds: 2.0
 decode_verification_max_center_shift_px: 120.0
+# Search around the recent QR track; preprocessing fallbacks apply in this ROI.
+enable_local_search: true
+local_search_hold_seconds: 2.0
+local_search_margin_ratio: 2.0
 # D435 自动曝光在首帧后需要短暂稳定时间。预热期间仍可在本机 RViz 观察候选，
 # 但不会发布稳定二维码，也不会触发 target_reporting 远程上报。
 startup_warmup_seconds: 5.0
@@ -48,7 +52,8 @@ startup_warmup_seconds: 5.0
 draw_raw_candidates: false
 
 # Temporal stability.
-confirm_frames: 2
+# Confirm the first frame passing decode verification and depth validation.
+confirm_frames: 1
 lost_hold_time: 0.3
 ema_alpha: 0.35
 
