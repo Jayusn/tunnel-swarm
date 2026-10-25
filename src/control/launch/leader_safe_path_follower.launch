@@ -89,7 +89,7 @@
         <arg name="precision_node_package" value="$(eval 'uav1_inplace_landing_test' if arg('use_nmpc_landing') else 'precision_landing')"/>
         <arg name="precision_node_type" value="$(eval 'uav1_test_precision_landing_node' if arg('use_nmpc_landing') else 'precision_landing_node')"/>
         <arg name="precision_config" value="$(eval find('exploration_control') + '/config/precision_landing_uav1.yaml' if arg('use_nmpc_landing') else find('precision_landing') + '/config/precision_landing.yaml')"/>
-        <arg name="center_offset_config" value="$(eval find('uav1_inplace_landing_test') + '/config/center_offset_uav1.yaml' if arg('use_nmpc_landing') else '')"/>
+        <arg name="center_offset_config" value="$(eval find('exploration_control') + '/config/center_offset_uav1.yaml' if arg('use_nmpc_landing') else '')"/>
         <arg name="rc_land_active_topic" value="$(eval '/UAV1/landing/rc_land_active' if arg('use_nmpc_landing') else '')"/>
         <arg name="image_topic" value="/UAV1/down_camera/image_raw"/>
         <arg name="camera_info_topic" value="/UAV1/down_camera/camera_info"/>
