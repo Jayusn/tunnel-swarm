@@ -254,7 +254,7 @@
     </node>
     <!--
       录制动态障碍诊断与前机接力输入，-o 会自动追加时间戳，避免覆盖旧包。
-      同时保存 D435 原始彩色/对齐深度、二维码画面和状态，供飞行后回看漏检原因；使用 LZ4 无损压缩。
+      同时保存 D435 原始及融合输入图像、热成像原图/候选/匹配时间、二维码画面和状态，供飞行后回看漏检原因；使用 LZ4 无损压缩。
       roslaunch 退出时向该进程发送 SIGINT，保证生成完整 .bag 而非 .bag.active。
     -->
     <node if="$(arg record_dynamic_debug)" pkg="rosbag" type="record"
@@ -268,6 +268,11 @@
                 /UAV1/camera/color/image_raw
                 /UAV1/camera/aligned_depth_to_color/image_raw
                 /UAV1/camera/color/camera_info
+                /UAV1/camera/aux/color/image_raw
+                /UAV1/camera/aux/aligned_depth_to_color/image_raw
+                /UAV1/thermal/image_raw
+                /UAV1/thermal/target_candidate_status
+                /UAV1/thermal/report_candidate
                 /UAV1/vision/qr_debug_image
                 /UAV1/vision/qr_candidate_detected
                 /UAV1/vision/qr_candidate_pose_camera

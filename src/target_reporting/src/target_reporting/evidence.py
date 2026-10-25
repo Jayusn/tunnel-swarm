@@ -201,6 +201,7 @@ def build_evidence_jpeg(image, event, camera_xyz=None, quality=85):
     position = event["position"]
     geometry_keys = {
         "points", "bbox", "center_u", "center_v", "u", "v", "cx", "cy",
+        "source_timing",
     }
     result_text = ", ".join(
         "{}={}".format(k, v)

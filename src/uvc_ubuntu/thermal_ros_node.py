@@ -225,8 +225,9 @@ class ThermalDetectorNode:
             self.stable_max_pixel_jump,
         )
 
-    def publish_detection(self, gray, debug, detection):
-        stamp = rospy.Time.now()
+    def publish_detection(self, gray, debug, detection, stamp=None):
+        if stamp is None:
+            stamp = rospy.Time.now()
         border_rejected = bool(
             self.reject_roi_border_touching
             and detection.get("touches_roi_border", False)
@@ -348,6 +349,9 @@ class ThermalDetectorNode:
                     break
                 continue
 
+            # Software receive time, before image conversion/detection. The
+            # raw UVC pipe does not carry a hardware exposure timestamp.
+            frame_stamp = rospy.Time.now()
             try:
                 gray = yuyv_to_gray(raw_data, self.width, self.height)
             except ValueError as exc:
@@ -366,7 +370,7 @@ class ThermalDetectorNode:
                 min_local_contrast=self.min_local_contrast,
             )
             debug = draw_debug(gray, detection)
-            self.publish_detection(gray, debug, detection)
+            self.publish_detection(gray, debug, detection, stamp=frame_stamp)
 
             if self.display:
                 cv2.imshow("Thermal ROS Debug", debug)

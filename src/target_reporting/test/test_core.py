@@ -17,6 +17,34 @@ from target_reporting.adapters import parse_color_status, parse_qr_status, parse
 
 
 class CoreTests(unittest.TestCase):
+    def test_thermal_timing_is_saved_without_splitting_target_identity(self):
+        tracker = CandidateTracker(distance_m=0.3, confirm_hits=2)
+        position = {"x": 1.0, "y": 0.0, "z": 0.5}
+        for stamp in (10.0, 10.1):
+            timing = {"thermal_stamp": stamp, "color_stamp": stamp + 0.01,
+                      "depth_stamp": stamp - 0.02, "color_dt_s": 0.01,
+                      "depth_dt_s": -0.02}
+            result, _ = parse_thermal_status(json.dumps({
+                "detected": True, "stable": True, "source_timing": timing,
+            }))
+            self.assertEqual(timing, result["source_timing"])
+            candidate, confirmed = tracker.update(
+                "thermal_source", result, position, timestamp=stamp
+            )
+        self.assertTrue(confirmed)
+        self.assertEqual(2, candidate["hits"])
+        event = TargetEvent(
+            seq=1, timestamp=stamp, drone_id="uav1", message_type="confirmed_target",
+            target_id="uav1-thermal_source-001", target_type="thermal_source",
+            result=result, position=Position("channel", 1.0, 0.0, 0.5),
+        ).to_dict()
+        with tempfile.TemporaryDirectory() as directory:
+            store = MissionStore(directory, "uav1")
+            store.append_event(event)
+            with open(store.events_path, encoding="utf-8") as stream:
+                saved = json.loads(stream.readline())
+            self.assertEqual(timing, saved["result"]["source_timing"])
+
     def make_event(self, seq=1):
         return TargetEvent(
             seq=seq,

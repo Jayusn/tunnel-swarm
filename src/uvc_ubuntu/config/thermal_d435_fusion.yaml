@@ -17,6 +17,8 @@ d435_depth_topic: /camera/aligned_depth_to_color/image_raw
 d435_color_topic: /camera/color/image_raw
 d435_debug_image_topic: /UAV0/thermal/d435_debug_image
 d435_exposure_warmup_seconds: 5.0
+# 彩色/深度各缓存的帧数；按热成像时间选择已收到的最近帧，不新增丢弃阈值。
+d435_image_cache_size: 10
 thermal_to_d435_homography:
 - - 2.632295209442165
   - 0.032025874429704726

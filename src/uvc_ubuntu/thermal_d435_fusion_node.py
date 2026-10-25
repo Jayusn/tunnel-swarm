@@ -4,6 +4,8 @@ import math
 import os
 import threading
 import time
+from collections import deque
+from copy import deepcopy
 
 import cv2
 import numpy as np
@@ -97,6 +99,9 @@ class ThermalD435FusionNode:
         self.d435_exposure_warmup_seconds = max(
             0.0, float(self.get_param("d435_exposure_warmup_seconds", 5.0))
         )
+        cache_size = max(1, int(self.get_param("d435_image_cache_size", 10)))
+        self.depth_frames = deque(maxlen=cache_size)
+        self.color_frames = deque(maxlen=cache_size)
 
         self.target_detected = False
         self.thermal_pixel_msg = None
@@ -261,6 +266,9 @@ class ThermalD435FusionNode:
             self.depth_image = np.array(depth, copy=True)
             self.depth_encoding = msg.encoding
             self.depth_stamp = msg.header.stamp
+            self.depth_frames.append(
+                (msg.header.stamp, self.depth_image, msg.encoding)
+            )
 
     def color_callback(self, msg):
         try:
@@ -272,6 +280,9 @@ class ThermalD435FusionNode:
         with self.lock:
             self.color_image = np.array(color, copy=True)
             self.color_header = msg.header
+            self.color_frames.append(
+                (msg.header.stamp, self.color_image, msg.header)
+            )
             if self.first_color_wall_time is None:
                 self.first_color_wall_time = time.monotonic()
                 if self.d435_exposure_warmup_seconds > 0.0:
@@ -279,6 +290,33 @@ class ThermalD435FusionNode:
                         "D435 mapping image exposure warm-up: %.1f s",
                         self.d435_exposure_warmup_seconds,
                     )
+
+    def matched_d435_frames(self, stamp):
+        """Select nearest received frames; do not wait for or reject frames.
+
+        Callback arrays are replaced, never edited, so retaining references
+        here gives the entire fusion operation a consistent input snapshot.
+        """
+        with self.lock:
+            depth_frames = list(self.depth_frames)
+            color_frames = list(self.color_frames)
+
+        def nearest(frames):
+            if not frames:
+                return None
+            if stamp is None or stamp == rospy.Time(0):
+                return frames[-1]
+            return min(frames, key=lambda frame: abs((frame[0] - stamp).to_sec()))
+
+        depth = nearest(depth_frames)
+        color = nearest(color_frames)
+        return (
+            depth[1] if depth else None,
+            depth[2] if depth else None,
+            depth[0] if depth else None,
+            color[1] if color else None,
+            color[2] if color else None,
+        )
 
     def d435_exposure_ready(self, now=None):
         """Return true after D435 auto exposure has had time to settle."""
@@ -417,7 +455,7 @@ class ThermalD435FusionNode:
         )
         return depth, "bbox" if depth is not None else None
 
-    def pixel_to_camera_point(self, u, v, depth, camera_info):
+    def pixel_to_camera_point(self, u, v, depth, camera_info, stamp):
         fx = float(camera_info.K[0])
         fy = float(camera_info.K[4])
         cx = float(camera_info.K[2])
@@ -427,7 +465,7 @@ class ThermalD435FusionNode:
             return None
 
         point = PointStamped()
-        point.header.stamp = self.depth_stamp if self.depth_stamp != rospy.Time(0) else rospy.Time.now()
+        point.header.stamp = stamp
         point.header.frame_id = self.d435_optical_frame
         point.point.x = (float(u) - cx) * depth / fx
         point.point.y = (float(v) - cy) * depth / fy
@@ -536,7 +574,9 @@ class ThermalD435FusionNode:
             )
             camera_point = None
             if depth is not None and camera_info is not None:
-                camera_point = self.pixel_to_camera_point(u_d, v_d, depth, camera_info)
+                camera_point = self.pixel_to_camera_point(
+                    u_d, v_d, depth, camera_info, source.header.stamp
+                )
             if camera_point is not None:
                 cv2.putText(
                     debug_image,
@@ -555,9 +595,9 @@ class ThermalD435FusionNode:
 
         debug_msg = self.bridge.cv2_to_imgmsg(debug_image, encoding="bgr8")
         if color_header is not None:
-            debug_msg.header = color_header
-            if output_stamp is not None:
-                debug_msg.header.stamp = output_stamp
+            debug_msg.header = deepcopy(color_header)
+        if output_stamp is not None:
+            debug_msg.header.stamp = output_stamp
         if publish_realtime:
             self.d435_debug_image_pub.publish(debug_msg)
         if publish_evidence:
@@ -571,7 +611,7 @@ class ThermalD435FusionNode:
         depth_encoding,
         thermal_bbox=None,
     ):
-        """Fuse one thermal pixel with the latest D435 depth, without TF."""
+        """Fuse a thermal pixel with the supplied matched depth, without TF."""
         if (
             thermal_pixel_msg is None
             or thermal_pixel_msg.point.z <= 0.0
@@ -588,7 +628,9 @@ class ThermalD435FusionNode:
         )
         if depth is None:
             return None
-        return self.pixel_to_camera_point(u_d, v_d, depth, camera_info)
+        return self.pixel_to_camera_point(
+            u_d, v_d, depth, camera_info, thermal_pixel_msg.header.stamp
+        )
 
     @staticmethod
     def status_candidates(status):
@@ -603,7 +645,7 @@ class ThermalD435FusionNode:
 
     def publish_report_candidates(
         self, status, camera_info, depth_image, depth_encoding,
-        color_image=None, color_header=None
+        color_image=None, color_header=None, depth_stamp=None
     ):
         if status is None or camera_info is None or depth_image is None:
             return False
@@ -613,6 +655,22 @@ class ThermalD435FusionNode:
             base_stamp = float(status.get("stamp"))
         except (TypeError, ValueError):
             base_stamp = rospy.Time.now().to_sec()
+
+        color_stamp = color_header.stamp.to_sec() if color_header is not None else None
+        depth_time = depth_stamp.to_sec() if depth_stamp is not None else None
+        source_timing = {
+            "thermal_stamp": base_stamp,
+            "color_stamp": color_stamp,
+            "depth_stamp": depth_time,
+            "color_dt_s": None if color_stamp is None else color_stamp - base_stamp,
+            "depth_dt_s": None if depth_time is None else depth_time - base_stamp,
+        }
+        if color_stamp is not None and depth_time is not None:
+            rospy.loginfo_throttle(
+                1.0, "Thermal frame match: color_dt=%.1f ms depth_dt=%.1f ms",
+                source_timing["color_dt_s"] * 1000.0,
+                source_timing["depth_dt_s"] * 1000.0,
+            )
 
         for index, candidate in enumerate(self.status_candidates(status)):
             try:
@@ -666,6 +724,7 @@ class ThermalD435FusionNode:
                 "stable_count": int(candidate.get("stable_count", 0)),
                 "stable_window": int(status.get("stable_window", 1)),
                 "stamp": stamp,
+                "source_timing": source_timing,
                 "rank": int(candidate.get("rank", index + 1)),
                 "cx": int(round(cx)),
                 "cy": int(round(cy)),
@@ -713,6 +772,10 @@ class ThermalD435FusionNode:
         self, status, camera_info, depth_image, depth_encoding
     ):
         """Return the highest-ranked non-ground candidate for the mapping view."""
+        try:
+            source_stamp = rospy.Time.from_sec(float(status.get("stamp")))
+        except (TypeError, ValueError):
+            source_stamp = rospy.Time.now()
         for candidate in self.status_candidates(status):
             try:
                 cx = float(candidate["cx"])
@@ -720,7 +783,7 @@ class ThermalD435FusionNode:
             except (KeyError, TypeError, ValueError):
                 continue
             thermal_point = PointStamped()
-            thermal_point.header.stamp = rospy.Time.now()
+            thermal_point.header.stamp = source_stamp
             thermal_point.header.frame_id = "thermal_camera"
             thermal_point.point.x = cx
             thermal_point.point.y = cy
@@ -747,15 +810,31 @@ class ThermalD435FusionNode:
             candidate_status = self.candidate_status
             candidate_status_version = self.candidate_status_version
             camera_info = self.camera_info
-            depth_image = None if self.depth_image is None else self.depth_image.copy()
-            depth_encoding = self.depth_encoding
-            color_image = None if self.color_image is None else self.color_image.copy()
-            color_header = self.color_header
+
+        try:
+            status_stamp = rospy.Time.from_sec(float(candidate_status["stamp"]))
+        except (TypeError, ValueError, KeyError):
+            status_stamp = None
+        report_depth, report_encoding, report_depth_stamp, report_color, report_header = (
+            self.matched_d435_frames(status_stamp)
+        )
+        has_candidates = bool(self.status_candidates(candidate_status))
+        if has_candidates:
+            depth_image, depth_encoding = report_depth, report_encoding
+            color_image, color_header = report_color, report_header
+        else:
+            display_stamp = (
+                thermal_pixel_msg.header.stamp
+                if detected and thermal_pixel_msg is not None else None
+            )
+            depth_image, depth_encoding, _, color_image, color_header = (
+                self.matched_d435_frames(display_stamp)
+            )
 
         display_detected = detected
         display_thermal_pixel = thermal_pixel_msg
         display_bbox = candidate_thermal_bbox
-        if self.status_candidates(candidate_status):
+        if has_candidates:
             selected = self.select_display_candidate(
                 candidate_status, camera_info, depth_image, depth_encoding
             )
@@ -788,10 +867,11 @@ class ThermalD435FusionNode:
             if self.publish_report_candidates(
                 candidate_status,
                 camera_info,
-                depth_image,
-                depth_encoding,
-                color_image,
-                color_header,
+                report_depth,
+                report_encoding,
+                report_color,
+                report_header,
+                depth_stamp=report_depth_stamp,
             ):
                 self.published_candidate_status_version = candidate_status_version
 
@@ -799,11 +879,15 @@ class ThermalD435FusionNode:
         # stream. It only requires a valid raw hotspot pixel and valid depth;
         # target_reporting performs the later world-frame tracking/confirmation.
         if candidate_detected:
+            candidate_stamp = candidate_pixel_msg.header.stamp if candidate_pixel_msg else None
+            candidate_depth, candidate_encoding, _, _, _ = self.matched_d435_frames(
+                candidate_stamp
+            )
             candidate_camera_point = self.build_camera_point(
                 candidate_pixel_msg,
                 camera_info,
-                depth_image,
-                depth_encoding,
+                candidate_depth,
+                candidate_encoding,
                 candidate_thermal_bbox,
             )
             if candidate_camera_point is not None:
@@ -839,7 +923,7 @@ class ThermalD435FusionNode:
             depth_encoding,
         )
         d435_pixel = PointStamped()
-        d435_pixel.header.stamp = rospy.Time.now()
+        d435_pixel.header.stamp = display_thermal_pixel.header.stamp
         d435_pixel.header.frame_id = "d435_color_image"
         d435_pixel.point.x = float(u_d)
         d435_pixel.point.y = float(v_d)
@@ -866,7 +950,9 @@ class ThermalD435FusionNode:
                 depth,
             )
 
-        camera_point = self.pixel_to_camera_point(u_d, v_d, depth, camera_info)
+        camera_point = self.pixel_to_camera_point(
+            u_d, v_d, depth, camera_info, display_thermal_pixel.header.stamp
+        )
         if camera_point is None:
             rospy.logwarn_throttle(2.0, "Invalid D435 camera intrinsics")
             self.publish_valid(False)

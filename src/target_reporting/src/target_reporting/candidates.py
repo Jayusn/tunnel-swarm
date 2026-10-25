@@ -11,6 +11,7 @@ class CandidateTracker:
         "depth_std", "pixel_area", "fill_ratio", "method", "preprocess",
         "validated", "confirmable",
         "detector_stable", "detector_confirmable",
+        "source_timing",
     }
 
     def __init__(

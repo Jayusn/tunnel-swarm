@@ -99,6 +99,8 @@ def parse_thermal_status(detected):
         if not data.get("detected"):
             return None
         result = {"detected": True}
+        if "source_timing" in data:
+            result["source_timing"] = data["source_timing"]
         has_detector_gate = any(
             field in data for field in ("candidate", "stable", "confirmable")
         )
