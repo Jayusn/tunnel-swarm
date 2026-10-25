@@ -199,7 +199,7 @@
               file="$(find target_reporting)/config/target_reporting.yaml" />
     <param name="drone_id" value="uav1" />
     <param name="localization_frame" value="$(arg world_frame)" />
-    <param name="record_root" value="~/target_reports/uav1" />
+    <param name="record_root" value="~/match_ws/target_reports/uav1" />
     <param if="$(eval arg('target_reporting_mission_id') != '')"
            name="mission_id" value="$(arg target_reporting_mission_id)" />
     <param name="color_candidate_point_topic"
