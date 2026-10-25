@@ -41,7 +41,8 @@ thermal_d435_ready_tolerance_s: 0.50
 leader_thermal_filter_enabled: false
 leader_odom_topic: "/UAV0/fast_lio/Odom_high_freq"
 leader_odom_frame: ""
-leader_thermal_exclusion_radius_m: 0.35
+# 与前机的水平距离在此范围内时，排除该热源候选（米）。
+leader_thermal_exclusion_radius_m: 0.50
 leader_odom_max_age_s: 0.50
 # UAV0 默认关闭；UAV1 启动入口按自身世界坐标高度过滤地面热源误检。
 thermal_ground_filter_enabled: false

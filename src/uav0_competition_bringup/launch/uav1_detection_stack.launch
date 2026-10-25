@@ -216,7 +216,6 @@
     <param name="leader_thermal_filter_enabled" value="true" />
     <param name="leader_odom_topic" value="/UAV0/fast_lio/Odom_high_freq" />
     <param name="leader_odom_frame" value="world" />
-    <param name="leader_thermal_exclusion_radius_m" value="0.35" />
     <param name="leader_odom_max_age_s" value="0.50" />
     <!-- 与融合显示采用同一 UAV1/camera_init 高度阈值，避免上报地面误检。 -->
     <param name="thermal_ground_filter_enabled" value="true" />
