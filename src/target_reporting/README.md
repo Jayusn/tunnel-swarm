@@ -154,6 +154,12 @@ roslaunch target_reporting remote_server.launch
 
 ## 记录目录
 
+UAV1 的前机热源过滤按检测帧时间匹配历史 UAV0 里程计（缓存最近 400 条），
+选择时间最近的一条，误差不超过 `source_match_tolerance_s`（当前 0.03 秒）。
+前机位置的 TF 变换也使用匹配里程计的时间戳，不再使用最新位置和最新 TF。
+原有 0.35 米水平过滤半径及 0.50 秒接收新鲜度检查保持不变；
+无匹配里程计或 TF 不可用时仍跳过前机过滤，不阻止目标后续确认和保存。
+
 `~enable_remote_upload` 控制远端发送，默认 `true`。UAV1 的
 `uav1_detection_stack.launch` 当前设为 `false`：仍检测、确认、发布本机观测，
 并保存 JSONL 和证据图，但不创建网络客户端、不重试连接、不向发送队列入队。

@@ -153,7 +153,8 @@ class TargetReporterNode:
         self.point_version = {}
         self.status_version = {}
         self.last_processed_pair = {}
-        self.latest_leader_odom = None
+        # 200 Hz 前机里程计保留约 2 秒，用检测时间匹配，避免处理延迟引入位置差。
+        self.leader_odom_history = deque(maxlen=400)
         self.latest_leader_odom_received = rospy.Time(0)
         self.seq = 0
         existing = self.store.all_events()
@@ -335,18 +336,29 @@ class TargetReporterNode:
 
     def _leader_odom_cb(self, msg):
         with self.lock:
-            self.latest_leader_odom = msg
+            self.leader_odom_history.append(msg)
             self.latest_leader_odom_received = rospy.Time.now()
 
-    def _is_leader_thermal_source(self, position):
+    def _is_leader_thermal_source(self, position, event_stamp):
         if not self.leader_thermal_filter_enabled:
             return False
         with self.lock:
-            leader_odom = self.latest_leader_odom
+            history = list(self.leader_odom_history)
             received = self.latest_leader_odom_received
-        if leader_odom is None or received == rospy.Time(0):
+        if not history or received == rospy.Time(0):
             return False
         if (rospy.Time.now() - received).to_sec() > self.leader_odom_max_age:
+            return False
+        leader_odom = min(
+            history,
+            key=lambda msg: abs(msg.header.stamp.to_sec() - event_stamp),
+        )
+        # 沿用检测源时间匹配容差；没有匹配帧时按原有里程计不可用分支处理。
+        if (
+            leader_odom.header.stamp == rospy.Time(0)
+            or abs(leader_odom.header.stamp.to_sec() - event_stamp)
+            > self.source_match_tolerance
+        ):
             return False
         leader_frame = self.leader_odom_frame or leader_odom.header.frame_id
         if not leader_frame:
@@ -354,7 +366,7 @@ class TargetReporterNode:
 
         leader_point = PointStamped()
         leader_point.header.frame_id = leader_frame
-        leader_point.header.stamp = rospy.Time(0)
+        leader_point.header.stamp = leader_odom.header.stamp
         leader_point.point = leader_odom.pose.pose.position
         try:
             leader = self.tf_buffer.transform(
@@ -485,7 +497,7 @@ class TargetReporterNode:
             self.last_processed_pair[source] = pair
         position = {"x": world.point.x, "y": world.point.y, "z": world.point.z}
         target_type = {"color": "color_tag", "qr": "qr_code", "thermal": "thermal_source"}[source]
-        if source == "thermal" and self._is_leader_thermal_source(position):
+        if source == "thermal" and self._is_leader_thermal_source(position, event_stamp):
             return
         if source == "thermal" and self._is_ground_thermal_source(position):
             return
