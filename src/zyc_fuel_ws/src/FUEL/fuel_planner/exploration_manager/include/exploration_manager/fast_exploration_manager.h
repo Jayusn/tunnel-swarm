@@ -177,6 +177,11 @@ private:
   bool buildManualFappUnderpassPath(const Vector3d& pos, const Vector3d& waypoint,
                                    std::vector<Vector3d>& path);
   ManualWaypointPath manual_path_;
+  bool manual_local_goal_enabled_{false}, manual_local_goal_selected_{false};
+  double manual_local_goal_radius_{0.60};
+  std::size_t manual_local_goal_index_{std::numeric_limits<std::size_t>::max()};
+  Vector3d manual_local_goal_anchor_{Vector3d::Zero()};
+  void improveManualWaypoint(const Vector3d& pos);
   int planManualWaypointMotion(const Vector3d& pos, const Vector3d& vel,
                                const Vector3d& acc, const Vector3d& yaw);
   Vector3d external_selected_viewpoint_{0.0, 0.0, 0.0};

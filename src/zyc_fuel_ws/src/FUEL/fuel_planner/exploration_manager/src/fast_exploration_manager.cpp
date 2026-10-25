@@ -3263,6 +3263,10 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
   nh.param("mission/manual_path/arrive_distance", manual_path_arrive_distance_, 0.25);
   nh.param("mission/manual_path/max_segment_length", manual_path_max_segment_length_, 0.0);
   nh.param("mission/manual_path/exploration_style", manual_path_exploration_style_, false);
+  nh.param("mission/manual_path/local_goal_enabled", manual_local_goal_enabled_, false);
+  nh.param("mission/manual_path/local_goal_radius", manual_local_goal_radius_, 0.60);
+  if (!std::isfinite(manual_local_goal_radius_) || manual_local_goal_radius_ <= 0.0)
+    throw std::runtime_error("manual_path local_goal_radius must be finite and positive");
   if (!std::isfinite(manual_path_max_segment_length_) || manual_path_max_segment_length_ < 0.0)
     throw std::runtime_error("manual_path max_segment_length must be finite and nonnegative");
   if (manual_path_enabled_) {
@@ -3986,12 +3990,88 @@ bool FastExplorationManager::planExplorationFappCrossing(
   return true;
 }
 
+void FastExplorationManager::improveManualWaypoint(const Vector3d& pos) {
+  if (!manual_path_enabled_ || !manual_local_goal_enabled_ || manual_path_.finished() ||
+      !manual_path_use_astar_ || manual_exit_latched_ || manual_fapp_active_ ||
+      recovery_side_latched_ || low_probe_phase_ != vertical_detour::LowProbePhase::IDLE)
+    return;
+  const auto index = manual_path_.next;
+  if (manual_local_goal_index_ != index) {
+    manual_local_goal_index_ = index;
+    manual_local_goal_anchor_ = manual_path_.points[index];
+    manual_local_goal_selected_ = false;
+  }
+  if (manual_local_goal_selected_) return;
+  // 搜索中心始终是手填点；只改当前点XY，选定后保持至实际到达。
+  const Vector3d anchor = manual_local_goal_anchor_;
+  const double step = std::max(0.10, sdf_map_->getResolution());
+  const auto clearance = [&](const Vector3d& point) {
+    double free_radius = 0.0;
+    for (double r = sdf_map_->getResolution(); r <= 0.60 + 1e-6;
+         r += sdf_map_->getResolution()) {
+      for (int k = 0; k < 16; ++k) {
+        const double a = 2.0 * M_PI * k / 16;
+        if (widthColumnState(point + Vector3d(r*std::cos(a), r*std::sin(a), 0)) != SDFMap::FREE)
+          return free_radius;
+      }
+      free_radius = r;
+    }
+    return free_radius;
+  };
+  const bool original_safe = planner_manager_->isKnownFreePosition(anchor);
+  const double original_clearance = original_safe ? clearance(anchor) : -1.0;
+  struct Candidate { Vector3d point; double clearance, offset; };
+  vector<Candidate> candidates;
+  const int cells = static_cast<int>(std::floor(manual_local_goal_radius_ / step + 1e-6));
+  for (int x = -cells; x <= cells; ++x)
+    for (int y = -cells; y <= cells; ++y) {
+      const double offset = step * std::hypot(x, y);
+      if (offset < 1e-6 || offset > manual_local_goal_radius_ + 1e-6) continue;
+      const Vector3d p = anchor + Vector3d(x*step, y*step, 0);
+      if (!planner_manager_->isKnownFreePosition(p)) continue;
+      const double gap = clearance(p);
+      if (original_safe && gap < original_clearance + 0.05 - 1e-6) continue;
+      candidates.push_back({p, gap, offset});
+    }
+  std::stable_sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
+    if (std::fabs(a.clearance - b.clearance) > 1e-6) return a.clearance > b.clearance;
+    return a.offset < b.offset;
+  });
+  auto& finder = planner_manager_->path_finder_;
+  if (!finder) return;
+  finder->clearProgressConstraint();
+  // 优选不能耗尽正常规划时间；至多验证三个候选，失败即继续原航点规划。
+  for (size_t i = 0; i < std::min<size_t>(3, candidates.size()); ++i) {
+    const auto& candidate = candidates[i];
+    finder->reset();
+    if (finder->search(pos, candidate.point) != Astar::REACH_END) continue;
+    auto path = finder->getPath();
+    path.insert(path.begin(), pos);
+    path.push_back(candidate.point);
+    if (!planner_manager_->isPathSafe(path) || !planner_manager_->isFappPathSafe(path)) continue;
+    bool known = true;
+    for (size_t j = 1; j < path.size() && known; ++j)
+      known = passage_centering::knownSegment(path[j-1], path[j], 0.05,
+          [&](const Vector3d& p) { return planner_manager_->isKnownFreePosition(p); });
+    if (!known) continue;
+    manual_path_.points[index] = candidate.point;
+    manual_local_goal_selected_ = true;
+    ROS_WARN("[manual_path] improve waypoint %zu within %.2fm: original=(%.2f,%.2f,%.2f) "
+             "selected=(%.2f,%.2f,%.2f) horizontal_clearance=%.2f->%.2fm; keep order and height.",
+             index+1, manual_local_goal_radius_, anchor.x(), anchor.y(), anchor.z(),
+             candidate.point.x(), candidate.point.y(), candidate.point.z(),
+             original_clearance, candidate.clearance);
+    return;
+  }
+}
+
 int FastExplorationManager::planManualWaypointMotion(
     const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, const Vector3d& yaw) {
   if (manual_path_wait_for_trigger_ && !manual_path_started_) return FAIL;
   if (task_search_manager_ && task_search_manager_->landingRequested()) return NO_FRONTIER;
   if (manualFappObservationMissing(pos, yaw[0])) return FAIL;
   if (planFappOpeningCrossing(pos, vel, acc, yaw)) return SUCCEED;
+  improveManualWaypoint(pos);
   Vector3d target;
   double target_yaw = yaw[0];
   const bool exit_motion = manual_exit_enabled_ && manual_exit_latched_ && manual_path_.finished();

@@ -1789,6 +1789,70 @@ public:
     }
   }
 
+  static void runManualLocalGoal(int mode) {
+    ros::NodeHandle nh("~manual_local_goal");
+    nh.setParam("manager/use_geometric_path", true);
+    nh.setParam("astar/resolution_astar", .05);
+    nh.setParam("astar/allocate_num", 100000);
+    nh.setParam("astar/lambda_heu", 1.0);
+    nh.setParam("astar/max_search_time", .05);
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    manager.manual_path_enabled_ = mode != 4;
+    manager.manual_path_use_astar_ = true;
+    manager.manual_local_goal_enabled_ = true;
+    manager.manual_exit_latched_ = mode == 2;
+    manager.manual_fapp_active_ = mode == 3;
+    auto& map = *manager.sdf_map_;
+    const Vector3d start(-.6, .25, 1.0), anchor(.60, -.10, 1.0), second(1.3, .4, 1.0);
+    manager.manual_path_.points = {anchor, second};
+    if (mode != 1) {
+      for (int iy = -8; iy <= 29; ++iy)
+        for (int iz = 14; iz <= 25; ++iz) {
+          const double y = (iy + .5) * .05, z = (iz + .5) * .05;
+          pcl::PointCloud<pcl::PointXYZ> cloud;
+          cloud.push_back(pcl::PointXYZ(1.9, y, z));
+          map.inputPointCloud(cloud, 1, Vector3d(-1.9, y, z));
+          cloud.front().x = -1.9;
+          map.inputPointCloud(cloud, 1, Vector3d(1.9, y, z));
+        }
+      if (mode == 5) {
+        for (double x = -.1; x <= .1; x += .05)
+          for (double y = -1.9; y <= 1.9; y += .05)
+            for (double z = .05; z <= 1.95; z += .05)
+              map.setOccupied(Vector3d(x, y, z));
+      }
+      map.updateESDF3d();
+    }
+    if (mode == 0) {
+      ASSERT_TRUE(manager.planner_manager_->isKnownFreePosition(start));
+      ASSERT_TRUE(manager.planner_manager_->isKnownFreePosition(Vector3d(.6, .4, 1.0)));
+      ASSERT_EQ(SDFMap::FREE, manager.widthColumnState(Vector3d(.6, .4, 1.0)));
+    }
+    manager.improveManualWaypoint(start);
+    if (mode != 0) {
+      EXPECT_EQ(anchor, manager.manual_path_.points.front());
+      EXPECT_FALSE(manager.manual_local_goal_selected_);
+      return;
+    }
+    ASSERT_TRUE(manager.manual_local_goal_selected_);
+    const Vector3d chosen = manager.manual_path_.points.front();
+    EXPECT_GT(chosen.y(), anchor.y()+.1);
+    EXPECT_LE((chosen-anchor).norm(), .60+1e-6);
+    EXPECT_DOUBLE_EQ(anchor.z(), chosen.z());
+    EXPECT_EQ(0U, manager.manual_path_.next);
+    EXPECT_EQ(second, manager.manual_path_.points.back());
+    for (int i=0; i<3; ++i) manager.improveManualWaypoint(start);
+    EXPECT_EQ(chosen, manager.manual_path_.points.front());
+    EXPECT_EQ(anchor, manager.manual_local_goal_anchor_);
+    manager.manual_path_.updateOdometry(anchor, .1);
+    EXPECT_EQ(0U, manager.manual_path_.next);
+    manager.manual_path_.updateOdometry(chosen, .1);
+    EXPECT_EQ(1U, manager.manual_path_.next);
+    manager.improveManualWaypoint(chosen);
+    EXPECT_EQ(second, manager.manual_local_goal_anchor_); // 下一点仍以其手填坐标为基准。
+  }
+
   static void runManualWaypoints(bool blocked) {
     ros::NodeHandle nh("~");
     FastExplorationManager manager;
@@ -3459,6 +3523,24 @@ TEST(SideSelection, NewlyObservedDividerIsAdoptedBeforeShortRecoveryRelease) {
 }
 TEST(SideSelection, GenericBypassKeepsSideBeyondTwentyCentimetres) {
   fast_planner::TurnEscapeTest::runEarlySplit(false, false, false, true);
+}
+TEST(ManualLocalGoal, ImprovesWithinOriginalRadiusKeepsHeightOrderAndActualArrival) {
+  fast_planner::TurnEscapeTest::runManualLocalGoal(0);
+}
+TEST(ManualLocalGoal, UnknownMapRetainsOriginalWaypoint) {
+  fast_planner::TurnEscapeTest::runManualLocalGoal(1);
+}
+TEST(ManualLocalGoal, ConfirmedExitOwnsGoal) {
+  fast_planner::TurnEscapeTest::runManualLocalGoal(2);
+}
+TEST(ManualLocalGoal, DynamicCrossingOwnsGoal) {
+  fast_planner::TurnEscapeTest::runManualLocalGoal(3);
+}
+TEST(ManualLocalGoal, AutonomousExplorationIsUnaffected) {
+  fast_planner::TurnEscapeTest::runManualLocalGoal(4);
+}
+TEST(ManualLocalGoal, UnreachableBetterPocketRetainsOriginalWaypoint) {
+  fast_planner::TurnEscapeTest::runManualLocalGoal(5);
 }
 int main(int argc,char** argv) {
   ros::init(argc,argv,"turn_escape_test");
