@@ -14,15 +14,13 @@
   <arg name="fapp_detection_max_z" default="1.2"/>
   <arg name="enable_fapp_dynamic_avoidance" default="true"/>
   <!-- true保留动态软代价，常规轨迹跳过动态硬拒绝；历史包络用于选路与样条生成；false启用动态碰撞硬检查。
-       航点先尝试下穿，再到左右侧等空档，超时或无可达侧点后恢复普通规划。 -->
+       航点复用探索的下穿、完整侧绕与普通规划回退；执行中仍重试可行的动态穿越。 -->
   <arg name="fapp_planner_priority" default="true"/>
   <!-- 保存历史最低点与摆动包络；持续空帧仍依历史范围规划，不仅因超时制动。 -->
   <arg name="fapp_memory_enabled" default="true"/>
   <arg name="fapp_history_duration" default="10.0"/>
   <arg name="fapp_observation_retention" default="0.8"/>
   <arg name="fapp_association_distance" default="0.6"/>
-  <!-- 下穿失败后先到侧边等空档，真实到达后计时，超时恢复普通规划。 -->
-  <arg name="fapp_side_wait_timeout" default="3.0"/>
 
   <!-- 手填点保底：只在当前原点附近优选XY，保留高度和列表顺序。 -->
   <arg name="waypoint_local_goal_enabled" default="true"/>
@@ -104,7 +102,6 @@
        FAPP动态避障开启时摆球也参与下穿/侧绕选路；关闭时只处理静态地图障碍。 -->
   <param name="/exploration_node/mission/manual_path/max_segment_length" value="1.20" type="double"/>
   <param name="/exploration_node/mission/manual_path/exploration_style" value="true" type="bool"/>
-  <param name="/exploration_node/mission/manual_path/fapp_side_wait_timeout" value="$(arg fapp_side_wait_timeout)" type="double"/>
   <param name="/exploration_node/mission/manual_path/exit_enabled" value="$(arg enable_exit_recognition)" type="bool"/>
   <param name="/exploration_node/mission/workspace_lock_topic" value="/UAV0/corridor_search/workspace_lock"/>
   <param name="/exploration_node/fsm/use_diff_for_fuel_exploration" value="false" type="bool"/>
