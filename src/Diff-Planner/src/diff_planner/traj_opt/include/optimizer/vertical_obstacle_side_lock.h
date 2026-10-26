@@ -29,6 +29,7 @@ public:
   void setConfig(const Config &config);
   const Config &config() const;
   void clearLock();
+  bool hasActiveLock() const { return lock_.active; }
 
   struct Passage
   {

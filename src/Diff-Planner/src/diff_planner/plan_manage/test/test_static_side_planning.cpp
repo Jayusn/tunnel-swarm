@@ -625,6 +625,115 @@ TEST_F(StaticSidePlanning, OptimizedTrajectoryStaysInSelectedStaticPassageWithFa
     optimizer.endPlanningCycle();
   }
 }
+TEST_F(StaticSidePlanning, FailedSideOptimizationRetriesWithoutOldSideConstraints)
+{
+  for (bool multitopology : {false, true})
+  {
+    PolyTrajOptimizer optimizer;
+    configure(optimizer, true);
+    std::vector<Vector3d> path;
+    ASSERT_EQ(optimizer.searchObstaclePath(start, end, path), ASTAR_RET::SUCCESS);
+    ASSERT_TRUE(optimizer.vertical_obstacle_side_lock_.hasActiveLock());
+    // 模拟旧侧中心已与当前地图不一致：偏好把轨迹拉入侧墙。
+    optimizer.vertical_obstacle_side_lock_.lock_.passage_center_offset = -2.0;
+    optimizer.beginPlanningCycle();
+    poly_traj::MinJerkOpt seed;
+    Eigen::Matrix3d head, tail;
+    head << start, Vector3d::Zero(), Vector3d::Zero();
+    tail << end, Vector3d::Zero(), Vector3d::Zero();
+    Eigen::MatrixXd midpoint(3, 1);
+    midpoint.col(0) = 0.5 * (start + end);
+    const Eigen::VectorXd durations = Eigen::Vector2d::Constant(2.0);
+    seed.reset(head, tail, 2);
+    seed.generate(midpoint, durations);
+    std::vector<std::pair<int, int>> segments;
+    ASSERT_NE(optimizer.finelyCheckAndSetConstraintPoints(segments, seed, true),
+              PolyTrajOptimizer::ERR);
+    optimizer.setUseMultitopologyTrajs(multitopology);
+    double cost;
+    // 先证实不含新回退的原优化器确实失败，避免仅测试本来就成功的场景。
+    ASSERT_FALSE(optimizer.optimizeTrajectoryOnce(head, tail, midpoint, durations, cost));
+    ASSERT_TRUE(optimizer.vertical_obstacle_side_lock_.hasActiveLock());
+    ASSERT_NE(optimizer.finelyCheckAndSetConstraintPoints(segments, seed, true),
+              PolyTrajOptimizer::ERR);
+    ASSERT_TRUE(optimizer.optimizeTrajectory(head, tail, midpoint, durations, cost));
+    EXPECT_FALSE(optimizer.vertical_obstacle_side_lock_.hasActiveLock());
+    EXPECT_TRUE(optimizer.vertical_obstacle_side_lock_.config().enabled);
+    EXPECT_EQ(optimizer.multitopology_data_.use_multitopology_trajs, multitopology);
+    const auto trajectory = optimizer.getMinJerkOpt().getTraj();
+    const double now = ros::Time::now().toSec();
+    EXPECT_TRUE(optimizer.trajectoryCollisionFree(trajectory, now, now));
+    for (int sample = 0; sample <= 1000; ++sample)
+      EXPECT_EQ(map->getInflateOccupancy(
+          trajectory.getPos(trajectory.getTotalDuration() * sample / 1000.0)), 0);
+    optimizer.endPlanningCycle();
+  }
+}
+
+TEST_F(StaticSidePlanning, OrdinaryRetryStillRejectsInfeasibleTrajectory)
+{
+  PolyTrajOptimizer optimizer;
+  configure(optimizer, true);
+  std::vector<Vector3d> path;
+  ASSERT_EQ(optimizer.searchObstaclePath(start, end, path), ASTAR_RET::SUCCESS);
+  optimizer.beginPlanningCycle();
+  poly_traj::MinJerkOpt seed;
+  Eigen::Matrix3d head, tail;
+  head << start, Vector3d::Zero(), Vector3d::Zero();
+  tail << end, Vector3d::Zero(), Vector3d::Zero();
+  Eigen::MatrixXd midpoint(3, 1);
+  midpoint.col(0) = 0.5 * (start + end);
+  const Eigen::VectorXd durations = Eigen::Vector2d::Constant(2.0);
+  seed.reset(head, tail, 2);
+  seed.generate(midpoint, durations);
+  std::vector<std::pair<int, int>> segments;
+  ASSERT_NE(optimizer.finelyCheckAndSetConstraintPoints(segments, seed, true),
+            PolyTrajOptimizer::ERR);
+  // 起点速度超过最终硬限制，解除侧锁也不能接受这条轨迹。
+  head.col(1) = Vector3d(3.0, 0.0, 0.0);
+  double cost;
+  EXPECT_FALSE(optimizer.optimizeTrajectory(head, tail, midpoint, durations, cost));
+  EXPECT_FALSE(optimizer.vertical_obstacle_side_lock_.hasActiveLock());
+  EXPECT_TRUE(optimizer.vertical_obstacle_side_lock_.config().enabled);
+  optimizer.endPlanningCycle();
+}
+
+TEST_F(StaticSidePlanning, SideOptimizationFallbackRespectsDeadlineAndDynamicCandidate)
+{
+  for (bool timeout : {false, true})
+  {
+    PolyTrajOptimizer optimizer;
+    configure(optimizer, true);
+    std::vector<Vector3d> path;
+    ASSERT_EQ(optimizer.searchObstaclePath(start, end, path), ASTAR_RET::SUCCESS);
+    optimizer.beginPlanningCycle();
+    poly_traj::MinJerkOpt seed;
+    Eigen::Matrix3d head, tail;
+    head << start, Vector3d::Zero(), Vector3d::Zero();
+    tail << end, Vector3d::Zero(), Vector3d::Zero();
+    Eigen::MatrixXd midpoint(3, 1);
+    midpoint.col(0) = 0.5 * (start + end);
+    const Eigen::VectorXd durations = Eigen::Vector2d::Constant(2.0);
+    seed.reset(head, tail, 2);
+    seed.generate(midpoint, durations);
+    std::vector<std::pair<int, int>> segments;
+    ASSERT_NE(optimizer.finelyCheckAndSetConstraintPoints(segments, seed, true),
+              PolyTrajOptimizer::ERR);
+    if (timeout)
+      optimizer.planning_deadline_ = ros::WallTime::now() - ros::WallDuration(1.0);
+    else
+    {
+      optimizer.dynamic_candidate_active_ = true;
+      head.col(1) = Vector3d(3.0, 0.0, 0.0);
+    }
+    double cost;
+    EXPECT_FALSE(optimizer.optimizeTrajectory(head, tail, midpoint, durations, cost));
+    EXPECT_TRUE(optimizer.vertical_obstacle_side_lock_.hasActiveLock());
+    EXPECT_TRUE(optimizer.vertical_obstacle_side_lock_.config().enabled);
+    optimizer.endPlanningCycle();
+  }
+}
+
 class UnderpassEndpointPlanning : public StaticSidePlanning
 {
 protected:

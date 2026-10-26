@@ -71,6 +71,9 @@ namespace diff_planner
   {
 
   private:
+    bool optimizeTrajectoryOnce(const Eigen::MatrixXd &iniState, const Eigen::MatrixXd &finState,
+                                const Eigen::MatrixXd &initInnerPts, const Eigen::VectorXd &initT,
+                                double &final_cost);
     GridMap::Ptr grid_map_;
     AStar::Ptr a_star_;
     SuspendedObstacleUnderpass suspended_underpass_;

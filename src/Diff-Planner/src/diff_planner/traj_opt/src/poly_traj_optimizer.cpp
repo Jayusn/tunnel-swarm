@@ -15,6 +15,42 @@ namespace diff_planner
       const Eigen::MatrixXd &initInnerPts, const Eigen::VectorXd &initT,
       double &final_cost)
   {
+    const bool success = optimizeTrajectoryOnce(iniState, finState, initInnerPts, initT, final_cost);
+    if (success || dynamic_candidate_active_ || !vertical_obstacle_side_lock_.hasActiveLock() ||
+        initInnerPts.cols() != initT.size() - 1 ||
+        checkPlanningTimeout("side-lock optimization fallback"))
+      return success;
+
+    // 侧锁折线可通不代表该侧能优化出可执行轨迹。失败后只重试一次普通规划，
+    // 重建原始种子的避障约束，且整个重试期间不再建立侧锁或施加旧侧中心代价。
+    const auto side_config = vertical_obstacle_side_lock_.config();
+    auto ordinary_config = side_config;
+    ordinary_config.enabled = false;
+    vertical_obstacle_side_lock_.clearLock();
+    vertical_obstacle_side_lock_.setConfig(ordinary_config);
+    const bool use_multitopology = multitopology_data_.use_multitopology_trajs;
+    setUseMultitopologyTrajs(false);
+    ROS_WARN("[通道分流侧锁] 轨迹优化失败，清除侧锁约束并重试一次普通规划。");
+
+    poly_traj::MinJerkOpt seed;
+    seed.reset(iniState, finState, initT.size());
+    seed.generate(initInnerPts, initT);
+    std::vector<std::pair<int, int>> segments;
+    const bool fallback_success =
+        finelyCheckAndSetConstraintPoints(segments, seed, true) != CHK_RET::ERR &&
+        optimizeTrajectoryOnce(iniState, finState, initInnerPts, initT, final_cost);
+
+    // 恢复后续规划的侧锁功能；失效的旧锁不恢复。沿用本轮的计算时限和最终检查。
+    setUseMultitopologyTrajs(use_multitopology);
+    vertical_obstacle_side_lock_.setConfig(side_config);
+    return fallback_success;
+  }
+
+  bool PolyTrajOptimizer::optimizeTrajectoryOnce(
+      const Eigen::MatrixXd &iniState, const Eigen::MatrixXd &finState,
+      const Eigen::MatrixXd &initInnerPts, const Eigen::VectorXd &initT,
+      double &final_cost)
+  {
     if (checkPlanningTimeout("optimizer entry"))
     {
       return false;
