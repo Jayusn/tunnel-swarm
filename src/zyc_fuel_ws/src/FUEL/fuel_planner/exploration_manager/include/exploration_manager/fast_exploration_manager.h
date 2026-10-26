@@ -176,6 +176,12 @@ private:
   // 一次锁定穿越高度，不随掉高或可疑历史最低框逐轮降低。
   double manual_fapp_hold_height_{std::numeric_limits<double>::quiet_NaN()};
   ros::Time manual_fapp_wait_since_;
+  double manual_fapp_side_wait_timeout_{3.0};
+  bool manual_fapp_side_wait_active_{false}, manual_fapp_normal_fallback_{false};
+  Vector3d manual_fapp_side_wait_target_{Vector3d::Zero()};
+  ros::Time manual_fapp_side_wait_since_;
+  bool planManualFappSideWait(const Vector3d& pos, const Vector3d& vel,
+                             const Vector3d& acc, const Vector3d& yaw);
   bool manual_fapp_curve_active_{false};
   Vector3d manual_fapp_curve_origin_{Vector3d::Zero()};
   double manual_fapp_curve_end_{0.0};

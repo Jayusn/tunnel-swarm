@@ -209,6 +209,13 @@ public:
 
   static void runCloseFappDescent(int scenario) {
     ros::NodeHandle nh("~close_fapp_descent");
+    if(scenario>=8) {
+      nh.setParam("manager/use_geometric_path",true);
+      nh.setParam("astar/resolution_astar",.10);
+      nh.setParam("astar/allocate_num",100000);
+      nh.setParam("astar/lambda_heu",1.0);
+      nh.setParam("astar/max_search_time",1.0);
+    }
     nh.setParam("mission/task_search/min_height",0.10);
     nh.setParam("manager/footprint_bottom_clearance",0.20);
     nh.setParam("fapp/enabled",true);
@@ -218,24 +225,33 @@ public:
     initialize(nh,manager,true);
     auto& planner=*manager.planner_manager_;
     auto& map=*manager.sdf_map_;
+    if(scenario>=8) {
+      manager.edt_environment_=planner.edt_environment_;
+      manager.task_search_manager_->setMap(manager.sdf_map_);
+      ViewNode::caster_.reset(new RayCaster);
+      Vector3d origin,size; map.getRegion(origin,size);
+      ViewNode::caster_->setParams(map.getResolution(),origin);
+    }
     for(int x=0;x<map.mp_->map_voxel_num_.x();++x)
       for(int y=0;y<map.mp_->map_voxel_num_.y();++y)
         for(int z=0;z<map.mp_->map_voxel_num_.z();++z) {
           const Eigen::Vector3i id(x,y,z); Vector3d p; map.indexToPos(id,p);
           // 前方高处横梁挡住斜下降，但起点下降柱及低位水平通道可通。
           const bool beam=scenario==6&&p.x()>-.65&&p.x()<-.50&&p.z()>=.55&&p.z()<=.85;
-          const bool blocked=((scenario==1||scenario==2)&&p.z()<.30)||beam;
+          const bool side_wall=(scenario==10&&std::fabs(p.y())>.25)||
+              (scenario==11&&p.y()>.25);
+          const bool blocked=((scenario==1||scenario==2||scenario==12)&&p.z()<.30)||beam||side_wall;
           map.md_->occupancy_buffer_[map.toAddress(id)]=blocked
               ? (scenario==1 ? map.mp_->clamp_min_log_-map.mp_->unknown_flag_ : map.mp_->clamp_max_log_)
               : map.mp_->clamp_min_log_;
-          map.md_->occupancy_buffer_inflate_[map.toAddress(id)]=blocked&&(scenario==2||beam);
+          map.md_->occupancy_buffer_inflate_[map.toAddress(id)]=blocked&&(scenario==2||scenario>=10||beam);
         }
     map.md_->local_bound_min_.setZero();
     map.md_->local_bound_max_=map.mp_->map_voxel_num_-Eigen::Vector3i::Ones();
     map.updateESDF3d();
     planner.fapp_watched_valid_=true;
-    planner.fapp_watched_lower_=Vector3d(-.30,scenario==8?-1.8:-.40,(scenario==4||scenario==8)?.12:.40);
-    planner.fapp_watched_upper_=Vector3d(.30,scenario==8?1.8:.40,.90);
+    planner.fapp_watched_lower_=Vector3d(-.30,scenario>=8?-1.8:-.40,(scenario==4||(scenario>=8&&scenario!=12))?.12:.40);
+    planner.fapp_watched_upper_=Vector3d(.30,scenario>=8?1.8:.40,.90);
     planner.fapp_watched_state_.stamp=ros::Time::now().toSec();
     manager.manual_path_enabled_=manager.manual_path_exploration_style_=true;
     manager.manual_path_wait_for_trigger_=true;
@@ -252,10 +268,88 @@ public:
       EXPECT_FALSE(manager.vertical_detour_plan_);
       return;
     }
-    if(scenario==8) {
-      // 既不能下穿也不能侧绕时，planner_priority 不能把穿障直行当成成功。
-      EXPECT_EQ(FAIL,manager.planExploreMotion(start,zero,zero,zero));
+    if(scenario>=8) {
+      manager.manual_actual_pos_=start;
+      if(scenario==13) manager.manual_path_.points.front().x()=.28; // 比包络出口少7厘米的中间航点。
+      planner.fapp_watched_state_.position=Vector3d(.20,0,.65);
+      planner.fapp_watched_state_.size=Vector3d::Constant(.20);
+      ASSERT_EQ(SUCCEED,manager.planExploreMotion(start,zero,zero,zero));
       EXPECT_EQ(0u,manager.manual_path_.next);
+      if(scenario==10) {
+        // 两侧不可达时直接恢复普通规划，不消耗航点、不循环等待。
+        EXPECT_TRUE(manager.manual_fapp_normal_fallback_);
+        EXPECT_FALSE(manager.manual_fapp_side_wait_active_);
+        EXPECT_GT(manager.ed_->next_goal_.x(),start.x()+.20);
+        EXPECT_FALSE(manager.manualFappTrajectoryBlocked(planner.local_data_,0.));
+        checkManualFappExecution(manager,start);
+        return;
+      }
+      ASSERT_TRUE(manager.manual_fapp_side_wait_active_);
+      EXPECT_FALSE(manager.manual_fapp_normal_fallback_);
+      const Vector3d side=manager.manual_fapp_side_wait_target_;
+      EXPECT_NEAR(side.x(),start.x(),1e-6);
+      if(scenario==11) EXPECT_LT(side.y(),start.y()-.20);
+      else EXPECT_GT(side.y(),start.y()+.20);
+      EXPECT_FALSE(manager.manualFappTrajectoryBlocked(planner.local_data_,0.));
+      // 执行检查只看尚未执行的部分，不能拿已飞过的起点反复刹停。
+      planner.fapp_watched_state_.position=start;
+      planner.fapp_watched_state_.stamp=ros::Time::now().toSec();
+      EXPECT_TRUE(manager.manualFappTrajectoryBlocked(planner.local_data_,0.));
+      EXPECT_FALSE(manager.manualFappTrajectoryBlocked(planner.local_data_,planner.local_data_.duration_));
+      planner.fapp_watched_state_.position=Vector3d(.20,0,.65);
+      // 预测起点先到侧点，真实飞机尚未到达：不能提前启动3秒计时。
+      ASSERT_EQ(SUCCEED,manager.planExploreMotion(side,zero,zero,zero));
+      EXPECT_TRUE(manager.manual_fapp_side_wait_since_.isZero());
+      manager.manual_actual_pos_=side;
+      ASSERT_EQ(SUCCEED,manager.planExploreMotion(side,zero,zero,zero));
+      EXPECT_FALSE(manager.manual_fapp_side_wait_since_.isZero());
+      EXPECT_FALSE(manager.manual_fapp_normal_fallback_);
+      if(scenario==9||scenario==13) {
+        // 等待期间球向另一侧让开，直接穿越，无需等满3秒。
+        planner.fapp_watched_state_.stamp=ros::Time::now().toSec();
+        planner.fapp_watched_state_.velocity=Vector3d(0,-.3,0);
+        ASSERT_EQ(SUCCEED,manager.planExploreMotion(side,zero,zero,zero));
+        EXPECT_TRUE(manager.fapp_rush_pending_);
+        EXPECT_FALSE(manager.manual_fapp_side_wait_active_);
+        EXPECT_FALSE(manager.manual_fapp_normal_fallback_);
+        if(scenario==13) {
+          EXPECT_NEAR(manager.ed_->next_goal_.x(),.28,1e-6);
+          EXPECT_FALSE(manager.manualFappObservationMissing(manager.ed_->next_goal_,0.,true));
+          EXPECT_TRUE(manager.manual_fapp_active_);
+        } else EXPECT_GT(manager.ed_->next_goal_.x(),.30);
+        EXPECT_TRUE(planner.isFappCrossingTrajectorySafe());
+        manager.recordPublishedTrajectoryHeight();
+        EXPECT_FALSE(manager.manualFappTrajectoryBlocked(planner.local_data_,0.));
+        return;
+      }
+      if(scenario==12) {
+        // 下方地图更新为自由，等待期间重试垂直下降，而非僵等计时结束。
+        std::fill(map.md_->occupancy_buffer_.begin(),map.md_->occupancy_buffer_.end(),map.mp_->clamp_min_log_);
+        std::fill(map.md_->occupancy_buffer_inflate_.begin(),map.md_->occupancy_buffer_inflate_.end(),0);
+        map.updateESDF3d();
+        ASSERT_EQ(SUCCEED,manager.planExploreMotion(side,zero,zero,zero));
+        EXPECT_TRUE(manager.vertical_detour_plan_);
+        EXPECT_LT(manager.ed_->next_goal_.z(),side.z());
+        EXPECT_FALSE(manager.manual_fapp_side_wait_active_);
+        EXPECT_FALSE(manager.manual_fapp_normal_fallback_);
+        return;
+      }
+      manager.manual_fapp_side_wait_since_=ros::Time::now()-ros::Duration(2.8);
+      ASSERT_EQ(SUCCEED,manager.planExploreMotion(side,zero,zero,zero));
+      EXPECT_FALSE(manager.manual_fapp_normal_fallback_);
+      manager.manual_fapp_side_wait_since_=ros::Time::now()-ros::Duration(3.1);
+      ASSERT_EQ(SUCCEED,manager.planExploreMotion(side,zero,zero,zero));
+      EXPECT_TRUE(manager.manual_fapp_normal_fallback_);
+      EXPECT_FALSE(manager.manual_fapp_side_wait_active_);
+      EXPECT_GT(manager.ed_->next_goal_.x(),side.x()+.20);
+      EXPECT_FALSE(manager.manualFappTrajectoryBlocked(planner.local_data_,0.));
+      ASSERT_EQ(SUCCEED,manager.planExploreMotion(side,zero,zero,zero));
+      EXPECT_TRUE(manager.manual_fapp_normal_fallback_);
+      EXPECT_FALSE(manager.manual_fapp_side_wait_active_);
+      checkManualFappExecution(manager,side);
+      EXPECT_FALSE(manager.manualFappObservationMissing(Vector3d(.8,0,.65),0.,true));
+      EXPECT_FALSE(manager.manual_fapp_normal_fallback_);
+      EXPECT_FALSE(manager.manual_fapp_active_);
       return;
     }
     if(scenario==6) {
@@ -1260,8 +1354,21 @@ public:
     if (inside) {
       auto& planner = *manager.planner_manager_;
       ASSERT_FALSE(planner.isWatchedFappPositionSafe(start));
-      // 没有可行下穿/侧绕时，优先规划也不能把包络内普通直行当成避障成功。
-      EXPECT_EQ(FAIL, result);
+      if(scenario=="inside_history_strict") {
+        EXPECT_EQ(FAIL,result);
+        return;
+      }
+      ASSERT_EQ(SUCCEED,result);
+      EXPECT_TRUE(manager.manual_fapp_side_wait_active_);
+      const Vector3d side=manager.ed_->next_goal_;
+      EXPECT_NEAR(side.x(),start.x(),1e-6);
+      manager.manual_actual_pos_=side;
+      manager.manual_fapp_side_wait_since_=ros::Time::now()-ros::Duration(3.1);
+      ASSERT_EQ(SUCCEED,manager.planExploreMotion(side,zero,zero,zero));
+      EXPECT_TRUE(manager.manual_fapp_normal_fallback_);
+      EXPECT_GT(manager.ed_->next_goal_.x(),side.x()+.20);
+      EXPECT_FALSE(manager.manualFappTrajectoryBlocked(planner.local_data_,0.));
+      checkManualFappExecution(manager,side);
       return;
     }
     if (scenario == "blocked") {
@@ -1276,13 +1383,19 @@ public:
       ASSERT_TRUE(manager.planner_manager_->watchedFappBounds(lower, upper, age));
       EXPECT_EQ(0u, manager.manual_path_.next);
       EXPECT_FALSE(manager.currentPlanIsVerticalDetour());
-      if (!asymmetric_side) EXPECT_GT(manager.ed_->next_goal_.x(), start.x() + 0.2);
+      if (!asymmetric_side && !approach) EXPECT_GT(manager.ed_->next_goal_.x(), start.x() + 0.2);
       if (approach) {
-        EXPECT_EQ(committed, manager.recovery_side_latched_);
+        EXPECT_TRUE(manager.recovery_side_latched_);
         EXPECT_FALSE(manager.manual_fapp_curve_active_);
-        // 规划优先允许普通前进段进入历史包络，不能被包络边界卡住。
-        EXPECT_LE(manager.ed_->next_goal_.x(), start.x() + 1.20 + 1e-6);
+        EXPECT_TRUE(manager.manual_fapp_side_wait_active_);
+        EXPECT_NEAR(manager.ed_->next_goal_.x(), start.x(), 1e-6);
         EXPECT_NEAR(start.z(), manager.ed_->next_goal_.z(), 1e-6);
+        const Vector3d side=manager.ed_->next_goal_;
+        manager.manual_actual_pos_=side;
+        manager.manual_fapp_side_wait_since_=ros::Time::now()-ros::Duration(3.1);
+        ASSERT_EQ(SUCCEED,manager.planExploreMotion(side,zero,zero,zero));
+        EXPECT_TRUE(manager.manual_fapp_normal_fallback_);
+        EXPECT_GT(manager.ed_->next_goal_.x(),side.x()+.20);
       } else if (asymmetric_side) {
         EXPECT_LT(lower.z() - manager.underpass_height_tracking_margin_, 0.15);
         EXPECT_FALSE(manager.manual_fapp_curve_active_);
@@ -3998,7 +4111,7 @@ TEST(FappMemory, ConfirmedRegionRejectsSingleTallBoxButKeepsRealLowerObservation
 TEST(FappMemory, OldSparseTallBoxIsRecheckedBeforeJoiningConfirmedEnvelope) {
   fast_planner::TurnEscapeTest::runLateHistoricalOutlier();
 }
-TEST(FappMemory, PlannerPriorityDoesNotBypassHistoricalEnvelopeCheck) {
+TEST(FappMemory, StaleHistoryAllowsSideWaitThenNormalFallback) {
   fast_planner::TurnEscapeTest::runManualSuspended("inside_history");
 }
 TEST(FappMemory, StrictModeStillRejectsHistoricalEnvelopeOverlap) {
@@ -4239,14 +4352,14 @@ int main(int argc,char** argv) {
   return RUN_ALL_TESTS();
 }
 
-TEST(FappMemory, DistantBlockedCrossingStillPlansForwardApproach) {
+TEST(FappMemory, DistantBlockedCrossingWaitsThenResumesForwardPlanning) {
   fast_planner::TurnEscapeTest::runManualSuspended("distant_blocked");
 }
 TEST(FappMemory, AsymmetricBodyAllowsCurveBelowOldMinimum) {
   fast_planner::TurnEscapeTest::runManualSuspended("asymmetric_low");
 }
 
-TEST(FappMemory, UnavailableCommittedSideStillAllowsForwardApproach) {
+TEST(FappMemory, UnavailableCommittedSideSelectsLateralWaitBeforeFallback) {
   fast_planner::TurnEscapeTest::runManualSuspended("distant_committed");
 }
 TEST(FappMemory, AsymmetricBodyFallsBackToSideBelowMinimum) {
@@ -4359,7 +4472,7 @@ TEST(ManualSuspended, BlockedSlopeDescendsBeforeApproachingDynamicEnvelope) {
 TEST(ManualSuspended, DynamicObstacleReplansExecutingApproachThenDescends) {
   fast_planner::TurnEscapeTest::runCloseFappDescent(7);
 }
-TEST(ManualSuspended, FailedCrossingDoesNotPublishOrdinaryPathThroughEnvelope) {
+TEST(ManualSuspended, SideWaitTimesOutToNormalPlanning) {
   fast_planner::TurnEscapeTest::runCloseFappDescent(8);
 }
 TEST(ManualSuspended, VerticalDynamicDescentRejectsUnknownBodyColumn) {
@@ -4447,4 +4560,21 @@ TEST(FappExploration, AdaptiveLowCrossingRejectsBlockedBodySpace) {
 }
 TEST(FappExploration, AdaptiveLowCrossingRejectsUnknownBodySpace) {
   fast_planner::TurnEscapeTest::runAdaptiveLowCrossing(1.0,true,true);
+}
+
+TEST(ManualSuspended, SideWaitCrossesNewOpening) {
+  fast_planner::TurnEscapeTest::runCloseFappDescent(9);
+}
+TEST(ManualSuspended, NoReachableSideFallsBackToNormalPlanning) {
+  fast_planner::TurnEscapeTest::runCloseFappDescent(10);
+}
+TEST(ManualSuspended, BlockedLeftWaitsOnRight) {
+  fast_planner::TurnEscapeTest::runCloseFappDescent(11);
+}
+TEST(ManualSuspended, SideWaitRetriesDescentAfterMapUpdate) {
+  fast_planner::TurnEscapeTest::runCloseFappDescent(12);
+}
+
+TEST(ManualSuspended, SideOpeningAllowsWaypointJustInsideHistoricalExit) {
+  fast_planner::TurnEscapeTest::runCloseFappDescent(13);
 }

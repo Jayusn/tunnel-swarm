@@ -545,19 +545,25 @@ bool FastPlannerManager::fappSideOpening(
 }
 
 bool FastPlannerManager::isFappCrossingTrajectorySafe() const {
-  auto trajectory = local_data_.position_traj_;
+  return isFappCrossingTrajectorySafe(local_data_, 0.0);
+}
+
+bool FastPlannerManager::isFappCrossingTrajectorySafe(
+    const LocalTrajData& data, double elapsed) const {
+  auto trajectory = data.position_traj_;
   const double duration = trajectory.getTimeSum();
   if (!(duration > 0.0)) return false;
+  const double begin = std::min(duration, std::max(0.0, elapsed));
   const double now = ros::Time::now().toSec();
-  const int samples = std::max(1, static_cast<int>(std::ceil(duration / 0.02)));
+  const int samples = std::max(1, static_cast<int>(std::ceil((duration - begin) / 0.02)));
   for (int i = 0; i <= samples; ++i) {
-    const double t = duration * i / samples;
+    const double t = begin + (duration - begin) * i / samples;
     const auto point = trajectory.evaluateDeBoorT(t);
     // 此分支按新鲜观测和实际样条到达时间验球，不能用整段历史摆幅封死空隙。
-    if (!fappPositionSafe(point, now + t, now)) return false;
+    if (!fappPositionSafe(point, now + t - begin, now)) return false;
     double clearance;
     if (fapp_watched_valid_ && fuel_fapp::evaluateDynamicObstacle(
-        point, fapp_watched_state_, now + t, now, fapp_config_, &clearance) &&
+        point, fapp_watched_state_, now + t - begin, now, fapp_config_, &clearance) &&
         clearance < 0.0) return false;
   }
   return true;

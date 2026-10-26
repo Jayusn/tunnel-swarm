@@ -83,6 +83,7 @@ public:
                           fuel_fapp::DynamicObstacleState* observation = nullptr) const;
   bool fappSideOpening(const Eigen::Vector3d& position, const Eigen::Vector3d& side) const;
   bool isFappCrossingTrajectorySafe() const;
+  bool isFappCrossingTrajectorySafe(const LocalTrajData& data, double elapsed) const;
   bool isFappPathSafe(const vector<Eigen::Vector3d>& path) const;
   bool fappPlannerPriority() const { return fapp_planner_priority_; }
   bool fappMemoryEnabled() const { return fapp_config_.enabled && fapp_memory_enabled_; }
