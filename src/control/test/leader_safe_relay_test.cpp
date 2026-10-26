@@ -6,6 +6,73 @@
 
 class LeaderSafeRelayTest {
  public:
+  static void targetScan(bool enabled, bool active_scan) {
+    ros::NodeHandle pnh("~");
+    pnh.setParam("ordinary_scan_enabled", true);
+    pnh.setParam("stop_scan_after_all_targets", enabled);
+    LeaderSafePathFollower follower;
+    follower.timer_.stop();
+    follower.follower_detection_enabled_ = true;
+    follower.follower_odom_.header.frame_id = "UAV1/camera_init";
+    follower.follower_odom_.pose.pose.orientation.w = 1.0;
+    ros::Time::setNow(ros::Time(100));
+    if (active_scan) follower.startOrdinaryScan(0.5, ros::Time::now());
+    const auto observe = [&](const std::string& type, bool confirmed = true,
+                             const std::string& drone = "uav1") {
+      auto msg = boost::make_shared<std_msgs::String>();
+      msg->data = "{\"drone_id\":\"" + drone + "\",\"target_type\":\"" + type +
+          "\",\"confirmed\":" + (confirmed ? "true" : "false") + "}";
+      follower.targetObservationCallback(msg);
+    };
+    observe("qr_code");
+    observe("qr_code");
+    observe("color_tag");
+    observe("thermal_source", false);
+    observe("thermal_source", true, "uav0");
+    observe("unknown");
+    auto malformed = boost::make_shared<std_msgs::String>();
+    malformed->data = "invalid json";
+    follower.targetObservationCallback(malformed);
+    EXPECT_EQ(enabled ? 2U : 0U, follower.confirmed_target_types_.size());
+    EXPECT_TRUE(follower.ordinaryScanAllowed());
+    EXPECT_EQ(active_scan ? 1 : 0, follower.ordinary_scan_stage_);
+
+    ros::NodeHandle nh;
+    quadrotor_msgs::PositionCommand last_yaw;
+    bool received_yaw = false;
+    auto sub = nh.subscribe<quadrotor_msgs::PositionCommand>(
+        "/UAV1/planning/goal/scan_yaw", 1,
+        [&](const quadrotor_msgs::PositionCommand::ConstPtr& msg) {
+          last_yaw = *msg; received_yaw = true;
+        });
+    for (int i = 0; i < 50 && follower.ordinary_scan_yaw_pub_.getNumSubscribers() == 0; ++i) {
+      ros::spinOnce(); ros::WallDuration(0.01).sleep();
+    }
+    ASSERT_GT(follower.ordinary_scan_yaw_pub_.getNumSubscribers(), 0U);
+    observe("thermal_source");
+    EXPECT_EQ(!enabled, follower.ordinaryScanAllowed());
+    EXPECT_EQ(enabled ? 3U : 0U, follower.confirmed_target_types_.size());
+    EXPECT_EQ(active_scan && !enabled ? 1 : 0, follower.ordinary_scan_stage_);
+    EXPECT_EQ(enabled && active_scan, follower.ordinary_scan_done_);
+    EXPECT_TRUE(follower.follower_detection_enabled_);
+    if (enabled && active_scan) {
+      for (int i = 0; i < 50 && !received_yaw; ++i) {
+        ros::spinOnce(); ros::WallDuration(0.01).sleep();
+      }
+      ASSERT_TRUE(received_yaw);
+      EXPECT_DOUBLE_EQ(0.0, last_yaw.yaw);
+    }
+    // Changing waypoints must retain the accumulated types, without marking
+    // a not-yet-reached waypoint as complete or starting another scan.
+    follower.resetOrdinaryScan();
+    EXPECT_FALSE(follower.ordinary_scan_done_);
+    follower.startOrdinaryScan(0.5, ros::Time::now());
+    EXPECT_EQ(enabled ? 0 : 1, follower.ordinary_scan_stage_);
+    EXPECT_TRUE(follower.follower_detection_enabled_);
+    pnh.deleteParam("ordinary_scan_enabled");
+    pnh.deleteParam("stop_scan_after_all_targets");
+  }
+
   static void run() {
     ros::NodeHandle nh;
     nh.setParam("/dual_uav_frame_alignment/mission_frame", std::string("world"));
@@ -217,6 +284,15 @@ class LeaderSafeRelayTest {
 
 };
 TEST(LeaderSafeRelay, SnapshotValidityExactCoordinatesAndNoUnsafeFallback) { LeaderSafeRelayTest::run(); }
+TEST(LeaderSafeRelay, ThreeConfirmedTypesStopCurrentAndFutureScans) {
+  LeaderSafeRelayTest::targetScan(true, true);
+}
+TEST(LeaderSafeRelay, ThreeTypesDuringFlightDoNotMarkWaypointReached) {
+  LeaderSafeRelayTest::targetScan(true, false);
+}
+TEST(LeaderSafeRelay, DisabledTargetSwitchRetainsScanningAndDetection) {
+  LeaderSafeRelayTest::targetScan(false, true);
+}
 TEST(LeaderSafeRelay, ThirdRevisionUpdatesActiveGoalWithoutAppending) {
   LeaderSafeRelayTest::replacement(3);
 }

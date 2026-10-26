@@ -6,6 +6,7 @@
 #include <array>
 #include <bspline/Bspline.h>
 #include <bspline/non_uniform_bspline.h>
+#include <boost/property_tree/json_parser.hpp>
 #include <cmath>
 #include <cstdint>
 #include <deque>
@@ -352,6 +353,7 @@ class LeaderSafePathFollower {
     pnh_.param("ordinary_waypoint_z_tolerance", ordinary_waypoint_z_tolerance_, 0.15);
     pnh_.param("ordinary_waypoint_dwell", ordinary_waypoint_dwell_, 0.0);
     pnh_.param("ordinary_scan_enabled", ordinary_scan_enabled_, false);
+    pnh_.param("stop_scan_after_all_targets", stop_scan_after_all_targets_, false);
     pnh_.param("ordinary_scan_angle_deg", ordinary_scan_angle_deg_, 45.0);
     pnh_.param("ordinary_scan_rate_deg", ordinary_scan_rate_deg_, 15.0);
     pnh_.param("ordinary_scan_return_rate_deg", ordinary_scan_return_rate_deg_, 30.0);
@@ -448,6 +450,9 @@ class LeaderSafePathFollower {
     front_scan_anchor_sub_ = nh_.subscribe(
         front_scan_anchor_topic_, 1,
         &LeaderSafePathFollower::frontScanAnchorCallback, this);
+    target_observation_sub_ = nh_.subscribe(
+        "/UAV1/target_reporting/observation", 20,
+        &LeaderSafePathFollower::targetObservationCallback, this);
     leader_task_status_sub_ = nh_.subscribe(
         leader_task_status_topic_, 2,
         &LeaderSafePathFollower::leaderTaskStatusCallback, this);
@@ -2253,7 +2258,44 @@ class LeaderSafePathFollower {
     ordinary_scan_reached_ = ros::Time(0);
   }
 
+  bool ordinaryScanAllowed() const {
+    return ordinary_scan_enabled_ &&
+        !(stop_scan_after_all_targets_ && confirmed_target_types_.size() == 3U);
+  }
+
+  void targetObservationCallback(const std_msgs::String::ConstPtr& msg) {
+    if (!stop_scan_after_all_targets_ || confirmed_target_types_.size() == 3U) return;
+    boost::property_tree::ptree observation;
+    try {
+      std::istringstream input(msg->data);
+      boost::property_tree::read_json(input, observation);
+      if (observation.get<std::string>("drone_id", "") != "uav1" ||
+          !observation.get<bool>("confirmed", false)) return;
+      const auto type = observation.get<std::string>("target_type", "");
+      if (type != "qr_code" && type != "color_tag" && type != "thermal_source") return;
+      confirmed_target_types_.insert(type);
+    } catch (const boost::property_tree::ptree_error& error) {
+      ROS_WARN_THROTTLE(2.0, "[relay_scan] Invalid target observation: %s", error.what());
+      return;
+    }
+    if (confirmed_target_types_.size() != 3U) return;
+    if (ordinary_scan_stage_ != 0) {
+      // 停止继续扫向侧边，以实际当前航向替换最后一个扫描参考；正常跟随随后接管。
+      quadrotor_msgs::PositionCommand command;
+      command.header.stamp = ros::Time::now();
+      command.header.frame_id = follower_odom_.header.frame_id;
+      command.yaw = yawFromQuaternion(follower_odom_.pose.pose.orientation);
+      ordinary_scan_yaw_pub_.publish(command);
+      ordinary_scan_stage_ = 0;
+      ordinary_scan_done_ = true;
+      ordinary_scan_reached_ = ros::Time(0);
+    }
+    ROS_WARN("[relay_scan] QR, color and thermal targets confirmed: stop remaining "
+             "observation scans for this run; target detection remains active.");
+  }
+
   void startOrdinaryScan(double center_yaw, const ros::Time& now) {
+    if (!ordinaryScanAllowed()) return;
     // 中心来自当前接力点的前机航向，转换为后机坐标系后锁存一次。
     ordinary_scan_center_ = center_yaw;
     ordinary_scan_yaw_ = yawFromQuaternion(follower_odom_.pose.pose.orientation);
@@ -2498,7 +2540,7 @@ class LeaderSafePathFollower {
         // 保留队首，后续周期复用普通间距等待，恢复后再消费并接续下一点。
         if (handleDiffSeparationSafety(now)) return true;
       }
-      if (ordinary_relay && ordinary_scan_enabled_ && !skip_occupied_point &&
+      if (ordinary_relay && ordinaryScanAllowed() && !skip_occupied_point &&
           !in_dynamic_passage_ && !ordinary_scan_done_) {
         startOrdinaryScan(worldYawToFollower(desired_world.yaw), now);
         stepOrdinaryScan(now);
@@ -4632,6 +4674,7 @@ class LeaderSafePathFollower {
       front_scan_anchor_sub_;
   ros::Subscriber diff_status_sub_;  // 2026-07-28: UAV1 Diff轨迹成功/失败反馈。
   ros::Subscriber diff_dynamic_passage_sub_;
+  ros::Subscriber target_observation_sub_;
   ros::Publisher command_pub_, traj_started_pub_, diff_goal_pub_, diff_entry_goal_pub_, route_pub_, relay_path_pub_, target_pub_, state_pub_;
   ros::Publisher diff_yaw_pub_;
   ros::Publisher ordinary_scan_yaw_pub_;
@@ -4799,6 +4842,8 @@ class LeaderSafePathFollower {
   double ordinary_waypoint_z_tolerance_{0.15};
   double ordinary_waypoint_dwell_{0.0};
   bool ordinary_scan_enabled_{false}, ordinary_scan_done_{false};
+  bool stop_scan_after_all_targets_{false};
+  std::set<std::string> confirmed_target_types_; // 本节点运行期间累计；换航点不清零。
   int ordinary_scan_stage_{0};
   double ordinary_scan_angle_deg_{45.0}, ordinary_scan_rate_deg_{15.0};
   double ordinary_scan_return_rate_deg_{30.0}, ordinary_scan_side_dwell_{1.0};

@@ -89,6 +89,7 @@
 
     <node pkg="exploration_control" type="leader_safe_path_follower"
           name="leader_safe_path_follower" output="screen">
+        <rosparam command="load" file="$(find exploration_control)/config/follower_target_scan.yaml"/>
         <!-- 2026-07-14: 1.2m 路径滞后和 0.75m 硬间距用于当前 1m 初始纵队的保守跟随验证。 -->
         <param name="leader_odom_topic" value="$(arg leader_odom_topic)"/>
         <param name="leader_history_path_topic"

@@ -11,6 +11,7 @@
 
   <!-- Existing dependencies -->
   <build_depend>geometry_msgs</build_depend>
+  <build_depend>boost</build_depend>
   <!-- 2026-07-14: 后机跟随器需要双机里程计、注册点云和 RViz 路径/状态标记。 -->
   <build_depend>nav_msgs</build_depend>
   <build_depend>sensor_msgs</build_depend>
