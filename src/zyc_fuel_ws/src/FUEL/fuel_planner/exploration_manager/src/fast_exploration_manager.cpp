@@ -1504,7 +1504,8 @@ bool FastExplorationManager::findForwardObstacleTop(
   Vector3d map_origin;
   Vector3d map_size;
   sdf_map_->getRegion(map_origin, map_size);
-  const double min_z = std::max(map_origin.z(), vertical_detour_low_height_);
+  // 下探目标高度不是上绕障碍的最低高度；从地图底部扫描，低矮障碍也参与上绕。
+  const double min_z = map_origin.z() + 0.5 * step;
   const double max_z = map_origin.z() + map_size.z() - 0.5 * step;
 
   bool found = false;

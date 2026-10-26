@@ -85,6 +85,64 @@ class TurnEscapeTest {
     });
   }
 public:
+  static void runLowObstacleUpperDetour(bool blocked_above) {
+    ros::NodeHandle nh("~low_obstacle_upper");
+    nh.setParam("manager/use_geometric_path", true);
+    nh.setParam("mission/task_search/min_height", .10);
+    nh.setParam("astar/min_search_height", .10);
+    nh.setParam("astar/max_search_height", 1.50);
+    nh.setParam("astar/resolution_astar", .05);
+    nh.setParam("astar/allocate_num", 100000);
+    nh.setParam("astar/lambda_heu", 1.0);
+    nh.setParam("astar/max_search_time", 1.0);
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    auto& map = *manager.sdf_map_;
+    std::fill(map.md_->occupancy_buffer_.begin(), map.md_->occupancy_buffer_.end(),
+              map.mp_->clamp_min_log_);
+    std::fill(map.md_->occupancy_buffer_inflate_.begin(),
+              map.md_->occupancy_buffer_inflate_.end(), 0);
+    const Vector3d pos(.025, .025, .375), forward(1, 0, 0);
+    // 顶部仅0.30m，低于实飞配置的0.40m下探目标，仍应识别并尝试上绕。
+    for (double x=.325; x<=.475; x+=.05)
+      for (double y=-.175; y<=.225; y+=.05)
+        for (double z=.025; z<=.275; z+=.05) {
+          Eigen::Vector3i index; map.posToIndex(Vector3d(x,y,z), index);
+          map.md_->occupancy_buffer_[map.toAddress(index)] = map.mp_->clamp_max_log_;
+        }
+    manager.vertical_detour_low_height_ = .40;
+    manager.vertical_detour_upper_step_ = .20;
+    manager.vertical_detour_upper_max_rise_ = .60;
+    manager.vertical_detour_upper_forward_max_distance_ = .60;
+    double top = 0;
+    ASSERT_TRUE(manager.findForwardObstacleTop(pos, forward, top));
+    EXPECT_NEAR(.30, top, .001);
+    // 改变下探高度也不能改变上绕看到的障碍高度。
+    manager.vertical_detour_low_height_ = .80;
+    double same_top = 0;
+    ASSERT_TRUE(manager.findForwardObstacleTop(pos, forward, same_top));
+    EXPECT_DOUBLE_EQ(top, same_top);
+    if (blocked_above) {
+      for (int x=0; x<map.mp_->map_voxel_num_.x(); ++x)
+        for (int y=0; y<map.mp_->map_voxel_num_.y(); ++y)
+          for (int z=0; z<map.mp_->map_voxel_num_.z(); ++z) {
+            const Eigen::Vector3i index(x,y,z);
+            Vector3d point; map.indexToPos(index, point);
+            if (point.z() < .425) continue;
+            const int address = map.toAddress(index);
+            map.md_->occupancy_buffer_[address] = map.mp_->clamp_max_log_;
+            map.md_->occupancy_buffer_inflate_[address] = 1;
+        }
+    }
+    Vector3d next; double yaw = 0;
+    const bool found = manager.buildVerticalDetourFallback(pos, 0, forward, next, yaw, false, false);
+    EXPECT_EQ(!blocked_above, found);
+    if (found) {
+      EXPECT_GT(next.z(), pos.z());
+      EXPECT_GE(next.z() - top, manager.vertical_detour_upper_obstacle_clearance_ - 1e-6);
+      EXPECT_TRUE(manager.planner_manager_->isPathSafe(manager.planner_manager_->path_finder_->getPath()));
+    }
+  }
   static void runRecordedLowCrossing(const char* fixture, bool manual_mission = false) {
     ros::NodeHandle nh("/exploration_node");
     FastExplorationManager manager;
@@ -4662,6 +4720,12 @@ TEST(PassableTurn, RejectsRecentLeftReturnFromActualTurnAnchor) { fast_planner::
 TEST(PassableTurn, OnlyOldRouteDoesNotConfirmNewTurn) { fast_planner::TurnEscapeTest::runPassableTurn(11); }
 
 TEST(UpperTurn, LowRightObstacleConfirmsTurnThenTriggersAscent) { fast_planner::TurnEscapeTest::runUpperTurn(0); }
+TEST(UpperDetour, ObstacleBelowFortyCentimetresCanTriggerAscent) {
+  fast_planner::TurnEscapeTest::runLowObstacleUpperDetour(false);
+}
+TEST(UpperDetour, LowObstacleDoesNotAuthorizeBlockedUpperSpace) {
+  fast_planner::TurnEscapeTest::runLowObstacleUpperDetour(true);
+}
 TEST(UpperTurn, UnknownAboveDoesNotAuthorizeTurn) { fast_planner::TurnEscapeTest::runUpperTurn(1); }
 TEST(UpperTurn, RoofBlocksElevatedPassage) { fast_planner::TurnEscapeTest::runUpperTurn(2); }
 TEST(UpperTurn, OrdinaryTurnDoesNotUseEarlyTakeover) { fast_planner::TurnEscapeTest::runUpperTurn(3); }
