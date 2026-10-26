@@ -61,9 +61,6 @@ namespace PayloadMPC
         std::string waypoint_goal_topic;
         normal_velocity_xy_ = params_.max_velocity_xy_;
         normal_velocity_z_ = params_.max_velocity_z_;
-        nh_.param("safety_hold_vertical_speed", safety_hold_vertical_speed_, 0.20);
-        if (!std::isfinite(safety_hold_vertical_speed_) || safety_hold_vertical_speed_ <= 0.0)
-            safety_hold_vertical_speed_ = 0.20;
         nh_.param("entry_max_velocity_xy", entry_velocity_xy_, normal_velocity_xy_);
         if (!std::isfinite(entry_velocity_xy_) || entry_velocity_xy_ <= 0.0)
             entry_velocity_xy_ = normal_velocity_xy_;
@@ -281,31 +278,6 @@ namespace PayloadMPC
 		mavros_local_pose_valid_ = std::isfinite(latest_mavros_local_yaw_);
 	}
 
-    void MPCFSM::captureSafetyHoldPose()
-    {
-        // 只保留已经由当前完整轨迹确认的航点高度；重试同一点不能把下沉量
-        // 重新锁存为目标。不同终点的脱障轨迹、入口和降落仍使用各自原规则。
-        const bool matching_trajectory = !trajectory_data.traj_queue.empty() &&
-            trajectory_data.exec_traj >= 0 &&
-            currentWaypointMatchesTrajectory(trajectory_data.traj_queue.back());
-        const bool waiting_at_same_height = trajectory_data.traj_queue.empty() &&
-            exec_traj_state_ == HOVER &&
-            std::abs(hover_pose_.z() - waypoint_position_.z()) < 1.0e-6;
-        safety_hold_keep_waypoint_height_ = fsm_state == CMD_CTRL &&
-            !rc_land_active_ && !precision_landing_active_ && !mpc_recovery_active_ &&
-            waypoint_yaw_valid_ && !waypoint_is_entry_ &&
-            (matching_trajectory || waiting_at_same_height);
-        update_hover_pose();
-        if (safety_hold_keep_waypoint_height_)
-        {
-            hover_pose_.z() = waypoint_position_.z();
-            ROS_WARN("[安全锁点高度] 保留航点高度 %.3fm，当前高度 %.3fm；垂直修正软限速 %.2fm/s。",
-                hover_pose_.z(), odom_data.p.z(),
-                std::min(normal_velocity_z_, safety_hold_vertical_speed_));
-        }
-        keepHoverAboveVirtualGround();
-    }
-
 	void MPCFSM::safetyHoldCallback(const std_msgs::Bool::ConstPtr &msg)
 	{
 		const ros::Time now = ros::Time::now();
@@ -321,12 +293,12 @@ namespace PayloadMPC
 			safety_hold_pose_valid_ = !odom_data.rcv_stamp.isZero() &&
 				odom_data.p.allFinite() && force_attitude_odom_data.q.coeffs().allFinite();
 			if (safety_hold_pose_valid_)
-				captureSafetyHoldPose();
+				update_hover_pose();
 			// 立即丢弃旧轨迹，但继续缓存HOLD之后生成的新轨迹。Diff先发布PolyTraj、
 			// 后发布TRAJECTORY_PUBLISHED状态，因此不能在HOLD期间完全关闭轨迹订阅。
 			trajectory_data.allowTrajectoryAcceptanceAfter(now);
 			exec_traj_state_ = HOVER;
-			ROS_ERROR("[安全锁点] ACTIVE：丢弃旧轨迹，锁定当前位置XY和航向；高度目标 %.3fm，等待上层确认新轨迹。",
+			ROS_ERROR("[安全锁点] ACTIVE：丢弃旧轨迹，锁定当前位置XYZ和航向；悬停高度 %.3fm，等待上层确认新轨迹。",
                 hover_pose_.z());
 			return;
 		}
@@ -335,7 +307,6 @@ namespace PayloadMPC
 			return;
 		safety_hold_active_ = false;
 		safety_hold_pose_valid_ = false;
-        safety_hold_keep_waypoint_height_ = false;
         controller_.setVerticalVelocityLimit(normal_velocity_z_);
 		ROS_WARN("[安全锁点] RELEASED：允许执行HOLD之后缓存的新轨迹。");
 	}
@@ -1063,13 +1034,11 @@ namespace PayloadMPC
 		{
 			if (!safety_hold_pose_valid_ && !odom_data.rcv_stamp.isZero())
 			{
-				captureSafetyHoldPose();
+				update_hover_pose();
 				safety_hold_pose_valid_ = true;
 			}
-            controller_.setVerticalVelocityLimit(safety_hold_keep_waypoint_height_
-                ? std::min(normal_velocity_z_, safety_hold_vertical_speed_)
-                : normal_velocity_z_);
-			keepHoverAboveVirtualGround();
+            // 普通HOLD只保持触发时的XYZ；高度变化交给后续规划/脱障轨迹。
+            controller_.setVerticalVelocityLimit(normal_velocity_z_);
 			controller_.setHoverReference(hover_pose_, hover_yaw_);
 			controller_.execMPC(est_state_, mpc_predicted_states_, mpc_predicted_inputs_);
 			exec_traj_state_ = HOVER;
@@ -1130,20 +1099,8 @@ namespace PayloadMPC
 				}
 				else
 				{
-					// 普通航点末段到期但重规划尚未返回时，XY停在实际位置，
-					// Z继续使用该轨迹对应的前机目标，不能把跟踪下沉量锁成新高度。
-					const bool keep_waypoint_height = params_.use_trajectory_ending_pos_ &&
-						normal_end && trajectory_data.replan_pending && fsm_state == CMD_CTRL &&
-						!rc_land_active_ && !precision_landing_active_ && !mpc_recovery_active_ &&
-						!waypoint_is_entry_ &&
-						currentWaypointMatchesTrajectory(trajectory_data.traj_queue.back());
+					// 中止或等待重规划时保持实际位置，不再沿用旧航点高度。
 					update_hover_pose();
-					if (keep_waypoint_height)
-					{
-						hover_pose_.z() = waypoint_position_.z();
-						ROS_WARN("[跟踪重规划等待] 保持当前XY，目标高度 %.3fm，实际高度 %.3fm。",
-							hover_pose_.z(), odom_data.p.z());
-					}
 				}
 				keepHoverAboveVirtualGround();
 				controller_.setHoverReference(hover_pose_, hover_yaw_);

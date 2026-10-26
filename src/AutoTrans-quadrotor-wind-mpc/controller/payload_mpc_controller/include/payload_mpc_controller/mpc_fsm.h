@@ -130,9 +130,8 @@ namespace PayloadMPC
         void waypointGoalCallback(const geometry_msgs::PoseStamped::ConstPtr &msg);
         void entryWaypointGoalCallback(const geometry_msgs::PoseStamped::ConstPtr &msg);
         void handleWaypointGoal(const geometry_msgs::PoseStamped::ConstPtr &msg, bool entry);
-        void captureSafetyHoldPose();
         double normal_velocity_xy_{0.0}, entry_velocity_xy_{0.0};
-        double normal_velocity_z_{0.0}, safety_hold_vertical_speed_{0.20};
+        double normal_velocity_z_{0.0};
         const double *trajectoryEndYaw(const oneTraj_Data_t &trajectory) const;
         bool currentWaypointMatchesTrajectory(const oneTraj_Data_t &trajectory) const;
         ros::Subscriber locked_yaw_sub_;
@@ -196,7 +195,6 @@ namespace PayloadMPC
 		bool planning_stop_sent_{false};
 		bool safety_hold_active_{false};
 		bool safety_hold_pose_valid_{false};
-        bool safety_hold_keep_waypoint_height_{false};
 		ros::Time mpc_recovery_start_time_{0};
 		ros::Time last_mpc_recovery_reset_time_{0};
 		int mpc_recovery_success_count_{0};

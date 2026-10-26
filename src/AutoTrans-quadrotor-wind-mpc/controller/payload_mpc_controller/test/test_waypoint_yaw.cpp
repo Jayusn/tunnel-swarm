@@ -203,7 +203,7 @@ TEST_F(WaypointYaw, NormalFinishKeepsEndpointYawWhileAbortKeepsActualYaw) {
   EXPECT_TRUE(controller->lastMpcSolveSuccessful());
 }
 
-TEST_F(WaypointYaw, RecoveryAbortHoldRaisesRecordedLowHeightAbovePlannerGround) {
+TEST_F(WaypointYaw, RecoveryAbortHoldKeepsActualHeightUntilRecoveryTrajectory) {
   // 18:36:04 录包：恢复轨迹与当前航点不匹配，原锁点Z为0.0358489。
   nh.setParam("test_virtual_ground", 0.05);
   fsm->hover_virtual_ground_param_ = nh.resolveName("test_virtual_ground");
@@ -218,17 +218,35 @@ TEST_F(WaypointYaw, RecoveryAbortHoldRaisesRecordedLowHeightAbovePlannerGround) 
   auto hold = boost::make_shared<std_msgs::Bool>();
   hold->data = true;
   fsm->safetyHoldCallback(hold);
-  EXPECT_FALSE(fsm->safety_hold_keep_waypoint_height_);
   EXPECT_DOUBLE_EQ(fsm->hover_pose_.x(), actual.x());
   EXPECT_DOUBLE_EQ(fsm->hover_pose_.y(), actual.y());
-  EXPECT_NEAR(fsm->hover_pose_.z(), 0.10, 1e-9);
+  EXPECT_NEAR(fsm->hover_pose_.z(), actual.z(), 1e-9);
   fsm->CMD_CTRL_process();
-  EXPECT_NEAR(controller->reference_states_(kPosZ, 0), 0.10, 1e-6);
+  EXPECT_NEAR(controller->reference_states_(kPosZ, 0), actual.z(), 1e-6);
   EXPECT_TRUE(controller->lastMpcSolveSuccessful());
   fsm->odom_data.p.z() = -0.01;
-  fsm->safetyHoldCallback(hold); // 重复锁点不能重新取低于地面的实际高度。
+  fsm->safetyHoldCallback(hold); // 重复锁点不重新取点，也不自行提高目标高度。
   fsm->CMD_CTRL_process();
-  EXPECT_NEAR(controller->reference_states_(kPosZ, 0), 0.10, 1e-6);
+  EXPECT_NEAR(controller->reference_states_(kPosZ, 0), actual.z(), 1e-6);
+  // 明确的脱障轨迹发布并解除HOLD后，按脱障轨迹爬升。
+  ros::Time::setNow(ros::Time(1011));
+  auto recovery = trajectoryInfo();
+  Piece::CoefficientMat coefficients = Piece::CoefficientMat::Zero(3, 6);
+  coefficients.col(5) = actual;
+  coefficients(2, 4) = .10;
+  recovery.traj.clear(); recovery.traj.emplace_back(4.0, coefficients);
+  recovery.traj_start_time = ros::Time(1011);
+  recovery.traj_end_time = ros::Time(1015);
+  prepareStop(recovery);
+  fsm->exec_traj_state_ = MPCFSM::HOVER;
+  hold->data = false;
+  fsm->safetyHoldCallback(hold);
+  ros::Time::setNow(ros::Time(1012));
+  fsm->CMD_CTRL_process();
+  EXPECT_EQ(fsm->exec_traj_state_, MPCFSM::POLY_TRAJ);
+  EXPECT_NEAR(controller->reference_states_(kPosZ, 0), actual.z() + .10, 1e-6);
+  EXPECT_NEAR(controller->reference_states_(kPosX, 0), actual.x(), 1e-6);
+  EXPECT_NEAR(controller->reference_states_(kPosY, 0), actual.y(), 1e-6);
 }
 
 TEST_F(WaypointYaw, HoverFloorCoversCompletionPendingAbortAndExistingHover) {
@@ -300,8 +318,8 @@ TEST_F(WaypointYaw, HoverFloorDoesNotAlterFlightTrajectoryTakeoffOrLanding) {
   }
 }
 
-TEST_F(WaypointYaw, TrackingWaitKeepsLowWaypointHeightAndActualXY) {
-  // 17:47:26 录包：前机目标 z=0.129884，错误悬停参考曾被锁为 z=0.016495。
+TEST_F(WaypointYaw, TrackingWaitKeepsActualPositionUntilNewTrajectory) {
+  // 等待重规划时锁当前位置，不主动从 z=0.016495 升到旧目标 z=0.129884。
   auto info = trajectoryInfo();
   Piece::CoefficientMat coefficients = Piece::CoefficientMat::Zero(3, 6);
   const Eigen::Vector3d endpoint(4.811481, -0.169411, 0.129884);
@@ -323,15 +341,15 @@ TEST_F(WaypointYaw, TrackingWaitKeepsLowWaypointHeightAndActualXY) {
   EXPECT_TRUE(fsm->trajectory_data.replan_pending);
   EXPECT_NEAR(fsm->hover_pose_.x(), actual.x(), 1e-9);
   EXPECT_NEAR(fsm->hover_pose_.y(), actual.y(), 1e-9);
-  EXPECT_NEAR(fsm->hover_pose_.z(), endpoint.z(), 1e-9);
-  EXPECT_NEAR(controller->reference_states_(kPosZ, 0), endpoint.z(), 1e-6);
+  EXPECT_NEAR(fsm->hover_pose_.z(), actual.z(), 1e-9);
+  EXPECT_NEAR(controller->reference_states_(kPosZ, 0), actual.z(), 1e-6);
   EXPECT_NEAR(fsm->hover_yaw_, 0.0, 1e-9);
   EXPECT_TRUE(controller->lastMpcSolveSuccessful());
-  // 等待期间实际高度继续偏低，也不能重新锁低；拿到新轨迹后正常恢复。
+  // 等待期间不重复取点；拿到新轨迹后正常恢复。
   fsm->odom_data.p.z() = -0.01;
   ros::Time::setNow(ros::Time(1011));
   fsm->CMD_CTRL_process();
-  EXPECT_NEAR(controller->reference_states_(kPosZ, 0), endpoint.z(), 1e-6);
+  EXPECT_NEAR(controller->reference_states_(kPosZ, 0), actual.z(), 1e-6);
   fsm->trajectory_data.traj_queue.clear();
   info.traj_start_time = ros::Time(1012);
   info.traj_end_time = ros::Time(1020);
@@ -453,11 +471,9 @@ TEST_F(WaypointYaw, PendingGoalDoesNotBindYawToPartialTrajectoryOrOverrideSafety
   EXPECT_TRUE(fsm->trajectory_data.traj_queue.empty());
   EXPECT_TRUE(fsm->hover_pose_.isApprox(fsm->odom_data.p));
   EXPECT_NEAR(fsm->hover_yaw_, 0.0, 1e-9);
-  // The bound old yaw cannot certify the pending goal's different height.
-  EXPECT_FALSE(fsm->safety_hold_keep_waypoint_height_);
 }
 
-TEST_F(WaypointYaw, RepeatedSafetyHoldsKeepApprovedHeightWhileActualHeightFalls) {
+TEST_F(WaypointYaw, SafetyHoldCapturesActualXYZAndDoesNotRelatchOnRepeatedTrue) {
   const auto info = trajectoryInfo();
   const Eigen::Vector3d endpoint = info.traj.getJuncPos(info.traj.getPieceNum());
   fsm->waypointGoalCallback(goal(endpoint, 1.2));
@@ -467,53 +483,50 @@ TEST_F(WaypointYaw, RepeatedSafetyHoldsKeepApprovedHeightWhileActualHeightFalls)
   fsm->CMD_CTRL_process(); // Normal completion retains the full endpoint.
   const double normal_z_speed = params.max_velocity_z_;
   std_msgs::Bool::Ptr hold(new std_msgs::Bool);
-  for (double actual_z : {0.398, 0.235, 0.119}) {
+  for (double actual_z : {0.091, 0.235, 0.8}) {
     fsm->odom_data.rcv_stamp = ros::Time::now();
     fsm->odom_data.p = Eigen::Vector3d(2.2, 0.1, actual_z);
     fsm->est_state_.head<3>() = fsm->odom_data.p.cast<real_t>();
     hold->data = true;
     fsm->safetyHoldCallback(hold);
-    ASSERT_TRUE(fsm->safety_hold_keep_waypoint_height_);
-    EXPECT_NEAR(fsm->hover_pose_.z(), endpoint.z(), 1e-9);
+    EXPECT_NEAR(fsm->hover_pose_.z(), actual_z, 1e-9);
     EXPECT_NEAR(fsm->hover_pose_.x(), 2.2, 1e-9);
     EXPECT_NEAR(fsm->hover_pose_.y(), 0.1, 1e-9);
     fsm->CMD_CTRL_process();
-    EXPECT_NEAR(controller->reference_states_(kPosZ, 0), endpoint.z(), 1e-6);
-    EXPECT_NEAR(params.max_velocity_z_, 0.2, 1e-6);
+    EXPECT_NEAR(controller->reference_states_(kPosZ, 0), actual_z, 1e-6);
+    EXPECT_NEAR(params.max_velocity_z_, normal_z_speed, 1e-6);
     EXPECT_TRUE(controller->lastMpcSolveSuccessful());
-    // Repeated true messages and a later false/true cycle must not relatch the lower Z.
+    // 同一次HOLD重复true不重新取点；释放后下一次HOLD锁存新的实际位置。
     fsm->odom_data.p.z() -= 0.05;
     fsm->safetyHoldCallback(hold);
-    EXPECT_NEAR(fsm->hover_pose_.z(), endpoint.z(), 1e-9);
+    EXPECT_NEAR(fsm->hover_pose_.z(), actual_z, 1e-9);
     hold->data = false;
     fsm->safetyHoldCallback(hold);
     EXPECT_NEAR(params.max_velocity_z_, normal_z_speed, 1e-6);
   }
 }
 
-TEST_F(WaypointYaw, RetryKeepsHeightButAValidatedNewHeightCanReplaceIt) {
+TEST_F(WaypointYaw, ChangedWaypointCannotRaiseOrLowerActiveHold) {
   auto info = trajectoryInfo();
-  auto endpoint = info.traj.getJuncPos(info.traj.getPieceNum());
-  ros::Time::setNow(ros::Time(1004));
+  const auto endpoint = info.traj.getJuncPos(info.traj.getPieceNum());
+  fsm->waypointGoalCallback(goal(endpoint, 1.2));
+  prepareStop(info);
+  fsm->fsm_state = MPCFSM::CMD_CTRL;
+  ros::Time::setNow(ros::Time(1005));
+  fsm->odom_data.rcv_stamp = ros::Time::now();
+  const Eigen::Vector3d actual(2.2, .1, .091);
+  fsm->odom_data.p = actual;
+  fsm->est_state_.head<3>() = actual.cast<real_t>();
   std_msgs::Bool::Ptr hold(new std_msgs::Bool);
-  for (double new_height : {0.6, 0.6, 0.8}) {
-    const unsigned stamp = ros::Time::now().sec;
-    info.traj = line(Eigen::Vector3d(0.3, 0.0, (new_height - 0.6)/8.0));
-    info.traj_start_time = ros::Time(stamp + 1);
-    info.traj_end_time = ros::Time(stamp + 9);
-    endpoint = info.traj.getJuncPos(info.traj.getPieceNum());
-    fsm->waypointGoalCallback(goal(endpoint, 1.2, stamp));
-    prepareStop(info);
-    fsm->fsm_state = MPCFSM::CMD_CTRL;
-    fsm->odom_data.rcv_stamp = ros::Time::now();
-    fsm->odom_data.p.z() = 0.2;
-    hold->data = true;
-    fsm->safetyHoldCallback(hold);
-    EXPECT_TRUE(fsm->safety_hold_keep_waypoint_height_);
-    EXPECT_NEAR(fsm->hover_pose_.z(), new_height, 1e-9);
-    hold->data = false;
-    fsm->safetyHoldCallback(hold);
-    ros::Time::setNow(ros::Time(stamp + 10));
+  hold->data = true;
+  fsm->safetyHoldCallback(hold);
+  unsigned stamp = 1006;
+  for (double new_height : {.432, .526, .05}) {
+    fsm->waypointGoalCallback(goal(Eigen::Vector3d(3, 0, new_height), .3, stamp++));
+    fsm->CMD_CTRL_process();
+    EXPECT_TRUE(fsm->hover_pose_.isApprox(actual));
+    EXPECT_NEAR(controller->reference_states_(kPosZ, 0), actual.z(), 1e-6);
+    EXPECT_TRUE(controller->lastMpcSolveSuccessful());
   }
 }
 
@@ -540,7 +553,6 @@ TEST_F(WaypointYaw, EntryRecoveryAbortAndLandingDoNotReuseOrdinaryWaypointHeight
     fsm->odom_data.p.z() = 0.2;
     hold->data = true;
     fsm->safetyHoldCallback(hold);
-    EXPECT_FALSE(fsm->safety_hold_keep_waypoint_height_);
     EXPECT_NEAR(fsm->hover_pose_.z(), 0.2, 1e-9);
     hold->data = false;
     fsm->safetyHoldCallback(hold);
