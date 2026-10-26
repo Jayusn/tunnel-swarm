@@ -3869,8 +3869,10 @@ bool FastExplorationManager::buildManualFappUnderpassPath(
       const double progress = current + (end-current)*i/count;
       double dip = 1.0;
       if (progress < near) dip = smooth((progress-descent_begin)/(near-descent_begin));
-      // 左下/右下穿越：接近时同时向侧下方移动，保持侧下方直到实际通过。
-      Vector3d point = origin + (progress-begin)*forward + side*dip*lateral;
+      // 横移覆盖整个接近段，下降仍只在障碍前0.5m开始；避免先直行贴上侧障碍。
+      const double lateral_ratio = near > begin + 1e-6
+          ? smooth((progress-begin)/(near-begin)) : 1.0;
+      Vector3d point = origin + (progress-begin)*forward + side*lateral_ratio*lateral;
       point.z() = origin.z() + (low-origin.z())*dip;
       if (!planner_manager_->isKnownFreePosition(point)) {
         ROS_WARN_THROTTLE(1.0, "[fapp_underpass_check] reject known-free side=%.2f "
@@ -3897,13 +3899,22 @@ bool FastExplorationManager::buildManualFappUnderpassPath(
   if (manual_fapp_curve_active_) {
     if (!side_path(side, path)) return false;
   } else {
-    // 只尝试左右两个侧下方通路；选定后保持方向，不逐帧反复换边。
-    side = recovery_side_latched_ && recovery_side_dir_.dot(lateral) < 0.0 ? -0.20 : 0.20;
-    if (!side_path(side, path)) {
-      if (manual_fapp_active_ && recovery_side_latched_) return false;
-      side = -side;
-      if (!side_path(side, path)) return false;
+    // 固定20cm可能仍扫到侧障碍；在已有横移范围内寻找最近的可通行低位通路。
+    // 普通侧绕偏好只决定尝试顺序，不能否决另一侧；已选中的下穿曲线仍保持原侧。
+    const double first_sign = recovery_side_latched_ && recovery_side_dir_.dot(lateral) < 0.0
+        ? -1.0 : 1.0;
+    bool found = false;
+    const double step = std::max(0.10, sdf_map_->getResolution());
+    for (double sign : {first_sign, -first_sign}) {
+      for (double offset = 0.20; offset <= wide_side_bypass_lateral_range_ + 1e-6;
+           offset += step) {
+        side = sign * offset;
+        if (side_path(side, path)) { found = true; break; }
+      }
+      if (found) break;
     }
+    if (!found) return false;
+    if (recovery_side_latched_) recovery_side_dir_ = (side > 0.0 ? 1.0 : -1.0) * lateral;
   }
   if (!manual_fapp_curve_active_)
     ROS_WARN("[manual_fapp] continuous underpass from=(%.2f,%.2f,%.2f) "

@@ -80,6 +80,111 @@ class TurnEscapeTest {
     manager.task_search_manager_->initialize(nh);
   }
 public:
+  static void runRecordedLowCrossing(const char* fixture) {
+    ros::NodeHandle nh("/exploration_node");
+    FastExplorationManager manager;
+    manager.initialize(nh);
+    auto& planner = *manager.planner_manager_;
+    auto& map = *manager.sdf_map_;
+    std::ifstream input(fixture, std::ios::binary);
+    const auto read = [&](auto& value) { input.read(reinterpret_cast<char*>(&value), sizeof(value)); };
+    int frames; Vector3d pos, lower, upper;
+    read(frames);
+    for (auto* v : {&pos, &lower, &upper}) for (int k=0;k<3;++k) read((*v)[k]);
+    for (int f=0; f<frames; ++f) {
+      int count; Vector3d camera; read(count);
+      for (int k=0;k<3;++k) read(camera[k]);
+      pcl::PointCloud<pcl::PointXYZ> cloud; cloud.resize(count);
+      for (auto& p : cloud) { read(p.x); read(p.y); read(p.z); }
+      map.inputPointCloud(cloud,count,camera);
+      map.clearAndInflateLocalMap();
+    }
+    ASSERT_TRUE(input.good());
+    map.updateESDF3d();
+    planner.fapp_watched_valid_=true;
+    planner.fapp_watched_lower_=lower; planner.fapp_watched_upper_=upper;
+    planner.fapp_watched_state_.stamp=ros::Time::now().toSec();
+    manager.manual_fapp_active_=true; manager.manual_fapp_forward_=Vector3d::UnitX();
+    manager.manual_fapp_hold_height_=pos.z();
+    const Vector3d goal(upper.x()+map.getResolution()+.20,pos.y(),pos.z());
+    std::vector<Vector3d> path;
+    std::cout << "recorded start=" << pos.transpose() << " bounds=" << lower.transpose() << " / " << upper.transpose() << std::endl;
+    ASSERT_TRUE(manager.buildManualFappUnderpassPath(pos,goal,path));
+    EXPECT_GT(manager.manual_fapp_curve_side_,0.30);
+    EXPECT_LT(manager.manual_fapp_curve_side_,0.60);
+    EXPECT_NEAR(path.back().z(),lower.z()-manager.underpass_height_tracking_margin_,1e-6);
+    for (const auto& point : path) EXPECT_TRUE(planner.isKnownFreePosition(point));
+    ASSERT_TRUE(planner.isFappPathSafe(path));
+    ASSERT_TRUE(planner.planExploreTraj(path,Vector3d::Zero(),Vector3d::Zero(),0.0));
+    EXPECT_TRUE(planner.isTrajectorySafe());
+    auto& trajectory=planner.local_data_.position_traj_;
+    for(double t=0;t<=trajectory.getTimeSum();t+=.02) {
+      const Vector3d point=trajectory.evaluateDeBoorT(t);
+      EXPECT_TRUE(planner.isWatchedFappPositionSafe(point));
+    }
+  }
+
+  static void runAdaptiveLowCrossing(double open_side, bool blocked = false,
+                                      bool unknown = false) {
+    ros::NodeHandle nh("~adaptive_low_crossing");
+    nh.setParam("mission/task_search/min_height",0.10);
+    nh.setParam("manager/footprint_bottom_clearance",0.20);
+    nh.setParam("fapp/enabled",true);
+    nh.setParam("fapp/memory_enabled",true);
+    FastExplorationManager manager;
+    initialize(nh,manager,true);
+    auto& planner=*manager.planner_manager_;
+    auto& map=*manager.sdf_map_;
+    for(int x=0;x<map.mp_->map_voxel_num_.x();++x)
+      for(int y=0;y<map.mp_->map_voxel_num_.y();++y)
+        for(int z=0;z<map.mp_->map_voxel_num_.z();++z) {
+          const Eigen::Vector3i id(x,y,z); Vector3d p; map.indexToPos(id,p);
+          const bool barrier=p.x()>-.20&&p.x()<.85&&p.z()<.45&&
+              (blocked||p.y()*open_side<.16);
+          const int addr=map.toAddress(id);
+          map.md_->occupancy_buffer_[addr]=barrier
+              ? (unknown ? map.mp_->clamp_min_log_-map.mp_->unknown_flag_ : map.mp_->clamp_max_log_)
+              : map.mp_->clamp_min_log_;
+          map.md_->occupancy_buffer_inflate_[addr]=barrier&&!unknown;
+        }
+    map.md_->local_bound_min_.setZero();
+    map.md_->local_bound_max_=map.mp_->map_voxel_num_-Eigen::Vector3i::Ones();
+    map.updateESDF3d();
+    planner.fapp_watched_valid_=true;
+    planner.fapp_watched_lower_=Vector3d(-.30,-.40,.40);
+    planner.fapp_watched_upper_=Vector3d(.30,.40,.90);
+    planner.fapp_watched_state_.stamp=ros::Time::now().toSec();
+    manager.manual_fapp_active_=true;
+    manager.manual_fapp_forward_=Vector3d::UnitX();
+    // 旧的普通侧绕偏好指向受阻侧，不能封死首次低位穿越的另一侧。
+    manager.recovery_side_latched_=true;
+    manager.recovery_side_dir_=-open_side*Vector3d::UnitY();
+    const Vector3d start(-1.,0.,.65),goal(.60,0.,.65);
+    std::vector<Vector3d> path;
+    if(blocked) {
+      EXPECT_FALSE(manager.buildManualFappUnderpassPath(start,goal,path));
+      EXPECT_FALSE(manager.manual_fapp_curve_active_);
+      return;
+    }
+    ASSERT_TRUE(manager.buildManualFappUnderpassPath(start,goal,path));
+    EXPECT_GT(manager.manual_fapp_curve_side_*open_side,.30);
+    EXPECT_GT(manager.recovery_side_dir_.y()*open_side,.9);
+    EXPECT_NEAR(path.back().z(),.34,1e-6);
+    EXPECT_GT(path.back().x(),.45);
+    for(const auto& p:path) EXPECT_TRUE(planner.isKnownFreePosition(p));
+    EXPECT_TRUE(planner.isFappPathSafe(path));
+    ASSERT_TRUE(planner.planExploreTraj(path,Vector3d::Zero(),Vector3d::Zero(),0.0));
+    EXPECT_TRUE(planner.isTrajectorySafe());
+    auto trajectory=planner.local_data_.position_traj_;
+    for(double t=0;t<=trajectory.getTimeSum();t+=.02)
+      EXPECT_TRUE(planner.isWatchedFappPositionSafe(trajectory.evaluateDeBoorT(t)));
+    const Vector3d end=path.back(),mid=path[path.size()/2];
+    const double side=manager.manual_fapp_curve_side_;
+    ASSERT_TRUE(manager.buildManualFappUnderpassPath(mid,goal,path));
+    EXPECT_NEAR(manager.manual_fapp_curve_side_,side,1e-9);
+    EXPECT_LT((end-path.back()).norm(),1e-9);
+  }
+
   static void runBottomClearance(bool search) {
     ros::NodeHandle nh("~bottom_clearance");
     nh.setParam("manager/footprint_bottom_clearance", 0.20);
@@ -718,6 +823,8 @@ public:
     manager.manual_path_exploration_style_ = true;
     manager.manual_path_max_segment_length_ = scenario == "memory_left" ? 0.15 : 1.2;
     if (asymmetric) manager.underpass_min_height_ = 0.15;
+    // 此用例专测水平侧绕的失观续接；低位高度不允许，不能改走新增的宽偏移下穿。
+    if (scenario == "memory_left") manager.underpass_min_height_ = 0.70;
     if (low_minimum) {
       manager.underpass_min_height_ = 0.10;
       manager.task_search_manager_->min_search_height_ = 0.10;
@@ -4103,3 +4210,22 @@ TEST(UpperTurn, OrdinaryTurnDoesNotUseEarlyTakeover) { fast_planner::TurnEscapeT
 TEST(UpperTurn, DisabledVerticalDetourDoesNotAuthorizeElevatedTurn) { fast_planner::TurnEscapeTest::runUpperTurn(4); }
 TEST(UpperTurn, RechecksMapAfterYawCompletes) { fast_planner::TurnEscapeTest::runUpperTurn(5); }
 TEST(UpperTurn, MirroredLowObstacleUsesLeftPassage) { fast_planner::TurnEscapeTest::runUpperTurn(6); }
+
+TEST(FappExploration, RecordedLeftLowCrossing) {
+  const char* fixture=std::getenv("LOW_CROSSING_FIXTURE");
+  if (!fixture) GTEST_SKIP() << "requires recorded crossing cloud snapshot";
+  fast_planner::TurnEscapeTest::runRecordedLowCrossing(fixture);
+}
+
+TEST(FappExploration, RightObstacleSelectsWiderLeftLowCrossing) {
+  fast_planner::TurnEscapeTest::runAdaptiveLowCrossing(1.0);
+}
+TEST(FappExploration, LeftObstacleSelectsWiderRightLowCrossing) {
+  fast_planner::TurnEscapeTest::runAdaptiveLowCrossing(-1.0);
+}
+TEST(FappExploration, AdaptiveLowCrossingRejectsBlockedBodySpace) {
+  fast_planner::TurnEscapeTest::runAdaptiveLowCrossing(1.0,true);
+}
+TEST(FappExploration, AdaptiveLowCrossingRejectsUnknownBodySpace) {
+  fast_planner::TurnEscapeTest::runAdaptiveLowCrossing(1.0,true,true);
+}
