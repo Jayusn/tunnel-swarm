@@ -102,6 +102,9 @@
        FAPP动态避障开启时摆球也参与下穿/侧绕选路；关闭时只处理静态地图障碍。 -->
   <param name="/exploration_node/mission/manual_path/max_segment_length" value="1.20" type="double"/>
   <param name="/exploration_node/mission/manual_path/exploration_style" value="true" type="bool"/>
+  <!-- 沿已选路线恢复高度，单段爬升量与探索一致；仍受当前航点高度限制。 -->
+  <param name="/exploration_node/mission/ground_ascent/enabled" value="true" type="bool"/>
+  <param name="/exploration_node/mission/task_search/max_goal_climb" value="0.30" type="double"/>
   <param name="/exploration_node/mission/manual_path/exit_enabled" value="$(arg enable_exit_recognition)" type="bool"/>
   <param name="/exploration_node/mission/workspace_lock_topic" value="/UAV0/corridor_search/workspace_lock"/>
   <param name="/exploration_node/fsm/use_diff_for_fuel_exploration" value="false" type="bool"/>
