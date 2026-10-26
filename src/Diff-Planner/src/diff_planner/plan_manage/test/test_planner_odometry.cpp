@@ -1288,6 +1288,26 @@ TEST_F(PlannerEndpoint, TrackingRequestDoesNotBypassOccupiedGoalStop)
   EXPECT_EQ(planner.exec_state_, FSM::EMERGENCY_STOP); // no retry of the occupied goal
 }
 
+TEST_F(PlannerEndpoint, EmergencyStopKeepsMeasuredHeightInsteadOfOldTrajectoryHeight)
+{
+  // 旧轨迹高度0.6m；实际高度更低或更高时，紧停都必须保持实际XYZ。
+  const auto old_trajectory = planner.planner_manager_->traj_.local_traj;
+  for (double actual_z : {0.091, 0.8}) {
+    planner.planner_manager_->traj_.local_traj = old_trajectory;
+    const Eigen::Vector3d actual(2.5, .2, actual_z);
+    ASSERT_TRUE(planner.callEmergencyStop(actual));
+    drain();
+    const auto& stop = planner.planner_manager_->traj_.local_traj.traj;
+    for (int i = 0; i <= 20; ++i) {
+      const double time = stop.getTotalDuration() * i / 20.0;
+      EXPECT_LT((stop.getPos(time) - actual).norm(), 1e-9);
+      EXPECT_LT(stop.getVel(time).norm(), 1e-9);
+    }
+    EXPECT_FALSE(planner.occupied_recovery_active_);
+  }
+  EXPECT_EQ(2, published);
+}
+
 TEST_F(PlannerEndpoint, NonOccupiedEmergencyStillResumesCurrentTarget)
 {
   planner.exec_state_ = FSM::EMERGENCY_STOP;

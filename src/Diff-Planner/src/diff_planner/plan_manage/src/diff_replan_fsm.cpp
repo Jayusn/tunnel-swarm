@@ -1496,17 +1496,8 @@ namespace diff_planner
 
   bool DiffReplanFSM::callEmergencyStop(Eigen::Vector3d stop_pos)
   {
-    const LocalTrajData &local_traj = planner_manager_->traj_.local_traj;
-    const double duration = local_traj.traj.getTotalDuration();
-    if (local_traj.traj.getPieceNum() > 0 && std::isfinite(duration) && duration > 0.0)
-    {
-      const double elapsed = ros::Time::now().toSec() - local_traj.start_time;
-      const double sample_time = std::max(0.0, std::min(elapsed, duration));
-      const double planned_height = local_traj.traj.getPos(sample_time).z();
-      if (std::isfinite(planned_height))
-        stop_pos.z() = planned_height;
-    }
-
+    // 紧停保持调用方提供的实际XYZ，不能因旧轨迹更高而变成原地爬升。
+    // 绕障升降和虚拟地面脱障由各自的新轨迹决定。
     planner_manager_->EmergencyStop(stop_pos);
 
     traj_utils::PolyTraj poly_msg;
