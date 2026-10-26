@@ -1430,24 +1430,28 @@ class LeaderSafePathFollower {
       previous = id;
       auto existing = safe_relay_points_.find(id);
       if (existing != safe_relay_points_.end() &&
-          distance3d(existing->second.pose.position, p) > 1e-6) {
-        // 只有8号点允许一次60cm内、带更新发布时刻的优化；编号仍为8。
-        if (id != 8 || safe_relay_eighth_revised_ ||
-            pose.header.stamp <= existing->second.header.stamp ||
-            distance3d(existing->second.pose.position, p) > 0.60 + 1e-6) {
-          safe_relay_fault_ = true;
-          return;
-        }
-        safe_relay_eighth_revised_ = true;
+          (distance3d(existing->second.pose.position, p) > 1e-6 ||
+           std::abs(std::remainder(yawFromQuaternion(pose.pose.orientation) -
+               yawFromQuaternion(existing->second.pose.orientation), 2.0 * M_PI)) > 1e-6)) {
+        // 快照序号已保证消息递增。同编号以最新位置/朝向为准，已完成点不回访。
         for (std::size_t i = active_relay_index_; i < relay_waypoints_.size(); ++i) {
           auto& point = relay_waypoints_[i];
           if (point.safe_relay_id != id) continue;
           point.position = p;
           point.yaw = yawFromQuaternion(pose.pose.orientation);
           point.progress = nearestRouteProgress(p);
-          // 新终点重新取得规划回执归属，旧点的脱障完成不能消费8.1。
+          // 作废旧终点的所有重试/脱障回执，新目标重新取得执行归属。
+          const uint64_t old_owner = point.diff_goal_owner_stamp_ns;
+          for (auto it = simple_diff_goal_owners_.begin(); it != simple_diff_goal_owners_.end();) {
+            if (old_owner != 0ULL && it->second == old_owner)
+              it = simple_diff_goal_owners_.erase(it);
+            else
+              ++it;
+          }
           point.diff_goal_owner_stamp_ns = 0ULL;
           if (i == active_relay_index_) {
+            simple_occupied_recovery_active_ = false;
+            simple_active_recovery_stamp_ns_ = 0ULL;
             diff_goal_published_ = false;
             diff_plan_response_received_ = false;
             diff_accepted_goal_valid_ = false;
@@ -1466,8 +1470,8 @@ class LeaderSafePathFollower {
           }
         }
         publishRelayPath();
-        ROS_WARN("[safe_follower] REPLACE SAFE_RELAY 8.1 target=(%.2f,%.2f,%.2f); "
-                 "keep queue index, completed goals are not revisited.", p.x, p.y, p.z);
+        ROS_WARN("[safe_follower] REPLACE SAFE_RELAY id=%u target=(%.2f,%.2f,%.2f); "
+                 "keep queue index, completed goals are not revisited.", id, p.x, p.y, p.z);
       }
       safe_relay_points_[id] = pose;
       valid.insert(id);
@@ -4610,7 +4614,6 @@ class LeaderSafePathFollower {
   int safe_relay_live_messages_{0};
   bool safe_relay_fault_{false};
   double safe_relay_timeout_{1.0};
-  bool safe_relay_eighth_revised_{false};
   std::map<uint32_t, geometry_msgs::PoseStamped> safe_relay_points_;
   std::set<uint32_t> safe_relay_valid_ids_;
 

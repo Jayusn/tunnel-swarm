@@ -136,6 +136,28 @@ class FifoEntrySpacing : public ::testing::Test {
     setLeader(4.0);
   }
 
+  nav_msgs::Path::Ptr relaySnapshot() {
+    nav_msgs::Path::Ptr path(new nav_msgs::Path);
+    path->header.frame_id = follower->world_frame_;
+    path->header.stamp = ros::Time::now();
+    path->header.seq = 1;
+    for (const auto& point : follower->relay_waypoints_) {
+      geometry_msgs::PoseStamped pose;
+      pose.header.frame_id = path->header.frame_id;
+      pose.header.seq = point.safe_relay_id;
+      pose.header.stamp = path->header.stamp;
+      pose.pose.position = point.position;
+      pose.pose.orientation.w = std::cos(point.yaw * .5);
+      pose.pose.orientation.z = std::sin(point.yaw * .5);
+      path->poses.push_back(pose);
+    }
+    follower->safe_relay_next_id_ = path->poses.back().header.seq + 1;
+    follower->safeRelayCallback(path);
+    ++path->header.seq;
+    follower->safeRelayCallback(path);
+    return path;
+  }
+
   void occupyFirstPoint() {
     sensor_msgs::PointCloud2::Ptr cloud(new sensor_msgs::PointCloud2);
     cloud->header.frame_id = "test_local";
@@ -1775,6 +1797,106 @@ TEST_F(FifoEntrySpacing, ExitWaypointKeepsExistingArrivalWithoutScan) {
   follower->follower_odom_.pose.pose.position.x = 1;
   follower->handleSimpleDiffPlannerExecution(ros::Time::now());
   EXPECT_EQ(0, follower->ordinary_scan_stage_);
+}
+
+TEST_F(FifoEntrySpacing, ThirdPointReplacementReplansAndReleasesHold) {
+  prepareQualifiedPoints();
+  follower->relay_waypoints_[0].safe_relay_id = 3;
+  follower->relay_waypoints_[1].safe_relay_id = 4;
+  auto& old_point = follower->relay_waypoints_[0].position;
+  old_point.x = 4.821482725;
+  old_point.y = -0.181985043;
+  old_point.z = 0.431510298;
+  setLeader(10.0);
+  auto path = relaySnapshot();
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_TRUE(follower->diff_goal_published_);
+  const auto old_stamp = follower->diff_active_goal_stamp_ns_;
+  reportDiffStatus("OCCUPIED_RECOVERY_VERTICAL", old_stamp,
+                   " recovery_stamp_ns=" + std::to_string(old_stamp + 1));
+  ASSERT_TRUE(follower->simple_occupied_recovery_active_);
+
+  // 复现本次 3 -> 3.1 的实际坐标变化；点时间戳不作为额外接收门槛。
+  ++path->header.seq;
+  auto& replacement = path->poses[0].pose.position;
+  replacement.x = 4.721482725;
+  replacement.z = 0.525636228;
+  follower->safeRelayCallback(path);
+  ASSERT_FALSE(follower->safe_relay_fault_);
+  ASSERT_TRUE(follower->activeSafeRelayValid());
+  ASSERT_FALSE(follower->simple_occupied_recovery_active_);
+  ASSERT_FALSE(follower->diff_goal_published_);
+  ASSERT_EQ(2U, follower->relay_waypoints_.size());
+  follower->setDiffWaitPositionHold(true, "test pending trajectory");
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_TRUE(follower->diff_goal_published_);
+  const auto new_stamp = follower->diff_active_goal_stamp_ns_;
+  ASSERT_GT(new_stamp, old_stamp);
+  const ros::WallTime deadline = ros::WallTime::now() + ros::WallDuration(1.0);
+  while ((goals.empty() || goals.back().header.stamp.toNSec() != new_stamp) &&
+         ros::WallTime::now() < deadline) {
+    ros::spinOnce(); ros::WallDuration(.01).sleep();
+  }
+  ASSERT_FALSE(goals.empty());
+  EXPECT_EQ(new_stamp, goals.back().header.stamp.toNSec());
+  EXPECT_LT(distance3d(follower->worldToFollower(replacement), goals.back().pose.position), 1e-9);
+  reportDiffStatus("TRAJECTORY_PUBLISHED", new_stamp, " 4.721482725 -0.181985043 0.525636228");
+  EXPECT_TRUE(follower->diff_accepted_goal_valid_);
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+
+  // 旧目标的普通、脱障回执都不能重新锁点、接管执行或消费新点。
+  reportDiffStatus("PLANNING_FAILED", old_stamp);
+  for (const auto& status : {"OCCUPIED_RECOVERY_VERTICAL", "OCCUPIED_RECOVERY_SUCCEEDED",
+                             "OCCUPIED_RECOVERY_CANCELLED", "OCCUPIED_RECOVERY_ABORTED"})
+    reportDiffStatus(status, old_stamp, " recovery_stamp_ns=" + std::to_string(old_stamp + 2));
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+  EXPECT_FALSE(follower->simple_occupied_recovery_active_);
+  EXPECT_TRUE(follower->diff_accepted_goal_valid_);
+  EXPECT_EQ(2U, follower->relay_waypoints_.size());
+
+  // 同一快照再次广播不会重复撤销已经接纳的新轨迹。
+  ++path->header.seq;
+  follower->safeRelayCallback(path);
+  EXPECT_TRUE(follower->diff_goal_published_);
+  EXPECT_TRUE(follower->diff_accepted_goal_valid_);
+}
+
+TEST_F(FifoEntrySpacing, QueuedPointReplacementDoesNotInterruptCurrentGoal) {
+  prepareQualifiedPoints();
+  auto path = relaySnapshot();
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  const auto stamp = follower->diff_active_goal_stamp_ns_;
+  reportDiffStatus("TRAJECTORY_PUBLISHED", stamp, " 1 0 0.6");
+  ASSERT_TRUE(follower->diff_accepted_goal_valid_);
+  ++path->header.seq;
+  path->poses[1].pose.position.x = 2.8;
+  follower->safeRelayCallback(path);
+  EXPECT_FALSE(follower->safe_relay_fault_);
+  EXPECT_DOUBLE_EQ(2.8, follower->relay_waypoints_[1].position.x);
+  EXPECT_TRUE(follower->diff_accepted_goal_valid_);
+  EXPECT_TRUE(follower->diff_goal_published_);
+  EXPECT_EQ(stamp, follower->diff_active_goal_stamp_ns_);
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+  --path->header.seq;
+  path->poses[1].pose.position.x = 2.0;
+  follower->safeRelayCallback(path); // 延迟旧快照不能把更新后的点改回去。
+  EXPECT_DOUBLE_EQ(2.8, follower->relay_waypoints_[1].position.x);
+}
+
+TEST_F(FifoEntrySpacing, UpdatedHeadingReplacesCurrentScanReference) {
+  prepareQualifiedPoints();
+  auto path = relaySnapshot();
+  follower->ordinary_scan_stage_ = 2;
+  follower->ordinary_scan_done_ = false;
+  follower->diff_goal_published_ = true;
+  ++path->header.seq;
+  path->poses[0].pose.orientation.w = std::cos(.3);
+  path->poses[0].pose.orientation.z = std::sin(.3);
+  follower->safeRelayCallback(path);
+  EXPECT_FALSE(follower->safe_relay_fault_);
+  EXPECT_NEAR(.6, follower->relay_waypoints_[0].yaw, 1e-9);
+  EXPECT_EQ(0, follower->ordinary_scan_stage_);
+  EXPECT_FALSE(follower->diff_goal_published_);
 }
 
 int main(int argc, char** argv) {
