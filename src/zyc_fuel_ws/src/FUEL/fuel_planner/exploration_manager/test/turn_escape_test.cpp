@@ -2060,7 +2060,8 @@ public:
           "underpass probe overwrote the published reference without publication");
   }
 
-  static void runMovingClimb(int mode, bool height_correction = false) {
+  static void runMovingClimb(int mode, bool height_correction = false,
+                            bool manual_mission = false) {
     ros::NodeHandle nh("~");
     nh.setParam("mission/task_search/min_height", 0.10);
     nh.setParam("mission/task_search/cruise_height", 0.60);
@@ -2100,6 +2101,80 @@ public:
     }
     map.updateESDF3d();
     task.updateRobotPose(start, 0.0);
+    if (manual_mission) {
+      // 重现下穿结束后仍沿低位同侧前进的航点入口，不能只直接测试回升工具函数。
+      manager.manual_path_enabled_ = true;
+      manager.manual_path_started_ = true;
+      manager.manual_path_exploration_style_ = true;
+      manager.manual_path_use_astar_ = true;
+      manager.manual_local_goal_enabled_ = false;
+      manager.manual_path_max_segment_length_ = 1.20;
+      manager.ep_->mission_use_forward_fallback_ = true;
+      manager.edt_environment_ = planner.edt_environment_;
+      ViewNode::caster_.reset(new RayCaster);
+      Vector3d map_origin, map_size;
+      map.getRegion(map_origin, map_size);
+      ViewNode::caster_->setParams(map.getResolution(), map_origin);
+      const Vector3d goal(1.025, 0.025, mode == 7 ? 0.40 : 0.60);
+      const std::vector<Vector3d> waypoints{goal, Vector3d(1.225, 0.025, 0.60)};
+      manager.manual_path_.points = waypoints;
+      manager.horizontal_reference_height_ = start.z();
+      manager.recovery_side_latched_ = true;
+      manager.recovery_side_dir_ = -Vector3d::UnitY();
+      manager.recovery_side_origin_ = start;
+      manager.wide_side_bypass_active_ = true;
+      manager.wide_side_bypass_release_distance_ = 1.0;
+      // 先取得同一地图、同一侧绕状态下不启用斜升的真实水平轨迹作为比较基线。
+      manager.ground_ascent_enabled_ = false;
+      ASSERT_EQ(SUCCEED, manager.planExploreMotion(start, Vector3d::Zero(),
+                                                   Vector3d::Zero(), Vector3d::Zero()));
+      auto original = planner.local_data_;
+      const Vector3d horizontal_end = manager.ed_->next_goal_;
+      ASSERT_NEAR(start.z(), horizontal_end.z(), 1e-6);
+      ASSERT_GT(horizontal_end.x(), start.x() + 0.2);
+      if (mode == 8) {
+        const auto controls = original.position_traj_.getControlPoint();
+        double length = 0.0;
+        for (int i = 1; i < controls.rows(); ++i)
+          length += (controls.row(i) - controls.row(i-1)).norm();
+        manager.manual_path_max_segment_length_ = length + 0.005;
+      }
+      manager.ground_ascent_enabled_ = true;
+      ASSERT_EQ(SUCCEED, manager.planExploreMotion(start, Vector3d::Zero(),
+                                                   Vector3d::Zero(), Vector3d::Zero()));
+      EXPECT_EQ(0u, manager.manual_path_.next);
+      ASSERT_EQ(waypoints.size(), manager.manual_path_.points.size());
+      for (size_t i = 0; i < waypoints.size(); ++i)
+        EXPECT_TRUE(manager.manual_path_.points[i].isApprox(waypoints[i]));
+      EXPECT_TRUE(manager.recovery_side_latched_);
+      EXPECT_LT(manager.recovery_side_dir_.y(), -0.9);
+      EXPECT_TRUE(manager.ed_->next_goal_.head<2>().isApprox(horizontal_end.head<2>(), 1e-6));
+      const bool raised = mode == 0 || mode == 7;
+      if (raised) {
+        EXPECT_GT(manager.ed_->next_goal_.z(), start.z() + 0.06);
+        EXPECT_LE(manager.ed_->next_goal_.z(), goal.z() + 1e-6);
+        EXPECT_NEAR(manager.ed_->next_goal_.z(), manager.pending_reference_height_, 1e-9);
+        // 回升候选只有真正发布后才更新低位参考。
+        EXPECT_DOUBLE_EQ(start.z(), manager.horizontal_reference_height_);
+        manager.recordPublishedTrajectoryHeight();
+        EXPECT_NEAR(manager.ed_->next_goal_.z(), manager.horizontalGoalHeight(start.z()), 1e-9);
+      } else {
+        EXPECT_TRUE(manager.ed_->next_goal_.isApprox(horizontal_end, 1e-6));
+        EXPECT_TRUE(planner.local_data_.position_traj_.getControlPoint().isApprox(
+            original.position_traj_.getControlPoint(), 1e-6));
+      }
+      const auto controls = planner.local_data_.position_traj_.getControlPoint();
+      double length = 0.0;
+      for (int i = 1; i < controls.rows(); ++i)
+        length += (controls.row(i) - controls.row(i-1)).norm();
+      EXPECT_LE(length, manager.manual_path_max_segment_length_ + 1e-6);
+      EXPECT_TRUE(planner.isTrajectorySafe());
+      if (raised) {
+        for (double t = 0.0; t <= planner.local_data_.duration_; t += 0.02)
+          EXPECT_TRUE(planner.isKnownFreePosition(planner.local_data_.position_traj_.evaluateDeBoorT(t)));
+      }
+      return;
+    }
     if (height_correction) {
       const Vector3d horizontal = end - start;
       const Vector3d correction = horizontal + Vector3d(0, 0, 0.275);
@@ -3945,6 +4020,22 @@ TEST(CruiseHeightRecovery, RejectedGenerationRestoresOriginalTrajectory) {
 }
 TEST(CruiseHeightRecovery, SmallClimbStepStillRecoversHeight) {
   fast_planner::TurnEscapeTest::runMovingClimb(5);
+}
+
+TEST(ManualCruiseRecovery, WaypointEntryClimbsAlongExistingSideRoute) {
+  fast_planner::TurnEscapeTest::runMovingClimb(0, false, true);
+}
+TEST(ManualCruiseRecovery, MidRouteRoofKeepsHorizontalTrajectory) {
+  fast_planner::TurnEscapeTest::runMovingClimb(1, false, true);
+}
+TEST(ManualCruiseRecovery, UnknownOverheadKeepsHorizontalTrajectory) {
+  fast_planner::TurnEscapeTest::runMovingClimb(2, false, true);
+}
+TEST(ManualCruiseRecovery, LowerWaypointCapsRecoveredHeight) {
+  fast_planner::TurnEscapeTest::runMovingClimb(7, false, true);
+}
+TEST(ManualCruiseRecovery, RaisedRouteStillObeysWaypointSegmentLimit) {
+  fast_planner::TurnEscapeTest::runMovingClimb(8, false, true);
 }
 
 TEST(SideBypassProgress, PartialStepsPassPillarOnLeft) {

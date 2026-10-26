@@ -478,8 +478,12 @@ bool FastExplorationManager::tryCruiseHeightRecovery(
       low_probe_phase_ != vertical_detour::LowProbePhase::IDLE ||
       suspended_underpass_active_ || ed_->path_next_goal_.size() < 2)
     return false;
-  const double target_z = task_search_manager_->projectSearchHeight(pos.z(), pos.z());
-  if (task_search_manager_->preferredSearchHeight() - pos.z() <=
+  double cruise_height = task_search_manager_->preferredSearchHeight();
+  if (manual_path_enabled_ && !manual_path_.finished())
+    cruise_height = std::min(cruise_height, manual_path_.points[manual_path_.next].z());
+  const double target_z = std::min(cruise_height,
+      task_search_manager_->projectSearchHeight(pos.z(), pos.z()));
+  if (cruise_height - pos.z() <=
           ground_ascent_height_tolerance_ || target_z - pos.z() <= 0.02)
     return false;
 
@@ -542,6 +546,14 @@ bool FastExplorationManager::tryCruiseHeightRecovery(
     safe = safe && pathInsideWorkspaceLock(swept) &&
            task_search_manager_->isRecoveryPathAllowed(swept, false);
   }
+  // 航点水平段原本满足长度上限，斜升后仍须满足同一上限，否则保留原轨迹。
+  if (safe && manual_path_enabled_ && manual_path_max_segment_length_ > 0.0) {
+    const auto controls = planner_manager_->local_data_.position_traj_.getControlPoint();
+    double length = 0.0;
+    for (int i = 1; i < controls.rows(); ++i)
+      length += (controls.row(i) - controls.row(i - 1)).norm();
+    safe = length <= manual_path_max_segment_length_ + 1e-6;
+  }
   if (!safe) {
     planner_manager_->local_data_ = original;
     ROS_WARN("[cruise_recovery] raised trajectory rejected; retain original horizontal trajectory.");
@@ -554,7 +566,7 @@ bool FastExplorationManager::tryCruiseHeightRecovery(
   task_search_manager_->recordSelectedGoal(path.back());
   ROS_INFO("[cruise_recovery] retain horizontal route and climb %.2f -> %.2fm "
            "over %.2fm toward cruise height %.2fm.",
-           pos.z(), path.back().z(), progress.back(), task_search_manager_->preferredSearchHeight());
+           pos.z(), path.back().z(), progress.back(), cruise_height);
   return true;
 }
 
@@ -4407,6 +4419,11 @@ int FastExplorationManager::planManualWaypointMotion(
     return FAIL;
   }
   ed_->next_goal_ = target;
+  // 与探索共用沿已选路线斜升；下穿、出口仍保留自己的高度控制。
+  // 失败时函数保留已验证的水平轨迹，航点目标及顺序不变。
+  if (manual_path_exploration_style_ && !exit_motion && !underpass_motion &&
+      tryCruiseHeightRecovery(pos, vel, acc, 0.0))
+    target = ed_->next_goal_;
   pending_reference_height_ = target.z();
   // 恒定航向复用插值器，避免全零控制点进入旧航向优化器的归一化计算。
   if (std::fabs(target_yaw - yaw[0]) < 1e-6 && yaw.tail<2>().norm() < 1e-6) {
