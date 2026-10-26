@@ -302,6 +302,7 @@ run_detection_pane() {
     target_reporting_mission_id:="${mission_id}" \
     enable_down_camera:=true \
     enable_precision_landing:=true \
+    enable_aruco_rosbag:="${UAV0_ARUCO_ROSBAG_ENABLED:-false}" \
     landing_via_mpc:="${UAV0_LANDING_VIA_MPC:-false}" \
     landing_vehicle_ns:=UAV0 \
     down_camera_device:="${down_camera}"

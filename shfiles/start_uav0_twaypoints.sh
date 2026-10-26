@@ -32,9 +32,12 @@ export UAV0_FIRST_SEVEN_ENABLE_QR=false
 export UAV0_FIRST_SEVEN_THERMAL=false
 export UAV0_FIRST_SEVEN_ENABLE_TARGET_REPORTING=false
 
-# 复用第六屏的规划诊断记录器，补齐建图输入，供通道转弯和绕障离线回放。
+# 默认只录轻量规划诊断；完整建图回放需显式设置 UAV0_PLANNER_ROSBAG_CLOUDS=true。
 export UAV0_PLANNER_ROSBAG_PREFIX="${UAV0_PLANNER_ROSBAG_PREFIX:-${HOME}/.ros/corridor_replay/uav0_corridor}"
-export UAV0_PLANNER_ROSBAG_EXTRA_TOPICS="${UAV0_PLANNER_ROSBAG_EXTRA_TOPICS:-/UAV0/fast_lio/cloud_registered /UAV1/fast_lio/cloud_registered /UAV1/fast_lio/Odom_high_freq /UAV0/move_base_simple/goal /UAV0/mavros/state /UAV0/mavros/rc/in /UAV0/mavros/local_position/odom /UAV1/mavros/state /UAV1/mavros/rc/in /mission/rc_land_active}"
+export UAV0_PLANNER_ROSBAG_EXTRA_TOPICS="${UAV0_PLANNER_ROSBAG_EXTRA_TOPICS:-/UAV1/fast_lio/Odom_high_freq /UAV0/move_base_simple/goal /UAV0/mavros/state /UAV0/mavros/rc/in /UAV0/mavros/local_position/odom /UAV1/mavros/state /UAV1/mavros/rc/in /mission/rc_land_active}"
+if [[ "${UAV0_PLANNER_ROSBAG_CLOUDS:-false}" == true ]]; then
+  export UAV0_PLANNER_ROSBAG_EXTRA_TOPICS="${UAV0_PLANNER_ROSBAG_EXTRA_TOPICS} /UAV0/fast_lio/cloud_registered /UAV1/fast_lio/cloud_registered"
+fi
 # 同时记录接力点快照、有效性状态和实飞参考路线；保留外部自定义的附加话题。
 export UAV0_PLANNER_ROSBAG_EXTRA_TOPICS="${UAV0_PLANNER_ROSBAG_EXTRA_TOPICS} /UAV0/mission/relay_waypoints /UAV0/mission/relay_status /UAV0/mission/reference_route"
 
