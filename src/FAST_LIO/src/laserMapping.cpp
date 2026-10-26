@@ -1174,6 +1174,11 @@ int main(int argc, char** argv)
         perf_loop.mark(1);
         if(have_measurements)
         {
+            // 空 IMU 扫描不参与处理，避免复用上一帧点云并访问空 IMU 集合。
+            if (Measures.imu.empty())
+            {
+                continue;
+            }
             perf_loop.frame(Measures.lidar_end_time, Measures.lidar->size());
             if (flg_first_scan)
             {
