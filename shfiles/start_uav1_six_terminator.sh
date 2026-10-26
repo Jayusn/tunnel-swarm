@@ -309,9 +309,10 @@ run_mid360_pane() {
 
 run_fastlio_pane() {
   pane_init 3 FAST-LIO
-  wait_for_topic_messages "${LIDAR_TOPIC}" "${LIDAR_IMU_TOPIC}" || keep_pane_open
-  printf '[启动] UAV1 FAST-LIO\n'
-  sh "${MATCH_WS}/shfiles/run_uav1_sensor_stack.sh" fastlio
+  wait_for_ros_master || keep_pane_open
+  printf '[准备] UAV1 FAST-LIO 诊断录包；与雷达初始化并行\n'
+  UAV1_FASTLIO_LIDAR_WAIT_TIMEOUT="${WAIT_TIMEOUT}" \
+    sh "${MATCH_WS}/shfiles/run_uav1_sensor_stack.sh" fastlio
   printf '[退出] FAST-LIO 分屏，返回码=%s\n' "$?"
   keep_pane_open
 }
@@ -369,12 +370,6 @@ run_planner_pane() {
   roslaunch exploration_control uav1_relay_visualization.launch &
   visualization_pid=$!
   trap stop_owned_planner_helpers EXIT INT TERM
-  if ! wait_for_topic_messages "${ODOM_TOPIC}" "${CLOUD_TOPIC}" \
-      /UAV0/fast_lio/Odom_high_freq; then
-    stop_owned_planner_helpers
-    trap - EXIT INT TERM
-    keep_pane_open
-  fi
   # 没有发布者时直接启动相机，避免首次启动必等 5 秒。
   if timeout --kill-after=1s 5s rostopic list -p "${DOWN_CAMERA_TOPIC}" 2>/dev/null |
       grep -Fx "${DOWN_CAMERA_TOPIC}" >/dev/null &&
@@ -385,7 +380,9 @@ run_planner_pane() {
     sh "${MATCH_WS}/shfiles/run_uav1_sensor_stack.sh" landing &
     down_camera_pid=$!
   fi
-  if ! wait_for_topic_message "${DOWN_CAMERA_TOPIC}"; then
+  # 相机与 FAST-LIO 并行初始化；规划器仍等待定位、点云和相机全部就绪。
+  if ! wait_for_topic_messages "${ODOM_TOPIC}" "${CLOUD_TOPIC}" \
+      /UAV0/fast_lio/Odom_high_freq "${DOWN_CAMERA_TOPIC}"; then
     stop_owned_planner_helpers
     trap - EXIT INT TERM
     keep_pane_open

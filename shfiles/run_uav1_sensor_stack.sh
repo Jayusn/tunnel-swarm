@@ -157,6 +157,26 @@ run_fastlio()
     if ! timeout 8 rostopic echo -n 1 /UAV1/lio_recording_started > "$record_dir/recording_started.txt"; then
         echo "[UAV1 FAST-LIO][警告] 未确认录包就绪，初始化数据可能缺失；检查 $record_dir/recorder.log" >&2
     fi
+    # 七分屏入口提前准备录包，将原有雷达就绪检查移到建图前。
+    # 直接调用本脚本时维持原有启动方式。
+    if [ -n "${UAV1_FASTLIO_LIDAR_WAIT_TIMEOUT:-}" ]; then
+        local lidar_wait_pid imu_wait_pid lidar_wait_status=0
+        echo "[UAV1 FAST-LIO] 等待雷达点云和 IMU 实际消息 ..."
+        timeout --kill-after=1s "${UAV1_FASTLIO_LIDAR_WAIT_TIMEOUT}s" \
+            rostopic echo --noarr --nostr -n 1 /UAV1/livox/lidar >/dev/null 2>&1 &
+        lidar_wait_pid=$!
+        timeout --kill-after=1s "${UAV1_FASTLIO_LIDAR_WAIT_TIMEOUT}s" \
+            rostopic echo --noarr --nostr -n 1 /UAV1/livox/imu >/dev/null 2>&1 &
+        imu_wait_pid=$!
+        wait "$lidar_wait_pid" || lidar_wait_status=1
+        wait "$imu_wait_pid" || lidar_wait_status=1
+        if [ "$lidar_wait_status" -ne 0 ]; then
+            cleanup_fastlio_recording
+            trap - EXIT INT TERM
+            fail "等待雷达点云或 IMU 超时，未启动 FAST-LIO 建图。"
+        fi
+        echo "[UAV1 FAST-LIO] 雷达点云和 IMU 已就绪，启动建图。"
+    fi
     roslaunch fast_lio mapping_mid360.launch \
         rviz_goal_topic:=/UAV1/planning/goal \
         vehicle_ns:=UAV1 \
