@@ -1231,14 +1231,28 @@ TEST_F(PlannerEndpoint, DisabledGoalModificationRetainsOccupiedTargetAndStops)
   ASSERT_NE(planner.planner_manager_->grid_map_->getInflateOccupancy(goal), 0);
   ASSERT_EQ(planner.planner_manager_->grid_map_->getInflateOccupancy(planner.odom_pos_), 0);
   planner.mondify_final_goal_ = false;
-  planner.exec_state_ = FSM::GEN_NEW_TRAJ;
+  planner.active_external_goal_stamp_ns_ = 123456789ULL;
 
-  exec();
-
-  EXPECT_EQ(planner.exec_state_, FSM::EMERGENCY_STOP);
-  EXPECT_NEAR((planner.final_goal_ - goal).norm(), 0.0, 1e-9);
-  EXPECT_TRUE(planner.have_target_);
-  expectNoReplacement();
+  // Cover all regular FSM paths plus the expired-trajectory helper below.
+  for (const auto state : {FSM::SEQUENTIAL_START, FSM::GEN_NEW_TRAJ, FSM::EXEC_TRAJ}) {
+    planner.exec_state_ = state;
+    planner.have_new_target_ = true; // Do not take the expired-trajectory shortcut.
+    statuses.clear();
+    exec();
+    EXPECT_EQ(planner.exec_state_, FSM::EMERGENCY_STOP);
+    EXPECT_NEAR((planner.final_goal_ - goal).norm(), 0.0, 1e-9);
+    EXPECT_TRUE(planner.have_target_);
+    expectNoReplacement();
+    ASSERT_EQ(1U, statuses.size());
+    EXPECT_EQ("GOAL_OCCUPIED goal_stamp_ns=123456789", statuses.front());
+  }
+  planner.exec_state_ = FSM::EXEC_TRAJ;
+  planner.have_new_target_ = false;
+  statuses.clear();
+  ASSERT_TRUE(planner.handleManualTrajectoryEnd(1000.0));
+  drain();
+  ASSERT_EQ(1U, statuses.size());
+  EXPECT_EQ("GOAL_OCCUPIED goal_stamp_ns=123456789", statuses.front());
 }
 
 TEST_F(PlannerEndpoint, OccupiedEmergencyKeepsFirstStopWhenPositionBecomesFree)
@@ -1277,6 +1291,7 @@ TEST_F(PlannerEndpoint, TrackingRequestDoesNotBypassOccupiedGoalStop)
   publishPoint(goal + Eigen::Vector3d(0.10, 0.0, 0.0));
   ASSERT_NE(planner.planner_manager_->grid_map_->getInflateOccupancy(goal), 0);
   ASSERT_EQ(planner.planner_manager_->grid_map_->getInflateOccupancy(planner.odom_pos_), 0);
+  planner.active_external_goal_stamp_ns_ = 123456790ULL;
   planner.tracking_replan_pending_ = true;
   planner.tracking_request_.header.seq = 3;
   planner.tracking_request_.header.stamp = ros::Time(999.9);
@@ -1284,6 +1299,9 @@ TEST_F(PlannerEndpoint, TrackingRequestDoesNotBypassOccupiedGoalStop)
   EXPECT_EQ(planner.exec_state_, FSM::EMERGENCY_STOP);
   EXPECT_FALSE(planner.tracking_replan_pending_); // matched stop result was sent
   EXPECT_TRUE(planner.need_hover_stop_);
+  drain();
+  ASSERT_EQ(1U, statuses.size());
+  EXPECT_EQ("GOAL_OCCUPIED goal_stamp_ns=123456790", statuses.front());
   exec();
   EXPECT_EQ(planner.exec_state_, FSM::EMERGENCY_STOP); // no retry of the occupied goal
 }

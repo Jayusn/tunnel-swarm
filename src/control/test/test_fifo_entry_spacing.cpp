@@ -1138,7 +1138,12 @@ TEST_F(FifoEntrySpacing, OccupiedPointIsAttemptedFirstThenSkippedAndOldReplyCann
   ASSERT_EQ(2U, follower->relay_waypoints_.size());
   ASSERT_TRUE(follower->diff_goal_published_);
   const auto old_stamp = follower->diff_active_goal_stamp_ns_;
-  // The timer must allow checking local occupancy even if the leader withdraws this point.
+  // Point-cloud hits alone do not authorize a skip; Diff owns this decision.
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(2U, follower->relay_waypoints_.size());
+  follower->follower_cloud_.reset(); // Reproduce the flight's lack of local point hits.
+  reportDiffStatus("GOAL_OCCUPIED", old_stamp);
+  // The timer must allow the Diff result even if the leader withdraws this point.
   follower->safe_relay_valid_ids_.erase(1);
   follower->leader_started_ = follower->follower_started_ = true;
   follower->follower_odom_stamp_ = ros::Time::now();
@@ -1156,10 +1161,10 @@ TEST_F(FifoEntrySpacing, OccupiedPointIsAttemptedFirstThenSkippedAndOldReplyCann
   EXPECT_NE(old_stamp, follower->diff_active_goal_stamp_ns_);
 }
 
-TEST_F(FifoEntrySpacing, OccupiedPointWaitsForLeaderClearanceFreshDataAndValidSuccessor) {
+TEST_F(FifoEntrySpacing, DiffOccupiedPointWaitsForLeaderClearanceFreshOdomAndValidSuccessor) {
   prepareQualifiedPoints();
   follower->handleSimpleDiffPlannerExecution(ros::Time::now());
-  occupyFirstPoint();
+  reportDiffStatus("GOAL_OCCUPIED", follower->diff_active_goal_stamp_ns_);
   setLeader(2.19); // Actual separation is sufficient, but leader is <1.2m from point.
   follower->handleSimpleDiffPlannerExecution(ros::Time::now());
   EXPECT_EQ(2U, follower->relay_waypoints_.size());
@@ -1168,14 +1173,13 @@ TEST_F(FifoEntrySpacing, OccupiedPointWaitsForLeaderClearanceFreshDataAndValidSu
   follower->handleSimpleDiffPlannerExecution(ros::Time::now());
   EXPECT_EQ(2U, follower->relay_waypoints_.size());
   setLeader(2.2);
-  follower->cloud_stamp_ = ros::Time::now() - ros::Duration(10.0);
-  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
-  EXPECT_EQ(2U, follower->relay_waypoints_.size());
-  follower->cloud_stamp_ = ros::Time::now();
   follower->safe_relay_valid_ids_.erase(2);
   follower->handleSimpleDiffPlannerExecution(ros::Time::now());
   EXPECT_EQ(2U, follower->relay_waypoints_.size());
   follower->safe_relay_valid_ids_.insert(2);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(2U, follower->relay_waypoints_.size()); // Clearance release resent the goal.
+  reportDiffStatus("GOAL_OCCUPIED", follower->diff_active_goal_stamp_ns_);
   follower->handleSimpleDiffPlannerExecution(ros::Time::now());
   ASSERT_EQ(1U, follower->relay_waypoints_.size()); // Exact 1.2m boundary allows skipping.
   follower->handleSimpleDiffPlannerExecution(ros::Time::now());
@@ -1183,6 +1187,30 @@ TEST_F(FifoEntrySpacing, OccupiedPointWaitsForLeaderClearanceFreshDataAndValidSu
   setLeader(4.0);
   follower->handleSimpleDiffPlannerExecution(ros::Time::now());
   EXPECT_TRUE(follower->diff_goal_published_);
+}
+
+TEST_F(FifoEntrySpacing, DiffOccupancyRejectsOldRepliesAndClearsAfterSuccessfulPlan) {
+  prepareQualifiedPoints();
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  const auto stamp = follower->diff_active_goal_stamp_ns_;
+  reportDiffStatus("GOAL_OCCUPIED", stamp - 1ULL);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(2U, follower->relay_waypoints_.size());
+  reportDiffStatus("GOAL_OCCUPIED", stamp);
+  reportDiffStatus("TRAJECTORY_PUBLISHED", stamp, " 1 0 0.6");
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(2U, follower->relay_waypoints_.size());
+  reportDiffStatus("PLANNING_FAILED", stamp);
+  follower->simple_diff_retry_not_before_ = ros::Time(0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_NE(stamp, follower->diff_active_goal_stamp_ns_);
+  reportDiffStatus("GOAL_OCCUPIED", stamp);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(2U, follower->relay_waypoints_.size());
+  reportDiffStatus("GOAL_OCCUPIED", follower->diff_active_goal_stamp_ns_);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(1U, follower->relay_waypoints_.size());
+  EXPECT_EQ(2U, follower->relay_waypoints_.front().safe_relay_id);
 }
 
 TEST_F(FifoEntrySpacing, FailureAndWithdrawalAloneDoNotSkipAndSpecialPointsAreNotSkipped) {
@@ -1195,7 +1223,11 @@ TEST_F(FifoEntrySpacing, FailureAndWithdrawalAloneDoNotSkipAndSpecialPointsAreNo
   follower->handleSimpleDiffPlannerExecution(ros::Time::now());
   EXPECT_EQ(2U, follower->relay_waypoints_.size());
   EXPECT_TRUE(follower->diff_wait_hold_active_);
-  occupyFirstPoint();
+  follower->safe_relay_valid_ids_.insert(1);
+  follower->simple_diff_retry_not_before_ = ros::Time(0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_TRUE(follower->diff_goal_published_);
+  reportDiffStatus("GOAL_OCCUPIED", follower->diff_active_goal_stamp_ns_);
   follower->exit_waypoint_index_ = 0;
   follower->handleSimpleDiffPlannerExecution(ros::Time::now());
   EXPECT_EQ(2U, follower->relay_waypoints_.size());

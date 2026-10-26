@@ -1926,6 +1926,17 @@ class LeaderSafePathFollower {
         status == "TRAJECTORY_PUBLISHED" &&
         static_cast<bool>(stream >> accepted.x >> accepted.y >> accepted.z);
 
+    // 跳点与Diff使用同一占据结论；沿用目标时间戳，只接受当前FIFO目标的回执。
+    if (simple_segment_endpoint_following_ && response_goal_stamp_valid &&
+        diff_goal_published_ && diff_goal_index_ == active_relay_index_ &&
+        response_goal_stamp_ns == diff_active_goal_stamp_ns_) {
+      if (status == "GOAL_OCCUPIED")
+        diff_occupied_goal_stamp_ns_ = response_goal_stamp_ns;
+      else if (status == "TRAJECTORY_PUBLISHED")
+        diff_occupied_goal_stamp_ns_ = 0ULL;
+    }
+    if (status == "GOAL_OCCUPIED") return;
+
     // 脱障回执按执行时间戳和FIFO归属处理；确认点重试/暂时失效不能吞掉回执。
     const bool recovery_started = status == "OCCUPIED_RECOVERY_VERTICAL" ||
         status == "OCCUPIED_RECOVERY_HISTORY" ||
@@ -2434,17 +2445,16 @@ class LeaderSafePathFollower {
     const bool ordinary_dwell_started = ordinary_relay && ordinary_waypoint_dwell_ > 0.0 &&
         !relay_arrival_stamp_.isZero();
 
-    // 只用新鲜点云确认点本身占据；规划失败、快照超时或字段错误不等于障碍。
+    // 使用Diff对当前目标的地图占据回执；普通规划失败或快照超时不等于占据。
     // 前机未离开当前点时不能跳点；下一普通点仍由原放行门槛和Diff检查。
     bool skip_occupied_point = false;
-    int occupied_hits = 0;
     const std::size_t next = active_relay_index_ + 1;
     if (ordinary_relay && !waypoint_arrival &&
         desired_world.diff_goal_owner_stamp_ns != 0ULL &&
         isOrdinaryRelayPoint(next) &&
-        leaderOdomFresh(now) && follower_cloud_ && !cloud_stamp_.isZero() &&
-        (now - cloud_stamp_).toSec() >= 0.0 &&
-        (now - cloud_stamp_).toSec() <= cloud_timeout_ &&
+        leaderOdomFresh(now) &&
+        diff_occupied_goal_stamp_ns_ != 0ULL &&
+        diff_occupied_goal_stamp_ns_ == diff_active_goal_stamp_ns_ &&
         (relay_waypoints_[next].safe_relay_id == 0U ||
          (safeRelayFresh() &&
           safe_relay_valid_ids_.count(relay_waypoints_[next].safe_relay_id) != 0U))) {
@@ -2453,9 +2463,7 @@ class LeaderSafePathFollower {
           leader_world.x - desired_world.position.x,
           leader_world.y - desired_world.position.y);
       skip_occupied_point =
-          leader_to_point + 1e-6 >= ordinarySpacing(waypoint_release_min_separation_) &&
-          relayPointOccupied(desired_local, &occupied_hits) &&
-          occupied_hits >= relay_point_occupied_min_points_;
+          leader_to_point + 1e-6 >= ordinarySpacing(waypoint_release_min_separation_);
     }
 
     // 撤点或快照超时本身不能证明有障碍，仍沿用原有效性等待。
@@ -2578,8 +2586,8 @@ class LeaderSafePathFollower {
 
       if (skip_occupied_point)
         ROS_WARN("[safe_follower] FIFO SKIP OCCUPIED endpoint (%.2f,%.2f,%.2f), "
-                 "hits=%d; leader cleared current point, plan next queued point.",
-                 desired_local.x, desired_local.y, desired_local.z, occupied_hits);
+                 "Diff map occupied; leader cleared current point, plan next queued point.",
+                 desired_local.x, desired_local.y, desired_local.z);
       else
         ROS_ERROR("[safe_follower] UAV1 FIFO ARRIVED and consume endpoint 1/%zu "
                   "at (%.2f,%.2f,%.2f).",
@@ -4742,6 +4750,7 @@ class LeaderSafePathFollower {
   bool follower_detection_enabled_{false};  // 2026-07-27: 锁存的UAV1检测会话状态。
   bool diff_goal_published_{false}, diff_dynamic_hold_active_{false}; // 2026-07-28: UAV1 Diff目标与动态紧停状态。
   uint64_t diff_active_goal_stamp_ns_{0ULL};
+  uint64_t diff_occupied_goal_stamp_ns_{0ULL};
   bool enable_dynamic_obstacle_detection_{false};
   bool diff_wait_hold_active_{false};  // 2026-07-28: 接力点之间使用MAVROS位置闭环锁点，区别于动态临时HOLD。
   bool diff_plan_response_received_{false}, diff_accepted_goal_valid_{false}; // 2026-07-28: Diff应答与实际落点。

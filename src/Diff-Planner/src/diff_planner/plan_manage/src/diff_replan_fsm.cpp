@@ -363,6 +363,7 @@ namespace diff_planner
         exec_state_ != EMERGENCY_STOP &&
         planner_manager_->grid_map_->getInflateOccupancy(final_goal_) != 0)
     {
+      publishPlanningStatus("GOAL_OCCUPIED");
       need_hover_stop_ = true;
       flag_escape_emergency_ = true;
       changeFSMExecState(EMERGENCY_STOP, "TRACKING_TARGET_OCCUPIED");
@@ -428,6 +429,7 @@ namespace diff_planner
             planner_manager_->grid_map_->getInflateOccupancy(final_goal_))
         {
           ROS_WARN("Final goal in obstacle, unsafe. Emergency stop.");
+          publishPlanningStatus("GOAL_OCCUPIED");
           need_hover_stop_ = true;
           flag_escape_emergency_ = true;
           changeFSMExecState(EMERGENCY_STOP, "STUCK_DETECT");
@@ -468,6 +470,7 @@ namespace diff_planner
           planner_manager_->grid_map_->getInflateOccupancy(final_goal_))
       {
         ROS_WARN("Final goal in obstacle, unsafe. Emergency stop.");
+        publishPlanningStatus("GOAL_OCCUPIED");
         need_hover_stop_ = true;
         flag_escape_emergency_ = true;
         changeFSMExecState(EMERGENCY_STOP, "STUCK_DETECT");
@@ -560,6 +563,7 @@ namespace diff_planner
         if (!mondify_final_goal_)
         {
           ROS_WARN("Final goal in obstacle, unsafe. Emergency stop.");
+          publishPlanningStatus("GOAL_OCCUPIED");
           need_hover_stop_ = true;
           flag_escape_emergency_ = true;
           changeFSMExecState(EMERGENCY_STOP, "STUCK_DETECT");
@@ -1055,6 +1059,7 @@ namespace diff_planner
       if (!mondify_final_goal_)
       {
         ROS_WARN("Final goal in obstacle, unsafe. Emergency stop.");
+        publishPlanningStatus("GOAL_OCCUPIED");
         need_hover_stop_ = true;
         flag_escape_emergency_ = true;
         changeFSMExecState(EMERGENCY_STOP, "STUCK_DETECT");
