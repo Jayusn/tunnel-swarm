@@ -886,7 +886,14 @@ namespace diff_planner
     if (vertical_obstacle_side_lock_.trySearch(
             *a_star_, grid_map_, resolution, start, end,
             unconstrained_path, path))
-      return path.empty() ? ASTAR_RET::SEARCH_ERR : ASTAR_RET::SUCCESS;
+    {
+      if (!path.empty()) return ASTAR_RET::SUCCESS;
+      // 侧锁只提供通路偏好，不能否决已通过占据检查的普通A*路径。
+      // 同时清除旧侧的直线限制和中心代价，允许普通路径继续优化（包括上绕）。
+      vertical_obstacle_side_lock_.clearLock();
+      ROS_WARN_THROTTLE(1.0,
+          "[通道分流侧锁] 约束搜索无路径，解除侧锁并采用普通A*路径继续规划。");
+    }
 
     path = std::move(unconstrained_path);
     return ASTAR_RET::SUCCESS;

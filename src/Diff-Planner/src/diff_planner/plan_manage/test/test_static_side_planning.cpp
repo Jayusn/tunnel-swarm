@@ -347,7 +347,7 @@ TEST_F(StaticSidePlanning, FappEnabledAndDisabledBothChooseWiderStaticPassage)
   }
 }
 
-TEST_F(StaticSidePlanning, SingleUsableSideAndBothBlockedDoNotFallBackToNarrowSide)
+TEST_F(StaticSidePlanning, UnavailablePreferredPassagesFallBackToOrdinaryCollisionChecks)
 {
   PolyTrajOptimizer optimizer;
   configure(optimizer, true);
@@ -356,7 +356,15 @@ TEST_F(StaticSidePlanning, SingleUsableSideAndBothBlockedDoNotFallBackToNarrowSi
   ASSERT_EQ(optimizer.searchObstaclePath(start, end, path), ASTAR_RET::SUCCESS);
   expectLowerPassage(path);
   fillCorridor(-0.65, 0.65);
+  ASSERT_EQ(optimizer.searchObstaclePath(start, end, path), ASTAR_RET::SUCCESS);
+  ASSERT_FALSE(path.empty());
+  EXPECT_FALSE(optimizer.vertical_obstacle_side_lock_.lock_.active);
+  for (const auto &point : path)
+    EXPECT_EQ(map->getInflateOccupancy(point), 0);
+  // 普通A*也无路时仍然失败，不能把回退当作绕过碰撞检查。
+  fillCorridor(-0.85, 0.85);
   EXPECT_NE(optimizer.searchObstaclePath(start, end, path), ASTAR_RET::SUCCESS);
+  EXPECT_TRUE(path.empty());
 }
 
 TEST_F(StaticSidePlanning, SimilarWidthsKeepSelectedSideAcrossReversedSearch)
@@ -438,90 +446,122 @@ TEST_F(StaticSidePlanning, WiderOppositeObservationDoesNotReplaceConfirmedPassag
                    previous.passage_center_offset);
 }
 
-TEST_F(StaticSidePlanning, SingleBlockedFrameAndRepeatedSearchesDoNotSwitch)
+TEST_F(StaticSidePlanning, BlockedPreferredSideImmediatelyAllowsOrdinaryAlternative)
 {
   PolyTrajOptimizer optimizer;
   configure(optimizer, true);
   std::vector<Vector3d> path;
   ASSERT_EQ(optimizer.searchObstaclePath(start, end, path), ASTAR_RET::SUCCESS);
-  const double previous = optimizer.vertical_obstacle_side_lock_.lock_.passage_center_offset;
+  expectLowerPassage(path);
   fillCorridor(-0.85, 0.10);
   for (int retry = 0; retry < 4; ++retry)
   {
-    EXPECT_NE(optimizer.searchObstaclePath(start, end, path), ASTAR_RET::SUCCESS);
-    EXPECT_TRUE(path.empty());
-    EXPECT_DOUBLE_EQ(optimizer.vertical_obstacle_side_lock_.lock_.passage_center_offset, previous);
-    EXPECT_EQ(optimizer.vertical_obstacle_side_lock_.lock_.blocked_observations, 1);
-  }
-  fillCorridor(-0.10, 0.25);
-  ASSERT_EQ(optimizer.searchObstaclePath(start, end, path), ASTAR_RET::SUCCESS);
-  expectLowerPassage(path);
-  EXPECT_EQ(optimizer.vertical_obstacle_side_lock_.lock_.blocked_observations, 0);
-}
-
-TEST_F(StaticSidePlanning, ThreeBlockedObservationsSwitchOnlyAfterAlternativeSucceeds)
-{
-  PolyTrajOptimizer optimizer;
-  configure(optimizer, true);
-  std::vector<Vector3d> path;
-  ASSERT_EQ(optimizer.searchObstaclePath(start, end, path), ASTAR_RET::SUCCESS);
-  for (int observation = 1; observation <= 3; ++observation)
-  {
-    fillCorridor(-0.85, 0.10);
-    const auto result = optimizer.searchObstaclePath(start, end, path);
-    if (observation < 3) {
-      EXPECT_NE(result, ASTAR_RET::SUCCESS);
-    } else {
-      ASSERT_EQ(result, ASTAR_RET::SUCCESS);
+    ASSERT_EQ(optimizer.searchObstaclePath(start, end, path), ASTAR_RET::SUCCESS);
+    ASSERT_FALSE(path.empty());
+    for (const auto &point : path)
+    {
+      EXPECT_EQ(map->getInflateOccupancy(point), 0);
+      if (std::abs(point.x()) <= 0.25) {
+        EXPECT_GE(point.y(), 0.10 - 1e-6);
+      }
+    }
+    if (retry == 0) {
+      EXPECT_FALSE(optimizer.vertical_obstacle_side_lock_.lock_.active);
     }
   }
-  ASSERT_FALSE(path.empty());
-  for (const auto &point : path)
-  {
-    EXPECT_EQ(map->getInflateOccupancy(point), 0);
-    if (std::abs(point.x()) <= 0.25) {
-      EXPECT_GE(point.y(), 0.10 - 1e-6);
-    }
-  }
+  // 后续仍可为成功的通路建立侧锁，保留稳定选边的作用。
   EXPECT_GT(optimizer.vertical_obstacle_side_lock_.lock_.passage_center_offset, 0.0);
 }
 
-TEST_F(StaticSidePlanning, TimeoutDoesNotAccumulateBlockedObservationsOrReplaceLock)
+TEST_F(StaticSidePlanning, SideSearchTimeoutFallsBackAndClearsOldCenterCost)
 {
-  PolyTrajOptimizer optimizer;
-  configure(optimizer, true);
-  std::vector<Vector3d> path;
-  ASSERT_EQ(optimizer.searchObstaclePath(start, end, path), ASTAR_RET::SUCCESS);
-  const double previous = optimizer.vertical_obstacle_side_lock_.lock_.passage_center_offset;
-  optimizer.vertical_obstacle_side_lock_.config_.search_timeout = 1e-12;
-  for (int i = 0; i < 4; ++i)
+  for (bool original_side_blocked : {false, true})
   {
-    fillCorridor(-0.40, 0.10); // 两侧净宽仍可用，只让搜索超时。
-    EXPECT_NE(optimizer.searchObstaclePath(start, end, path), ASTAR_RET::SUCCESS);
-    EXPECT_EQ(optimizer.vertical_obstacle_side_lock_.lock_.blocked_observations, 0);
-    EXPECT_DOUBLE_EQ(optimizer.vertical_obstacle_side_lock_.lock_.passage_center_offset, previous);
+    PolyTrajOptimizer optimizer;
+    fillCorridor(-0.10, 0.25);
+    configure(optimizer, true);
+    std::vector<Vector3d> path;
+    ASSERT_EQ(optimizer.searchObstaclePath(start, end, path), ASTAR_RET::SUCCESS);
+    ASSERT_TRUE(optimizer.vertical_obstacle_side_lock_.lock_.active);
+    optimizer.vertical_obstacle_side_lock_.config_.search_timeout = 1e-12;
+    fillCorridor(original_side_blocked ? -0.85 : -0.40, 0.10);
+    for (int retry = 0; retry < 4; ++retry)
+    {
+      ASSERT_EQ(optimizer.searchObstaclePath(start, end, path), ASTAR_RET::SUCCESS);
+      ASSERT_FALSE(path.empty());
+      EXPECT_FALSE(optimizer.vertical_obstacle_side_lock_.lock_.active);
+      EXPECT_TRUE(optimizer.allowsDirectRoute(start, end));
+      double error;
+      Vector3d direction;
+      EXPECT_FALSE(optimizer.vertical_obstacle_side_lock_.passageCenterError(
+          Vector3d(0, 0, 1.0), error, direction));
+      for (const auto &point : path)
+        EXPECT_EQ(map->getInflateOccupancy(point), 0);
+    }
   }
 }
 
-TEST_F(StaticSidePlanning, FailedAlternativeDoesNotOverwriteConfirmedLock)
+TEST_F(StaticSidePlanning, NoSidePassageUsesOrdinaryOverflightWithOrWithoutOldLock)
 {
-  PolyTrajOptimizer optimizer;
-  configure(optimizer, true);
-  std::vector<Vector3d> path;
-  ASSERT_EQ(optimizer.searchObstaclePath(start, end, path), ASTAR_RET::SUCCESS);
-  const double previous = optimizer.vertical_obstacle_side_lock_.lock_.passage_center_offset;
-  optimizer.vertical_obstacle_side_lock_.config_.search_timeout = 1e-12;
-  for (int i = 0; i < 3; ++i)
-  {
-    fillCorridor(-0.85, 0.10); // 净宽测量确认原侧堵塞，但新侧搜索超时。
-    EXPECT_NE(optimizer.searchObstaclePath(start, end, path), ASTAR_RET::SUCCESS);
-    EXPECT_TRUE(path.empty());
-    EXPECT_DOUBLE_EQ(optimizer.vertical_obstacle_side_lock_.lock_.passage_center_offset, previous);
-  }
-  EXPECT_EQ(optimizer.vertical_obstacle_side_lock_.lock_.blocked_observations, 3);
-  optimizer.vertical_obstacle_side_lock_.config_.search_timeout = 1.0;
-  ASSERT_EQ(optimizer.searchObstaclePath(start, end, path), ASTAR_RET::SUCCESS);
-  EXPECT_GT(optimizer.vertical_obstacle_side_lock_.lock_.passage_center_offset, 0.0);
+  for (bool previous_lock : {false, true})
+    for (bool fapp : {false, true})
+    {
+      PolyTrajOptimizer optimizer;
+      fillCorridor(-0.10, 0.25);
+      configure(optimizer, fapp);
+      std::vector<Vector3d> path;
+      if (previous_lock)
+      {
+        ASSERT_EQ(optimizer.searchObstaclePath(start, end, path), ASTAR_RET::SUCCESS);
+        ASSERT_TRUE(optimizer.vertical_obstacle_side_lock_.lock_.active);
+      }
+      fillCorridor(-0.85, 0.85);
+      // 横向完全封闭的低障碍，上方仍留有已知空闲空间。
+      for (int z = 17; z < 30; ++z)
+        for (int y = -16; y < 16; ++y)
+          for (int x = -30; x < 30; ++x)
+            map->md_.occupancy_buffer_inflate_[
+                map->globalIdx2InfBufIdx(Eigen::Vector3i(x, y, z))] = 0;
+      ASSERT_EQ(optimizer.searchObstaclePath(start, end, path), ASTAR_RET::SUCCESS);
+      ASSERT_FALSE(path.empty());
+      EXPECT_FALSE(optimizer.vertical_obstacle_side_lock_.lock_.active);
+      bool flew_over = false;
+      for (const auto &point : path)
+      {
+        EXPECT_EQ(map->getInflateOccupancy(point), 0);
+        if (std::abs(map->globalIdx2Pos(map->pos2GlobalIdx(point)).x()) <= 0.25)
+        {
+          EXPECT_GE(point.z(), 0.85 - 1e-6);
+          flew_over = true;
+        }
+      }
+      EXPECT_TRUE(flew_over);
+      optimizer.beginPlanningCycle();
+      poly_traj::MinJerkOpt seed;
+      Eigen::Matrix3d head, tail;
+      head << start, Vector3d::Zero(), Vector3d::Zero();
+      tail << end, Vector3d::Zero(), Vector3d::Zero();
+      Eigen::MatrixXd midpoint(3, 1);
+      midpoint.col(0) = 0.5 * (start + end);
+      const Eigen::VectorXd durations = Eigen::Vector2d::Constant(2.0);
+      seed.reset(head, tail, 2);
+      seed.generate(midpoint, durations);
+      std::vector<std::pair<int, int>> segments;
+      ASSERT_NE(optimizer.finelyCheckAndSetConstraintPoints(segments, seed, true),
+                PolyTrajOptimizer::ERR);
+      double cost;
+      ASSERT_TRUE(optimizer.optimizeTrajectory(head, tail, midpoint, durations, cost));
+      const auto trajectory = optimizer.getMinJerkOpt().getTraj();
+      for (int i = 0; i <= 1000; ++i)
+      {
+        const auto point = trajectory.getPos(trajectory.getTotalDuration() * i / 1000.0);
+        EXPECT_EQ(map->getInflateOccupancy(point), 0);
+        if (std::abs(map->globalIdx2Pos(map->pos2GlobalIdx(point)).x()) <= 0.25) {
+          EXPECT_GE(point.z(), 0.85 - 1e-6);
+        }
+      }
+      optimizer.endPlanningCycle();
+    }
 }
 
 TEST_F(StaticSidePlanning, DynamicCandidateRetainsItsOwnRegion)
@@ -812,8 +852,7 @@ TEST_F(UnderpassEndpointPlanning, NoRouteAboveFloorStillFailsFinalChecks)
       }
   PolyTrajOptimizer optimizer;
   configureUnderpass(optimizer);
-  // 本例独立覆盖高度最终检查。新的贴墙通路识别会更早拒绝该封闭场景，
-  // 已由 SingleUsableSideAndBothBlockedDoNotFallBackToNarrowSide 覆盖。
+  // 本例独立覆盖下穿高度的最终检查，不施加侧锁通路偏好。
   auto side_config = optimizer.vertical_obstacle_side_lock_.config();
   side_config.enabled = false;
   optimizer.vertical_obstacle_side_lock_.setConfig(side_config);

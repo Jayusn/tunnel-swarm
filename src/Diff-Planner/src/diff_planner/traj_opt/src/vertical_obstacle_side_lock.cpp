@@ -40,6 +40,11 @@ VerticalObstacleSideLock::config() const
   return config_;
 }
 
+void VerticalObstacleSideLock::clearLock()
+{
+  lock_ = Lock{};
+}
+
 bool VerticalObstacleSideLock::widthsAreComparable(
     const double left_width, const double right_width,
     const double min_width, const double tolerance)

@@ -28,6 +28,7 @@ public:
 
   void setConfig(const Config &config);
   const Config &config() const;
+  void clearLock();
 
   struct Passage
   {
