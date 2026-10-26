@@ -43,16 +43,18 @@ public:
   int planExploreMotion(const Vector3d& pos, const Vector3d& vel, const Vector3d& acc,
                         const Vector3d& yaw);
   bool manualWaypointsEnabled() const { return manual_path_enabled_; }
-  bool manualFappTrajectoryBlocked(const LocalTrajData& trajectory, double elapsed) const;
   bool preserveTrajectoryEndpoint() const {
     return manual_path_enabled_ || fapp_exploration_crossing_enabled_;
   }
   bool explorationFappCrossingActive() const {
-    return fapp_exploration_crossing_enabled_ && manual_fapp_active_;
+    return (fapp_exploration_crossing_enabled_ ||
+            (manual_path_enabled_ && manual_path_exploration_style_)) && manual_fapp_active_;
   }
   bool needsExplorationFappRetry(const Vector3d& actual_pos) const {
-    return explorationFappCrossingActive() && !manual_path_enabled_ &&
-        fapp_crossing_retry_needed_ && pointInsideWorkspaceLock(actual_pos);
+    return explorationFappCrossingActive() && fapp_crossing_retry_needed_ &&
+        (!manual_path_enabled_ || (!manual_path_.finished() &&
+          (!manual_path_wait_for_trigger_ || manual_path_started_))) &&
+        pointInsideWorkspaceLock(actual_pos);
   }
   bool planExplorationFappCrossing(const Vector3d& pos, const Vector3d& vel,
                                    const Vector3d& acc, const Vector3d& yaw);
@@ -176,12 +178,6 @@ private:
   // 一次锁定穿越高度，不随掉高或可疑历史最低框逐轮降低。
   double manual_fapp_hold_height_{std::numeric_limits<double>::quiet_NaN()};
   ros::Time manual_fapp_wait_since_;
-  double manual_fapp_side_wait_timeout_{3.0};
-  bool manual_fapp_side_wait_active_{false}, manual_fapp_normal_fallback_{false};
-  Vector3d manual_fapp_side_wait_target_{Vector3d::Zero()};
-  ros::Time manual_fapp_side_wait_since_;
-  bool planManualFappSideWait(const Vector3d& pos, const Vector3d& vel,
-                             const Vector3d& acc, const Vector3d& yaw);
   bool manual_fapp_curve_active_{false};
   Vector3d manual_fapp_curve_origin_{Vector3d::Zero()};
   double manual_fapp_curve_end_{0.0};

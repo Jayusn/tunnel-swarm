@@ -140,7 +140,7 @@ private:
 
   /* helper functions */
   int callExplorationPlanner();
-  bool keepExecutingCorridorTrajectory() const;
+  bool keepExecutingCorridorTrajectory(bool allow_manual = false) const;
   bool checkWiderExecutionRoute();
   bool resumeAfterWidthAttempt(const string& reason);
   bool getReviewedOdometry(Vector3d& position, Vector3d& velocity) const;

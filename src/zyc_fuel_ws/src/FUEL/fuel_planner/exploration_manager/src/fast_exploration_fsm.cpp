@@ -936,7 +936,7 @@ bool FastExplorationFSM::checkWiderExecutionRoute() {
 
 bool FastExplorationFSM::checkFappExecutionRetry() {
   const ros::Time now = ros::Time::now();
-  if (!keepExecutingCorridorTrajectory() ||
+  if (!keepExecutingCorridorTrajectory(true) ||
       !expl_manager_->needsExplorationFappRetry(fd_->odom_pos_) ||
       (!next_fapp_retry_.isZero() && now < next_fapp_retry_)) return false;
   next_fapp_retry_ = now + ros::Duration(0.5);
@@ -951,7 +951,7 @@ bool FastExplorationFSM::resumeAfterWidthAttempt(const string& reason) {
   width_replan_pending_ = false;
   width_candidate_seen_ = false;
   expl_manager_->clearWiderRoute();
-  if (!keepExecutingCorridorTrajectory() ||
+  if (!keepExecutingCorridorTrajectory(fapp_retry) ||
       expl_manager_->turnInPlaceAlignmentPending() ||
       expl_manager_->currentPlanIsVerticalDetour() ||
       expl_manager_->currentPlanIsGroundAscent()) return false;
@@ -969,10 +969,12 @@ bool FastExplorationFSM::resumeAfterWidthAttempt(const string& reason) {
   return true;
 }
 
-bool FastExplorationFSM::keepExecutingCorridorTrajectory() const {
-  if (!narrow_corridor_stage_ || !active_traj_valid_ || active_traj_braked_ ||
+bool FastExplorationFSM::keepExecutingCorridorTrajectory(bool allow_manual) const {
+  const bool manual = expl_manager_->manualWaypointsEnabled();
+  if ((!narrow_corridor_stage_ && !(allow_manual && manual)) ||
+      !active_traj_valid_ || active_traj_braked_ ||
       active_turn_in_place_ || active_vertical_detour_ || active_ground_ascent_ ||
-      inflation_escape_active_ || expl_manager_->manualWaypointsEnabled())
+      inflation_escape_active_ || (manual && !allow_manual))
     return false;
   const double elapsed = std::max(0.0,
       (ros::Time::now() - active_traj_.start_time_).toSec());
@@ -983,7 +985,7 @@ int FastExplorationFSM::callExplorationPlanner() {
   ros::Time time_r = ros::Time::now() + ros::Duration(fp_->replan_time_);
 
   // 跟踪纠偏、碰撞或旧轨迹结束要求正常重规划时，动态试探必须让出执行权。
-  if (fapp_replan_pending_ && (fd_->static_state_ || !keepExecutingCorridorTrajectory())) {
+  if (fapp_replan_pending_ && (fd_->static_state_ || !keepExecutingCorridorTrajectory(true))) {
     expl_manager_->discardExplorationFappRetry();
     fapp_replan_pending_ = false;
   }
@@ -1173,18 +1175,6 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
     fd_->static_state_ = true;
     if (state_ != EXPL_STATE::PLAN_TRAJ)
       transitState(PLAN_TRAJ, "fapp-observation-wait");
-    return;
-  }
-
-  // 用真正执行的剩余样条检查新动态包络；失败后从实测位置重规划，
-  // 不等普通接近段执行完，也不拿前向直线否决已可通的弯曲下穿。
-  const double fapp_elapsed = (ros::Time::now() - active_traj_.start_time_).toSec();
-  if (expl_manager_->manualFappTrajectoryBlocked(active_traj_, fapp_elapsed)) {
-    requestActiveTrajectoryBrake("dynamic obstacle blocks remaining waypoint trajectory");
-    fd_->static_state_ = true;
-    next_plan_retry_time_ = ros::Time(0);
-    pending_traj_safe_since_ = ros::Time(0);
-    transitState(PLAN_TRAJ, "fapp-waypoint-replan");
     return;
   }
 
