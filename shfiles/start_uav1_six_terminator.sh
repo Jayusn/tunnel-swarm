@@ -250,8 +250,8 @@ wait_for_mavros_connected() {
     fi
     check_timeout=$((deadline - SECONDS))
     if (( check_timeout <= 0 )); then break; fi
-    if (( check_timeout > 5 )); then check_timeout=5; fi
-    if timeout --kill-after=1s "${check_timeout}s" rostopic echo -n 1 "${MAVROS_STATE_TOPIC}" 2>/dev/null |
+    # 持续等待 connected=True，避免未连接状态触发退出、休眠和重新订阅。
+    if timeout --kill-after=1s "${check_timeout}s" rostopic echo --filter 'm.connected' -n 1 "${MAVROS_STATE_TOPIC}" 2>/dev/null |
         grep -F 'connected: True' >/dev/null 2>&1; then
       printf '[就绪] UAV1 MAVROS 已连接飞控\n'
       return 0
@@ -404,10 +404,17 @@ run_planner_pane() {
 }
 
 run_controller_pane() {
+  local mavros_wait_pid topics_wait_pid readiness_status=0
   pane_init 7 AutoTrans控制器
-  wait_for_mavros_connected || keep_pane_open
+  # 独立前置条件同时等待，全部成功后才启动控制器。
+  wait_for_mavros_connected &
+  mavros_wait_pid=$!
   wait_for_topic_messages "${HIGH_FREQ_ODOM_TOPIC}" "${VISION_POSE_TOPIC}" \
-    /UAV1/landing/control_owner || keep_pane_open
+    /UAV1/landing/control_owner &
+  topics_wait_pid=$!
+  wait "${mavros_wait_pid}" || readiness_status=1
+  wait "${topics_wait_pid}" || readiness_status=1
+  (( readiness_status == 0 )) || keep_pane_open
   printf '[启动] UAV1 轨迹桥接、AutoTrans、日志和自动 rosbag\n'
   printf '[说明] uav1_diff_autotrans.launch 默认不重复启动 Diff-Planner\n'
   roslaunch autotrans_reference_bridge uav1_diff_autotrans.launch \

@@ -61,9 +61,9 @@ wait_for_mavros()
     while [ "$SECONDS" -lt "$deadline" ]; do
         check_timeout=$((deadline - SECONDS))
         [ "$check_timeout" -gt 0 ] || break
-        if [ "$check_timeout" -gt 5 ]; then check_timeout=5; fi
-        if timeout --kill-after=1s "${check_timeout}s" rostopic echo -n 1 /UAV1/mavros/state 2>/dev/null |
-            grep -q 'connected: True'; then
+        # 保持订阅直到连接成功，避免每条 disconnected 状态都重新启动检测。
+        if timeout --kill-after=1s "${check_timeout}s" rostopic echo --filter 'm.connected' -n 1 /UAV1/mavros/state 2>/dev/null |
+            grep -F 'connected: True' >/dev/null; then
             return 0
         fi
         if [ "$SECONDS" -lt "$deadline" ]; then sleep 1; fi
