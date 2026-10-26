@@ -2178,7 +2178,6 @@ namespace diff_planner
     nh.param("optimization/obstacle_clearance", obs_clearance_, -1.0);
     nh.param("optimization/obstacle_clearance_soft", obs_clearance_soft_, -1.0);
     nh.param("optimization/upper_obstacle_clearance", upper_obstacle_clearance_, 0.0);
-    nh.param("optimization/upper_obstacle_min_z", upper_obstacle_min_z_, 0.40);
     nh.param("grid_map/obstacles_inflation", obstacle_inflation_, 0.0);
     SuspendedObstacleUnderpass::Config underpass_config;
     nh.param("optimization/enable_suspended_obstacle_underpass",
@@ -2319,22 +2318,20 @@ namespace diff_planner
       return false;
 
     // 上绕净空按原始占据体素的顶面计算，不在已有Z膨胀上再叠加20cm。
-    // XY沿用地图膨胀范围；最低障碍检查层与前机vertical_detour/low_height一致，
-    // 地面不作为上绕障碍，避免把这条规则变成全程最低飞行高度。
+    // XY沿用地图膨胀范围，所有高度的占据体素都参与上方净空检查。
     const double resolution = grid_map_->getResolution();
     const Eigen::Vector3i center =
         (position / resolution).array().floor().cast<int>();
     const int horizontal_steps = std::max(0, static_cast<int>(
         std::ceil((obstacle_inflation_ - 1.0e-5) / resolution)));
+    // 多检查边界下方一层，确保恰好20cm时也能找到顶面所在体素。
     const int lowest_z = static_cast<int>(std::floor(
-        (position.z() - upper_obstacle_clearance_) / resolution));
+        (position.z() - upper_obstacle_clearance_) / resolution)) - 1;
     for (int z = center.z(); z >= lowest_z; --z)
     {
       const double voxel_center_z = (z + 0.5) * resolution;
-      if (voxel_center_z < upper_obstacle_min_z_)
-        break;
       const double obstacle_top = (z + 1) * resolution;
-      if (position.z() + 1.0e-6 >= obstacle_top + upper_obstacle_clearance_)
+      if (position.z() > obstacle_top + upper_obstacle_clearance_ + 1.0e-6)
         continue;
       for (int dx = -horizontal_steps; dx <= horizontal_steps; ++dx)
         for (int dy = -horizontal_steps; dy <= horizontal_steps; ++dy)
