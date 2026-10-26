@@ -11,7 +11,7 @@ import unittest
 
 import rosgraph
 import rospy
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, PoseArray, Pose
 from nav_msgs.msg import Odometry
 from std_msgs.msg import String
 
@@ -62,6 +62,15 @@ class LandingSweepProgressTest(unittest.TestCase):
     def setUp(self):
         self.name = "/" + self._testMethodName
         self.goals = []
+        self.states = []
+        self.verification_test = self._testMethodName.startswith("test_verification")
+        self.altitude = 0.6 if self.verification_test else 1.7
+        self.hint_publisher = rospy.Publisher(self.name + "/hint", PoseArray, queue_size=1)
+        self.assigned_publisher = rospy.Publisher(self.name + "/assigned", PoseStamped, queue_size=1)
+        self.addCleanup(self.hint_publisher.unregister)
+        self.addCleanup(self.assigned_publisher.unregister)
+        state_subscriber = rospy.Subscriber(self.name + "/state", String, lambda m: self.states.append(m.data))
+        self.addCleanup(state_subscriber.unregister)
         self.goal_subscriber = rospy.Subscriber(
             self.name + "/goal", PoseStamped, self.goals.append, queue_size=100,
         )
@@ -78,8 +87,11 @@ class LandingSweepProgressTest(unittest.TestCase):
             "odom_topic": self.name + "/odom",
             "stage_topic": self.name + "/stage",
             "subgoal_topic": self.name + "/goal",
+            "verification_hint_topic": self.name + "/hint",
+            "assigned_target_topic": self.name + "/assigned",
+            "enable_single_front_hint_approach": False,
             "front_approach_distance": 0.0,
-            "front_hint_initial_wait_sec": 0.0,
+            "front_hint_initial_wait_sec": 1.0 if self.verification_test else 0.0,
             "front_yaw_scan_half_angle_rad": 0.0,
             "search_height": 1.7,
             "goal_reissue_sec": 0.1,
@@ -105,6 +117,8 @@ class LandingSweepProgressTest(unittest.TestCase):
         self.hold(0.0, 0.2)
         self.stage_publisher.publish(String(data="SEARCH_OUTSIDE_LANDING"))
         self.hold(0.0, 0.3)
+        if self.verification_test:
+            return
         self.assert_goal(0.0, -1.5)
         self.hold(-1.156, 0.15)
         self.assert_goal(0.0, 1.5)
@@ -116,7 +130,7 @@ class LandingSweepProgressTest(unittest.TestCase):
             odom.header.stamp = rospy.Time.now()
             odom.pose.pose.position.x = forward
             odom.pose.pose.position.y = lateral
-            odom.pose.pose.position.z = 1.7
+            odom.pose.pose.position.z = self.altitude
             odom.pose.pose.orientation.w = 1.0
             self.odom_publisher.publish(odom)
             time.sleep(0.025)
@@ -126,6 +140,60 @@ class LandingSweepProgressTest(unittest.TestCase):
         point = self.goals[-1].pose.position
         self.assertAlmostEqual(point.x, forward, places=4)
         self.assertAlmostEqual(point.y, lateral, places=4)
+
+    def test_verification_keeps_height_and_yields_to_confirmed_assignment(self):
+        hint = PoseArray()
+        hint.poses = [Pose()]
+        hint.header.frame_id = "world"
+        hint.header.stamp = rospy.Time.now()
+        hint.poses[0].position.x = 3.0
+        hint.poses[0].position.z = 0.1
+        hint.poses[0].orientation.w = 1.0
+        self.hint_publisher.publish(hint)
+        self.hold(0.0, 1.2)
+        self.assert_goal(2.4, 0.0)
+        self.assertAlmostEqual(self.goals[-1].pose.position.z, 0.6)
+        self.assertIn("FRONT_ARUCO_VERIFY_APPROACH", self.states)
+        self.assertNotIn("FRONT_ARUCO_YAW_SCAN_COMPLETE_START_DOWN_SWEEP", self.states)
+        # 线索超过消息超时仍保留，不因为离开前视画面就抬升搜索。
+        self.hold(0.0, 0.8, forward=1.0)
+        self.assert_goal(2.4, 0.0)
+        self.assertAlmostEqual(self.goals[-1].pose.position.z, 0.6)
+        self.hold(0.0, 0.3, forward=2.4)
+        goal_count = len(self.goals)
+        self.hold(0.0, 0.3, forward=2.4)
+        self.assertEqual(len(self.goals), goal_count, "close verification must not generate zero-length goals")
+        # 两平台确认后的正式分配立即覆盖粗搜索点，恢复原有精降接近链路。
+        target = PoseStamped()
+        target.header.frame_id = "world"
+        target.header.stamp = rospy.Time.now()
+        target.pose.position.x = 4.0
+        target.pose.position.z = 0.1
+        target.pose.orientation.w = 1.0
+        self.assigned_publisher.publish(target)
+        self.hold(0.0, 0.3, forward=2.4)
+        self.assert_goal(4.0, 0.0)
+        self.assertIn("TWO_ARUCOS_ASSIGNED_APPROACH_FAR_PLATFORM", self.states)
+        hint.header.stamp = rospy.Time.now()
+        self.hint_publisher.publish(hint)
+        self.hold(0.0, 0.2, forward=2.4)
+        self.assert_goal(4.0, 0.0)
+
+    def test_verification_clear_resumes_search_for_missing_second_platform(self):
+        hint = PoseArray()
+        hint.header.frame_id = "world"
+        hint.header.stamp = rospy.Time.now()
+        hint.poses = [Pose()]
+        hint.poses[0].position.x = 3.0
+        self.hint_publisher.publish(hint)
+        self.hold(0.0, 1.2)
+        self.assert_goal(2.4, 0.0)
+        hint.poses = []
+        hint.header.stamp = rospy.Time.now()
+        self.hint_publisher.publish(hint)
+        self.hold(0.0, 0.3)
+        self.assertAlmostEqual(self.goals[-1].pose.position.z, 1.7)
+        self.assertIn("FRONT_ARUCO_YAW_SCAN_COMPLETE_START_DOWN_SWEEP", self.states)
 
     def test_turnaround_retains_left_goal(self):
         # 2026-10-17 飞行换向段的实测距离，先远离目标再持续接近。

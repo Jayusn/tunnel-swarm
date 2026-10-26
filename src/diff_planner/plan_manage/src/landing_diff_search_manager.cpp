@@ -6,6 +6,7 @@
 #include <vector>
 
 #include <geometry_msgs/PoseStamped.h>
+#include <geometry_msgs/PoseArray.h>
 #include <nav_msgs/Odometry.h>
 #include <quadrotor_msgs/PositionCommand.h>
 #include <ros/ros.h>
@@ -72,6 +73,8 @@ class LandingDiffSearchManager {
     std::string rc_land_topic("/UAV0/mission/rc_land_active");
     std::string marker_topic("/UAV0/mission/detection/final_aruco");
     std::string front_hint_topic("/UAV0/landing/front_aruco_hint");
+    std::string verification_hint_topic("/UAV0/landing/verification_hint");
+    private_nh_.param("verification_hint_topic", verification_hint_topic, verification_hint_topic);
     std::string assigned_target_topic("/UAV0/landing/assigned_target");
     std::string subgoal_topic("/UAV0/landing_diff/subgoal");
     std::string trigger_topic("/UAV0/landing_diff/trigger");
@@ -120,6 +123,8 @@ class LandingDiffSearchManager {
     marker_sub_ = nh_.subscribe(marker_topic, 10, &LandingDiffSearchManager::markerCallback, this);
     front_hint_sub_ = nh_.subscribe(front_hint_topic, 10,
                                     &LandingDiffSearchManager::frontHintCallback, this);
+    verification_hint_sub_ = nh_.subscribe(verification_hint_topic, 10,
+        &LandingDiffSearchManager::verificationHintCallback, this);
     assigned_target_sub_ = nh_.subscribe(
         assigned_target_topic, 10,
         &LandingDiffSearchManager::assignedTargetCallback, this);
@@ -232,6 +237,32 @@ class LandingDiffSearchManager {
     }
   }
 
+  void verificationHintCallback(const geometry_msgs::PoseArrayConstPtr& msg) {
+    if (rc_land_active_ || !switched_ || !front_approach_complete_ ||
+        have_assigned_target_ || have_marker_ || landing_requested_) return;
+    geometry_msgs::PoseStamped target;
+    target.header = msg->header;
+    if (!msg->poses.empty()) target.pose = msg->poses.front();
+    if (!validTarget(target, front_hint_timeout_sec_, "unconfirmed ArUco search hint")) return;
+    if (msg->poses.empty()) {
+      const bool was_verifying = have_verification_hint_;
+      have_verification_hint_ = false;
+      if (was_verifying && front_yaw_scan_complete_)
+        publishState("FRONT_ARUCO_YAW_SCAN_COMPLETE_START_DOWN_SWEEP");
+      return;
+    }
+    const auto& p = target.pose.position;
+    const double dx = p.x - anchor_x_, dy = p.y - anchor_y_;
+    const double forward = dx * forward_x_ + dy * forward_y_;
+    const double lateral = dx * lateral_x_ + dy * lateral_y_;
+    if (p.z < front_hint_min_z_ || p.z > front_hint_max_z_ ||
+        forward < -front_hint_forward_margin_ || forward > search_depth_ + front_hint_forward_margin_ ||
+        std::fabs(lateral) > 0.5 * search_width_ + front_hint_lateral_margin_) return;
+    verification_hint_ = target;
+    have_verification_hint_ = true;
+    if (front_yaw_scan_complete_) publishState("FRONT_ARUCO_VERIFY_APPROACH");
+  }
+
   void assignedTargetCallback(const geometry_msgs::PoseStampedConstPtr& msg) {
     if (rc_land_active_) return;
     if (!switched_ || !front_approach_complete_ || landing_requested_) return;
@@ -243,6 +274,7 @@ class LandingDiffSearchManager {
         !front_yaw_scan_complete_ && !front_hint_returning_;
     assigned_target_ = *msg;
     have_assigned_target_ = true;
+    have_verification_hint_ = false;
     have_front_hint_ = false;
     // 双码分配可以立即中断余下扫描，但只能先原地回到 CH9 锁定航向。
     // 回正且稳定前不发布远平台状态，避免 Diff 提前生成平移轨迹。
@@ -398,6 +430,19 @@ class LandingDiffSearchManager {
       if (arrived(goal)) {
         publishState("ASSIGNED_TARGET_REACHED_WAIT_DOWN_CONFIRMATION");
       }
+    } else if (have_verification_hint_) {
+      sweep_tracking_ = false;
+      publishState("FRONT_ARUCO_VERIFY_APPROACH");
+      const auto& current = odom_.pose.pose.position;
+      const auto& point = verification_hint_.pose.position;
+      const double dx = point.x - current.x, dy = point.y - current.y;
+      const double distance = std::hypot(dx, dy);
+      // 未确认位置仅用于朝该方向接近；保留扫描高度，在码前0.6m继续观察。
+      // 不以粗估Z触发上升或精降，也不生成零长度悬停轨迹。
+      if (distance <= 0.60 + 0.05) return;
+      goal.x = point.x - 0.60 * dx / distance;
+      goal.y = point.y - 0.60 * dy / distance;
+      goal.z = anchor_z_;
     } else if (have_front_hint_) {
       sweep_tracking_ = false;
       goal = front_hint_.pose.position;
@@ -503,6 +548,8 @@ class LandingDiffSearchManager {
           publishState("ARUCO_LOCKED_DIFF_APPROACH");
         } else if (have_assigned_target_) {
           publishState("TWO_ARUCOS_ASSIGNED_APPROACH_FAR_PLATFORM");
+        } else if (have_verification_hint_) {
+          publishState("FRONT_ARUCO_VERIFY_APPROACH");
         } else if (have_front_hint_) {
           publishState("FRONT_ARUCO_HINT_DIFF_APPROACH");
         } else {
@@ -565,6 +612,8 @@ class LandingDiffSearchManager {
         publishState("ARUCO_LOCKED_DIFF_APPROACH");
       } else if (have_assigned_target_) {
         publishState("TWO_ARUCOS_ASSIGNED_APPROACH_FAR_PLATFORM");
+      } else if (have_verification_hint_) {
+        publishState("FRONT_ARUCO_VERIFY_APPROACH");
       } else if (have_front_hint_) {
         publishState("FRONT_ARUCO_HINT_RETURN_COMPLETE_APPROACH");
       } else {
@@ -800,7 +849,9 @@ class LandingDiffSearchManager {
   nav_msgs::Odometry odom_;
   geometry_msgs::PoseStamped marker_;
   geometry_msgs::PoseStamped front_hint_;
-  geometry_msgs::PoseStamped assigned_target_;
+  geometry_msgs::PoseStamped assigned_target_, verification_hint_;
+  ros::Subscriber verification_hint_sub_;
+  bool have_verification_hint_{false};
   geometry_msgs::PoseStamped exit_portal_;
   bool have_exit_portal_{false};
   geometry_msgs::Point front_approach_goal_;
