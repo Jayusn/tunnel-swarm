@@ -2,6 +2,7 @@
 #define _ASTAR2_H
 
 #include <Eigen/Eigen>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <ros/console.h>
@@ -44,6 +45,11 @@ public:
 
   void init(ros::NodeHandle& nh, const EDTEnvironment::Ptr& env);
   void reset();
+  void setFootprintChecker(std::function<int(const Eigen::Vector3d&)> checker,
+                           int maximum_escape_contacts) {
+    footprint_checker_ = std::move(checker);
+    maximum_escape_contacts_ = maximum_escape_contacts;
+  }
   // 动态穿越回退可沿目标高度搜索侧路，选项只作用于当前调用。
   int search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt,
              bool hold_goal_height = false);
@@ -79,6 +85,9 @@ private:
   EDTEnvironment::Ptr edt_env_;
 
   // parameter
+  std::function<int(const Eigen::Vector3d&)> footprint_checker_;
+  int maximum_escape_contacts_{0};
+  bool footprintEdgeSafe(const Eigen::Vector3d& from, const Eigen::Vector3d& to) const;
   double margin_;
   // 2026-07-28: 任务A*高度带，防止三维搜索从未知/稀疏地面下方绕障。
   double min_search_height_, max_search_height_;

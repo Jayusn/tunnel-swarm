@@ -55,6 +55,15 @@ void FastPlannerManager::initPlanModules(ros::NodeHandle& nh) {
            escape_max_initial_occupied_samples_, 6);
   nh.param("manager/turn_slowdown_angle_deg", turn_slowdown_angle_deg_, 30.0);
   nh.param("manager/turn_time_scale", turn_time_scale_, 1.5);
+  double bottom_clearance;
+  nh.param("manager/footprint_bottom_clearance", bottom_clearance, 0.06);
+  if (!std::isfinite(bottom_clearance) || bottom_clearance < 0.06)
+    throw std::runtime_error("footprint bottom clearance must be finite and >= 0.06m");
+  // 保留原有三层，在机体下方补齐体积采样；不能只查最低平面而漏掉中间横杆。
+  footprint_z_offsets_ = {-0.06, 0.0, 0.06};
+  for (double depth = 0.11; depth < bottom_clearance - 1e-6; depth += 0.05)
+    footprint_z_offsets_.push_back(-depth);
+  if (bottom_clearance > 0.06) footprint_z_offsets_.push_back(-bottom_clearance);
   footprint_check_radius_ = std::max(0.0, footprint_check_radius_);
   footprint_check_samples_ = std::max(4, footprint_check_samples_);
   footprint_min_occupied_support_ = std::max(1, footprint_min_occupied_support_);
@@ -114,6 +123,12 @@ void FastPlannerManager::initPlanModules(ros::NodeHandle& nh) {
     // path_finder_->setEnvironment(edt_environment_);
     // path_finder_->init();
     path_finder_->init(nh, edt_environment_);
+    if (bottom_clearance > 0.06) {
+      // 搜索阶段就考虑同一机体足迹，避免先搜出贴底路线、最后反复拒绝。
+      path_finder_->setFootprintChecker(
+          [this](const Eigen::Vector3d& point) { return rawFootprintCollisionCount(point); },
+          escape_max_initial_occupied_samples_);
+    }
   }
 
   if (use_kinodynamic_path) {
@@ -727,8 +742,7 @@ int FastPlannerManager::rawFootprintCollisionCount(
   // 2026-07-23: 不再只采最外圆周；按中心、半径一半和最外沿组成真实圆盘，
   // 防止放宽膨胀层硬拒绝后漏掉位于旋翼圆盘内部、但恰好不在圆周采样点上的体素。
   int occupied_samples = 0;
-  const double z_offsets[] = {-0.06, 0.0, 0.06};
-  for (double z_offset : z_offsets) {
+  for (double z_offset : footprint_z_offsets_) {
     for (int ring = 0; ring <= 2; ++ring) {
       const double radius = 0.5 * static_cast<double>(ring) * footprint_check_radius_;
       const int samples = ring == 0 ? 1 : footprint_check_samples_;
@@ -794,7 +808,7 @@ bool FastPlannerManager::isRawPositionSafe(const Eigen::Vector3d& position) cons
 
 bool FastPlannerManager::isKnownFreePosition(const Eigen::Vector3d& position) const {
   if (!position.allFinite() || !isPositionSafe(position)) return false;
-  for (double z_offset : {-0.06, 0.0, 0.06}) {
+  for (double z_offset : footprint_z_offsets_) {
     for (int ring = 0; ring <= 2; ++ring) {
       const double radius = 0.5 * ring * footprint_check_radius_;
       const int samples = ring == 0 ? 1 : footprint_check_samples_;

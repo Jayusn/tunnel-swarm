@@ -151,6 +151,7 @@ private:
   // 避免把膨胀层与机体半径重复作为两个硬约束。
   double footprint_check_radius_{0.18};
   int footprint_check_samples_{12};
+  std::vector<double> footprint_z_offsets_{-0.06, 0.0, 0.06};
   int footprint_min_occupied_support_{2};
   double footprint_support_radius_{0.10};
   bool supported_occupancy_hard_reject_enabled_{true};

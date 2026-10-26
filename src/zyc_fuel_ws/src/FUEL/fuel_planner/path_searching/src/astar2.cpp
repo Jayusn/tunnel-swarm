@@ -67,6 +67,21 @@ void Astar::clearProgressConstraint() {
   maximum_progress_regression_ = 0.0;
 }
 
+bool Astar::footprintEdgeSafe(const Eigen::Vector3d& from,
+                              const Eigen::Vector3d& to) const {
+  if (!footprint_checker_) return true;
+  int previous = footprint_checker_(from);
+  if (previous > maximum_escape_contacts_) return false;
+  const int samples = std::max(1, static_cast<int>(std::ceil((to - from).norm() / 0.05)));
+  for (int i = 1; i <= samples; ++i) {
+    const int contacts = footprint_checker_(from + (to - from) * (double(i) / samples));
+    // 沿用初始接触只能减少、离开后不能重新接触的规则。
+    if (contacts > previous) return false;
+    previous = contacts;
+  }
+  return true;
+}
+
 int Astar::search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt,
                   bool hold_goal_height) {
   if (progress_constraint_enabled_ &&
@@ -112,7 +127,7 @@ int Astar::search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt
     cur_node = open_set_.top();
     bool reach_end = abs(cur_node->index(0) - end_index(0)) <= 1 &&
         abs(cur_node->index(1) - end_index(1)) <= 1 && abs(cur_node->index(2) - end_index(2)) <= 1;
-    if (reach_end) {
+    if (reach_end && footprintEdgeSafe(cur_node->position, end_pt)) {
       backtrack(cur_node, end_pt);
       return REACH_END;
     }
@@ -212,6 +227,7 @@ int Astar::search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt
           Eigen::Vector3i nbr_idx;
           posToIndex(nbr_pos, nbr_idx);
           if (close_set_map_.find(nbr_idx) != close_set_map_.end()) continue;
+          if (!footprintEdgeSafe(cur_pos, nbr_pos)) continue;
 
           NodePtr neighbor;
           // Horizontal detours toward open space are safer than short vertical or wall-hugging

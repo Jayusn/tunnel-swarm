@@ -80,6 +80,51 @@ class TurnEscapeTest {
     manager.task_search_manager_->initialize(nh);
   }
 public:
+  static void runBottomClearance(bool search) {
+    ros::NodeHandle nh("~bottom_clearance");
+    nh.setParam("manager/footprint_bottom_clearance", 0.20);
+    nh.setParam("manager/use_geometric_path", true);
+    nh.setParam("astar/resolution_astar", 0.10);
+    nh.setParam("astar/allocate_num", 100000);
+    nh.setParam("astar/lambda_heu", 1.0);
+    nh.setParam("astar/max_search_time", 1.0);
+    nh.setParam("astar/min_search_height", 0.65);
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    auto& planner = *manager.planner_manager_;
+    auto& map = *manager.sdf_map_;
+    for (int x=0; x<map.mp_->map_voxel_num_.x(); ++x)
+      for (int y=0; y<map.mp_->map_voxel_num_.y(); ++y)
+        for (int z=0; z<map.mp_->map_voxel_num_.z(); ++z) {
+          const Eigen::Vector3i id(x,y,z);
+          Vector3d p; map.indexToPos(id,p);
+          // 0.60m高的横梁；点检查时只放在机体右边缘，中心射线完全自由。
+          const bool obstacle = std::fabs(p.x()) < .15 && p.z() < .60 &&
+              (search || (p.y() > .10 && p.y() < .20));
+          const int address = map.toAddress(id);
+          map.md_->occupancy_buffer_[address] = obstacle ? map.mp_->clamp_max_log_ : map.mp_->clamp_min_log_;
+          map.md_->occupancy_buffer_inflate_[address] = obstacle;
+        }
+    if (!search) {
+      EXPECT_EQ(map.getOccupancy(Vector3d(.025,.025,.725)), SDFMap::FREE);
+      EXPECT_FALSE(planner.isPositionSafe(Vector3d(.025,.025,.725)));
+      EXPECT_FALSE(planner.isKnownFreePosition(Vector3d(.025,.025,.775)));
+      EXPECT_TRUE(planner.isKnownFreePosition(Vector3d(.025,.025,.825)));
+      EXPECT_FALSE(planner.isPathSafe({Vector3d(-.5,.025,.725),Vector3d(.5,.025,.725)}));
+      EXPECT_TRUE(planner.isPathSafe({Vector3d(-.5,.025,.825),Vector3d(.5,.025,.825)}));
+      return;
+    }
+    const Vector3d start(-.6,.025,.725), goal(.6,.025,.725);
+    const auto begin = ros::WallTime::now();
+    ASSERT_EQ(planner.path_finder_->search(start,goal), Astar::REACH_END);
+    std::cout << "bottom-clearance A* seconds=" << (ros::WallTime::now()-begin).toSec() << std::endl;
+    const auto path = planner.path_finder_->getPath();
+    EXPECT_TRUE(planner.isPathSafe(path));
+    double crossing_height = 0.0;
+    for (const auto& point : path)
+      if (std::fabs(point.x()) < .20) crossing_height = std::max(crossing_height,point.z());
+    EXPECT_GE(crossing_height,.80);
+  }
   static void runRecordedTurn(const char* fixture) {
     ros::NodeHandle nh("~");
     // 与正式fuel_map.yaml的分辨率、融合概率和膨胀配置一致。
@@ -3886,4 +3931,11 @@ TEST(PassableTurn, RecordedOctober25CornerSelectsRight) {
   const char* fixture = std::getenv("TURN_PASSABILITY_FIXTURE");
   if (!fixture) GTEST_SKIP() << "requires October 25 pre-turn point clouds";
   fast_planner::TurnEscapeTest::runRecordedTurn(fixture);
+}
+
+TEST(BottomClearance, SideOfBodyNeedsTwentyCentimetersAboveObstacle) {
+  fast_planner::TurnEscapeTest::runBottomClearance(false);
+}
+TEST(BottomClearance, AstarFindsHigherRouteInsteadOfRepeatedlyRejectingLowRoute) {
+  fast_planner::TurnEscapeTest::runBottomClearance(true);
 }
