@@ -53,6 +53,10 @@ public:
   // 动态穿越回退可沿目标高度搜索侧路，选项只作用于当前调用。
   int search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt,
              bool hold_goal_height = false);
+  // 按当前任务阶段提供额外高度上限；未安装回调时保持原配置。
+  void setHeightLimitProvider(std::function<double()> provider) {
+    height_limit_provider_ = std::move(provider);
+  }
   void setResolution(const double& res);
   void setProgressConstraint(const Eigen::Vector3d& forward_direction,
                              double maximum_regression = 0.0);
@@ -91,6 +95,7 @@ private:
   double margin_;
   // 2026-07-28: 任务A*高度带，防止三维搜索从未知/稀疏地面下方绕障。
   double min_search_height_, max_search_height_;
+  std::function<double()> height_limit_provider_;
   // Prefer wide horizontal corridors instead of the geometrically shortest wall-hugging route.
   double vertical_weight_, preferred_clearance_, clearance_weight_;
   int allocate_num_;

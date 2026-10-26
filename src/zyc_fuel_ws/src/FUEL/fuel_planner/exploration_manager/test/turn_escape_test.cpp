@@ -78,6 +78,11 @@ class TurnEscapeTest {
     manager.ed_ = std::make_shared<ExplorationData>();
     manager.task_search_manager_ = std::make_shared<TaskSearchManager>();
     manager.task_search_manager_->initialize(nh);
+    const std::weak_ptr<TaskSearchManager> height_task = manager.task_search_manager_;
+    if (planner.path_finder_) planner.path_finder_->setHeightLimitProvider([height_task]() {
+      const auto task = height_task.lock();
+      return task ? task->corridorHeightLimit() : std::numeric_limits<double>::infinity();
+    });
   }
 public:
   static void runRecordedLowCrossing(const char* fixture, bool manual_mission = false) {
@@ -581,7 +586,68 @@ public:
     EXPECT_TRUE(manager.planner_manager_->isPositionSafe(target));
     EXPECT_TRUE(manager.planner_manager_->isPathSafe(manager.planner_manager_->path_finder_->getPath()));
     EXPECT_NEAR(target_yaw,side*M_PI_2,1e-9);
+    if (mode == 7) {
+      // 复现实飞：Y 远小于旧框的 0.70m，但已确认上层通道并完成转向。
+      manager.ep_->mission_search_region_min_ = Vector3d(-1.2, .7, .2);
+      manager.ep_->mission_search_region_max_ = Vector3d(6.2, 6.8, 1.8);
+      manager.edt_environment_ = manager.planner_manager_->edt_environment_;
+      nh.setParam("frontier/cluster_min", 1000000);
+      manager.frontier_finder_ = std::make_shared<FrontierFinder>(manager.edt_environment_, nh);
+      manager.external_selection_only_ = true;
+      ASSERT_FALSE(manager.mission_entered_search_region_);
+      ASSERT_EQ(SUCCEED, manager.planExploreMotion(pos, zero, zero, Vector3d(side*M_PI_2,0,0)));
+      EXPECT_FALSE(manager.mission_entered_search_region_);
+      EXPECT_GE(manager.external_selected_viewpoint_.z(), .80);
+      EXPECT_GT((manager.external_selected_viewpoint_-pos).y()*side, .15);
+    }
     EXPECT_FALSE(manager.buildPostTurnUpperRecovery(target,side*M_PI_2,target,target_yaw));
+  }
+
+  static void runCorridorHeightScope() {
+    ros::NodeHandle nh("~corridor_height");
+    nh.setParam("manager/use_geometric_path", true);
+    nh.setParam("mission/task_search/corridor_max_height", 1.50);
+    nh.setParam("mission/task_search/max_height", 1.90);
+    nh.setParam("mission/task_search/min_height", .10);
+    nh.setParam("astar/max_search_height", 1.90);
+    nh.setParam("astar/min_search_height", .10);
+    nh.setParam("astar/resolution_astar", .05);
+    nh.setParam("astar/allocate_num", 100000);
+    nh.setParam("astar/lambda_heu", 1.0);
+    nh.setParam("astar/max_search_time", 1.0);
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    auto& map = *manager.sdf_map_;
+    auto& task = *manager.task_search_manager_;
+    auto& finder = *manager.planner_manager_->path_finder_;
+    std::fill(map.md_->occupancy_buffer_.begin(), map.md_->occupancy_buffer_.end(),
+              map.mp_->clamp_min_log_);
+    std::fill(map.md_->occupancy_buffer_inflate_.begin(),
+              map.md_->occupancy_buffer_inflate_.end(), 0);
+    const Vector3d start(.025,.025,1.425), high(.325,.025,1.725), low(.325,.025,.325);
+    EXPECT_DOUBLE_EQ(1.50, task.clampSearchHeight(1.7));
+    finder.reset();
+    EXPECT_EQ(Astar::NO_PATH, finder.search(start, high));
+    finder.reset();
+    ASSERT_EQ(Astar::REACH_END, finder.search(start, Vector3d(.325,.025,1.475)));
+    for (const auto& point : finder.getPath()) EXPECT_LE(point.z(), 1.501);
+    // 不重启/重配规划器，阶段切换后原高层搜索和下降都可用。
+    for (auto stage : {TaskSearchManager::EXIT_APPROACH_INSIDE, TaskSearchManager::CROSS_EXIT,
+                       TaskSearchManager::SEARCH_OUTSIDE_LANDING, TaskSearchManager::APPROACH_LANDING,
+                       TaskSearchManager::LANDING}) {
+      task.mission_stage_ = stage;
+      EXPECT_DOUBLE_EQ(1.7, task.clampSearchHeight(1.7));
+      finder.reset();
+      EXPECT_EQ(Astar::REACH_END, finder.search(start, high));
+      finder.reset();
+      EXPECT_EQ(Astar::REACH_END, finder.search(high, low));
+      EXPECT_FALSE(manager.shouldStartGroundAscent(low));
+    }
+    task.mission_stage_ = TaskSearchManager::SEARCH_CORRIDOR;
+    finder.reset();
+    EXPECT_EQ(Astar::NO_PATH, finder.search(start, high));
+    nh.deleteParam("mission");
+    nh.deleteParam("astar");
   }
 
   static void runTurnHistory(int mode) {
@@ -2070,7 +2136,9 @@ public:
     initialize(nh, manager);
     for (const auto& name : {"min_height", "cruise_height", "max_goal_climb"})
       nh.deleteParam(std::string("mission/task_search/") + name);
-    manager.mission_entered_search_region_ = true;
+    manager.mission_entered_search_region_ = false;
+    manager.ep_->mission_search_region_min_ = Vector3d(-1.2, 0.7, 0.2);
+    manager.ep_->mission_search_region_max_ = Vector3d(6.2, 6.8, 1.8);
     auto& task = *manager.task_search_manager_;
     task.setMap(manager.sdf_map_);
     task.global_no_return_ = false;
@@ -2203,6 +2271,7 @@ public:
     if (mode == 2)
       check(map.getOccupancy(Vector3d(end + Vector3d(0, 0, 0.275))) == SDFMap::UNKNOWN,
             "unknown overhead fixture was accidentally observed");
+    if (mode == 9) task.mission_stage_ = TaskSearchManager::LANDING;
     if (mode == 6) manager.manual_fapp_active_ = true;
     if (mode == 3) manager.low_probe_phase_ = vertical_detour::LowProbePhase::ADVANCING;
     Vector3d velocity = Vector3d::Zero();
@@ -4630,4 +4699,14 @@ TEST(ManualSuspended, DistantCrossingFailureKeepsPublishedForwardRouteAndRetries
 }
 TEST(ManualSuspended, SharedRetryFindsUnderpassWithoutLosingPublishedRoute) {
   fast_planner::TurnEscapeTest::runManualSharedFappRetry(true);
+}
+
+TEST(UpperTurn, PlannerRecoversAboveObstacleOutsideObsoleteWorkArea) {
+  fast_planner::TurnEscapeTest::runUpperTurn(7);
+}
+TEST(CorridorHeight, ExitAndLandingRestoreOriginalSearchAndDescent) {
+  fast_planner::TurnEscapeTest::runCorridorHeightScope();
+}
+TEST(CruiseHeightRecovery, LandingDoesNotTriggerCorridorAscent) {
+  fast_planner::TurnEscapeTest::runMovingClimb(9);
 }

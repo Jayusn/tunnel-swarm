@@ -93,6 +93,10 @@ public:
   bool explorationInitialYawFrozen() const { return exploration_initial_yaw_frozen_; }
   void fillExplorationConstraint(quadrotor_msgs::ExplorationMotionConstraint& msg) const;
   void recordExplorationReached(const Eigen::Vector3d& goal);
+  // 仅通道搜索采用此上限；出口与降落阶段恢复各自原有高度配置。
+  double corridorHeightLimit() const {
+    return stage3Active() ? std::numeric_limits<double>::infinity() : corridor_max_height_;
+  }
   double clampSearchHeight(double z) const;
   double preferredSearchHeight() const;
   // 2026-07-13: 窄通道任务点优先保持水平飞行，仅以有限步长向巡航高度收敛。
@@ -350,6 +354,7 @@ private:
   double cruise_height_{0.75};
   double min_search_height_{0.55};
   double max_search_height_{1.00};
+  double corridor_max_height_{std::numeric_limits<double>::infinity()};
   // 2026-07-13: 限制单个搜索目标的升降量，避免 frontier 高度把无人机持续拉向天花板。
   double max_goal_climb_{0.06};
   double max_goal_descent_{0.10};

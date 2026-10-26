@@ -38,6 +38,8 @@ void TaskSearchManager::initialize(ros::NodeHandle& nh) {
   nh.param("mission/task_search/cruise_height", cruise_height_, 0.75);
   nh.param("mission/task_search/min_height", min_search_height_, 0.55);
   nh.param("mission/task_search/max_height", max_search_height_, 1.00);
+  nh.param("mission/task_search/corridor_max_height", corridor_max_height_,
+           std::numeric_limits<double>::infinity());
   // 2026-07-13: 比赛窄道采用水平优先搜索，目标高度不能随 frontier 一次跳到顶层。
   nh.param("mission/task_search/max_goal_climb", max_goal_climb_, 0.06);
   nh.param("mission/task_search/max_goal_descent", max_goal_descent_, 0.10);
@@ -1345,7 +1347,7 @@ bool TaskSearchManager::inferOccupancyTurnDirection(
   const double maximum_rise = turn_upper_enabled_ ? turn_upper_max_rise_ : 0.0;
   // 当前高度有新通路就保持原选择；只有这些候选均不可用时才查低障碍上方。
   for (double rise = 0.0; rise <= maximum_rise + 1e-6; rise += turn_upper_step_) {
-    if (rise > 0.0 && start.z()+rise > turn_upper_max_height_+1e-6) break;
+    if (rise > 0.0 && start.z()+rise > std::min(turn_upper_max_height_, corridorHeightLimit())+1e-6) break;
     for (double angle = min_angle; angle <= max_angle + 1e-6; angle += M_PI / 12.0) {
       for (double sign : {-1.0, 1.0}) {
         const double signed_angle = sign * angle;
@@ -1853,7 +1855,7 @@ bool TaskSearchManager::isRecoveryPathAllowed(
 }
 
 double TaskSearchManager::clampSearchHeight(double z) const {
-  return std::max(min_search_height_, std::min(max_search_height_, z));
+  return std::max(min_search_height_, std::min(std::min(max_search_height_, corridorHeightLimit()), z));
 }
 
 double TaskSearchManager::preferredSearchHeight() const {

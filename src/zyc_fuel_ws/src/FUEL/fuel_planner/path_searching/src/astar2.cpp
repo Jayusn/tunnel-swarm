@@ -84,6 +84,12 @@ bool Astar::footprintEdgeSafe(const Eigen::Vector3d& from,
 
 int Astar::search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt,
                   bool hold_goal_height) {
+  const double phase_max_height = height_limit_provider_
+      ? height_limit_provider_() : std::numeric_limits<double>::infinity();
+  const double max_height = std::min(max_search_height_, phase_max_height);
+  // 终点直连也必须遵守通道上限；起点已偏高时仍允许下降回到高度带。
+  if (std::isfinite(phase_max_height) && end_pt.z() > max_height + 1e-3 &&
+      end_pt.z() >= start_pt.z()) return NO_PATH;
   if (progress_constraint_enabled_ &&
       !directional_progress::isAllowed(start_pt, end_pt, progress_direction_,
                                        maximum_progress_regression_)) {
@@ -175,9 +181,9 @@ int Astar::search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt
             continue;
           }
           // 2026-07-28: 起点偶发高于上限时对称地只允许下降，正常任务路径严禁越过上限。
-          if (start_pt.z() > max_search_height_ && cur_pos.z() > max_search_height_) {
+          if (start_pt.z() > max_height && cur_pos.z() > max_height) {
             if (nbr_pos.z() - 1e-3 > cur_pos.z()) continue;
-          } else if (nbr_pos.z() > max_search_height_ + 1e-3) {
+          } else if (nbr_pos.z() > max_height + 1e-3) {
             continue;
           }
           // Check safety
@@ -207,7 +213,7 @@ int Astar::search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt
             }
             // 2026-07-28: 对角边内部采样同样遵守高度带，不能只检查端点后从地面穿过。
             if ((start_pt.z() >= min_search_height_ && ckpt.z() < min_search_height_ - 1e-3) ||
-                (start_pt.z() <= max_search_height_ && ckpt.z() > max_search_height_ + 1e-3)) {
+                (start_pt.z() <= max_height && ckpt.z() > max_height + 1e-3)) {
               safe = false;
               break;
             }

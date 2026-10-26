@@ -473,8 +473,8 @@ bool FastExplorationManager::hasSafeCruiseContinuation(
 
 bool FastExplorationManager::tryCruiseHeightRecovery(
     const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, double time_lb) {
-  if (manual_fapp_active_ || !ground_ascent_enabled_ || !mission_entered_search_region_ ||
-      !task_search_manager_ || !planner_manager_ || ground_ascent_active_ ||
+  if (manual_fapp_active_ || !ground_ascent_enabled_ ||
+      !task_search_manager_ || task_search_manager_->stage3Active() || !planner_manager_ || ground_ascent_active_ ||
       low_probe_phase_ != vertical_detour::LowProbePhase::IDLE ||
       suspended_underpass_active_ || ed_->path_next_goal_.size() < 2)
     return false;
@@ -572,7 +572,8 @@ bool FastExplorationManager::tryCruiseHeightRecovery(
 
 bool FastExplorationManager::shouldStartGroundAscent(
     const Vector3d& pos) const {
-  if (!ground_ascent_enabled_ || !mission_entered_search_region_ ||
+  if (!ground_ascent_enabled_ ||
+      (task_search_manager_ && task_search_manager_->stage3Active()) ||
       low_probe_phase_ != vertical_detour::LowProbePhase::IDLE)
     return false;
   const double cruise_height = task_search_manager_
@@ -1331,8 +1332,6 @@ bool FastExplorationManager::beginSuspendedUnderpass(const Vector3d& pos,
     return false;
   if (!vertical_detour_enabled_ || !task_search_manager_ ||
       !task_search_manager_->enabled() ||
-      (!manual && !mission_entered_search_region_ &&
-       !task_search_manager_->hasConfirmedCorridorTurn()) ||
       task_search_manager_->stage3Active() ||
       low_probe_phase_ != vertical_detour::LowProbePhase::IDLE ||
       turn_in_place_session_active_)
@@ -1889,8 +1888,7 @@ bool FastExplorationManager::prepareWiderRoute(
       !task_search_manager_->enabled() || task_search_manager_->stage3Active() ||
       task_search_manager_->finalExitFrontierGuardActive() ||
       low_probe_phase_ != vertical_detour::LowProbePhase::IDLE ||
-      turn_in_place_session_active_ || ground_ascent_active_ ||
-      (!mission_entered_search_region_ && !entry_forward_complete_)) return false;
+      turn_in_place_session_active_ || ground_ascent_active_) return false;
   const Vector3d forward = task_search_manager_->recoveryForwardDirection(yaw).normalized();
   const Vector3d side(-forward.y(), forward.x(), 0.0);
   const Vector3d start = current_path.front();
@@ -3390,6 +3388,12 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
   // 2026-07-13: 初始化比赛第二阶段任务搜索层，颜色/二维码/温度接口与 frontier 生命周期解耦。
   task_search_manager_.reset(new TaskSearchManager);
   task_search_manager_->initialize(nh);
+  // 每次搜索读取当前任务阶段；穿出口/搜索降落点后立即沿用原 A* 高度配置。
+  const std::weak_ptr<TaskSearchManager> height_task = task_search_manager_;
+  planner_manager_->path_finder_->setHeightLimitProvider([height_task]() {
+    const auto task = height_task.lock();
+    return task ? task->corridorHeightLimit() : std::numeric_limits<double>::infinity();
+  });
   task_search_manager_->deferExitCrossing(manual_path_enabled_ && manual_exit_enabled_);
   nh.param("mission/short_backtrack_enabled", short_backtrack_enabled_, false);
   // 短回撤启用时的距离、冷却、次数和换向角均可在launch调节。
@@ -3749,6 +3753,10 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
   cmu_pose_pub_ = nh.advertise<geometry_msgs::PointStamped>("/way_point", 10);
   ViewNode::astar_.reset(new Astar);
   ViewNode::astar_->init(nh, edt_environment_);
+  ViewNode::astar_->setHeightLimitProvider([height_task]() {
+    const auto task = height_task.lock();
+    return task ? task->corridorHeightLimit() : std::numeric_limits<double>::infinity();
+  });
   ViewNode::map_ = sdf_map_;
 
   double resolution_ = sdf_map_->getResolution();
@@ -4504,11 +4512,12 @@ int FastExplorationManager::planExploreMotion(
                                     std::sin(turn_in_place_final_yaw_), 0.0);
     return buildTurnInPlacePlan(pos, vel, acc, yaw, locked_direction) ? SUCCEED : FAIL;
   }
+  // 避障依据当前通道地图，不以旧静态作业区坐标作为启用条件。
   // 低障碍阻断当前层、但地图已确认上方新通道时，先对准通道；
   // 不能要求先生成一条被障碍阻断的平移轨迹才允许确认转弯。
   if (!hold_fapp_height && !replacing_width_route && !suspended_underpass_active_ &&
       low_probe_phase_ == vertical_detour::LowProbePhase::IDLE &&
-      mission_entered_search_region_ && task_search_manager_ &&
+      task_search_manager_ &&
       task_search_manager_->enabled() && !task_search_manager_->stage3Active() &&
       !task_search_manager_->finalExitFrontierGuardActive()) {
     Vector3d upper_direction;
@@ -4546,8 +4555,8 @@ int FastExplorationManager::planExploreMotion(
   // 发布，但不能把 A* 弯折弧长或优化器的往返路程当成向前推进距离。
   if (!use_vertical_detour_target && !low_probe_active &&
       mission_workspace_lock_received_ && !entry_forward_complete_ &&
-      !mission_entered_search_region_ &&
       task_search_manager_ && task_search_manager_->enabled() &&
+      !task_search_manager_->stage3Active() &&
       !task_search_manager_->hasConfirmedCorridorTurn() &&
       mission_workspace_dir_.head<2>().norm() > 1e-3) {
     const Vector3d forward = mission_workspace_dir_.normalized();
@@ -4624,8 +4633,8 @@ int FastExplorationManager::planExploreMotion(
   // 不抢占入口、出口和已启动的垂直避障。
   if (!use_vertical_detour_target && !use_forced_entry_target &&
       !use_stage3_target && !use_mission_forward_fallback &&
-      (mission_entered_search_region_ || entry_forward_complete_) && task_search_manager_ &&
-      task_search_manager_->enabled()) {
+      task_search_manager_ && task_search_manager_->enabled() &&
+      !task_search_manager_->stage3Active()) {
     bool current_split_detected = false;
     const Vector3d forward = task_search_manager_->recoveryForwardDirection(yaw[0]);
     if (ep_->mission_use_forward_fallback_ && !task_search_manager_->stage3Active() &&
@@ -4648,8 +4657,8 @@ int FastExplorationManager::planExploreMotion(
   bool center_gate_detected = false;
   if (!use_vertical_detour_target && !use_forced_entry_target &&
       !use_stage3_target && !use_mission_forward_fallback &&
-      mission_entered_search_region_ &&
-      task_search_manager_ && task_search_manager_->enabled()) {
+      task_search_manager_ && task_search_manager_->enabled() &&
+      !task_search_manager_->stage3Active()) {
     const Vector3d recovery_forward =
         task_search_manager_->recoveryForwardDirection(yaw[0]);
     if (buildCenterGatePassage(pos, yaw[0], recovery_forward, next_pos,
@@ -5457,7 +5466,7 @@ int FastExplorationManager::planExploreMotion(
   // 入口后第一米按实际轨迹终点的门法向位移累计，不能用弧长或侧向绕圈凑数。
   if (!use_entry_forward_target && mission_workspace_lock_received_ &&
       !entry_forward_complete_ &&
-      !mission_entered_search_region_ && task_search_manager_ &&
+      task_search_manager_ && !task_search_manager_->stage3Active() &&
       !task_search_manager_->hasConfirmedCorridorTurn() &&
       mission_workspace_dir_.head<2>().norm() > 1e-3) {
     const Vector3d forward = mission_workspace_dir_.normalized();
@@ -5598,8 +5607,8 @@ int FastExplorationManager::planExploreMotion(
 
   if (!use_forced_entry_target && !use_stage3_target &&
       !use_vertical_detour_target && !pending_short_backtrack_ && !planned_split_route_.side &&
-      mission_entered_search_region_ && task_search_manager_ &&
-      task_search_manager_->enabled())
+      task_search_manager_ &&
+      task_search_manager_->enabled() && !task_search_manager_->stage3Active())
     rememberSideRecovery(pos, yaw[0], ed_->path_next_goal_);
   recovery_side_continuation_pending_ = false;
   // 保留本段的目标高度，不能把里程计误差或 A* 截断处的中间高度当成新定高。
