@@ -433,10 +433,11 @@ void SafeRelayPublisher::qualifyCandidate(
 
 void SafeRelayPublisher::improveInternalGoals(bool new_map) {
   if (!new_map) return;
-  // 同一编号允许继续优化；已完成点由后机回报后保留原位置。
+  // 每个编号最多优化一次；已完成点由后机回报后保留原位置。
   for (std::size_t i = 0; i < goals_.size(); ++i) {
     auto& goal = goals_[i];
-    if (completed_ids_.count(goal.id) || odom_stamp_ <= goal.pose.header.stamp) continue;
+    if (goal.revisions != 0 || completed_ids_.count(goal.id) ||
+        odom_stamp_ <= goal.pose.header.stamp) continue;
     const auto& old = goal.pose.pose.position;
     const Eigen::Vector3d original(old.x, old.y, old.z);
     auto& record = goal.revision;
@@ -454,6 +455,8 @@ void SafeRelayPublisher::improveInternalGoals(bool new_map) {
     const double offset = (candidate.position - original).norm();
     if (!candidate.confirmed || offset + 1e-6 < 0.05) continue;
     const double old_gap = horizontalClearance(original);
+    if (candidate.clearance + 0.02 < old_gap ||
+        verticalClearance(candidate.position) + 1e-6 < verticalClearance(original)) continue;
     const double gain = std::max(0.05, map_->getResolution());
     const bool forward_gain = (candidate.position - original).head<2>().dot(forward) >=
                                   sample_spacing_ - 1e-6 &&
@@ -473,7 +476,7 @@ void SafeRelayPublisher::updateGoal(std::size_t index, const safe_relay::Sample&
   goal.pose.pose.position.x = p.x();
   goal.pose.pose.position.y = p.y();
   goal.pose.pose.position.z = p.z();
-  // 同一个timer内的局部更新和队尾替换仍必须有不同的版本时刻。
+  // 替换版本时刻严格晚于原点，供后机识别更新。
   goal.pose.header.stamp = std::max(ros::Time::now(), goal.pose.header.stamp + ros::Duration(0, 1));
   ++goal.revisions;
   ROS_WARN("[safe_relay] REPLACE id=%u label=%u.%u target=(%.2f,%.2f,%.2f); same queue slot, next ID unchanged.",
@@ -485,7 +488,8 @@ bool SafeRelayPublisher::replaceQueuedTail(std::size_t route_index) {
       (ros::Time::now() - execution_stamp_).toSec() > odom_timeout_ ||
       execution_stamp_ > ros::Time::now()) return false;
   auto& tail = goals_.back();
-  if (!queued_ids_.count(tail.id) || completed_ids_.count(tail.id)) return false;
+  if (tail.revisions != 0 || !queued_ids_.count(tail.id) ||
+      completed_ids_.count(tail.id)) return false;
   const auto& candidate = history_[route_index].candidate;
   const auto& old = tail.pose.pose.position;
   const Eigen::Vector3d original(old.x, old.y, old.z);
@@ -494,6 +498,7 @@ bool SafeRelayPublisher::replaceQueuedTail(std::size_t route_index) {
   // 入口/出口不在此列表；已执行或正在执行的点不会被当作冗余队尾吞掉。
   if (!candidate.hold_free || !candidate.confirmed ||
       candidate.clearance + 0.02 < horizontalClearance(original) ||
+      verticalClearance(candidate.position) + 1e-6 < verticalClearance(original) ||
       delta.norm() >= config_.normal_spacing ||
       delta.dot(routeForward(tail.route_index)) < sample_spacing_ ||
       !revisionFits(goals_.size() - 1, candidate.position) ||

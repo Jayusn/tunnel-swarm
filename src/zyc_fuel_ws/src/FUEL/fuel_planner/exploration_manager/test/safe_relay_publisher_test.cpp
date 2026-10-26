@@ -169,28 +169,36 @@ class SafeRelayPublisherTest {
       pose.pose.position.y = .05; pose.pose.position.z = .45;
       publisher.goals_.push_back({index, static_cast<uint32_t>(8 + index/2), pose});
     }
-    publisher.goals_.back().revisions = 1; // 9.1 曾只调整过高度，仍能继续替换。
+    publisher.goals_.back().revisions = 1; // 已做过局部更新，队尾替换也不能再改。
     auto feedback = boost::make_shared<std_msgs::UInt32MultiArray>();
     feedback->data = {200, 0, 300, 0, 0, 9}; // 8正在执行，9排队。
     ros::Time::setNow(ros::Time(300));
     EXPECT_FALSE(publisher.replaceQueuedTail(3)); // 无反馈仍走普通新点流程。
     publisher.executionCallback(feedback);
+    EXPECT_FALSE(publisher.replaceQueuedTail(3));
+    publisher.goals_.back().revisions = 0; // 未更新过的点才有一次替换机会。
     const double forward_clearance = publisher.history_[3].candidate.clearance;
     ASSERT_GT(publisher.horizontalClearance({.3, .05, .45}), .20);
     publisher.history_[3].candidate.clearance = .10;
     EXPECT_FALSE(publisher.replaceQueuedTail(3)); // 不能用贴障点替换较宽敞的旧版本。
     publisher.history_[3].candidate.clearance = forward_clearance;
-    EXPECT_TRUE(publisher.replaceQueuedTail(3)); // 72cm前方合格点替换9.1，不新增10。
+    publisher.history_[3].candidate.position.z() = .25;
+    ASSERT_LT(publisher.verticalClearance(publisher.history_[3].candidate.position),
+              publisher.verticalClearance({.3, .05, .45}));
+    EXPECT_FALSE(publisher.replaceQueuedTail(3)); // 横向更前但上下余量更差也不替换。
+    publisher.history_[3].candidate.position.z() = .45;
+    EXPECT_TRUE(publisher.replaceQueuedTail(3)); // 72cm前方更好点替换9为9.1，不新增10。
     ASSERT_EQ(2U, publisher.goals_.size());
     EXPECT_EQ(9U, publisher.goals_.back().id);
-    EXPECT_EQ(2U, publisher.goals_.back().revisions);
+    EXPECT_EQ(1U, publisher.goals_.back().revisions);
     EXPECT_EQ(10U, publisher.next_id_);
     EXPECT_DOUBLE_EQ(-.42, publisher.goals_.back().pose.pose.position.x);
     const auto first_stamp = publisher.goals_.back().pose.header.stamp;
-    EXPECT_TRUE(publisher.replaceQueuedTail(4));
-    EXPECT_EQ(3U, publisher.goals_.back().revisions);
-    EXPECT_GT(publisher.goals_.back().pose.header.stamp, first_stamp);
-    EXPECT_DOUBLE_EQ(-.90, publisher.goals_.back().pose.pose.position.x);
+    EXPECT_FALSE(publisher.replaceQueuedTail(4));
+    EXPECT_EQ(1U, publisher.goals_.back().revisions);
+    EXPECT_EQ(publisher.goals_.back().pose.header.stamp, first_stamp);
+    EXPECT_DOUBLE_EQ(-.42, publisher.goals_.back().pose.pose.position.x);
+    publisher.goals_.back().revisions = 0; // 单独验证原有状态反馈条件。
     ros::Time::setNow(ros::Time(301));
     EXPECT_FALSE(publisher.replaceQueuedTail(5)); // 旧状态不能把正在执行点当队尾吞掉。
     feedback->data = {200, 0, 301, 0, 8};
@@ -909,9 +917,14 @@ class SafeRelayPublisherTest {
       map_frame(); publisher.improveInternalGoals(true);
       EXPECT_EQ(already_revised ? 1U : 0U, goal.revisions); // 两次地图确认之前不改已下发坐标。
       map_frame(); publisher.improveInternalGoals(true);
-      EXPECT_EQ((already_revised ? 1U : 0U) + (no_gain ? 0U : 1U), goal.revisions);
+      EXPECT_EQ(already_revised || !no_gain ? 1U : 0U, goal.revisions);
       const auto revised = goal.pose;
-      if (!no_gain) {
+      if (no_gain || already_revised) {
+        EXPECT_DOUBLE_EQ(original.x(), revised.pose.position.x);
+        EXPECT_DOUBLE_EQ(original.y(), revised.pose.position.y);
+        EXPECT_DOUBLE_EQ(original.z(), revised.pose.position.z);
+        EXPECT_EQ(ros::Time(300), revised.header.stamp);
+      } else {
         EXPECT_GT(revised.pose.position.y, bound_exit ? .05 : .20);
         if (bound_exit) {
           EXPECT_LE(revised.pose.position.y, .15 + 1e-6);
@@ -931,7 +944,7 @@ class SafeRelayPublisherTest {
       ASSERT_EQ(1U, goals.poses.size());
       EXPECT_EQ(id, goals.poses.front().header.seq);
       ASSERT_EQ(1U, labels.markers.size());
-      EXPECT_EQ(std::to_string(id) + (no_gain ? "" : (already_revised ? ".2" : ".1")), labels.markers.front().text);
+      EXPECT_EQ(std::to_string(id) + (already_revised || !no_gain ? ".1" : ""), labels.markers.front().text);
       return;
     }
     // The immutable goal has its own coordinates; it is not reconstructed from
@@ -959,7 +972,7 @@ TEST(SafeRelayPublisher, ForwardSelectionKeepsWideClearanceInsteadOfClosestFront
 TEST(SafeRelayPublisher, LoggedNineTenRevisionCannotRetreatOrCrowdNeighbours) {
   SafeRelayPublisherTest::loggedRevisionOrder();
 }
-TEST(SafeRelayPublisher, NearbyForwardPointReplacesQueuedTailWithSuccessiveVersions) {
+TEST(SafeRelayPublisher, QueuedTailSharesSingleRevisionLimitAndRejectsWorseClearance) {
   SafeRelayPublisherTest::queuedTailVersions();
 }
 
@@ -977,7 +990,7 @@ TEST(SafeRelayPublisher, InternalPointUpdatesKeepIdAndLocalSearchAnchor) {
   for (uint32_t id : {1U, 7U, 8U, 9U})
     SafeRelayPublisherTest::unflownPocketAndGap(true, false, id);
 }
-TEST(SafeRelayPublisher, SecondRevisionReplacesFirstWithoutConsumingNewId) {
+TEST(SafeRelayPublisher, AlreadyRevisedPointKeepsCoordinatesStampAndLabel) {
   SafeRelayPublisherTest::unflownPocketAndGap(true, false, 8, false, false, true);
 }
 TEST(SafeRelayPublisher, InternalPointWithoutImprovementKeepsOriginalPoint) {
