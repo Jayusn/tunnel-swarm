@@ -94,12 +94,19 @@ A* 和原有静态碰撞检查仍由 FUEL 原流程负责。关闭检测时，�
 `fapp_planner_priority` 的默认值不变；被选中的历史区域用于选路与样条生成，不新增执行期硬拦截。
 检测器的背景过滤和运动确认阈值未改，不能把规划继续运行等同于即时检测恢复。
 
-开启原有录包开关后，额外记录：
+七分屏入口默认保留轻量规划录包，关闭双机建图点云、地图/规划可视化和独立 ArUco 录包，
+相机识别、实时建图和控制照常运行。需要录制点云以离线重建地图时，使用
+`UAV0_PLANNER_ROSBAG_CLOUDS=true bash ~/match_ws/shfiles/start_uav0_twaypoints.sh`；
+需要独立 ArUco 判定数据时设置 `UAV0_ARUCO_ROSBAG_ENABLED=true`。
+其他话题可以通过 `UAV0_PLANNER_ROSBAG_EXTRA_TOPICS` 补录。
+默认轻量包可排查轨迹、里程计和动态状态，但不能单独重建完整地图。
+
+开启原有录包开关后，保留：
 
 - `/UAV0/fapp/states`：检测器原始输出。
 - `/exploration_node/fapp/memory`：近期障碍，以及穿越中的历史区域；每个状态保留原观测时间。
 - `/exploration_node/fapp/memory_status`：观测年龄、位置、`retained` / `historical` 状态和历史包络上下界。
-- 原有 `/rosout` 中的 `[manual_fapp]`、`[side_recovery]`、`[vertical_detour]`：
+- `/rosout_agg` 中的 `[manual_fapp]`、`[side_recovery]`、`[vertical_detour]`：
   历史区域选取、连续下穿、通过和绕行阶段切换原因。
 
 `memory` 是诊断话题，包含已经超过新鲜预测有效期的历史区域，不能当作检测器的新鲜状态重新输入规划器。

@@ -851,7 +851,7 @@
     </include>
 
     <!--
-      默认保留轻量规划诊断话题；通道回放入口通过 extra_topics 补录建图点云等输入。
+      默认保留轻量规划诊断话题；建图点云、地图和规划可视化需通过 extra_topics 显式补录。
       cwd=ROS_HOME 使相对路径落在 ~/.ros；-o 会自动追加启动时间戳。
     -->
     <node if="$(arg enable_planner_rosbag)" pkg="rosbag" type="record"
@@ -872,24 +872,14 @@
                 /UAV0/planning/emergency_brake
                 /UAV0/planning/safety_hold
                 /UAV0/planning/endpoint_hold
-                /UAV0/sdf_map/occupancy_local
-                /UAV0/sdf_map/occupancy_local_inflate
-                /UAV0/sdf_map/update_range
-                /UAV0/planning_vis/frontier
-                /UAV0/planning_vis/viewpoints
-                /UAV0/planning_vis/trajectory
-                /UAV0/planning_vis/yaw
-                /UAV0/planning_vis/topo_path
                 /UAV0/corridor_search/workspace_lock
                 /UAV0/corridor_search/dynamic_detection_enable
                 /mission/task_status
                 /UAV0/mission/task_status
-                /UAV0/mission/search_markers
                 /UAV0/mission/exit_candidate
                 /UAV0/mission/final_exit
                 /tf
                 /tf_static
-                /rosout
                 /rosout_agg"/>
 
     <!-- 2026-07-07: 验证探索版优先使用 FUEL 的 traj.rviz，能直接看到 frontier / bspline / exploration 可视化。 -->

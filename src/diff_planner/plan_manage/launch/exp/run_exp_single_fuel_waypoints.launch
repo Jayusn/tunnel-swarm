@@ -261,6 +261,7 @@
   <node if="$(arg enable_rviz)" name="rviz" pkg="rviz" type="rviz" args="-d $(find diff_planner)/launch/exp/fuel_waypoints.rviz" required="true">
     <remap from="/move_base_simple/goal" to="$(arg rviz_goal_topic)"/>
   </node>
+  <!-- 默认不录地图和规划可视化；需要时通过 planner_rosbag_extra_topics 显式补录。 -->
   <node if="$(arg enable_planner_rosbag)" pkg="rosbag" type="record"
         name="fuel_planner_recorder" ns="$(arg vehicle_ns)" cwd="ROS_HOME" output="screen"
         args="--lz4 --split --size=$(arg planner_rosbag_split_size_mb)
@@ -275,9 +276,5 @@
               $(arg topic_prefix)/planning/emergency_brake
               /UAV0/fapp/states /exploration_node/fapp/memory /exploration_node/fapp/memory_status
               $(arg topic_prefix)/planning/safety_hold $(arg topic_prefix)/planning/endpoint_hold
-              $(arg topic_prefix)/sdf_map/occupancy_local
-              $(arg topic_prefix)/sdf_map/occupancy_local_inflate
-              $(arg topic_prefix)/sdf_map/update_range
-              $(arg topic_prefix)/planning_vis/trajectory $(arg topic_prefix)/planning_vis/topo_path
-              $(arg topic_prefix)/planning_vis/yaw /tf /tf_static /rosout /rosout_agg"/>
+              /tf /tf_static /rosout_agg"/>
 </launch>
