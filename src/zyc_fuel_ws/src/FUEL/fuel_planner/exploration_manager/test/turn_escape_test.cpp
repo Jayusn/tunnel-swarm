@@ -222,18 +222,20 @@ public:
       for(int y=0;y<map.mp_->map_voxel_num_.y();++y)
         for(int z=0;z<map.mp_->map_voxel_num_.z();++z) {
           const Eigen::Vector3i id(x,y,z); Vector3d p; map.indexToPos(id,p);
-          const bool blocked=(scenario==1||scenario==2)&&p.z()<.30;
+          // 前方高处横梁挡住斜下降，但起点下降柱及低位水平通道可通。
+          const bool beam=scenario==6&&p.x()>-.65&&p.x()<-.50&&p.z()>=.55&&p.z()<=.85;
+          const bool blocked=((scenario==1||scenario==2)&&p.z()<.30)||beam;
           map.md_->occupancy_buffer_[map.toAddress(id)]=blocked
               ? (scenario==1 ? map.mp_->clamp_min_log_-map.mp_->unknown_flag_ : map.mp_->clamp_max_log_)
               : map.mp_->clamp_min_log_;
-          map.md_->occupancy_buffer_inflate_[map.toAddress(id)]=blocked&&scenario==2;
+          map.md_->occupancy_buffer_inflate_[map.toAddress(id)]=blocked&&(scenario==2||beam);
         }
     map.md_->local_bound_min_.setZero();
     map.md_->local_bound_max_=map.mp_->map_voxel_num_-Eigen::Vector3i::Ones();
     map.updateESDF3d();
     planner.fapp_watched_valid_=true;
-    planner.fapp_watched_lower_=Vector3d(-.30,-.40,scenario==4?.12:.40);
-    planner.fapp_watched_upper_=Vector3d(.30,.40,.90);
+    planner.fapp_watched_lower_=Vector3d(-.30,scenario==8?-1.8:-.40,(scenario==4||scenario==8)?.12:.40);
+    planner.fapp_watched_upper_=Vector3d(.30,scenario==8?1.8:.40,.90);
     planner.fapp_watched_state_.stamp=ros::Time::now().toSec();
     manager.manual_path_enabled_=manager.manual_path_exploration_style_=true;
     manager.manual_path_wait_for_trigger_=true;
@@ -244,11 +246,45 @@ public:
     manager.manual_fapp_active_=true;
     manager.manual_fapp_forward_=Vector3d::UnitX();
     manager.manual_fapp_hold_height_=.65;
-    const Vector3d start(scenario==3?0.:(scenario==5?-1.:-.425),0,.65),zero=Vector3d::Zero();
+    const Vector3d start(scenario==3?0.:(scenario==5?-1.:(scenario==6?-.95:-.425)),0,.65),zero=Vector3d::Zero();
     if(scenario>=1&&scenario<=4) {
       EXPECT_FALSE(manager.planFappVerticalDescent(start,zero));
       EXPECT_FALSE(manager.vertical_detour_plan_);
       return;
+    }
+    if(scenario==8) {
+      // 既不能下穿也不能侧绕时，planner_priority 不能把穿障直行当成成功。
+      EXPECT_EQ(FAIL,manager.planExploreMotion(start,zero,zero,zero));
+      EXPECT_EQ(0u,manager.manual_path_.next);
+      return;
+    }
+    if(scenario==6) {
+      std::vector<Vector3d> blocked_path;
+      EXPECT_FALSE(manager.buildManualFappUnderpassPath(start,manager.manual_path_.points.front(),blocked_path));
+      EXPECT_TRUE(planner.isKnownFreePosition(start));
+    }
+    if(scenario==7) {
+      ASSERT_TRUE(planner.planExploreTraj({start,Vector3d(0,0,.65),Vector3d(.8,0,.65)},
+                                         zero,zero,0.,true));
+      FastExplorationFSM fsm;
+      fsm.expl_manager_=std::shared_ptr<FastExplorationManager>(&manager,[](FastExplorationManager*){});
+      fsm.planner_manager_=manager.planner_manager_;
+      fsm.fd_=std::make_shared<FSMData>();
+      fsm.fp_=std::make_shared<FSMParam>();
+      fsm.fd_->state_str_={"INIT","WAIT","PLAN","PUB","EXEC","FINISH"};
+      fsm.fd_->odom_pos_=start;
+      fsm.fd_->odom_yaw_=0.;
+      fsm.fp_->emergency_brake_horizon_=.12;
+      fsm.active_traj_=planner.local_data_;
+      fsm.active_traj_.start_time_=ros::Time::now();
+      fsm.active_traj_valid_=true;
+      fsm.state_=EXEC_TRAJ;
+      fsm.emergency_brake_pub_=nh.advertise<std_msgs::Int32>("brake",1);
+      fsm.safetyCallback(ros::TimerEvent());
+      EXPECT_TRUE(fsm.active_traj_braked_);
+      EXPECT_TRUE(fsm.fd_->static_state_);
+      EXPECT_EQ(PLAN_TRAJ,fsm.state_);
+      EXPECT_TRUE(fsm.next_plan_retry_time_.isZero());
     }
     ASSERT_EQ(SUCCEED,manager.planExploreMotion(start,zero,zero,zero));
     EXPECT_EQ(0u,manager.manual_path_.next);
@@ -286,6 +322,7 @@ public:
     EXPECT_TRUE(manager.manual_fapp_curve_active_);
     EXPECT_GT(manager.ed_->next_goal_.x(),.45);
     EXPECT_EQ(0u,manager.manual_path_.next);
+    EXPECT_FALSE(manager.manualFappTrajectoryBlocked(planner.local_data_,0.));
   }
 
   static void runBottomClearance(bool search) {
@@ -1223,17 +1260,8 @@ public:
     if (inside) {
       auto& planner = *manager.planner_manager_;
       ASSERT_FALSE(planner.isWatchedFappPositionSafe(start));
-      if (scenario == "inside_history_strict") {
-        EXPECT_EQ(FAIL, result);
-      } else {
-        ASSERT_EQ(SUCCEED, result);
-        auto& trajectory = planner.local_data_.position_traj_;
-        const Vector3d end = trajectory.evaluateDeBoorT(trajectory.getTimeSum());
-        EXPECT_GT(end.x(), start.x() + 0.3);
-        EXPECT_GT(end.z(), start.z() - 0.05);
-        EXPECT_FALSE(manager.currentPlanIsVerticalDetour());
-        checkManualFappExecution(manager, start);
-      }
+      // 没有可行下穿/侧绕时，优先规划也不能把包络内普通直行当成避障成功。
+      EXPECT_EQ(FAIL, result);
       return;
     }
     if (scenario == "blocked") {
@@ -3970,7 +3998,7 @@ TEST(FappMemory, ConfirmedRegionRejectsSingleTallBoxButKeepsRealLowerObservation
 TEST(FappMemory, OldSparseTallBoxIsRecheckedBeforeJoiningConfirmedEnvelope) {
   fast_planner::TurnEscapeTest::runLateHistoricalOutlier();
 }
-TEST(FappMemory, PlannerPriorityAdvancesFromInsideHistoricalEnvelope) {
+TEST(FappMemory, PlannerPriorityDoesNotBypassHistoricalEnvelopeCheck) {
   fast_planner::TurnEscapeTest::runManualSuspended("inside_history");
 }
 TEST(FappMemory, StrictModeStillRejectsHistoricalEnvelopeOverlap) {
@@ -4324,6 +4352,15 @@ TEST(InflationEscape, ManualWaypointBacksStraightWithoutOdometryHistory) {
 
 TEST(ManualSuspended, CloseDynamicObstacleUsesVerticalDescentThenCrosses) {
   fast_planner::TurnEscapeTest::runCloseFappDescent(0);
+}
+TEST(ManualSuspended, BlockedSlopeDescendsBeforeApproachingDynamicEnvelope) {
+  fast_planner::TurnEscapeTest::runCloseFappDescent(6);
+}
+TEST(ManualSuspended, DynamicObstacleReplansExecutingApproachThenDescends) {
+  fast_planner::TurnEscapeTest::runCloseFappDescent(7);
+}
+TEST(ManualSuspended, FailedCrossingDoesNotPublishOrdinaryPathThroughEnvelope) {
+  fast_planner::TurnEscapeTest::runCloseFappDescent(8);
 }
 TEST(ManualSuspended, VerticalDynamicDescentRejectsUnknownBodyColumn) {
   fast_planner::TurnEscapeTest::runCloseFappDescent(1);

@@ -1176,6 +1176,18 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
     return;
   }
 
+  // 用真正执行的剩余样条检查新动态包络；失败后从实测位置重规划，
+  // 不等普通接近段执行完，也不拿前向直线否决已可通的弯曲下穿。
+  const double fapp_elapsed = (ros::Time::now() - active_traj_.start_time_).toSec();
+  if (expl_manager_->manualFappTrajectoryBlocked(active_traj_, fapp_elapsed)) {
+    requestActiveTrajectoryBrake("dynamic obstacle blocks remaining waypoint trajectory");
+    fd_->static_state_ = true;
+    next_plan_retry_time_ = ros::Time(0);
+    pending_traj_safe_since_ = ros::Time(0);
+    transitState(PLAN_TRAJ, "fapp-waypoint-replan");
+    return;
+  }
+
   // 航点模式和动态穿越会话已在选路时处理连续下穿/侧绕，执行中不能再用前向直线
   // 触发旧的刹车下降流程，否则每条新轨迹都会因同一障碍被立即取消。
   if (!expl_manager_->manualWaypointsEnabled() &&

@@ -27,6 +27,7 @@ class FastPlannerManager;
 class FrontierFinder;
 class TaskSearchManager;
 class SafeRelayPublisher;
+struct LocalTrajData;
 struct ExplorationParam;
 struct ExplorationData;
 
@@ -42,6 +43,7 @@ public:
   int planExploreMotion(const Vector3d& pos, const Vector3d& vel, const Vector3d& acc,
                         const Vector3d& yaw);
   bool manualWaypointsEnabled() const { return manual_path_enabled_; }
+  bool manualFappTrajectoryBlocked(const LocalTrajData& trajectory, double elapsed) const;
   bool preserveTrajectoryEndpoint() const {
     return manual_path_enabled_ || fapp_exploration_crossing_enabled_;
   }

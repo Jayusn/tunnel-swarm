@@ -3848,13 +3848,11 @@ bool FastExplorationManager::planFappVerticalDescent(
   double age;
   if (!manual_fapp_active_ || !planner_manager_->watchedFappBounds(lower, upper, age))
     return false;
-  const Vector3d forward = manual_fapp_forward_;
-  const double near = (0.5 * (lower + upper)).dot(forward) -
-      (0.5 * (upper - lower)).dot(forward.cwiseAbs()) - sdf_map_->getResolution();
   const double low = lower.z() - underpass_height_tracking_margin_;
   const double minimum = std::max(underpass_min_height_, task_search_manager_->clampSearchHeight(-1e3));
-  // 仅在接近距离不足时退回固定XY下降；整根柱仍须通过原有机体和动态检查。
-  if (near - pos.dot(forward) >= 0.10 || low < minimum || pos.z() <= low + 0.02)
+  // 斜下穿受阻时就检查固定XY下降，不能等进入包络后才尝试。
+  // 整根下降柱仍须通过原有机体和动态检查。
+  if (low < minimum || pos.z() <= low + 0.02)
     return false;
   Vector3d target = pos;
   target.z() = low;
@@ -3885,7 +3883,7 @@ bool FastExplorationManager::planFappVerticalDescent(
   has_last_requested_goal_ = true;
   vertical_detour_plan_ = true;
   pending_reference_height_ = target.z();
-  ROS_WARN("[fapp_vertical] insufficient sloped approach; fixed-xy descent "
+  ROS_WARN("[fapp_vertical] sloped underpass unavailable; fixed-xy descent "
            "at (%.2f,%.2f), z %.2f -> %.2f, then replan crossing.",
            pos.x(), pos.y(), pos.z(), target.z());
   return true;
@@ -4197,6 +4195,19 @@ void FastExplorationManager::improveManualWaypoint(const Vector3d& pos) {
   }
 }
 
+bool FastExplorationManager::manualFappTrajectoryBlocked(
+    const LocalTrajData& trajectory, double elapsed) const {
+  if (!manual_path_enabled_ || !manual_path_exploration_style_ ||
+      !manual_fapp_active_ || fapp_rush_active_) return false;
+  auto curve = trajectory.position_traj_;
+  const double duration = curve.getTimeSum();
+  std::vector<Vector3d> remaining;
+  for (double t = std::max(0.0, elapsed); t < duration; t += 0.02)
+    remaining.push_back(curve.evaluateDeBoorT(t));
+  remaining.push_back(curve.evaluateDeBoorT(duration));
+  return !planner_manager_->isFappPathSafe(remaining);
+}
+
 int FastExplorationManager::planManualWaypointMotion(
     const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, const Vector3d& yaw) {
   if (manual_path_wait_for_trigger_ && !manual_path_started_) return FAIL;
@@ -4390,11 +4401,12 @@ int FastExplorationManager::planManualWaypointMotion(
     if (planner_manager_->isPositionSafe(target) &&
         planner_manager_->isPathSafe(ed_->path_next_goal_) &&
         (!(manual_path_exploration_style_ && !exit_motion) ||
-         planner_manager_->fappPlannerPriority() ||
+         (planner_manager_->fappPlannerPriority() && !manual_fapp_active_) ||
          planner_manager_->isFappPathSafe(ed_->path_next_goal_)) &&
         planner_manager_->planExploreTraj(ed_->path_next_goal_, vel, acc, 0.0,
                                           hold_fapp_height && !underpass_motion, fapp_rush_active_ ? 1.0 : 0.0, fapp_rush_active_ ? 1.0 : 0.0) &&
-        planner_manager_->isTrajectorySafe()) {
+        planner_manager_->isTrajectorySafe() &&
+        !manualFappTrajectoryBlocked(planner_manager_->local_data_, 0.0)) {
       if (trajectory_within_limit()) {
         planned = true;
         break;
