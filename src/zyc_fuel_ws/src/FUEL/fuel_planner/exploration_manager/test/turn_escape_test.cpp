@@ -80,7 +80,7 @@ class TurnEscapeTest {
     manager.task_search_manager_->initialize(nh);
   }
 public:
-  static void runRecordedLowCrossing(const char* fixture) {
+  static void runRecordedLowCrossing(const char* fixture, bool manual_mission = false) {
     ros::NodeHandle nh("/exploration_node");
     FastExplorationManager manager;
     manager.initialize(nh);
@@ -109,13 +109,35 @@ public:
     const Vector3d goal(upper.x()+map.getResolution()+.20,pos.y(),pos.z());
     std::vector<Vector3d> path;
     std::cout << "recorded start=" << pos.transpose() << " bounds=" << lower.transpose() << " / " << upper.transpose() << std::endl;
-    ASSERT_TRUE(manager.buildManualFappUnderpassPath(pos,goal,path));
+    if (manual_mission) {
+      // 参数必须来自航点launch；测试目标放在录包障碍后方，不改用户航点文件。
+      ASSERT_TRUE(manager.manual_path_enabled_);
+      ASSERT_TRUE(manager.manual_path_exploration_style_);
+      ASSERT_TRUE(manager.manual_path_wait_for_trigger_);
+      ASSERT_DOUBLE_EQ(1.20, manager.manual_path_max_segment_length_);
+      manager.manual_path_.points = {goal};
+      manager.manual_path_.next = 0;
+      ASSERT_EQ(FAIL, manager.planExploreMotion(pos,Vector3d::Zero(),
+                                               Vector3d::Zero(),Vector3d::Zero()));
+      manager.startManualWaypointMission();
+      ASSERT_EQ(SUCCEED, manager.planExploreMotion(pos,Vector3d::Zero(),
+                                                  Vector3d::Zero(),Vector3d::Zero()));
+      path = manager.ed_->path_next_goal_;
+      EXPECT_TRUE(manager.manual_fapp_curve_active_);
+      EXPECT_GT(Astar::pathLength(path), manager.manual_path_max_segment_length_);
+      EXPECT_GT(path.back().x(), upper.x()+map.getResolution()+.10);
+      EXPECT_EQ(0u, manager.manual_path_.next);
+      ASSERT_EQ(1u, manager.manual_path_.points.size());
+      EXPECT_TRUE(manager.manual_path_.points.front().isApprox(goal));
+    } else {
+      ASSERT_TRUE(manager.buildManualFappUnderpassPath(pos,goal,path));
+      ASSERT_TRUE(planner.planExploreTraj(path,Vector3d::Zero(),Vector3d::Zero(),0.0));
+    }
     EXPECT_GT(manager.manual_fapp_curve_side_,0.30);
     EXPECT_LT(manager.manual_fapp_curve_side_,0.60);
     EXPECT_NEAR(path.back().z(),lower.z()-manager.underpass_height_tracking_margin_,1e-6);
     for (const auto& point : path) EXPECT_TRUE(planner.isKnownFreePosition(point));
     ASSERT_TRUE(planner.isFappPathSafe(path));
-    ASSERT_TRUE(planner.planExploreTraj(path,Vector3d::Zero(),Vector3d::Zero(),0.0));
     EXPECT_TRUE(planner.isTrajectorySafe());
     auto& trajectory=planner.local_data_.position_traj_;
     for(double t=0;t<=trajectory.getTimeSum();t+=.02) {
@@ -4215,6 +4237,12 @@ TEST(FappExploration, RecordedLeftLowCrossing) {
   const char* fixture=std::getenv("LOW_CROSSING_FIXTURE");
   if (!fixture) GTEST_SKIP() << "requires recorded crossing cloud snapshot";
   fast_planner::TurnEscapeTest::runRecordedLowCrossing(fixture);
+}
+
+TEST(ManualSuspended, RecordedLeftLowCrossingWithWaypointLaunch) {
+  const char* fixture=std::getenv("WAYPOINT_LOW_CROSSING_FIXTURE");
+  if (!fixture) GTEST_SKIP() << "requires waypoint launch parameters and recorded crossing cloud snapshot";
+  fast_planner::TurnEscapeTest::runRecordedLowCrossing(fixture,true);
 }
 
 TEST(FappExploration, RightObstacleSelectsWiderLeftLowCrossing) {
