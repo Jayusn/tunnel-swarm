@@ -57,6 +57,7 @@ bool isLandingSearchHighSpeedState(const std::string& state)
            state == "FRONT_ARUCO_YAW_SCAN_RETURN" ||
            state == "FRONT_ARUCO_YAW_SCAN_COMPLETE_START_DOWN_SWEEP" ||
            state == "FRONT_ARUCO_HINT_DIFF_APPROACH" ||
+           state == "FRONT_ARUCO_VERIFY_APPROACH" ||
            state == "FRONT_ARUCO_HINT_RETURN_COMPLETE_APPROACH" ||
            state == "FRONT_HINT_REACHED_WAIT_DOWN_CAMERA" ||
            state == "FRONT_HINT_TIMEOUT_FALLBACK_DOWN_SWEEP" ||

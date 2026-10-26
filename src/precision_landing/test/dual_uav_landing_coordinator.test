@@ -3,6 +3,8 @@
         name="dual_uav_landing_coordinator" output="screen">
     <param name="topics/candidates" value="/test/down_candidates"/>
     <param name="topics/front_candidates" value="/test/front_candidates"/>
+    <param name="topics/search_candidates" value="/test/search_candidates"/>
+    <param name="topics/verification_hint" value="/test/verification_hint"/>
     <param name="topics/final_exit" value="/test/final_exit"/>
     <param name="topics/uav0_landing_request" value="/test/uav0_landing_request"/>
     <param name="topics/uav0_success" value="/test/uav0_success"/>

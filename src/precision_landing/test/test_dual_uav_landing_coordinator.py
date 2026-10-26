@@ -5,7 +5,7 @@ import unittest
 
 import rospy
 import rostest
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, PoseArray
 from std_msgs.msg import Bool, Int32, String
 
 from precision_landing.msg import LandingPlatform, LandingPlatformArray
@@ -19,6 +19,7 @@ class DualUavLandingCoordinatorTest(unittest.TestCase):
         self.uav0_target = None
         self.uav1_target = None
         self.released = False
+        self.hint = None
 
         rospy.Subscriber("/test/assignments_ready", Bool, self._ready_callback)
         rospy.Subscriber("/test/uav0_assigned", Int32, self._uav0_id_callback)
@@ -27,6 +28,9 @@ class DualUavLandingCoordinatorTest(unittest.TestCase):
         rospy.Subscriber("/test/uav1_target", PoseStamped, self._uav1_target_callback)
         rospy.Subscriber("/test/release_uav1", Bool, self._release_callback)
 
+        rospy.Subscriber("/test/verification_hint", PoseArray, self._hint_callback)
+        self.search_candidates_pub = rospy.Publisher(
+            "/test/search_candidates", LandingPlatformArray, queue_size=1)
         self.front_candidates_pub = rospy.Publisher(
             "/test/front_candidates", LandingPlatformArray, queue_size=1
         )
@@ -43,12 +47,16 @@ class DualUavLandingCoordinatorTest(unittest.TestCase):
         self.assertTrue(
             self._wait_for(
                 lambda: self.front_candidates_pub.get_num_connections() > 0
+                and self.search_candidates_pub.get_num_connections() > 0
                 and self.exit_pub.get_num_connections() > 0
                 and self.state_pub.get_num_connections() > 0
                 and self.landing_request_pub.get_num_connections() > 0
             ),
             "coordinator did not subscribe to test inputs",
         )
+
+    def _hint_callback(self, message):
+        self.hint = message if message.poses else None
 
     def _ready_callback(self, message):
         self.ready = message.data
@@ -94,7 +102,7 @@ class DualUavLandingCoordinatorTest(unittest.TestCase):
             message.platforms.append(platform)
         return message
 
-    def test_assignment_waits_for_full_scan_and_preserves_detection_order(self):
+    def test_unconfirmed_search_then_immediate_nearest_pair_assignment(self):
         self.state_pub.publish(String(data="FRONT_ARUCO_FORWARD_APPROACH"))
         exit_pose = PoseStamped()
         exit_pose.header.stamp = rospy.Time.now()
@@ -110,19 +118,43 @@ class DualUavLandingCoordinatorTest(unittest.TestCase):
         rospy.sleep(0.15)
         self.assertFalse(self.ready, "stale latched candidates must not assign")
 
-        self.front_candidates_pub.publish(self._candidate_array(rospy.Time.now()))
+        # 深度未确认的近点只能搜索，不能参与双机分配。
+        uncertain = self._candidate_array(rospy.Time.now())
+        uncertain.platforms = uncertain.platforms[1:]
+        uncertain.platforms[0].id = 31
+        uncertain.platforms[0].pose.pose.position.x = 1.0
+        self.search_candidates_pub.publish(uncertain)
+        self.assertTrue(self._wait_for(lambda: self.hint is not None))
+        self.assertFalse(self.ready)
+        self.assertAlmostEqual(self.hint.poses[0].position.x, 1.0)
+        # 无新观测时保留线索；不是依靠图像每帧重发才能继续搜索。
+        first_stamp = self.hint.header.stamp
+        self.assertTrue(self._wait_for(lambda: self.hint.header.stamp > first_stamp))
+        self.state_pub.publish(String(data="FRONT_ARUCO_VERIFY_APPROACH"))
+        rospy.sleep(0.1)
+        confirmed = self._candidate_array(rospy.Time.now())
+        confirmed.platforms = confirmed.platforms[:1]
+        self.front_candidates_pub.publish(confirmed)
         rospy.sleep(0.15)
-        self.assertFalse(self.ready, "front candidates must not interrupt yaw scan")
+        self.assertFalse(self.ready, "one confirmed plus one rough candidate must not assign")
         self.assertEqual(self.uav0_id, -1)
         self.assertEqual(self.uav1_id, -1)
-
-        self.state_pub.publish(String(data="FRONT_ARUCO_YAW_SCAN_RIGHT"))
-        rospy.sleep(0.1)
-        self.assertFalse(self.ready, "right scan is not full scan completion")
-
-        self.state_pub.publish(
-            String(data="FRONT_ARUCO_YAW_SCAN_COMPLETE_START_DOWN_SWEEP")
-        )
+        self.assertTrue(self._wait_for(lambda: self.hint is None), "confirmed-only hint must clear")
+        uncertain.header.stamp = rospy.Time.now()
+        uncertain.platforms[0].id = 99
+        uncertain.platforms[0].pose.pose.position.x = 0.5
+        self.search_candidates_pub.publish(uncertain)
+        self.assertTrue(self._wait_for(lambda: self.hint is not None))
+        # 一次确认多个：打乱到达顺序，较远的88不应占用名额。
+        confirmed = self._candidate_array(rospy.Time.now())
+        far = LandingPlatform()
+        far.header = confirmed.header
+        far.id = 88
+        far.pose.header = confirmed.header
+        far.pose.pose.position.x = 9.0
+        far.pose.pose.orientation.w = 1.0
+        confirmed.platforms = [far] + list(reversed(confirmed.platforms))
+        self.front_candidates_pub.publish(confirmed)
         self.assertTrue(self._wait_for(lambda: self.ready), "assignment was not released")
         self.assertEqual(self.uav1_id, 31)
         self.assertEqual(self.uav0_id, 17)

@@ -1,0 +1,17 @@
+<launch>
+  <node pkg="precision_landing" type="front_aruco_hint_node" name="front_hint_test_node" output="screen">
+    <param name="topics/image" value="/front_test/image"/>
+    <param name="topics/aligned_depth" value="/front_test/depth"/>
+    <param name="topics/camera_info" value="/front_test/info"/>
+    <param name="topics/odometry" value="/front_test/odom"/>
+    <param name="topics/mission_status" value="/front_test/stage"/>
+    <param name="topics/search_state" value="/front_test/state"/>
+    <param name="topics/candidates" value="/front_test/confirmed"/>
+    <param name="topics/search_candidates" value="/front_test/rough"/>
+    <param name="frames/body" value="front_test_body"/>
+    <param name="frames/camera_optical" value="front_test_camera"/>
+    <param name="marker/size_m" value="0.5"/>
+  </node>
+  <test test-name="front_aruco_search_hint_test" pkg="precision_landing"
+        type="test_front_aruco_search_hint.py" time-limit="20"/>
+</launch>

@@ -92,6 +92,7 @@ install(PROGRAMS scripts/start_landing_test.sh scripts/start_onboard_landing.sh
 if(CATKIN_ENABLE_TESTING)
   add_rostest(test/precision_landing_node.test)
   add_rostest(test/dual_uav_landing_coordinator.test)
+  add_rostest(test/front_aruco_search_hint.test)
   catkin_add_nosetests(test/test_config.py)
   catkin_add_nosetests(test/test_landing_search_config.py)
 

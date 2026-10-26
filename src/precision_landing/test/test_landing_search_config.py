@@ -235,12 +235,11 @@ def test_search_runtime_exclusion_clears_conflicting_lock():
     assert "true, excluded_marker_id_" in source
 
 
-def test_dual_uav_coordinator_assigns_after_scan_in_detection_order():
+def test_dual_uav_coordinator_assigns_nearest_confirmed_pair_without_full_scan():
     source = (PACKAGE / "src/dual_uav_landing_coordinator_node.cpp").read_text()
-    assert "!front_scan_completed_ || candidate_order_.size() < 2U" in source
+    assert "candidates_by_id_.size() < 2U" in source
     assert "downward_ids_.insert(platform.id)" in source
     assert "downward_ids_.count(platform.id) == 0U" in source
-    assert "candidate_order_.push_back(platform.id)" in source
     assert "uav1_id_ = uav1_platform.id" in source
     assert "uav0_id_ = uav0_platform.id" in source
     assert "publishBool(release_pub_, true)" in source
@@ -287,7 +286,6 @@ def test_dual_uav_coordinator_assigns_after_scan_in_detection_order():
     )[0]
     assert 'next_state == "FRONT_ARUCO_FORWARD_APPROACH"' in state_callback
     assert "resetSearchCandidates()" in state_callback
-    assert "frontScanCompleted(next_state)" in state_callback
     assert "tryAssignPlatforms()" in state_callback
 
 

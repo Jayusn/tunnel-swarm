@@ -133,6 +133,8 @@
               /dual_uav_landing/assignments_ready
               /dual_uav_landing/release_uav1
               /dual_uav_landing/status
+              $(arg topic_prefix)/landing/front/search_candidates
+              /UAV0/landing/verification_hint
               /landing_diff_search_manager/state
               /UAV0/landing/front_scan_anchor
               /tf /tf_static /rosout_agg"/>

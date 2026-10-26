@@ -1,4 +1,5 @@
 #include <geometry_msgs/PoseStamped.h>
+#include <geometry_msgs/PoseArray.h>
 #include <ros/ros.h>
 #include <std_msgs/Bool.h>
 #include <std_msgs/Int32.h>
@@ -26,6 +27,10 @@ class DualUavLandingCoordinator {
   DualUavLandingCoordinator() : private_node_("~") {
     std::string candidates_topic{"/UAV0/landing/search/candidates"};
     std::string front_candidates_topic{"/UAV0/landing/front/candidates"};
+    std::string search_candidates_topic{"/UAV0/landing/front/search_candidates"};
+    std::string search_hint_topic{"/UAV0/landing/verification_hint"};
+    private_node_.param("topics/search_candidates", search_candidates_topic, search_candidates_topic);
+    private_node_.param("topics/verification_hint", search_hint_topic, search_hint_topic);
     std::string exit_topic{"/UAV0/mission/final_exit"};
     std::string landing_request_topic{"/UAV0/mission/landing_request"};
     std::string success_topic{"/UAV0/landing/success"};
@@ -65,6 +70,9 @@ class DualUavLandingCoordinator {
     front_candidates_sub_ = node_.subscribe(
         front_candidates_topic, 2,
         &DualUavLandingCoordinator::frontCandidatesCallback, this);
+    search_candidates_sub_ = node_.subscribe(search_candidates_topic, 2,
+        &DualUavLandingCoordinator::searchCandidatesCallback, this);
+    search_hint_pub_ = node_.advertise<geometry_msgs::PoseArray>(search_hint_topic, 1);
     exit_sub_ = node_.subscribe(exit_topic, 1, &DualUavLandingCoordinator::exitCallback, this);
     landing_request_sub_ = node_.subscribe(
         landing_request_topic, 2,
@@ -99,14 +107,16 @@ class DualUavLandingCoordinator {
   }
 
   static bool frontCandidatesAllowed(const std::string& state) {
-    return state == "FRONT_ARUCO_INITIAL_WAIT" ||
+    return state == "FRONT_ARUCO_VERIFY_APPROACH" ||
+           state == "FRONT_ARUCO_INITIAL_WAIT" ||
            state == "FRONT_ARUCO_YAW_SCAN_LEFT" ||
            state == "FRONT_ARUCO_YAW_SCAN_RIGHT" ||
            state == "FRONT_ARUCO_YAW_SCAN_RETURN";
   }
 
   static bool downwardCandidatesAllowed(const std::string& state) {
-    return state == "FRONT_ARUCO_YAW_SCAN_COMPLETE_START_DOWN_SWEEP" ||
+    return state == "FRONT_ARUCO_VERIFY_APPROACH" ||
+           state == "FRONT_ARUCO_YAW_SCAN_COMPLETE_START_DOWN_SWEEP" ||
            state == "FRONT_ARUCO_HINT_DIFF_APPROACH" ||
            state == "FRONT_ARUCO_HINT_RETURN_COMPLETE_APPROACH" ||
            state == "FRONT_HINT_REACHED_WAIT_DOWN_CAMERA" ||
@@ -115,22 +125,10 @@ class DualUavLandingCoordinator {
            state == "ARUCO_LOCKED_DIFF_APPROACH";
   }
 
-  static bool frontScanCompleted(const std::string& state) {
-    return state == "FRONT_ARUCO_YAW_SCAN_COMPLETE_START_DOWN_SWEEP" ||
-           state == "FRONT_ARUCO_HINT_DIFF_APPROACH" ||
-           state == "FRONT_ARUCO_HINT_RETURN_COMPLETE_APPROACH" ||
-           state == "FRONT_HINT_REACHED_WAIT_DOWN_CAMERA" ||
-           state == "FRONT_HINT_TIMEOUT_FALLBACK_DOWN_SWEEP" ||
-           state == "FINAL_ARUCO_TIMEOUT_FALLBACK_DOWN_SWEEP" ||
-           state == "ARUCO_LOCKED_DIFF_APPROACH" ||
-           state == "ASSIGNED_TARGET_REACHED_WAIT_DOWN_CONFIRMATION";
-  }
-
   void resetSearchCandidates() {
     candidates_by_id_.clear();
-    candidate_order_.clear();
+    search_candidates_.clear();
     downward_ids_.clear();
-    front_scan_completed_ = false;
   }
 
   void searchStateCallback(const std_msgs::StringConstPtr& message) {
@@ -142,10 +140,7 @@ class DualUavLandingCoordinator {
       resetSearchCandidates();
     }
     landing_search_state_ = next_state;
-    if (frontScanCompleted(next_state)) {
-      front_scan_completed_ = true;
-      tryAssignPlatforms();
-    }
+    tryAssignPlatforms();
   }
 
   void updateCandidates(const precision_landing::LandingPlatformArray& message,
@@ -174,9 +169,6 @@ class DualUavLandingCoordinator {
           !std::isfinite(point.y) || !std::isfinite(point.z)) {
         continue;
       }
-      if (candidates_by_id_.count(platform.id) == 0U) {
-        candidate_order_.push_back(platform.id);
-      }
       if (downward_source) {
         downward_ids_.insert(platform.id);
         candidates_by_id_[platform.id] = platform;
@@ -187,19 +179,51 @@ class DualUavLandingCoordinator {
     tryAssignPlatforms();
   }
 
-  void tryAssignPlatforms() {
-    if (assignments_ready_ || uav0_success_ || !have_exit_ ||
-        !front_scan_completed_ || candidate_order_.size() < 2U) return;
-    const auto first = candidates_by_id_.find(candidate_order_[0]);
-    const auto second = candidates_by_id_.find(candidate_order_[1]);
-    if (first == candidates_by_id_.end() || second == candidates_by_id_.end() ||
-        first->first == second->first) {
-      return;
+  double distanceFromExit(const precision_landing::LandingPlatform& platform) const {
+    const auto& point = platform.pose.pose.position;
+    return std::hypot(point.x - exit_position_.x, point.y - exit_position_.y);
+  }
+
+  void searchCandidatesCallback(const precision_landing::LandingPlatformArrayConstPtr& message) {
+    if (assignments_ready_ || uav0_success_ || !frontCandidatesAllowed(landing_search_state_)) return;
+    const double age = (ros::Time::now() - message->header.stamp).toSec();
+    if (message->header.frame_id != "world" || message->header.stamp.isZero() ||
+        age < -max_header_future_sec_ || age > candidate_message_timeout_sec_) return;
+    for (const auto& platform : message->platforms) {
+      const auto& p = platform.pose.pose.position;
+      if (platform.id >= 0 && std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z))
+        search_candidates_[platform.id] = platform;
     }
-    // 前机负责完成双码搜索：第一个稳定确认的平台交给后机，前机在确认
-    // 第二个平台后前往其粗位置，并由下视相机完成最终定位与精降。
-    const auto& uav1_platform = first->second;
-    const auto& uav0_platform = second->second;
+    publishVerificationHint();
+  }
+
+  void publishVerificationHint() {
+    if (assignments_ready_ || uav0_success_ || !have_exit_ ||
+        !(frontCandidatesAllowed(landing_search_state_) || downwardCandidatesAllowed(landing_search_state_))) return;
+    const precision_landing::LandingPlatform* best = nullptr;
+    for (const auto& item : search_candidates_) {
+      if (candidates_by_id_.count(item.first)) continue;
+      if (!best || distanceFromExit(item.second) < distanceFromExit(*best)) best = &item.second;
+    }
+    geometry_msgs::PoseArray hint;
+    hint.header.frame_id = "world";
+    hint.header.stamp = ros::Time::now();
+    if (best) hint.poses.push_back(best->pose.pose);
+    // 空数组表示已有线索均已确认，不让前机继续守着已确认的单个平台。
+    search_hint_pub_.publish(hint);
+  }
+
+  void tryAssignPlatforms() {
+    if (assignments_ready_ || uav0_success_ || !have_exit_ || candidates_by_id_.size() < 2U) return;
+    std::vector<precision_landing::LandingPlatform> nearest;
+    for (const auto& item : candidates_by_id_) nearest.push_back(item.second);
+    std::sort(nearest.begin(), nearest.end(), [&](const auto& a, const auto& b) {
+      const double da = distanceFromExit(a), db = distanceFromExit(b);
+      return da != db ? da < db : a.id < b.id;
+    });
+    // 已确认的两个最近平台立即接管搜索；近的留给后机，前机继续到另一个。
+    const auto& uav1_platform = nearest[0];
+    const auto& uav0_platform = nearest[1];
     uav0_id_ = uav0_platform.id;
     uav1_id_ = uav1_platform.id;
     assignments_ready_ = true;
@@ -211,7 +235,7 @@ class DualUavLandingCoordinator {
     publishId(uav0_assigned_pub_, uav0_id_);
     publishId(uav1_assigned_pub_, uav1_id_);
     publishBool(ready_pub_, true);
-    publishStatus("左右扫描完成并确认两个平台：UAV1 第一个，UAV0 第二个；等待 UAV0 准备精降");
+    publishStatus("已确认至少两个平台：选距出口最近的两个，近点给 UAV1，另一点给 UAV0；结束搜索");
     tryReleaseUav1();
   }
 
@@ -245,6 +269,7 @@ class DualUavLandingCoordinator {
 
   void targetTimerCallback(const ros::TimerEvent&) {
     if (assignments_ready_ && !uav0_success_) publishTargets();
+    else publishVerificationHint();
   }
 
   void publishTargets() {
@@ -273,6 +298,8 @@ class DualUavLandingCoordinator {
   ros::NodeHandle node_, private_node_;
   ros::Subscriber candidates_sub_, front_candidates_sub_, exit_sub_,
       landing_request_sub_, success_sub_, search_state_sub_;
+  ros::Subscriber search_candidates_sub_;
+  ros::Publisher search_hint_pub_;
   ros::Timer target_timer_;
   ros::Publisher uav0_assigned_pub_, uav1_assigned_pub_, uav0_target_pub_, uav1_target_pub_;
   ros::Publisher release_pub_, ready_pub_, status_pub_;
@@ -281,11 +308,10 @@ class DualUavLandingCoordinator {
   geometry_msgs::Point exit_position_;
   geometry_msgs::PoseStamped uav0_target_, uav1_target_;
   std::map<int, precision_landing::LandingPlatform> candidates_by_id_;
-  std::vector<int> candidate_order_;
+  std::map<int, precision_landing::LandingPlatform> search_candidates_;
   std::set<int> downward_ids_;
   bool have_exit_{false}, uav0_landing_requested_{false}, uav0_success_{false},
       assignments_ready_{false}, uav1_released_{false};
-  bool front_scan_completed_{false};
   int uav0_id_{-1}, uav1_id_{-1};
   double candidate_message_timeout_sec_{0.50};
   double max_header_future_sec_{0.05};

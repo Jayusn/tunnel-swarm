@@ -146,6 +146,8 @@ class FrontArucoHintNode {
     private_node_.param("topics/hint_world", hint_topic, hint_topic);
     private_node_.param("topics/candidates", candidates_topic,
                         candidates_topic);
+    std::string search_candidates_topic("/UAV0/landing/front/search_candidates");
+    private_node_.param("topics/search_candidates", search_candidates_topic, search_candidates_topic);
     private_node_.param("topics/locked_id", locked_id_topic, locked_id_topic);
     private_node_.param("topics/status", status_topic, status_topic);
     private_node_.param("topics/debug_image", debug_image_topic,
@@ -169,6 +171,8 @@ class FrontArucoHintNode {
     candidates_publisher_ =
         node_.advertise<precision_landing::LandingPlatformArray>(
             candidates_topic, 2, true);
+    search_candidates_publisher_ = node_.advertise<precision_landing::LandingPlatformArray>(
+        search_candidates_topic, 2, true);
     locked_id_publisher_ = node_.advertise<std_msgs::Int32>(locked_id_topic, 1,
                                                             true);
     status_publisher_ =
@@ -186,7 +190,8 @@ class FrontArucoHintNode {
   }
 
   static bool isFrontScanState(const std::string& state) {
-    return state == "FRONT_ARUCO_INITIAL_WAIT" ||
+    return state == "FRONT_ARUCO_VERIFY_APPROACH" ||
+           state == "FRONT_ARUCO_INITIAL_WAIT" ||
            state == "FRONT_ARUCO_YAW_SCAN_LEFT" ||
            state == "FRONT_ARUCO_YAW_SCAN_RIGHT" ||
            state == "FRONT_ARUCO_YAW_SCAN_RETURN";
@@ -203,6 +208,8 @@ class FrontArucoHintNode {
       target_filter_.reset();
       candidate_filters_.clear();
       stable_candidates_.clear();
+      search_candidate_filters_.clear();
+      search_candidates_.clear();
       std_msgs::Header header;
       header.stamp = ros::Time::now();
       publishCandidates(header);
@@ -220,6 +227,8 @@ class FrontArucoHintNode {
     target_filter_.reset();
     candidate_filters_.clear();
     stable_candidates_.clear();
+    search_candidate_filters_.clear();
+    search_candidates_.clear();
     std_msgs::Header header;
     header.stamp = ros::Time::now();
     publishCandidates(header);
@@ -372,6 +381,14 @@ class FrontArucoHintNode {
       message.platforms.push_back(platform);
     }
     candidates_publisher_.publish(message);
+    message.platforms.clear();
+    for (const auto& item : search_candidates_) {
+      auto platform = item.second;
+      platform.header = message.header;
+      platform.pose.header = message.header;
+      message.platforms.push_back(platform);
+    }
+    search_candidates_publisher_.publish(message);
   }
 
   void collectStableCandidates(
@@ -395,7 +412,6 @@ class FrontArucoHintNode {
       observation.id = detected.id;
       observation.position_camera = detected.position_camera;
       observation.image_center_px = detected.image_center_px;
-      if (!validateDepth(observation, image_header.stamp, nullptr)) continue;
 
       geometry_msgs::PointStamped point_camera;
       point_camera.header = image_header;
@@ -412,6 +428,25 @@ class FrontArucoHintNode {
       const Eigen::Vector3d world =
           body_orientation_world * body_point +
           Eigen::Vector3d(body_position.x, body_position.y, body_position.z);
+
+      // PnP位置连续稳定但深度不一致时仍保留搜索线索，不能混入已确认平台。
+      auto& search_filter = search_candidate_filters_[detected.id];
+      if (!search_filter) search_filter.reset(new WorldTargetFilter(candidate_filter_config_));
+      if (search_filter->add(detected.id, world, image_header.stamp.toSec())) {
+        const auto point = search_filter->filteredPoint();
+        precision_landing::LandingPlatform platform;
+        platform.header = image_header;
+        platform.header.frame_id = output_world_frame_;
+        platform.id = detected.id;
+        platform.pose.header = platform.header;
+        platform.pose.pose.position.x = point.x();
+        platform.pose.pose.position.y = point.y();
+        platform.pose.pose.position.z = point.z();
+        platform.pose.pose.orientation.w = 1.0;
+        platform.score = detected.score;
+        search_candidates_[detected.id] = platform;
+      }
+      if (!validateDepth(observation, image_header.stamp, nullptr)) continue;
 
       auto filter = candidate_filters_.find(detected.id);
       if (filter == candidate_filters_.end()) {
@@ -619,7 +654,7 @@ class FrontArucoHintNode {
   ros::Subscriber mission_status_subscriber_;
   ros::Subscriber search_state_subscriber_;
   ros::Publisher hint_publisher_;
-  ros::Publisher candidates_publisher_;
+  ros::Publisher candidates_publisher_, search_candidates_publisher_;
   ros::Publisher locked_id_publisher_;
   ros::Publisher status_publisher_;
   image_transport::Publisher debug_image_publisher_;
@@ -632,6 +667,8 @@ class FrontArucoHintNode {
   WorldTargetFilterConfig candidate_filter_config_;
   std::map<int, std::unique_ptr<WorldTargetFilter>> candidate_filters_;
   std::map<int, precision_landing::LandingPlatform> stable_candidates_;
+  std::map<int, std::unique_ptr<WorldTargetFilter>> search_candidate_filters_;
+  std::map<int, precision_landing::LandingPlatform> search_candidates_;
   bool camera_info_received_{false};
   bool require_stage_gate_{true};
   bool require_search_state_gate_{true};
