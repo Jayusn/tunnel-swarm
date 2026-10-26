@@ -98,6 +98,17 @@ void TaskSearchManager::initialize(ros::NodeHandle& nh) {
   nh.param("mission/task_search/entry_path_direction_grace_distance",
            entry_path_direction_grace_distance_, 1.50);
   // 2026-07-28: 正常拐弯不能继续把最近实飞切线当作唯一“前方”；累计占据地图负责识别新通道轴线。
+  // 复用现有上绕高度范围和机体底部净空，不为转弯引入另一套高度配置。
+  nh.param("mission/vertical_detour/enabled", turn_upper_enabled_, true);
+  nh.param("mission/vertical_detour/upper_step", turn_upper_step_, 0.20);
+  nh.param("mission/vertical_detour/upper_max_rise", turn_upper_max_rise_, 0.60);
+  nh.param("astar/max_search_height", turn_upper_max_height_, 1.90);
+  nh.param("manager/footprint_bottom_clearance", turn_bottom_clearance_, 0.20);
+  double upper_clearance;
+  nh.param("mission/vertical_detour/upper_obstacle_clearance", upper_clearance, 0.20);
+  turn_bottom_clearance_ = std::max(0.20, std::max(turn_bottom_clearance_,upper_clearance));
+  turn_upper_step_ = std::max(0.10,turn_upper_step_);
+  turn_upper_max_rise_ = std::max(turn_upper_step_,turn_upper_max_rise_);
   nh.param("mission/task_search/recovery/occupancy_turn_enabled",
            recovery_occupancy_turn_enabled_, true);
   nh.param("mission/task_search/recovery/turn_probe_length",
@@ -1119,7 +1130,8 @@ int TaskSearchManager::selectSearchCandidate(
 // 允许一侧墙在拐角中断，但另一侧必须有连续地图轮廓，避免孤立障碍物误触发。
 bool TaskSearchManager::inferOccupancyTurnDirection(
     const Eigen::Vector3d& travel_direction, Eigen::Vector3d& turn_direction,
-    double& forward_free_length, double& turn_free_length) const {
+    double& forward_free_length, double& turn_free_length, double* upper_height) const {
+  if (upper_height) *upper_height = std::numeric_limits<double>::quiet_NaN();
   forward_free_length = 0.0;
   turn_free_length = 0.0;
   if (!recovery_occupancy_turn_enabled_ || !sdf_map_ || visited_positions_.empty() ||
@@ -1292,9 +1304,12 @@ bool TaskSearchManager::inferOccupancyTurnDirection(
   // 轮廓射线只用于发现前墙。新通道必须从真实机位连通，整个机体包络在
   // 累计地图中已知可通行；不能把穿过窄缝的中心射线提升为通道方向。
   const Eigen::Vector3d start = latest_robot_pose_valid_ ? robot_pos : origin;
+  const auto bodyFree = [&](const Eigen::Vector3d& p) {
+    return mapExitFootprintFree(p,turn_bottom_clearance_);
+  };
   const double body_step = std::min(0.05, sdf_map_->getResolution());
   const double horizon = std::min(1.0, recovery_turn_probe_length_);
-  if (horizon <= 0.0 || !mapExitFootprintFree(start)) return false;
+  if (horizon <= 0.0 || !bodyFree(start)) return false;
   std::vector<Eigen::Vector3d> anchors{start};
   // 射线采样的最后FREE点不等于墙面；接近距离由足迹检查实际截断，
   // 不再提前减一次机体半径，避免漏掉窄弯唯一可通行的转角中心。
@@ -1304,7 +1319,7 @@ bool TaskSearchManager::inferOccupancyTurnDirection(
        distance += body_step) {
     Eigen::Vector3d point = start;
     point.head<2>() += distance * travel;
-    if (!mapExitFootprintFree(point)) break;
+    if (!bodyFree(point)) break;
     anchors.push_back(point);
   }
 
@@ -1326,96 +1341,131 @@ bool TaskSearchManager::inferOccupancyTurnDirection(
   Eigen::Vector3d best_anchor = start;
   Eigen::Vector2d best_direction = travel;
   const double max_angle = recovery_turn_max_angle_deg_ * M_PI / 180.0;
-  for (double angle = min_angle; angle <= max_angle + 1e-6; angle += M_PI / 12.0) {
-    for (double sign : {-1.0, 1.0}) {
-      const double signed_angle = sign * angle;
-      const Eigen::Vector2d direction(
-          std::cos(signed_angle) * travel.x() - std::sin(signed_angle) * travel.y(),
-          std::sin(signed_angle) * travel.x() + std::cos(signed_angle) * travel.y());
-      // 新通道不能落到当前已确认通道的后方。这里必须比较当前travel，不能比较初始
-      // 入口方向；否则北向通道中的东南旧路仍会被误当成合法新分支。
-      if (!task_search::insideForwardHalfPlane(direction, travel))
-        continue;
-      // U形通道的新段可以与入口绝对航向相反；回头只按空间上是否
-      // 重新压回已飞历史轨迹判断，不再用初始入口航向一刀切。
-      if (turnDirectionRetracesVisitedRoute(origin.head<2>(), direction))
-        continue;
-      const Eigen::Vector3d forward(direction.x(), direction.y(), 0.0);
-      // 每个转弯起点都通过了从当前机位到该点的连续足迹检查。
-      // 所有左右候选共用同一米级观察长度和宽度评分，最高分胜出。
-      for (std::size_t a = 0; a < anchors.size(); ++a) {
-        const Eigen::Vector3d& anchor = anchors[a];
-        double free_length = 0.0;
-        for (double distance = body_step;
-             distance <= recovery_turn_probe_length_ + 1e-6; distance += body_step) {
-          if (!mapExitFootprintFree(anchor + distance * forward)) break;
-          free_length = distance;
-        }
-        if (free_length + 1e-6 < horizon) continue;
-        const std::vector<Eigen::Vector3d> branch{anchor, anchor + horizon * forward};
-        const auto width = route_width::measure(
-            branch, forward, horizon, 0.75, body_step,
-            [this](const Eigen::Vector3d& p) { return mapExitFootprintFree(p); });
-        if (!width.complete) continue;
-        // 宽度为可容纳机体的中心移动范围；包络本身已在上面逐点验证。
-        const double shape_bonus = 0.05 * u_shape_confidence *
-                                   direction.dot(return_direction);
-        const double score = width.minimum + 0.25 * width.mean +
-                             0.10 * free_length - 0.02 * std::fabs(angle) + shape_bonus;
-        const int side = sign > 0.0 ? 1 : 0;
-        if (score > side_score[side]) {
-          side_score[side] = score;
-          side_width[side] = width.minimum + 2.0 * exit_footprint_extra_radius_;
-        }
-        if (score > best_score) {
-          best_score = score;
-          best_width = width.minimum + 2.0 * exit_footprint_extra_radius_;
-          best_anchor = anchor;
-          best_direction = direction;
-          turn_free_length = free_length;
+  double best_rise = 0.0;
+  const double maximum_rise = turn_upper_enabled_ ? turn_upper_max_rise_ : 0.0;
+  // 当前高度有新通路就保持原选择；只有这些候选均不可用时才查低障碍上方。
+  for (double rise = 0.0; rise <= maximum_rise + 1e-6; rise += turn_upper_step_) {
+    if (rise > 0.0 && start.z()+rise > turn_upper_max_height_+1e-6) break;
+    for (double angle = min_angle; angle <= max_angle + 1e-6; angle += M_PI / 12.0) {
+      for (double sign : {-1.0, 1.0}) {
+        const double signed_angle = sign * angle;
+        const Eigen::Vector2d direction(
+            std::cos(signed_angle) * travel.x() - std::sin(signed_angle) * travel.y(),
+            std::sin(signed_angle) * travel.x() + std::cos(signed_angle) * travel.y());
+        // 新通道不能落到当前已确认通道的后方。这里必须比较当前travel，不能比较初始
+        // 入口方向；否则北向通道中的东南旧路仍会被误当成合法新分支。
+        if (!task_search::insideForwardHalfPlane(direction, travel))
+          continue;
+        // U形通道的新段可以与入口绝对航向相反；回头只按空间上是否
+        // 重新压回已飞历史轨迹判断，不再用初始入口航向一刀切。
+        const Eigen::Vector3d forward(direction.x(), direction.y(), 0.0);
+        // 每个转弯起点都通过了从当前机位到该点的连续足迹检查。
+        // 所有左右候选共用同一米级观察长度和宽度评分，最高分胜出。
+        for (std::size_t a = 0; a < anchors.size(); ++a) {
+          const Eigen::Vector3d& base = anchors[a];
+          if (turnDirectionRetracesVisitedRoute(base.head<2>(), direction)) continue;
+          Eigen::Vector3d anchor = base;
+          anchor.z() += rise;
+          if (rise > 0.0) {
+            // 原地转向发生在当前机位，高层分支必须从此处可上升进入，不能隔墙看宽处。
+            if (a != 0) continue;
+            bool low_obstacle = false;
+            for (double d = body_step; d <= horizon+1e-6; d += body_step)
+              if (mapRelativeColumnOccupied(base+d*forward,base.z())) { low_obstacle=true; break; }
+            if (!low_obstacle) continue;
+            bool column_free = true;
+            for (double dz = body_step; dz <= rise+1e-6; dz += body_step)
+              if (!bodyFree(base+Eigen::Vector3d(0,0,dz))) { column_free=false; break; }
+            if (!column_free || !bodyFree(anchor)) continue;
+          }
+          double free_length = 0.0;
+          for (double distance = body_step;
+               distance <= recovery_turn_probe_length_ + 1e-6; distance += body_step) {
+            if (!bodyFree(anchor + distance * forward)) break;
+            free_length = distance;
+          }
+          if (free_length + 1e-6 < horizon) continue;
+          const std::vector<Eigen::Vector3d> branch{anchor, anchor + horizon * forward};
+          const auto width = route_width::measure(
+              branch, forward, horizon, 0.75, body_step,
+              bodyFree);
+          if (!width.complete) continue;
+          // 宽度为可容纳机体的中心移动范围；包络本身已在上面逐点验证。
+          const double shape_bonus = 0.05 * u_shape_confidence *
+                                     direction.dot(return_direction);
+          const double score = width.minimum + 0.25 * width.mean +
+                               0.10 * free_length - 0.02 * std::fabs(angle) + shape_bonus;
+          const int side = sign > 0.0 ? 1 : 0;
+          if (score > side_score[side]) {
+            side_score[side] = score;
+            side_width[side] = width.minimum + 2.0 * exit_footprint_extra_radius_;
+          }
+          if (score > best_score) {
+            best_score = score;
+            best_rise = rise;
+            best_width = width.minimum + 2.0 * exit_footprint_extra_radius_;
+            best_anchor = anchor;
+            best_direction = direction;
+            turn_free_length = free_length;
+          }
         }
       }
     }
+    if (std::isfinite(best_score)) break;
   }
   if (!std::isfinite(best_score)) return false;
+  if (upper_height && best_rise > 0.0) *upper_height = start.z()+best_rise;
   turn_direction = Eigen::Vector3d(best_direction.x(), best_direction.y(), 0.0);
   ROS_ERROR_THROTTLE(
       0.5,
       "[task_search] PASSABLE TURN selected yaw=%.1fdeg old_free=%.2fm "
       "branch_free=%.2fm body_width=%.2fm anchor=(%.2f,%.2f) "
       "right=(score=%.3f,width=%.2f) left=(score=%.3f,width=%.2f) "
-      "u_history=%.0f; highest body-passable branch score wins.",
+      "u_history=%.0f rise=%.2fm; highest body-passable branch score wins.",
       std::atan2(best_direction.y(), best_direction.x()) * 180.0 / M_PI,
       forward_free_length, turn_free_length, best_width, best_anchor.x(), best_anchor.y(),
-      side_score[0], side_width[0], side_score[1], side_width[1], u_shape_confidence);
+      side_score[0], side_width[0], side_score[1], side_width[1], u_shape_confidence, best_rise);
   return true;
 }
 
 bool TaskSearchManager::turnDirectionRetracesVisitedRoute(
     const Eigen::Vector2d& anchor,
     const Eigen::Vector2d& direction) const {
-  if (visited_positions_.size() < 4 || direction.norm() < 1e-3)
+  if (visited_positions_.size() < 2 || direction.norm() < 1e-3)
     return false;
   const Eigen::Vector2d unit_direction = direction.normalized();
-  constexpr double kRecentAnchorRadius = 0.70;
   constexpr double kRouteOverlapRadius = 0.30;
   constexpr double kProbeLength = 1.50;
-  constexpr double kProbeStep = 0.10;
-  for (double distance = kRecentAnchorRadius;
-       distance <= kProbeLength + 1e-6; distance += kProbeStep) {
+  constexpr double kProbeStep = 0.05;
+  double overlap_start = -1.0;
+  // 只用于识别正常探索的新通道，历史回退脱障不调用本检查。
+  // 保留全部历史；按相邻实飞点之间的线段判断反向重走，不再豁免附近70cm。
+  for (double distance = 0.10; distance <= kProbeLength + 1e-6; distance += kProbeStep) {
     const Eigen::Vector2d probe = anchor + distance * unit_direction;
-    for (const auto& visited : visited_positions_) {
-      const Eigen::Vector2d history = visited.head<2>();
-      if ((history - anchor).norm() <= kRecentAnchorRadius) continue;
-      if ((probe - history).norm() <= kRouteOverlapRadius) {
-        ROS_ERROR_THROTTLE(
-            0.5,
-            "[task_search] reject mapped branch yaw=%.1fdeg: probe=(%.2f,%.2f) "
-            "re-enters visited route near (%.2f,%.2f).",
-            std::atan2(unit_direction.y(), unit_direction.x()) * 180.0 / M_PI,
-            probe.x(), probe.y(), history.x(), history.y());
-        return true;
+    bool reversing_history = false;
+    for (size_t i = 1; i < visited_positions_.size(); ++i) {
+      const Eigen::Vector2d from = visited_positions_[i-1].head<2>();
+      const Eigen::Vector2d flown = visited_positions_[i].head<2>() - from;
+      if (flown.norm() < 0.03 || flown.normalized().dot(unit_direction) > -0.5) continue;
+      const double projection = (probe-from).dot(flown) / flown.squaredNorm();
+      // 不把轨迹端点周围的圆形邻域当成已飞路段；横移离开共同起点应正常放行。
+      if (projection < 0.0 || projection > 1.0) continue;
+      const Eigen::Vector2d history = from + projection * flown;
+      if ((history-anchor).dot(unit_direction) < 0.10-1e-6) continue;
+      if ((probe-history).norm() <= kRouteOverlapRadius) {
+        reversing_history = true;
+        break;
       }
+    }
+    if (!reversing_history) { overlap_start = -1.0; continue; }
+    if (overlap_start < 0.0) overlap_start = distance;
+    if (distance-overlap_start >= 0.20-1e-6) {
+      ROS_ERROR_THROTTLE(0.5,
+          "[task_search] reject mapped branch yaw=%.1fdeg at (%.2f,%.2f): "
+          "reverses %.2fm of flown route; history retained for dedicated escape.",
+          std::atan2(unit_direction.y(),unit_direction.x())*180.0/M_PI,
+          anchor.x(),anchor.y(),distance-overlap_start);
+      return true;
     }
   }
   return false;
@@ -1442,6 +1492,7 @@ void TaskSearchManager::commitCorridorTurn(
   latest_turn_anchor_ = anchor;
   latest_turn_incoming_direction_ = incoming;
   latest_turn_anchor_valid_ = true;
+  committed_turn_upper_height_ = std::numeric_limits<double>::quiet_NaN();
   transition_active_ = true;
   transition_anchor_ = anchor;
   transition_incoming_direction_ = incoming;
@@ -1485,7 +1536,7 @@ void TaskSearchManager::commitCorridorTurn(
 
 bool TaskSearchManager::mappedCorridorDirection(
     double cur_yaw, Eigen::Vector3d& direction, bool check_entry_forward_phase,
-    bool require_observed_yaw) {
+    bool require_observed_yaw, bool upper_route_only) {
   // 入口后的第一段直线尚未走完时，门外开放区和门框遮挡不是拐弯。
   if (check_entry_forward_phase && entryForwardPhaseActive()) {
     clearPendingTurnEvidence();
@@ -1494,6 +1545,7 @@ bool TaskSearchManager::mappedCorridorDirection(
 
   Eigen::Vector2d latched_direction;
   if (turn_yaw_follow_latch_.lockedDirection(latched_direction)) {
+    if (upper_route_only && !std::isfinite(committed_turn_upper_height_)) return false;
     direction = Eigen::Vector3d(latched_direction.x(), latched_direction.y(), 0.0);
     return true;
   }
@@ -1523,9 +1575,11 @@ bool TaskSearchManager::mappedCorridorDirection(
   const Eigen::Vector3d travel(stable.x(), stable.y(), 0.0);
   double forward_free_length = 0.0;
   double turn_free_length = 0.0;
+  double upper_height;
   if (!inferOccupancyTurnDirection(
-          travel, direction, forward_free_length, turn_free_length))
+          travel, direction, forward_free_length, turn_free_length, &upper_height))
     return false;
+  if (upper_route_only && !std::isfinite(upper_height)) return false;
   // 手持模式没有控制器去执行地图建议的转向。实际朝向尚未与该分支一致时，
   // 保留旧段，避免提前锁定一条未走入的支路后永远等待对准。
   // 正式飞行调用默认不启用此项，仍先确认地图转弯再由FSM执行转向。
@@ -1542,6 +1596,10 @@ bool TaskSearchManager::mappedCorridorDirection(
   }
   if (!confirmCorridorTurnEvidence(direction)) return false;
   commitCorridorTurn(direction);
+  committed_turn_upper_height_ = upper_height;
+  if (std::isfinite(upper_height))
+    ROS_WARN("[upper_turn] confirmed mapped branch at z=%.2fm; align yaw first, "
+             "then recheck ascent and forward route on the current map.",upper_height);
   // 新确认的这一周期立即生效。锁存方向只能由实际yaw连续达标后的FSM显式释放，
   // 这样30度分段之间不会重新做地图转弯检测。
   if (!turn_yaw_follow_latch_.lockedDirection(latched_direction))
@@ -2092,7 +2150,8 @@ bool TaskSearchManager::detectLocalMapExit(const Eigen::Vector3d& cur_pos,
   return false;
 }
 
-bool TaskSearchManager::mapExitFootprintFree(const Eigen::Vector3d& center) const {
+bool TaskSearchManager::mapExitFootprintFree(const Eigen::Vector3d& center,
+                                             double bottom_height) const {
   if (!sdf_map_ || !sdf_map_->isInMap(center) ||
       sdf_map_->getInflateOccupancy(center) != 0) return false;
   const double step = std::max(0.05, sdf_map_->getResolution());
@@ -2100,13 +2159,15 @@ bool TaskSearchManager::mapExitFootprintFree(const Eigen::Vector3d& center) cons
   const double half_height = std::max(0.0, exit_footprint_half_height_);
   const int xy_bins = std::max(1, static_cast<int>(std::ceil(radius / step)));
   const int z_bins = std::max(1, static_cast<int>(std::ceil(half_height / step)));
+  const double bottom = bottom_height < 0.0 ? half_height : std::max(half_height,bottom_height);
+  const int bottom_bins = std::max(1,static_cast<int>(std::ceil(bottom/step)));
   for (int x = -xy_bins; x <= xy_bins; ++x) {
     for (int y = -xy_bins; y <= xy_bins; ++y) {
       const double dx = radius * x / xy_bins, dy = radius * y / xy_bins;
       if (dx * dx + dy * dy > radius * radius + 1e-9) continue;
-      for (int z = -z_bins; z <= z_bins; ++z) {
+      for (int z = -bottom_bins; z <= z_bins; ++z) {
         const Eigen::Vector3d point = center +
-            Eigen::Vector3d(dx, dy, half_height * z / z_bins);
+            Eigen::Vector3d(dx, dy, z < 0 ? bottom*z/bottom_bins : half_height*z/z_bins);
         if (!sdf_map_->isInMap(point) || sdf_map_->getOccupancy(point) != SDFMap::FREE)
           return false;
       }

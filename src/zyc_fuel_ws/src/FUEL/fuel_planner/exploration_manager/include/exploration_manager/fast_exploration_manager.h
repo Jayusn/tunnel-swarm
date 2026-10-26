@@ -478,6 +478,8 @@ private:
                                    const Vector3d& forward, Vector3d& next_pos,
                                    double& next_yaw, bool force_descend = false,
                                    bool allow_descend = true);
+  bool buildPostTurnUpperRecovery(const Vector3d& pos, double cur_yaw,
+                                   Vector3d& next_pos, double& next_yaw);
   bool buildStationaryVerticalDetourPlan(const Vector3d& pos,
                                          const Vector3d& yaw);
   bool handleActiveLowProbe(const Vector3d& pos, Vector3d& next_pos, double& next_yaw,

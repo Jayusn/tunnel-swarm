@@ -181,6 +181,135 @@ public:
     EXPECT_LT(direction.x(), -0.5);
   }
 
+  static void runUpperTurn(int mode) {
+    ros::NodeHandle nh("~upper_turn");
+    nh.setParam("manager/footprint_bottom_clearance",.20);
+    nh.setParam("manager/use_geometric_path",true);
+    nh.setParam("astar/resolution_astar",.05);
+    nh.setParam("astar/allocate_num",100000);
+    nh.setParam("astar/lambda_heu",1.0);
+    nh.setParam("astar/max_search_time",1.0);
+    FastExplorationManager manager;
+    initialize(nh,manager);
+    auto& task=*manager.task_search_manager_;
+    auto& map=*manager.sdf_map_;
+    const double side=mode==6 ? 1.0 : -1.0;
+    const Vector3d pos(.45,0,.525), zero=Vector3d::Zero();
+    task.setMap(manager.sdf_map_);
+    task.global_no_return_=false;
+    task.setCorridorFrame(Vector3d(-1,0,.525),Vector3d::UnitX());
+    task.segment_direction_=Eigen::Vector2d::UnitX();
+    task.turn_detection_direction_=Eigen::Vector2d::UnitX();
+    task.stable_progress_direction_=Eigen::Vector2d::UnitX();
+    task.stable_progress_direction_valid_=true;
+    task.updateRobotPose(pos,0);
+    task.visited_positions_={Vector3d(.45,-side*.6,.525),Vector3d(.45,-side*.3,.525),pos};
+    task.exit_footprint_extra_radius_=.20;
+    task.exit_footprint_half_height_=.15;
+    task.turn_upper_enabled_=mode!=4;
+    for (int x=0; x<map.mp_->map_voxel_num_.x(); ++x)
+      for (int y=0; y<map.mp_->map_voxel_num_.y(); ++y)
+        for (int z=0; z<map.mp_->map_voxel_num_.z(); ++z) {
+          const Eigen::Vector3i id(x,y,z); Vector3d p; map.indexToPos(id,p);
+          const double along=side*p.y();
+          const bool hall=p.x()<.9 && std::fabs(p.y())<.55;
+          const bool branch=std::fabs(p.x()-.45)<.45;
+          const bool low_obstacle=mode!=3 && along>.30 && along<.65 && p.z()<.60;
+          const bool roof=mode==2 && along>.30 && p.z()>.70;
+          const bool occupied=(!hall && !branch) || low_obstacle || roof;
+          const int address=map.toAddress(id);
+          map.md_->occupancy_buffer_[address]=occupied?map.mp_->clamp_max_log_:map.mp_->clamp_min_log_;
+          if (mode==1 && along>.30 && p.z()>=.60)
+            map.md_->occupancy_buffer_[address]=map.mp_->clamp_min_log_-map.mp_->unknown_flag_;
+          map.md_->occupancy_buffer_inflate_[address]=occupied;
+        }
+    Vector3d direction;
+    const bool found=task.mappedCorridorDirection(0,direction,false,false,true);
+    if (mode==1 || mode==2 || mode==3 || mode==4) {
+      EXPECT_FALSE(found);
+      EXPECT_FALSE(task.hasConfirmedCorridorTurn());
+      if (mode==3) { // 普通可通行的转弯仍走原发布前确认流程。
+        EXPECT_TRUE(task.mappedCorridorDirection(0,direction,false,false));
+        EXPECT_GT(direction.y()*side,.9);
+      }
+      return;
+    }
+    ASSERT_TRUE(found);
+    EXPECT_GT(direction.y()*side,.9);
+    EXPECT_GE(task.committed_turn_upper_height_,.80);
+    Vector3d target; double target_yaw=0;
+    EXPECT_FALSE(manager.buildPostTurnUpperRecovery(pos,0,target,target_yaw));
+    manager.completeTurnInPlace(pos);
+    if (mode==5) { // 转向期间地图更新：原先可用的高层被堵，不能使用旧结论强行上绕。
+      for (double x=-1.9; x<1.9; x+=.05)
+        for (double y=-1.9; y<1.9; y+=.05)
+          for (double z=.65; z<1.6; z+=.05) {
+            Eigen::Vector3i id; map.posToIndex(Vector3d(x,y,z),id);
+            map.md_->occupancy_buffer_[map.toAddress(id)]=map.mp_->clamp_max_log_;
+          }
+      EXPECT_FALSE(manager.buildPostTurnUpperRecovery(pos,side*M_PI_2,target,target_yaw));
+      return;
+    }
+    ASSERT_TRUE(manager.buildPostTurnUpperRecovery(pos,side*M_PI_2,target,target_yaw));
+    EXPECT_GT((target-pos).y()*side,.15);
+    EXPECT_GE(target.z(),.80);
+    EXPECT_TRUE(manager.planner_manager_->isPositionSafe(target));
+    EXPECT_TRUE(manager.planner_manager_->isPathSafe(manager.planner_manager_->path_finder_->getPath()));
+    EXPECT_NEAR(target_yaw,side*M_PI_2,1e-9);
+    EXPECT_FALSE(manager.buildPostTurnUpperRecovery(target,side*M_PI_2,target,target_yaw));
+  }
+
+  static void runTurnHistory(int mode) {
+    TaskSearchManager task;
+    Eigen::Vector2d anchor(0,0), direction(0,1);
+    bool expected = true;
+    // 来路全部落在原来豁免的70cm内，且只需两个历史点就能确认反向重走。
+    task.visited_positions_ = {Vector3d(0,.6,1),Vector3d(0,0,1)};
+    if (mode == 1) { direction = Eigen::Vector2d(0,-1); expected = false; }
+    if (mode == 2) {
+      task.visited_positions_ = {Vector3d(-.6,0,1),Vector3d(0,0,1)};
+      expected = false;  // 从共同起点横移，不能仅凭距离近判回头。
+    }
+    if (mode == 3) {
+      anchor.x() = .8; expected = false; // 倒U另一条通道方向虽相反，空间不重合。
+    }
+    if (mode == 4) {
+      task.visited_positions_ = {Vector3d(0,.08,1),Vector3d(0,0,1)};
+      expected = false; // 起点处极短重合不等于沿来路返回。
+    }
+    if (mode == 5) {
+      task.visited_positions_ = {Vector3d(0,2,1),Vector3d(0,-1,1)};
+      // 稀疏采样点位于探测范围外，但它们之间的实际轨迹穿过候选。
+    }
+    if (mode == 6) {
+      task.visited_positions_ = {Vector3d(0,-.6,1),Vector3d(0,0,1)};
+      direction.y() = -1;
+    }
+    const auto original = task.visited_positions_;
+    EXPECT_EQ(task.turnDirectionRetracesVisitedRoute(anchor,direction),expected);
+    ASSERT_EQ(task.visited_positions_.size(),original.size());
+    for (size_t i=0; i<original.size(); ++i)
+      EXPECT_EQ((task.visited_positions_[i]-original[i]).norm(),0.0);
+  }
+
+  static void runRecordedTurnHistory(const char* fixture) {
+    TaskSearchManager task;
+    std::ifstream input(fixture);
+    Vector3d point;
+    while (input >> point.x() >> point.y() >> point.z()) {
+      if (task.visited_positions_.empty() ||
+          (point-task.visited_positions_.back()).head<2>().norm() >= .35)
+        task.visited_positions_.push_back(point);
+    }
+    ASSERT_GT(task.visited_positions_.size(),4u);
+    const Eigen::Vector2d anchor(5.99,-1.36);
+    const double yaw = 87.6*M_PI/180.0;
+    EXPECT_TRUE(task.turnDirectionRetracesVisitedRoute(
+        anchor,Eigen::Vector2d(std::cos(yaw),std::sin(yaw))));
+    EXPECT_FALSE(task.turnDirectionRetracesVisitedRoute(
+        anchor,Eigen::Vector2d(-std::cos(yaw),-std::sin(yaw))));
+  }
+
   static void runPassableTurn(int mode) {
     ros::NodeHandle nh("~");
     FastExplorationManager manager;
@@ -207,8 +336,15 @@ public:
     task.visited_positions_.clear();
     task.visited_positions_.push_back(Vector3d(-1.1,0,1));
     task.visited_positions_.push_back(Vector3d(-0.1,0,1));
-    double right_width = (mode == 2 ? 0.65 : 0.90);
-    double left_width = (mode == 2 || mode == 3 || mode == 4 ? 0.90 : 0.20);
+    if (mode >= 10) {
+      task.updateRobotPose(Vector3d(.45,0,1),0.0);
+      task.visited_positions_ = {Vector3d(.45,.60,1),Vector3d(.45,.30,1),Vector3d(.45,0,1)};
+      // 冻结的轮廓观察点不等于实际转弯起点。
+      task.pending_turn_probe_origin_valid_ = true;
+      task.pending_turn_probe_origin_ = Vector3d(-.1,0,1);
+    }
+    double right_width = (mode == 2 ? 0.65 : (mode == 11 ? .20 : .90));
+    double left_width = (mode == 2 || mode == 3 || mode == 4 || mode >= 10 ? 0.90 : 0.20);
     if (mode == 5) right_width = left_width = 0.20;
     if (mirror) std::swap(right_width, left_width);
     for (int x=0; x<map.mp_->map_voxel_num_.x(); ++x)
@@ -231,7 +367,7 @@ public:
     Vector3d selected; double old_free, branch_free;
     const bool found = task.inferOccupancyTurnDirection(
         Vector3d::UnitX(), selected, old_free, branch_free);
-    if (mode >= 5 && mode <= 8) {
+    if ((mode >= 5 && mode <= 8) || mode == 11) {
       EXPECT_FALSE(found) << "slit, disconnected, unknown or low-roof branch was accepted";
       return;
     }
@@ -3245,6 +3381,11 @@ public:
     manager.task_search_manager_->stable_progress_direction_=Eigen::Vector2d(scenario==3?-1:1,0);
     manager.task_search_manager_->stable_progress_direction_valid_=true;
     manager.recovery_odom_history_={pos-Vector3d(.5,0,0),pos};
+    manager.task_search_manager_->visited_positions_=manager.recovery_odom_history_;
+    if (scenario==1) {
+      EXPECT_TRUE(manager.task_search_manager_->turnDirectionRetracesVisitedRoute(
+          pos.head<2>(),Eigen::Vector2d(-1,0)));
+    }
     manager.manual_fapp_active_=true;
     manager.manual_fapp_hold_height_=pos.z();
     ASSERT_TRUE(manager.planner_manager_->isControlledEscapePosition(pos));
@@ -3939,3 +4080,26 @@ TEST(BottomClearance, SideOfBodyNeedsTwentyCentimetersAboveObstacle) {
 TEST(BottomClearance, AstarFindsHigherRouteInsteadOfRepeatedlyRejectingLowRoute) {
   fast_planner::TurnEscapeTest::runBottomClearance(true);
 }
+
+TEST(TurnHistory, RecentReturnIsRejectedWithoutDeletingHistory) { fast_planner::TurnEscapeTest::runTurnHistory(0); }
+TEST(TurnHistory, ForwardContinuationIsAllowed) { fast_planner::TurnEscapeTest::runTurnHistory(1); }
+TEST(TurnHistory, LateralDepartureIsAllowed) { fast_planner::TurnEscapeTest::runTurnHistory(2); }
+TEST(TurnHistory, SeparateUShapedCorridorIsAllowed) { fast_planner::TurnEscapeTest::runTurnHistory(3); }
+TEST(TurnHistory, SharedStartAloneIsNotReturn) { fast_planner::TurnEscapeTest::runTurnHistory(4); }
+TEST(TurnHistory, SparseHistoryChecksConnectingSegments) { fast_planner::TurnEscapeTest::runTurnHistory(5); }
+TEST(TurnHistory, MirroredReturnIsRejected) { fast_planner::TurnEscapeTest::runTurnHistory(6); }
+TEST(TurnHistory, RecordedCh10ApproachRejectsOldLeftRoute) {
+  const char* fixture=std::getenv("TURN_HISTORY_FIXTURE");
+  if (!fixture) GTEST_SKIP() << "requires October 26 pre-CH10 odometry";
+  fast_planner::TurnEscapeTest::runRecordedTurnHistory(fixture);
+}
+TEST(PassableTurn, RejectsRecentLeftReturnFromActualTurnAnchor) { fast_planner::TurnEscapeTest::runPassableTurn(10); }
+TEST(PassableTurn, OnlyOldRouteDoesNotConfirmNewTurn) { fast_planner::TurnEscapeTest::runPassableTurn(11); }
+
+TEST(UpperTurn, LowRightObstacleConfirmsTurnThenTriggersAscent) { fast_planner::TurnEscapeTest::runUpperTurn(0); }
+TEST(UpperTurn, UnknownAboveDoesNotAuthorizeTurn) { fast_planner::TurnEscapeTest::runUpperTurn(1); }
+TEST(UpperTurn, RoofBlocksElevatedPassage) { fast_planner::TurnEscapeTest::runUpperTurn(2); }
+TEST(UpperTurn, OrdinaryTurnDoesNotUseEarlyTakeover) { fast_planner::TurnEscapeTest::runUpperTurn(3); }
+TEST(UpperTurn, DisabledVerticalDetourDoesNotAuthorizeElevatedTurn) { fast_planner::TurnEscapeTest::runUpperTurn(4); }
+TEST(UpperTurn, RechecksMapAfterYawCompletes) { fast_planner::TurnEscapeTest::runUpperTurn(5); }
+TEST(UpperTurn, MirroredLowObstacleUsesLeftPassage) { fast_planner::TurnEscapeTest::runUpperTurn(6); }

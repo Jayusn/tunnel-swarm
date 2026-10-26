@@ -14,6 +14,8 @@
 #include <deque>
 #include <cstdint>
 #include <memory>
+#include <limits>
+#include <cmath>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -52,7 +54,8 @@ public:
   // 查询并锁存累计占据地图确认的真实转弯，直到机头对准新通道，防止位置恢复先消费结果。
   bool mappedCorridorDirection(double cur_yaw, Eigen::Vector3d& direction,
                                bool check_entry_forward_phase = true,
-                               bool require_observed_yaw = false);
+                               bool require_observed_yaw = false,
+                               bool upper_route_only = false);
   // 已建立分段后，机头偏离实际通道轴线时只校正yaw，不重复建立分段或禁回门。
   bool corridorYawCorrectionDirection(double cur_yaw,
                                       Eigen::Vector3d& direction) const;
@@ -66,6 +69,14 @@ public:
                                double reference_yaw) const;
   bool curveHeadingActive() const { return curve_heading_active_; }
   bool turnYawAlignmentPending() const { return turn_yaw_follow_latch_.active(); }
+  bool upperTurnRecovery(Eigen::Vector3d& direction, double& height) const {
+    if (!transition_active_ || turnYawAlignmentPending() ||
+        !std::isfinite(committed_turn_upper_height_)) return false;
+    direction = Eigen::Vector3d(transition_outgoing_direction_.x(),
+                                transition_outgoing_direction_.y(), 0.0);
+    height = committed_turn_upper_height_;
+    return true;
+  }
   bool hasConfirmedCorridorTurn() const { return latest_turn_anchor_valid_; }
   void completeTurnYawAlignment() { turn_yaw_follow_latch_.clear(); }
   bool isRecoveryDirectionBackward(const Eigen::Vector3d& direction,
@@ -166,7 +177,8 @@ private:
                           const Eigen::Vector3d& cur_pos, const ros::Time& now);
   void lockExitPortal(const ros::Time& now);
   void beginExitCrossing(const ros::Time& now);
-  bool mapExitFootprintFree(const Eigen::Vector3d& point) const;
+  bool mapExitFootprintFree(const Eigen::Vector3d& point,
+                            double bottom_height = -1.0) const;
   bool mapRelativeColumnOccupied(const Eigen::Vector3d& point, double reference_z) const;
   // 2026-07-21: 穿门只发布已成为FREE的短滚动目标，UNKNOWN只用于证明开口延伸，不能直接飞入。
   bool buildSafeExitCrossingGoal(const Eigen::Vector3d& cur_pos, Eigen::Vector3d& goal) const;
@@ -181,7 +193,7 @@ private:
   bool inferOccupancyTurnDirection(const Eigen::Vector3d& travel_direction,
                                    Eigen::Vector3d& turn_direction,
                                    double& forward_free_length,
-                                   double& turn_free_length) const;
+                                   double& turn_free_length, double* upper_height = nullptr) const;
   bool turnDirectionRetracesVisitedRoute(
       const Eigen::Vector2d& anchor,
       const Eigen::Vector2d& direction) const;
@@ -266,6 +278,10 @@ private:
   Eigen::Vector2d segment_origin_{0.0, 0.0};
   Eigen::Vector2d segment_direction_{1.0, 0.0};
   double segment_high_water_{0.0};
+  bool turn_upper_enabled_{true};
+  double turn_upper_step_{0.20}, turn_upper_max_rise_{0.60};
+  double turn_upper_max_height_{1.90}, turn_bottom_clearance_{0.20};
+  double committed_turn_upper_height_{std::numeric_limits<double>::quiet_NaN()};
   bool transition_active_{false};
   Eigen::Vector2d transition_anchor_{0.0, 0.0};
   Eigen::Vector2d transition_incoming_direction_{1.0, 0.0};

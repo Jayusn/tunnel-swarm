@@ -728,6 +728,51 @@ bool FastExplorationManager::isLowProbeCorridorSafe(
        planner_manager_->isFappPathSafe(path));
 }
 
+bool FastExplorationManager::buildPostTurnUpperRecovery(
+    const Vector3d& pos, double cur_yaw, Vector3d& next_pos, double& next_yaw) {
+  if (!vertical_detour_enabled_ || !task_search_manager_ || manual_fapp_active_ || suspended_underpass_active_ ||
+      turn_in_place_session_active_ ||
+      low_probe_phase_ != vertical_detour::LowProbePhase::IDLE) return false;
+  Vector3d direction;
+  double height;
+  if (!task_search_manager_->upperTurnRecovery(direction,height) ||
+      pos.z() >= height - 0.03) return false;
+  // 转弯已按完整机体包络确认高层通道，沿新方向复查实际连接。
+  // 不再把旧前向宽扇区内的侧墙最高点当成此通道低障碍的高度。
+  Vector3d elevated = pos;
+  elevated.z() = height;
+  for (double distance = vertical_detour_forward_check_distance_;
+       distance <= vertical_detour_upper_forward_max_distance_+1e-6;
+       distance += vertical_detour_forward_check_distance_) {
+    const Vector3d candidate = elevated + distance*direction;
+    if (!pointInsideWorkspaceLock(candidate)) continue;
+    planner_manager_->path_finder_->reset();
+    if (planner_manager_->path_finder_->search(pos,candidate) != Astar::REACH_END) continue;
+    const auto path = planner_manager_->path_finder_->getPath();
+    if (!planner_manager_->isPathSafe(path) ||
+        !task_search_manager_->isRecoveryPathAllowed(path,false)) continue;
+    bool known_free = true;
+    for (size_t i=1; i<path.size() && known_free; ++i) {
+      const Vector3d delta = path[i]-path[i-1];
+      const int samples = std::max(1,static_cast<int>(std::ceil(delta.norm()/.025)));
+      for (int j=0; j<=samples; ++j)
+        if (!planner_manager_->isKnownFreePosition(path[i-1]+delta*(double(j)/samples))) {
+          known_free = false; break;
+        }
+    }
+    if (!known_free) continue;
+    next_pos = candidate;
+    next_yaw = cur_yaw;
+    ROS_WARN("[upper_turn] yaw aligned; upper recovery along new corridor "
+             "dir=(%.2f,%.2f) target=(%.2f,%.2f,%.2f), required_z=%.2f.",
+             direction.x(),direction.y(),next_pos.x(),next_pos.y(),next_pos.z(),height);
+    return true;
+  }
+  ROS_WARN_THROTTLE(0.5,"[upper_turn] updated map cannot validate upper recovery "
+                    "to z=%.2f; yield to ordinary planning.",height);
+  return false;
+}
+
 bool FastExplorationManager::buildVerticalDetourFallback(
     const Vector3d& pos, double cur_yaw, const Vector3d& forward,
     Vector3d& next_pos, double& next_yaw, bool force_descend,
@@ -4360,13 +4405,26 @@ int FastExplorationManager::planExploreMotion(
                                     std::sin(turn_in_place_final_yaw_), 0.0);
     return buildTurnInPlacePlan(pos, vel, acc, yaw, locked_direction) ? SUCCEED : FAIL;
   }
+  // 低障碍阻断当前层、但地图已确认上方新通道时，先对准通道；
+  // 不能要求先生成一条被障碍阻断的平移轨迹才允许确认转弯。
+  if (!hold_fapp_height && !replacing_width_route && !suspended_underpass_active_ &&
+      low_probe_phase_ == vertical_detour::LowProbePhase::IDLE &&
+      mission_entered_search_region_ && task_search_manager_ &&
+      task_search_manager_->enabled() && !task_search_manager_->stage3Active() &&
+      !task_search_manager_->finalExitFrontierGuardActive()) {
+    Vector3d upper_direction;
+    if (task_search_manager_->mappedCorridorDirection(yaw[0],upper_direction,true,false,true))
+      return buildTurnInPlacePlan(pos,vel,acc,yaw,upper_direction) ? SUCCEED : FAIL;
+    use_vertical_detour_target = buildPostTurnUpperRecovery(pos,yaw[0],next_pos,next_yaw);
+  }
   // 先生成并验证本轮平移目标，再在轨迹发布前检查是否为真实弯道。局部左右绕障
   // 必须先拥有解释权，不能在A*尚未选路时被独立占据射线提前改写通道方向。
   // 低空探测状态具有XY所有权。状态结束或被显式取消前，膨胀层历史逃逸不得
   // 沿旧航迹横移，从而避免原地上升目标被带到数米之外仍继续生效。
   bool wait_for_low_confirmation = false;
-  use_vertical_detour_target = handleActiveLowProbe(
-      pos, next_pos, next_yaw, wait_for_low_confirmation);
+  if (!use_vertical_detour_target)
+    use_vertical_detour_target = handleActiveLowProbe(
+        pos, next_pos, next_yaw, wait_for_low_confirmation);
   const bool low_probe_active =
       low_probe_phase_ != vertical_detour::LowProbePhase::IDLE;
   if (wait_for_low_confirmation) return FAIL;
