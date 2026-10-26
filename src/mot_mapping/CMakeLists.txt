@@ -49,3 +49,6 @@ if(CATKIN_ENABLE_TESTING)
   target_include_directories(spatial_confirmation_test PRIVATE include ${EIGEN3_INCLUDE_DIRS})
   add_test(NAME mot_mapping_spatial_confirmation COMMAND spatial_confirmation_test)
 endif()
+
+# 本机前机角色，与后机目标同时构建。
+add_subdirectory(uav0)

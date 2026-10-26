@@ -51,3 +51,6 @@ target_link_libraries( bspline_opt
     ${NLOPT_LIBRARIES}
     # /usr/local/lib/libnlopt.so
     )  
+
+# 本机前机角色，与后机目标同时构建。
+add_subdirectory(uav0)

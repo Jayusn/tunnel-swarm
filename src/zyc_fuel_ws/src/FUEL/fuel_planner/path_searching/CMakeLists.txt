@@ -44,3 +44,6 @@ add_library( fuel_path_searching
 target_link_libraries( fuel_path_searching
     ${catkin_LIBRARIES} 
     )  
+
+# 本机前机角色，与后机目标同时构建。
+add_subdirectory(uav0)

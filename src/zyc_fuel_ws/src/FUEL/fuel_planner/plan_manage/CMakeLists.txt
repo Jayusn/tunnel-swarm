@@ -90,3 +90,6 @@ target_link_libraries( proc_msg2
     ${catkin_LIBRARIES} 
     ${PCL_LIBRARIES}
     )  
+
+# 本机前机角色，与后机目标同时构建。
+add_subdirectory(uav0)

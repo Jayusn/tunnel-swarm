@@ -1,0 +1,25 @@
+# 实飞位置作为进度参考，允许选附近未飞过的已知自由空间；map_confirmations 是地图更新次数。
+mission:
+  safe_relay:
+    enabled: false  # 双机 UAV0 入口显式开启，其他入口保持原任务行为。
+    frame_id: world
+    normal_spacing: 1.00
+    minimum_progress: 0.70
+    minimum_xy_spacing: 0.70  # 后续三类点统一与上一已发点比较 XY 直线距离；首点豁免。
+    entrance_minimum_progress: 0.50  # 尚未发布任何点时，相对实测入口样本的最低累计前进量。
+    release_distance: 1.00
+    selection_window: 0.50
+    maximum_gap: 1.50  # 没有常规新点时，累计前进达到此距离允许在当前位置附近补点。
+    sample_spacing: 0.08
+    # 内部点的悬停包络留在入口及已确认出口内侧，局部偏移不穿墙或未知空间；连接路径由后机规划。
+    # 所有自动内部接力点均允许新地图确认一次更优位置（原点60cm内），显示ID.1，保留ID。
+    # 出口交接后仍可更新；接收端只更新未完成的点，已完成点不回访，入口/出口点不参与。
+    hold_radius: 0.30
+    hold_half_height: 0.10
+    clearance_search_radius: 0.60  # 合格点在自身高度带内比较原始体素水平净空，上限 0.60m。
+    candidate_search_radius: 0.60  # 在实飞参考位置附近搜索更宽敞的已知自由空间，不要求点本身飞过。
+    map_confirmations: 2
+    map_timeout: 1.00
+    odom_timeout: 0.50
+    dynamic_wait_horizon: 2.00
+    maximum_samples: 10000

@@ -1,0 +1,507 @@
+#ifndef _EXPLORATION_MANAGER_H_
+#define _EXPLORATION_MANAGER_H_
+
+#include <ros/ros.h>
+#include <Eigen/Eigen>
+#include <memory>
+#include <deque>
+#include <vector>
+#include <limits>
+#include <geometry_msgs/Point.h>
+#include <geometry_msgs/PointStamped.h>
+#include <geometry_msgs/PoseStamped.h>
+#include <quadrotor_msgs/ExplorationMotionConstraint.h>
+#include <exploration_manager/vertical_detour_policy.h>
+#include <exploration_manager/manual_waypoint_path.h>
+#include <exploration_manager/entry_forward_policy.h>
+#include <exploration_manager/route_width_policy.h>
+using Eigen::Vector3d;
+using std::shared_ptr;
+using std::unique_ptr;
+using std::vector;
+
+namespace fast_planner {
+class EDTEnvironment;
+class SDFMap;
+class FastPlannerManager;
+class FrontierFinder;
+class TaskSearchManager;
+class SafeRelayPublisher;
+struct ExplorationParam;
+struct ExplorationData;
+
+enum EXPL_RESULT { NO_FRONTIER, FAIL, SUCCEED };
+
+class FastExplorationManager {
+public:
+  FastExplorationManager();
+  ~FastExplorationManager();
+
+  void initialize(ros::NodeHandle& nh);
+
+  int planExploreMotion(const Vector3d& pos, const Vector3d& vel, const Vector3d& acc,
+                        const Vector3d& yaw);
+  bool manualWaypointsEnabled() const { return manual_path_enabled_; }
+  bool preserveTrajectoryEndpoint() const {
+    return manual_path_enabled_ || fapp_exploration_crossing_enabled_;
+  }
+  bool explorationFappCrossingActive() const {
+    return fapp_exploration_crossing_enabled_ && manual_fapp_active_;
+  }
+  bool needsExplorationFappRetry(const Vector3d& actual_pos) const {
+    return explorationFappCrossingActive() && !manual_path_enabled_ &&
+        fapp_crossing_retry_needed_ && pointInsideWorkspaceLock(actual_pos);
+  }
+  bool planExplorationFappCrossing(const Vector3d& pos, const Vector3d& vel,
+                                   const Vector3d& acc, const Vector3d& yaw);
+  void discardExplorationFappRetry() {
+    fapp_crossing_retry_needed_ = true;
+    manual_fapp_curve_active_ = false;
+    suspended_underpass_active_ = false;
+    fapp_rush_pending_ = false;
+  }
+  // 只有真实里程计可释放未越过的动态障碍；预测规划起点不能提前解除等待。
+  bool manualFappObservationMissing(const Vector3d& pos, double yaw,
+                                     bool actual_odometry = false);
+  void startManualWaypointMission() { manual_path_started_ = true; }
+  bool consumeManualExitReplanRequest() {
+    const bool pending = manual_exit_replan_pending_;
+    manual_exit_replan_pending_ = false;
+    return pending;
+  }
+  // 只在 FSM 真正发布轨迹后提交高度，失败候选不能改写后续水平段目标。
+  void recordPublishedTrajectoryHeight();
+  // 混合模式只执行FUEL的候选评分与完整观察视点选择，轨迹由DIFF负责。
+  bool selectExplorationViewpoint(const Vector3d& pos, const Vector3d& vel,
+                                  const Vector3d& acc, const Vector3d& yaw,
+                                  Vector3d& next_pos, double& next_yaw);
+  void freezeExplorationInitialYaw(double yaw);
+  void fillExplorationConstraint(quadrotor_msgs::ExplorationMotionConstraint& msg) const;
+  void recordExplorationReached(const Vector3d& goal);
+  // 2026-07-13: 执行轨迹预测碰撞时把当前任务目标加入失败冷却，防止下一周期再次选择同一危险点。
+  void reportTrajectoryCollision();
+  // 2026-07-22: 由FSM里程计回调连续更新任务航迹，旧路判断不再只依赖稀疏重规划时刻。
+  void updateMissionOdometry(const Vector3d& pos, double yaw,
+                             const ros::Time& stamp = ros::Time(0));
+  bool consumeRcSearchLandingStartRequest();
+  bool shouldStartInflationHistoryEscape(const Vector3d& odom_pos) const;
+  bool exitTransitActive() const;
+  bool shouldReplanCurveHeading(const Vector3d& position, double reference_yaw) const;
+  bool prepareWiderRoute(const vector<Vector3d>& current_path, double yaw);
+  bool widthReplacementImproves(const vector<Vector3d>& current_path,
+                                const vector<Vector3d>& replacement, double yaw) const;
+  Vector3d widerRouteTarget() const { return pending_wider_route_.back(); }
+  Vector3d widerRouteForward(double yaw) const;
+  int widerRouteSide(double yaw) const;
+  void clearWiderRoute() { pending_wider_route_.clear(); pending_split_route_ = {}; planned_split_route_ = {}; }
+  bool beginSuspendedUnderpass(const Vector3d& pos, double yaw);
+  bool currentPlanIsTurnInPlace() const { return turn_in_place_plan_; }
+  bool incrementalEscapePlanSafe() const;
+  bool currentPlanIsEscapeStep() const { return escape_step_plan_; }
+  bool planFailedMotionEscape(const Vector3d& pos, const Vector3d& vel,
+                             const Vector3d& acc, const Vector3d& yaw);
+  bool currentPlanIsGroundAscent() const { return ground_ascent_plan_; }
+  bool currentPlanIsVerticalDetour() const { return vertical_detour_plan_; }
+  void completeVerticalDetourReference();
+  // 发布门控可能等待多帧地图更新；竖直段在真正发布前必须重新锁定实时里程计 XY。
+  bool reanchorVerticalDetourForRelease(const Vector3d& pos,
+                                        const Vector3d& yaw);
+  bool turnInPlaceAlignmentPending() const {
+    return turn_in_place_session_active_;
+  }
+  double turnInPlaceFinalYawError(double current_yaw) const;
+  double turnInPlaceCompletionTolerance() const;
+  double turnInPlaceCompletionConfirmTime() const {
+    return turn_in_place_completion_confirm_time_;
+  }
+  double turnInPlaceTrackingGraceTime() const {
+    return turn_in_place_tracking_grace_time_;
+  }
+  void completeTurnInPlace(const Vector3d& pos);
+
+  // Benchmark method, classic frontier and rapid frontier
+  int classicFrontier(const Vector3d& pos, const double& yaw);
+  int rapidFrontier(const Vector3d& pos, const Vector3d& vel, const double& yaw, bool& classic);
+
+  shared_ptr<ExplorationData> ed_;
+  shared_ptr<ExplorationParam> ep_;
+  shared_ptr<FastPlannerManager> planner_manager_;
+  shared_ptr<FrontierFinder> frontier_finder_;
+  // unique_ptr<ViewFinder> view_finder_;
+  ros::Publisher endpose_pub_;
+  ros::Publisher cmu_pose_pub_;
+  ros::Subscriber workspace_lock_sub_;
+  geometry_msgs::Point end_pose;
+  geometry_msgs::PointStamped cmu_pose;
+  bool cmu_exploration;
+private:
+  friend class TurnEscapeTest;
+  shared_ptr<EDTEnvironment> edt_environment_;
+  shared_ptr<SDFMap> sdf_map_;
+  shared_ptr<SafeRelayPublisher> safe_relay_;
+  // 2026-07-13: 门后第二阶段由任务搜索模块维护覆盖、重复站点和三类作业目标，FUEL 降级为地图与轨迹后端。
+  shared_ptr<TaskSearchManager> task_search_manager_;
+  bool mission_entered_search_region_{false};
+  bool mission_workspace_lock_received_{false};
+  bool entry_forward_complete_{false};
+  bool external_selection_only_{false};
+  bool manual_path_enabled_{false};
+  bool manual_path_use_astar_{false};
+  bool manual_path_wait_for_trigger_{false};
+  bool manual_path_started_{false};
+  bool manual_exit_enabled_{false};
+  bool manual_exit_latched_{false};
+  bool manual_exit_replan_pending_{false};
+  Vector3d manual_actual_pos_{Vector3d::Zero()};
+  double manual_path_arrive_distance_{0.25};
+  double manual_path_stuck_timeout_{5.0};
+  std::size_t manual_progress_index_{std::numeric_limits<std::size_t>::max()};
+  ros::Time manual_progress_stamp_;
+  Vector3d manual_progress_position_{Vector3d::Zero()};
+  // 仅独立航点入口开启，自动探索仍走原有局部规划流程。
+  double manual_path_max_segment_length_{0.0};
+  bool manual_path_exploration_style_{false};
+  bool manual_fapp_active_{false};
+  bool fapp_rush_active_{false}, fapp_rush_pending_{false};
+  ros::Publisher fapp_rush_pub_;
+  bool keepsDynamicSide(const std::vector<Vector3d>& path) const;
+  bool planFappOpeningCrossing(const Vector3d& pos, const Vector3d& vel,
+                               const Vector3d& acc, const Vector3d& yaw);
+  bool fapp_exploration_crossing_enabled_{false};
+  bool fapp_crossing_retry_needed_{false};
+  Vector3d manual_fapp_forward_{Vector3d::UnitX()};
+  double manual_fapp_exit_progress_{0.0};
+  // 一次锁定穿越高度，不随掉高或可疑历史最低框逐轮降低。
+  double manual_fapp_hold_height_{std::numeric_limits<double>::quiet_NaN()};
+  ros::Time manual_fapp_wait_since_;
+  bool manual_fapp_curve_active_{false};
+  Vector3d manual_fapp_curve_origin_{Vector3d::Zero()};
+  double manual_fapp_curve_end_{0.0};
+  double manual_fapp_curve_side_{0.0};
+  bool buildManualFappUnderpassPath(const Vector3d& pos, const Vector3d& waypoint,
+                                   std::vector<Vector3d>& path);
+  ManualWaypointPath manual_path_;
+  bool manual_local_goal_enabled_{false}, manual_local_goal_selected_{false};
+  double manual_local_goal_radius_{0.60};
+  std::size_t manual_local_goal_index_{std::numeric_limits<std::size_t>::max()};
+  Vector3d manual_local_goal_anchor_{Vector3d::Zero()};
+  void improveManualWaypoint(const Vector3d& pos);
+  int planManualWaypointMotion(const Vector3d& pos, const Vector3d& vel,
+                               const Vector3d& acc, const Vector3d& yaw);
+  Vector3d external_selected_viewpoint_{0.0, 0.0, 0.0};
+  double external_selected_yaw_{0.0};
+  // 2026-07-16: 预留相机观测航向接口；Mid360比赛模式默认按运动方向飞行，不执行原地转头观测。
+  bool use_camera_viewpoint_yaw_{false};
+  // 2026-07-24: 前机通道搜索期间控制机体航向，为前置相机提供规律扫描视场。
+  bool camera_head_sweep_enabled_{true};
+  // 2026-07-24: 全程连续360度只保留为调试回退项；比赛默认由独立障碍物触发一次快速环扫。
+  bool camera_head_full_rotation_{false};
+  double camera_head_sweep_amplitude_rad_{0.5235987756};
+  double camera_head_sweep_period_{10.0};
+  double camera_head_scan_direction_{1.0};
+  ros::Time camera_head_sweep_start_;
+  // 2026-07-24: 障碍物导向扫描状态；墙由Mid360累计图负责，前置相机只重点扫描非连续墙占据簇。
+  bool camera_obstacle_scan_enabled_{true};
+  double camera_clear_sweep_amplitude_rad_{0.6108652382};
+  double camera_clear_sweep_period_{3.5};
+  double camera_obstacle_scan_period_{6.0};
+  double camera_turn_threshold_rad_{0.5235987756};
+  double camera_turn_hold_time_{1.2};
+  double camera_obstacle_min_forward_{0.55};
+  double camera_obstacle_max_forward_{1.60};
+  double camera_obstacle_lateral_range_{0.90};
+  double camera_obstacle_dedup_radius_{0.55};
+  double camera_wall_support_length_{0.90};
+  double camera_wall_support_ratio_{0.68};
+  bool camera_route_heading_valid_{false};
+  double camera_last_route_heading_{0.0};
+  ros::Time camera_turning_until_;
+  bool camera_obstacle_scan_active_{false};
+  Vector3d camera_active_obstacle_{0.0, 0.0, 0.0};
+  ros::Time camera_obstacle_scan_start_;
+  vector<Vector3d> camera_scanned_obstacles_;
+  Vector3d mission_workspace_origin_{0.0, 0.0, 0.0};
+  Vector3d mission_workspace_dir_{1.0, 0.0, 0.0};
+  // 2026-07-14: 保存任务层请求的最终目标；执行期碰撞不能只冷却 5m 截断后的中间点。
+  Vector3d last_requested_goal_{0.0, 0.0, 0.0};
+  bool has_last_requested_goal_{false};
+  double horizontal_reference_height_{std::numeric_limits<double>::quiet_NaN()};
+  double pending_reference_height_{std::numeric_limits<double>::quiet_NaN()};
+  double horizontalGoalHeight(double current_height) const;
+  // 绕障侧只作可让出的连续性偏好；横移不解除，前方短路可通并前进后解除。
+  bool recovery_side_latched_{false};
+  bool wide_side_bypass_active_{false};
+  double wide_side_bypass_release_distance_{0.0};
+  Vector3d wide_side_bypass_forward_{Vector3d::UnitX()};
+  bool recovery_side_continuation_pending_{false};
+  Vector3d recovery_side_origin_{0.0, 0.0, 0.0};
+  Vector3d recovery_side_dir_{1.0, 0.0, 0.0};
+  double recovery_side_release_distance_{0.20};
+  // 绕障路径转回主方向前，若地图允许则继续沿当前直线多走一段，给机体后部留出通过距离。
+  bool straight_run_extension_enabled_{true};
+  double straight_run_extension_distance_{0.30};
+  double straight_run_extension_min_turn_deg_{35.0};
+  bool passage_centering_enabled_{true};
+  double passage_centering_search_radius_{0.90};
+  double passage_centering_maximum_shift_{0.45};
+  double route_width_horizon_{1.0};
+  double route_width_replan_gain_{0.10};
+  vector<Vector3d> pending_wider_route_;
+  bool width_route_plan_{false};
+  route_width::SplitRoute pending_split_route_, planned_split_route_;
+  route_width::SplitRoute active_split_lane_;
+  bool split_route_committed_{false};
+  bool incremental_escape_plan_{false};
+  bool escape_step_plan_{false};
+  bool committedSplitRoute() const {
+    return split_route_committed_ && recovery_side_latched_ &&
+           wide_side_bypass_active_ && !manual_fapp_active_;
+  }
+  bool prepareSplitRoute(const Vector3d& start, const Vector3d& forward);
+  bool splitPassagePath(const Vector3d& start, const route_width::SplitRoute& lane,
+                        vector<Vector3d>& path) const;
+  bool splitPassageBlocked(const route_width::SplitRoute& lane) const;
+  void latchSplitRecovery(const Vector3d& pos, const Vector3d& forward,
+                          const Vector3d& side_direction);
+  bool insideRecoveryLane(const Vector3d& point) const;
+  void updateSplitRear(route_width::SplitRoute& lane) const;
+  int widthColumnState(const Vector3d& point) const;
+  bool widthEndpointHasRoom(const vector<Vector3d>& path) const;
+  route_width::Score evaluateRouteWidth(const vector<Vector3d>& path,
+                                       const Vector3d& forward) const;
+  // 前方竖直障碍把通道横向分开时，优先横移到占据地图中净宽更大的一侧。
+  bool wide_side_bypass_enabled_{true};
+  double wide_side_bypass_min_lookahead_{0.20};
+  double wide_side_bypass_max_lookahead_{0.90};
+  double wide_side_bypass_lateral_range_{0.90};
+  double wide_side_bypass_min_lane_width_{0.25};
+  double wide_side_bypass_max_lateral_step_{0.45};
+  double wide_side_bypass_forward_step_{0.20};
+  double wide_side_bypass_low_support_height_{0.20};
+  int wide_side_bypass_min_vertical_support_layers_{2};
+  // 两侧局部障碍夹出已知自由中门时，优先保持当前高度沿门中心通过。
+  bool center_gate_enabled_{true};
+  double center_gate_min_width_{0.55};
+  double center_gate_pass_margin_{0.20};
+  // 可选的一次性短回撤；比赛窄通道默认关闭。
+  bool short_backtrack_enabled_{false};
+  bool short_backtrack_latched_{false};
+  Vector3d short_backtrack_release_origin_{0.0, 0.0, 0.0};
+  Vector3d short_backtrack_forward_dir_{1.0, 0.0, 0.0};
+  Vector3d short_backtrack_last_dir_{0.0, 0.0, 0.0};
+  ros::Time short_backtrack_last_time_;
+  int short_backtrack_chain_count_{0};
+  bool pending_short_backtrack_{false};
+  Vector3d pending_short_backtrack_target_{0.0, 0.0, 0.0};
+  Vector3d pending_short_backtrack_dir_{0.0, 0.0, 0.0};
+  Vector3d pending_short_backtrack_forward_dir_{1.0, 0.0, 0.0};
+  double short_backtrack_min_distance_{0.10};
+  double short_backtrack_max_distance_{0.20};
+  double short_backtrack_forward_release_{0.60};
+  double short_backtrack_retry_cooldown_{1.5};
+  int short_backtrack_max_chain_{1};
+  double short_backtrack_min_direction_change_deg_{35.0};
+  // 仅在当前位置落入膨胀层时，沿高密度真实航迹切线前后脱困；不改变普通任务禁回头规则。
+  bool inflation_history_escape_enabled_{true};
+  double inflation_history_escape_max_distance_{0.45};
+  double inflation_history_escape_sample_step_{0.05};
+  double inflation_history_escape_clearance_tolerance_{0.02};
+  bool inflation_wall_pull_enabled_{true};
+  double inflation_escape_clear_margin_{0.10};
+  double recovery_history_spacing_{0.03};
+  int recovery_history_max_size_{200};
+  std::deque<Vector3d> recovery_odom_history_;
+  bool turn_in_place_enabled_{true};
+  bool turn_in_place_plan_{false};
+  bool turn_in_place_session_active_{false};
+  Vector3d turn_in_place_anchor_{0.0, 0.0, 0.0};
+  double turn_in_place_final_yaw_{0.0};
+  double turn_in_place_yaw_rate_deg_{30.0};
+  double turn_in_place_completion_tolerance_deg_{8.0};
+  double turn_in_place_completion_confirm_time_{0.15};
+  double turn_in_place_tracking_grace_time_{1.0};
+  double turn_in_place_max_stationary_speed_{0.20};
+  double turn_in_place_still_confirm_time_{0.15};
+  ros::Time turn_in_place_still_since_;
+  double turn_in_place_min_duration_{1.0};
+  double turn_in_place_max_duration_{4.0};
+  bool skip_straight_extension_after_turn_{false};
+  // 当前位置下方出现受支撑障碍时，先固定 XY/yaw 回到巡航高度，再恢复水平搜索。
+  bool ground_ascent_enabled_{true};
+  bool ground_ascent_active_{false};
+  // 转弯后的 0.60m 高度恢复只是偏好：失败时让出规划权，但不改默认高度。
+  bool ground_ascent_optional_{false};
+  bool ground_ascent_plan_{false};
+  bool vertical_detour_plan_{false};
+  double ground_ascent_cruise_height_{0.60};
+  double ground_ascent_lower_probe_depth_{0.20};
+  int ground_ascent_min_lower_obstacles_{2};
+  double ground_ascent_max_stationary_speed_{0.12};
+  double ground_ascent_still_confirm_time_{0.15};
+  double ground_ascent_height_tolerance_{0.06};
+  Vector3d ground_ascent_anchor_{0.0, 0.0, 0.0};
+  bool ground_ascent_anchor_valid_{false};
+  Vector3d ground_ascent_target_{0.0, 0.0, 0.0};
+  double ground_ascent_yaw_{0.0};
+  ros::Time ground_ascent_still_since_;
+  // 水平绕障全部失败后的三维恢复。下绕必须先原地下降并连续确认，不能生成斜向俯冲轨迹。
+  bool vertical_detour_enabled_{true};
+  double vertical_detour_low_height_{0.10};
+  double vertical_detour_forward_check_distance_{0.20};
+  double vertical_detour_upper_step_{0.20};
+  double vertical_detour_upper_max_rise_{0.60};
+  double vertical_detour_upper_forward_max_distance_{0.60};
+  double vertical_detour_upper_max_side_angle_deg_{45.0};
+  double vertical_detour_upper_obstacle_clearance_{0.20};
+  double vertical_detour_down_first_height_{0.75};
+  double vertical_detour_height_tolerance_{0.06};
+  double vertical_detour_xy_tolerance_{0.08};
+  double vertical_detour_verification_timeout_{2.0};
+  double vertical_detour_descent_tracking_timeout_{2.0};
+  double vertical_detour_ascent_timeout_{4.0};
+  double vertical_detour_footprint_radius_{0.17};
+  int vertical_detour_required_confirmations_{1};
+  int vertical_detour_release_confirmations_{2};
+  vertical_detour::LowProbePhase low_probe_phase_{
+      vertical_detour::LowProbePhase::IDLE};
+  int low_probe_confirmations_{0};
+  int low_probe_release_confirmations_{0};
+  double low_probe_advanced_distance_{0.0};
+  Vector3d low_probe_origin_{0.0, 0.0, 0.0};
+  Vector3d low_probe_direction_{1.0, 0.0, 0.0};
+  Vector3d low_probe_target_{0.0, 0.0, 0.0};
+  double low_probe_return_height_{0.60};
+  double low_probe_height_{0.20};
+  double low_probe_exit_progress_{0.0};
+  bool suspended_underpass_active_{false};
+  bool suspended_underpass_blocked_{false};
+  double underpass_lidar_above_odom_{0.044};
+  double underpass_clearance_{0.10};
+  double underpass_height_tracking_margin_{0.06};
+  double underpass_lookahead_{2.00};
+  double underpass_min_height_{0.25};
+
+  double low_probe_yaw_{0.0};
+  ros::Time low_probe_verify_start_;
+  ros::Time low_probe_descent_end_time_;
+  ros::Time low_probe_ascent_start_;
+  Vector3d low_probe_ascent_origin_{0.0, 0.0, 0.0};
+
+  // Find optimal tour for coarse viewpoints of all frontiers
+  void findGlobalTour(const Vector3d& cur_pos, const Vector3d& cur_vel, const Vector3d cur_yaw,
+                      vector<int>& indices);
+
+  // Refine local tour for next few frontiers, using more diverse viewpoints
+  void refineLocalTour(const Vector3d& cur_pos, const Vector3d& cur_vel, const Vector3d& cur_yaw,
+                       const vector<vector<Vector3d>>& n_points, const vector<vector<double>>& n_yaws,
+                       vector<Vector3d>& refined_pts, vector<double>& refined_yaws);
+
+  void shortenPath(vector<Vector3d>& path);
+  bool centrePassagePath(vector<Vector3d>& path, double horizon);
+  void extendSafeStraightRuns(vector<Vector3d>& path);
+
+  // 2026-07-08 19:26: 为比赛任务层提供最小约束工具，把“先过门进入搜索区、起飞区禁搜、未完成任务不结束”
+  // 直接接进 exploration_manager，避免继续只按 frontier 覆盖率行事。
+  bool pointInBox(const Vector3d& pt, const Vector3d& box_min, const Vector3d& box_max) const;
+  void updateMissionRegionState(const Vector3d& pos);
+  bool shouldUseMissionEntryTransit(const Vector3d& pos) const;
+  void applyMissionFrontierFilter();
+  // 2026-07-10: 门内锁约束工具，FUEL 第二阶段不能越过入口半平面回到起飞区。
+  void workspaceLockCallback(const geometry_msgs::PoseStampedConstPtr& msg);
+  bool pointInsideWorkspaceLock(const Vector3d& pt) const;
+  bool pathInsideWorkspaceLock(const vector<Vector3d>& path,
+                               bool allow_entry_start = false) const;
+  // 2026-07-13: 动态门后阶段改为多方向任务搜索恢复，不再永久沿入口朝向直飞。
+  bool buildMissionForwardFallback(const Vector3d& pos, double cur_yaw, Vector3d& next_pos,
+                                   double& next_yaw);
+  bool buildSideRecoveryContinuation(const Vector3d& pos, double cur_yaw,
+                                     Vector3d& next_pos, double& next_yaw);
+  void rememberSideRecovery(const Vector3d& pos, double cur_yaw,
+                            const vector<Vector3d>& path);
+  struct SplitEvidence {
+    bool valid{false};
+    bool suspended_obstacle_seen{false};
+    double forward_distance{0.0};
+    double obstacle_min_offset{0.0};
+    double obstacle_max_offset{0.0};
+    double left_free_min{0.0};
+    double left_free_max{0.0};
+    double right_free_min{0.0};
+    double right_free_max{0.0};
+    double left_width{0.0};
+    double right_width{0.0};
+  };
+  SplitEvidence findWideSideSplit(const Vector3d& pos, const Vector3d& forward,
+                                  bool entry_exempt = false) const;
+  route_width::SplitRoute makeSplitLane(const Vector3d& pos, const Vector3d& forward,
+                                        const SplitEvidence& split, int side) const;
+  bool selectEntryForwardGoal(const Vector3d& pos, const Vector3d& forward,
+                              double remaining, entry_forward::Goal& selected);
+  bool buildWideSideBypass(const Vector3d& pos, double cur_yaw,
+                           const Vector3d& forward, Vector3d& next_pos,
+                           double& next_yaw, bool& split_obstacle_detected);
+  bool buildFappSideBypass(const Vector3d& pos, double cur_yaw,
+                           const Vector3d& forward, Vector3d& next_pos,
+                           double& next_yaw, bool& obstacle_detected,
+                           std::vector<Vector3d>* crossing_path = nullptr);
+  bool buildCenterGatePassage(const Vector3d& pos, double cur_yaw,
+                              const Vector3d& forward, Vector3d& next_pos,
+                              double& next_yaw, bool& gate_detected);
+  bool findForwardObstacleTop(const Vector3d& pos, const Vector3d& forward,
+                              double& obstacle_top) const;
+  bool occupiedNearHeight(const Vector3d& point, double height) const;
+  bool hasCurrentHeightForwardObstacle(const Vector3d& pos,
+                                       const Vector3d& forward) const;
+  bool detectSuspendedObstacle(const Vector3d& pos, const Vector3d& forward,
+                               double& bottom_z, double& exit_progress,
+                               double& first_hit_distance) const;
+  bool hasSuspendedForwardObstacle(const Vector3d& pos,
+                                   const Vector3d& forward) const;
+  bool hasLowVerticalSupport(const Vector3d& point,
+                             double current_height) const;
+  bool hasKnownFreeSpaceBelowObstacle(const Vector3d& point,
+                                      double bottom_z) const;
+  bool planInflationHistoryEscape(const Vector3d& pos, const Vector3d& vel,
+                                  const Vector3d& acc, const Vector3d& yaw, bool after_failure = false);
+  bool shouldStartGroundAscent(const Vector3d& pos) const;
+  bool buildGroundAscentPlan(const Vector3d& pos, const Vector3d& vel,
+                             const Vector3d& yaw);
+  bool isKnownSafeGroundAscentPath(const Vector3d& start,
+                                   const Vector3d& target) const;
+  bool hasSafeCruiseContinuation(const Vector3d& pos, double yaw) const;
+  bool tryCruiseHeightRecovery(const Vector3d& pos, const Vector3d& vel,
+                              const Vector3d& acc, double time_lb);
+  bool buildTurnInPlacePlan(const Vector3d& pos, const Vector3d& vel,
+                            const Vector3d& acc, const Vector3d& yaw,
+                            const Vector3d& turn_direction);
+  bool buildVerticalDetourFallback(const Vector3d& pos, double cur_yaw,
+                                   const Vector3d& forward, Vector3d& next_pos,
+                                   double& next_yaw, bool force_descend = false,
+                                   bool allow_descend = true);
+  bool buildPostTurnUpperRecovery(const Vector3d& pos, double cur_yaw,
+                                   Vector3d& next_pos, double& next_yaw);
+  bool buildStationaryVerticalDetourPlan(const Vector3d& pos,
+                                         const Vector3d& yaw);
+  bool handleActiveLowProbe(const Vector3d& pos, Vector3d& next_pos, double& next_yaw,
+                            bool& wait_for_confirmation);
+  void cancelActiveLowProbe(const char* reason);
+  bool isKnownSafeHorizontalCorridor(const Vector3d& start, const Vector3d& direction,
+                                     double distance) const;
+  bool isLowProbeCorridorSafe(const Vector3d& start, const Vector3d& direction,
+                              double distance) const;
+  bool isKnownSafeVerticalPath(const Vector3d& start, double target_z,
+                               bool allow_unknown = true) const;
+  // 2026-07-24: 以当前高度附近的XY占据柱检测物体，并用沿通道方向的连续支撑剔除左右墙。
+  bool cameraOccupancyColumn(const Vector3d& point, double reference_z) const;
+  bool cameraWallSupported(const Vector3d& point, const Eigen::Vector2d& travel_dir) const;
+  bool detectCameraObstacle(const Vector3d& pos, const Eigen::Vector2d& travel_dir,
+                            Vector3d& obstacle_center) const;
+  bool cameraObstacleAlreadyScanned(const Vector3d& obstacle_center) const;
+
+public:
+  typedef shared_ptr<FastExplorationManager> Ptr;
+};
+
+}  // namespace fast_planner
+
+#endif

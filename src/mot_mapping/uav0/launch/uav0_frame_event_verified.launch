@@ -1,0 +1,42 @@
+<launch>
+  <arg name="dynamic_mode" default="swing-only"/>
+  <arg name="detection_min_z" default="0.3"/>
+  <arg name="detection_max_z" default="1.2"/>
+  <arg name="object_motion_evidence_enabled" default="true"/>
+  <arg name="object_motion_span_enabled" default="true"/>
+  <arg name="object_motion_evidence_window" default="0.4"/>
+  <arg name="spatial_reacquisition_enabled" default="true"/>
+  <arg name="object_motion_local_bidirectional_enabled" default="false"/>
+  <arg name="object_motion_local_match_fraction" default="0.60"/>
+  <arg name="object_motion_local_match_advantage" default="0.20"/>
+  <arg name="object_candidate_split_enabled" default="false"/>
+  <arg name="object_candidate_isolation_enabled" default="false"/>
+  <!-- Explicit trial preset; the general detection launch retains its defaults. -->
+  <arg name="cloud_topic" default="/UAV0/fast_lio/cloud_registered"/>
+  <arg name="odom_topic" default="/UAV0/fast_lio/Odom_high_freq"/>
+  <arg name="frame_id" default="UAV0/camera_init"/>
+  <group ns="UAV0/fapp">
+    <node pkg="mot_mapping" type="mapping_node_uav0" name="mapping_node" output="screen">
+      <rosparam command="load" file="$(find mot_mapping)/uav0/config/uav1_frame_event_verified.yaml"/>
+      <param name="detection/min_z" value="$(arg detection_min_z)"/>
+      <param name="detection/max_z" value="$(arg detection_max_z)"/>
+      <!-- Startup accumulation can include the swinging ball; do not veto it as fixed background. -->
+      <param name="background_reference/enabled" value="false"/>
+      <!-- Swing and measured-motion confirmation supply their own observation checks. -->
+      <param if="$(eval arg('dynamic_mode') == 'swing-only' or arg('object_motion_evidence_enabled'))" name="detection/motion_confirmation_duration" value="0.0"/>
+      <param name="detection/object_motion_evidence_enabled" value="$(arg object_motion_evidence_enabled)"/>
+      <param name="detection/object_motion_span_enabled" value="$(arg object_motion_span_enabled)"/>
+      <param name="detection/object_motion_evidence_window" value="$(arg object_motion_evidence_window)"/>
+      <param name="detection/spatial_reacquisition_enabled" value="$(arg spatial_reacquisition_enabled)"/>
+      <param name="detection/object_motion_local_bidirectional_enabled" value="$(arg object_motion_local_bidirectional_enabled)"/>
+      <param name="detection/object_motion_local_match_fraction" value="$(arg object_motion_local_match_fraction)"/>
+      <param name="detection/object_motion_local_match_advantage" value="$(arg object_motion_local_match_advantage)"/>
+      <param name="clustering/object_candidate_split_enabled" value="$(arg object_candidate_split_enabled)"/>
+      <param name="association/object_candidate_isolation_enabled" value="$(arg object_candidate_isolation_enabled)"/>
+      <param name="detection/dynamic_mode" value="$(arg dynamic_mode)"/>
+      <param name="ros/lidar_topic" value="$(arg cloud_topic)"/>
+      <param name="ros/odom_topic" value="$(arg odom_topic)"/>
+      <param name="ros/frame_id" value="$(arg frame_id)"/>
+    </node>
+  </group>
+</launch>

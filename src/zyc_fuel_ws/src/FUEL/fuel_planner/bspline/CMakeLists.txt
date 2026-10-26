@@ -54,3 +54,6 @@ add_library( bspline
 target_link_libraries( bspline
     ${catkin_LIBRARIES} 
     )  
+
+# 使用同一源码，但前机链接自己的依赖库。
+add_subdirectory(uav0)

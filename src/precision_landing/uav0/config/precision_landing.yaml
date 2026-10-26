@@ -1,0 +1,61 @@
+topics:
+  trigger: /need_to_land
+  target_id: /landing/target_id
+  image: /usb_cam/image_raw
+  camera_info: /usb_cam/camera_info
+  local_pose: /mavros/local_position/pose
+  mavros_state: /mavros/state
+  setpoint: /mavros/setpoint_raw/local
+  set_mode_service: /mavros/set_mode
+
+marker:
+  dictionary: DICT_4X4_250
+  size_m: 0.50
+  requested_id: -1
+  stable_frames: 5
+  max_reprojection_error_px: 4.0
+  min_distance_m: 0.15
+  max_distance_m: 6.0
+  max_position_jump_m: 0.60
+  max_tilt_deg: 60.0
+
+control:
+  publish_rate_hz: 20.0
+  kp_xy: 0.55
+  max_xy_speed_mps: 0.60
+  max_xy_accel_mps2: 0.80
+  error_deadband_m: 0.02
+  filter_alpha: 0.35
+
+safety:
+  require_camera_info: true
+  image_timeout_sec: 0.30
+  pose_timeout_sec: 0.30
+  state_timeout_sec: 1.50
+  # Reject zero stamps and stamps over 0.05 s in the future. Small positive
+  # skew accommodates normal ROS callback scheduling and synchronized clocks.
+  max_header_future_sec: 0.05
+  target_loss_timeout_sec: 0.50
+  # 已见过目标后，从首次丢码开始连续计时，满 5 秒锁定 XY 慢降，至 0.30 m 再 AUTO.LAND。
+  # 重新识别到目标会清零计时；total_timeout_sec 只控制长时间搜索告警。
+  reacquire_timeout_sec: 5.0
+  total_timeout_sec: 30.0
+state_machine:
+  align_error_m: 0.15
+
+stages:
+  high: {min_height_m: 1.30, error_m: 0.20, descent_mps: 0.25}
+  # 高位提前累计水平误差连续0.5秒不超过12厘米；到达此高度且满足对准时锁定XY，否则保持高度继续对准。
+  auto_land: {height_m: 1.30, stable_sec: 0.50, error_m: 0.12, fine_stable_sec: 0.50}
+  fixed_xy_descent:
+    descent_mps: 0.25
+    cutoff_height_m: 0.30
+    ground_target_offset_m: 0.03
+
+camera_to_body:
+  rotation:
+    - [0.010462050829534572, -0.9998552702926987, 0.013415810089416448]
+    - [-0.9998746211809735, -0.010619853717261046, -0.011745664103329254]
+    - [0.011886438097449967, -0.013291244296115478, -0.9998410150691043]
+  # 2026-08-15 Park手眼标定：UAV0/body <- UAV0/down_camera_optical_frame。
+  translation_m: [0.07383116536212123, -0.03902001736630811, -0.13346814265233625]

@@ -34,6 +34,12 @@ add_message_files(
   PolynomialTrajectory.msg
   PolynomialMatrix.msg
   PolynomialTraj.msg
+  PolynomialTrajUav0.msg
+  ExplorationGoalStatus.msg
+  ExplorationGate.msg
+  ExplorationCancel.msg
+  ExplorationGoal.msg
+  ExplorationMotionConstraint.msg
   OptimalTimeAllocator.msg
   TrajectoryMatrix.msg
   ReplanCheck.msg

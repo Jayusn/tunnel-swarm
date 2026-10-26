@@ -72,3 +72,6 @@ if(CATKIN_ENABLE_TESTING)
     target_link_libraries(test_vertical_obstacle_side_lock ${catkin_LIBRARIES})
   endif()
 endif()
+
+# 本机前机角色，与后机目标同时构建。
+add_subdirectory(uav0)

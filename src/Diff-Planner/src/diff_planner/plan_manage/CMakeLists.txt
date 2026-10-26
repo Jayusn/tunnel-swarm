@@ -111,3 +111,6 @@ if(CATKIN_ENABLE_TESTING)
 endif()
 # add_executable(monitor_node src/monitor_node.cpp)
 # target_link_libraries(monitor_node ${catkin_LIBRARIES})
+
+# 本机前机角色，与后机目标同时构建。
+add_subdirectory(uav0)

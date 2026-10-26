@@ -27,3 +27,11 @@ install(TARGETS reference_bridge_node
 install(DIRECTORY launch/
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch
 )
+
+# 本机前机角色，与后机目标同时构建。
+add_subdirectory(uav0)
+
+if(CATKIN_ENABLE_TESTING)
+  find_package(rostest REQUIRED)
+  add_rostest(test/role_bridge.test DEPENDENCIES fuel_autotrans_bridge_node_uav0 reference_bridge_node)
+endif()

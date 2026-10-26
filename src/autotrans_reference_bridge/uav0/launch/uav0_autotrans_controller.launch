@@ -1,0 +1,65 @@
+<launch>
+  <arg name="precision_landing_mission_mode" default="false"/>
+  <!-- 只启动 FUEL 到 AutoTrans 的桥接和 AutoTrans MPC，不启动 FUEL 规划器。 -->
+  <arg name="enable_logger" default="true"/>
+  <!-- 纯FUEL模式直接接入AutoTrans；关闭时保留FUEL/DIFF任务阶段仲裁。 -->
+  <arg name="pure_fuel_mode" default="false"/>
+  <!-- MPC 总流程通过降落仲裁器统一输出；其他入口保留原接口。 -->
+  <arg name="setpoint_topic"
+       default="$(eval '/UAV0/control/attitude_setpoint' if arg('precision_landing_mission_mode') else optenv('UAV0_AUTOTRANS_SETPOINT_TOPIC', '/UAV0/mavros/setpoint_raw/attitude'))"/>
+
+  <!-- 纯FUEL时直接输出控制器话题；混合模式先输出到FUEL专用话题。 -->
+  <node pkg="autotrans_reference_bridge" type="fuel_autotrans_bridge_node_uav0"
+        name="fuel_autotrans_bridge" output="screen">
+    <param name="input_topic" value="/UAV0/planning/bspline"/>
+    <param name="emergency_brake_topic" value="/UAV0/planning/emergency_brake"/>
+    <param name="output_topic"
+           value="$(eval '/UAV0/planning/autotrans_trajectory' if arg('pure_fuel_mode') else '/UAV0/fuel/autotrans_trajectory')"/>
+    <param name="frame_id" value="UAV0/camera_init"/>
+  </node>
+
+  <node unless="$(arg pure_fuel_mode)"
+        pkg="autotrans_reference_bridge" type="reference_bridge_node_uav0"
+        name="uav0_diff_autotrans_reference_bridge" output="screen">
+    <param name="input_topic" value="/drone_0_planning/trajectory"/>
+    <param name="output_topic" value="/UAV0/diff/autotrans_trajectory"/>
+    <param name="frame_id" value="UAV0/camera_init"/>
+    <param name="trajectory_timeout" value="2.0"/>
+  </node>
+
+  <node unless="$(arg pure_fuel_mode)"
+        pkg="autotrans_reference_bridge" type="autotrans_trajectory_arbiter_node_uav0"
+        name="autotrans_trajectory_arbiter" output="screen" required="true">
+    <param name="fuel_topic" value="/UAV0/fuel/autotrans_trajectory"/>
+    <param name="diff_topic" value="/UAV0/diff/autotrans_trajectory"/>
+    <param name="output_topic" value="/UAV0/planning/autotrans_trajectory"/>
+    <param name="stage_topic" value="/UAV0/mission/task_status"/>
+  </node>
+
+  <!-- AutoTrans 使用 UAV0 FAST-LIO 位姿/姿态、MID360 加速度和 UAV0 MAVROS 控制接口。 -->
+  <include file="$(find payload_mpc_controller)/uav0/launch/quad_wind_mpc_controller.launch">
+    <arg name="precision_target_in_fast_lio" value="$(arg precision_landing_mission_mode)"/>
+    <arg name="precision_landing_mission_mode" value="$(arg precision_landing_mission_mode)"/>
+    <arg name="precision_landing_test_target" value="/UAV0/landing/nmpc_target"/>
+    <arg name="recovery_position_setpoint_topic"
+         value="$(eval '/UAV0/control/position_setpoint' if arg('precision_landing_mission_mode') else '/UAV0/mavros/setpoint_raw/local')"/>
+    <arg name="odom_topic" value="/UAV0/fast_lio/Odom_high_freq"/>
+    <arg name="imu_topic" value="/UAV0/livox/imu_mps2"/>
+    <arg name="force_attitude_odom_topic" value="/UAV0/fast_lio/Odom_high_freq"/>
+    <arg name="state_topic" value="/UAV0/mavros/state"/>
+    <arg name="extended_state_topic" value="/UAV0/mavros/extended_state"/>
+    <arg name="rc_topic" value="/UAV0/mavros/rc/in"/>
+    <arg name="battery_topic" value="/UAV0/mavros/battery"/>
+    <arg name="esc_status_topic" value="/UAV0/mavros/esc_status"/>
+    <arg name="setpoint_topic" value="$(arg setpoint_topic)"/>
+    <arg name="reboot_service" value="/UAV0/mavros/cmd/command"/>
+    <arg name="dynamic_crossing_topic" value="/exploration_node/fapp/dynamic_crossing"/>
+    <arg name="trajectory_topic" value="/UAV0/planning/autotrans_trajectory"/>
+    <arg name="position_cmd_topic" value="/UAV0/planning/pos_cmd"/>
+    <arg name="landing_search_state_topic" value="/landing_diff_search_manager/state"/>
+    <arg name="landing_search_yaw_topic" value="/UAV0/landing_diff/yaw"/>
+    <arg name="cmd_trigger_topic" value="/UAV0/hummingbird/goal"/>
+    <arg name="goal_topic" value="/UAV0/move_base_simple/goal"/>
+    <arg name="enable_logger" value="$(arg enable_logger)"/>
+  </include>
+</launch>

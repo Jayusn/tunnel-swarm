@@ -1,0 +1,1341 @@
+
+#include <plan_manage/planner_manager.h>
+#include <exploration_manager/fast_exploration_manager.h>
+#include <traj_utils/planning_visualization.h>
+
+#include <exploration_manager/fast_exploration_fsm.h>
+#include <exploration_manager/expl_data.h>
+#include <exploration_manager/replan_execution_policy.h>
+#include <plan_env/edt_environment.h>
+#include <plan_env/sdf_map.h>
+
+#include <limits>
+
+using Eigen::Vector4d;
+
+namespace fast_planner {
+void FastExplorationFSM::init(ros::NodeHandle& nh) {
+  fp_.reset(new FSMParam);
+  fd_.reset(new FSMData);
+
+  /*  Fsm param  */
+  nh.param("fsm/thresh_replan1", fp_->replan_thresh1_, -1.0);
+  nh.param("fsm/thresh_replan2", fp_->replan_thresh2_, -1.0);
+  nh.param("fsm/thresh_replan3", fp_->replan_thresh3_, -1.0);
+  nh.param("fsm/replan_time", fp_->replan_time_, -1.0);
+  // 2026-07-13: 最新日志出现 0.35~0.44m 跟踪误差，超过机体安全余量时不允许继续执行旧轨迹。
+  nh.param("fsm/max_tracking_error_xy", fp_->max_tracking_error_xy_, 0.30);
+  nh.param("fsm/max_tracking_error_z", fp_->max_tracking_error_z_, 0.25);
+  // 2026-07-13: 新轨迹交接和短时误差先平滑重规划，只有持续或严重偏差才触发急停。
+  nh.param("fsm/tracking_error_confirm_time", fp_->tracking_error_confirm_time_, 0.25);
+  nh.param("fsm/tracking_error_grace_time", fp_->tracking_error_grace_time_, 0.35);
+  nh.param("fsm/hard_tracking_error_xy", fp_->hard_tracking_error_xy_, 0.65);
+  nh.param("fsm/hard_tracking_error_z", fp_->hard_tracking_error_z_, 0.50);
+  // 2026-07-22: FAIL后保持悬停并等待地图更新，禁止100Hz重复规划同一目标。
+  nh.param("fsm/plan_failure_retry_interval", fp_->plan_failure_retry_interval_, 0.50);
+  nh.param("fsm/safety_hold_enabled", safety_hold_enabled_, true);
+  nh.param("fsm/hold_on_plan_failure", hold_on_plan_failure_, true);
+  nh.param("fsm/endpoint_hold_enabled", endpoint_hold_enabled_, true);
+  nh.param("fsm/endpoint_hold_lead_time", endpoint_hold_lead_time_, 0.05);
+  endpoint_hold_lead_time_ = std::max(0.0, endpoint_hold_lead_time_);
+  nh.param("fsm/periodic_replan_enabled", periodic_replan_enabled_, true);
+  nh.param("fsm/use_diff_for_fuel_exploration", use_diff_for_fuel_exploration_, false);
+  nh.param("fsm/fuel_diff_goal_topic", external_goal_topic_, external_goal_topic_);
+  nh.param("fsm/fuel_diff_status_topic", external_status_topic_, external_status_topic_);
+  nh.param("fsm/fuel_diff_cancel_topic", external_cancel_topic_, external_cancel_topic_);
+  nh.param("fsm/fuel_diff_trigger_topic", external_trigger_topic_, external_trigger_topic_);
+  // 连续复核覆盖至少两次20Hz地图/安全周期；任一起点状态过期都先短刹并从最新里程计重规划。
+  nh.param("fsm/trajectory_release_confirm_time", fp_->trajectory_release_confirm_time_, 0.12);
+  nh.param("fsm/trajectory_release_check_interval", fp_->trajectory_release_check_interval_, 0.04);
+  nh.param("fsm/trajectory_release_max_start_error",
+           fp_->trajectory_release_max_start_error_, 0.20);
+  nh.param("fsm/trajectory_release_max_velocity_error",
+           fp_->trajectory_release_max_velocity_error_, 0.25);
+  nh.param("fsm/trajectory_restart_max_velocity_error",
+           fp_->trajectory_restart_max_velocity_error_, 0.25);
+  nh.param("fsm/trajectory_release_max_acceleration_error",
+           fp_->trajectory_release_max_acceleration_error_, 0.50);
+  nh.param("fsm/emergency_brake_horizon", fp_->emergency_brake_horizon_, 0.12);
+
+  /* Initialize main modules */
+  expl_manager_.reset(new FastExplorationManager);
+  expl_manager_->initialize(nh);
+  visualization_.reset(new PlanningVisualization(nh));
+
+  planner_manager_ = expl_manager_->planner_manager_;
+  state_ = EXPL_STATE::INIT;
+  fd_->have_odom_ = false;
+  fd_->state_str_ = { "INIT", "WAIT_TRIGGER", "PLAN_TRAJ", "PUB_TRAJ", "EXEC_TRAJ", "FINISH" };
+  fd_->static_state_ = true;
+  fd_->trigger_ = false;
+  next_plan_retry_time_ = ros::Time(0);
+  pending_traj_safe_since_ = ros::Time(0);
+  next_pending_traj_check_ = ros::Time(0);
+  active_traj_valid_ = false;
+  active_traj_braked_ = false;
+
+  /* Ros sub, pub and timer */
+  exec_timer_ = nh.createTimer(ros::Duration(0.01), &FastExplorationFSM::FSMCallback, this);
+  safety_timer_ = nh.createTimer(ros::Duration(0.05), &FastExplorationFSM::safetyCallback, this);
+  // frontier只在入口触发后的planExploreMotion中生成，等待入口期间不预计算候选。
+
+  trigger_sub_ =
+      nh.subscribe("/waypoint_generator/waypoints", 1, &FastExplorationFSM::triggerCallback, this);
+  // 独立队列保留最近十帧，主线程在规划/安全检查前优先取齐五帧。
+  // 地图回调期间消息仍入队，避免队列长度1把五帧审核拖成五次慢回调周期。
+  ros::NodeHandle odom_nh(nh);
+  odom_nh.setCallbackQueue(&odom_callback_queue_);
+  odom_sub_ = odom_nh.subscribe("/odom_world", 10,
+                               &FastExplorationFSM::odometryCallback, this);
+  // 任务状态决定门内/门外，并对外发布统一的动态检测阶段状态。
+  std::string mission_status_topic;
+  std::string dynamic_detection_enable_topic;
+  nh.param("fsm/mission_status_topic", mission_status_topic,
+           std::string("/mission/task_status"));
+  nh.param("fsm/dynamic_detection_enable_topic", dynamic_detection_enable_topic,
+           std::string("/UAV0/corridor_search/dynamic_detection_enable"));
+  mission_status_sub_ = nh.subscribe(mission_status_topic, 2,
+                                     &FastExplorationFSM::missionStatusCallback, this);
+  if (use_diff_for_fuel_exploration_) {
+    external_status_sub_ = nh.subscribe(
+        external_status_topic_, 10, &FastExplorationFSM::externalStatusCallback, this);
+    external_goal_pub_ = nh.advertise<quadrotor_msgs::ExplorationGoal>(
+        external_goal_topic_, 2, false);
+    external_cancel_pub_ = nh.advertise<quadrotor_msgs::ExplorationCancel>(
+        external_cancel_topic_, 2, false);
+    external_trigger_pub_ = nh.advertise<geometry_msgs::PoseStamped>(
+        external_trigger_topic_, 2, true);
+    external_session_id_ = static_cast<std::uint64_t>(ros::Time::now().toNSec());
+  }
+
+  replan_pub_ = nh.advertise<std_msgs::Empty>("/planning/replan", 10);
+  new_pub_ = nh.advertise<std_msgs::Empty>("/planning/new", 10);
+  bspline_pub_ = nh.advertise<bspline::Bspline>("/planning/bspline", 10);
+  emergency_brake_pub_ = nh.advertise<std_msgs::Int32>("/planning/emergency_brake", 2);
+  // 2026-07-13: latch 保证后启动的控制器也能收到当前安全门控状态。
+  safety_hold_pub_ = nh.advertise<std_msgs::Bool>("/planning/safety_hold", 2, true);
+  endpoint_hold_pub_ = nh.advertise<std_msgs::Bool>("/planning/endpoint_hold", 2, true);
+  dynamic_detection_enable_pub_ =
+      nh.advertise<std_msgs::Bool>(dynamic_detection_enable_topic, 2, true);
+  setSafetyHold(false, "initialization");
+  setEndpointHold(false, "initialization");
+  // 锁存初始false，后启动的监控节点也能获得当前阶段。
+  setDynamicDetectionEnable(false, "initialization", true);
+}
+
+void FastExplorationFSM::setSafetyHold(bool active, const string& reason) {
+  if (active && !safety_hold_enabled_) {
+    ROS_WARN_THROTTLE(1.0, "[safety_hold] ignored reason=%s; FUEL hold disabled.",
+                      reason.c_str());
+    return;
+  }
+  if (safety_hold_active_ == active && reason != "initialization") return;
+  safety_hold_active_ = active;
+  std_msgs::Bool msg;
+  msg.data = active;
+  safety_hold_pub_.publish(msg);
+  ROS_WARN("[safety_hold] %s reason=%s.", active ? "ACTIVE" : "RELEASED", reason.c_str());
+}
+
+void FastExplorationFSM::setEndpointHold(bool active, const string& reason) {
+  if (!endpoint_hold_enabled_ && active) return;
+  if (endpoint_hold_active_ == active && reason != "initialization") return;
+  endpoint_hold_active_ = active;
+  std_msgs::Bool msg;
+  msg.data = active;
+  endpoint_hold_pub_.publish(msg);
+  ROS_WARN("[endpoint_hold] %s reason=%s.", active ? "ACTIVE" : "RELEASED",
+           reason.c_str());
+}
+
+void FastExplorationFSM::requestActiveTrajectoryBrake(const string& reason) {
+  if (!active_traj_valid_ || active_traj_braked_) return;
+
+  std_msgs::Int32 brake_msg;
+  brake_msg.data = active_traj_.traj_id_;
+  emergency_brake_pub_.publish(brake_msg);
+  const double elapsed = std::max(0.0, (ros::Time::now() - active_traj_.start_time_).toSec());
+  active_traj_.duration_ =
+      std::min(active_traj_.duration_, elapsed + std::max(0.02, fp_->emergency_brake_horizon_));
+  active_traj_braked_ = true;
+  fd_->static_state_ = true;
+  ROS_ERROR("[trajectory_brake] requested reason=%s horizon=%.2fs.", reason.c_str(),
+            fp_->emergency_brake_horizon_);
+}
+
+// 统一发布规划器判定后的门内动态检测阶段，重复状态不重复刷屏。
+void FastExplorationFSM::setDynamicDetectionEnable(bool active, const string& reason,
+                                                   bool force) {
+  if (!force && dynamic_detection_enabled_ == active) return;
+  dynamic_detection_enabled_ = active;
+  std_msgs::Bool msg;
+  msg.data = active;
+  dynamic_detection_enable_pub_.publish(msg);
+  ROS_WARN("[dynamic_detection_gate] %s reason=%s.", active ? "ENABLED" : "DISABLED",
+           reason.c_str());
+}
+
+// 2026-07-27: 通道内、出口门内接近及穿门阶段保持检测；确认门外搜索后立即关闭。
+void FastExplorationFSM::missionStatusCallback(const std_msgs::StringConstPtr &msg) {
+  if (rc_land_active_) return;
+  const std::string &state = msg->data;
+  if (state.find("RC_LAND") == 0) {
+    rc_land_active_ = true;
+    active_traj_valid_ = false;
+    fd_->trigger_ = false;
+    transitState(FINISH, "CH10 original-position landing");
+    setDynamicDetectionEnable(false, "CH10 landing");
+    return;
+  }
+  narrow_corridor_stage_ =
+      state.find("SEARCH_CORRIDOR") == 0 ||
+      state.find("EXIT_APPROACH_INSIDE") == 0 ||
+      state.find("CROSS_EXIT") == 0;
+  mission_allows_dynamic_detection_ = narrow_corridor_stage_;
+  setDynamicDetectionEnable(first_corridor_traj_published_ &&
+                                mission_allows_dynamic_detection_,
+                            mission_allows_dynamic_detection_
+                                ? "inside corridor with published trajectory"
+                                : "outside corridor mission stage");
+  const bool landing_stage = state.find("SEARCH_OUTSIDE_LANDING") == 0 ||
+      state.find("SEARCH_OUTSIDE_QR") == 0 || state.find("APPROACH_LANDING") == 0 ||
+      state.find("LANDING") == 0;
+  if (use_diff_for_fuel_exploration_ && landing_stage) {
+    if (external_goal_pending_) {
+      quadrotor_msgs::ExplorationCancel cancel;
+      cancel.header.stamp = ros::Time::now();
+      cancel.session_id = external_session_id_;
+      cancel.goal_id = external_goal_id_;
+      cancel.reason = "landing handoff";
+      external_cancel_pub_.publish(cancel);
+    }
+    external_exploration_active_ = false;
+    external_goal_pending_ = false;
+    setSafetyHold(true, "landing handoff");
+  }
+}
+
+void FastExplorationFSM::activateExternalExploration(
+    const geometry_msgs::PoseStamped& entry_trigger) {
+  external_exploration_active_ = true;
+  external_goal_pending_ = false;
+  external_next_select_at_ = ros::Time::now();
+  if (fd_->have_odom_)
+    expl_manager_->freezeExplorationInitialYaw(fd_->odom_yaw_);
+
+  geometry_msgs::PoseStamped trigger = entry_trigger;
+  trigger.header.stamp = ros::Time::now();
+  if (trigger.header.frame_id.empty()) trigger.header.frame_id = "world";
+  external_trigger_pub_.publish(trigger);
+  setSafetyHold(true, "DIFF owns fuel exploration execution");
+  ROS_WARN("[fuel_diff] external DIFF execution activated by entry trigger.");
+}
+
+bool FastExplorationFSM::publishExternalViewpoint() {
+  if (!use_diff_for_fuel_exploration_ || !external_exploration_active_ ||
+      !fd_->have_odom_) return false;
+  const ros::Time now = ros::Time::now();
+  expl_manager_->freezeExplorationInitialYaw(fd_->odom_yaw_);
+  if (external_goal_pending_) {
+    if ((now - external_goal_sent_at_).toSec() >= 1.0) {
+      external_last_goal_.header.stamp = now;
+      external_goal_pub_.publish(external_last_goal_);
+      external_goal_sent_at_ = now;
+    }
+    return true;
+  }
+  if (!external_next_select_at_.isZero() && now < external_next_select_at_) return true;
+
+  Vector3d next_pos;
+  double next_yaw = fd_->odom_yaw_;
+  if (!expl_manager_->selectExplorationViewpoint(
+          fd_->odom_pos_, fd_->odom_vel_, fd_->start_acc_, fd_->start_yaw_,
+          next_pos, next_yaw)) {
+    external_next_select_at_ = now + ros::Duration(0.50);
+    setSafetyHold(true, "FUEL has no executable viewpoint");
+    return false;
+  }
+  external_last_pose_ = geometry_msgs::Pose();
+  external_last_pose_.position.x = next_pos.x();
+  external_last_pose_.position.y = next_pos.y();
+  external_last_pose_.position.z = next_pos.z();
+  external_last_pose_.orientation.w = std::cos(0.5 * next_yaw);
+  external_last_pose_.orientation.z = std::sin(0.5 * next_yaw);
+  quadrotor_msgs::ExplorationGoal goal;
+  goal.header.stamp = now;
+  goal.header.frame_id = "world";
+  goal.session_id = external_session_id_;
+  goal.goal_id = ++external_goal_id_;
+  goal.target_type = quadrotor_msgs::ExplorationGoal::TARGET_FRONTIER;
+  goal.motion_type = quadrotor_msgs::ExplorationGoal::MOTION_MOVE;
+  goal.target_pose = external_last_pose_;
+  goal.enforce_yaw = false;
+  expl_manager_->fillExplorationConstraint(goal.motion_constraint);
+  external_last_goal_ = goal;
+  external_goal_pending_ = true;
+  external_goal_sent_at_ = now;
+  external_goal_pub_.publish(goal);
+  setSafetyHold(true, "waiting for DIFF trajectory");
+  ROS_INFO("[fuel_diff] publish goal session=%llu id=%llu view=(%.2f %.2f %.2f).",
+           static_cast<unsigned long long>(goal.session_id),
+           static_cast<unsigned long long>(goal.goal_id),
+           next_pos.x(), next_pos.y(), next_pos.z());
+  return true;
+}
+
+void FastExplorationFSM::externalStatusCallback(
+    const quadrotor_msgs::ExplorationGoalStatusConstPtr& msg) {
+  if (!use_diff_for_fuel_exploration_ || msg->session_id != external_session_id_ ||
+      msg->goal_id != external_goal_id_ || !external_goal_pending_)
+    return;
+  if (msg->state == quadrotor_msgs::ExplorationGoalStatus::STATE_ACCEPTED ||
+      msg->state == quadrotor_msgs::ExplorationGoalStatus::STATE_EXECUTING) {
+    setSafetyHold(true, "DIFF accepted/executing viewpoint");
+    return;
+  }
+  if (msg->state == quadrotor_msgs::ExplorationGoalStatus::STATE_REACHED) {
+    expl_manager_->recordExplorationReached(
+        Vector3d(external_last_pose_.position.x, external_last_pose_.position.y,
+                 external_last_pose_.position.z));
+    external_goal_pending_ = false;
+    external_next_select_at_ = ros::Time::now() + ros::Duration(0.05);
+    setSafetyHold(true, "viewpoint reached; selecting next FUEL viewpoint");
+    return;
+  }
+  if (msg->state == quadrotor_msgs::ExplorationGoalStatus::STATE_PREEMPTED &&
+      msg->reason == quadrotor_msgs::ExplorationGoalStatus::REASON_LANDING_HANDOFF) {
+    external_goal_pending_ = false;
+    external_exploration_active_ = false;
+    return;
+  }
+  if (msg->state == quadrotor_msgs::ExplorationGoalStatus::STATE_REJECTED ||
+      msg->state == quadrotor_msgs::ExplorationGoalStatus::STATE_PLANNING_FAILED ||
+      msg->state == quadrotor_msgs::ExplorationGoalStatus::STATE_ABORTED ||
+      msg->state == quadrotor_msgs::ExplorationGoalStatus::STATE_CANCELED) {
+    expl_manager_->reportTrajectoryCollision();
+    external_goal_pending_ = false;
+    external_next_select_at_ = ros::Time::now() + ros::Duration(0.05);
+    setSafetyHold(true, "DIFF failed viewpoint; FUEL selecting replacement");
+  }
+}
+
+void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
+  if (rc_land_active_) return;
+  odom_callback_queue_.callAvailable(ros::WallDuration(0.0));
+  ROS_INFO_STREAM_THROTTLE(1.0, "[FSM]: state: " << fd_->state_str_[int(state_)]);
+
+  if ((state_ == PLAN_TRAJ || state_ == PUB_TRAJ || state_ == EXEC_TRAJ) &&
+      expl_manager_->consumeManualExitReplanRequest()) {
+    requestActiveTrajectoryBrake("manual waypoint replan, skip or exit handoff");
+    fd_->static_state_ = true;
+    next_plan_retry_time_ = ros::Time(0);
+    transitState(PLAN_TRAJ, "manual-target-change");
+  }
+
+  // 出口正式接管后撤销尚未完成的普通探索目标，包括门外旧终点。
+  // 已生成/发布的出口专用轨迹不重复打断，普通转弯也不走此分支。
+  if ((state_ == PLAN_TRAJ || state_ == PUB_TRAJ || state_ == EXEC_TRAJ) &&
+      expl_manager_->exitTransitActive() &&
+      ((state_ == PUB_TRAJ && !pending_exit_transit_) ||
+       (state_ != PUB_TRAJ && active_traj_valid_ && !active_traj_braked_ &&
+        !active_exit_transit_))) {
+    requestActiveTrajectoryBrake("confirmed exit replaces ordinary exploration target");
+    width_replan_pending_ = false;
+    fapp_replan_pending_ = false;
+    expl_manager_->clearWiderRoute();
+    fd_->static_state_ = true;
+    next_plan_retry_time_ = ros::Time(0);
+    pending_traj_safe_since_ = ros::Time(0);
+    transitState(PLAN_TRAJ, "confirmed-exit-target");
+    return;
+  }
+
+  // 航点和启用连续动态穿越的探索模式由traj_server持续发布原轨迹终点，保留高度修正目标。
+  // 不能仅因等待下一段就刹车并将偏低的实测Z重新锁成目标。
+  // 其他模式仍在等待时结束旧轨迹并锁住实时位置。
+  // 仅在PLAN/PUB等待阶段触发；通道内普通轨迹执行到终点附近后才重新选路。
+  if (!expl_manager_->preserveTrajectoryEndpoint() &&
+      (state_ == PLAN_TRAJ || state_ == PUB_TRAJ) && active_traj_valid_) {
+    const double elapsed =
+        std::max(0.0, (ros::Time::now() - active_traj_.start_time_).toSec());
+    const double time_to_end = active_traj_.duration_ - elapsed;
+    if (exploration_policy::shouldHoldAtTrajectoryEnd(
+            true, false, active_traj_braked_, time_to_end,
+            endpoint_hold_lead_time_)) {
+      requestActiveTrajectoryBrake("old trajectory ended before replacement publish");
+      setEndpointHold(true, "wait for validated replacement at old trajectory endpoint");
+    }
+  }
+
+  if (use_diff_for_fuel_exploration_ && external_exploration_active_ &&
+      state_ != INIT && state_ != FINISH) {
+    fd_->static_state_ = true;
+    fd_->start_acc_.setZero();
+    setSafetyHold(true, "DIFF external execution owner");
+    publishExternalViewpoint();
+    return;
+  }
+
+  switch (state_) {
+    case INIT: {
+      // Wait for odometry ready
+      if (!fd_->have_odom_) {
+        ROS_WARN_THROTTLE(1.0, "no odom.");
+        return;
+      }
+      // Go to wait trigger when odom is ok
+      transitState(WAIT_TRIGGER, "FSM");
+      break;
+    }
+
+    case WAIT_TRIGGER: {
+      // CH9 是搜索降落的完整人工入口：无需先发送普通航点。
+      if (expl_manager_->consumeRcSearchLandingStartRequest()) {
+        fd_->trigger_ = true;
+        fd_->static_state_ = true;
+        next_plan_retry_time_ = ros::Time(0);
+        transitState(PLAN_TRAJ, "CH9 search-landing trigger");
+        ROS_ERROR("[exit_mission] CH9 started search landing directly from WAIT_TRIGGER.");
+        break;
+      }
+      // 普通通道搜索仍等待航点触发。
+      ROS_WARN_THROTTLE(1.0, "wait for trigger.");
+      break;
+    }
+
+    case FINISH: {
+      // 2026-07-13: exploration 结束或降落接管前不再沿用最后一条轨迹。
+      setSafetyHold(true, "exploration finished");
+      ROS_INFO_THROTTLE(1.0, "finish exploration.");
+      break;
+    }
+
+    case PLAN_TRAJ: {
+      if (expl_manager_->manualFappObservationMissing(fd_->odom_pos_, fd_->odom_yaw_, true)) {
+        requestActiveTrajectoryBrake("FAPP observation lost before passing obstacle");
+        fd_->static_state_ = true;
+        return;
+      }
+      // 2026-07-22: 失败冷却期间不发布replan、不重新选点也不刷新规划可视化。
+      if (!next_plan_retry_time_.isZero() && ros::Time::now() < next_plan_retry_time_) return;
+      // 入口触发可能与耗时的frontier回调相邻执行。禁止首轮规划继续使用触发前的
+      // 门外里程计；等待五帧新状态后，下面现有的中值审核逻辑会直接采用它们。
+      if (initial_plan_waiting_for_fresh_odom_) {
+        Vector3d reviewed_position, reviewed_velocity;
+        if (!getReviewedOdometry(reviewed_position, reviewed_velocity)) {
+          ROS_WARN_THROTTLE(
+              0.5, "[initial_plan] waiting for five post-trigger odometry frames (%zu/5).",
+              odom_review_window_.size());
+          return;
+        }
+        initial_plan_waiting_for_fresh_odom_ = false;
+        ROS_WARN("[initial_plan] five post-trigger odometry frames ready; plan from reviewed "
+                 "live position.");
+      }
+      // exploration_node 是单线程 spinner，规划函数运行期间安全定时器不能插入执行。
+      // 因此每次开始一次可能耗时的重规划前，先同步复核 traj_server 正在执行的旧轨迹。
+      if (active_traj_valid_ && !active_traj_braked_) {
+        double active_collision_distance = 0.0;
+        const bool raw_escape_safe =
+            !inflation_escape_active_ ||
+            planner_manager_->isRawPositionSafe(fd_->odom_pos_) ||
+            planner_manager_->isControlledEscapePosition(fd_->odom_pos_);
+        const bool active_safe = raw_escape_safe && planner_manager_->checkTrajCollision(
+                                                        active_traj_, active_collision_distance,
+                                                        inflation_escape_active_);
+        if (!active_safe) {
+          requestActiveTrajectoryBrake("unsafe old trajectory before replanning");
+          expl_manager_->reportTrajectoryCollision();
+          ROS_WARN("[trajectory_brake] old trajectory rejected before planner call, "
+                   "path_dist=%.2fm.",
+                   active_collision_distance);
+        }
+      }
+      // 膨胀层脱困必须从真实里程计起点生成。这里只切换规划起点，不发布safety_hold，
+      // 控制器仍会继续接收当前控制状态，直到替代轨迹通过复核并发布。
+      if (!fd_->static_state_ &&
+          expl_manager_->shouldStartInflationHistoryEscape(fd_->odom_pos_)) {
+        fd_->static_state_ = true;
+        ROS_WARN("[inflation_history_escape] switch replanning start from 0.2s prediction "
+                 "to live odometry; controller hold remains disabled.");
+      }
+      // local_data_ 会被本轮候选规划改写；动态重规划起点必须来自上一条已经发布的轨迹。
+      if (!fd_->static_state_) {
+        const double active_replan_time =
+            active_traj_valid_
+                ? (ros::Time::now() - active_traj_.start_time_).toSec() + fp_->replan_time_
+                : std::numeric_limits<double>::infinity();
+        if (!active_traj_valid_ || active_traj_braked_ ||
+            active_replan_time >= active_traj_.duration_) {
+          fd_->static_state_ = true;
+        }
+      }
+      if (fd_->static_state_) {
+        // Plan from static state (hover)
+        Eigen::Vector3d reviewed_position;
+        Eigen::Vector3d reviewed_velocity;
+        if (getReviewedOdometry(reviewed_position, reviewed_velocity)) {
+          fd_->start_pt_ = reviewed_position;
+          fd_->start_vel_ = reviewed_velocity;
+        } else {
+          fd_->start_pt_ = fd_->odom_pos_;
+          fd_->start_vel_ = fd_->odom_vel_;
+        }
+        // 入口悬停后的首条轨迹以零速为边界，避免把单帧速度尖峰写进整条轨迹。
+        if (!active_traj_valid_) fd_->start_vel_.setZero();
+        fd_->start_acc_.setZero();
+
+        fd_->start_yaw_(0) = fd_->odom_yaw_;
+        fd_->start_yaw_(1) = fd_->start_yaw_(2) = 0.0;
+      } else {
+        // Replan from non-static state, starting from 'replan_time' seconds later
+        LocalTrajData* info = &active_traj_;
+        double t_r = (ros::Time::now() - info->start_time_).toSec() + fp_->replan_time_;
+
+        fd_->start_pt_ = info->position_traj_.evaluateDeBoorT(t_r);
+        fd_->start_vel_ = info->velocity_traj_.evaluateDeBoorT(t_r);
+        fd_->start_acc_ = info->acceleration_traj_.evaluateDeBoorT(t_r);
+        fd_->start_yaw_(0) = info->yaw_traj_.evaluateDeBoorT(t_r)[0];
+        fd_->start_yaw_(1) = info->yawdot_traj_.evaluateDeBoorT(t_r)[0];
+        fd_->start_yaw_(2) = info->yawdotdot_traj_.evaluateDeBoorT(t_r)[0];
+      }
+
+      int res = callExplorationPlanner();
+      if (res == SUCCEED) {
+        // 候选轨迹还要经过 PUB_TRAJ 的连续地图复核；复核通过前不能截断旧轨迹。
+        next_plan_retry_time_ = ros::Time(0);
+        pending_traj_safe_since_ = ros::Time(0);
+        next_pending_traj_check_ = ros::Time(0);
+        pending_initial_traj_reanchored_ = false;
+        // 丢弃规划前的旧窗口，发布审核只采用规划完成后到达的最新五帧里程计。
+        odom_review_window_.clear();
+        odom_review_after_ = ros::Time::now();
+        transitState(PUB_TRAJ, "FSM");
+      } else if (res == NO_FRONTIER) {
+        if (resumeAfterWidthAttempt("alternative unavailable")) break;
+        transitState(FINISH, "FSM");
+        fd_->static_state_ = true;
+        clearVisMarker();
+      } else if (res == FAIL) {
+        if (resumeAfterWidthAttempt("alternative planning failed")) break;
+        // Still in PLAN_TRAJ state, keep replanning
+        // 转弯可能恰好在普通重规划阶段确认，此时安全定时器不在EXEC分支，必须在这里
+        // 主动截断旧平移轨迹；随后只等待静止确认和原地转向候选，不能继续向旧轴推进。
+        if (expl_manager_->turnInPlaceAlignmentPending())
+          requestActiveTrajectoryBrake(
+              "turn-in-place alignment pending; stop old translation");
+        // 2026-07-13: 新轨迹未生成时立即悬停，旧 bspline 不允许继续把机体带向障碍物。
+        if (hold_on_plan_failure_) setSafetyHold(true, "planning failed");
+        // 2026-07-14: FSM 定时器为 100 Hz，连续不可达时限制重复日志，保留悬停和后续重规划行为。
+        ROS_WARN_THROTTLE(1.0, "plan fail");
+        fd_->static_state_ = true;
+        next_plan_retry_time_ =
+            ros::Time::now() + ros::Duration(std::max(0.05, fp_->plan_failure_retry_interval_));
+      }
+      break;
+    }
+
+    case PUB_TRAJ: {
+      if (expl_manager_->manualFappObservationMissing(fd_->odom_pos_, fd_->odom_yaw_, true)) {
+        requestActiveTrajectoryBrake("FAPP observation lost before trajectory release");
+        fd_->static_state_ = true;
+        transitState(PLAN_TRAJ, "fapp-observation-wait");
+        return;
+      }
+      const ros::Time now = ros::Time::now();
+      Eigen::Vector3d reviewed_position;
+      Eigen::Vector3d reviewed_velocity;
+      if (!getReviewedOdometry(reviewed_position, reviewed_velocity)) {
+        ROS_WARN_THROTTLE(1.0,
+                          "[trajectory_release] waiting for five odometry frames.");
+        break;
+      }
+      if (pending_vertical_detour_ && !pending_vertical_detour_reanchored_) {
+        Eigen::Vector3d live_yaw(fd_->odom_yaw_, 0.0, 0.0);
+        if (!expl_manager_->reanchorVerticalDetourForRelease(reviewed_position,
+                                                              live_yaw)) {
+          ROS_ERROR("[vertical_detour] live-odom re-anchor failed before publish; retry plan.");
+          pending_traj_safe_since_ = ros::Time(0);
+          fd_->static_state_ = true;
+          next_plan_retry_time_ =
+              now + ros::Duration(std::max(0.05, fp_->plan_failure_retry_interval_));
+          transitState(PLAN_TRAJ, "vertical-detour-release-reanchor");
+          break;
+        }
+        updatePendingTrajectoryMessage(now);
+        pending_vertical_detour_reanchored_ = true;
+        pending_traj_safe_since_ = ros::Time(0);
+        next_pending_traj_check_ = ros::Time(0);
+        ROS_ERROR("[vertical_detour] release candidate re-anchored to live odom "
+                  "(%.2f,%.2f,%.2f).",
+                  reviewed_position.x(), reviewed_position.y(), reviewed_position.z());
+      }
+      if (!active_traj_valid_ && !pending_vertical_detour_ &&
+          !pending_initial_traj_reanchored_) {
+        auto& local_data = planner_manager_->local_data_;
+        const Eigen::Vector3d trajectory_start =
+            local_data.position_traj_.evaluateDeBoorT(0.0);
+        const Eigen::Vector3d offset = reviewed_position - trajectory_start;
+        if (offset.norm() <= fp_->trajectory_release_max_start_error_) {
+          Eigen::MatrixXd control_points = local_data.position_traj_.getControlPoint();
+          control_points.rowwise() += offset.transpose();
+          const Eigen::VectorXd knots = local_data.position_traj_.getKnot();
+          const int degree = static_cast<int>(knots.size()) -
+                             static_cast<int>(control_points.rows()) - 1;
+          NonUniformBspline reanchored(control_points, degree,
+                                       local_data.position_traj_.getKnotSpan());
+          reanchored.setKnot(knots);
+          local_data.position_traj_ = reanchored;
+          local_data.velocity_traj_ = local_data.position_traj_.getDerivative();
+          local_data.acceleration_traj_ = local_data.velocity_traj_.getDerivative();
+          updatePendingTrajectoryMessage(now);
+          pending_initial_traj_reanchored_ = true;
+          ROS_WARN("[trajectory_release] initial trajectory re-anchored by "
+                   "(%.3f,%.3f,%.3f)m using reviewed odometry.",
+                   offset.x(), offset.y(), offset.z());
+        }
+      }
+      // 2026-07-28: 即便规划阶段复核过，发布前仍等待刷新地图上的连续安全证据；
+      // 轨迹起点若已与真实机体分离，禁止把远参考点直接交给控制器。
+      if (next_pending_traj_check_.isZero() || now >= next_pending_traj_check_) {
+        next_pending_traj_check_ =
+            now + ros::Duration(std::max(0.02, fp_->trajectory_release_check_interval_));
+        auto& trajectory = planner_manager_->local_data_.position_traj_;
+        const Eigen::Vector3d trajectory_start = trajectory.evaluateDeBoorT(0.0);
+        const Eigen::Vector3d trajectory_start_velocity =
+            planner_manager_->local_data_.velocity_traj_.evaluateDeBoorT(0.0);
+        const Eigen::Vector3d trajectory_start_acceleration =
+            planner_manager_->local_data_.acceleration_traj_.evaluateDeBoorT(0.0);
+        Eigen::Vector3d release_reference_acceleration = Eigen::Vector3d::Zero();
+        if (active_traj_valid_ && !active_traj_braked_) {
+          const double active_time = std::max(
+              0.0, std::min((now - active_traj_.start_time_).toSec(),
+                            active_traj_.duration_));
+          release_reference_acceleration =
+              active_traj_.acceleration_traj_.evaluateDeBoorT(active_time);
+        }
+        const double start_error = (trajectory_start - reviewed_position).norm();
+        const double velocity_error =
+            (trajectory_start_velocity - reviewed_velocity).norm();
+        // 只对旧轨迹结束后的端点保持放宽重新起步容差，飞行中换轨保持原值。
+        const bool restarting_from_endpoint = active_traj_valid_ &&
+            (endpoint_hold_active_ || expl_manager_->preserveTrajectoryEndpoint()) &&
+            (now - active_traj_.start_time_).toSec() >= active_traj_.duration_;
+        const double max_velocity_error = restarting_from_endpoint
+            ? fp_->trajectory_restart_max_velocity_error_
+            : fp_->trajectory_release_max_velocity_error_;
+        const double acceleration_error =
+            (trajectory_start_acceleration - release_reference_acceleration).norm();
+        // 原地转向在规划器内已经完成一次连续静止确认。这里保留位置、加速度、
+        // 地图和整条轨迹安全检查，但不再用普通平移轨迹的速度差重复拒绝。
+        const bool release_state_continuous = pending_turn_in_place_
+            ? exploration_policy::isTurnTrajectoryReleaseStateContinuous(
+                  start_error, acceleration_error,
+                  fp_->trajectory_release_max_start_error_,
+                  fp_->trajectory_release_max_acceleration_error_)
+            : exploration_policy::isTrajectoryReleaseStateContinuous(
+                  start_error, velocity_error, acceleration_error,
+                  fp_->trajectory_release_max_start_error_,
+                  max_velocity_error,
+                  fp_->trajectory_release_max_acceleration_error_);
+        const bool position_continuous =
+            start_error <= fp_->trajectory_release_max_start_error_;
+        const bool velocity_continuous = pending_turn_in_place_ ||
+            velocity_error <= max_velocity_error;
+        const bool acceleration_continuous =
+            acceleration_error <= fp_->trajectory_release_max_acceleration_error_;
+        const bool controlled_escape_start =
+            planner_manager_->isControlledEscapePosition(reviewed_position);
+        const bool starts_in_inflation = planner_manager_->isPositionInflated(reviewed_position);
+        const bool raw_start_safe = planner_manager_->isRawPositionSafe(reviewed_position) ||
+                                    controlled_escape_start;
+        const bool clears_inflation =
+            !controlled_escape_start || expl_manager_->incrementalEscapePlanSafe() ||
+            planner_manager_->trajectoryClearsInflation(
+                0.80, 0.02, controlled_escape_start);
+        const bool trajectory_safe = planner_manager_->isTrajectorySafe(
+            0.03, controlled_escape_start);
+        const bool release_safe = raw_start_safe && clears_inflation &&
+                                  release_state_continuous && trajectory_safe;
+        if (!release_safe) {
+          if (resumeAfterWidthAttempt("alternative failed release checks")) break;
+          // 首条轨迹的速度只要尚未连续稳定就继续悬停审核，不销毁已经通过位置和地图
+          // 检查的候选；这样单帧尖峰不会触发无休止的“规划-拒绝”循环。
+          if (!active_traj_valid_ && position_continuous && acceleration_continuous &&
+              !velocity_continuous && raw_start_safe && clears_inflation &&
+              trajectory_safe) {
+            pending_traj_safe_since_ = ros::Time(0);
+            ROS_WARN_THROTTLE(
+                1.0,
+                "[trajectory_release] initial trajectory waits for reviewed odometry "
+                "to settle: velocity_error=%.3fm/s.",
+                velocity_error);
+            break;
+          }
+          ROS_ERROR("[trajectory_release] reject before publish: position_error=%.3fm "
+                    "velocity_error=%.3fm/s acceleration_error=%.3fm/s^2 continuous=%d "
+                    "turn_policy=%d raw_safe=%d inflated=%d clears=%d.",
+                    start_error, velocity_error, acceleration_error,
+                    static_cast<int>(release_state_continuous),
+                    static_cast<int>(pending_turn_in_place_),
+                    static_cast<int>(raw_start_safe),
+                    static_cast<int>(starts_in_inflation), static_cast<int>(clears_inflation));
+          if (!release_state_continuous) {
+            requestActiveTrajectoryBrake("stale trajectory start state before publish");
+            if (!active_traj_valid_)
+              setSafetyHold(true, "initial trajectory start state is stale");
+          }
+          pending_traj_safe_since_ = ros::Time(0);
+          fd_->static_state_ = true;
+          next_plan_retry_time_ =
+              now + ros::Duration(std::max(0.05, fp_->plan_failure_retry_interval_));
+          transitState(PLAN_TRAJ, "trajectory-release-validation");
+          break;
+        }
+        if (pending_traj_safe_since_.isZero()) pending_traj_safe_since_ = now;
+      }
+      if (!pending_traj_safe_since_.isZero() &&
+          (now - pending_traj_safe_since_).toSec() >=
+              std::max(0.0, fp_->trajectory_release_confirm_time_)) {
+        if (width_replan_pending_ && !pending_turn_in_place_ &&
+            !pending_vertical_detour_ && !pending_ground_ascent_) {
+          vector<Vector3d> current, replacement;
+          const double elapsed = std::max(0.0, (now - active_traj_.start_time_).toSec());
+          for (double t = elapsed; t < active_traj_.duration_; t += 0.10)
+            current.push_back(active_traj_.position_traj_.evaluateDeBoorT(t));
+          current.push_back(active_traj_.position_traj_.evaluateDeBoorT(active_traj_.duration_));
+          auto& candidate = planner_manager_->local_data_;
+          for (double t = 0.0; t < candidate.duration_; t += 0.10)
+            replacement.push_back(candidate.position_traj_.evaluateDeBoorT(t));
+          replacement.push_back(candidate.position_traj_.evaluateDeBoorT(candidate.duration_));
+          if (!expl_manager_->widthReplacementImproves(current, replacement, fd_->odom_yaw_) &&
+              resumeAfterWidthAttempt("optimized spline no longer has the width gain")) break;
+        }
+        // 2026-07-28: 确认等待后把发布时刻重置为执行起点，既避免轨迹已经过去0.1~0.3s而跳点，
+        // 也不给执行期安全定时器留下对负轨迹时间采样的窗口。
+        const ros::Time release_start = now;
+        planner_manager_->local_data_.start_time_ = release_start;
+        fd_->newest_traj_.start_time = release_start;
+        // bspline 本身会原子替换 traj_server 的旧轨迹；这里不再跨话题先发 replan，
+        // 避免消息乱序后 replan 反而把刚收到的新轨迹截短。
+        bspline_pub_.publish(fd_->newest_traj_);
+        expl_manager_->recordPublishedTrajectoryHeight();
+        active_traj_ = planner_manager_->local_data_;
+        active_traj_valid_ = true;
+        active_traj_braked_ = false;
+        width_replan_pending_ = false;
+        fapp_replan_pending_ = false;
+        width_candidate_seen_ = false;
+        next_width_check_ = now + ros::Duration(0.5);
+        active_exit_transit_ = pending_exit_transit_;
+        active_turn_in_place_ = pending_turn_in_place_;
+        active_ground_ascent_ = pending_ground_ascent_;
+        active_escape_step_ = pending_escape_step_;
+        active_vertical_detour_ = pending_vertical_detour_;
+        if (active_turn_in_place_) {
+          turn_alignment_since_ = ros::Time(0);
+          turn_tracking_grace_since_ = ros::Time(0);
+          ROS_ERROR("[turn_in_place] published direct turn-to-final trajectory.");
+        }
+        if (active_ground_ascent_)
+          ROS_ERROR("[ground_ascent] published vertical recovery; suppress normal "
+                    "near-end replanning until its hard endpoint.");
+        // 2026-07-27: 发布顺序固定为“轨迹先、检测使能后”，满足入口目标下发后才开始识别。
+        if (!first_corridor_traj_published_) {
+          first_corridor_traj_published_ = true;
+          setDynamicDetectionEnable(mission_allows_dynamic_detection_,
+                                    "first corridor trajectory published");
+        }
+        // 2026-07-13: 只有新轨迹已经发布后才解除安全悬停，避免规划成功与轨迹服务器接收之间的空窗。
+        inflation_escape_active_ =
+            planner_manager_->isControlledEscapePosition(fd_->odom_pos_);
+        inflation_escape_clear_since_ = ros::Time(0);
+        setSafetyHold(false, inflation_escape_active_
+                                 ? "validated inflation escape trajectory published"
+                                 : "validated new trajectory published");
+        setEndpointHold(false, "validated new trajectory published");
+        fd_->static_state_ = false;
+        transitState(EXEC_TRAJ, "FSM");
+
+        // 可视化必须在单线程 ROS 回调内读取当前轨迹和 frontier。分离线程会与紧随其后的
+        // 安全重规划并发改写同一批容器，造成悬空访问并以 SIGSEGV 退出。
+        visualize();
+      }
+      break;
+    }
+
+    case EXEC_TRAJ: {
+      LocalTrajData* info = active_traj_valid_ ? &active_traj_ : &planner_manager_->local_data_;
+      double t_cur = (ros::Time::now() - info->start_time_).toSec();
+
+      // Replan if traj is almost fully executed
+      double time_to_end = info->duration_ - t_cur;
+      if (active_ground_ascent_) {
+        // 垂直恢复是一条完整的固定XY轨迹；普通“剩余1秒”重规划会在上升途中
+        // 把它截断并重新触发水平逃逸，因此只在硬终点后回到规划状态确认高度。
+        if (time_to_end <= 0.05) {
+          active_ground_ascent_ = false;
+          fd_->static_state_ = true;
+          transitState(PLAN_TRAJ, "ground-ascent-endpoint");
+          ROS_ERROR("[ground_ascent] vertical reference reached endpoint; "
+                    "confirm live height before horizontal planning.");
+        }
+        return;
+      }
+      if (active_vertical_detour_) {
+        // 原地下降/上升属于低空探测状态机的原子步骤；必须执行到硬终点，不能被
+        // 普通 frontier 的临近终点或周期重规划截断。
+        if (time_to_end <= 0.05) {
+          active_vertical_detour_ = false;
+          expl_manager_->completeVerticalDetourReference();
+          fd_->static_state_ = true;
+          transitState(PLAN_TRAJ, "vertical-detour-endpoint");
+          ROS_ERROR("[vertical_detour] fixed-xy vertical reference reached endpoint; "
+                    "advance low-probe state from live odometry.");
+        }
+        return;
+      }
+      if (active_turn_in_place_) {
+        // 原地转向要执行到yaw终点，不能按普通平移轨迹在“剩余1秒”时提前打断。
+        if (time_to_end <= 0.05) {
+          const double final_yaw_error =
+              expl_manager_->turnInPlaceFinalYawError(fd_->odom_yaw_);
+          const double tolerance =
+              expl_manager_->turnInPlaceCompletionTolerance();
+          if (std::fabs(final_yaw_error) > tolerance) {
+            turn_alignment_since_ = ros::Time(0);
+            const ros::Time now = ros::Time::now();
+            if (turn_tracking_grace_since_.isZero()) {
+              turn_tracking_grace_since_ = now;
+              ROS_WARN("[turn_in_place] yaw reference reached final endpoint; allow "
+                       "%.2fs for real yaw tracking before retry (error %.1fdeg).",
+                       expl_manager_->turnInPlaceTrackingGraceTime(),
+                       final_yaw_error * 180.0 / M_PI);
+            }
+            if ((now - turn_tracking_grace_since_).toSec() <
+                expl_manager_->turnInPlaceTrackingGraceTime())
+              return;
+            active_turn_in_place_ = false;
+            turn_tracking_grace_since_ = ros::Time(0);
+            fd_->static_state_ = true;
+            transitState(PLAN_TRAJ, "turn-in-place-retry");
+            ROS_WARN("[turn_in_place] direct turn ended with final-yaw error "
+                     "%.1fdeg; re-anchor and retry from live yaw.",
+                     final_yaw_error * 180.0 / M_PI);
+            return;
+          }
+          turn_tracking_grace_since_ = ros::Time(0);
+          const ros::Time now = ros::Time::now();
+          if (turn_alignment_since_.isZero()) turn_alignment_since_ = now;
+          if ((now - turn_alignment_since_).toSec() <
+              expl_manager_->turnInPlaceCompletionConfirmTime())
+            return;
+          expl_manager_->completeTurnInPlace(fd_->odom_pos_);
+          active_turn_in_place_ = false;
+          turn_alignment_since_ = ros::Time(0);
+          turn_tracking_grace_since_ = ros::Time(0);
+          fd_->static_state_ = true;
+          transitState(PLAN_TRAJ, "turn-in-place-complete");
+          ROS_ERROR("[turn_in_place] actual yaw stayed within %.1fdeg; "
+                    "replan translation from live odometry.",
+                    tolerance * 180.0 / M_PI);
+        }
+        return;
+      }
+      // 脱障小步必须实际执行；普通的临近终点/动态候选重试不能反复截断它。
+      if (active_escape_step_) {
+        if (time_to_end > 0.05) return;
+        active_escape_step_ = false;
+        fd_->static_state_ = true;
+        transitState(PLAN_TRAJ, "escape-step-complete");
+        return;
+      }
+      // 动态穿越的临时拒绝不能等入口等高段飞完才重试。保留普通路线，
+      // 进门后单独尝试穿越；候选通过完整发布检查后再替换。
+      if (checkFappExecutionRetry()) {
+        fapp_replan_pending_ = true;
+        fd_->static_state_ = false;
+        transitState(PLAN_TRAJ, "retry-dynamic-crossing");
+        ROS_WARN("[fapp_retry] retry crossing during forward execution at (%.2f,%.2f,%.2f).",
+                 fd_->odom_pos_.x(), fd_->odom_pos_.y(), fd_->odom_pos_.z());
+        return;
+      }
+      // 覆盖、周期和临近终点仍不能任意换边；只有连续新地图证实前方整段
+      // 明显更宽时才准备替代轨迹。碰撞与跟踪检查继续由 safetyCallback 负责。
+      if (keepExecutingCorridorTrajectory()) {
+        if (checkWiderExecutionRoute()) {
+          width_replan_pending_ = true;
+          fd_->static_state_ = false;
+          transitState(PLAN_TRAJ, "wider-known-passage");
+        }
+        return;
+      }
+      if (exploration_policy::shouldReplanNearTrajectoryEnd(
+              time_to_end, fp_->replan_thresh1_)) {
+        transitState(PLAN_TRAJ, "FSM");
+        ROS_WARN("Replan: traj fully executed=================================");
+        return;
+      }
+      // Replan if next frontier to be visited is covered
+      if (!expl_manager_->manualWaypointsEnabled() &&
+          exploration_policy::shouldReplanForCoveredFrontier(
+              expl_manager_->frontier_finder_->isFrontierCovered(),
+              narrow_corridor_stage_, t_cur, fp_->replan_thresh2_)) {
+        transitState(PLAN_TRAJ, "FSM");
+        ROS_WARN("Replan: cluster covered=====================================");
+        return;
+      }
+      // Replan after some time
+      if (!classic_ && exploration_policy::shouldPeriodicReplan(
+                           t_cur, fp_->replan_thresh3_, periodic_replan_enabled_)) {
+        transitState(PLAN_TRAJ, "FSM");
+        ROS_WARN("Replan: periodic call=======================================");
+      }
+      break;
+    }
+  }
+}
+
+bool FastExplorationFSM::checkWiderExecutionRoute() {
+  const ros::Time now = ros::Time::now();
+  if (!next_width_check_.isZero() && now < next_width_check_) return false;
+  next_width_check_ = now + ros::Duration(0.5);
+  const auto sequence = planner_manager_->edt_environment_->sdf_map_->getUpdateSequence();
+  if (sequence == width_check_map_sequence_) return false;
+  width_check_map_sequence_ = sequence;
+  const double start = std::max(0.0, (now - active_traj_.start_time_).toSec());
+  if (active_traj_.duration_ - start < 0.5) {
+    width_candidate_seen_ = false;
+    return false;
+  }
+  // The start and every following sample come from the currently published
+  // spline. Never compare a straight surrogate against a curved real route.
+  vector<Vector3d> path;
+  for (double t = start; t < active_traj_.duration_; t += 0.10)
+    path.push_back(active_traj_.position_traj_.evaluateDeBoorT(t));
+  path.push_back(active_traj_.position_traj_.evaluateDeBoorT(active_traj_.duration_));
+  if (!expl_manager_->prepareWiderRoute(path, fd_->odom_yaw_)) {
+    width_candidate_seen_ = false;
+    return false;
+  }
+  // Two consecutive evaluations must agree on the alternative. Tiny width
+  // fluctuations cannot switch sides on each callback.
+  const Vector3d target = expl_manager_->widerRouteTarget();
+  const Vector3d forward = expl_manager_->widerRouteForward(fd_->odom_yaw_);
+  const int side = expl_manager_->widerRouteSide(fd_->odom_yaw_);
+  const bool confirmed = width_candidate_seen_ &&
+      route_width::sameAlternative(last_width_target_, last_width_side_,
+                                   last_width_forward_, target, side, forward);
+  last_width_target_ = target;
+  last_width_side_ = side;
+  last_width_forward_ = forward;
+  width_candidate_seen_ = true;
+  if (!confirmed) expl_manager_->clearWiderRoute();
+  return confirmed;
+}
+
+bool FastExplorationFSM::checkFappExecutionRetry() {
+  const ros::Time now = ros::Time::now();
+  if (!keepExecutingCorridorTrajectory() ||
+      !expl_manager_->needsExplorationFappRetry(fd_->odom_pos_) ||
+      (!next_fapp_retry_.isZero() && now < next_fapp_retry_)) return false;
+  next_fapp_retry_ = now + ros::Duration(0.5);
+  return true;
+}
+
+bool FastExplorationFSM::resumeAfterWidthAttempt(const string& reason) {
+  if (!width_replan_pending_ && !fapp_replan_pending_) return false;
+  const bool fapp_retry = fapp_replan_pending_;
+  if (fapp_retry) expl_manager_->discardExplorationFappRetry();
+  fapp_replan_pending_ = false;
+  width_replan_pending_ = false;
+  width_candidate_seen_ = false;
+  expl_manager_->clearWiderRoute();
+  if (!keepExecutingCorridorTrajectory() ||
+      expl_manager_->turnInPlaceAlignmentPending() ||
+      expl_manager_->currentPlanIsVerticalDetour() ||
+      expl_manager_->currentPlanIsGroundAscent()) return false;
+  double collision_distance = 0.0;
+  if (!planner_manager_->checkTrajCollision(active_traj_, collision_distance, false))
+    return false;
+  fd_->static_state_ = false;
+  next_plan_retry_time_ = ros::Time(0);
+  pending_traj_safe_since_ = ros::Time(0);
+  next_width_check_ = ros::Time::now() + ros::Duration(0.5);
+  next_fapp_retry_ = ros::Time::now() + ros::Duration(0.5);
+  transitState(EXEC_TRAJ, "keep-valid-route-after-alternative-attempt");
+  ROS_WARN("[%s] %s; continue the checked published trajectory.",
+           fapp_retry ? "fapp_retry" : "route_width", reason.c_str());
+  return true;
+}
+
+bool FastExplorationFSM::keepExecutingCorridorTrajectory() const {
+  if (!narrow_corridor_stage_ || !active_traj_valid_ || active_traj_braked_ ||
+      active_turn_in_place_ || active_vertical_detour_ || active_ground_ascent_ ||
+      inflation_escape_active_ || expl_manager_->manualWaypointsEnabled())
+    return false;
+  const double elapsed = std::max(0.0,
+      (ros::Time::now() - active_traj_.start_time_).toSec());
+  return active_traj_.duration_ - elapsed > 0.05;
+}
+
+int FastExplorationFSM::callExplorationPlanner() {
+  ros::Time time_r = ros::Time::now() + ros::Duration(fp_->replan_time_);
+
+  // 跟踪纠偏、碰撞或旧轨迹结束要求正常重规划时，动态试探必须让出执行权。
+  if (fapp_replan_pending_ && (fd_->static_state_ || !keepExecutingCorridorTrajectory())) {
+    expl_manager_->discardExplorationFappRetry();
+    fapp_replan_pending_ = false;
+  }
+  // 执行中重试只检查动态穿越，失败时不重新选普通目标、不抢占原前进轨迹。
+  int res = fapp_replan_pending_
+      ? (expl_manager_->planExplorationFappCrossing(fd_->start_pt_, fd_->start_vel_,
+                                                   fd_->start_acc_, fd_->start_yaw_)
+             ? SUCCEED : FAIL)
+      : expl_manager_->planExploreMotion(fd_->start_pt_, fd_->start_vel_, fd_->start_acc_,
+                                          fd_->start_yaw_);
+  // 普通规划失败后，从实测位置尝试局部脱障；执行中比较替代路线不触发此回退。
+  if (res == FAIL && !fapp_replan_pending_ && !width_replan_pending_ &&
+      expl_manager_->planFailedMotionEscape(fd_->odom_pos_, fd_->odom_vel_,
+          Vector3d::Zero(), Vector3d(fd_->odom_yaw_,0,0))) {
+    fd_->static_state_ = true;
+    res = SUCCEED;
+  }
+  pending_escape_step_ = res == SUCCEED && expl_manager_->currentPlanIsEscapeStep();
+  pending_exit_transit_ = res == SUCCEED && expl_manager_->exitTransitActive();
+  pending_turn_in_place_ =
+      res == SUCCEED && expl_manager_->currentPlanIsTurnInPlace();
+  pending_ground_ascent_ =
+      res == SUCCEED && expl_manager_->currentPlanIsGroundAscent();
+  pending_vertical_detour_ =
+      res == SUCCEED && expl_manager_->currentPlanIsVerticalDetour();
+  pending_vertical_detour_reanchored_ = false;
+  classic_ = false;
+
+  // int res = expl_manager_->classicFrontier(fd_->start_pt_, fd_->start_yaw_[0]);
+  // classic_ = true;
+
+  // int res = expl_manager_->rapidFrontier(fd_->start_pt_, fd_->start_vel_, fd_->start_yaw_[0],
+  // classic_);
+
+  if (res == SUCCEED) {
+    auto info = &planner_manager_->local_data_;
+    info->start_time_ = (ros::Time::now() - time_r).toSec() > 0 ? ros::Time::now() : time_r;
+    updatePendingTrajectoryMessage(info->start_time_);
+  }
+  return res;
+}
+
+void FastExplorationFSM::updatePendingTrajectoryMessage(
+    const ros::Time& start_time) {
+  auto info = &planner_manager_->local_data_;
+  info->start_time_ = start_time;
+  bspline::Bspline bspline;
+  bspline.order = planner_manager_->pp_.bspline_degree_;
+  bspline.start_time = start_time;
+  bspline.traj_id = info->traj_id_;
+  const Eigen::MatrixXd pos_pts = info->position_traj_.getControlPoint();
+  for (int i = 0; i < pos_pts.rows(); ++i) {
+    geometry_msgs::Point pt;
+    pt.x = pos_pts(i, 0);
+    pt.y = pos_pts(i, 1);
+    pt.z = pos_pts(i, 2);
+    bspline.pos_pts.push_back(pt);
+  }
+  const Eigen::VectorXd knots = info->position_traj_.getKnot();
+  for (int i = 0; i < knots.rows(); ++i) bspline.knots.push_back(knots(i));
+  const Eigen::MatrixXd yaw_pts = info->yaw_traj_.getControlPoint();
+  for (int i = 0; i < yaw_pts.rows(); ++i)
+    bspline.yaw_pts.push_back(yaw_pts(i, 0));
+  bspline.yaw_dt = info->yaw_traj_.getKnotSpan();
+  fd_->newest_traj_ = bspline;
+}
+
+void FastExplorationFSM::visualize() {
+  auto info = &planner_manager_->local_data_;
+  auto plan_data = &planner_manager_->plan_data_;
+  auto ed_ptr = expl_manager_->ed_;
+
+  // Draw updated box
+  // Vector3d bmin, bmax;
+  // planner_manager_->edt_environment_->sdf_map_->getUpdatedBox(bmin, bmax);
+  // visualization_->drawBox((bmin + bmax) / 2.0, bmax - bmin, Vector4d(0, 1, 0, 0.3), "updated_box", 0,
+  // 4);
+
+  // Draw frontier
+  static int last_ftr_num = 0;
+  for (int i = 0; i < ed_ptr->frontiers_.size(); ++i) {
+    visualization_->drawCubes(ed_ptr->frontiers_[i], 0.1,
+                              visualization_->getColor(double(i) / ed_ptr->frontiers_.size(), 0.4),
+                              "frontier", i, 4);
+    // visualization_->drawBox(ed_ptr->frontier_boxes_[i].first, ed_ptr->frontier_boxes_[i].second,
+    //                         Vector4d(0.5, 0, 1, 0.3), "frontier_boxes", i, 4);
+  }
+  for (int i = ed_ptr->frontiers_.size(); i < last_ftr_num; ++i) {
+    visualization_->drawCubes({}, 0.1, Vector4d(0, 0, 0, 1), "frontier", i, 4);
+    // visualization_->drawBox(Vector3d(0, 0, 0), Vector3d(0, 0, 0), Vector4d(1, 0, 0, 0.3),
+    // "frontier_boxes", i, 4);
+  }
+  last_ftr_num = ed_ptr->frontiers_.size();
+  // for (int i = 0; i < ed_ptr->dead_frontiers_.size(); ++i)
+  //   visualization_->drawCubes(ed_ptr->dead_frontiers_[i], 0.1, Vector4d(0, 0, 0, 0.5), "dead_frontier",
+  //                             i, 4);
+  // for (int i = ed_ptr->dead_frontiers_.size(); i < 5; ++i)
+  //   visualization_->drawCubes({}, 0.1, Vector4d(0, 0, 0, 0.5), "dead_frontier", i, 4);
+
+  // Draw global top viewpoints info
+  // visualization_->drawSpheres(ed_ptr->points_, 0.2, Vector4d(0, 0.5, 0, 1), "points", 0, 6);
+  // visualization_->drawLines(ed_ptr->global_tour_, 0.07, Vector4d(0, 0.5, 0, 1), "global_tour", 0, 6);
+  // visualization_->drawLines(ed_ptr->points_, ed_ptr->views_, 0.05, Vector4d(0, 1, 0.5, 1), "view", 0, 6);
+  // visualization_->drawLines(ed_ptr->points_, ed_ptr->averages_, 0.03, Vector4d(1, 0, 0, 1),
+  // "point-average", 0, 6);
+
+  // Draw local refined viewpoints info
+  // visualization_->drawSpheres(ed_ptr->refined_points_, 0.2, Vector4d(0, 0, 1, 1), "refined_pts", 0, 6);
+  // visualization_->drawLines(ed_ptr->refined_points_, ed_ptr->refined_views_, 0.05,
+  //                           Vector4d(0.5, 0, 1, 1), "refined_view", 0, 6);
+  // visualization_->drawLines(ed_ptr->refined_tour_, 0.07, Vector4d(0, 0, 1, 1), "refined_tour", 0, 6);
+  // visualization_->drawLines(ed_ptr->refined_views1_, ed_ptr->refined_views2_, 0.04, Vector4d(0, 0, 0,
+  // 1),
+  //                           "refined_view", 0, 6);
+  // visualization_->drawLines(ed_ptr->refined_points_, ed_ptr->unrefined_points_, 0.05, Vector4d(1, 1,
+  // 0, 1),
+  //                           "refine_pair", 0, 6);
+  // for (int i = 0; i < ed_ptr->n_points_.size(); ++i)
+  //   visualization_->drawSpheres(ed_ptr->n_points_[i], 0.1,
+  //                               visualization_->getColor(double(ed_ptr->refined_ids_[i]) /
+  //                               ed_ptr->frontiers_.size()),
+  //                               "n_points", i, 6);
+  // for (int i = ed_ptr->n_points_.size(); i < 15; ++i)
+  //   visualization_->drawSpheres({}, 0.1, Vector4d(0, 0, 0, 1), "n_points", i, 6);
+
+  // Draw trajectory
+  // visualization_->drawSpheres({ ed_ptr->next_goal_ }, 0.3, Vector4d(0, 1, 1, 1), "next_goal", 0, 6);
+  visualization_->drawBspline(info->position_traj_, 0.1, Vector4d(1.0, 0.0, 0.0, 1), false, 0.15,
+                              Vector4d(1, 1, 0, 1));
+  // visualization_->drawSpheres(plan_data->kino_path_, 0.1, Vector4d(1, 0, 1, 1), "kino_path", 0, 0);
+  // visualization_->drawLines(ed_ptr->path_next_goal_, 0.05, Vector4d(0, 1, 1, 1), "next_goal", 1, 6);
+}
+
+void FastExplorationFSM::clearVisMarker() {
+  // visualization_->drawSpheres({}, 0.2, Vector4d(0, 0.5, 0, 1), "points", 0, 6);
+  // visualization_->drawLines({}, 0.07, Vector4d(0, 0.5, 0, 1), "global_tour", 0, 6);
+  // visualization_->drawSpheres({}, 0.2, Vector4d(0, 0, 1, 1), "refined_pts", 0, 6);
+  // visualization_->drawLines({}, {}, 0.05, Vector4d(0.5, 0, 1, 1), "refined_view", 0, 6);
+  // visualization_->drawLines({}, 0.07, Vector4d(0, 0, 1, 1), "refined_tour", 0, 6);
+  // visualization_->drawSpheres({}, 0.1, Vector4d(0, 0, 1, 1), "B-Spline", 0, 0);
+
+  // visualization_->drawLines({}, {}, 0.03, Vector4d(1, 0, 0, 1), "current_pose", 0, 6);
+}
+
+void FastExplorationFSM::triggerCallback(const nav_msgs::PathConstPtr& msg) {
+  if (rc_land_active_) return;
+  if (msg->poses.empty()) {
+    ROS_ERROR("[fuel_diff] ignore empty entry trigger path.");
+    return;
+  }
+  if (msg->poses[0].pose.position.z < -0.1) return;
+  if (state_ != WAIT_TRIGGER) return;
+  fd_->trigger_ = true;
+  cout << "Triggered!" << endl;
+  if (use_diff_for_fuel_exploration_) {
+    if (exploration_policy::shouldActivateExternalExploration(
+            true, true, external_exploration_active_)) {
+      activateExternalExploration(msg->poses[0]);
+    }
+    return;
+  }
+  // corridor_search_manager发布的触发点已经位于入口内侧。清空门外历史样本并让
+  // PLAN_TRAJ等待触发后的五帧高频里程计，避免旧起点使门内A*路径看起来回穿入口。
+  odom_callback_queue_.callAvailable(ros::WallDuration(0.0));
+  // 先处理触发前积压的里程计，再允许新样本推进人工航点。
+  expl_manager_->startManualWaypointMission();
+  odom_review_window_.clear();
+  odom_review_after_ = ros::Time::now();
+  initial_plan_waiting_for_fresh_odom_ = true;
+  fd_->static_state_ = true;
+  transitState(PLAN_TRAJ, "triggerCallback");
+}
+
+void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
+  if (rc_land_active_) return;
+  odom_callback_queue_.callAvailable(ros::WallDuration(0.0));
+  const bool replacement_pending =
+      state_ == EXPL_STATE::PLAN_TRAJ || state_ == EXPL_STATE::PUB_TRAJ;
+  const bool execution_stage = replacement_pending || state_ == EXPL_STATE::EXEC_TRAJ;
+  if (!execution_stage || !exploration_policy::shouldMonitorPublishedTrajectory(
+                              active_traj_valid_, replacement_pending,
+                              active_traj_braked_))
+    return;
+
+  if (expl_manager_->manualFappObservationMissing(fd_->odom_pos_, fd_->odom_yaw_, true)) {
+    requestActiveTrajectoryBrake("FAPP observation lost before passing obstacle");
+    fd_->static_state_ = true;
+    if (state_ != EXPL_STATE::PLAN_TRAJ)
+      transitState(PLAN_TRAJ, "fapp-observation-wait");
+    return;
+  }
+
+  // 航点模式和动态穿越会话已在选路时处理连续下穿/侧绕，执行中不能再用前向直线
+  // 触发旧的刹车下降流程，否则每条新轨迹都会因同一障碍被立即取消。
+  if (!expl_manager_->manualWaypointsEnabled() &&
+      !expl_manager_->explorationFappCrossingActive() &&
+      state_ == EXPL_STATE::EXEC_TRAJ && !active_turn_in_place_ &&
+      !inflation_escape_active_ &&
+      (last_suspended_underpass_check_.isZero() ||
+       (ros::Time::now() - last_suspended_underpass_check_).toSec() >= 0.20)) {
+    last_suspended_underpass_check_ = ros::Time::now();
+    if (expl_manager_->beginSuspendedUnderpass(fd_->odom_pos_, fd_->odom_yaw_)) {
+      requestActiveTrajectoryBrake("suspended obstacle confirmed before underpass");
+      fd_->static_state_ = true;
+      transitState(PLAN_TRAJ, "safetyCallback-suspended-underpass");
+      return;
+    }
+  }
+
+  // 地图转弯只在当前段执行结束后的正常规划中确认，不能截断正在执行的平移。
+  // 通道内有效路线不因墙体航向变化而重新选位置目标；待该段完成后更新航向。
+  if (!expl_manager_->manualWaypointsEnabled() &&
+      state_ == EXPL_STATE::EXEC_TRAJ && !active_turn_in_place_ &&
+      !active_vertical_detour_ && !active_ground_ascent_ && !inflation_escape_active_ &&
+      !active_escape_step_) {
+    const double time=std::max(0.0,std::min(
+        (ros::Time::now()-active_traj_.start_time_).toSec(),active_traj_.duration_));
+    const double reference_yaw=active_traj_.yaw_traj_.evaluateDeBoorT(time)[0];
+    if (!keepExecutingCorridorTrajectory() &&
+        expl_manager_->shouldReplanCurveHeading(fd_->odom_pos_,reference_yaw)) {
+      fd_->static_state_=false;
+      transitState(PLAN_TRAJ,"corridor-curve-follow");
+      ROS_INFO("[corridor_curve] roll translation/yaw plan from moving state.");
+    }
+  }
+
+  // 候选规划会改写 planner_manager_->local_data_，这里只检查 traj_server 真正执行的快照。
+  auto& trajectory = active_traj_.position_traj_;
+  const double traj_time = std::max(
+      0.0, std::min((ros::Time::now() - active_traj_.start_time_).toSec(),
+                    active_traj_.duration_));
+  const Eigen::Vector3d desired = trajectory.evaluateDeBoorT(traj_time);
+  const Eigen::Vector3d tracking_error = fd_->odom_pos_ - desired;
+  const double error_xy = tracking_error.head<2>().norm();
+  const double error_z = std::fabs(tracking_error.z());
+  const bool in_handover_grace = traj_time < fp_->tracking_error_grace_time_;
+  const bool tracking_exceeded = error_xy > fp_->max_tracking_error_xy_ ||
+                                 error_z > fp_->max_tracking_error_z_;
+  if (in_handover_grace || !tracking_exceeded) {
+    tracking_error_since_ = ros::Time(0);
+  } else {
+    if (tracking_error_since_.isZero()) tracking_error_since_ = ros::Time::now();
+    const double exceeded_time = (ros::Time::now() - tracking_error_since_).toSec();
+    const bool hard_error = error_xy > fp_->hard_tracking_error_xy_ ||
+                            error_z > fp_->hard_tracking_error_z_;
+    if (hard_error || exceeded_time >= fp_->tracking_error_confirm_time_) {
+      if (hard_error) requestActiveTrajectoryBrake("hard tracking error");
+      fd_->static_state_ = true;
+      ROS_ERROR("[tracking_safety] %s replan: error_xy=%.2fm error_z=%.2fm duration=%.2fs.",
+                hard_error ? "short-brake" : "odometry", error_xy, error_z, exceeded_time);
+      tracking_error_since_ = ros::Time(0);
+      if (state_ != EXPL_STATE::PLAN_TRAJ)
+        transitState(PLAN_TRAJ, "safetyCallback-tracking");
+    } else {
+      ROS_WARN_THROTTLE(
+          0.5, "[tracking_safety] confirming error_xy=%.2fm error_z=%.2fm for %.2f/%.2fs.",
+          error_xy, error_z, exceeded_time, fp_->tracking_error_confirm_time_);
+    }
+  }
+
+  // 已通过发布门控的膨胀层逃逸，在真正离开膨胀层前使用单调净空判据。
+  if (inflation_escape_active_) {
+    const bool still_inflated = planner_manager_->isPositionInflated(fd_->odom_pos_);
+    const bool raw_safe = planner_manager_->isRawPositionSafe(fd_->odom_pos_);
+    const bool still_needs_escape = still_inflated || !raw_safe;
+    if (still_needs_escape &&
+        !planner_manager_->isControlledEscapePosition(fd_->odom_pos_)) {
+      requestActiveTrajectoryBrake("footprint contact worsened during inflation escape");
+      fd_->static_state_ = true;
+      inflation_escape_active_ = false;
+      if (state_ != EXPL_STATE::PLAN_TRAJ)
+        transitState(PLAN_TRAJ, "safetyCallback-raw-escape");
+      return;
+    }
+    if (!still_needs_escape) {
+      if (inflation_escape_clear_since_.isZero())
+        inflation_escape_clear_since_ = ros::Time::now();
+      if ((ros::Time::now() - inflation_escape_clear_since_).toSec() >= 0.20) {
+        inflation_escape_active_ = false;
+        ROS_WARN("[footprint_safety] inflation escape completed after 0.20s continuous clearance.");
+      }
+    } else {
+      inflation_escape_clear_since_ = ros::Time(0);
+    }
+  }
+
+  double dist;
+  const bool safe =
+      planner_manager_->checkTrajCollision(active_traj_, dist, inflation_escape_active_);
+  if (exploration_policy::shouldBrakePublishedTrajectory(active_traj_valid_, !safe,
+                                                          active_traj_braked_)) {
+    requestActiveTrajectoryBrake("future footprint collision");
+    expl_manager_->reportTrajectoryCollision();
+    ROS_WARN("Replan: collision detected, old trajectory short-braked at path_dist=%.2fm", dist);
+    if (state_ != EXPL_STATE::PLAN_TRAJ)
+      transitState(PLAN_TRAJ, "safetyCallback");
+  }
+}
+
+void FastExplorationFSM::odometryCallback(const nav_msgs::OdometryConstPtr& msg) {
+  if (msg->header.stamp <= last_odom_stamp_) return;
+  last_odom_stamp_ = msg->header.stamp;
+  fd_->odom_pos_(0) = msg->pose.pose.position.x;
+  fd_->odom_pos_(1) = msg->pose.pose.position.y;
+  fd_->odom_pos_(2) = msg->pose.pose.position.z;
+
+  fd_->odom_vel_(0) = msg->twist.twist.linear.x;
+  fd_->odom_vel_(1) = msg->twist.twist.linear.y;
+  fd_->odom_vel_(2) = msg->twist.twist.linear.z;
+
+  OdomReviewSample sample;
+  sample.stamp = msg->header.stamp.toSec();
+  for (int axis = 0; axis < 3; ++axis) {
+    sample.position[axis] = fd_->odom_pos_(axis);
+    sample.velocity[axis] = fd_->odom_vel_(axis);
+  }
+  if (msg->header.stamp > odom_review_after_) {
+    odom_review_window_.push_back(sample);
+    while (odom_review_window_.size() > 5) odom_review_window_.pop_front();
+  }
+
+  fd_->odom_orient_.w() = msg->pose.pose.orientation.w;
+  fd_->odom_orient_.x() = msg->pose.pose.orientation.x;
+  fd_->odom_orient_.y() = msg->pose.pose.orientation.y;
+  fd_->odom_orient_.z() = msg->pose.pose.orientation.z;
+
+  Eigen::Vector3d rot_x = fd_->odom_orient_.toRotationMatrix().block<3, 1>(0, 0);
+  fd_->odom_yaw_ = atan2(rot_x(1), rot_x(0));
+
+  // 2026-07-22: 按真实里程计连续建立任务航迹，规划失败/低频重规划时旧路过滤仍立即有效。
+  if (expl_manager_)
+    expl_manager_->updateMissionOdometry(fd_->odom_pos_, fd_->odom_yaw_, msg->header.stamp);
+
+  fd_->have_odom_ = true;
+}
+
+bool FastExplorationFSM::getReviewedOdometry(
+    Vector3d& position, Vector3d& velocity) const {
+  std::array<double, 3> positions, velocities;
+  if (!reviewOdometry(odom_review_window_, positions, velocities))
+    return false;
+  for (int axis = 0; axis < 3; ++axis) {
+    position(axis) = positions[axis];
+    velocity(axis) = velocities[axis];
+  }
+  return position.allFinite() && velocity.allFinite();
+}
+
+void FastExplorationFSM::transitState(EXPL_STATE new_state, string pos_call) {
+  int pre_s = int(state_);
+  state_ = new_state;
+  cout << "[" + pos_call + "]: from " + fd_->state_str_[pre_s] + " to " + fd_->state_str_[int(new_state)]
+       << endl;
+}
+}  // namespace fast_planner

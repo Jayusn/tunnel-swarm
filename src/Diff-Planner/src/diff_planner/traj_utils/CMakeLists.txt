@@ -57,3 +57,6 @@ add_library( diff_traj_utils
 target_link_libraries( diff_traj_utils
     ${catkin_LIBRARIES} 
     )  
+
+# 本机前机角色，与后机目标同时构建。
+add_subdirectory(uav0)

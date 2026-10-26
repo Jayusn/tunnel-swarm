@@ -10,3 +10,6 @@ install(DIRECTORY launch
 
 install(PROGRAMS scripts/start_uav0_detection_landing_stack.sh
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
+
+catkin_install_python(PROGRAMS uav0/scripts/aruco_debug_height_uav0.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})

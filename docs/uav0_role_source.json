@@ -1,0 +1,799 @@
+{
+  "source_date": "2026-10-26",
+  "host": "asus@192.168.43.14",
+  "workspace": "/home/asus/match_ws",
+  "branch": "vehicle/cav0",
+  "collection": "Read-only; repository state and every collected file rechecked after reading.",
+  "repositories": {
+    ".": {
+      "head": "59b59c9bc8c5488f313b47bb8609731e088d3b85",
+      "status": " M src/FAST_LIO\n M src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/src/fast_exploration_manager.cpp\n M src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/test/turn_escape_test.cpp\n?? .catkin_tools/\n?? Testing/\n?? build_isolated/\n?? devel_isolated/\n?? src/LDOP.zip\n?? src/color_tag_detector.zip\n?? src/precision_landing.zip\n?? src/qr_detector.zip\n?? src/target_reporting.zip\n?? src/uvc_ubuntu.zip\n",
+      "diff": "diff --git a/src/FAST_LIO b/src/FAST_LIO\n--- a/src/FAST_LIO\n+++ b/src/FAST_LIO\n@@ -1 +1 @@\n-Subproject commit b4e164cc6db2e329440c0c9736be22dde04c16d8\n+Subproject commit b4e164cc6db2e329440c0c9736be22dde04c16d8-dirty\ndiff --git a/src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/src/fast_exploration_manager.cpp b/src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/src/fast_exploration_manager.cpp\nindex 86babf7..420f5c3 100644\n--- a/src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/src/fast_exploration_manager.cpp\n+++ b/src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/src/fast_exploration_manager.cpp\n@@ -3869,8 +3869,10 @@ bool FastExplorationManager::buildManualFappUnderpassPath(\n       const double progress = current + (end-current)*i/count;\n       double dip = 1.0;\n       if (progress < near) dip = smooth((progress-descent_begin)/(near-descent_begin));\n-      // 左下/右下穿越：接近时同时向侧下方移动，保持侧下方直到实际通过。\n-      Vector3d point = origin + (progress-begin)*forward + side*dip*lateral;\n+      // 横移覆盖整个接近段，下降仍只在障碍前0.5m开始；避免先直行贴上侧障碍。\n+      const double lateral_ratio = near > begin + 1e-6\n+          ? smooth((progress-begin)/(near-begin)) : 1.0;\n+      Vector3d point = origin + (progress-begin)*forward + side*lateral_ratio*lateral;\n       point.z() = origin.z() + (low-origin.z())*dip;\n       if (!planner_manager_->isKnownFreePosition(point)) {\n         ROS_WARN_THROTTLE(1.0, \"[fapp_underpass_check] reject known-free side=%.2f \"\n@@ -3897,13 +3899,22 @@ bool FastExplorationManager::buildManualFappUnderpassPath(\n   if (manual_fapp_curve_active_) {\n     if (!side_path(side, path)) return false;\n   } else {\n-    // 只尝试左右两个侧下方通路；选定后保持方向，不逐帧反复换边。\n-    side = recovery_side_latched_ && recovery_side_dir_.dot(lateral) < 0.0 ? -0.20 : 0.20;\n-    if (!side_path(side, path)) {\n-      if (manual_fapp_active_ && recovery_side_latched_) return false;\n-      side = -side;\n-      if (!side_path(side, path)) return false;\n+    // 固定20cm可能仍扫到侧障碍；在已有横移范围内寻找最近的可通行低位通路。\n+    // 普通侧绕偏好只决定尝试顺序，不能否决另一侧；已选中的下穿曲线仍保持原侧。\n+    const double first_sign = recovery_side_latched_ && recovery_side_dir_.dot(lateral) < 0.0\n+        ? -1.0 : 1.0;\n+    bool found = false;\n+    const double step = std::max(0.10, sdf_map_->getResolution());\n+    for (double sign : {first_sign, -first_sign}) {\n+      for (double offset = 0.20; offset <= wide_side_bypass_lateral_range_ + 1e-6;\n+           offset += step) {\n+        side = sign * offset;\n+        if (side_path(side, path)) { found = true; break; }\n+      }\n+      if (found) break;\n     }\n+    if (!found) return false;\n+    if (recovery_side_latched_) recovery_side_dir_ = (side > 0.0 ? 1.0 : -1.0) * lateral;\n   }\n   if (!manual_fapp_curve_active_)\n     ROS_WARN(\"[manual_fapp] continuous underpass from=(%.2f,%.2f,%.2f) \"\ndiff --git a/src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/test/turn_escape_test.cpp b/src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/test/turn_escape_test.cpp\nindex 8aa6421..52a06d6 100644\n--- a/src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/test/turn_escape_test.cpp\n+++ b/src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/test/turn_escape_test.cpp\n@@ -80,6 +80,110 @@ class TurnEscapeTest {\n     manager.task_search_manager_->initialize(nh);\n   }\n public:\n+  static void runRecordedLowCrossing(const char* fixture) {\n+    ros::NodeHandle nh(\"/exploration_node\");\n+    FastExplorationManager manager;\n+    manager.initialize(nh);\n+    auto& planner = *manager.planner_manager_;\n+    auto& map = *manager.sdf_map_;\n+    std::ifstream input(fixture, std::ios::binary);\n+    const auto read = [&](auto& value) { input.read(reinterpret_cast<char*>(&value), sizeof(value)); };\n+    int frames; Vector3d pos, lower, upper;\n+    read(frames);\n+    for (auto* v : {&pos, &lower, &upper}) for (int k=0;k<3;++k) read((*v)[k]);\n+    for (int f=0; f<frames; ++f) {\n+      int count; Vector3d camera; read(count);\n+      for (int k=0;k<3;++k) read(camera[k]);\n+      pcl::PointCloud<pcl::PointXYZ> cloud; cloud.resize(count);\n+      for (auto& p : cloud) { read(p.x); read(p.y); read(p.z); }\n+      map.inputPointCloud(cloud,count,camera);\n+      map.clearAndInflateLocalMap();\n+    }\n+    ASSERT_TRUE(input.good());\n+    map.updateESDF3d();\n+    planner.fapp_watched_valid_=true;\n+    planner.fapp_watched_lower_=lower; planner.fapp_watched_upper_=upper;\n+    planner.fapp_watched_state_.stamp=ros::Time::now().toSec();\n+    manager.manual_fapp_active_=true; manager.manual_fapp_forward_=Vector3d::UnitX();\n+    manager.manual_fapp_hold_height_=pos.z();\n+    const Vector3d goal(upper.x()+map.getResolution()+.20,pos.y(),pos.z());\n+    std::vector<Vector3d> path;\n+    std::cout << \"recorded start=\" << pos.transpose() << \" bounds=\" << lower.transpose() << \" / \" << upper.transpose() << std::endl;\n+    ASSERT_TRUE(manager.buildManualFappUnderpassPath(pos,goal,path));\n+    EXPECT_GT(manager.manual_fapp_curve_side_,0.30);\n+    EXPECT_LT(manager.manual_fapp_curve_side_,0.60);\n+    EXPECT_NEAR(path.back().z(),lower.z()-manager.underpass_height_tracking_margin_,1e-6);\n+    for (const auto& point : path) EXPECT_TRUE(planner.isKnownFreePosition(point));\n+    ASSERT_TRUE(planner.isFappPathSafe(path));\n+    ASSERT_TRUE(planner.planExploreTraj(path,Vector3d::Zero(),Vector3d::Zero(),0.0));\n+    EXPECT_TRUE(planner.isTrajectorySafe());\n+    auto& trajectory=planner.local_data_.position_traj_;\n+    for(double t=0;t<=trajectory.getTimeSum();t+=.02) {\n+      const Vector3d point=trajectory.evaluateDeBoorT(t);\n+      EXPECT_TRUE(planner.isWatchedFappPositionSafe(point));\n+    }\n+  }\n+\n+  static void runAdaptiveLowCrossing(double open_side, bool blocked = false,\n+                                      bool unknown = false) {\n+    ros::NodeHandle nh(\"~adaptive_low_crossing\");\n+    nh.setParam(\"manager/footprint_bottom_clearance\",0.20);\n+    nh.setParam(\"fapp/enabled\",true);\n+    nh.setParam(\"fapp/memory_enabled\",true);\n+    FastExplorationManager manager;\n+    initialize(nh,manager,true);\n+    auto& planner=*manager.planner_manager_;\n+    auto& map=*manager.sdf_map_;\n+    for(int x=0;x<map.mp_->map_voxel_num_.x();++x)\n+      for(int y=0;y<map.mp_->map_voxel_num_.y();++y)\n+        for(int z=0;z<map.mp_->map_voxel_num_.z();++z) {\n+          const Eigen::Vector3i id(x,y,z); Vector3d p; map.indexToPos(id,p);\n+          const bool barrier=p.x()>-.20&&p.x()<.85&&p.z()<.45&&\n+              (blocked||p.y()*open_side<.16);\n+          const int addr=map.toAddress(id);\n+          map.md_->occupancy_buffer_[addr]=barrier\n+              ? (unknown ? map.mp_->clamp_min_log_-map.mp_->unknown_flag_ : map.mp_->clamp_max_log_)\n+              : map.mp_->clamp_min_log_;\n+          map.md_->occupancy_buffer_inflate_[addr]=barrier&&!unknown;\n+        }\n+    map.md_->local_bound_min_.setZero();\n+    map.md_->local_bound_max_=map.mp_->map_voxel_num_-Eigen::Vector3i::Ones();\n+    map.updateESDF3d();\n+    planner.fapp_watched_valid_=true;\n+    planner.fapp_watched_lower_=Vector3d(-.30,-.40,.40);\n+    planner.fapp_watched_upper_=Vector3d(.30,.40,.90);\n+    planner.fapp_watched_state_.stamp=ros::Time::now().toSec();\n+    manager.manual_fapp_active_=true;\n+    manager.manual_fapp_forward_=Vector3d::UnitX();\n+    // 旧的普通侧绕偏好指向受阻侧，不能封死首次低位穿越的另一侧。\n+    manager.recovery_side_latched_=true;\n+    manager.recovery_side_dir_=-open_side*Vector3d::UnitY();\n+    const Vector3d start(-1.,0.,.65),goal(.60,0.,.65);\n+    std::vector<Vector3d> path;\n+    if(blocked) {\n+      EXPECT_FALSE(manager.buildManualFappUnderpassPath(start,goal,path));\n+      EXPECT_FALSE(manager.manual_fapp_curve_active_);\n+      return;\n+    }\n+    ASSERT_TRUE(manager.buildManualFappUnderpassPath(start,goal,path));\n+    EXPECT_GT(manager.manual_fapp_curve_side_*open_side,.30);\n+    EXPECT_GT(manager.recovery_side_dir_.y()*open_side,.9);\n+    EXPECT_NEAR(path.back().z(),.34,1e-6);\n+    EXPECT_GT(path.back().x(),.45);\n+    for(const auto& p:path) EXPECT_TRUE(planner.isKnownFreePosition(p));\n+    EXPECT_TRUE(planner.isFappPathSafe(path));\n+    ASSERT_TRUE(planner.planExploreTraj(path,Vector3d::Zero(),Vector3d::Zero(),0.0));\n+    EXPECT_TRUE(planner.isTrajectorySafe());\n+    auto trajectory=planner.local_data_.position_traj_;\n+    for(double t=0;t<=trajectory.getTimeSum();t+=.02)\n+      EXPECT_TRUE(planner.isWatchedFappPositionSafe(trajectory.evaluateDeBoorT(t)));\n+    const Vector3d end=path.back(),mid=path[path.size()/2];\n+    const double side=manager.manual_fapp_curve_side_;\n+    ASSERT_TRUE(manager.buildManualFappUnderpassPath(mid,goal,path));\n+    EXPECT_NEAR(manager.manual_fapp_curve_side_,side,1e-9);\n+    EXPECT_LT((end-path.back()).norm(),1e-9);\n+  }\n+\n   static void runBottomClearance(bool search) {\n     ros::NodeHandle nh(\"~bottom_clearance\");\n     nh.setParam(\"manager/footprint_bottom_clearance\", 0.20);\n@@ -4103,3 +4207,22 @@ TEST(UpperTurn, OrdinaryTurnDoesNotUseEarlyTakeover) { fast_planner::TurnEscapeT\n TEST(UpperTurn, DisabledVerticalDetourDoesNotAuthorizeElevatedTurn) { fast_planner::TurnEscapeTest::runUpperTurn(4); }\n TEST(UpperTurn, RechecksMapAfterYawCompletes) { fast_planner::TurnEscapeTest::runUpperTurn(5); }\n TEST(UpperTurn, MirroredLowObstacleUsesLeftPassage) { fast_planner::TurnEscapeTest::runUpperTurn(6); }\n+\n+TEST(FappExploration, RecordedLeftLowCrossing) {\n+  const char* fixture=std::getenv(\"LOW_CROSSING_FIXTURE\");\n+  if (!fixture) GTEST_SKIP() << \"requires recorded crossing cloud snapshot\";\n+  fast_planner::TurnEscapeTest::runRecordedLowCrossing(fixture);\n+}\n+\n+TEST(FappExploration, RightObstacleSelectsWiderLeftLowCrossing) {\n+  fast_planner::TurnEscapeTest::runAdaptiveLowCrossing(1.0);\n+}\n+TEST(FappExploration, LeftObstacleSelectsWiderRightLowCrossing) {\n+  fast_planner::TurnEscapeTest::runAdaptiveLowCrossing(-1.0);\n+}\n+TEST(FappExploration, AdaptiveLowCrossingRejectsBlockedBodySpace) {\n+  fast_planner::TurnEscapeTest::runAdaptiveLowCrossing(1.0,true);\n+}\n+TEST(FappExploration, AdaptiveLowCrossingRejectsUnknownBodySpace) {\n+  fast_planner::TurnEscapeTest::runAdaptiveLowCrossing(1.0,true,true);\n+}\n"
+    },
+    "src/Diff-Planner": {
+      "head": "0f609ffdae1c06c108b29aac1bb5632804a14278",
+      "status": "",
+      "diff": ""
+    },
+    "src/FAST_LIO": {
+      "head": "b4e164cc6db2e329440c0c9736be22dde04c16d8",
+      "status": "?? Log/mat_pre.txt\n?? PCD/scans.pcd\n",
+      "diff": ""
+    },
+    "src/LDOP": {
+      "head": "a4c94578cd04dd961663f190e04c5c6ed31cf957",
+      "status": "",
+      "diff": ""
+    },
+    "src/cxr_ego_ctrl": {
+      "head": "5c76c3de8ddadb669b9b98ed3c35cd62241aa9bf",
+      "status": "",
+      "diff": ""
+    },
+    "src/livox_ros_driver2": {
+      "head": "02c88582e59051c4641d2ed28a6f82253d0354e1",
+      "status": "",
+      "diff": ""
+    }
+  },
+  "imported_files": {
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_env/uav0/include/plan_env/map_ros.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_env/include/plan_env/map_ros.h",
+      "sha256": "ed5e7975e4ec134977ff05dac0e3758ac5bccf68f763930cc57da573cb679a3b"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_env/uav0/include/plan_env/obj_predictor.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_env/include/plan_env/obj_predictor.h",
+      "sha256": "54d828821e0d153cf64c123ec3660c0e324e36acf5093daa5f45be30619032eb"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_env/uav0/include/plan_env/raycast.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_env/include/plan_env/raycast.h",
+      "sha256": "608367c1ab411636a39c477d3d26fdd7467745fe042e9979629f98ec59db2349"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_env/uav0/include/plan_env/edt_environment.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_env/include/plan_env/edt_environment.h",
+      "sha256": "410c83da6c915b1ef7fd9901663f4f030c3b2b061eeda24e4bfabaf64e579800"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_env/uav0/include/plan_env/static_occupancy_policy.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_env/include/plan_env/static_occupancy_policy.h",
+      "sha256": "4c9cb42d130ea8b96ac976e9959f5824ae9e690652529fdc998c68fd92eb392f"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_env/uav0/include/plan_env/metric_voxel_policy.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_env/include/plan_env/metric_voxel_policy.h",
+      "sha256": "7dacca466659b40a39bce5458faefe9dfa3f310909dd28c64e0fe82d13ea9c75"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_env/uav0/include/plan_env/linear_obj_model.hpp": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_env/include/plan_env/linear_obj_model.hpp",
+      "sha256": "a4f8a967ad15b7ac849d8324bc5eab04721beb09d8e7fe11f679bc5e0dffe0c9"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_env/uav0/include/plan_env/polynomial_traj.hpp": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_env/include/plan_env/polynomial_traj.hpp",
+      "sha256": "acbd1e1c88f19fff41e05616a2921c97f26479c51bc6dd5de0d62aca92afc583"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_env/uav0/include/plan_env/sdf_map.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_env/include/plan_env/sdf_map.h",
+      "sha256": "43937690f64936786f256ef860e94e361da85ce857e4162f92d707f9e12483e1"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_env/uav0/src/sdf_map.cpp": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_env/src/sdf_map.cpp",
+      "sha256": "35392885986651c5a6537977330deeaf198d28299e272c9ccbe7143818410800"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/path_searching/uav0/include/path_searching/topo_prm.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/path_searching/include/path_searching/topo_prm.h",
+      "sha256": "5de3764c118a22fe807837eea212b8b8c8715466b175f85d8d7e9bcc39cc780d"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/path_searching/uav0/include/path_searching/matrix_hash.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/path_searching/include/path_searching/matrix_hash.h",
+      "sha256": "f4cec335063435d6cd1625e2b2704f8cb7b65b18b8e42b7de00d7f805241e296"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/path_searching/uav0/include/path_searching/directional_progress_policy.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/path_searching/include/path_searching/directional_progress_policy.h",
+      "sha256": "aea28a25f9f08583234fcee4124262dbfd66801482453ff510539977652d8ac6"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/path_searching/uav0/include/path_searching/graph_search.hpp": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/path_searching/include/path_searching/graph_search.hpp",
+      "sha256": "e381b79b1bc060676492c6a4019adda6f85148aa5c201f9b4728e67d11914c4c"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/path_searching/uav0/include/path_searching/astar.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/path_searching/include/path_searching/astar.h",
+      "sha256": "14032fa9defab11350379504efcc07d36330dc902d01fa719096fc461cdeac69"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/path_searching/uav0/include/path_searching/astar2.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/path_searching/include/path_searching/astar2.h",
+      "sha256": "702ad4910aefd76aaad030871a18f612f6e01ecd81c2cfbeec9a98cc741f3876"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/path_searching/uav0/include/path_searching/kinodynamic_astar.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/path_searching/include/path_searching/kinodynamic_astar.h",
+      "sha256": "6e4d1daf4126140b3b94a9756ad60636ebb613ca5c57316a01b69e3c23b0ff72"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/path_searching/uav0/src/astar2.cpp": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/path_searching/src/astar2.cpp",
+      "sha256": "1c638d21c18f247ffbfeed3ca47c11867edba2aaec2e8cda29d81ceb56be1b02"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/active_perception/uav0/include/active_perception/perception_utils.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/active_perception/include/active_perception/perception_utils.h",
+      "sha256": "332bd6fb0e91d5eef30badff426c527839c93e09a7d20ee402477724a88c09f7"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/active_perception/uav0/include/active_perception/heading_planner.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/active_perception/include/active_perception/heading_planner.h",
+      "sha256": "22ac10029f093f870af7615220617f122f98049529cf926f769ea06df23f6c74"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/active_perception/uav0/include/active_perception/graph_node.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/active_perception/include/active_perception/graph_node.h",
+      "sha256": "c0cad806786d18c135e02d7e2b4b3ea4c282a24759d1f393df7cb75985b19688"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/active_perception/uav0/include/active_perception/frontier_finder.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/active_perception/include/active_perception/frontier_finder.h",
+      "sha256": "cd98a804627b3c228e31e78bc0eea75c5f4c8da3ccfca058b839c73492d62701"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/active_perception/uav0/include/active_perception/traj_visibility.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/active_perception/include/active_perception/traj_visibility.h",
+      "sha256": "5f85dcf1fa8db29a646e08641c6167a5ddf99fcc66be497f89bfbbd1c46544d7"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/active_perception/uav0/include/active_perception/graph_search.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/active_perception/include/active_perception/graph_search.h",
+      "sha256": "8d9483ca7916e91ecbb92b90475b5502c94330d7968e1d5eabdd2ff0a5d5a436"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/active_perception/uav0/src/frontier_finder.cpp": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/active_perception/src/frontier_finder.cpp",
+      "sha256": "8ee8519fdc5442283ca6093040f099462dd38a547dc2b25b0de3d92e29ea6579"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/bspline_opt/uav0/include/bspline_opt/fapp_dynamic_obstacle.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/bspline_opt/include/bspline_opt/fapp_dynamic_obstacle.h",
+      "sha256": "ee4097f3b1a1c6087951bb2f7a4b46b5120966fee7f03b050cc589f074e4aa6d"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/bspline_opt/uav0/include/bspline_opt/fapp_bspline_cost.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/bspline_opt/include/bspline_opt/fapp_bspline_cost.h",
+      "sha256": "05b9793ec1d8fba0490862ce55ca1f68a1773ddfcd85a615d6b7b1e944ad40c9"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/bspline_opt/uav0/include/bspline_opt/fapp_vehicle_geometry.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/bspline_opt/include/bspline_opt/fapp_vehicle_geometry.h",
+      "sha256": "ae1385eaa37d6b3b43f71c8f705159fca970f25bbd98f70caf0c492915d65e0e"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/bspline_opt/uav0/include/bspline_opt/bspline_optimizer.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/bspline_opt/include/bspline_opt/bspline_optimizer.h",
+      "sha256": "09642c1e93b480f6d85c5116f14ba75e13ddf2c469e72c3eb9f46975415fcbaf"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/bspline_opt/uav0/src/fapp_dynamic_obstacle.cpp": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/bspline_opt/src/fapp_dynamic_obstacle.cpp",
+      "sha256": "3c32a537791d78281b9f1cc166275d54423951b4a99d423d119eaa953ea129cc"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/bspline_opt/uav0/src/bspline_optimizer.cpp": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/bspline_opt/src/bspline_optimizer.cpp",
+      "sha256": "4e9bb9e83820c2c4288107e2d38b396d79d9f5583e2814465ddf800f962213e5"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_manage/uav0/include/plan_manage/kino_replan_fsm.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_manage/include/plan_manage/kino_replan_fsm.h",
+      "sha256": "153755b590884c1c10bed5b34d52e70a6831d6648da15c5e736134c3d0e043c0"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_manage/uav0/include/plan_manage/topo_replan_fsm.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_manage/include/plan_manage/topo_replan_fsm.h",
+      "sha256": "bf1bfde213464103d864815cb56b3ea5231bd2803aaf8bea9ff7b84294755520"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_manage/uav0/include/plan_manage/utils.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_manage/include/plan_manage/utils.h",
+      "sha256": "99186b6307d746bf21c3df0b91c24e486ba65421f6a99a8825c7201e8162ea8d"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_manage/uav0/include/plan_manage/local_explore_fsm.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_manage/include/plan_manage/local_explore_fsm.h",
+      "sha256": "34c57b8bd5361c0527655edf9d6a129cc7a439921f31ff5db55c7da8693c99da"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_manage/uav0/include/plan_manage/planner_manager.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_manage/include/plan_manage/planner_manager.h",
+      "sha256": "9f6f89fe2ff2b761048f2bc80346724fbae459fc3a9840b01e1be60796737e30"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_manage/uav0/include/plan_manage/plan_container.hpp": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_manage/include/plan_manage/plan_container.hpp",
+      "sha256": "2b6715a5add99e2e8ce672c4b4356573c5f0a95ff37e3d121825d673677b1c29"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_manage/uav0/include/plan_manage/backward.hpp": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_manage/include/plan_manage/backward.hpp",
+      "sha256": "f6a3fd85b1ab2c1444014bf1d3c744893dfdabb99b127e3977d0e3a203bf17c5"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_manage/uav0/src/planner_manager.cpp": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_manage/src/planner_manager.cpp",
+      "sha256": "2afefb1fd3d630abdd74db5c90d19ed99ca11c9e7420a3368b23f0e723f84235"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_manage/uav0/src/traj_server.cpp": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_manage/src/traj_server.cpp",
+      "sha256": "3e9fb57b22127dd0a2dc34093f56657f0d5aff65074b2239b929d2bbed0cb24e"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/include/exploration_manager/replan_execution_policy.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/include/exploration_manager/replan_execution_policy.h",
+      "sha256": "b08f946ddd922f5393be32b17fdc1a2509e4b94a92a47402e47a7373ab414eee"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/include/exploration_manager/motion_direction_rules.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/include/exploration_manager/motion_direction_rules.h",
+      "sha256": "9ebccd22a59e6bc3a25baec464f5c7226fe4ea574530f47f1a371535b906945e"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/include/exploration_manager/safe_relay_policy.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/include/exploration_manager/safe_relay_policy.h",
+      "sha256": "8f722a911c8fc5d1655e5c14c080d87c6f28a01ba36bcaf5b7e126c0188f946e"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/include/exploration_manager/inflation_history_escape_policy.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/include/exploration_manager/inflation_history_escape_policy.h",
+      "sha256": "bdc75d7443ffe8de91e0ce2f6cc0027cf57984924038c64fff41ab19ac2510c9"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/include/exploration_manager/open_space_exit_detection.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/include/exploration_manager/open_space_exit_detection.h",
+      "sha256": "4f57bb452684553386b9e18b1f727fff3b0fc3d0a06ec493c854778fb16523ad"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/include/exploration_manager/path_shortening_policy.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/include/exploration_manager/path_shortening_policy.h",
+      "sha256": "d2016d6b4d6186cfaa53a0d94d7bb6cff3ec25522e4c80b5144d0d2e32909612"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/include/exploration_manager/fast_exploration_fsm.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/include/exploration_manager/fast_exploration_fsm.h",
+      "sha256": "ae44b5b321342a08d0641a2a8d68c8f749a53289725e9aee9d79a6588f5e99b5"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/include/exploration_manager/expl_data.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/include/exploration_manager/expl_data.h",
+      "sha256": "ca966da471ff8bcf7529f8f32b6f944b1785f955309cf8d6507af6e611caaf07"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/include/exploration_manager/corridor_curve_heading.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/include/exploration_manager/corridor_curve_heading.h",
+      "sha256": "cdb8d76edf227f9f26fb32e4bf2213583abe84b9ce9c7b0c694f1b918f25a2a5"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/include/exploration_manager/vertical_detour_policy.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/include/exploration_manager/vertical_detour_policy.h",
+      "sha256": "7b07ad2a343a1bab897b5e08851954931c6c8647099cf98ad96b63eb8674fc80"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/include/exploration_manager/safe_relay_publisher.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/include/exploration_manager/safe_relay_publisher.h",
+      "sha256": "be32bba7c96b56e3695911466d2d09aa34093e40cd3dccee2c309dce8a71ba26"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/include/exploration_manager/manual_waypoint_path.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/include/exploration_manager/manual_waypoint_path.h",
+      "sha256": "fb45c066b11694a14dc1dc3185f882256b91f4751f13f9974e4845ceaf9d84a4"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/include/exploration_manager/frontier_clearance_policy.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/include/exploration_manager/frontier_clearance_policy.h",
+      "sha256": "372528a8da6dc3b45e7814d6d90b8fa474fe04dfa0bd76066a0cf600509f6c5f"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/include/exploration_manager/fast_exploration_manager.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/include/exploration_manager/fast_exploration_manager.h",
+      "sha256": "b4ba6f9e608c1e4e6532337e3df149c4272cf147b52411e5c30f7d6017bd9063"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/include/exploration_manager/odometry_review.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/include/exploration_manager/odometry_review.h",
+      "sha256": "3b0d2e12a9b2632af60ae8f447e40398c68ef7fe676e6824fd021dfa6d9c7788"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/include/exploration_manager/entry_forward_policy.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/include/exploration_manager/entry_forward_policy.h",
+      "sha256": "0ac0de008bc574812f39ffd50cf59146b9935d4d2f1f579ea1b618ae4b6dea6b"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/include/exploration_manager/passage_centering_policy.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/include/exploration_manager/passage_centering_policy.h",
+      "sha256": "e9e4b2c62a16aecde685035d660ecc73f5bc3e0ac6aca7141b7524f6dc355b72"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/include/exploration_manager/task_search_manager.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/include/exploration_manager/task_search_manager.h",
+      "sha256": "cf569a6626909d4eb5f4ed1365c64f4dfd89abdc768eefb0fba5577c6dcaa64d"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/include/exploration_manager/route_width_policy.h": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/include/exploration_manager/route_width_policy.h",
+      "sha256": "608131bca83f89a9515d3976e5d3d103cbd6b2c3e03e6795b72bf1a6ad2acc61"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/src/fast_exploration_fsm.cpp": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/src/fast_exploration_fsm.cpp",
+      "sha256": "5460b6d033c392e44889b6e17bd7144bf13e000b7c9183db9be8d73ddd1214cf"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/src/fast_exploration_manager.cpp": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/src/fast_exploration_manager.cpp",
+      "sha256": "9957890b9717beade2ba1ab85d1dbf9b44c7b20f93079cac89260d683baf2131"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/src/safe_relay_publisher.cpp": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/src/safe_relay_publisher.cpp",
+      "sha256": "53a4e7d322bce9060277e54409b05c3289be426a69b490c314403f36e9e4b408"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/src/task_search_manager.cpp": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/src/task_search_manager.cpp",
+      "sha256": "a8e15348aebd3d916278969e680c2496156fa163b63a64740fd65e1f4154825b"
+    },
+    "src/Diff-Planner/src/diff_planner/plan_env/uav0/include/plan_env/raycast.h": {
+      "source": "src/Diff-Planner/src/diff_planner/plan_env/include/plan_env/raycast.h",
+      "sha256": "54c3644d3841103270dff90defb42097884c77166f7efd08934d3bc6ebf507a9"
+    },
+    "src/Diff-Planner/src/diff_planner/plan_env/uav0/include/plan_env/grid_map.h": {
+      "source": "src/Diff-Planner/src/diff_planner/plan_env/include/plan_env/grid_map.h",
+      "sha256": "1b28ec2b50a772337ea17e73d0c5df4c2f86c141e0b2ce52bf02e68be0dda04e"
+    },
+    "src/Diff-Planner/src/diff_planner/plan_env/uav0/include/plan_env/exploration_motion_constraint.h": {
+      "source": "src/Diff-Planner/src/diff_planner/plan_env/include/plan_env/exploration_motion_constraint.h",
+      "sha256": "0dc15e62d6205bfa7ba5c15a735f587bcd200dcf6d9e16eb7db21aac2ac44e11"
+    },
+    "src/Diff-Planner/src/diff_planner/plan_env/uav0/include/plan_env/grid_map_bigmap.h": {
+      "source": "src/Diff-Planner/src/diff_planner/plan_env/include/plan_env/grid_map_bigmap.h",
+      "sha256": "7f8a236cee6e47e0d27cd6fbe50dd4eb36d13f80444bfe8bdc60882205747b22"
+    },
+    "src/Diff-Planner/src/diff_planner/plan_env/uav0/src/grid_map.cpp": {
+      "source": "src/Diff-Planner/src/diff_planner/plan_env/src/grid_map.cpp",
+      "sha256": "bb94a9e93ac88e804fee37225ae770c9cc36f47031ad46b2159c2904dbc29b36"
+    },
+    "src/Diff-Planner/src/diff_planner/path_searching/uav0/include/path_searching/dyn_a_star.h": {
+      "source": "src/Diff-Planner/src/diff_planner/path_searching/include/path_searching/dyn_a_star.h",
+      "sha256": "3050702ab76069c2fc58080367d420e548f68e0dc3551ee1af7fb910c33dbf6c"
+    },
+    "src/Diff-Planner/src/diff_planner/path_searching/uav0/src/dyn_a_star.cpp": {
+      "source": "src/Diff-Planner/src/diff_planner/path_searching/src/dyn_a_star.cpp",
+      "sha256": "d7729ee3f1be8843441ac0b95360faa6bc0f6b144d8cdf306db1bcb80c5c22eb"
+    },
+    "src/Diff-Planner/src/diff_planner/traj_utils/uav0/include/traj_utils/plan_container.hpp": {
+      "source": "src/Diff-Planner/src/diff_planner/traj_utils/include/traj_utils/plan_container.hpp",
+      "sha256": "b4455599e43dd5d26876b5cd2e9510176a79062796918735b77777d98ea4ddd3"
+    },
+    "src/Diff-Planner/src/diff_planner/traj_utils/uav0/include/traj_utils/planning_visualization.h": {
+      "source": "src/Diff-Planner/src/diff_planner/traj_utils/include/traj_utils/planning_visualization.h",
+      "sha256": "4877129cdff89cfc82b3b042d47e0559e0bc439e53eedebefa76d0a854012556"
+    },
+    "src/Diff-Planner/src/diff_planner/traj_utils/uav0/src/planning_visualization.cpp": {
+      "source": "src/Diff-Planner/src/diff_planner/traj_utils/src/planning_visualization.cpp",
+      "sha256": "5956a70f4169c68fbda82c4a528b1440378c5a644e48060dc9ba9c57c244c453"
+    },
+    "src/Diff-Planner/src/diff_planner/traj_opt/uav0/include/optimizer/poly_traj_optimizer.h": {
+      "source": "src/Diff-Planner/src/diff_planner/traj_opt/include/optimizer/poly_traj_optimizer.h",
+      "sha256": "359c7ea9e47b0a89e34f39ee26cf2d42a8263ad34c2641288e3e30025d7f6bba"
+    },
+    "src/Diff-Planner/src/diff_planner/traj_opt/uav0/include/optimizer/poly_traj_utils.hpp": {
+      "source": "src/Diff-Planner/src/diff_planner/traj_opt/include/optimizer/poly_traj_utils.hpp",
+      "sha256": "7fc76ed8278fe8b4fde79f6997f7075115f04f81ac6978ad1623caf87cef650f"
+    },
+    "src/Diff-Planner/src/diff_planner/traj_opt/uav0/include/optimizer/lbfgs.hpp": {
+      "source": "src/Diff-Planner/src/diff_planner/traj_opt/include/optimizer/lbfgs.hpp",
+      "sha256": "eafa7ce5b5bfd73400faaa744bb9a41ed05adbb2ebeec3af839f009b9cafe921"
+    },
+    "src/Diff-Planner/src/diff_planner/traj_opt/uav0/include/optimizer/root_finder.hpp": {
+      "source": "src/Diff-Planner/src/diff_planner/traj_opt/include/optimizer/root_finder.hpp",
+      "sha256": "4794908ec18e8af75a0dd9f1b393561cb5c4a73eb57f78b6566556c460211326"
+    },
+    "src/Diff-Planner/src/diff_planner/traj_opt/uav0/include/optimizer/gcopter.hpp": {
+      "source": "src/Diff-Planner/src/diff_planner/traj_opt/include/optimizer/gcopter.hpp",
+      "sha256": "a3b7f6de6b78081ab1481745ee1c2a5b70f74f89f6a6acca4f4fa8ee812e015a"
+    },
+    "src/Diff-Planner/src/diff_planner/traj_opt/uav0/src/poly_traj_optimizer.cpp": {
+      "source": "src/Diff-Planner/src/diff_planner/traj_opt/src/poly_traj_optimizer.cpp",
+      "sha256": "2a4b8e18cae7aff584b9be8a661bf537f657965ba870f6a035aeed945373ad9b"
+    },
+    "src/Diff-Planner/src/diff_planner/plan_manage/uav0/include/plan_manage/diff_replan_fsm.h": {
+      "source": "src/Diff-Planner/src/diff_planner/plan_manage/include/plan_manage/diff_replan_fsm.h",
+      "sha256": "a7dcda3c47722288c1018b7c0c83b2191ebd75272a039550db31e1fbc0709cdb"
+    },
+    "src/Diff-Planner/src/diff_planner/plan_manage/uav0/include/plan_manage/planner_manager.h": {
+      "source": "src/Diff-Planner/src/diff_planner/plan_manage/include/plan_manage/planner_manager.h",
+      "sha256": "8caf47a6e1c44b3c6f62963b3aad0a2f7856bc8c62178a88260d1bf431b58f2e"
+    },
+    "src/Diff-Planner/src/diff_planner/plan_manage/uav0/include/diff_planner/entry_point_to_point.h": {
+      "source": "src/Diff-Planner/src/diff_planner/plan_manage/include/diff_planner/entry_point_to_point.h",
+      "sha256": "5e673e670b0ad2ea1aff4b7d7c06a79e9694671f7cf5659591ed227173cac253"
+    },
+    "src/Diff-Planner/src/diff_planner/plan_manage/uav0/include/diff_planner/entry_frame_rules.h": {
+      "source": "src/Diff-Planner/src/diff_planner/plan_manage/include/diff_planner/entry_frame_rules.h",
+      "sha256": "3baec6b6c2ca7e45a96d6a7a6995666e6ede35dbcae8ea946bdedf607b24c499"
+    },
+    "src/Diff-Planner/src/diff_planner/plan_manage/uav0/src/diff_replan_fsm.cpp": {
+      "source": "src/Diff-Planner/src/diff_planner/plan_manage/src/diff_replan_fsm.cpp",
+      "sha256": "c523886c223fe4dad4d8318b8b9e48011954c89ac5e8bbfe030b4d5c285de7b1"
+    },
+    "src/Diff-Planner/src/diff_planner/plan_manage/uav0/src/planner_manager.cpp": {
+      "source": "src/Diff-Planner/src/diff_planner/plan_manage/src/planner_manager.cpp",
+      "sha256": "798748c4df37ddc5bdda1a513840843a1a197b0e2aef0ddfcf1194049036d547"
+    },
+    "src/Diff-Planner/src/diff_planner/plan_manage/uav0/src/traj_server.cpp": {
+      "source": "src/Diff-Planner/src/diff_planner/plan_manage/src/traj_server.cpp",
+      "sha256": "772c66a72da26c3947a6a3c2ff63f1003f71d1e219981295d75d2d7990225a21"
+    },
+    "src/Diff-Planner/src/diff_planner/plan_manage/uav0/src/corridor_search_manager.cpp": {
+      "source": "src/Diff-Planner/src/diff_planner/plan_manage/src/corridor_search_manager.cpp",
+      "sha256": "b9eaf450c7bac383a7f6a33057e319de1dda6b93314352e0de14f40b726fd5df"
+    },
+    "src/Diff-Planner/src/diff_planner/plan_manage/uav0/src/landing_diff_search_manager.cpp": {
+      "source": "src/Diff-Planner/src/diff_planner/plan_manage/src/landing_diff_search_manager.cpp",
+      "sha256": "dede0fd7a99b0cc94fec62a6e2cf2a00bf9549f3f2c7ef9cfd1610dfbe34b414"
+    },
+    "src/Diff-Planner/src/diff_planner/plan_manage/uav0/src/planner_command_arbiter.cpp": {
+      "source": "src/Diff-Planner/src/diff_planner/plan_manage/src/planner_command_arbiter.cpp",
+      "sha256": "ebb560185f1a569adcbb4abbfa3cadd9941c662247d195e27b4f716431451943"
+    },
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/uav0/include/payload_mpc_controller/flatness.h": {
+      "source": "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/include/payload_mpc_controller/flatness.h",
+      "sha256": "e5a24a3467bbced2cda30d25867267e6e57e6c8f0f4a2343d22356e701294128"
+    },
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/uav0/include/payload_mpc_controller/multi_optimization_based_force_estimator_min_length.hpp": {
+      "source": "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/include/payload_mpc_controller/multi_optimization_based_force_estimator_min_length.hpp",
+      "sha256": "1084fa32fec9cf3caf8531585d97b23b8b60625ccc35648e292eddf2e39b1392"
+    },
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/uav0/include/payload_mpc_controller/mpc_wrapper.h": {
+      "source": "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/include/payload_mpc_controller/mpc_wrapper.h",
+      "sha256": "4931bbd64200222925c60c190265cf6924995e07dcad5c999d8f3c4ffbf96b57"
+    },
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/uav0/include/payload_mpc_controller/recovery_control.h": {
+      "source": "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/include/payload_mpc_controller/recovery_control.h",
+      "sha256": "0c57bf687b30c23e00d4341680bfecfaf67505676f2f595689c7098ea274887b"
+    },
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/uav0/include/payload_mpc_controller/mpc_controller.h": {
+      "source": "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/include/payload_mpc_controller/mpc_controller.h",
+      "sha256": "a02a1060533b1664c67b1f3f665cb8afcc37f0bb64c89fc67f31158fc1a085a1"
+    },
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/uav0/include/payload_mpc_controller/lbfgs.hpp": {
+      "source": "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/include/payload_mpc_controller/lbfgs.hpp",
+      "sha256": "7f3b8f08653e08c8580c0a6e0545435d12e5d0dfadc9de2c928beedb03fa5819"
+    },
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/uav0/include/payload_mpc_controller/multi_optimization_based_force_estimator.hpp": {
+      "source": "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/include/payload_mpc_controller/multi_optimization_based_force_estimator.hpp",
+      "sha256": "6ad82f279e53aaf96f9c6800de46efe8854e9eaa7f3b36eee9bd363f2247f7f4"
+    },
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/uav0/include/payload_mpc_controller/force_observer_input_synchronizer.h": {
+      "source": "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/include/payload_mpc_controller/force_observer_input_synchronizer.h",
+      "sha256": "e8b775d01cb61050b8e28f627c7eb21c9bf0b8a6e7b188e4725ab392185f6b7c"
+    },
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/uav0/include/payload_mpc_controller/polynomial_trajectory.h": {
+      "source": "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/include/payload_mpc_controller/polynomial_trajectory.h",
+      "sha256": "e9c4cfd539e239b89e46d94891952eaebb5b2dc5f834880ba9f462b1096a96d9"
+    },
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/uav0/include/payload_mpc_controller/vertical_disturbance_low_pass.h": {
+      "source": "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/include/payload_mpc_controller/vertical_disturbance_low_pass.h",
+      "sha256": "1b487c7935f396e3c4bdc18512e2bbb70f21d1b38217c8b993c7424f5fdece6b"
+    },
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/uav0/include/payload_mpc_controller/mpc_input.h": {
+      "source": "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/include/payload_mpc_controller/mpc_input.h",
+      "sha256": "0350fe1b8f9b3c3ca4706d434f83cd7256a28d0bc08cfba67859677ae48ad83d"
+    },
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/uav0/include/payload_mpc_controller/mpc_fsm.h": {
+      "source": "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/include/payload_mpc_controller/mpc_fsm.h",
+      "sha256": "24c2eddd490d681a6126c10a3e6c78b709d8221f22bd9a5d4ca9203b581793f2"
+    },
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/uav0/include/payload_mpc_controller/disturbance_slew_limiter.h": {
+      "source": "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/include/payload_mpc_controller/disturbance_slew_limiter.h",
+      "sha256": "7f45fe0615dad40317d396fad56a21c2b1690921fd4365ca02761c11ac86956f"
+    },
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/uav0/include/payload_mpc_controller/optimization_based_force_estimator_lbfgs.hpp": {
+      "source": "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/include/payload_mpc_controller/optimization_based_force_estimator_lbfgs.hpp",
+      "sha256": "c4cc31d5db523c2bd7e806ed0c66515441cba1caff0e437550582fafe03d39e6"
+    },
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/uav0/include/payload_mpc_controller/lowpassfilter2p.h": {
+      "source": "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/include/payload_mpc_controller/lowpassfilter2p.h",
+      "sha256": "a689be2057cd799a348e46ebf95711c33eb8321e346f91303537437ccfa3b7db"
+    },
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/uav0/include/payload_mpc_controller/force_estimator.hpp": {
+      "source": "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/include/payload_mpc_controller/force_estimator.hpp",
+      "sha256": "44bb1f2e1ea446f265818201f0b624627d5ac198977064fdbf85ff3f4381d4dc"
+    },
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/uav0/include/payload_mpc_controller/force_attitude_aligner.h": {
+      "source": "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/include/payload_mpc_controller/force_attitude_aligner.h",
+      "sha256": "d10fde4669b4c1abe6b206309971a4cbfdf42ef69c4451d13d1c10b53089ed97"
+    },
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/uav0/include/payload_mpc_controller/mpc_params.h": {
+      "source": "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/include/payload_mpc_controller/mpc_params.h",
+      "sha256": "89c48d6e36f3ab78e8ccb1016add578a2b1a39ff503b5f49045be9e5683e44f8"
+    },
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/uav0/include/payload_mpc_controller/odom_spike_guard.h": {
+      "source": "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/include/payload_mpc_controller/odom_spike_guard.h",
+      "sha256": "02606a07ed366c04fffbbc6507a6a9313e1fabb8592836042e205d8083d955ff"
+    },
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/uav0/src/mpc_controller_node.cpp": {
+      "source": "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/src/mpc_controller_node.cpp",
+      "sha256": "cb6191a4d29382ce081ad30bbf4071fe2a42178045d7d4699fa3226309ae3b42"
+    },
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/uav0/src/mpc_controller.cpp": {
+      "source": "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/src/mpc_controller.cpp",
+      "sha256": "f374ab85ecc0b736a0bffbc2b1bfca42cf8c422c87c21d56ab041c399b292796"
+    },
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/uav0/src/mpc_input.cpp": {
+      "source": "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/src/mpc_input.cpp",
+      "sha256": "104619b12a780c52c1788d331af2b49fc33085a08762d5e979427afe1fb51782"
+    },
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/uav0/src/mpc_fsm.cpp": {
+      "source": "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/src/mpc_fsm.cpp",
+      "sha256": "79679f72518249241123f011252ccf90a84a03cf605a42187a8e1adaa8243195"
+    },
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/uav0/src/mpc_wrapper.cpp": {
+      "source": "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/src/mpc_wrapper.cpp",
+      "sha256": "cab3cb8002be88ac246911a846478da805ade590c66998b4cf1b61ae6a5ba3df"
+    },
+    "src/autotrans_reference_bridge/uav0/src/reference_bridge_node.cpp": {
+      "source": "src/autotrans_reference_bridge/src/reference_bridge_node.cpp",
+      "sha256": "d595f76061356d7b0e18cdcc5b946d6b829731f90af61fef17cf5b4abbd8f597"
+    },
+    "src/autotrans_reference_bridge/uav0/src/fuel_autotrans_bridge_node.cpp": {
+      "source": "src/autotrans_reference_bridge/src/fuel_autotrans_bridge_node.cpp",
+      "sha256": "6bb418ccdadddb7fcf86f5117733cd38d4946f2653d2f9c42913ed9293f427b9"
+    },
+    "src/autotrans_reference_bridge/uav0/src/autotrans_trajectory_arbiter_node.cpp": {
+      "source": "src/autotrans_reference_bridge/src/autotrans_trajectory_arbiter_node.cpp",
+      "sha256": "8f2f0dc54bf6b9b9fad3829a5c6606920ea435f77ba5423451e8390478df5a3b"
+    },
+    "src/precision_landing/uav0/include/precision_landing/aruco_tracker.hpp": {
+      "source": "src/precision_landing/include/precision_landing/aruco_tracker.hpp",
+      "sha256": "5a7ccbf94f17998c39ad6002ba2f89e04a68915f096848489b7d7b7145a0ba02"
+    },
+    "src/precision_landing/uav0/include/precision_landing/landing_controller.hpp": {
+      "source": "src/precision_landing/include/precision_landing/landing_controller.hpp",
+      "sha256": "d673cc72f71231c01c32fdcbb84d09dbc7f9b934045e66cb1de253cff76fc0a6"
+    },
+    "src/precision_landing/uav0/include/precision_landing/types.hpp": {
+      "source": "src/precision_landing/include/precision_landing/types.hpp",
+      "sha256": "ef61591f1ccab277d7e3f3d28ee9d1fad999e2222964bd150d489696d5f719f4"
+    },
+    "src/precision_landing/uav0/include/precision_landing/landing_state_machine.hpp": {
+      "source": "src/precision_landing/include/precision_landing/landing_state_machine.hpp",
+      "sha256": "f85cecd89abd9c41415173585b531d542ebdb3e6743baf14fba6b418c81f7e8a"
+    },
+    "src/precision_landing/uav0/include/precision_landing/mode_request_authorization.hpp": {
+      "source": "src/precision_landing/include/precision_landing/mode_request_authorization.hpp",
+      "sha256": "bb468b01883e77262ca74cc435a4b1cc3ab8cb45cee60940befa9a59ef3350b3"
+    },
+    "src/precision_landing/uav0/include/precision_landing/landing_search_core.hpp": {
+      "source": "src/precision_landing/include/precision_landing/landing_search_core.hpp",
+      "sha256": "2d013d1c9dd3793c74f22bc0a52c8320202f8e4e7518b2a1a7d7a051f62ef16d"
+    },
+    "src/precision_landing/uav0/src/landing_state_machine.cpp": {
+      "source": "src/precision_landing/src/landing_state_machine.cpp",
+      "sha256": "1e09d3c14c6f145984cb9fd0647cf43facd82895234e4c2a7eeadc6972c0b1a0"
+    },
+    "src/precision_landing/uav0/src/landing_search_node.cpp": {
+      "source": "src/precision_landing/src/landing_search_node.cpp",
+      "sha256": "60930c6eaabb2f6dfe9c0d9e344e835528565f9f846eb60ee41ddc6d08955e5a"
+    },
+    "src/precision_landing/uav0/src/front_aruco_hint_node.cpp": {
+      "source": "src/precision_landing/src/front_aruco_hint_node.cpp",
+      "sha256": "ab680f9841b2838eb69553c35dc1531bf437a6cd1d610164939844c1f2ac392b"
+    },
+    "src/precision_landing/uav0/src/precision_landing_node.cpp": {
+      "source": "src/precision_landing/src/precision_landing_node.cpp",
+      "sha256": "ebc7b652e32681041f1f2663874ba2fcdd98f38fcbd1149af9da0972f40b4373"
+    },
+    "src/precision_landing/uav0/src/landing_setpoint_arbiter_node.cpp": {
+      "source": "src/precision_landing/src/landing_setpoint_arbiter_node.cpp",
+      "sha256": "d2c854d1c279e03b4c08c47e9f2c36311a47e825ceacb20c39c05ec70b7fb433"
+    },
+    "src/precision_landing/uav0/src/dual_uav_landing_coordinator_node.cpp": {
+      "source": "src/precision_landing/src/dual_uav_landing_coordinator_node.cpp",
+      "sha256": "f2c01a9a06d57465dc53a964a2d2e29021474a2214acaaa60efb33ee1ee5d411"
+    },
+    "src/mot_mapping/uav0/include/mapping_manager.h": {
+      "source": "src/mot_mapping/include/mapping_manager.h",
+      "sha256": "42f2a2666bb7d05ebfc58910fb0760008c0ee854134c8c550bac3959fd486959"
+    },
+    "src/mot_mapping/uav0/include/motion_continuity.h": {
+      "source": "src/mot_mapping/include/motion_continuity.h",
+      "sha256": "8be383b169eebdaf3af005aea466e8cbe8f43773d86132cf48dcd444cf6d0659"
+    },
+    "src/mot_mapping/uav0/include/spatial_confirmation.h": {
+      "source": "src/mot_mapping/include/spatial_confirmation.h",
+      "sha256": "682e31fd33edf90cfd7a542dc8405881e47e133639325c100eab0626e1ead705"
+    },
+    "src/mot_mapping/uav0/include/swing_confirmation.h": {
+      "source": "src/mot_mapping/include/swing_confirmation.h",
+      "sha256": "b8ae8ebe0bf678cc0821feb4c3a29ee508a3b93584d1e9b42f7dc795d68b5728"
+    },
+    "src/mot_mapping/uav0/include/DBSCAN_kdtree.h": {
+      "source": "src/mot_mapping/include/DBSCAN_kdtree.h",
+      "sha256": "8636f50b982ac7458543adaae7afde7b217245a21d71eab0b75bc37bd7b60a20"
+    },
+    "src/mot_mapping/uav0/include/bidirectional_depth.h": {
+      "source": "src/mot_mapping/include/bidirectional_depth.h",
+      "sha256": "b26f7fa338dfb87778748957722d3304c3455f3753c8e62520de028b14c16466"
+    },
+    "src/mot_mapping/uav0/include/Hungarian.h": {
+      "source": "src/mot_mapping/include/Hungarian.h",
+      "sha256": "e0576a547c8a4f32459dad8476c134856367f35b3405de0a02f52737caceb8ec"
+    },
+    "src/mot_mapping/uav0/include/object_motion_evidence.h": {
+      "source": "src/mot_mapping/include/object_motion_evidence.h",
+      "sha256": "75db86b4ce1711fe584937c01c56ca0148917d378e83845825290b88886f797e"
+    },
+    "src/mot_mapping/uav0/include/density_partition.h": {
+      "source": "src/mot_mapping/include/density_partition.h",
+      "sha256": "e9a1446b17d4cfcb2d8b6291fbc7acc88d087d2389c8f1eb6ae94279bee98000"
+    },
+    "src/mot_mapping/uav0/include/ikd_Tree.h": {
+      "source": "src/mot_mapping/include/ikd_Tree.h",
+      "sha256": "763e204a65978d434ea08a038f600411b8221a027d852402248fe35f78832010"
+    },
+    "src/mot_mapping/uav0/include/nanoflann.hpp": {
+      "source": "src/mot_mapping/include/nanoflann.hpp",
+      "sha256": "cfbd9820db653d0c58870d1705548f8d9495daed0d8c4ba5b11fe907cc8aa8af"
+    },
+    "src/mot_mapping/uav0/include/object_motion_local.h": {
+      "source": "src/mot_mapping/include/object_motion_local.h",
+      "sha256": "8e86a65738ed3dfa0de682c019652d00960c29db7a27611446847d68d63673cb"
+    },
+    "src/mot_mapping/uav0/include/online_background.h": {
+      "source": "src/mot_mapping/include/online_background.h",
+      "sha256": "98834273273b2f3a578e71ded9c95ff3ef3281f07175644c021fe6d6ea3b186d"
+    },
+    "src/mot_mapping/uav0/include/DBSCAN_simple.h": {
+      "source": "src/mot_mapping/include/DBSCAN_simple.h",
+      "sha256": "b0130b2aa3b69cee736d98f160252838150d8efe803e2c7614adc734d2a852a9"
+    },
+    "src/mot_mapping/uav0/include/target_ekf.hpp": {
+      "source": "src/mot_mapping/include/target_ekf.hpp",
+      "sha256": "2b330694776306a684768bba009aa4767774b71a076cdd4e8c5b1b082dae0f60"
+    },
+    "src/mot_mapping/uav0/include/ikd_Tree_impl.h": {
+      "source": "src/mot_mapping/include/ikd_Tree_impl.h",
+      "sha256": "7e55f5c91d1017a6bfae4349d84c1030cb95fb0031e4731a7bee35201dccc964"
+    },
+    "src/mot_mapping/uav0/src/mapping_manger.cpp": {
+      "source": "src/mot_mapping/src/mapping_manger.cpp",
+      "sha256": "a36ca86ff063ec80266739569d8cd063e7fc82e266e7584786eb0369e09c05ed"
+    },
+    "src/uav0_competition_bringup/uav0/launch/uav0_detection_landing_stack.launch": {
+      "source": "src/uav0_competition_bringup/launch/uav0_detection_landing_stack.launch",
+      "sha256": "70c5c79dddc1359242888f8a0a2f6fd15b556616a579a9fdf9ca3e3081b306d7"
+    },
+    "src/precision_landing/uav0/launch/dual_uav_landing_coordinator.launch": {
+      "source": "src/precision_landing/launch/dual_uav_landing_coordinator.launch",
+      "sha256": "1b41878c9cd918d54b073717e07179c93754256cd196c7fc0b1b6110d4822402"
+    },
+    "src/precision_landing/uav0/config/landing_search.yaml": {
+      "source": "src/precision_landing/config/landing_search.yaml",
+      "sha256": "4e5bbec7eadc01d38982442b674fa231bff4203efce694cbc52e2757e8e63540"
+    },
+    "src/precision_landing/uav0/launch/precision_landing.launch": {
+      "source": "src/precision_landing/launch/precision_landing.launch",
+      "sha256": "1aeb9cd29cf3078cb95ba5abdf63ab1fd8fa94a925f5588c7c2a6f6a6d1dc870"
+    },
+    "src/precision_landing/uav0/config/precision_landing.yaml": {
+      "source": "src/precision_landing/config/precision_landing.yaml",
+      "sha256": "fe6678717c9818edf54dec48601b958880bd54b928349498358dbfd27383f4a7"
+    },
+    "src/precision_landing/uav0/config/front_aruco_hint.yaml": {
+      "source": "src/precision_landing/config/front_aruco_hint.yaml",
+      "sha256": "004e55d5be271272777d0aac0ff72662b184ee994ddb735242fbfbcfd8960f57"
+    },
+    "src/precision_landing/uav0/launch/down_camera.launch": {
+      "source": "src/precision_landing/launch/down_camera.launch",
+      "sha256": "399e3e7a2e683cb69c67a166f1f639db131341b993dada816e0cc9eff58c0a38"
+    },
+    "src/autotrans_reference_bridge/uav0/launch/uav0_autotrans_controller.launch": {
+      "source": "src/autotrans_reference_bridge/launch/uav0_autotrans_controller.launch",
+      "sha256": "d8073d100d179043d1d537f90373f2307a6566844f0dbcb66f6f742799c9863d"
+    },
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/uav0/launch/quad_wind_mpc_controller.launch": {
+      "source": "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/launch/quad_wind_mpc_controller.launch",
+      "sha256": "5e07cc934b70153feec89979725cbb290b27a4b7bcb865a35e76274b09d9ec4b"
+    },
+    "src/Diff-Planner/src/diff_planner/plan_manage/uav0/launch/exp/run_swarm_indoor1_fuel_exploration.launch": {
+      "source": "src/Diff-Planner/src/diff_planner/plan_manage/launch/exp/run_swarm_indoor1_fuel_exploration.launch",
+      "sha256": "4b5d70f881f5412f257abb4af600fc22944ca7b4c4a5b676a841ae3f09fb9e9d"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_manage/uav0/config/traj.rviz": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_manage/config/traj.rviz",
+      "sha256": "1963d3f59dcd61ff8d0ffab967d8ef10e3531904fb2bf1ae8507b34e75dc4dee"
+    },
+    "src/Diff-Planner/src/diff_planner/plan_manage/uav0/launch/exp/run_ldop_uav_pair.launch": {
+      "source": "src/Diff-Planner/src/diff_planner/plan_manage/launch/exp/run_ldop_uav_pair.launch",
+      "sha256": "c2748c4f8b52c490a66fe8a07466f0241cd8511cbc8b7206f50b0e9bd244f4ef"
+    },
+    "src/Diff-Planner/src/diff_planner/plan_manage/uav0/launch/include/advanced_param_exp.xml": {
+      "source": "src/Diff-Planner/src/diff_planner/plan_manage/launch/include/advanced_param_exp.xml",
+      "sha256": "9b703aee79cf077f87e55c60d0fc9195289cd72d4cceb518cfe9da468fb05635"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/launch/algorithm.xml": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/launch/algorithm.xml",
+      "sha256": "77ac43ee9c8ff81fc909ec020f13c042134ccbcd8f93f96362220288cfb89a83"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/config/fuel_map.yaml": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/config/fuel_map.yaml",
+      "sha256": "30e0452e922551c7fb96f62e45eb2bc0705d2933e5a8401b0615390748589786"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/config/safe_relay.yaml": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/config/safe_relay.yaml",
+      "sha256": "fa6493cbb2bb03a166bc5f97b45ff14f48fdeae118419d8c8cc8403b45304cfa"
+    },
+    "src/mot_mapping/uav0/launch/uav0_frame_event_verified.launch": {
+      "source": "src/mot_mapping/launch/uav0_frame_event_verified.launch",
+      "sha256": "da78dcc52cc2e6523f8dccf7d1bab89631c07588322276b60df8f71222d5f89c"
+    },
+    "src/mot_mapping/uav0/config/uav1_frame_event_verified.yaml": {
+      "source": "src/mot_mapping/config/uav1_frame_event_verified.yaml",
+      "sha256": "27b91f4f2abc89ea25b310971a55961772bcc85cce599dd2256a4d51dd786a3e"
+    },
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/uav0/scripts/autotrans_mpc_logger_uav0.py": {
+      "source": "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/scripts/autotrans_mpc_logger.py",
+      "sha256": "e0f94cd0d3e464ee9e65bb924662d83063efbc322f9ce25494765e32a429e934"
+    },
+    "src/precision_landing/uav0/scripts/fast_lio_pose_uav0.py": {
+      "source": "src/precision_landing/scripts/fast_lio_pose.py",
+      "sha256": "d72b1105c85f2d31a45562db03697902a5136f3cad87cba5a937a43538594cca"
+    },
+    "src/uav0_competition_bringup/uav0/scripts/aruco_debug_height_uav0.py": {
+      "source": "src/uav0_competition_bringup/scripts/aruco_debug_height.py",
+      "sha256": "894aebda6c4b23db8e153b84a5adc71b1f6314ae6e316b705105765ff74701ef"
+    },
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/uav0/scripts/generate_evo_report_uav0.py": {
+      "source": "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/scripts/generate_evo_report.py",
+      "sha256": "d025600ff308ef41708b84735eafeb3556f99bac6c56930440ef1a2be5d00787"
+    },
+    "shfiles/start_uav0_dual_network_six_terminator.sh": {
+      "source": "shfiles/start_uav0_dual_network_six_terminator.sh",
+      "sha256": "51f651400e1913da0754b495b98371c04991375a4d6c26ca1f25e0b61a7202d7"
+    },
+    "shfiles/start_uav0_six_terminator.sh": {
+      "source": "shfiles/start_uav0_six_terminator.sh",
+      "sha256": "8abc51b071e3adf4addcc64c0a9a5484d4178b921ef798e7b971e09f530a4062"
+    },
+    "shfiles/start_uav0_first_seven_terminator.sh": {
+      "source": "shfiles/start_uav0_first_seven_terminator.sh",
+      "sha256": "4c7262717d47fb4fc74bd607166457e73085ed6232c1c8c7cbd389dff43578ce"
+    },
+    "shfiles/terminator_uav0_six.conf": {
+      "source": "shfiles/terminator_uav0_six.conf",
+      "sha256": "6edba016e131a770398828a4c3c3b95642cd22716083607185bcc54153a9f5bc"
+    },
+    "shfiles/terminator_uav0_first_seven.conf": {
+      "source": "shfiles/terminator_uav0_first_seven.conf",
+      "sha256": "f3f7a21765d272bec0a44ae4aa8f7f1a034efa79d66fc29181b5d639b4ab24b5"
+    },
+    "shfiles/run_uav0_mavros.sh": {
+      "source": "shfiles/run.sh",
+      "sha256": "92fa9e5e4e4b7427543df821754d3779c1ece3cd3a3d047b951b647bc19cd760"
+    },
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/uav0/config/mpc.yaml": {
+      "source": "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/config/mpc.yaml",
+      "sha256": "db01c0648235f2496221f1266578d9e788656155c32e2c96519bf360ec6d5316"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/test/safe_relay_policy_test.cpp": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/test/safe_relay_policy_test.cpp",
+      "sha256": "0bd09930f6acdb67871e5ba84e10e60e70d05167ca0bad2a2900415b169167fb"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/test/route_width_policy_test.cpp": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/test/route_width_policy_test.cpp",
+      "sha256": "433a0742bd0c536672ed5e591283a9b241929572caabdae612c58725c2572641"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/test/passage_centering_policy_test.cpp": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/test/passage_centering_policy_test.cpp",
+      "sha256": "3d250c96eb95716f6855c366b3693c52353f3a9b09692b5994d1ac11bd25bdde"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/test/vertical_detour_policy_test.cpp": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/test/vertical_detour_policy_test.cpp",
+      "sha256": "01f0b02a9786a880a8caf4dfcfcf70f6a519ed2f8d1e6384c63fb58194c39ff1"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/test/frontier_clearance_policy_test.cpp": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/test/frontier_clearance_policy_test.cpp",
+      "sha256": "ec2139ed56d9563c14654abdd3d4f3677de18692cf8ae80d2238671758e10930"
+    },
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/uav0/test/inflation_history_escape_policy_test.cpp": {
+      "source": "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/test/inflation_history_escape_policy_test.cpp",
+      "sha256": "7ff1f668d2b00f3a793efc0edcd15cf80582ac49122ace1516661ad7a84a8ab7"
+    }
+  },
+  "shared_sources_sha256": {
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_env/src/obj_predictor.cpp": "29b7b28d47cbe78bdbe1377ce186f0e634fbc3886fb9bb4c2083b4bbda0375d7",
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_env/src/edt_environment.cpp": "0fe5871eb3df794cca8539899a8037e098a0ee4c009aae3c191446245ca2c9a8",
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_env/src/raycast.cpp": "cf603c371c5974d2b41af7e4de9cbf49e7ca57aafdc421d06dced25165d90d13",
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_env/src/map_ros.cpp": "02fabe8e846da8499718afbba33db170f2d0d0511970fe18b87024ab5eaf9350",
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/path_searching/src/kinodynamic_astar.cpp": "aa09813f7d69e275af7f942a1ac85c78bf5d1cc5985e4a04537a20021c74c9a5",
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/path_searching/src/topo_prm.cpp": "324f22b29f4d46c8666602df9dc81a4a3d612c88dc54e950f74ee1898f927709",
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/active_perception/src/traj_visibility.cpp": "92fa3161b5b0ae27546062e1e42d5d5de17063830fee44bc7dd6dc19fbe3ab3d",
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/active_perception/src/heading_planner.cpp": "347295664e01f6bd6902cc3f14b6fd11a4c908892f94edad55133b4fffda6c11",
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/active_perception/src/graph_node.cpp": "cc6d0a5a0ecb2c1f07b193b9df4b8fd42e57d3f396e472a3efe0a617848edd8d",
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/active_perception/src/perception_utils.cpp": "cac3c108aa9f059283b2f3ff0faf1fd868d61deb0b42ba08094854e25870510a",
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/plan_manage/src/planner_manager_dev.cpp": "357f02d187fcb0a89c6d3f79229060cf018fe7239cc84c08f95ee91c366cbb7a",
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/exploration_manager/src/exploration_node.cpp": "06e4cdf7203be6cd8a64e08bc1c26cf007dd1d9a92878e1dbbad6efab073f680",
+    "src/Diff-Planner/src/diff_planner/plan_env/src/raycast.cpp": "0c65c52d3d6c635c5f3cfd7b4d9e216e722c76d1c8159392751f5d754a652aa8",
+    "src/Diff-Planner/src/diff_planner/plan_manage/src/diff_planner_node.cpp": "a5996ef53b9a0e5cfbbc9587a2fdeac0edf9ccf0e647a5fa04836b90f7a311c6",
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/externals/qpoases/SRC/Bounds.cpp": "bf15df6312c4ac798f196bb3bb515fb340d7a73028d0982aa3a703f07c92a3cd",
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/externals/qpoases/SRC/Constraints.cpp": "0e27dcbbe4e079b398eab16a5e8f440b3dcbdd1d114d5cd4443f18b7ed2be41f",
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/externals/qpoases/SRC/CyclingManager.cpp": "3c5f0b9f315d553377747f1060f51d247416ce09c008f28d269a5a3b3e7c6bcd",
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/externals/qpoases/SRC/Indexlist.cpp": "92afe82a2f64f55bff5e8d5f4a2b6cf7518748771cf4b07ab20498b0d95c7d14",
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/externals/qpoases/SRC/MessageHandling.cpp": "8cb78395390e8f5fe3a309f12d46719bf5632f2cc2de6f8f005256baa69ada14",
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/externals/qpoases/SRC/QProblem.cpp": "163e99f70362fea4b23ee4e1e79b4107b9a13b929e579ed09bc97fe60635d698",
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/externals/qpoases/SRC/QProblemB.cpp": "12c7b87fca7fc97a033814848fef9893b1e7529ec33d3bdf2e264b9e31e19fa6",
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/externals/qpoases/SRC/SubjectTo.cpp": "10c23e85753aa03581ac96430efaef53f1e05598f05d478de7a4102b7ddc1b6a",
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/externals/qpoases/SRC/Utils.cpp": "dc531e06dec4e0e8e11e8c0ea1bd89bacd64fdfe895f446098a5738b0cda18e6",
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/externals/qpoases/SRC/EXTRAS/SolutionAnalysis.cpp": "1cc39dede19249ae695a72203ee643e65b29a0738316b1b2e77cc5f9d72821fe",
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/model/quadrotor_payload_mpc/acado_qpoases_interface.cpp": "13a810392d30be09b11c458d421050039060b44854e3135d27ea639df8736efa",
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/model/quadrotor_payload_mpc/acado_integrator.c": "f409c13d84c0209bcd00f76d6633496d28fedf231ac91940a1e69763c61f983d",
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/model/quadrotor_payload_mpc/acado_solver.c": "d3f9c63719155578727e9ed00d4dc64dad976db8c9bd55222251076d6183f06b",
+    "src/AutoTrans-quadrotor-wind-mpc/controller/payload_mpc_controller/model/quadrotor_payload_mpc/acado_auxiliary_functions.c": "36c26a2590e54135f7f03b8c784b434d2bd5ef0d42e7e2a9022c2bb56d0e2357",
+    "src/precision_landing/src/landing_controller.cpp": "208d5e99988821dbcc19d4cab14fd149e4ed88c11316ce8e8bd8bb8bd677d06d",
+    "src/precision_landing/src/aruco_tracker.cpp": "e3b166db22c8ba1856df7bbeb688c162ab272facbb327353dfd21f0f9588d263",
+    "src/precision_landing/src/landing_search_core.cpp": "6f1947442b3aa90abe9fbf2644923fa2636c0866725d47efe1c392b39f2655f6",
+    "src/precision_landing/src/landing_debug_image_mux_node.cpp": "9a17a0281a254db9d95d8c0107c085981983a0946cfab688f02da1c5b2023ec6",
+    "src/mot_mapping/src/mapping_node.cpp": "2326176e710ed32bb119149343bc80fb17a8551853f7c03c1cde780fb71ab0e7",
+    "src/mot_mapping/src/Hungarian.cpp": "8ee4c012c02743ddf467459a90d94b08e6eef0ac1400c6b591db3427a8e388c5",
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/bspline/src/non_uniform_bspline.cpp": "96189cd6bd17675afad9620675a4149d315a1bd6566eb1eca6670d18dc0d1d0e",
+    "src/zyc_fuel_ws/src/FUEL/fuel_planner/traj_utils/src/planning_visualization.cpp": "9211539b1737c3e87edc685757aab6b1bf98d81212ccac1ab126a956db86bb93"
+  }
+}

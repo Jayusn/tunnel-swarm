@@ -39,6 +39,8 @@ TEST(ForceControllerIntegration, ProductionCallSiteMatchesReplayEventsAndDownstr
     MpcController controller(p);MPCFSM fsm(nh,p,controller);controller.waitForPreparation();
     SelectedForceEstimator offline;offline.init(p);
     const Eigen::Vector4d rpm=Eigen::Vector4d::Constant(16000);
+    // Samples arrive every other tick; readiness follows the configured window.
+    const int first_ready_tick=2*(p.force_estimator_param_.max_queue-1);
     bool input=false;
     for(int k=0;k<350;++k) {
       const ros::Time now=ros::Time(1000)+ros::Duration(.01*k);ros::Time::setNow(now);
@@ -65,11 +67,11 @@ TEST(ForceControllerIntegration, ProductionCallSiteMatchesReplayEventsAndDownstr
         applied=target;
       }
       // The first ready sample is applied immediately, with no 0.03 N Z ramp.
-      if(k==38 && z_gain>0) { EXPECT_GT(ForceEstimatorTestAccess::applied(fsm).z(),.03); }
+      if(k==first_ready_tick && z_gain>0) { EXPECT_GT(ForceEstimatorTestAccess::applied(fsm).z(),.03); }
       if(z_gain==0) EXPECT_DOUBLE_EQ(ForceEstimatorTestAccess::applied(fsm).z(),0.0);
       EXPECT_LT((out-ForceEstimatorTestAccess::estimate(fsm)).norm(),1e-12)<<method<<" tick="<<k;
       EXPECT_LT((applied-ForceEstimatorTestAccess::applied(fsm)).norm(),1e-8)<<method<<" tick="<<k;
-      if(k<38 || blocked) { EXPECT_TRUE(ForceEstimatorTestAccess::applied(fsm).isZero()); }
+      if(k<first_ready_tick || blocked) { EXPECT_TRUE(ForceEstimatorTestAccess::applied(fsm).isZero()); }
     }
   }
 }

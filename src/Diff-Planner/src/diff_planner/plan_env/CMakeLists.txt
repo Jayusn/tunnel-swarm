@@ -61,3 +61,6 @@ target_link_libraries( diff_plan_env_target
 if(CATKIN_ENABLE_TESTING)
   catkin_add_gtest(test_vehicle_geometry test/test_vehicle_geometry.cpp)
 endif()
+
+# 本机前机角色，与后机目标同时构建。
+add_subdirectory(uav0)

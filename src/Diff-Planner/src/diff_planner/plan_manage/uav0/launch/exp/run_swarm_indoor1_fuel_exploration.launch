@@ -1,0 +1,919 @@
+<launch>
+    <!-- 定位中心下方的机体净空：障碍顶部0.60m时中心至少0.80m。 -->
+    <arg name="footprint_bottom_clearance" default="0.20"/>
+    <!-- 到出口后、搜索降落码前沿出口方向前进的距离，单位m。 -->
+    <arg name="front_approach_distance" default="0.2"/>
+    <!-- 与单机航点入口共用已验证的检测、历史包络及连续穿越策略。 -->
+    <arg name="enable_fapp_detection" default="true"/>
+    <arg name="dynamic_mode" default="swing-only"/>
+    <arg name="enable_fapp_dynamic_avoidance" default="true"/>
+    <arg name="fapp_planner_priority" default="true"/>
+    <!-- 定位坐标系中的动态目标中心Z，单位m。 -->
+    <arg name="fapp_detection_min_z" default="0.3"/>
+    <arg name="fapp_detection_max_z" default="1.2"/>
+    <arg name="fapp_memory_enabled" default="true"/>
+    <arg name="fapp_history_duration" default="10.0"/>
+    <arg name="fapp_observation_retention" default="0.8"/>
+    <arg name="fapp_association_distance" default="0.6"/>
+    <arg name="fapp_object_motion_evidence_enabled" default="true"/>
+    <arg name="fapp_object_motion_local_bidirectional_enabled" default="false"/>
+    <arg name="fapp_object_candidate_split_enabled" default="false"/>
+    <arg name="fapp_object_candidate_isolation_enabled" default="false"/>
+    <include if="$(arg enable_fapp_detection)" file="$(find mot_mapping)/uav0/launch/uav0_frame_event_verified.launch">
+        <arg name="dynamic_mode" value="$(arg dynamic_mode)"/>
+        <arg name="detection_min_z" value="$(arg fapp_detection_min_z)"/>
+        <arg name="detection_max_z" value="$(arg fapp_detection_max_z)"/>
+        <arg name="object_motion_evidence_enabled" value="$(arg fapp_object_motion_evidence_enabled)"/>
+        <arg name="object_motion_local_bidirectional_enabled" value="$(arg fapp_object_motion_local_bidirectional_enabled)"/>
+        <arg name="object_candidate_split_enabled" value="$(arg fapp_object_candidate_split_enabled)"/>
+        <arg name="object_candidate_isolation_enabled" value="$(arg fapp_object_candidate_isolation_enabled)"/>
+    </include>
+    <param name="/exploration_node/fapp/planner_priority" value="$(arg fapp_planner_priority)" type="bool"/>
+    <param name="/exploration_node/fapp/enabled" value="$(arg enable_fapp_dynamic_avoidance)" type="bool"/>
+    <param name="/exploration_node/fapp/topic" value="/UAV0/fapp/states"/>
+    <param name="/exploration_node/fapp/frame_id" value="UAV0/camera_init"/>
+    <param name="/exploration_node/fapp/memory_enabled" value="$(arg fapp_memory_enabled)" type="bool"/>
+    <param name="/exploration_node/fapp/history_duration" value="$(arg fapp_history_duration)"/>
+    <param name="/exploration_node/fapp/observation_retention" value="$(arg fapp_observation_retention)"/>
+    <param name="/exploration_node/fapp/association_distance" value="$(arg fapp_association_distance)"/>
+    <param name="/exploration_node/fapp/vehicle_top_height" value="0.05" type="double"/>
+    <param name="/exploration_node/manager/footprint_bottom_clearance" value="$(arg footprint_bottom_clearance)" type="double"/>
+    <param name="/exploration_node/fapp/vehicle_bottom_height" value="0.20" type="double"/>
+    <!-- 自主选点保持原流程；摆球走连续侧下穿/侧绕，不能原地下降或因旧包络封死前进。 -->
+    <param name="/exploration_node/fapp/exploration_crossing_enabled" value="true" type="bool"/>
+    <param name="/exploration_node/mission/vertical_detour/underpass/min_height" value="0.10" type="double"/>
+
+    <!-- 2026-07-07: 这是给 indoor1 雷达未知环境做验证的混合探索入口，保留当前 /Odometry + /cloud_registered 链路，但上层任务从固定 waypoint 改成 FUEL exploration_manager。 -->
+    <!-- 2026-07-07: 该 launch 依赖 /home/togan/老张/zyc_fuel_ws 已经 source 且其中的 exploration_manager、plan_manage、waypoint_generator 已编译可用。 -->
+    <!-- 2026-07-08: 按未来飞行器大赛 2.1 的任务语义重整入口：探索任务以“统一开始信号后自主搜索狭窄通道与目标作业区域”为主，
+         不再把 RViz 单点点击当成真实作业目标；当前文件仍是单机验证入口，但话题语义改成兼容后续多机统一发令。 -->
+
+    <arg name="drone_id" default="0"/>
+    <!-- 2026-07-27: 前机规划链和后机显示链的 ROS 前缀统一为 UAV0/UAV1，iris 仅保留为仿真机型名。 -->
+    <arg name="vehicle_ns" default="UAV0"/>
+    <arg name="topic_prefix" default="/UAV0"/>
+    <arg name="enable_rviz" default="true"/>
+    <!-- 规划器启动即录制轻量诊断话题；不依赖稍后启动的控制器 logger。 -->
+    <arg name="enable_planner_rosbag" default="true"/>
+    <arg name="planner_rosbag_prefix" default="fuel_planner_$(arg vehicle_ns)"/>
+    <arg name="planner_rosbag_split_size_mb" default="1024"/>
+    <arg name="planner_rosbag_extra_topics" default=""/>
+    <!-- 纯显示适配：只把 target_reporting 观测转成 RViz 标记，不接入规划器。 -->
+    <arg name="enable_detection_rviz" default="true"/>
+    <!-- 本机为前机UAV0：默认启动前机LDOP；后机由其自身计算机按需启动。 -->
+    <arg name="enable_ldop_detection" default="$(eval not arg('enable_fapp_detection'))"/>
+    <arg name="enable_follower_ldop_detection" default="false"/>
+    <arg name="ldop_input_rate" default="5.0"/>
+    <!-- 与后机 run_swarm.launch 的 LDOP 实飞覆盖值保持一致，并允许从主入口调整。 -->
+    <arg name="ufomap_resolution" default="0.05"/>
+    <arg name="ufomap_max_range" default="4.0"/>
+    <arg name="ufomap_inflate_hits_dist" default="0.10"/>
+    <arg name="corridor_min_lateral_span" default="0.15"/>
+    <arg name="corridor_min_confirm_hits" default="3"/>
+    <arg name="corridor_min_cluster_points" default="4"/>
+    <arg name="corridor_max_cluster_extent" default="0.8"/>
+    <arg name="corridor_oversized_split_enabled" default="false"/>
+    <arg name="corridor_split_min_cluster_points" default="3"/>
+    <arg name="corridor_max_candidates" default="3"/>
+    <arg name="corridor_reject_candidate_count" default="10"/>
+    <arg name="corridor_wall_clearance" default="0.10"/>
+    <arg name="dynamic_cluster_detector_min_points" default="4"/>
+    <!-- LDOP尚未完成实飞验证：默认不启动两机动态检测，规划仲裁器也不消费动态目标。
+         后续分别设置对应环境变量为true并重启，才允许恢复。 -->
+    <arg name="enable_uav0_dynamic_obstacle_detection"
+         default="$(optenv UAV0_ENABLE_DYNAMIC_OBSTACLE_DETECTION false)"/>
+    <arg name="enable_uav1_dynamic_obstacle_detection"
+         default="$(optenv UAV1_ENABLE_DYNAMIC_OBSTACLE_DETECTION false)"/>
+    <!-- 出口确认后默认自动锁存、穿越并搜索降落；false可恢复仅检测。
+         CH9仍保留：有确认出口时人工启动穿越，无确认出口时沿用门外搜索入口。 -->
+    <arg name="enable_auto_exit" default="$(optenv UAV0_ENABLE_AUTO_EXIT true)"/>
+    <!-- 搜索降落链路默认开启；如需临时关闭可设置 UAV0_ENABLE_SEARCH_LANDING=false。
+         UAV0 CH9 低->高持续0.5s仍可人工触发降落搜索模式。 -->
+    <arg name="enable_search_landing"
+         default="$(optenv UAV0_ENABLE_SEARCH_LANDING true)"/>
+    <!-- 2026-07-08 19:26: FUEL 的真正开始触发改为前置通道管理器内部发布，避免 RViz 一点击就直接让 exploration FSM 起跑。 -->
+    <arg name="start_trigger_topic" default="/UAV0/corridor_search/exploration_trigger"/>
+    <arg name="search_start_waypoint_type" default="point"/>
+    <!-- FUEL静态占据锁存开关；默认关闭，让旧障碍能被后续自由射线清除。 -->
+    <arg name="retain_global_static_cloud" default="false"/>
+    <!-- a=原入口检测；b=适配断裂门框、少量细杆和低完整度地图的软门框检测。 -->
+    <arg name="entry_detection_mode" default="c"/>
+
+    <!-- 2026-07-07: 继续沿用 indoor1 当前稳定的雷达里程计和注册点云话题，验证“探索上层 + 雷达建图”而不是再用固定巡航。 -->
+    <arg name="odom_topic" default="/UAV0/fast_lio/Odom_high_freq"/>
+    <arg name="cloud_topic" default="/UAV0/fast_lio/cloud_registered"/>
+    <!-- 2026-07-14: 第二架只接入公共 RViz，不启动第二套规划。 -->
+    <arg name="follower_odom_topic" default="/UAV1/fast_lio/Odom_high_freq"/>
+    <arg name="follower_world_frame" default="UAV1/camera_init"/>
+    <arg name="follower_body_frame" default="UAV1/body"/>
+    <!-- 2026-07-08: RViz 目标点只保留给“允许开始前置通道进入任务”；不再直接触发 exploration FSM。 -->
+    <arg name="rviz_goal_topic" default="/UAV0/move_base_simple/goal"/>
+
+    <!-- 2026-07-07: 初始位姿保持与现有 indoor1 启动一致，方便直接对比固定巡航和探索模式。 -->
+    <arg name="init_x" default="-2.5"/>
+    <arg name="init_y" default="-3.0"/>
+    <arg name="init_z" default="0.15"/>
+
+    <!-- 2026-07-07: 先给验证版一个覆盖 indoor1 的探索盒和地图尺寸，后续再按真实场地继续放大。 -->
+    <arg name="map_size_x" default="20.0"/>
+    <arg name="map_size_y" default="20"/>
+    <arg name="map_size_z" default="3.0"/>
+    <arg name="box_min_x" default="-10.0"/>
+    <arg name="box_min_y" default="-10.0"/>
+    <arg name="box_min_z" default="0.05"/>
+    <arg name="box_max_x" default="10"/>
+    <arg name="box_max_y" default="10"/>
+    <arg name="box_max_z" default="2.0"/>
+    <!-- 2026-07-08 19:26: 这条混合探索链路的点云截断、射线建图和 active perception 视野主要由 FUEL 侧生效；
+         针对“视频里周围点云距离偏近、窄道入口长期只在近处出现”的问题，先把搜索感知半径整体放大一档。 -->
+    <arg name="raycast_max_dist" default="8.0"/>
+    <arg name="perception_max_dist" default="7.0"/>
+
+    <!-- 通道与常规探索保持保守速度；Diff只在出口后由仲裁器接管，可使用独立搜索速度。 -->
+    <arg name="fuel_max_vel" default="0.40"/>
+    <arg name="fuel_max_acc" default="0.50"/>
+    <arg name="landing_search_max_vel" default="0.30"/>
+    <arg name="landing_search_max_acc" default="0.60"/>
+
+    <!-- Native FUEL must not inherit FUEL-DIFF route-history constraints from a previous launch. -->
+    <param name="/exploration_node/fsm/use_diff_for_fuel_exploration"
+           value="false" type="bool"/>
+
+    <!-- 2026-07-07: FUEL exploration_manager 原始 launch 默认是深度相机，这里切到 cloud-only 雷达模式并直接使用 /Odometry 作为 sensor pose。 -->
+    <include file="$(find exploration_manager)/uav0/launch/algorithm.xml">
+        <arg name="map_size_x_" value="$(arg map_size_x)"/>
+        <arg name="map_size_y_" value="$(arg map_size_y)"/>
+        <arg name="map_size_z_" value="$(arg map_size_z)"/>
+
+        <arg name="box_min_x" value="$(arg box_min_x)"/>
+        <arg name="box_min_y" value="$(arg box_min_y)"/>
+        <arg name="box_min_z" value="$(arg box_min_z)"/>
+        <arg name="box_max_x" value="$(arg box_max_x)"/>
+        <arg name="box_max_y" value="$(arg box_max_y)"/>
+        <arg name="box_max_z" value="$(arg box_max_z)"/>
+
+        <arg name="odometry_topic" value="$(arg odom_topic)"/>
+        <arg name="sensor_pose_topic" value="$(arg odom_topic)"/>
+        <arg name="depth_topic" value="no_use_depth"/>
+        <arg name="cloud_topic" value="$(arg cloud_topic)"/>
+
+        <!-- 2026-07-07: cloud-only 模式下这些内参只是占位，为了保持 exploration_manager/algorithm.xml 参数完整。 -->
+        <arg name="cx" value="319.31427001953125"/>
+        <arg name="cy" value="239.09725952148438"/>
+        <arg name="fx" value="386.2706298828125"/>
+        <arg name="fy" value="386.2706298828125"/>
+
+        <arg name="max_vel" value="$(arg fuel_max_vel)"/>
+        <arg name="max_acc" value="$(arg fuel_max_acc)"/>
+        <arg name="vehicle_ns" value="$(arg vehicle_ns)"/>
+        <arg name="topic_prefix" value="$(arg topic_prefix)"/>
+        <arg name="raycast_max_dist" value="$(arg raycast_max_dist)"/>
+        <arg name="perception_max_dist" value="$(arg perception_max_dist)"/>
+    </include>
+
+    <!-- Diff从启动时即建立独立雷达占据图，但在出口切换信号到来前不接收搜索目标、不输出控制。 -->
+    <include if="$(arg enable_search_landing)"
+             file="$(find diff_planner)/uav0/launch/include/advanced_param_exp.xml">
+        <arg name="odom_topic" value="$(arg odom_topic)"/>
+        <arg name="drone_id" value="$(arg drone_id)"/>
+        <arg name="camera_pose_topic" value="no_use_diff_pose"/>
+        <arg name="depth_topic" value="no_use_diff_depth"/>
+        <arg name="cloud_topic" value="$(arg cloud_topic)"/>
+        <arg name="cx" value="319.31427001953125"/><arg name="cy" value="239.09725952148438"/>
+        <arg name="fx" value="386.2706298828125"/><arg name="fy" value="386.2706298828125"/>
+        <arg name="flight_type" value="4"/>
+        <arg name="point_num" value="1"/>
+        <arg name="point0_x" value="0.0"/><arg name="point0_y" value="0.0"/><arg name="point0_z" value="2.0"/>
+        <arg name="point1_x" value="0.0"/><arg name="point1_y" value="0.0"/><arg name="point1_z" value="2.0"/>
+        <arg name="point2_x" value="0.0"/><arg name="point2_y" value="0.0"/><arg name="point2_z" value="2.0"/>
+        <arg name="point3_x" value="0.0"/><arg name="point3_y" value="0.0"/><arg name="point3_z" value="2.0"/>
+        <arg name="point4_x" value="0.0"/><arg name="point4_y" value="0.0"/><arg name="point4_z" value="2.0"/>
+        <arg name="max_vel" value="$(arg landing_search_max_vel)"/><arg name="max_acc" value="$(arg landing_search_max_acc)"/>
+        <arg name="max_jer" value="2.0"/><arg name="planning_horizon" value="6.0"/>
+        <arg name="waypoint_switch_dist" value="0.25"/>
+        <arg name="local_map_size_x" value="$(arg map_size_x)"/>
+        <arg name="local_map_size_y" value="$(arg map_size_y)"/>
+        <arg name="local_map_size_z" value="$(arg map_size_z)"/>
+        <arg name="enable_virtual_wall" value="true"/><arg name="virtual_ceil" value="2.25"/>
+        <arg name="virtual_ground" value="0.10"/><arg name="map_resolution" value="0.15"/>
+        <arg name="inflation_size" value="0.15"/><arg name="obstacle_clearance" value="0.15"/>
+        <arg name="init_x" value="$(arg init_x)"/><arg name="init_y" value="$(arg init_y)"/><arg name="init_z" value="$(arg init_z)"/>
+        <arg name="cloud_use_init_offset" value="false"/><arg name="preserve_global_map" value="true"/>
+        <arg name="enable_stuck_detect" value="false"/><arg name="stuck_detect_grace_time" value="20.0"/>
+        <arg name="require_pre_agent_trajectory" value="false"/><arg name="enable_random_global_init" value="false"/>
+        <arg name="search_subgoal_topic" value="/UAV0/landing_diff/subgoal"/>
+        <arg name="search_subgoal_update_distance" value="0.15"/>
+        <arg name="search_trigger_topic" value="/UAV0/landing_diff/trigger"/>
+        <arg name="search_goal_trigger_topic" value="/UAV0/landing_diff/manual_trigger"/>
+    </include>
+
+    <!-- 2026-07-08 19:26: 按未来飞行器大赛 2.1 的任务目标，先把起飞区和搜索区语义显式参数化。
+         起飞后不再默认“哪里 frontier 多就去哪”，而是先强制通过门口进入上方作业区，再在作业区内继续探索/搜索。 -->
+    <!-- 2026-07-10: corridor_search_manager 已经负责动态找门和穿门，FUEL 启动后不能再用旧静态 entry_goal，
+         否则穿门后会被 force entry transit 拉回起飞区。 -->
+    <rosparam param="/exploration_node/mission/use_entry_transit">false</rosparam>
+    <rosparam param="/exploration_node/mission/prefer_entry_heading">true</rosparam>
+    <rosparam param="/exploration_node/mission/use_takeoff_exclusion_box">true</rosparam>
+    <rosparam param="/exploration_node/mission/prefer_search_region_frontiers">true</rosparam>
+    <rosparam param="/exploration_node/mission/hold_on_no_frontier">true</rosparam>
+    <!-- 2026-07-10: 穿过门后启用动态门平面锁，FUEL 只能在门内/作业区侧边建图边搜索，不能回起飞区补 frontier。 -->
+    <rosparam param="/exploration_node/mission/use_workspace_lock">true</rosparam>
+    <!-- 入口门确认后全局生效：所有frontier、fallback、任务目标和完整A*路径均不得回门外/旧通道。
+         关闭仅用于故障回撤调试；正常U形通道通过连续转弯且隔墙支路不会被旧航迹管误杀。 -->
+    <rosparam param="/exploration_node/mission/global_no_return">true</rosparam>
+    <!-- 2026-07-16: 当前Mid360模式先保证向目标平移；未来接入相机后改为true即可恢复viewpoint观测航向。 -->
+    <rosparam param="/exploration_node/mission/use_camera_viewpoint_yaw">false</rosparam>
+    <!-- 2026-07-24: 取消整条通道持续360度环扫；直段只做小幅快扫，弯道关闭附加扫描，
+         累计占据图剔除连续墙后发现新障碍物，才以6秒一圈重点扫描并按位置去重。 -->
+    <rosparam param="/exploration_node/mission/camera_head_sweep/enabled">false</rosparam>
+    <rosparam param="/exploration_node/mission/camera_head_sweep/full_rotation">false</rosparam>
+    <rosparam param="/exploration_node/mission/camera_head_sweep/amplitude_deg">30.0</rosparam>
+    <rosparam param="/exploration_node/mission/camera_head_sweep/period">10.0</rosparam>
+    <rosparam param="/exploration_node/mission/camera_head_sweep/direction">1.0</rosparam>
+    <!-- 2026-07-24: 前置相机障碍物扫描第一版参数；XY检测使用当前z附近占据柱，隔离绝对高度漂移。 -->
+    <rosparam param="/exploration_node/mission/camera_obstacle_scan/enabled">true</rosparam>
+    <rosparam param="/exploration_node/mission/camera_obstacle_scan/clear_sweep_amplitude_deg">35.0</rosparam>
+    <rosparam param="/exploration_node/mission/camera_obstacle_scan/clear_sweep_period">3.5</rosparam>
+    <rosparam param="/exploration_node/mission/camera_obstacle_scan/full_rotation_period">6.0</rosparam>
+    <rosparam param="/exploration_node/mission/camera_obstacle_scan/turn_threshold_deg">30.0</rosparam>
+    <rosparam param="/exploration_node/mission/camera_obstacle_scan/turn_hold_time">1.2</rosparam>
+    <rosparam param="/exploration_node/mission/camera_obstacle_scan/min_forward">0.55</rosparam>
+    <rosparam param="/exploration_node/mission/camera_obstacle_scan/max_forward">1.60</rosparam>
+    <rosparam param="/exploration_node/mission/camera_obstacle_scan/lateral_range">0.90</rosparam>
+    <rosparam param="/exploration_node/mission/camera_obstacle_scan/dedup_radius">0.55</rosparam>
+    <rosparam param="/exploration_node/mission/camera_obstacle_scan/wall_support_length">0.90</rosparam>
+    <rosparam param="/exploration_node/mission/camera_obstacle_scan/wall_support_ratio">0.68</rosparam>
+    <rosparam param="/exploration_node/mission/workspace_lock_topic">/UAV0/corridor_search/workspace_lock</rosparam>
+    <!-- 保留检测阶段信号供任务面板；LDOP当前持续处理自身点云。 -->
+    <rosparam param="/exploration_node/fsm/mission_status_topic">/mission/task_status</rosparam>
+    <rosparam param="/exploration_node/fsm/dynamic_detection_enable_topic">/UAV0/corridor_search/dynamic_detection_enable</rosparam>
+    <rosparam param="/exploration_node/mission/door_back_margin">0.0</rosparam>
+    <!-- 普通规划失败继续重试，不再通知控制器丢弃当前控制状态并锁点悬停。 -->
+    <rosparam param="/exploration_node/fsm/hold_on_plan_failure">false</rosparam>
+    <!-- 下一轨迹未发布且旧轨迹真正到终点时，刹停并切到控制器XY PID锁点。 -->
+    <rosparam param="/exploration_node/fsm/endpoint_hold_enabled">true</rosparam>
+    <rosparam param="/exploration_node/fsm/endpoint_hold_lead_time">0.05</rosparam>
+    <!-- 窄通道不按固定时间打断安全轨迹；临近终点、frontier失效和碰撞重规划仍保留。 -->
+    <rosparam param="/exploration_node/fsm/periodic_replan_enabled">false</rosparam>
+    <!-- 开启时同一体素需持续获得静态证据才锁存；默认关闭以避免历史点云持续过度膨胀。 -->
+    <rosparam param="/exploration_node/sdf_map/static_retention_enabled" subst_value="true">$(arg retain_global_static_cloud)</rosparam>
+    <rosparam param="/exploration_node/sdf_map/static_retention_required_hits">6</rosparam>
+    <!-- 关闭 FUEL 的全部锁点悬停；平台上方由控制器短暂锁点，随后交给精降节点。 -->
+    <rosparam param="/exploration_node/fsm/safety_hold_enabled">false</rosparam>
+    <!-- 2026-07-10: 门后搜索不再按最近 frontier 死板选点；优先沿动态门方向推进，frontier 为空时用安全短步前探继续建图。 -->
+    <rosparam param="/exploration_node/mission/use_forward_progress_bias">true</rosparam>
+    <rosparam param="/exploration_node/mission/forward_progress_weight">1.8</rosparam>
+    <rosparam param="/exploration_node/mission/forward_min_gain">0.25</rosparam>
+    <rosparam param="/exploration_node/mission/use_forward_fallback">true</rosparam>
+    <!-- 正前方失败时允许0.20/0.30/0.40m横向或斜前微调；直行仍可推进到max。 -->
+    <rosparam param="/exploration_node/mission/forward_fallback_step">0.20</rosparam>
+    <rosparam param="/exploration_node/mission/forward_fallback_max">1.80</rosparam>
+    <!-- 前方柱体/箱体把通道分开时，按累计占据地图比较左右净宽，先横移到较宽一侧。 -->
+    <rosparam param="/exploration_node/mission/wide_side_bypass/enabled">true</rosparam>
+    <rosparam param="/exploration_node/mission/wide_side_bypass/min_lookahead">0.20</rosparam>
+    <rosparam param="/exploration_node/mission/wide_side_bypass/max_lookahead">0.90</rosparam>
+    <rosparam param="/exploration_node/mission/wide_side_bypass/lateral_range">0.90</rosparam>
+    <rosparam param="/exploration_node/mission/wide_side_bypass/min_lane_width">0.25</rosparam>
+    <rosparam param="/exploration_node/mission/wide_side_bypass/max_lateral_step">0.45</rosparam>
+    <rosparam param="/exploration_node/mission/wide_side_bypass/forward_step">0.20</rosparam>
+    <!-- 当前高度与0.20m低位层至少两层同位置占据才算竖直障碍；否则按悬空障碍处理。 -->
+    <rosparam param="/exploration_node/mission/wide_side_bypass/low_support_height">0.20</rosparam>
+    <rosparam param="/exploration_node/mission/wide_side_bypass/min_vertical_support_layers">2</rosparam>
+    <!-- 两侧局部障碍形成窄门时，当前高度整段足迹已知安全就优先穿门中心。 -->
+    <rosparam param="/exploration_node/mission/center_gate/enabled">true</rosparam>
+    <rosparam param="/exploration_node/mission/center_gate/min_width">0.55</rosparam>
+    <rosparam param="/exploration_node/mission/center_gate/pass_margin">0.20</rosparam>
+    <!-- 窄通道优先持续向前规划，默认彻底禁用侧后微调。 -->
+    <rosparam param="/exploration_node/mission/short_backtrack_enabled">false</rosparam>
+    <rosparam param="/exploration_node/mission/short_backtrack_min_distance">0.10</rosparam>
+    <rosparam param="/exploration_node/mission/short_backtrack_max_distance">0.20</rosparam>
+    <rosparam param="/exploration_node/mission/short_backtrack_forward_release">0.60</rosparam>
+    <!-- 开关打开时仍只允许一次，不允许连续倒飞。 -->
+    <rosparam param="/exploration_node/mission/short_backtrack_retry_cooldown">1.5</rosparam>
+    <rosparam param="/exploration_node/mission/short_backtrack_max_chain">1</rosparam>
+    <rosparam param="/exploration_node/mission/short_backtrack_min_direction_change_deg">35.0</rosparam>
+    <!-- 仅在真实机体安全但落入膨胀层时，沿最近实飞航迹切线前后脱困；普通任务回撤仍关闭。 -->
+    <rosparam param="/exploration_node/mission/inflation_history_escape/enabled">true</rosparam>
+    <rosparam param="/exploration_node/mission/inflation_history_escape/max_distance">0.45</rosparam>
+    <rosparam param="/exploration_node/mission/inflation_history_escape/sample_step">0.05</rosparam>
+    <rosparam param="/exploration_node/mission/inflation_history_escape/clearance_tolerance">0.02</rosparam>
+    <!-- 受风贴墙时先沿远离最近墙面的方向横移；离开膨胀层后再保留10cm净空段。 -->
+    <rosparam param="/exploration_node/mission/inflation_history_escape/wall_pull_enabled">true</rosparam>
+    <rosparam param="/exploration_node/mission/inflation_history_escape/clear_margin">0.10</rosparam>
+    <!-- 只给脱困分支容忍少量足迹占据采样，普通路径仍执行多点占据硬拒绝。 -->
+    <rosparam param="/exploration_node/manager/escape_max_initial_occupied_samples">6</rosparam>
+    <rosparam param="/exploration_node/mission/inflation_history_escape/history_spacing">0.03</rosparam>
+    <rosparam param="/exploration_node/mission/inflation_history_escape/history_max_size">200</rosparam>
+    <!-- 远frontier只决定探索方向，实际每段最多执行1.2m并用新地图重新规划。 -->
+    <rosparam param="/exploration_node/mission/max_route_segment_length">1.20</rosparam>
+    <rosparam param="/exploration_node/mission/straight_run_extension/enabled">false</rosparam>
+    <rosparam param="/exploration_node/mission/straight_run_extension/distance">0.20</rosparam>
+    <rosparam param="/exploration_node/mission/straight_run_extension/min_turn_deg">45.0</rosparam>
+    <!-- 2026-07-22: 规划失败后2Hz重试，禁止100Hz重复同一fallback并刷满RViz。 -->
+    <rosparam param="/exploration_node/fsm/plan_failure_retry_interval">0.50</rosparam>
+    <!-- 2026-07-13: 第二阶段改为任务搜索主导。已搜索覆盖和重复站点决定下一站，frontier 只保留低权重地图辅助。 -->
+    <rosparam param="/exploration_node/mission/task_search/enabled">true</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/world_frame">world</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/visit_spacing">0.35</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/revisit_radius">0.65</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/repeat_goal_radius">0.45</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/max_goal_repeats">2</rosparam>
+    <!-- FUEL只负责通道，继续保持原1.90m搜索上限；门外1.7m搜索由独立Diff地图负责。 -->
+    <rosparam param="/exploration_node/mission/task_search/cruise_height">0.6</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/min_height">0.10</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/max_height">1.90</rosparam>
+    <!-- 2026-07-28: 任务目标和A*中间节点共用高度带，禁止路径截断后掉到z=0附近撞地。 -->
+    <rosparam param="/exploration_node/astar/min_search_height">0.10</rosparam>
+    <rosparam param="/exploration_node/astar/max_search_height">1.90</rosparam>
+    <!-- 水平恢复全部失败后才启用上下绕行；普通下探固定XY/Yaw降到0.40m，确认前方0.20m后推进。 -->
+    <rosparam param="/exploration_node/mission/vertical_detour/enabled">true</rosparam>
+    <rosparam param="/exploration_node/mission/vertical_detour/low_height">0.40</rosparam>
+    <!-- 雷达是机体最高点；UAV0 FAST-LIO 外参中雷达高于里程计原点约4.4cm。 -->
+    <rosparam param="/exploration_node/mission/vertical_detour/underpass/lidar_above_odom">0.044</rosparam>
+    <!-- 狭窄通道按悬挂障碍底部到雷达至少0.10m净空下穿，另留0.06m高度跟踪余量。 -->
+    <rosparam param="/exploration_node/mission/vertical_detour/underpass/clearance">0.10</rosparam>
+    <rosparam param="/exploration_node/mission/vertical_detour/underpass/height_tracking_margin">0.06</rosparam>
+    <rosparam param="/exploration_node/mission/vertical_detour/underpass/lookahead">2.00</rosparam>
+    <rosparam param="/exploration_node/mission/vertical_detour/forward_check_distance">0.20</rosparam>
+    <rosparam param="/exploration_node/mission/vertical_detour/upper_step">0.20</rosparam>
+    <rosparam param="/exploration_node/mission/vertical_detour/upper_max_rise">0.60</rosparam>
+    <rosparam param="/exploration_node/mission/vertical_detour/upper_forward_max_distance">0.60</rosparam>
+    <rosparam param="/exploration_node/mission/vertical_detour/upper_max_side_angle_deg">45.0</rosparam>
+    <!-- 中门不可通时，上绕高度必须高于前方障碍物最高占据层至少20cm。 -->
+    <rosparam param="/exploration_node/mission/vertical_detour/upper_obstacle_clearance">0.20</rosparam>
+    <rosparam param="/exploration_node/mission/vertical_detour/down_first_height">0.75</rosparam>
+    <rosparam param="/exploration_node/mission/vertical_detour/height_tolerance">0.06</rosparam>
+    <rosparam param="/exploration_node/mission/vertical_detour/xy_tolerance">0.08</rosparam>
+    <rosparam param="/exploration_node/mission/vertical_detour/verification_timeout">2.0</rosparam>
+    <rosparam param="/exploration_node/mission/vertical_detour/required_confirmations">1</rosparam>
+    <rosparam param="/exploration_node/mission/vertical_detour/release_confirmations">2</rosparam>
+    <rosparam param="/exploration_node/mission/vertical_detour/footprint_radius">0.17</rosparam>
+    <!-- 低位下方足迹出现受支撑障碍时，优先尝试固定XY/yaw直升到默认0.6m；
+         若无法静止或上升柱不安全则继续普通规划，不把恢复到0.6m作为硬性条件。 -->
+    <rosparam param="/exploration_node/mission/ground_ascent/enabled">true</rosparam>
+    <rosparam param="/exploration_node/mission/ground_ascent/cruise_height">0.60</rosparam>
+    <rosparam param="/exploration_node/mission/ground_ascent/lower_probe_depth">0.20</rosparam>
+    <rosparam param="/exploration_node/mission/ground_ascent/min_lower_obstacles">2</rosparam>
+    <rosparam param="/exploration_node/mission/ground_ascent/max_stationary_speed">0.12</rosparam>
+    <rosparam param="/exploration_node/mission/ground_ascent/still_confirm_time">0.15</rosparam>
+    <rosparam param="/exploration_node/mission/ground_ascent/height_tolerance">0.06</rosparam>
+    <!-- 2026-07-28: frontier可逐次抬高0.30m，恢复搜索另外主动枚举0.30m高度层。 -->
+    <rosparam param="/exploration_node/mission/task_search/max_goal_climb">0.30</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/max_goal_descent">0.10</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/novelty_weight">2.5</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/travel_weight">0.65</rosparam>
+    <!-- 远近frontier共同决定探索扇区；胜出扇区内优先选择1-2m目标，远点不剔除。 -->
+    <rosparam param="/exploration_node/mission/task_search/preferred_distance_min">1.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/preferred_distance_max">2.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/near_distance_weight">1.5</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/far_distance_weight">1.2</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/direction_sector_deg">30.0</rosparam>
+    <!-- 2026-07-13: 高度评分只作候选排序，实际飞行高度还会经过水平巡航投影。 -->
+    <rosparam param="/exploration_node/mission/task_search/height_weight">1.5</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/repeat_penalty">6.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/frontier_gain_weight">0.10</rosparam>
+    <!-- 仅用累计地图已知FREE计算前沿点周围净空；0.30m起奖，0.60m封顶5分。 -->
+    <rosparam param="/exploration_node/mission/task_search/clearance_reward_enabled">true</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/clearance_reward_start">0.30</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/clearance_reward_full">0.60</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/clearance_reward_max">5.0</rosparam>
+    <!-- 2026-07-13: 入口朝向仅约束刚过门后的 2m，随后允许依据搜索覆盖沿折线/U 型通道转弯。 -->
+    <rosparam param="/exploration_node/mission/task_search/entry_forward_distance">2.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/entry_forward_weight">1.5</rosparam>
+    <!-- 2026-07-21: 单通道正常搜索禁止回走已完成路段；暂无前向frontier时悬停等地图刷新，故障回撤需显式开启。 -->
+    <rosparam param="/exploration_node/mission/task_search/prefer_motion_forward">true</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/allow_search_backtrack">false</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/backward_cos_threshold">-0.15</rosparam>
+    <!-- 2026-07-13: 目标保持与失败冷却阻止柱边目标高频切换；门平面内侧余量禁止出口拓扑回到起飞区。 -->
+    <!-- 2026-07-14: 延长活动目标保持并增加空间连续性，抑制 5.85m 到 1.86m 这种单周期大反向。 -->
+    <rosparam param="/exploration_node/mission/task_search/min_goal_hold_time">3.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/goal_switch_weight">1.2</rosparam>
+    <!-- 2026-07-21: 任务优先，FUEL只提供前方新frontier；距最近2m航迹之外的已完成通道历史frontier直接剔除。 -->
+    <rosparam param="/exploration_node/mission/task_search/completed_route_exclusion_radius">0.90</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/completed_route_recent_arc_length">2.00</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/failed_goal_radius">0.80</rosparam>
+    <!-- 相邻失败点短时共同封存；同方向连续失败两次后暂停该扇区3s，再从当前位置重选。 -->
+    <rosparam param="/exploration_node/mission/task_search/failed_goal_cooldown">6.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/failed_direction_threshold">2</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/failed_direction_pause">3.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/inside_return_margin">0.10</rosparam>
+    <!-- 单通道转弯：旧通道轴线前方终止后，直接选择占据图中仍在延伸的自由分支。 -->
+    <rosparam param="/exploration_node/mission/task_search/recovery/occupancy_turn_enabled">true</rosparam>
+    <!-- 双侧墙体连续渐变时边前进边转头；直角转弯保留原地yaw流程。 -->
+    <rosparam param="/exploration_node/mission/task_search/curve_heading/enabled">true</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_probe_length">1.50</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_probe_step">0.10</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_min_angle_deg">45.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_max_angle_deg">120.0</rosparam>
+    <!-- 单次地图确认即可转弯；除非用户明确要求，否则禁止改回2。 -->
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_confirmation_count">1</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_confirmation_min_interval">0.15</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_confirmation_angle_deg">15.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_confirmation_accumulation_window">8.0</rosparam>
+    <!-- 首次确认后先刹停并连续静止0.15s；从最新里程计锚点以30deg/s一次直接对准新通道最终航向。 -->
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_enabled">true</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_yaw_rate_deg">30.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_completion_tolerance_deg">8.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_completion_confirm_time">0.15</rosparam>
+    <!-- yaw参考到达硬终点后，给实机短暂跟踪时间；超时仍未进入8度范围才重新规划。 -->
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_tracking_grace_time">1.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_max_stationary_speed">0.20</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_still_confirm_time">0.15</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_min_duration">1.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_in_place_max_duration">4.0</rosparam>
+    <!-- 确认转弯后允许拐点附近50cm数值余量，但禁止沿刚完成的旧通道退回。 -->
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_no_return_margin">0.50</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/recovery/turn_yaw_release_angle_deg">15.0</rosparam>
+    <!-- 2026-07-16: 当前没有摄像头，颜色、普通二维码、温度识别只预留PoseStamped接口，不作为任务完成门槛；
+         后续三类识别接入并验证后改为true，无需修改规划代码。 -->
+    <rosparam param="/exploration_node/mission/task_search/require_stage2_detections">false</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/color_topic">/UAV0/mission/detection/color</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/qrcode_topic">/UAV0/mission/detection/qrcode</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/thermal_topic">/UAV0/mission/detection/thermal</rosparam>
+    <!-- 检测直接读取正式FUEL地图；确认只更新结果和RViz，自动接管另设开关。 -->
+    <rosparam param="/exploration_node/mission/task_search/exit/enabled">true</rosparam>
+    <param name="/exploration_node/mission/task_search/exit/auto_crossing_enabled"
+           value="$(arg enable_auto_exit)" type="bool"/>
+    <param name="/exploration_node/mission/task_search/exit/rc_trigger/enabled"
+           value="$(arg enable_search_landing)" type="bool"/>
+    <rosparam param="/exploration_node/mission/task_search/exit/rc_trigger/topic">/UAV0/mavros/rc/in</rosparam>
+    <!-- RCIn.channels 数组下标8即遥控器CH9。必须先见低位，再高位保持0.5s，仅触发一次。 -->
+    <rosparam param="/exploration_node/mission/task_search/exit/rc_trigger/channel_index">8</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/rc_trigger/low_pwm">1300</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/rc_trigger/high_pwm">1800</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/rc_trigger/hold_sec">0.5</rosparam>
+    <!-- 局部受限通道向双侧开阔区域过渡；未知采样计入分母，确认仅累计新地图。 -->
+    <rosparam param="/exploration_node/mission/task_search/exit/search_max_forward">2.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/min_open_width">2.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/min_open_ratio">0.80</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/sector_ray_count">11</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/sector_half_angle_deg">20.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/inside_length">0.90</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/outside_length">1.20</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/confirmation_angle_deg">15.0</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/footprint_half_height">0.15</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/inference_period">0.50</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/stability_radius">0.30</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/confirmation_count">3</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/confirmation_max_distance">1.0</rosparam>
+    <!-- 2026-07-24: 任一出口候选出现后至少2.5秒保持沿路径前视，禁止快速摆头破坏连续雷达门切面。 -->
+    <rosparam param="/exploration_node/mission/task_search/exit/verification_yaw_hold_time">2.5</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/standoff">0.45</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/arrive_distance">0.50</rosparam>
+    <!-- Diff交接必须接近出口中心，不使用门内候选点的50cm到达范围。 -->
+    <rosparam param="/exploration_node/mission/task_search/exit/portal_arrive_distance">0.10</rosparam>
+    <!-- 2026-08-08: 正常转弯由连续航迹逐步更新推进方向；单段接近反向视为短回撤，禁止翻转门内外语义。 -->
+    <rosparam param="/exploration_node/mission/task_search/exit/progress_reverse_reject_deg">120.0</rosparam>
+    <!-- 穿门后前1.5m允许A*横向绕开门柱/杆件，仍保留占据和机体碰撞检查。 -->
+    <rosparam param="/exploration_node/mission/task_search/entry_path_direction_grace_distance">1.50</rosparam>
+    <!-- 2026-07-22: 候选门平面落后当前机超过0.35m立即淘汰，单通道绝不返回历史截面找出口。 -->
+    <rosparam param="/exploration_node/mission/task_search/exit/candidate_max_behind_distance">0.35</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/pending_observation_min_hits">3</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/pending_observation_lateral_offset">0.25</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/pending_observation_min_move">0.22</rosparam>
+    <!-- 下列穿门距离仅用于FUEL自行完成穿越；启用Diff搜索时，到出口中心附近才交接，随后Diff向出口外前飞1m。 -->
+    <rosparam param="/exploration_node/mission/task_search/exit/cross_step">0.35</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/cross_target_distance">0.90</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/cross_confirm_distance">0.60</rosparam>
+    <!-- 2026-07-13: 该半径检查原始占据栅格，不再与 0.15m 膨胀重复相加，避免门后唯一目标被全部拒绝。 -->
+    <!-- 2026-07-14: 与250机型 0.20m 周向包络一致，避免出口候选使用旧 0.22m 半径被额外拒绝。 -->
+    <rosparam param="/exploration_node/mission/task_search/exit/footprint_extra_radius">0.20</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/footprint_samples">12</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/scan_radius">0.35</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/scan_dwell_time">1.2</rosparam>
+    <!-- 出口后只发布阶段切换，FUEL不再生成平台搜索、接近或降落请求。 -->
+    <rosparam param="/exploration_node/mission/task_search/exit/external_landing_planner">true</rosparam>
+    <!-- 下视相机的 ArUco 世界位置需连续确认；仅有拓扑出口不得触发降落。 -->
+    <rosparam param="/exploration_node/mission/task_search/final_landing_marker_topic">/UAV0/mission/detection/final_aruco</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/require_final_landing_marker">true</rosparam>
+    <!-- 2026-07-22: 出口未确认时不限制普通frontier；门框确认且门后外部FREE分支成立后，
+         才允许出口1.2m内局部调整并禁止普通frontier再次远离出口。 -->
+    <rosparam param="/exploration_node/mission/task_search/exit/frontier_local_adjust_radius">1.20</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/frontier_max_distance_increase">0.45</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/final_landing_marker_confirmation_count">3</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/final_landing_marker_consistency_radius">0.20</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/landing_approach_height">1.70</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/landing_trigger_distance">0.30</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/landing_column_bottom_clearance">0.20</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/exit/landing_column_step">0.10</rosparam>
+    <!-- 2026-07-08 19:26: indoor1 当前验证版先把入口子目标放在上下区域连接门洞附近，目标是缩短起飞后进入搜索区的时间。 -->
+    <rosparam param="/exploration_node/mission/entry_goal">[-0.20, 1.15, 0.80]</rosparam>
+    <rosparam param="/exploration_node/mission/entry_arrive_dist">0.65</rosparam>
+    <rosparam param="/exploration_node/mission/entry_yaw">1.5707963</rosparam>
+    <!-- 2026-07-08 19:26: 起飞区只作为起降缓冲区，不再参与主要 frontier 收益竞争；避免无人机在下方大房间来回刷边界。 -->
+    <rosparam param="/exploration_node/mission/takeoff_exclusion_min">[-5.00, -8.00, -0.20]</rosparam>
+    <rosparam param="/exploration_node/mission/takeoff_exclusion_max">[2.20, 0.20, 1.80]</rosparam>
+    <!-- 2026-07-08 19:26: 上方狭窄通道和作业区定义为首要搜索区域；一旦这里已经出现可达 frontier，就优先留在该区域内搜索。 -->
+    <rosparam param="/exploration_node/mission/search_region_min">[-1.20, 0.70, 0.20]</rosparam>
+    <rosparam param="/exploration_node/mission/search_region_max">[6.20, 6.80, 1.80]</rosparam>
+
+    <!-- 2026-07-07: 用 FUEL 自带 traj_server 执行 exploration_manager 发布的 /planning/bspline，并继续输出到现有控制器在用的 /planning/pos_cmd。 -->
+    <node pkg="plan_manage" name="fuel_traj_server" type="traj_server_uav0" output="screen">
+        <!-- 2026-07-27: FUEL traj_server 的绝对/相对单机话题全部接入 UAV0 规划链。 -->
+        <remap from="/position_cmd" to="/UAV0/fuel/planning/pos_cmd"/>
+        <remap from="/odom_world" to="$(arg odom_topic)"/>
+        <remap from="planning/bspline" to="/UAV0/planning/bspline"/>
+        <remap from="planning/replan" to="/UAV0/planning/replan"/>
+        <remap from="planning/emergency_brake" to="/UAV0/planning/emergency_brake"/>
+        <remap from="planning/new" to="/UAV0/planning/new"/>
+        <remap from="planning/position_cmd_vis" to="/UAV0/planning/position_cmd_vis"/>
+        <remap from="planning/travel_traj" to="/UAV0/planning/travel_traj"/>
+        <remap from="/planning/traj_started" to="/UAV0/planning/traj_started"/>
+        <param name="traj_server/time_forward" value="1.5" type="double"/>
+        <param name="traj_server/emergency_brake_horizon" value="0.12" type="double"/>
+        <param name="traj_server/pub_traj_id" value="4" type="int"/>
+        <param name="traj_server/init_x" value="$(arg init_x)" type="double"/>
+        <param name="traj_server/init_y" value="$(arg init_y)" type="double"/>
+        <param name="traj_server/init_z" value="$(arg init_z)" type="double"/>
+        <param name="perception_utils/top_angle" value="0.56125" type="double"/>
+        <param name="perception_utils/left_angle" value="0.69222" type="double"/>
+        <param name="perception_utils/right_angle" value="0.68901" type="double"/>
+        <!-- 2026-07-08 19:26: 与 exploration_node 侧保持一致，避免上层 frontier 评分已经看得更远，但 traj_server 仍按旧的短视距算可见约束。 -->
+        <param name="perception_utils/max_dist" value="$(arg perception_max_dist)" type="double"/>
+        <param name="perception_utils/vis_dist" value="1.0" type="double"/>
+    </node>
+
+    <!-- 两套规划器始终分话题输出；任务阶段仲裁器只允许当前所有者进入现有控制器。 -->
+    <node if="$(arg enable_search_landing)" pkg="diff_planner"
+          name="landing_diff_traj_server" type="traj_server_uav0" output="screen">
+        <remap from="position_cmd" to="/UAV0/diff/planning/pos_cmd"/>
+        <remap from="~planning/trajectory" to="/drone_$(arg drone_id)_planning/trajectory"/>
+        <remap from="~planning/yaw" to="/UAV0/landing_diff/yaw"/>
+        <remap from="~heartbeat" to="/drone_$(arg drone_id)_traj_server/heartbeat"/>
+        <param name="traj_server/time_forward" value="1.0" type="double"/>
+        <param name="traj_server/yaw_dot_max" value="3.14" type="double"/>
+        <param name="traj_server/yaw_dot_dot_max" value="15.71" type="double"/>
+    </node>
+
+    <node pkg="diff_planner" name="planner_command_arbiter" type="planner_command_arbiter_uav0" output="screen">
+        <param name="fuel_topic" value="/UAV0/fuel/planning/pos_cmd"/>
+        <param name="diff_topic" value="/UAV0/diff/planning/pos_cmd"/>
+        <param name="output_topic" value="/UAV0/planning/pos_cmd"/>
+        <param name="stage_topic" value="/UAV0/mission/task_status"/>
+        <param name="odom_topic" value="$(arg odom_topic)"/>
+        <param name="dynamic_objects_topic" value="/UAV0/ldop/dynamic_objects"/>
+        <param name="emergency_brake_topic" value="/UAV0/planning/emergency_brake"/>
+        <param name="dynamic_avoidance_enabled"
+               value="$(arg enable_uav0_dynamic_obstacle_detection)"/>
+        <param name="dynamic_object_timeout" value="0.60"/>
+        <param name="dynamic_safety_radius" value="0.45"/>
+        <param name="dynamic_vertical_margin" value="0.25"/>
+        <param name="dynamic_prediction_horizon" value="1.0"/>
+        <param name="dynamic_prediction_step" value="0.20"/>
+    </node>
+
+    <node if="$(arg enable_search_landing)" pkg="diff_planner"
+          name="landing_diff_search_manager" type="landing_diff_search_manager_uav0" output="screen">
+        <param name="odom_topic" value="$(arg odom_topic)"/>
+        <param name="stage_topic" value="/UAV0/mission/task_status"/>
+        <param name="marker_topic" value="/UAV0/mission/detection/final_aruco"/>
+        <param name="front_hint_topic" value="/UAV0/landing/front_aruco_hint"/>
+        <param name="assigned_target_topic" value="/UAV0/landing/assigned_target"/>
+        <param name="enable_single_front_hint_approach" value="false"/>
+        <param name="subgoal_topic" value="/UAV0/landing_diff/subgoal"/>
+        <param name="trigger_topic" value="/UAV0/landing_diff/trigger"/>
+        <param name="yaw_topic" value="/UAV0/landing_diff/yaw"/>
+        <param name="landing_request_topic" value="/UAV0/mission/landing_request"/>
+        <!-- 前进距离使用顶部 front_approach_distance；已在门外则从当前位置前进；保持航向、目标高度0.6m，到达后开始前视扫描。 -->
+        <param name="front_approach_distance" value="$(arg front_approach_distance)"/>
+        <param name="front_approach_height" value="0.60"/>
+        <param name="front_approach_arrive_xy" value="0.15"/>
+        <param name="front_scan_anchor_topic" value="/UAV0/landing/front_scan_anchor"/>
+        <param name="exit_portal_topic" value="/UAV0/mission/final_exit"/>
+        <param name="search_height" value="1.7"/>
+        <param name="lane_spacing" value="1.0"/>
+        <!-- 下视扫描停滞时以实际停点收缩边界，换行反扫；实际移动10cm即重置计时。 -->
+        <param name="sweep_stall_timeout_sec" value="4.0"/>
+        <param name="sweep_motion_reset_distance" value="0.10"/>
+        <param name="search_width" value="3.0"/>
+        <param name="search_depth" value="4.0"/>
+        <param name="arrive_xy" value="0.35"/>
+        <param name="arrive_z" value="0.20"/>
+        <param name="front_hint_dwell_sec" value="2.0"/>
+        <param name="front_hint_initial_wait_sec" value="1.0"/>
+        <param name="front_yaw_scan_half_angle_rad" value="0.7854"/>
+        <!-- 前视偏航15度/秒，给ArUco稳定确认留出时间。 -->
+        <param name="front_yaw_scan_rate_rad_s" value="0.2617993878"/>
+        <param name="front_yaw_arrive_tolerance_rad" value="0.12"/>
+        <param name="front_yaw_return_dwell_sec" value="0.50"/>
+        <param name="front_hint_forward_margin" value="1.0"/>
+        <param name="front_hint_lateral_margin" value="1.0"/>
+        <param name="front_hint_min_z" value="-0.50"/>
+        <param name="front_hint_max_z" value="1.50"/>
+        <param name="target_frame" value="world"/>
+        <param name="marker_timeout_sec" value="0.50"/>
+        <param name="front_hint_timeout_sec" value="0.50"/>
+        <param name="assigned_target_timeout_sec" value="0.50"/>
+        <param name="max_header_future_sec" value="0.05"/>
+    </node>
+
+    <!-- 2026-07-08 19:26: 新增前置通道进入管理器。
+         它负责三件事：1) 在 RViz 标出通道入口和坐标；2) 起飞后先把无人机带到入口；3) 进入搜索区后再触发 FUEL exploration。
+         2026-07-10: 这个节点现在按“入口/门识别模块”使用，模块说明见 plan_manage/docs/entry_door_recognition_module.md。
+         2026-07-10: 受 ego_start 交接后高度偏高和仿真雷达漏扫影响，找门主判据必须看累计占据地图，不再把实时点云高分方向当入口。 -->
+    <node pkg="diff_planner" type="corridor_search_manager_uav0" name="corridor_search_manager" output="screen">
+        <param name="search_manager/entry_detection_mode" value="$(arg entry_detection_mode)"/>
+        <!-- 2026-07-27: corridor_search_manager 的绝对调试输出在 launch 边界映射到 UAV0。 -->
+        <remap from="/corridor_search/debug_goal" to="/UAV0/corridor_search/debug_goal"/>
+        <remap from="/corridor_search/accumulated_occ_map" to="/UAV0/corridor_search/accumulated_occ_map"/>
+        <param name="search_manager/odom_topic" value="$(arg odom_topic)"/>
+        <param name="search_manager/cloud_topic" value="$(arg cloud_topic)"/>
+        <param name="search_manager/trigger_topic" value="$(arg rviz_goal_topic)"/>
+        <param name="search_manager/ready_topic" value="/UAV0/start_after_hover"/>
+        <param name="search_manager/world_frame" value="world"/>
+        <param name="search_manager/goal_topic" value="/UAV0/corridor_search/pre_entry_goal"/>
+        <param name="search_manager/entry_pose_topic" value="/UAV0/corridor_search/entry_pose"/>
+        <param name="search_manager/workspace_lock_topic" value="/UAV0/corridor_search/workspace_lock"/>
+        <param name="search_manager/exploration_trigger_topic" value="$(arg start_trigger_topic)"/>
+        <param name="search_manager/position_cmd_topic" value="/UAV0/planning/pos_cmd"/>
+        <!-- 2026-07-29: 实机规划不再依赖 /UAV0/start_after_hover。
+             RViz目标触发 + FAST-LIO高度门槛共同决定何时开始发布搜索目标。 -->
+        <param name="search_manager/wait_for_hover_ready" value="false"/>
+        <!-- 2026-07-09: match 当前这版 FUEL 没有真正填充 /sdf_map/occupancy_local_inflate。
+             2026-07-09: 门检测改用 RViz 上累计显示的 /sdf_map/occupancy_all，再由程序裁剪机体前方局部窗口判断门。 -->
+        <param name="search_manager/map_occ_topic" value="/UAV0/sdf_map/occupancy_all"/>
+        <param name="search_manager/map_unknown_topic" value="/UAV0/sdf_map/unknown"/>
+        <!-- 2026-07-09: 仿真雷达点云有断裂/漏扫，前置找门不再直接使用单次地图消息；
+             corridor_search_manager 内部再按体素累计一份稳定地图，门识别只看累计后的结构。 -->
+        <param name="search_manager/use_internal_accumulated_map" value="true"/>
+        <param name="search_manager/map_accum_voxel_res" value="0.10"/>
+        <param name="search_manager/map_accum_min_hits" value="2"/>
+        <param name="search_manager/map_accum_max_voxels" value="60000"/>
+        <!-- 2026-07-10: 过滤仿真雷达累计图里的孤立重复噪声点，避免脏点被门检测当成墙/障碍。 -->
+        <param name="search_manager/map_accum_min_neighbors" value="2"/>
+        <param name="search_manager/map_accum_min_vertical_bins" value="2"/>
+        <!-- 2026-07-10: RViz 显示和找门输入去掉天花板层，避免顶面点云投影成假门柱。 -->
+        <param name="search_manager/map_accum_max_use_z" value="1.25"/>
+        <!-- 2026-07-09: 门候选必须保证从当前位置到门后 through-point 的累计地图中心走廊无障碍，
+             避免把起飞区内部墙边的小缺口当成可通过门。 -->
+        <param name="search_manager/door_path_clearance" value="0.25"/>
+        <!-- 2026-07-08 19:26: 改成内部自找门框模式，前置阶段不再盲飞固定点，而是在前向扇区里自己判断门的位置并打标。 -->
+        <param name="search_manager/use_fixed_entry_goal" value="false"/>
+        <!-- 2026-07-08 19:26: 下面这个 entry_goal 不再直接拿来飞，只保留作调试参考；真正入口点由 corridor_search_manager 内部从点云判断。 -->
+        <param name="search_manager/entry_goal_x" value="-0.20"/>
+        <param name="search_manager/entry_goal_y" value="1.15"/>
+        <param name="search_manager/entry_goal_z" value="0.80"/>
+        <param name="search_manager/entry_arrive_dist" value="0.30"/>
+        <param name="search_manager/entry_reach_by_search_region" value="true"/>
+        <param name="search_manager/publish_entry_marker" value="true"/>
+        <param name="search_manager/publish_pre_entry_pos_cmd" value="true"/>
+        <!-- 已确认入口的两段直线点到点参考：先加速后减速，单位 m/s 和 m/s^2。 -->
+        <param name="search_manager/entry_max_speed" value="1.0"/>
+        <param name="search_manager/entry_max_acceleration" value="1.0"/>
+        <param name="search_manager/min_start_height" value="0.35"/>
+        <param name="search_manager/goal_height_mode" value="keep_current"/>
+        <!-- 2026-07-14: 入门搜索同样限制在低空层，避免前置门搜索节点继续发布 0.8-1.0m 高目标。 -->
+        <param name="search_manager/cruise_height" value="0.6"/>
+        <param name="search_manager/min_goal_z" value="0.45"/>
+        <param name="search_manager/max_goal_z" value="0.78"/>
+        <param name="search_manager/arrive_dist" value="0.45"/>
+        <param name="search_manager/reissue_timeout" value="0.8"/>
+        <param name="search_manager/search_period" value="0.15"/>
+        <param name="search_manager/front_search_half_fov_deg" value="50.0"/>
+        <param name="search_manager/front_search_step_deg" value="10.0"/>
+        <param name="search_manager/min_entry_support_points" value="12"/>
+        <param name="search_manager/min_entry_progress" value="0.55"/>
+        <param name="search_manager/prefer_progress_weight" value="1.8"/>
+        <!-- 2026-07-09: 改成显式门框检测，先找“墙-开口-墙”，并把 through-point 放到门后，再允许切给 FUEL。 -->
+        <param name="search_manager/door_bin_step_deg" value="5.0"/>
+        <param name="search_manager/min_door_depth" value="1.35"/>
+        <param name="search_manager/max_door_side_range" value="2.3"/>
+        <!-- 2026-07-09: 比赛门框按可过机但不宽泛处理，宽度先限制在 0.4m~1.5m，避免把整面大开口当门。 -->
+        <param name="search_manager/door_width_min" value="0.40"/>
+        <param name="search_manager/door_width_max" value="2.00"/>
+        <param name="search_manager/door_prefer_width" value="1.40"/>
+        <param name="search_manager/door_pass_dist" value="0.90"/>
+        <!-- 入口参考停在门平面；允许门前8cm的位置跟踪余差，避免等偶然过冲才交给FUEL。
+             小于FUEL既有10cm门外起步余量；仍须完成入口参考并满足原横向判定。 -->
+        <param name="search_manager/door_cross_trigger_dist" value="-0.08"/>
+        <param name="search_manager/door_x_offset" value="0.0"/>
+        <param name="search_manager/max_entry_door_distance" value="2.5"/>
+        <param name="search_manager/entry_yaw_hold_radius" value="0.25"/>
+        <!-- 同一入口候选连续两次位置和宽度一致后才锁定；关闭时单次检测立即锁定。 -->
+        <param name="search_manager/door_confirmation_enabled" value="false"/>
+        <param name="search_manager/door_confirm_cycles" value="2"/>
+        <!-- 2026-07-10: 识别比赛场地里两根竖直柱形成的门架，不能只按墙体开洞判断。 -->
+        <param name="search_manager/portal_min_post_height" value="0.70"/>
+        <param name="search_manager/portal_max_depth_mismatch" value="0.35"/>
+        <param name="search_manager/portal_max_gap_occupied" value="1"/>
+        <!-- 2026-07-10: 柱门后方必须继续有侧墙/通道结构，否则近处柱状碎片不允许锁门。 -->
+        <param name="search_manager/portal_exit_probe_depth" value="1.10"/>
+        <param name="search_manager/portal_min_exit_support_rows" value="4"/>
+        <!-- 2026-07-10: 前置找门只要第一道可通过入口，不能让“更深的通道截面”靠 progress 高分抢走入口标记。 -->
+        <param name="search_manager/prefer_first_entry" value="true"/>
+        <param name="search_manager/first_entry_progress_tolerance" value="0.35"/>
+        <param name="search_manager/door_mid_free_margin" value="0.55"/>
+        <param name="search_manager/door_mid_block_margin" value="0.20"/>
+        <param name="search_manager/max_door_center_lateral" value="1.40"/>
+        <param name="search_manager/min_door_alignment" value="0.70"/>
+        <param name="search_manager/min_door_gap_free_ratio" value="0.60"/>
+        <param name="search_manager/min_door_side_points" value="3"/>
+        <param name="search_manager/min_door_post_height" value="0.35"/>
+        <!-- 方案B/C：只检测双边真实门柱和通行空间，门宽1.20~1.60m，偏好1.40m；不检测横梁/天花板。 -->
+        <param name="search_manager/frame_b_min_post_height" value="0.55"/>
+        <param name="search_manager/frame_b_door_width_min" value="1.20"/>
+        <param name="search_manager/frame_b_door_width_max" value="1.60"/>
+        <param name="search_manager/frame_b_min_free_ratio" value="0.45"/>
+        <param name="search_manager/frame_b_min_known_free_depth" value="0.50"/>
+        <param name="search_manager/frame_b_full_free_depth" value="1.00"/>
+        <param name="search_manager/frame_b_max_mid_blocked_bins" value="2"/>
+        <!-- 方案B门检测只做窄中心线预筛：左右0.10m，整段允许6个稀疏占据格；正式规划仍做完整碰撞检查。 -->
+        <param name="search_manager/frame_b_path_clearance" value="0.10"/>
+        <param name="search_manager/frame_b_path_max_blocked_bins" value="6"/>
+        <param name="search_manager/frame_b_lintel_min_height" value="0.65"/>
+        <param name="search_manager/frame_b_require_lintel" value="false"/>
+        <!-- 顶部仍取同一门截面；天花板与横梁点的垂直高度允许相差最多0.15m。 -->
+        <param name="search_manager/frame_b_lintel_row_tolerance" value="0.0"/>
+        <param name="search_manager/frame_b_lintel_max_height_spread" value="0.15"/>
+        <!-- 横梁高度相对起飞前地面固定；允许不完整建图，但两根门柱端点不能单独满足三格条件。 -->
+        <param name="search_manager/frame_b_lintel_min_ratio" value="0.15"/>
+        <param name="search_manager/frame_b_lintel_min_bins" value="2"/>
+        <param name="search_manager/frame_b_lintel_bonus" value="1.20"/>
+        <param name="search_manager/max_door_mid_blocked_bins" value="1"/>
+        <param name="search_manager/max_door_mid_near_bins" value="0"/>
+        <param name="search_manager/search_region_min_x" value="-1.20"/>
+        <param name="search_manager/search_region_min_y" value="0.70"/>
+        <param name="search_manager/search_region_min_z" value="0.20"/>
+        <param name="search_manager/search_region_max_x" value="6.20"/>
+        <param name="search_manager/search_region_max_y" value="6.80"/>
+        <!-- 2026-07-28: 与FUEL三维A*上限对齐，避免上方恢复点被静态任务区反向过滤。 -->
+        <param name="search_manager/search_region_max_z" value="1.90"/>
+    </node>
+
+    <!-- 2026-07-08: exploration_manager 对 /waypoint_generator/waypoints 只把它当合法开始触发，不依赖具体 path 内容。
+         这里改回 point 模式，让 /traj_start_trigger 更像比赛中的统一发令信号；RViz 点击仍可调试触发，但不再等价于“飞去这个精确点”。 -->
+    <node pkg="waypoint_generator" name="fuel_waypoint_generator" type="waypoint_generator" output="screen">
+        <remap from="~odom" to="$(arg odom_topic)"/>
+        <!-- 2026-07-08 19:26: 这里故意断开 RViz 目标点到 waypoint_generator 的直连，防止点击一次就提前触发 exploration。 -->
+        <remap from="~goal" to="/UAV0/corridor_search/unused_goal"/>
+        <remap from="~traj_start_trigger" to="$(arg start_trigger_topic)"/>
+        <!-- 2026-07-07: exploration_node 固定订阅 /waypoint_generator/waypoints，这里把改名后的私有输出显式接回去，避免外部开始信号触发不到探索 FSM。 -->
+        <remap from="~waypoints" to="/UAV0/waypoint_generator/waypoints"/>
+        <param name="waypoint_type" value="$(arg search_start_waypoint_type)"/>
+    </node>
+
+    <!-- 2026-07-07: 继续复用当前 indoor1 的 TF 桥接，避免 camera_init/body/base_link/world 在 RViz 和规划里解释不一致。 -->
+    <node pkg="tf2_ros" type="static_transform_publisher" name="world_to_map"
+        args="0 0 0 0 0 0 world map" />
+    <node pkg="tf2_ros" type="static_transform_publisher" name="world_to_camera_init"
+        args="0 0 0 0 0 0 world UAV0/camera_init" />
+    <node pkg="tf2_ros" type="static_transform_publisher" name="body_to_base_link"
+        args="0 0 0 0 0 0 UAV0/body UAV0/base_link" />
+    <!-- 后机 FAST-LIO 原点由 exploration_control 的统一对齐配置发布，禁止在这里维护第二份偏移。 -->
+    <node pkg="tf2_ros" type="static_transform_publisher" name="UAV1_body_to_base_link"
+        args="0 0 0 0 0 0 $(arg follower_body_frame) UAV1/base_link" />
+    <!-- 2026-07-07: FUEL traj.rviz 里会用到 navigation 坐标系，这里补一个 world->navigation 的单位变换。 -->
+    <node pkg="tf" type="static_transform_publisher" name="world_to_navigation"
+        args="0 0 0 0 0 0 world navigation 100" />
+
+    <!-- 2026-07-07: 补上里程计可视化，便于和当前 Diff-Planner indoor1 入口保持同一套 RViz 观感。 -->
+    <node pkg="odom_visualization" name="drone_$(arg drone_id)_odom_visualization" type="odom_visualization" output="screen">
+        <remap from="~odom" to="$(arg odom_topic)"/>
+        <!-- 2026-07-20: Mid360比赛显示改为跟随实际发布的PositionCommand航向，使RViz前机模型与航向框同步；FAST-LIO原始姿态仍保留在Odometry话题中供诊断。 -->
+        <remap from="~cmd" to="/UAV0/planning/pos_cmd"/>
+        <!-- 2026-07-13: 修复 RViz 仍读取旧 /odom_visualization/robot 导致机体坐标看似未对齐；所有里程计可视化输出显式归入 iris_0。 -->
+        <remap from="~pose" to="/UAV0/odom_visualization/pose"/>
+        <remap from="~path" to="/UAV0/odom_visualization/path"/>
+        <remap from="~velocity" to="/UAV0/odom_visualization/velocity"/>
+        <remap from="~covariance" to="/UAV0/odom_visualization/covariance"/>
+        <remap from="~covariance_velocity" to="/UAV0/odom_visualization/covariance_velocity"/>
+        <remap from="~trajectory" to="/UAV0/odom_visualization/trajectory"/>
+        <remap from="~sensor" to="/UAV0/odom_visualization/sensor"/>
+        <remap from="~robot" to="/UAV0/odom_visualization/robot"/>
+        <remap from="~height" to="/UAV0/odom_visualization/height"/>
+        <param name="color/a" value="1.0"/>
+        <param name="color/r" value="0.0"/>
+        <param name="color/g" value="0.0"/>
+        <param name="color/b" value="0.0"/>
+        <param name="covariance_scale" value="100.0"/>
+        <param name="robot_scale" value="0.35"/>
+        <!-- 2026-07-14: 输出保持在本机 camera_init，交给 TF 转换到 RViz 的 world。 -->
+        <param name="frame_id" value="UAV0/camera_init"/>
+        <param name="use_cmd_yaw_for_mesh" value="true"/>
+        <param name="cmd_yaw_timeout" value="0.8"/>
+        <!-- 2026-07-08: fake_drone.dae 的模型前向轴与当前控制/轨迹 yaw 定义存在固定偏差，这里补一个 90 度旋转让三角头和实际机体朝向一致。 -->
+        <param name="rotate_yaw_deg" value="90.0"/>
+        <param name="tf45" value="false"/>
+        <param name="drone_id" value="$(arg drone_id)"/>
+    </node>
+
+    <!-- 2026-07-14: 第二架显示自身 FAST-LIO 轨迹；跟随阶段接入安全历史路径指令的 yaw。 -->
+    <!-- 公共 RViz 的后机模型节点使用独立名称，避免与 UAV1 Diff 自带的
+         /drone_1_odom_visualization 在共享 Master 下互相顶掉。 -->
+    <node pkg="odom_visualization" name="uav1_shared_odom_visualization" type="odom_visualization" output="screen">
+        <remap from="~odom" to="$(arg follower_odom_topic)"/>
+        <!-- 2026-07-27: 后机开始跟随后，蓝色机头使用 /UAV1/planning/pos_cmd 航向。 -->
+        <!-- 2026-07-27: 后机 RViz 命令、marker 和轨迹话题统一切换到 UAV1。 -->
+        <remap from="~cmd" to="/UAV1/planning/pos_cmd"/>
+        <remap from="~pose" to="/UAV1/odom_visualization/pose"/>
+        <remap from="~path" to="/UAV1/odom_visualization/path"/>
+        <remap from="~velocity" to="/UAV1/odom_visualization/velocity"/>
+        <remap from="~covariance" to="/UAV1/odom_visualization/covariance"/>
+        <remap from="~covariance_velocity" to="/UAV1/odom_visualization/covariance_velocity"/>
+        <remap from="~trajectory" to="/UAV1/odom_visualization/trajectory"/>
+        <remap from="~sensor" to="/UAV1/odom_visualization/sensor"/>
+        <remap from="~robot" to="/UAV1/odom_visualization/robot"/>
+        <remap from="~height" to="/UAV1/odom_visualization/height"/>
+        <param name="color/a" value="1.0"/>
+        <param name="color/r" value="0.0"/>
+        <param name="color/g" value="0.35"/>
+        <param name="color/b" value="1.0"/>
+        <param name="covariance_scale" value="100.0"/>
+        <param name="robot_scale" value="0.35"/>
+        <param name="frame_id" value="$(arg follower_world_frame)"/>
+        <param name="use_cmd_yaw_for_mesh" value="true"/>
+        <param name="rotate_yaw_deg" value="90.0"/>
+        <param name="tf45" value="false"/>
+        <param name="drone_id" value="1"/>
+    </node>
+
+    <include file="$(find diff_planner)/uav0/launch/exp/run_ldop_uav_pair.launch">
+        <arg name="enable_uav0" value="$(arg enable_ldop_detection)"/>
+        <arg name="enable_uav1" value="$(arg enable_follower_ldop_detection)"/>
+        <arg name="uav0_cloud_topic" value="$(arg cloud_topic)"/>
+        <arg name="uav0_odom_topic" value="$(arg odom_topic)"/>
+        <arg name="uav1_cloud_topic" value="/UAV1/fast_lio/cloud_registered"/>
+        <arg name="uav1_odom_topic" value="$(arg follower_odom_topic)"/>
+        <arg name="ldop_input_rate" value="$(arg ldop_input_rate)"/>
+        <arg name="ufomap_resolution" value="$(arg ufomap_resolution)"/>
+        <arg name="ufomap_max_range" value="$(arg ufomap_max_range)"/>
+        <arg name="ufomap_inflate_hits_dist" value="$(arg ufomap_inflate_hits_dist)"/>
+        <arg name="corridor_min_lateral_span" value="$(arg corridor_min_lateral_span)"/>
+        <arg name="corridor_min_confirm_hits" value="$(arg corridor_min_confirm_hits)"/>
+        <arg name="corridor_min_cluster_points" value="$(arg corridor_min_cluster_points)"/>
+        <arg name="corridor_max_cluster_extent" value="$(arg corridor_max_cluster_extent)"/>
+        <arg name="corridor_oversized_split_enabled" value="$(arg corridor_oversized_split_enabled)"/>
+        <arg name="corridor_split_min_cluster_points" value="$(arg corridor_split_min_cluster_points)"/>
+        <arg name="corridor_max_candidates" value="$(arg corridor_max_candidates)"/>
+        <arg name="corridor_reject_candidate_count" value="$(arg corridor_reject_candidate_count)"/>
+        <arg name="corridor_wall_clearance" value="$(arg corridor_wall_clearance)"/>
+        <arg name="dynamic_cluster_detector_min_points" value="$(arg dynamic_cluster_detector_min_points)"/>
+    </include>
+
+    <!--
+      默认保留轻量规划诊断话题；通道回放入口通过 extra_topics 补录建图点云等输入。
+      cwd=ROS_HOME 使相对路径落在 ~/.ros；-o 会自动追加启动时间戳。
+    -->
+    <node if="$(arg enable_planner_rosbag)" pkg="rosbag" type="record"
+          name="fuel_planner_recorder" ns="$(arg vehicle_ns)"
+          cwd="ROS_HOME" output="screen"
+          args="--lz4 --split --size=$(arg planner_rosbag_split_size_mb)
+                -o &quot;$(arg planner_rosbag_prefix)&quot;
+                $(arg planner_rosbag_extra_topics)
+                $(arg odom_topic)
+                $(arg start_trigger_topic)
+                /UAV0/fapp/states
+                /exploration_node/fapp/memory
+                /exploration_node/fapp/memory_status
+                /UAV0/planning/bspline
+                /UAV0/planning/pos_cmd
+                /UAV0/planning/replan
+                /UAV0/planning/new
+                /UAV0/planning/emergency_brake
+                /UAV0/planning/safety_hold
+                /UAV0/planning/endpoint_hold
+                /UAV0/sdf_map/occupancy_local
+                /UAV0/sdf_map/occupancy_local_inflate
+                /UAV0/sdf_map/update_range
+                /UAV0/planning_vis/frontier
+                /UAV0/planning_vis/viewpoints
+                /UAV0/planning_vis/trajectory
+                /UAV0/planning_vis/yaw
+                /UAV0/planning_vis/topo_path
+                /UAV0/corridor_search/workspace_lock
+                /UAV0/corridor_search/dynamic_detection_enable
+                /mission/task_status
+                /UAV0/mission/task_status
+                /UAV0/mission/search_markers
+                /UAV0/mission/exit_candidate
+                /UAV0/mission/final_exit
+                /tf
+                /tf_static
+                /rosout
+                /rosout_agg"/>
+
+    <!-- 2026-07-07: 验证探索版优先使用 FUEL 的 traj.rviz，能直接看到 frontier / bspline / exploration 可视化。 -->
+    <node if="$(arg enable_rviz)" name="rviz" pkg="rviz" type="rviz"
+        args="-d $(find plan_manage)/uav0/config/traj.rviz" required="true">
+        <!-- 2026-07-13: RViz 工具栏仍发布标准目标话题，在节点边界转发给 iris_0 的比赛开始触发。 -->
+        <remap from="/move_base_simple/goal" to="$(arg rviz_goal_topic)"/>
+        <!-- RViz默认显示FAPP；显式关闭FAPP时仍兼容原LDOP输出。 -->
+        <remap unless="$(arg enable_fapp_detection)" from="/UAV0/fapp/dynamic_cloud" to="/UAV0/ldop/dynamic_cloud"/>
+        <remap unless="$(arg enable_fapp_detection)" from="/UAV0/fapp/dynamic_object_markers" to="/UAV0/ldop/dynamic_object_markers"/>
+        <remap unless="$(arg enable_fapp_detection)" from="/UAV0/fapp/dynamic_track_markers" to="/UAV0/ldop/dynamic_track_markers"/>
+    </node>
+
+    <!-- 仅为规划器 RViz 提供检测目标显示，不发布规划目标或控制指令。 -->
+    <node if="$(arg enable_detection_rviz)"
+          pkg="target_reporting" type="target_rviz_marker_node.py"
+          name="target_rviz_marker" output="screen">
+        <param name="observation_topic" value="/UAV0/target_reporting/observation"/>
+        <param name="marker_topic" value="/UAV0/target_reporting/markers"/>
+        <param name="marker_frame" value="world"/>
+        <param name="cloud_topic" value="/camera/depth/color/points"/>
+        <param name="enable_object_cloud" value="false"/>
+        <param name="object_cloud_topic" value="/UAV0/target_reporting/detected_object_cloud"/>
+        <param name="object_box_topic" value="/UAV0/target_reporting/detected_object_boxes"/>
+        <param name="object_cloud_radius" value="0.25"/>
+    </node>
+</launch>

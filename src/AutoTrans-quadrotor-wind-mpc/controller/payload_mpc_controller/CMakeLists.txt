@@ -215,3 +215,9 @@ install(FILES
   scripts/analyze_autotrans_wind_mpc.m
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/scripts
 )
+
+# 本机前机角色，与后机目标同时构建。
+add_subdirectory(uav0)
+
+catkin_install_python(PROGRAMS uav0/scripts/autotrans_mpc_logger_uav0.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})

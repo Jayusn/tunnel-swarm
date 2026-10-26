@@ -14,4 +14,8 @@
   <depend>quadrotor_msgs</depend>
 
   <export/>
+  <build_depend>bspline</build_depend>
+  <exec_depend>bspline</exec_depend>
+  <test_depend>rostest</test_depend>
+  <test_depend>rospy</test_depend>
 </package>

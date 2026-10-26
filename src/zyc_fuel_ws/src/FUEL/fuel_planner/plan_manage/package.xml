@@ -86,4 +86,6 @@
     <!-- Other tools can request additional information be placed here -->
 
   </export>
+  <build_depend>obj_state_msgs</build_depend>
+  <exec_depend>obj_state_msgs</exec_depend>
 </package>

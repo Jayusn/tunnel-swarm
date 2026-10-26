@@ -1,0 +1,25 @@
+bool enabled
+
+float64 exploration_initial_yaw
+float64 entry_inside_yaw
+
+bool entry_plane_active
+geometry_msgs/Point entry_origin
+geometry_msgs/Vector3 entry_direction
+float64 entry_back_margin
+
+geometry_msgs/Point segment_origin
+geometry_msgs/Vector3 segment_direction
+float64 segment_high_water
+float64 segment_regression_margin
+
+bool transition_active
+geometry_msgs/Point transition_anchor
+geometry_msgs/Vector3 transition_incoming_direction
+geometry_msgs/Vector3 transition_outgoing_direction
+float64 transition_old_high_water
+float64 transition_regression_margin
+float64 transition_radius
+float64 transition_corridor_half_width
+
+quadrotor_msgs/ExplorationGate[] completed_gates

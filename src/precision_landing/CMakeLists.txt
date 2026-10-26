@@ -119,3 +119,9 @@ if(CATKIN_ENABLE_TESTING)
     target_link_libraries(test_landing_search_core landing_search_core ${catkin_LIBRARIES})
   endif()
 endif()
+
+# 本机前机角色，与后机目标同时构建。
+add_subdirectory(uav0)
+
+catkin_install_python(PROGRAMS uav0/scripts/fast_lio_pose_uav0.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})

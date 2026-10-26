@@ -1,0 +1,15 @@
+<launch>
+  <node pkg="autotrans_reference_bridge" type="fuel_autotrans_bridge_node_uav0"
+        name="front_bridge_test">
+    <param name="input_topic" value="/role_test/front_input"/>
+    <param name="output_topic" value="/role_test/front_output"/>
+    <param name="emergency_brake_topic" value="/role_test/brake"/>
+  </node>
+  <node pkg="autotrans_reference_bridge" type="reference_bridge_node"
+        name="rear_bridge_test">
+    <param name="input_topic" value="/role_test/rear_input"/>
+    <param name="output_topic" value="/role_test/rear_output"/>
+  </node>
+  <test pkg="autotrans_reference_bridge" type="test_role_bridge.py"
+        test-name="role_bridge" time-limit="35"/>
+</launch>

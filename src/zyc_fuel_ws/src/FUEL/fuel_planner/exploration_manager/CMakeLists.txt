@@ -80,3 +80,6 @@ add_executable(load_obj test/load_obj.cpp)
 target_link_libraries(load_obj
   ${catkin_LIBRARIES} ${PCL_LIBRARIES}
 )
+
+# 本机前机角色，与后机目标同时构建。
+add_subdirectory(uav0)

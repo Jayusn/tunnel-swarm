@@ -58,3 +58,6 @@ add_executable(obj_generator
     )
 target_link_libraries(obj_generator 
     ${catkin_LIBRARIES})
+
+# 本机前机角色，与后机目标同时构建。
+add_subdirectory(uav0)
