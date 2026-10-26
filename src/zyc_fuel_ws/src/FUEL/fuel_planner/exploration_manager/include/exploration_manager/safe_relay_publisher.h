@@ -4,7 +4,9 @@
 #include <nav_msgs/Path.h>
 #include <ros/ros.h>
 #include <std_msgs/String.h>
+#include <std_msgs/UInt32MultiArray.h>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -13,7 +15,7 @@ class SDFMap;
 class FastPlannerManager;
 
 // Front vehicle owns waypoint qualification; the follower owns execution.
-// Each internal goal permits one local improvement; entrance/exit are not in this list.
+// Revisions keep the goal ID; entrance/exit are not in this list.
 // Later obstacle changes and route planning belong to the follower.
 // header.stamp identifies the producer session; pose.header.seq is the goal ID.
 class SafeRelayPublisher {
@@ -37,12 +39,17 @@ class SafeRelayPublisher {
     std::size_t route_index;
     uint32_t id;
     geometry_msgs::PoseStamped pose;
-    bool revised{false};
+    uint32_t revisions{0};
     Record revision;
   };
   void timerCallback(const ros::TimerEvent&);
   void missionCallback(const std_msgs::String::ConstPtr& message);
   void exitCallback(const geometry_msgs::PoseStamped::ConstPtr& message);
+  void executionCallback(const std_msgs::UInt32MultiArray::ConstPtr& message);
+  Eigen::Vector2d routeForward(std::size_t index) const;
+  bool revisionFits(std::size_t index, const Eigen::Vector3d& point) const;
+  bool replaceQueuedTail(std::size_t route_index);
+  void updateGoal(std::size_t index, const safe_relay::Sample& candidate);
   bool insideCorridor(const Eigen::Vector3d& reference, const Eigen::Vector3d& point) const;
   bool volumeFree(const Eigen::Vector3d& point, double radius, double height) const;
   double horizontalClearance(const Eigen::Vector3d& point) const;
@@ -51,20 +58,23 @@ class SafeRelayPublisher {
   double verticalClearance(const Eigen::Vector3d& point) const;
   double routeHeight(const Record& reference, const Eigen::Vector3d& point) const;
   void qualifyCandidate(Record& record, bool new_map, const Eigen::Vector2d& forward,
-                         double search_radius = -1.0);
+                         double search_radius = -1.0,
+                         std::size_t goal_index = std::numeric_limits<std::size_t>::max());
   void improveInternalGoals(bool new_map);
   void publish(const std::string& status);
 
   std::shared_ptr<SDFMap> map_;
   std::shared_ptr<FastPlannerManager> planner_;
   ros::Publisher goals_pub_, route_pub_, status_pub_, labels_pub_;
-  ros::Subscriber mission_sub_, exit_sub_;
+  ros::Subscriber mission_sub_, exit_sub_, execution_sub_;
   ros::Timer timer_;
   safe_relay::Config config_;
   double entrance_minimum_progress_{0.50};
   std::vector<Record> history_;
   std::vector<Goal> goals_;
   std::vector<Goal> manual_goals_;
+  std::set<uint32_t> completed_ids_, queued_ids_;
+  ros::Time execution_stamp_;
   bool manual_waypoints_only_{false};
   Eigen::Vector3d leader_{Eigen::Vector3d::Zero()};
   Eigen::Vector3d entrance_{Eigen::Vector3d::Zero()};

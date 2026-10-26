@@ -7,6 +7,98 @@
 namespace fast_planner {
 class SafeRelayPublisherTest {
  public:
+  static void loggedRevisionOrder() {
+    SafeRelayPublisher publisher;
+    const std::vector<Eigen::Vector3d> points = {
+      {4.165, -3.203, .873}, {3.480, -3.259, .824},
+      {3.080, -3.259, .874}, {2.806, -3.515, .778}, {2.406, -3.515, .778}};
+    double progress = 0;
+    for (std::size_t i = 0; i < points.size(); ++i) {
+      if (i) progress += (points[i] - points[i-1]).norm();
+      SafeRelayPublisher::Record r;
+      r.sample.position = points[i]; r.sample.progress = progress;
+      publisher.history_.push_back(r);
+      if (i % 2 == 0) {
+        geometry_msgs::PoseStamped pose;
+        pose.pose.position.x = points[i].x(); pose.pose.position.y = points[i].y();
+        pose.pose.position.z = points[i].z();
+        publisher.goals_.push_back({i, static_cast<uint32_t>(8 + i/2), pose});
+      }
+    }
+    // 实飞10向回挪40cm：即便净空更大也不能接受；9向10挤近也不接受。
+    EXPECT_FALSE(publisher.revisionFits(2, Eigen::Vector3d(2.806, -3.415, .868)));
+    EXPECT_FALSE(publisher.revisionFits(1, Eigen::Vector3d(2.880, -3.259, .874)));
+    EXPECT_TRUE(publisher.revisionFits(2, Eigen::Vector3d(2.206, -3.515, .778)));
+    EXPECT_TRUE(publisher.revisionFits(1, Eigen::Vector3d(3.080, -3.259, .924)));
+  }
+
+  static void queuedTailVersions() {
+    ros::NodeHandle nh("~queued_tail");
+    nh.setParam("sdf_map/resolution", .1);
+    nh.setParam("sdf_map/map_size_x", 4.0);
+    nh.setParam("sdf_map/map_size_y", 4.0);
+    nh.setParam("sdf_map/map_size_z", 2.0);
+    nh.setParam("sdf_map/ground_height", 0.0);
+    nh.setParam("sdf_map/max_ray_length", 20.0);
+    nh.setParam("sdf_map/obstacles_inflation", .1);
+    auto map = std::make_shared<SDFMap>(); map->initMap(nh);
+    for (int y = -4; y <= 4; ++y)
+      for (int z = 2; z <= 8; ++z) {
+        pcl::PointCloud<pcl::PointXYZ> cloud;
+        cloud.push_back(pcl::PointXYZ(20, .1*y + .05, .1*z + .05));
+        for (int repeat = 0; repeat < 2; ++repeat)
+          map->inputPointCloud(cloud, 1, Eigen::Vector3d(-1.9, cloud[0].y, cloud[0].z));
+      }
+    SafeRelayPublisher publisher;
+    publisher.map_ = map; publisher.frame_ = "world"; publisher.session_ = ros::Time(200);
+    publisher.hold_radius_ = .1; publisher.next_id_ = 10;
+    double progress = 0;
+    for (double x : {1.3, .6, .3, -.42, -.90, -1.1}) {
+      SafeRelayPublisher::Record r;
+      r.sample.position = Eigen::Vector3d(x, .05, .45);
+      if (!publisher.history_.empty())
+        progress += publisher.history_.back().sample.position.x() - x;
+      r.sample.progress = progress; r.sample.hold_free = r.sample.confirmed = true;
+      r.candidate = r.sample;
+      publisher.history_.push_back(r);
+    }
+    for (std::size_t index : {0U, 2U}) {
+      geometry_msgs::PoseStamped pose;
+      pose.header.stamp = ros::Time(299);
+      pose.pose.position.x = publisher.history_[index].sample.position.x();
+      pose.pose.position.y = .05; pose.pose.position.z = .45;
+      publisher.goals_.push_back({index, static_cast<uint32_t>(8 + index/2), pose});
+    }
+    publisher.goals_.back().revisions = 1; // 9.1 曾只调整过高度，仍能继续替换。
+    auto feedback = boost::make_shared<std_msgs::UInt32MultiArray>();
+    feedback->data = {200, 0, 300, 0, 0, 9}; // 8正在执行，9排队。
+    ros::Time::setNow(ros::Time(300));
+    EXPECT_FALSE(publisher.replaceQueuedTail(3)); // 无反馈仍走普通新点流程。
+    publisher.executionCallback(feedback);
+    EXPECT_TRUE(publisher.replaceQueuedTail(3)); // 72cm前方合格点替换9.1，不新增10。
+    ASSERT_EQ(2U, publisher.goals_.size());
+    EXPECT_EQ(9U, publisher.goals_.back().id);
+    EXPECT_EQ(2U, publisher.goals_.back().revisions);
+    EXPECT_EQ(10U, publisher.next_id_);
+    EXPECT_DOUBLE_EQ(-.42, publisher.goals_.back().pose.pose.position.x);
+    const auto first_stamp = publisher.goals_.back().pose.header.stamp;
+    EXPECT_TRUE(publisher.replaceQueuedTail(4));
+    EXPECT_EQ(3U, publisher.goals_.back().revisions);
+    EXPECT_GT(publisher.goals_.back().pose.header.stamp, first_stamp);
+    EXPECT_DOUBLE_EQ(-.90, publisher.goals_.back().pose.pose.position.x);
+    ros::Time::setNow(ros::Time(301));
+    EXPECT_FALSE(publisher.replaceQueuedTail(5)); // 旧状态不能把正在执行点当队尾吞掉。
+    feedback->data = {200, 0, 301, 0, 8};
+    publisher.executionCallback(feedback);
+    EXPECT_FALSE(publisher.replaceQueuedTail(5));
+    EXPECT_EQ(1U, publisher.completed_ids_.count(8));
+    feedback->data = {200, 0, 302, 0, 9};
+    publisher.executionCallback(feedback);
+    EXPECT_EQ(1U, publisher.completed_ids_.count(9));
+    feedback->data = {200, 0, 300, 0, 0, 9};
+    publisher.executionCallback(feedback);
+    EXPECT_TRUE(publisher.queued_ids_.empty());
+  }
   static void corridorBoundary(bool across_wall) {
     ros::NodeHandle nh("~corridor_boundary");
     nh.setParam("sdf_map/resolution", .1);
@@ -133,7 +225,7 @@ class SafeRelayPublisherTest {
     EXPECT_DOUBLE_EQ(.41, publisher.goals_[1].pose.pose.position.z);
     observe(9);
     EXPECT_EQ(2U, publisher.goals_.size());
-    EXPECT_FALSE(publisher.goals_[0].revised);
+    EXPECT_FALSE(publisher.goals_[0].revisions);
     EXPECT_EQ("MANUAL_WAYPOINT", publisher.last_status_);
   }
   static void run() {
@@ -505,12 +597,12 @@ class SafeRelayPublisherTest {
     const Eigen::Vector3d selected = record.candidate.position;
     EXPECT_NEAR(reference.z() + (pair_height && !block_paired_height ? 0.10 : 0.0),
                 selected.z(), 1e-6);
-    if (uniform_floor || unknown_ahead || block_paired_height) {
+    if (unknown_ahead || block_paired_height) {
       EXPECT_TRUE(selected.isApprox(reference)) << selected.transpose();
     } else {
       EXPECT_GE((selected.head<2>() - reference.head<2>()).dot(forward), 0.30);
-      EXPECT_LE((selected - reference).norm(), 0.60 + 1e-6);
-      EXPECT_GT(publisher.verticalClearance(selected), publisher.verticalClearance(reference));
+      EXPECT_LE((selected - reference).head<2>().norm(), 0.60 + 1e-6);
+      EXPECT_GE(publisher.verticalClearance(selected), publisher.verticalClearance(reference));
       EXPECT_NEAR(reference.y(), selected.y(), 1e-6);
     }
     // 同一帧不能增加确认；重复更新不从上次候选继续前移。
@@ -614,7 +706,7 @@ class SafeRelayPublisherTest {
   }
 
   static void unflownPocketAndGap(bool revision = false, bool no_gain = false,
-                                  uint32_t id = 8, bool exited = false, bool bound_exit = false) {
+                                  uint32_t id = 8, bool exited = false, bool bound_exit = false, bool already_revised = false) {
     ros::NodeHandle nh("~unflown_pocket");
     nh.setParam("sdf_map/resolution", 0.1);
     nh.setParam("sdf_map/map_size_x", 4.0);
@@ -685,6 +777,8 @@ class SafeRelayPublisherTest {
       goal.id = id;
       goal.pose.pose.position.y = no_gain ? p.y : 0.0;
       publisher.next_id_ = id + 1;
+      if (no_gain) publisher.candidate_search_radius_ = 0.01;
+      goal.revisions = already_revised ? 1 : 0;
       publisher.exited_ = exited;
       if (bound_exit) {
         auto exit = boost::make_shared<geometry_msgs::PoseStamped>();
@@ -698,11 +792,11 @@ class SafeRelayPublisherTest {
       publisher.observe(Eigen::Vector3d(1.0, 0, .45), 0, ros::Time(301));
       ros::Time::setNow(ros::Time(301));
       publisher.improveInternalGoals(false);
-      EXPECT_FALSE(goal.revised);
+      EXPECT_EQ(already_revised ? 1U : 0U, goal.revisions);
       map_frame(); publisher.improveInternalGoals(true);
-      EXPECT_FALSE(goal.revised); // 两次地图确认之前不改已下发坐标。
+      EXPECT_EQ(already_revised ? 1U : 0U, goal.revisions); // 两次地图确认之前不改已下发坐标。
       map_frame(); publisher.improveInternalGoals(true);
-      EXPECT_EQ(!no_gain, goal.revised);
+      EXPECT_EQ((already_revised ? 1U : 0U) + (no_gain ? 0U : 1U), goal.revisions);
       const auto revised = goal.pose;
       if (!no_gain) {
         EXPECT_GT(revised.pose.position.y, bound_exit ? .05 : .20);
@@ -724,7 +818,7 @@ class SafeRelayPublisherTest {
       ASSERT_EQ(1U, goals.poses.size());
       EXPECT_EQ(id, goals.poses.front().header.seq);
       ASSERT_EQ(1U, labels.markers.size());
-      EXPECT_EQ(std::to_string(id) + (no_gain ? "" : ".1"), labels.markers.front().text);
+      EXPECT_EQ(std::to_string(id) + (no_gain ? "" : (already_revised ? ".2" : ".1")), labels.markers.front().text);
       return;
     }
     // The immutable goal has its own coordinates; it is not reconstructed from
@@ -740,6 +834,12 @@ class SafeRelayPublisherTest {
 TEST(SafeRelayPublisher, ManualModeReleasesOnlyCompletedWaypointsAtFlownHeight) {
   SafeRelayPublisherTest::runManualWaypoints();
 }
+TEST(SafeRelayPublisher, LoggedNineTenRevisionCannotRetreatOrCrowdNeighbours) {
+  SafeRelayPublisherTest::loggedRevisionOrder();
+}
+TEST(SafeRelayPublisher, NearbyForwardPointReplacesQueuedTailWithSuccessiveVersions) {
+  SafeRelayPublisherTest::queuedTailVersions();
+}
 
 TEST(SafeRelayPublisher, NewEndpointsAndRetainedIssuedPoints) { SafeRelayPublisherTest::run(); }
 TEST(SafeRelayPublisher, EntranceFallbackUsesHalfMeterThenConfiguredSpacing) {
@@ -751,9 +851,12 @@ TEST(SafeRelayPublisher, RawVoxelBoxesAndLowHeightClearance) {
 TEST(SafeRelayPublisher, UnflownKnownFreePocketAndCurrentPositionGapFallback) {
   SafeRelayPublisherTest::unflownPocketAndGap();
 }
-TEST(SafeRelayPublisher, InternalPointsImproveOnceWithinSixtyCentimetresWithoutNewId) {
+TEST(SafeRelayPublisher, InternalPointUpdatesKeepIdAndLocalSearchAnchor) {
   for (uint32_t id : {1U, 7U, 8U, 9U})
     SafeRelayPublisherTest::unflownPocketAndGap(true, false, id);
+}
+TEST(SafeRelayPublisher, SecondRevisionReplacesFirstWithoutConsumingNewId) {
+  SafeRelayPublisherTest::unflownPocketAndGap(true, false, 8, false, false, true);
 }
 TEST(SafeRelayPublisher, InternalPointWithoutImprovementKeepsOriginalPoint) {
   SafeRelayPublisherTest::unflownPocketAndGap(true, true);
@@ -776,7 +879,7 @@ TEST(SafeRelayPublisher, BetterForwardVerticalPocketKeepsHeightAndDoesNotDrift) 
 TEST(SafeRelayPublisher, NegativeXProgressUsesForwardPocketInsteadOfBodyYaw) {
   SafeRelayPublisherTest::forwardVerticalPocket(true, false, false);
 }
-TEST(SafeRelayPublisher, NoBetterVerticalSpaceKeepsOriginalPoint) {
+TEST(SafeRelayPublisher, EqualVerticalSpacePrefersForwardPoint) {
   SafeRelayPublisherTest::forwardVerticalPocket(false, true, false);
 }
 TEST(SafeRelayPublisher, UnknownForwardSpaceCannotMoveHoldPoint) {
