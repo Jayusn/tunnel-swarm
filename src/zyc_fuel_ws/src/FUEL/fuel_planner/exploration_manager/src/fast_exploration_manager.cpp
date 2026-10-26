@@ -5655,7 +5655,9 @@ void FastExplorationManager::updateMissionOdometry(const Vector3d& pos, double y
   if (safe_relay_) {
     if (mission_workspace_lock_received_)
       safe_relay_->setEntrance(mission_workspace_origin_, mission_workspace_dir_);
-    safe_relay_->observe(pos, yaw, stamp);
+    const Vector3d relay_forward = task_search_manager_
+        ? task_search_manager_->recoveryForwardDirection(yaw) : mission_workspace_dir_;
+    safe_relay_->observe(pos, yaw, stamp, relay_forward);
   }
   if (!manual_path_enabled_ && fapp_exploration_crossing_enabled_ && manual_fapp_active_)
     manualFappObservationMissing(pos, yaw, true);

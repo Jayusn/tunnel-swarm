@@ -75,7 +75,8 @@ void SafeRelayPublisher::setEntrance(const Eigen::Vector3d& origin,
 }
 
 void SafeRelayPublisher::observe(const Eigen::Vector3d& position, double yaw,
-                                  const ros::Time& stamp) {
+                                  const ros::Time& stamp,
+                                  const Eigen::Vector3d& corridor_forward) {
   if (!enabled_ || !position.allFinite() || !std::isfinite(yaw)) return;
   const ros::Time measured_at = stamp.isZero() ? ros::Time::now() : stamp;
   if (!odom_stamp_.isZero() && measured_at <= odom_stamp_) return;
@@ -96,6 +97,10 @@ void SafeRelayPublisher::observe(const Eigen::Vector3d& position, double yaw,
   point.candidate = point.sample;
   point.stamp = measured_at;
   point.yaw = yaw;
+  // 保存采样时探索已确认的通道方向；短退、机头转动及后续转弯不改写旧段。
+  point.forward = corridor_forward.allFinite() && corridor_forward.head<2>().norm() > 1e-6
+      ? corridor_forward.head<2>().normalized().eval()
+      : entrance_direction_.head<2>().normalized().eval();
   history_.push_back(point);
 }
 
@@ -281,21 +286,15 @@ void SafeRelayPublisher::executionCallback(const std_msgs::UInt32MultiArray::Con
 }
 
 Eigen::Vector2d SafeRelayPublisher::routeForward(std::size_t index) const {
-  std::size_t previous = index;
-  while (previous > 0 &&
-         history_[index].sample.progress - history_[previous].sample.progress < 0.30)
-    --previous;
-  Eigen::Vector2d forward = history_[index].sample.position.head<2>() -
-                            history_[previous].sample.position.head<2>();
-  if (forward.norm() < 0.10) {
-    std::size_t next = index;
-    while (next + 1 < history_.size() &&
-           history_[next].sample.progress - history_[index].sample.progress < 0.30) ++next;
-    forward = history_[next].sample.position.head<2>() -
-              history_[index].sample.position.head<2>();
-  }
-  if (forward.norm() < 0.10) return Eigen::Vector2d::Zero();
-  return forward.normalized();
+  return history_[index].forward;
+}
+
+bool SafeRelayPublisher::newPointFits(
+    const Eigen::Vector3d& point, const Eigen::Vector2d& forward) const {
+  if (goals_.empty()) return true;
+  // .1/.2 已替换原点：新编号必须接在最新版本前方，不能用原始实飞样本作基准。
+  const auto& last = goals_.back().pose.pose.position;
+  return (point.head<2>() - Eigen::Vector2d(last.x, last.y)).dot(forward) > 1e-6;
 }
 
 bool SafeRelayPublisher::revisionFits(std::size_t index, const Eigen::Vector3d& point) const {
@@ -339,7 +338,8 @@ void SafeRelayPublisher::qualifyCandidate(
     return a.offset < b.offset;
   });
   const auto safe = [&](const Eigen::Vector3d& p) {
-    return (goal_index >= goals_.size() || revisionFits(goal_index, p)) &&
+    return (goal_index < goals_.size() ? revisionFits(goal_index, p)
+                                      : newPointFits(p, forward)) &&
         insideCorridor(reference, p) && volumeFree(p, hold_radius_, hold_half_height_) &&
         planner_->isRelayHoldDynamicallySafe(p, hold_radius_, hold_half_height_, dynamic_wait_horizon_);
   };
@@ -372,21 +372,28 @@ void SafeRelayPublisher::qualifyCandidate(
       double best_height = verticalClearance(selected);
       const double original_gap = gap;
       double best_progress = (selected.head<2>() - reference.head<2>()).dot(forward);
-      for (double distance = 0.30; distance <= search_radius + 1e-6;
-           distance += step) {
-        Eigen::Vector3d p = reference;
-        p.head<2>() += distance * forward;
+      const auto consider_forward = [&](Eigen::Vector3d p) {
+        const double distance = (p - reference).head<2>().dot(forward);
+        if (distance <= best_progress + 1e-6) return;
         p = paired(p);
         const double forward_gap = clearance(p);
         if (forward_gap + 1e-9 < hold_radius_ || forward_gap + 0.02 + 1e-9 < original_gap ||
-            !safe(p)) continue;
+            !safe(p)) return;
         const double height = verticalClearance(p);
-        if (height + 1e-9 < best_height || distance <= best_progress + 1e-6) continue;
+        if (height + 1e-9 < best_height) return;
         selected = p;
         gap = forward_gap;
         best_height = height;
         best_progress = distance;
+      };
+      for (double distance = 0.30; distance <= search_radius + 1e-6;
+           distance += step) {
+        Eigen::Vector3d p = reference;
+        p.head<2>() += distance * forward;
+        consider_forward(p);
       }
+      // 正前方贴障时也比较侧前方空地；推进不能牺牲横向净空或上下余量。
+      for (const auto& option : options) consider_forward(option.position);
     }
     // 定位原点到机体底部约0.15m，悬停优选再留0.05m余量。
     // 只在下方余量不足时尝试最小幅度抬高；受限位置保留原合格点，
@@ -486,6 +493,7 @@ bool SafeRelayPublisher::replaceQueuedTail(std::size_t route_index) {
   // 间隔不足一个常规接力段时，前方合格点优先替换排队中的末点。
   // 入口/出口不在此列表；已执行或正在执行的点不会被当作冗余队尾吞掉。
   if (!candidate.hold_free || !candidate.confirmed ||
+      candidate.clearance + 0.02 < horizontalClearance(original) ||
       delta.norm() >= config_.normal_spacing ||
       delta.dot(routeForward(tail.route_index)) < sample_spacing_ ||
       !revisionFits(goals_.size() - 1, candidate.position) ||
@@ -538,7 +546,7 @@ void SafeRelayPublisher::timerCallback(const ros::TimerEvent&) {
       samples.push_back(sample);
       continue;  // Neither the entrance nor issued points need requalification.
     }
-    // 沿实飞路线前进方向寻找空地，不用可能仍保持旧通道朝向的机头yaw。
+    // 新点和版本更新均沿该样本所属的已确认通道方向选点，回退不翻转前方。
     qualifyCandidate(record, new_map, routeForward(i));
     samples.push_back(record.candidate);
   }

@@ -7,6 +7,103 @@
 namespace fast_planner {
 class SafeRelayPublisherTest {
  public:
+  static void loggedBacktracking() {
+    SafeRelayPublisher publisher;
+    publisher.enabled_ = true;
+    publisher.setEntrance(Eigen::Vector3d::Zero(), Eigen::Vector3d::UnitX());
+    double time = 100;
+    for (double x : {4.8, 4.5, 4.38, 4.0})
+      publisher.observe(Eigen::Vector3d(x, -.50, .33), M_PI, ros::Time(time++),
+                        Eigen::Vector3d::UnitX());
+    const auto backwards_index = publisher.history_.size() - 1;
+    ASSERT_TRUE(publisher.routeForward(backwards_index).isApprox(Eigen::Vector2d::UnitX()));
+    geometry_msgs::PoseStamped pose;
+    pose.pose.position.x = 4.792; pose.pose.position.y = -.228; pose.pose.position.z = .244;
+    publisher.goals_.push_back({0, 3, pose});
+    publisher.goals_.back().revisions = 1; // 3.1 已替换 3；以 3.1 的坐标判断。
+    EXPECT_FALSE(publisher.newPointFits({3.783, -.497, .250}, publisher.routeForward(backwards_index)));
+    EXPECT_FALSE(publisher.newPointFits({4.60, -.50, .25}, publisher.routeForward(backwards_index)));
+    EXPECT_TRUE(publisher.newPointFits({5.40, -.50, .25}, publisher.routeForward(backwards_index)));
+
+    publisher.goals_.back().route_index = backwards_index;
+    publisher.goals_.back().pose.pose.position.x = 3.783;
+    publisher.goals_.back().pose.pose.position.y = -.497;
+    EXPECT_FALSE(publisher.revisionFits(0, {3.383, -.097, .250})); // 实飞 4 -> 4.1。
+    EXPECT_TRUE(publisher.revisionFits(0, {4.083, -.497, .225}));
+
+    publisher.goals_.back().pose.pose.position.x = 5.339; // 原 5。
+    EXPECT_TRUE(publisher.newPointFits({5.60, -.30, .25}, Eigen::Vector2d::UnitX()));
+    safe_relay::Sample updated;
+    updated.position = Eigen::Vector3d(5.839, -.597, .214);
+    publisher.updateGoal(0, updated); // 5.1 的实际位置立即成为新点基准。
+    EXPECT_FALSE(publisher.newPointFits({5.60, -.30, .25}, Eigen::Vector2d::UnitX()));
+    EXPECT_FALSE(publisher.newPointFits({4.790, -.276, .210}, Eigen::Vector2d::UnitX()));
+    EXPECT_TRUE(publisher.newPointFits({6.60, -.60, .25}, Eigen::Vector2d::UnitX()));
+
+    // 已确认拐弯及倒U返回仍允许推进；保存的旧段方向不随新段改写。
+    publisher.observe({5.90, -1.50, .40}, 0, ros::Time(time++), -Eigen::Vector3d::UnitY());
+    EXPECT_TRUE(publisher.newPointFits({5.80, -1.50, .40},
+                                      publisher.routeForward(publisher.history_.size() - 1)));
+    publisher.observe({4.90, -3.30, .40}, 0, ros::Time(time++), -Eigen::Vector3d::UnitX());
+    EXPECT_TRUE(publisher.newPointFits({4.90, -3.30, .40},
+                                      publisher.routeForward(publisher.history_.size() - 1)));
+    EXPECT_TRUE(publisher.routeForward(backwards_index).isApprox(Eigen::Vector2d::UnitX()));
+  }
+
+  static void forwardClearance(bool blocked_front) {
+    ros::NodeHandle nh("~forward_clearance");
+    nh.setParam("sdf_map/resolution", .1);
+    nh.setParam("sdf_map/map_size_x", 6.0);
+    nh.setParam("sdf_map/map_size_y", 6.0);
+    nh.setParam("sdf_map/map_size_z", 2.0);
+    nh.setParam("sdf_map/ground_height", 0.0);
+    nh.setParam("sdf_map/max_ray_length", 20.0);
+    nh.setParam("sdf_map/obstacles_inflation", .1);
+    auto map = std::make_shared<SDFMap>(); map->initMap(nh);
+    for (int y = -20; y <= 20; ++y)
+      for (int z = 1; z <= 12; ++z) {
+        pcl::PointCloud<pcl::PointXYZ> cloud;
+        cloud.push_back(pcl::PointXYZ(20, .1*y + .05, .1*z + .05));
+        for (int repeat = 0; repeat < 2; ++repeat)
+          map->inputPointCloud(cloud, 1, Eigen::Vector3d(-2.9, cloud[0].y, cloud[0].z));
+      }
+    SafeRelayPublisher publisher;
+    publisher.map_ = map;
+    publisher.planner_ = std::make_shared<FastPlannerManager>();
+    publisher.hold_radius_ = .30;
+    publisher.hold_half_height_ = .10;
+    geometry_msgs::PoseStamped pose;
+    pose.pose.position.x = -.10; pose.pose.position.y = .05; pose.pose.position.z = .55;
+    publisher.goals_.push_back({0, 5, pose});
+    publisher.goals_.back().revisions = 2;
+    SafeRelayPublisher::Record record;
+    record.sample.position = Eigen::Vector3d(.05, .05, .55);
+    record.candidate = record.sample;
+    record.candidate.position.x() = -.45; // 上帧后方空地也不能靠保持逻辑重新入选。
+    const Eigen::Vector3d straight_ahead(.65, .05, .55);
+    if (blocked_front) {
+      // 最靠前的直行位置只剩 0.25m 净空；侧前方仍有 >=0.50m 空地。
+      for (double z : {.45, .55, .65}) {
+        pcl::PointCloud<pcl::PointXYZ> wall;
+        wall.push_back(pcl::PointXYZ(.95, .05, z));
+        for (int repeat = 0; repeat < 10; ++repeat)
+          map->inputPointCloud(wall, 1, Eigen::Vector3d(.55, .05, z));
+      }
+      EXPECT_FALSE(publisher.volumeFree(straight_ahead, .30, .10));
+    }
+    for (int repeat = 0; repeat < 2; ++repeat)
+      publisher.qualifyCandidate(record, true, Eigen::Vector2d::UnitX());
+    ASSERT_TRUE(record.candidate.confirmed);
+    EXPECT_GT(record.candidate.position.x(), pose.pose.position.x);
+    EXPECT_GE(record.candidate.position.x(), .35 - 1e-6);
+    EXPECT_GE(record.candidate.clearance, .50 - 1e-6);
+    EXPECT_TRUE(publisher.volumeFree(record.candidate.position, .30, .10));
+    if (blocked_front)
+      EXPECT_GT(record.candidate.clearance, publisher.horizontalClearance(straight_ahead) + .20);
+    else
+      EXPECT_NEAR(.65, record.candidate.position.x(), 1e-6);
+  }
+
   static void loggedRevisionOrder() {
     SafeRelayPublisher publisher;
     const std::vector<Eigen::Vector3d> points = {
@@ -17,6 +114,7 @@ class SafeRelayPublisherTest {
       if (i) progress += (points[i] - points[i-1]).norm();
       SafeRelayPublisher::Record r;
       r.sample.position = points[i]; r.sample.progress = progress;
+      r.forward = -Eigen::Vector2d::UnitX();
       publisher.history_.push_back(r);
       if (i % 2 == 0) {
         geometry_msgs::PoseStamped pose;
@@ -51,14 +149,16 @@ class SafeRelayPublisherTest {
       }
     SafeRelayPublisher publisher;
     publisher.map_ = map; publisher.frame_ = "world"; publisher.session_ = ros::Time(200);
-    publisher.hold_radius_ = .1; publisher.next_id_ = 10;
+    publisher.hold_radius_ = .1; publisher.hold_half_height_ = .1; publisher.next_id_ = 10;
     double progress = 0;
     for (double x : {1.3, .6, .3, -.42, -.90, -1.1}) {
       SafeRelayPublisher::Record r;
       r.sample.position = Eigen::Vector3d(x, .05, .45);
+      r.forward = -Eigen::Vector2d::UnitX();
       if (!publisher.history_.empty())
         progress += publisher.history_.back().sample.position.x() - x;
       r.sample.progress = progress; r.sample.hold_free = r.sample.confirmed = true;
+      r.sample.clearance = publisher.horizontalClearance(r.sample.position);
       r.candidate = r.sample;
       publisher.history_.push_back(r);
     }
@@ -75,6 +175,11 @@ class SafeRelayPublisherTest {
     ros::Time::setNow(ros::Time(300));
     EXPECT_FALSE(publisher.replaceQueuedTail(3)); // 无反馈仍走普通新点流程。
     publisher.executionCallback(feedback);
+    const double forward_clearance = publisher.history_[3].candidate.clearance;
+    ASSERT_GT(publisher.horizontalClearance({.3, .05, .45}), .20);
+    publisher.history_[3].candidate.clearance = .10;
+    EXPECT_FALSE(publisher.replaceQueuedTail(3)); // 不能用贴障点替换较宽敞的旧版本。
+    publisher.history_[3].candidate.clearance = forward_clearance;
     EXPECT_TRUE(publisher.replaceQueuedTail(3)); // 72cm前方合格点替换9.1，不新增10。
     ASSERT_EQ(2U, publisher.goals_.size());
     EXPECT_EQ(9U, publisher.goals_.back().id);
@@ -196,7 +301,7 @@ class SafeRelayPublisherTest {
     double time = 100;
     auto observe = [&](double x) {
       ros::Time::setNow(ros::Time(time += .1));
-      publisher.observe(Eigen::Vector3d(x, 0, .27), 0, ros::Time::now());
+      publisher.observe(Eigen::Vector3d(x, 0, .27), 0, ros::Time::now(), Eigen::Vector3d::UnitX());
       publisher.timerCallback(ros::TimerEvent());
     };
     for (int i = 0; i <= 36; ++i) observe(i*.1);
@@ -258,14 +363,14 @@ class SafeRelayPublisherTest {
     };
     spin();
     ros::Time::setNow(ros::Time(100));
-    publisher.observe(Eigen::Vector3d(-0.2, 0, 1), 0, ros::Time(99));
+    publisher.observe(Eigen::Vector3d(-0.2, 0, 1), 0, ros::Time(99), Eigen::Vector3d::UnitX());
     EXPECT_TRUE(publisher.history_.empty());
     publisher.setEntrance(Eigen::Vector3d(0, 0, 1), Eigen::Vector3d::UnitX());
-    publisher.observe(Eigen::Vector3d(-0.1, 0, 1), 0, ros::Time(99.1));
+    publisher.observe(Eigen::Vector3d(-0.1, 0, 1), 0, ros::Time(99.1), Eigen::Vector3d::UnitX());
     EXPECT_TRUE(publisher.history_.empty());
     // One moving traversal, without stopping or revisiting any point.
     for (int i = 0; i <= 60; ++i)
-      publisher.observe(Eigen::Vector3d(0.1 * i, 0, 1), 0, ros::Time(99.2 + 0.01 * i));
+      publisher.observe(Eigen::Vector3d(0.1 * i, 0, 1), 0, ros::Time(99.2 + 0.01 * i), Eigen::Vector3d::UnitX());
     ASSERT_EQ(61U, publisher.history_.size());
     publisher.timerCallback(ros::TimerEvent());
     EXPECT_TRUE(publisher.goals_.empty());  // No map evidence yet.
@@ -379,7 +484,7 @@ class SafeRelayPublisherTest {
     EXPECT_EQ(2U, publisher.goals_.size());
     ASSERT_EQ(2U, received_goals.poses.size());
     EXPECT_EQ(61U, received_route.poses.size());
-    publisher.observe(Eigen::Vector3d(6, 0, 1), 0, ros::Time(102));
+    publisher.observe(Eigen::Vector3d(6, 0, 1), 0, ros::Time(102), Eigen::Vector3d::UnitX());
     publisher.timerCallback(ros::TimerEvent());
     spin();
     EXPECT_EQ("STALE_MAP", publisher.last_status_);
@@ -388,10 +493,10 @@ class SafeRelayPublisherTest {
     EXPECT_EQ(publisher.session_, received_goals.header.stamp);
 
     // Continue to retain only real, time-ordered odometry observations.
-    publisher.observe(Eigen::Vector3d(6.8, 0, 1), 0, ros::Time(102.1));
+    publisher.observe(Eigen::Vector3d(6.8, 0, 1), 0, ros::Time(102.1), Eigen::Vector3d::UnitX());
     const auto count = publisher.history_.size();
     EXPECT_EQ(62U, count);
-    publisher.observe(Eigen::Vector3d(6.9, 0, 1), 0, ros::Time(101));
+    publisher.observe(Eigen::Vector3d(6.9, 0, 1), 0, ros::Time(101), Eigen::Vector3d::UnitX());
     EXPECT_EQ(count, publisher.history_.size());
   }
 
@@ -426,7 +531,7 @@ class SafeRelayPublisherTest {
     publisher.setEntrance(Eigen::Vector3d(0, 0, 1), Eigen::Vector3d::UnitX());
     auto observe = [&](int i) {
       publisher.observe(Eigen::Vector3d(i * 0.1, 0, 1), 0,
-                        ros::Time(199.8 + i * 0.01));
+                        ros::Time(199.8 + i * 0.01), Eigen::Vector3d::UnitX());
     };
     auto refresh = [&](double obstacle_x) {
       for (int frame = 0; frame < 2; ++frame) {
@@ -597,8 +702,16 @@ class SafeRelayPublisherTest {
     const Eigen::Vector3d selected = record.candidate.position;
     EXPECT_NEAR(reference.z() + (pair_height && !block_paired_height ? 0.10 : 0.0),
                 selected.z(), 1e-6);
-    if (unknown_ahead || block_paired_height) {
+    if (unknown_ahead) {
       EXPECT_TRUE(selected.isApprox(reference)) << selected.transpose();
+    } else if (block_paired_height) {
+      // 新搜索可向前利用天花板前的已知空地，但不能在被挡住的高段借用旧低Z。
+      EXPECT_GT(selected.x(), reference.x());
+      EXPECT_LT(selected.x(), reference.x() + .30);
+      EXPECT_DOUBLE_EQ(publisher.routeHeight(record, selected), selected.z());
+      EXPECT_TRUE(publisher.volumeFree(selected, .30, .10));
+      EXPECT_GE(publisher.verticalClearance(selected), publisher.verticalClearance(reference));
+      EXPECT_FALSE(publisher.volumeFree(reference + Eigen::Vector3d(.40, 0, .10), .30, .10));
     } else {
       EXPECT_GE((selected.head<2>() - reference.head<2>()).dot(forward), 0.30);
       EXPECT_LE((selected - reference).head<2>().norm(), 0.60 + 1e-6);
@@ -737,7 +850,7 @@ class SafeRelayPublisherTest {
     publisher.setEntrance(Eigen::Vector3d(-1.0, 0.0, 0.45), Eigen::Vector3d::UnitX());
     for (int i = 0; i <= 15; ++i)
       publisher.observe(Eigen::Vector3d(-1.0 + 0.1*i, 0.0, 0.45), 0,
-                        ros::Time(299.8 + 0.01*i));
+                        ros::Time(299.8 + 0.01*i), Eigen::Vector3d::UnitX());
     publisher.timerCallback(ros::TimerEvent());
     EXPECT_TRUE(publisher.goals_.empty()); // UNKNOWN must not create an unflown goal.
     const auto map_frame = [&]() {
@@ -789,7 +902,7 @@ class SafeRelayPublisherTest {
         publisher.exitCallback(exit);
       }
       const Eigen::Vector3d original(goal.pose.pose.position.x, goal.pose.pose.position.y, p.z);
-      publisher.observe(Eigen::Vector3d(1.0, 0, .45), 0, ros::Time(301));
+      publisher.observe(Eigen::Vector3d(1.0, 0, .45), 0, ros::Time(301), Eigen::Vector3d::UnitX());
       ros::Time::setNow(ros::Time(301));
       publisher.improveInternalGoals(false);
       EXPECT_EQ(already_revised ? 1U : 0U, goal.revisions);
@@ -833,6 +946,15 @@ class SafeRelayPublisherTest {
 };
 TEST(SafeRelayPublisher, ManualModeReleasesOnlyCompletedWaypointsAtFlownHeight) {
   SafeRelayPublisherTest::runManualWaypoints();
+}
+TEST(SafeRelayPublisher, LoggedFourAndSixStayAheadOfLatestDecimalVersionDuringBacktrack) {
+  SafeRelayPublisherTest::loggedBacktracking();
+}
+TEST(SafeRelayPublisher, NewCandidateSearchSelectsForwardInsteadOfRetainedRearPocket) {
+  SafeRelayPublisherTest::forwardClearance(false);
+}
+TEST(SafeRelayPublisher, ForwardSelectionKeepsWideClearanceInsteadOfClosestFrontObstacle) {
+  SafeRelayPublisherTest::forwardClearance(true);
 }
 TEST(SafeRelayPublisher, LoggedNineTenRevisionCannotRetreatOrCrowdNeighbours) {
   SafeRelayPublisherTest::loggedRevisionOrder();

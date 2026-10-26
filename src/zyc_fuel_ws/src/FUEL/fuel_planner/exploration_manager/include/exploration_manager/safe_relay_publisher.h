@@ -23,7 +23,8 @@ class SafeRelayPublisher {
   void initialize(ros::NodeHandle& nh, std::shared_ptr<SDFMap> map,
                   std::shared_ptr<FastPlannerManager> planner);
   void setEntrance(const Eigen::Vector3d& origin, const Eigen::Vector3d& direction);
-  void observe(const Eigen::Vector3d& position, double yaw, const ros::Time& stamp);
+  void observe(const Eigen::Vector3d& position, double yaw, const ros::Time& stamp,
+               const Eigen::Vector3d& corridor_forward);
   void recordManualWaypoint(const Eigen::Vector3d& point, double yaw, const ros::Time& stamp);
 
  private:
@@ -33,6 +34,7 @@ class SafeRelayPublisher {
     safe_relay::Sample candidate;
     ros::Time stamp;
     double yaw{0.0};
+    Eigen::Vector2d forward{Eigen::Vector2d::Zero()};
     int confirmations{0};
   };
   struct Goal {
@@ -47,6 +49,7 @@ class SafeRelayPublisher {
   void exitCallback(const geometry_msgs::PoseStamped::ConstPtr& message);
   void executionCallback(const std_msgs::UInt32MultiArray::ConstPtr& message);
   Eigen::Vector2d routeForward(std::size_t index) const;
+  bool newPointFits(const Eigen::Vector3d& point, const Eigen::Vector2d& forward) const;
   bool revisionFits(std::size_t index, const Eigen::Vector3d& point) const;
   bool replaceQueuedTail(std::size_t route_index);
   void updateGoal(std::size_t index, const safe_relay::Sample& candidate);
