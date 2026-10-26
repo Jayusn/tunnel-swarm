@@ -1964,7 +1964,7 @@ class LeaderSafePathFollower {
       const auto expected = worldToFollower(relay_waypoints_[active_relay_index_].position);
       const bool changed_endpoint = status == "TRAJECTORY_PUBLISHED" &&
           (!accepted_valid || !std::isfinite(accepted.x) || !std::isfinite(accepted.y) ||
-           !std::isfinite(accepted.z) || distance3d(accepted, expected) > 0.03);
+           !std::isfinite(accepted.z) || distance3d(accepted, expected) > 0.15);
       if (status == "PLANNING_FAILED" || status == "GOAL_REJECTED_OUTSIDE_MAP" ||
           changed_endpoint) {
         setDiffWaitPositionHold(true, changed_endpoint

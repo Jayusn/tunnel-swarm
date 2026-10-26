@@ -73,11 +73,15 @@ class LeaderSafeRelayTest {
     EXPECT_LT(distance3d(expected, goal.pose.position), 1e-9); // No yaw offset or height flattening.
 
     auto status = boost::make_shared<std_msgs::String>();
-    status->data = "TRAJECTORY_PUBLISHED goal_stamp_ns=" +
-        std::to_string(follower.diff_active_goal_stamp_ns_) + " 0 0 0";
+    std::ostringstream rejected_status;
+    rejected_status.precision(17);
+    rejected_status << "TRAJECTORY_PUBLISHED goal_stamp_ns="
+                    << follower.diff_active_goal_stamp_ns_ << " "
+                    << expected.x + 0.16 << " " << expected.y << " " << expected.z;
+    status->data = rejected_status.str();
     follower.diffStatusCallback(status);
     EXPECT_TRUE(follower.diff_wait_hold_active_);
-    EXPECT_FALSE(follower.diff_accepted_goal_valid_); // Planner projection cannot change checked B.
+    EXPECT_FALSE(follower.diff_accepted_goal_valid_); // 16 cm exceeds the endpoint tolerance.
     for (int i = 0; i < 4; ++i) {
       follower.diff_goal_published_ = true;
       status->data = "PLANNING_FAILED goal_stamp_ns=" +
@@ -92,11 +96,11 @@ class LeaderSafeRelayTest {
     accepted_status.precision(17);
     accepted_status << "TRAJECTORY_PUBLISHED goal_stamp_ns="
                     << follower.diff_active_goal_stamp_ns_ << " "
-                    << expected.x << " " << expected.y << " " << expected.z;
+                    << expected.x + 0.14 << " " << expected.y << " " << expected.z;
     status->data = accepted_status.str();
     follower.diffStatusCallback(status);
     EXPECT_TRUE(follower.diff_accepted_goal_valid_);
-    EXPECT_FALSE(follower.diff_wait_hold_active_);
+    EXPECT_FALSE(follower.diff_wait_hold_active_); // 14 cm is accepted and releases HOLD.
     status->data = "PLANNING_FAILED goal_stamp_ns=" +
         std::to_string(follower.diff_active_goal_stamp_ns_ - 1);
     follower.diffStatusCallback(status);
