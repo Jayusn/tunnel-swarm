@@ -3576,7 +3576,7 @@ public:
         cloud.front().x=-1.9; map.inputPointCloud(cloud,1,Vector3d(1.9,y,z));
       }
     // 膨胀层在后方/前方/前后，原始足迹自由，复现方向不同的边缘受阻。
-    const double xmin=scenario==1?0.0:-.6, xmax=scenario==0?.05:.6;
+    const double xmin=(scenario==1||scenario>=5)?0.0:-.6, xmax=scenario==0?.05:.6;
     for (double x=xmin; x<=xmax+1e-6; x+=.05)
       for (double y=-.05; y<=.05+1e-6; y+=.05)
         for (double z=.9; z<=1.1+1e-6; z+=.05) map.setOccupied(Vector3d(x+.025,y+.025,z+.025));
@@ -3600,6 +3600,9 @@ public:
     manager.task_search_manager_->stable_progress_direction_=Eigen::Vector2d(scenario==3?-1:1,0);
     manager.task_search_manager_->stable_progress_direction_valid_=true;
     manager.recovery_odom_history_={pos-Vector3d(.5,0,0),pos};
+    // 最近历史含向障碍一侧的侧移，不能代替当前高度的正后方候选。
+    if (scenario==5) manager.recovery_odom_history_={pos+Vector3d(.3,.15,.1),pos};
+    if (scenario==6) manager.recovery_odom_history_.clear();
     manager.task_search_manager_->visited_positions_=manager.recovery_odom_history_;
     if (scenario==1) {
       EXPECT_TRUE(manager.task_search_manager_->turnDirectionRetracesVisitedRoute(
@@ -3608,7 +3611,24 @@ public:
     manager.manual_fapp_active_=true;
     manager.manual_fapp_hold_height_=pos.z();
     ASSERT_TRUE(manager.planner_manager_->isControlledEscapePosition(pos));
-    if(scenario==4) {
+    if(scenario>=5) {
+      manager.manual_path_enabled_=manager.manual_path_exploration_style_=true;
+      manager.manual_path_wait_for_trigger_=true;
+      manager.manual_path_.points={pos+Vector3d(1.,0,0)};
+      manager.startManualWaypointMission();
+      ASSERT_TRUE(manager.planFailedMotionEscape(pos,zero,zero,zero));
+      EXPECT_TRUE(manager.currentPlanIsEscapeStep());
+      EXPECT_EQ(0u,manager.manual_path_.next);
+      auto& curve=manager.planner_manager_->local_data_.position_traj_;
+      double previous_x=pos.x();
+      for(double t=0;t<=curve.getTimeSum();t+=.02) {
+        const Vector3d point=curve.evaluateDeBoorT(t);
+        EXPECT_LE(point.x(),previous_x+1e-6);
+        EXPECT_NEAR(point.y(),pos.y(),1e-6);
+        EXPECT_NEAR(point.z(),pos.z(),1e-6);
+        previous_x=point.x();
+      }
+    } else if(scenario==4) {
       EXPECT_FALSE(manager.planFailedMotionEscape(pos,zero,zero,zero));
       manager.startManualWaypointMission();
       ASSERT_TRUE(manager.planFailedMotionEscape(pos,zero,zero,zero));
@@ -3622,7 +3642,10 @@ public:
     const Vector3d delta=manager.ed_->next_goal_-pos;
     EXPECT_NEAR(delta.z(),0,1e-6);
     if (scenario==0) { EXPECT_GT(delta.x(),.04); EXPECT_NEAR(delta.y(),0,1e-6); }
-    if (scenario==1) { EXPECT_LT(delta.x(),-.04); EXPECT_NEAR(delta.y(),0,1e-6); }
+    if (scenario==1||scenario>=5) {
+      EXPECT_LT(delta.x(),-.04); EXPECT_GE(delta.x(),-.20-1e-6);
+      EXPECT_NEAR(delta.y(),0,1e-6);
+    }
     if (scenario==2) { EXPECT_GT(std::abs(delta.y()),.04); }
     if (scenario==3) {
       EXPECT_LT(delta.x(),-.04);
@@ -4289,6 +4312,14 @@ TEST(InflationEscape, ImprovingContactAllowsIncrementalInflatedEndpoint) {
 
 TEST(InflationEscape, ManualWaypointFailureUsesRightSpaceWithoutConsumingGoal) {
   fast_planner::TurnEscapeTest::runDirectionalEscape(4);
+}
+
+TEST(InflationEscape, ManualWaypointBacksStraightWhenHistoryDoesNotPointBackward) {
+  fast_planner::TurnEscapeTest::runDirectionalEscape(5);
+}
+
+TEST(InflationEscape, ManualWaypointBacksStraightWithoutOdometryHistory) {
+  fast_planner::TurnEscapeTest::runDirectionalEscape(6);
 }
 
 TEST(ManualSuspended, CloseDynamicObstacleUsesVerticalDescentThenCrosses) {

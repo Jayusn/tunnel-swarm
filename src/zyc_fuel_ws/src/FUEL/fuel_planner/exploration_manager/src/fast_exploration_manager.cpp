@@ -2995,7 +2995,7 @@ bool FastExplorationManager::planInflationHistoryEscape(
   incremental_escape_plan_ = false;
   escape_step_plan_ = false;
   const bool controlled_start = planner_manager_->isControlledEscapePosition(pos);
-  if (!inflation_history_escape_enabled_ || recovery_odom_history_.size() < 2 ||
+  if (!inflation_history_escape_enabled_ ||
       (!controlled_start && !(after_failure && planner_manager_->isPositionSafe(pos))))
     return false;
 
@@ -3116,6 +3116,12 @@ bool FastExplorationManager::planInflationHistoryEscape(
                         false,0,"corridor-forward-exit",max_distance);
   }
   if (front_blocked) {
+    // 后方检查通过就直接生成等高直退小步，不能用含侧移/高度变化的历史代替。
+    // 仍走同一接触、净空与样条检查；优先于历史回退和斜向侧移。
+    if (!rear_blocked)
+      validateAndTruncate(
+          inflation_escape::buildDirectionalPath(pos,-forward,step_distance,sample_step),
+          true,-1,"corridor-backward-step",step_distance);
     auto history=inflation_escape::buildBackwardHistoryPath(
         pos,recovery_odom_history_,max_distance,recovery_history_spacing_);
     // 动态穿越保持本次实际高度，不沿历史高度下降/抬升。
@@ -3147,10 +3153,10 @@ bool FastExplorationManager::planInflationHistoryEscape(
   }
   ROS_WARN_THROTTLE(0.5,"[inflation_history_escape] front_blocked=%d rear_blocked=%d "
       "candidates=%zu; prefer %s, then mapped side space.",
-      front_blocked,rear_blocked,candidates.size(),front_blocked?"history backtrack":"forward step");
+      front_blocked,rear_blocked,candidates.size(),front_blocked?"straight rear step/history backtrack":"forward step");
   if (candidates.empty()) {
     ROS_WARN_THROTTLE(0.5,
-                      "[inflation_history_escape] no improving forward/history/mapped-side step "
+                      "[inflation_history_escape] no improving forward/rear/history/mapped-side step "
                       "within %.2fm (start_contacts=%d).",
                       max_distance, start_contacts);
     return false;
@@ -3190,9 +3196,12 @@ bool FastExplorationManager::planInflationHistoryEscape(
     // 脱障保持当前朝向，恒定零航向也使用确定性样条，避免普通优化器退化。
     if (!planner_manager_->planYawTurnInPlace(yaw,yaw[0])) continue;
     escape_step_plan_ = true;
-    ROS_ERROR("[inflation_history_escape] publish %s %s escape %.2fm "
+    const double longitudinal = (ed_->next_goal_-pos).dot(forward);
+    ROS_WARN("[inflation_history_escape] selected %s %s escape %.2fm "
               "to (%.2f %.2f %.2f), yaw held at %.1fdeg, start_contacts=%d.",
-              candidate.backward ? "BACKWARD" : "FORWARD", candidate.label,
+              longitudinal < -0.03 ? "BACKWARD" :
+                  (longitudinal > 0.03 ? "FORWARD" : (candidate.backward ? "BACKTRACK" : "SIDE")),
+              candidate.label,
               candidate.length,
               ed_->next_goal_.x(), ed_->next_goal_.y(), ed_->next_goal_.z(),
               yaw[0] * 180.0 / M_PI, start_contacts);
