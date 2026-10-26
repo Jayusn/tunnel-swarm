@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <launch>
+  <!-- 通道内规划高度上限；出口、门外搜索及降落沿用各自原配置。 -->
+  <arg name="corridor_max_height" default="1.50"/>
+  <param name="/exploration_node/mission/task_search/corridor_max_height" value="$(arg corridor_max_height)" type="double"/>
   <!-- 定位中心下方的机体净空：障碍顶部0.60m时中心至少0.80m。 -->
   <arg name="footprint_bottom_clearance" default="0.20"/>
   <!-- 到出口后、搜索降落码前沿出口方向前进的距离，单位m。 -->

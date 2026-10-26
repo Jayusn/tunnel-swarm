@@ -227,7 +227,7 @@
     <param name="search_manager/entry_goal_y" value="1.15" />
     <param name="search_manager/entry_goal_z" value="0.80" />
     <param name="search_manager/entry_arrive_dist" value="0.30" />
-    <param name="search_manager/entry_reach_by_search_region" value="true" />
+    <param name="search_manager/entry_reach_by_search_region" value="false" />
     <param name="search_manager/publish_entry_marker" value="true" />
     <param name="search_manager/publish_pre_entry_pos_cmd" value="true" />
     <param name="search_manager/entry_max_speed" value="1.0" />
