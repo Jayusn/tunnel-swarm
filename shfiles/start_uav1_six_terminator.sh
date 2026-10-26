@@ -343,7 +343,7 @@ run_detection_pane() {
 }
 
 run_planner_pane() {
-  local down_camera_pid=""
+  local down_camera_pid="" visualization_pid=""
 
   stop_owned_down_camera() {
     if [[ -n "${down_camera_pid}" ]] && kill -0 "${down_camera_pid}" 2>/dev/null; then
@@ -353,10 +353,28 @@ run_planner_pane() {
     fi
   }
 
+  stop_owned_planner_helpers() {
+    stop_owned_down_camera
+    if [[ -n "${visualization_pid}" ]] && kill -0 "${visualization_pid}" 2>/dev/null; then
+      printf '[停止] 关闭本分屏启动的 UAV1 可视化（PID %s）\n' "${visualization_pid}"
+      kill -INT "${visualization_pid}" 2>/dev/null || true
+      wait "${visualization_pid}" 2>/dev/null || true
+    fi
+  }
+
   pane_init 6 双机航点接力与UAV1 Diff
   verify_follower_binary_fresh || keep_pane_open
-  wait_for_topic_messages "${ODOM_TOPIC}" "${CLOUD_TOPIC}" \
-    /UAV0/fast_lio/Odom_high_freq || keep_pane_open
+  wait_for_ros_master || keep_pane_open
+  printf '[启动] 提前加载 UAV1 RViz；传感器数据就绪后自动显示\n'
+  roslaunch exploration_control uav1_relay_visualization.launch &
+  visualization_pid=$!
+  trap stop_owned_planner_helpers EXIT INT TERM
+  if ! wait_for_topic_messages "${ODOM_TOPIC}" "${CLOUD_TOPIC}" \
+      /UAV0/fast_lio/Odom_high_freq; then
+    stop_owned_planner_helpers
+    trap - EXIT INT TERM
+    keep_pane_open
+  fi
   # 没有发布者时直接启动相机，避免首次启动必等 5 秒。
   if timeout --kill-after=1s 5s rostopic list -p "${DOWN_CAMERA_TOPIC}" 2>/dev/null |
       grep -Fx "${DOWN_CAMERA_TOPIC}" >/dev/null &&
@@ -367,22 +385,22 @@ run_planner_pane() {
     sh "${MATCH_WS}/shfiles/run_uav1_sensor_stack.sh" landing &
     down_camera_pid=$!
   fi
-  trap stop_owned_down_camera EXIT INT TERM
   if ! wait_for_topic_message "${DOWN_CAMERA_TOPIC}"; then
-    stop_owned_down_camera
+    stop_owned_planner_helpers
     trap - EXIT INT TERM
     keep_pane_open
   fi
-  printf '[启动] UAV1 航点接力管理器、坐标对齐、Diff-Planner、RViz与搜索降落节点\n'
+  printf '[启动] UAV1 航点接力管理器、坐标对齐、Diff-Planner与搜索降落节点\n'
   printf '[安全] 不执行预设航点，只接收前机满足0.70m放行门槛后发布的接力目标。\n'
   local dynamic_args=()
   [[ -n "${DETECTOR}" ]] && dynamic_args+=("detector_backend:=${DETECTOR}")
   [[ -n "${DYNAMIC_AVOIDANCE}" ]] && dynamic_args+=("enable_fapp_dynamic_avoidance:=${DYNAMIC_AVOIDANCE}")
   roslaunch exploration_control leader_safe_path_follower.launch "${dynamic_args[@]}" \
+    enable_diff_rviz:=false \
     fapp_verified_preset:=true object_motion_evidence_enabled:=true use_nmpc_landing:=true \
     fapp_planner_priority:="${PLANNER_PRIORITY}"
   local launch_status=$?
-  stop_owned_down_camera
+  stop_owned_planner_helpers
   trap - EXIT INT TERM
   printf '[退出] 双机航点接力分屏，返回码=%s\n' "${launch_status}"
   keep_pane_open
