@@ -207,6 +207,87 @@ public:
     EXPECT_LT((end-path.back()).norm(),1e-9);
   }
 
+  static void runCloseFappDescent(int scenario) {
+    ros::NodeHandle nh("~close_fapp_descent");
+    nh.setParam("mission/task_search/min_height",0.10);
+    nh.setParam("manager/footprint_bottom_clearance",0.20);
+    nh.setParam("fapp/enabled",true);
+    nh.setParam("fapp/memory_enabled",true);
+    nh.setParam("fapp/planner_priority",true);
+    FastExplorationManager manager;
+    initialize(nh,manager,true);
+    auto& planner=*manager.planner_manager_;
+    auto& map=*manager.sdf_map_;
+    for(int x=0;x<map.mp_->map_voxel_num_.x();++x)
+      for(int y=0;y<map.mp_->map_voxel_num_.y();++y)
+        for(int z=0;z<map.mp_->map_voxel_num_.z();++z) {
+          const Eigen::Vector3i id(x,y,z); Vector3d p; map.indexToPos(id,p);
+          const bool blocked=(scenario==1||scenario==2)&&p.z()<.30;
+          map.md_->occupancy_buffer_[map.toAddress(id)]=blocked
+              ? (scenario==1 ? map.mp_->clamp_min_log_-map.mp_->unknown_flag_ : map.mp_->clamp_max_log_)
+              : map.mp_->clamp_min_log_;
+          map.md_->occupancy_buffer_inflate_[map.toAddress(id)]=blocked&&scenario==2;
+        }
+    map.md_->local_bound_min_.setZero();
+    map.md_->local_bound_max_=map.mp_->map_voxel_num_-Eigen::Vector3i::Ones();
+    map.updateESDF3d();
+    planner.fapp_watched_valid_=true;
+    planner.fapp_watched_lower_=Vector3d(-.30,-.40,scenario==4?.12:.40);
+    planner.fapp_watched_upper_=Vector3d(.30,.40,.90);
+    planner.fapp_watched_state_.stamp=ros::Time::now().toSec();
+    manager.manual_path_enabled_=manager.manual_path_exploration_style_=true;
+    manager.manual_path_wait_for_trigger_=true;
+    manager.startManualWaypointMission();
+    manager.manual_path_use_astar_=true;
+    manager.manual_path_max_segment_length_=1.2;
+    manager.manual_path_.points={Vector3d(scenario==5?.20:.80,0,.65),Vector3d(1.,0,.65)};
+    manager.manual_fapp_active_=true;
+    manager.manual_fapp_forward_=Vector3d::UnitX();
+    manager.manual_fapp_hold_height_=.65;
+    const Vector3d start(scenario==3?0.:(scenario==5?-1.:-.425),0,.65),zero=Vector3d::Zero();
+    if(scenario>=1&&scenario<=4) {
+      EXPECT_FALSE(manager.planFappVerticalDescent(start,zero));
+      EXPECT_FALSE(manager.vertical_detour_plan_);
+      return;
+    }
+    ASSERT_EQ(SUCCEED,manager.planExploreMotion(start,zero,zero,zero));
+    EXPECT_EQ(0u,manager.manual_path_.next);
+    if(scenario==5) {
+      EXPECT_TRUE(manager.manual_fapp_curve_active_);
+      EXPECT_NEAR(manager.ed_->next_goal_.x(),.20,1e-6);
+      EXPECT_NEAR(manager.ed_->next_goal_.z(),.34,1e-6);
+      manager.recordPublishedTrajectoryHeight();
+      const Vector3d end=manager.ed_->next_goal_;
+      EXPECT_FALSE(manager.manualFappObservationMissing(end,0.,true));
+      EXPECT_TRUE(manager.manual_fapp_active_); // 到中间航点仍未通过整个包络。
+      manager.manual_path_.next=1;
+      ASSERT_EQ(SUCCEED,manager.planExploreMotion(end,zero,zero,zero));
+      EXPECT_GT(manager.ed_->next_goal_.x(),.45);
+      return;
+    }
+    EXPECT_TRUE(manager.vertical_detour_plan_);
+    EXPECT_FALSE(manager.manual_fapp_curve_active_);
+    const Vector3d live=start+Vector3d(-.01,.02,.01);
+    ASSERT_TRUE(manager.reanchorVerticalDetourForRelease(live,zero));
+    auto& curve=planner.local_data_.position_traj_;
+    double previous_z=live.z();
+    for(double t=0;t<=curve.getTimeSum();t+=.02) {
+      const Vector3d p=curve.evaluateDeBoorT(t);
+      EXPECT_NEAR(p.x(),live.x(),1e-6); EXPECT_NEAR(p.y(),live.y(),1e-6);
+      EXPECT_LE(p.z(),previous_z+1e-6); previous_z=p.z();
+      EXPECT_TRUE(planner.isKnownFreePosition(p));
+      EXPECT_TRUE(planner.isWatchedFappPositionSafe(p));
+    }
+    manager.recordPublishedTrajectoryHeight();
+    EXPECT_NEAR(manager.manual_fapp_hold_height_,.34,1e-6);
+    const Vector3d end=manager.ed_->next_goal_;
+    ASSERT_EQ(SUCCEED,manager.planExploreMotion(end,zero,zero,zero));
+    EXPECT_FALSE(manager.vertical_detour_plan_);
+    EXPECT_TRUE(manager.manual_fapp_curve_active_);
+    EXPECT_GT(manager.ed_->next_goal_.x(),.45);
+    EXPECT_EQ(0u,manager.manual_path_.next);
+  }
+
   static void runBottomClearance(bool search) {
     ros::NodeHandle nh("~bottom_clearance");
     nh.setParam("manager/footprint_bottom_clearance", 0.20);
@@ -3499,6 +3580,15 @@ public:
     for (double x=xmin; x<=xmax+1e-6; x+=.05)
       for (double y=-.05; y<=.05+1e-6; y+=.05)
         for (double z=.9; z<=1.1+1e-6; z+=.05) map.setOccupied(Vector3d(x+.025,y+.025,z+.025));
+    if (scenario==4) {
+      // 航点模式前后受阻，只有右侧能离开膨胀层。
+      for(double x=-1.5;x<=1.5;x+=.05)
+        for(double y=.10;y<=1.5;y+=.05)
+          for(double z=.9;z<=1.1;z+=.05) map.setOccupied(Vector3d(x,y,z));
+      manager.manual_path_enabled_=manager.manual_path_exploration_style_=true;
+      manager.manual_path_wait_for_trigger_=true;
+      manager.manual_path_.points={pos+Vector3d(1.,0,0)};
+    }
     if (scenario==3) {
       // 接触数可先减少，但20cm末端仍在膨胀层，验证分步发布复核。
       for (double z=.90; z<=1.15; z+=.05) {
@@ -3518,7 +3608,17 @@ public:
     manager.manual_fapp_active_=true;
     manager.manual_fapp_hold_height_=pos.z();
     ASSERT_TRUE(manager.planner_manager_->isControlledEscapePosition(pos));
-    ASSERT_TRUE(manager.planInflationHistoryEscape(pos,zero,zero,zero));
+    if(scenario==4) {
+      EXPECT_FALSE(manager.planFailedMotionEscape(pos,zero,zero,zero));
+      manager.startManualWaypointMission();
+      ASSERT_TRUE(manager.planFailedMotionEscape(pos,zero,zero,zero));
+      EXPECT_TRUE(manager.currentPlanIsEscapeStep());
+      EXPECT_EQ(0u,manager.manual_path_.next);
+      EXPECT_TRUE(manager.manual_path_.points.front().isApprox(pos+Vector3d(1.,0,0)));
+      EXPECT_LT(manager.ed_->next_goal_.y(),pos.y()-.04);
+    } else {
+      ASSERT_TRUE(manager.planInflationHistoryEscape(pos,zero,zero,zero));
+    }
     const Vector3d delta=manager.ed_->next_goal_-pos;
     EXPECT_NEAR(delta.z(),0,1e-6);
     if (scenario==0) { EXPECT_GT(delta.x(),.04); EXPECT_NEAR(delta.y(),0,1e-6); }
@@ -4185,6 +4285,29 @@ TEST(InflationEscape, BothEndsBlockedUsesMappedSideSpace) {
 
 TEST(InflationEscape, ImprovingContactAllowsIncrementalInflatedEndpoint) {
   fast_planner::TurnEscapeTest::runDirectionalEscape(3);
+}
+
+TEST(InflationEscape, ManualWaypointFailureUsesRightSpaceWithoutConsumingGoal) {
+  fast_planner::TurnEscapeTest::runDirectionalEscape(4);
+}
+
+TEST(ManualSuspended, CloseDynamicObstacleUsesVerticalDescentThenCrosses) {
+  fast_planner::TurnEscapeTest::runCloseFappDescent(0);
+}
+TEST(ManualSuspended, VerticalDynamicDescentRejectsUnknownBodyColumn) {
+  fast_planner::TurnEscapeTest::runCloseFappDescent(1);
+}
+TEST(ManualSuspended, VerticalDynamicDescentRejectsOccupiedBodyColumn) {
+  fast_planner::TurnEscapeTest::runCloseFappDescent(2);
+}
+TEST(ManualSuspended, VerticalDynamicDescentRejectsHistoricalOverlap) {
+  fast_planner::TurnEscapeTest::runCloseFappDescent(3);
+}
+TEST(ManualSuspended, VerticalDynamicDescentRespectsMinimumHeight) {
+  fast_planner::TurnEscapeTest::runCloseFappDescent(4);
+}
+TEST(ManualSuspended, IntermediateWaypointInsideEnvelopeContinuesLowCrossing) {
+  fast_planner::TurnEscapeTest::runCloseFappDescent(5);
 }
 
 TEST(PassableTurn, RightPassageBeatsLeftSlit) { fast_planner::TurnEscapeTest::runPassableTurn(0); }

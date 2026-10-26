@@ -180,6 +180,7 @@ private:
   double manual_fapp_curve_side_{0.0};
   bool buildManualFappUnderpassPath(const Vector3d& pos, const Vector3d& waypoint,
                                    std::vector<Vector3d>& path);
+  bool planFappVerticalDescent(const Vector3d& pos, const Vector3d& yaw);
   ManualWaypointPath manual_path_;
   bool manual_local_goal_enabled_{false}, manual_local_goal_selected_{false};
   double manual_local_goal_radius_{0.60};
