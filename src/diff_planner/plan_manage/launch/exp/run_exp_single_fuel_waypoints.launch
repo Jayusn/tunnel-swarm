@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <launch>
+  <!-- 定位中心下方的机体净空：障碍顶部0.60m时中心至少0.80m。 -->
+  <arg name="footprint_bottom_clearance" default="0.20"/>
   <!-- 到出口后、搜索降落码前沿出口方向前进的距离，单位m。 -->
   <arg name="front_approach_distance" default="0.2"/>
   <!-- 入口/出口控制任务阶段；FAPP检测、动态避障和规划优先在下方单独开关。 -->
@@ -136,6 +138,7 @@
   <param name="/exploration_node/fapp/topic" value="/UAV0/fapp/states"/>
   <!-- 以定位雷达参考点为准：上方5cm、下方20cm；下穿目标Z最低0.10m。 -->
   <param name="/exploration_node/fapp/vehicle_top_height" value="0.05" type="double"/>
+  <param name="/exploration_node/manager/footprint_bottom_clearance" value="$(arg footprint_bottom_clearance)" type="double"/>
   <param name="/exploration_node/fapp/vehicle_bottom_height" value="0.20" type="double"/>
   <param name="/exploration_node/mission/vertical_detour/underpass/min_height" value="0.10" type="double"/>
   <param name="/exploration_node/fapp/frame_id" value="UAV0/camera_init"/>

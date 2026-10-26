@@ -1,4 +1,6 @@
 <launch>
+    <!-- 定位中心下方的机体净空：障碍顶部0.60m时中心至少0.80m。 -->
+    <arg name="footprint_bottom_clearance" default="0.20"/>
     <!-- 到出口后、搜索降落码前沿出口方向前进的距离，单位m。 -->
     <arg name="front_approach_distance" default="0.2"/>
     <!-- 与单机航点入口共用已验证的检测、历史包络及连续穿越策略。 -->
@@ -35,6 +37,7 @@
     <param name="/exploration_node/fapp/observation_retention" value="$(arg fapp_observation_retention)"/>
     <param name="/exploration_node/fapp/association_distance" value="$(arg fapp_association_distance)"/>
     <param name="/exploration_node/fapp/vehicle_top_height" value="0.05" type="double"/>
+    <param name="/exploration_node/manager/footprint_bottom_clearance" value="$(arg footprint_bottom_clearance)" type="double"/>
     <param name="/exploration_node/fapp/vehicle_bottom_height" value="0.20" type="double"/>
     <!-- 自主选点保持原流程；摆球走连续侧下穿/侧绕，不能原地下降或因旧包络封死前进。 -->
     <param name="/exploration_node/fapp/exploration_crossing_enabled" value="true" type="bool"/>
