@@ -2177,6 +2177,9 @@ namespace diff_planner
     nh.param("optimization/weight_time", wei_time_, -1.0);
     nh.param("optimization/obstacle_clearance", obs_clearance_, -1.0);
     nh.param("optimization/obstacle_clearance_soft", obs_clearance_soft_, -1.0);
+    nh.param("optimization/upper_obstacle_clearance", upper_obstacle_clearance_, 0.0);
+    nh.param("optimization/upper_obstacle_min_z", upper_obstacle_min_z_, 0.40);
+    nh.param("grid_map/obstacles_inflation", obstacle_inflation_, 0.0);
     SuspendedObstacleUnderpass::Config underpass_config;
     nh.param("optimization/enable_suspended_obstacle_underpass",
              underpass_config.enabled, false);
@@ -2259,7 +2262,7 @@ namespace diff_planner
     // the 7.5 m corridor needs more than the old 100-cell local detour pool.
     a_star_->initGridMap(grid_map_, dynamic_obstacle_config_.enabled
         ? Eigen::Vector3i(160, 160, 100) : Eigen::Vector3i(100, 100, 100));
-    if (dynamic_obstacle_config_.enabled)
+    if (dynamic_obstacle_config_.enabled || upper_obstacle_clearance_ > 0.0)
       a_star_->setOccupancyChecker([this](const Eigen::Vector3d &position) {
         if (checkPlanningTimeout("A-star occupancy query") || staticPositionOccupied(position) ||
             (dynamic_candidate_active_ && dynamic_continuous_crossing_ && position.z() < dynamic_min_height_))
@@ -2310,9 +2313,40 @@ namespace diff_planner
 
   bool PolyTrajOptimizer::staticPositionOccupied(const Eigen::Vector3d &position) const
   {
-    // Static obstacles use Diff's inflated map, independently of FAPP.
-    // Vehicle geometry remains part of dynamic-obstacle collision checks.
-    return grid_map_->getInflateOccupancy(position) != 0;
+    if (grid_map_->getInflateOccupancy(position) != 0)
+      return true;
+    if (upper_obstacle_clearance_ <= 0.0)
+      return false;
+
+    // 上绕净空按原始占据体素的顶面计算，不在已有Z膨胀上再叠加20cm。
+    // XY沿用地图膨胀范围；最低障碍检查层与前机vertical_detour/low_height一致，
+    // 地面不作为上绕障碍，避免把这条规则变成全程最低飞行高度。
+    const double resolution = grid_map_->getResolution();
+    const Eigen::Vector3i center =
+        (position / resolution).array().floor().cast<int>();
+    const int horizontal_steps = std::max(0, static_cast<int>(
+        std::ceil((obstacle_inflation_ - 1.0e-5) / resolution)));
+    const int lowest_z = static_cast<int>(std::floor(
+        (position.z() - upper_obstacle_clearance_) / resolution));
+    for (int z = center.z(); z >= lowest_z; --z)
+    {
+      const double voxel_center_z = (z + 0.5) * resolution;
+      if (voxel_center_z < upper_obstacle_min_z_)
+        break;
+      const double obstacle_top = (z + 1) * resolution;
+      if (position.z() + 1.0e-6 >= obstacle_top + upper_obstacle_clearance_)
+        continue;
+      for (int dx = -horizontal_steps; dx <= horizontal_steps; ++dx)
+        for (int dy = -horizontal_steps; dy <= horizontal_steps; ++dy)
+        {
+          const Eigen::Vector3d probe((center.x() + dx + 0.5) * resolution,
+                                      (center.y() + dy + 0.5) * resolution,
+                                      voxel_center_z);
+          if (grid_map_->getOccupancy(probe) > 0)
+            return true;
+        }
+    }
+    return false;
   }
 
   bool PolyTrajOptimizer::trajectoryCollisionFree(

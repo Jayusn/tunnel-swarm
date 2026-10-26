@@ -98,6 +98,8 @@
     <arg name="fading_time" default="-1.0"/>
     <!-- 2026-07-07: 暴露轨迹优化的硬障碍间隙，便于按场景提升贴墙余量。 -->
     <arg name="obstacle_clearance" default="0.15"/>
+    <arg name="upper_obstacle_clearance" default="0.0"/>
+    <arg name="upper_obstacle_min_z" default="0.40"/>
     <!-- 悬空障碍下穿默认关闭，由需要该行为的实飞 launch 单独开启。 -->
     <arg name="enable_suspended_obstacle_underpass" default="false"/>
     <arg name="underpass_corridor_half_width" default="0.12"/>
@@ -368,6 +370,8 @@
         <param name="optimization/weight_time" value="5.0" type="double"/>
         <!-- 2026-07-07: 允许实验 launch 覆盖优化器的障碍硬约束间隙，避免窄通道里按过小安全距离贴墙飞。 -->
         <param name="optimization/obstacle_clearance" value="$(arg obstacle_clearance)" type="double"/>
+        <param name="optimization/upper_obstacle_clearance" value="$(arg upper_obstacle_clearance)" type="double"/>
+        <param name="optimization/upper_obstacle_min_z" value="$(arg upper_obstacle_min_z)" type="double"/>
         <param name="optimization/enable_suspended_obstacle_underpass" value="$(arg enable_suspended_obstacle_underpass)" type="bool"/>
         <param name="optimization/underpass_corridor_half_width" value="$(arg underpass_corridor_half_width)" type="double"/>
         <param name="optimization/underpass_min_descent" value="$(arg underpass_min_descent)" type="double"/>

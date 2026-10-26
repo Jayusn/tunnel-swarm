@@ -112,6 +112,9 @@ namespace diff_planner
     double wei_sqrvar_;                                           // squared variance weight
     double wei_time_;                                             // time weight
     double obs_clearance_, obs_clearance_soft_, swarm_clearance_; // safe distance
+    double upper_obstacle_clearance_{0.0};
+    double upper_obstacle_min_z_{0.40};
+    double obstacle_inflation_{0.0};
     double max_vel_, max_acc_, max_jer_, vel_tolerance_, acc_tolerance_; // dynamic limits
 
     // One difficult local plan must not block the single-threaded ROS callback queue.

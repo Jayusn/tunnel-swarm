@@ -123,6 +123,9 @@
              360度雷达持续命中的真实墙体仍会保持占据。 -->
         <arg name="fading_time" value="3"/>
         <arg name="obstacle_clearance" value="0.18"/>
+        <!-- 与前机一致：上绕参考高度至少高于原始障碍顶部20cm；从0.40m层检查障碍。 -->
+        <arg name="upper_obstacle_clearance" value="0.20"/>
+        <arg name="upper_obstacle_min_z" value="0.40"/>
         <!-- 2026-07-28: FAST-LIO点云/里程计均为UAV1局部坐标，不叠加出生点偏移。 -->
         <arg name="init_x" value="0.0"/>
         <arg name="init_y" value="0.0"/>

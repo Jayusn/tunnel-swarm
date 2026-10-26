@@ -734,6 +734,166 @@ TEST_F(StaticSidePlanning, SideOptimizationFallbackRespectsDeadlineAndDynamicCan
   }
 }
 
+class UpperClearancePlanning : public StaticSidePlanning
+{
+protected:
+  void SetUp() override
+  {
+    StaticSidePlanning::SetUp();
+    auto &data = map->md_;
+    data.ringbuffer_size3i_ = data.ringbuffer_inf_size3i_;
+    data.ringbuffer_origin3i_ = data.ringbuffer_inf_origin3i_;
+    data.ringbuffer_lowbound3d_ = data.ringbuffer_inf_lowbound3d_;
+    data.ringbuffer_upbound3d_ = data.ringbuffer_inf_upbound3d_;
+    data.occupancy_buffer_.assign(60 * 80 * 30, -2.0);
+    map->mp_.min_occupancy_log_ = 1.0;
+    fillObstacle(0.0);
+  }
+
+  void fillObstacle(double bottom)
+  {
+    for (int z = 0; z < 30; ++z)
+      for (int y = -40; y < 40; ++y)
+        for (int x = -30; x < 30; ++x)
+        {
+          const Eigen::Vector3i cell(x, y, z);
+          const Vector3d p = map->globalIdx2Pos(cell);
+          const bool raw = std::abs(p.x()) < 0.25 &&
+              std::abs(p.y()) < 0.8 && p.z() >= bottom && p.z() < 0.8;
+          const bool inflated = std::abs(p.x()) < 0.35 &&
+              std::abs(p.y()) < 0.9 && p.z() >= bottom - 0.1 && p.z() < 0.9;
+          // 地面点单独保留，验证上绕约束不会抬高低空下穿路线。
+          map->md_.occupancy_buffer_[map->globalIdx2BufIdx(cell)] =
+              raw || z == 0 ? 2.0 : -2.0;
+          map->md_.occupancy_buffer_inflate_[map->globalIdx2InfBufIdx(cell)] =
+              inflated || std::abs(p.y()) >= 0.8 || p.z() < 0.1;
+        }
+  }
+
+  void configureUpper(PolyTrajOptimizer &optimizer, bool fapp)
+  {
+    optimizer.upper_obstacle_clearance_ = 0.20;
+    optimizer.upper_obstacle_min_z_ = 0.40;
+    optimizer.obstacle_inflation_ = 0.099;
+    configure(optimizer, fapp);
+    auto side = optimizer.vertical_obstacle_side_lock_.config();
+    side.enabled = false;
+    optimizer.vertical_obstacle_side_lock_.setConfig(side);
+  }
+};
+
+TEST_F(UpperClearancePlanning, UsesRawVoxelTopAndAcceptsExactlyTwentyCentimeters)
+{
+  PolyTrajOptimizer optimizer;
+  configureUpper(optimizer, false);
+  EXPECT_EQ(map->getInflateOccupancy(Vector3d(0.025, 0.025, 0.99)), 0);
+  EXPECT_TRUE(optimizer.staticPositionOccupied(Vector3d(0.025, 0.025, 0.99)));
+  EXPECT_FALSE(optimizer.staticPositionOccupied(Vector3d(0.025, 0.025, 1.0)));
+  EXPECT_FALSE(optimizer.staticPositionOccupied(Vector3d(0.025, 0.025, 1.01)));
+  // XY仍覆盖原有两格膨胀；侧面不额外增加距离。
+  EXPECT_TRUE(optimizer.staticPositionOccupied(Vector3d(0.325, 0.025, 0.99)));
+  EXPECT_FALSE(optimizer.staticPositionOccupied(Vector3d(0.375, 0.025, 0.6)));
+  // 通用入口默认关闭时，保持原有膨胀地图判定。
+  optimizer.upper_obstacle_clearance_ = 0.0;
+  EXPECT_FALSE(optimizer.staticPositionOccupied(Vector3d(0.025, 0.025, 0.99)));
+}
+
+TEST_F(UpperClearancePlanning, FappEnabledAndDisabledBothSearchAboveRequiredHeight)
+{
+  for (bool fapp : {false, true})
+  {
+    PolyTrajOptimizer optimizer;
+    configureUpper(optimizer, fapp);
+    optimizer.beginPlanningCycle();
+    std::vector<Vector3d> path;
+    ASSERT_EQ(optimizer.searchObstaclePath(start, end, path), ASTAR_RET::SUCCESS);
+    bool crossed = false;
+    for (size_t i = 1; i < path.size(); ++i)
+      for (int j = 0; j <= 10; ++j)
+      {
+        const Vector3d p = path[i - 1] + (path[i] - path[i - 1]) * (j / 10.0);
+        EXPECT_FALSE(optimizer.staticPositionOccupied(p));
+        if (std::abs(p.x()) < 0.35)
+        {
+          crossed = true;
+          EXPECT_GE(p.z(), 1.0 - 1e-6);
+        }
+      }
+    EXPECT_TRUE(crossed);
+    optimizer.endPlanningCycle();
+  }
+}
+
+TEST_F(UpperClearancePlanning, FinalTrajectoryRejectsInsufficientClearanceEvenWithFappPriority)
+{
+  PolyTrajOptimizer optimizer;
+  configureUpper(optimizer, true);
+  optimizer.fapp_planner_priority_ = true;
+  const double now = ros::Time::now().toSec();
+  EXPECT_FALSE(optimizer.trajectoryCollisionFree(
+      recoveryLine(Vector3d(-0.9, 0, 0.99), Vector3d(0.9, 0, 0.99)), now, now));
+  EXPECT_TRUE(optimizer.trajectoryCollisionFree(
+      recoveryLine(Vector3d(-0.9, 0, 1.0), Vector3d(0.9, 0, 1.0)), now, now));
+}
+
+TEST_F(UpperClearancePlanning, UnderpassAndLowFlightRemainAvailable)
+{
+  fillObstacle(0.5);
+  PolyTrajOptimizer optimizer;
+  configureUpper(optimizer, false);
+  const double now = ros::Time::now().toSec();
+  EXPECT_FALSE(optimizer.staticPositionOccupied(Vector3d(0.025, 0.025, 0.15)));
+  EXPECT_TRUE(optimizer.trajectoryCollisionFree(
+      recoveryLine(Vector3d(-0.9, 0, 0.15), Vector3d(0.9, 0, 0.15)), now, now));
+}
+
+TEST_F(UpperClearancePlanning, InsufficientHeadroomCannotProduceAnUpperPath)
+{
+  map->mp_.virtual_ceil_ = 0.99;
+  PolyTrajOptimizer optimizer;
+  configureUpper(optimizer, false);
+  std::vector<Vector3d> path;
+  EXPECT_NE(optimizer.searchObstaclePath(start, end, path), ASTAR_RET::SUCCESS);
+  EXPECT_TRUE(path.empty());
+}
+
+TEST_F(UpperClearancePlanning, OptimizedUpperTrajectoryKeepsTwentyCentimeters)
+{
+  PolyTrajOptimizer optimizer;
+  configureUpper(optimizer, true);
+  optimizer.obs_clearance_ = 0.18;
+  optimizer.obs_clearance_soft_ = 0.30;
+  optimizer.beginPlanningCycle();
+  Eigen::Matrix3d head, tail;
+  head << start, Vector3d::Zero(), Vector3d::Zero();
+  tail << end, Vector3d::Zero(), Vector3d::Zero();
+  Eigen::MatrixXd inner(3, 3);
+  inner.col(0) = Vector3d(-0.5, 0, 1.1);
+  inner.col(1) = Vector3d(0, 0, 1.15);
+  inner.col(2) = Vector3d(0.5, 0, 1.1);
+  const Eigen::VectorXd times = Eigen::VectorXd::Constant(4, 3.0);
+  poly_traj::MinJerkOpt seed;
+  seed.reset(head, tail, 4);
+  seed.generate(inner, times);
+  std::vector<std::pair<int, int>> segments;
+  ASSERT_NE(optimizer.finelyCheckAndSetConstraintPoints(segments, seed, true),
+            PolyTrajOptimizer::ERR);
+  double cost;
+  ASSERT_TRUE(optimizer.optimizeTrajectory(head, tail, inner, times, cost));
+  const auto trajectory = optimizer.getMinJerkOpt().getTraj();
+  const double now = ros::Time::now().toSec();
+  EXPECT_TRUE(optimizer.trajectoryCollisionFree(trajectory, now, now));
+  for (int i = 0; i <= 2000; ++i)
+  {
+    const Vector3d p = trajectory.getPos(trajectory.getTotalDuration() * i / 2000.0);
+    if (std::abs(p.x()) < 0.35)
+    {
+      EXPECT_GE(p.z(), 1.0 - 1e-6);
+    }
+  }
+  optimizer.endPlanningCycle();
+}
+
 class UnderpassEndpointPlanning : public StaticSidePlanning
 {
 protected:
