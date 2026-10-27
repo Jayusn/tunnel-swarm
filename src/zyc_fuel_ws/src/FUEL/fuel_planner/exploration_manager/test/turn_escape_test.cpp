@@ -205,11 +205,33 @@ public:
     if (mode == 2)
       for (double x=-1.975; x<2.0; x+=0.05)
         for (double y=-1.975; y<2.0; y+=0.05) occupy(Vector3d(x,y,0.375),true);
+    if (mode == 8 || mode == 9) {
+      manager.recovery_side_latched_ = true;
+      manager.recovery_side_origin_ = start;
+      manager.recovery_side_dir_ = Vector3d::UnitY();
+      manager.recovery_side_obstacle_.side = 1;
+    }
+    if (mode == 9)
+      for (double x=-1.975; x<2.0; x+=0.05)
+        for (double y=-1.975; y<2.0; y+=0.05) occupy(Vector3d(x,y,0.375));
     map.md_->local_bound_min_.setZero();
     map.md_->local_bound_max_ = map.mp_->map_voxel_num_ - Eigen::Vector3i::Ones();
     map.clearAndInflateLocalMap(); map.updateESDF3d();
     const Vector3d zero = Vector3d::Zero();
-    const bool planned = mode == 0 || mode == 6
+    if (mode == 9) {
+      // 首次下降被真实静态层挡住；后续地图清除后必须重新检查，而非被旧选侧跳过。
+      ASSERT_FALSE(manager.planExplorationFappCrossing(start,zero,zero,zero));
+      EXPECT_TRUE(manager.fapp_crossing_retry_needed_);
+      EXPECT_EQ(manager.low_probe_phase_, vertical_detour::LowProbePhase::IDLE);
+      EXPECT_DOUBLE_EQ(manager.manual_fapp_hold_height_, 0.60);
+      for (double x=-1.975; x<2.0; x+=0.05)
+        for (double y=-1.975; y<2.0; y+=0.05) {
+          Eigen::Vector3i index; map.posToIndex(Vector3d(x,y,0.375),index);
+          map.md_->occupancy_buffer_[map.toAddress(index)] = map.mp_->clamp_min_log_;
+        }
+      map.clearAndInflateLocalMap(); map.updateESDF3d();
+    }
+    const bool planned = mode == 0 || mode == 6 || mode == 8 || mode == 9
         ? manager.planExplorationFappCrossing(start,zero,zero,zero)
         : manager.planLocalFappUnderpass(start,zero,zero,zero);
     if (mode == 2 || mode == 3) {
@@ -219,6 +241,10 @@ public:
       return;
     }
     ASSERT_TRUE(planned);
+    if (mode == 8 || mode == 9) {
+      EXPECT_EQ(manager.recovery_side_obstacle_.side, 1);
+      EXPECT_FALSE(manager.fapp_crossing_retry_needed_);
+    }
     EXPECT_DOUBLE_EQ(manager.manual_fapp_hold_height_, 0.60); // 未发布候选不能提交高度。
     EXPECT_TRUE(planner.isTrajectorySafe());
     EXPECT_TRUE(planner.isFappPathSafe(manager.ed_->path_next_goal_));
@@ -4087,6 +4113,12 @@ TEST(FappLocalStep, ChangedStaticMapRejectsDescentBeforeRelease) {
 }
 TEST(FappLocalStep, SafeEndpointMayExtendMoreThanTwentyCentimetresBeyondEnvelope) {
   fast_planner::TurnEscapeTest::runLocalFappStep(7);
+}
+TEST(FappLocalStep, StaticBypassStillRechecksStationaryDescent) {
+  fast_planner::TurnEscapeTest::runLocalFappStep(8);
+}
+TEST(FappLocalStep, RejectedStaticColumnRetriesAfterMapClears) {
+  fast_planner::TurnEscapeTest::runLocalFappStep(9);
 }
 TEST(BlindRangeFusion, NearbyObstacleSurvivesMissingReturnsAndBlocksTurn) {
   fast_planner::TurnEscapeTest::runBlindRangeFusion(true);

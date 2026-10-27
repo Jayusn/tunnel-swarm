@@ -4338,7 +4338,14 @@ bool FastExplorationManager::planLocalFappUnderpass(
       }
     }
   }
-  if (best.empty() || !planner_manager_->planExploreTraj(best, vel, acc, 0.0, true) ||
+  if (best.empty()) {
+    ROS_WARN_THROTTLE(1.0, "[fapp_local_step] no safe %s from (%.3f,%.3f,%.3f): "
+        "approach=%.3fm low=%.3fm; keep current route and retry from updated pose/map.",
+        need_descent ? "descent column or approach" : "low crossing prefix",
+        pos.x(), pos.y(), pos.z(), approach, low);
+    return false;
+  }
+  if (!planner_manager_->planExploreTraj(best, vel, acc, 0.0, true) ||
       !planner_manager_->isTrajectorySafe() ||
       !planner_manager_->planYawTurnInPlace(yaw, yaw[0])) return false;
   manual_fapp_curve_active_ = suspended_underpass_active_ = false;
@@ -4376,9 +4383,20 @@ bool FastExplorationManager::planExplorationFappCrossing(
   // 临时失败不消费穿越机会；执行普通入口/前进段时，FSM 仍可重新尝试。
   fapp_crossing_retry_needed_ = true;
   if (recovery_side_latched_ && recovery_side_obstacle_.side) {
-    // 已为当前静态障碍选路，旧动态会话不能再抢回侧向选择权。
+    // 静态绕行保留已选通路，但不能跳过新位置上的下降柱和短段重试。
+    // 局部候选仍完整检查静态足迹、已知自由空间与动态包络。
     manual_fapp_curve_active_ = false;
-    return false;
+    Vector3d lower, upper;
+    double age;
+    if (!planner_manager_->watchedFappBounds(lower, upper, age)) return false;
+    // 已充分低于旧目标或高于其上沿时，不让旧动态会话替换新静态路线。
+    // 刚到目标低位(2cm到达容差)仍可续接局部穿越。
+    if (pos.z() < lower.z() - underpass_height_tracking_margin_ - 0.02 ||
+        pos.z() > upper.z() || pos.dot(manual_fapp_forward_) >= manual_fapp_exit_progress_)
+      return false;
+    ROS_INFO_THROTTLE(1.0, "[fapp_local_retry] static bypass active; recheck local "
+        "descent/crossing from (%.3f,%.3f,%.3f).", pos.x(), pos.y(), pos.z());
+    return planLocalFappUnderpass(pos, vel, acc, yaw);
   }
   if (planFappOpeningCrossing(pos, vel, acc, yaw)) {
     bool clearance_ascent_needed = false;
