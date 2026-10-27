@@ -471,7 +471,8 @@ private:
   bool hasKnownFreeSpaceBelowObstacle(const Vector3d& point,
                                       double bottom_z) const;
   bool planInflationHistoryEscape(const Vector3d& pos, const Vector3d& vel,
-                                  const Vector3d& acc, const Vector3d& yaw, bool after_failure = false);
+                                  const Vector3d& acc, const Vector3d& yaw,
+                                  bool after_failure = false, bool compare_static_routes = false);
   bool shouldStartGroundAscent(const Vector3d& pos) const;
   bool buildGroundAscentPlan(const Vector3d& pos, const Vector3d& vel,
                              const Vector3d& yaw);
