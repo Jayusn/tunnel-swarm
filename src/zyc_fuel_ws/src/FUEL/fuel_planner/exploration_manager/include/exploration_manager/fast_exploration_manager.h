@@ -330,16 +330,13 @@ private:
   double turn_in_place_completion_tolerance_deg_{8.0};
   double turn_in_place_completion_confirm_time_{0.15};
   double turn_in_place_tracking_grace_time_{1.0};
-  double turn_in_place_max_stationary_speed_{0.20};
-  double turn_in_place_still_confirm_time_{0.15};
-  ros::Time turn_in_place_still_since_;
   double turn_in_place_min_duration_{1.0};
   double turn_in_place_max_duration_{4.0};
   bool skip_straight_extension_after_turn_{false};
   // 当前位置下方出现受支撑障碍时，先固定 XY/yaw 回到巡航高度，再恢复水平搜索。
   bool ground_ascent_enabled_{true};
   bool ground_ascent_active_{false};
-  // 转弯后的 0.60m 高度恢复只是偏好：失败时让出规划权，但不改默认高度。
+  // 普通动作后的 0.60m 高度恢复只是偏好，与转弯无关。
   bool ground_ascent_optional_{false};
   bool ground_ascent_plan_{false};
   bool vertical_detour_plan_{false};
@@ -348,7 +345,7 @@ private:
   int ground_ascent_min_lower_obstacles_{2};
   double ground_ascent_max_stationary_speed_{0.12};
   double ground_ascent_still_confirm_time_{0.15};
-  double ground_ascent_height_tolerance_{0.06};
+  double ground_ascent_height_tolerance_{0.10};
   Vector3d ground_ascent_anchor_{0.0, 0.0, 0.0};
   bool ground_ascent_anchor_valid_{false};
   Vector3d ground_ascent_target_{0.0, 0.0, 0.0};

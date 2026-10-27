@@ -138,13 +138,6 @@ int main() {
   turn_latch.clear();
   assert(!turn_latch.lockedDirection(turn_direction));
 
-  // 原地转向必须先连续静止；速度和稳定时间任一不满足都不能建立转向轨迹。
-  assert(!fast_planner::task_search::stationaryTurnReady(0.13, 0.12, 0.20, 0.15));
-  assert(!fast_planner::task_search::stationaryTurnReady(0.10, 0.12, 0.14, 0.15));
-  assert(fast_planner::task_search::stationaryTurnReady(0.12, 0.12, 0.15, 0.15));
-  assert(!fast_planner::task_search::stationaryTurnReady(
-      std::numeric_limits<double>::quiet_NaN(), 0.12, 0.20, 0.15));
-
   // 转向后的长距离恢复只能沿新通道前方展开；大偏角仅允许局部横移。
   const Eigen::Vector3d new_corridor_forward(0.0, 1.0, 0.0);
   const auto recovery_direction = [](double degrees) {

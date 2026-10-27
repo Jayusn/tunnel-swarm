@@ -26,6 +26,7 @@ bool evaluateDynamicObstacle(
       (!measured_box &&
        (!std::isfinite(config.ball_radius) || config.ball_radius <= 0.0)) ||
       !std::isfinite(config.margin) || config.margin < 0.0 ||
+      !std::isfinite(config.underpass_reference_clearance) ||
       !std::isfinite(config.observation_retention) ||
       config.observation_retention < 0.0 ||
       !std::isfinite(config.prediction_horizon) ||
@@ -51,6 +52,22 @@ bool evaluateDynamicObstacle(
   if (obstacle_velocity != nullptr)
     *obstacle_velocity = predicted_velocity;
 
+  // 下穿下沿统一采用“原始底部-总间距”，不再叠加机体顶部和通用margin。
+  // 仅截取旧包络的底面；水平侧面、上方净空以及运动预测保持原计算。
+  const auto underpass_clearance = [&](double original) {
+    if (config.underpass_reference_clearance < 0.0) return original;
+    const double half_z = measured_box ? 0.5 * state.size.z() : config.ball_radius;
+    double gap = predicted_position.z() - half_z -
+        config.lowerReferenceClearance() - vehicle_position.z();
+    if (std::fabs(gap) < 1e-9) gap = 0.0;  // 仅消除边界浮点舍入。
+    if (gap > original) {
+      if (clearance_gradient != nullptr)
+        *clearance_gradient = -Eigen::Vector3d::UnitZ();
+      return gap;
+    }
+    return original;
+  };
+
   const double half_height = 0.5 * (config.vehicle_top_height + config.vehicle_bottom_height);
   const Eigen::Vector3d body_center = vehicle_position + Eigen::Vector3d(
       0.0, 0.0, 0.5 * (config.vehicle_top_height - config.vehicle_bottom_height));
@@ -60,7 +77,9 @@ bool evaluateDynamicObstacle(
         body_center, predicted_position, state.size, config.vehicle_radius,
         half_height, config.margin, clearance_gradient);
     if (clearance != nullptr)
-      *clearance = box_clearance;
+      *clearance = underpass_clearance(box_clearance);
+    else
+      underpass_clearance(box_clearance);
     return true;
   }
 
@@ -75,8 +94,6 @@ bool evaluateDynamicObstacle(
   const double cylinder_distance =
       outside_distance + std::min(0.0, std::max(radial_gap, vertical_gap));
 
-  if (clearance != nullptr)
-    *clearance = cylinder_distance - config.ball_radius - config.margin;
   if (clearance_gradient != nullptr)
   {
     Eigen::Vector3d radial_normal = Eigen::Vector3d::UnitX();
@@ -96,6 +113,8 @@ bool evaluateDynamicObstacle(
     else
       *clearance_gradient = radial_normal;
   }
+  const double result = underpass_clearance(cylinder_distance - config.ball_radius - config.margin);
+  if (clearance != nullptr) *clearance = result;
   return true;
 }
 

@@ -44,14 +44,6 @@ private:
   bool active_{false};
 };
 
-inline bool stationaryTurnReady(double speed, double max_speed,
-                                double stable_elapsed,
-                                double required_stable_time) {
-  return std::isfinite(speed) && std::isfinite(stable_elapsed) &&
-         speed <= std::max(0.0, max_speed) &&
-         stable_elapsed >= std::max(0.0, required_stable_time);
-}
-
 inline double recoveryDirectionMaxDistance(
     const Eigen::Vector3d& direction, const Eigen::Vector3d& forward,
     double full_distance, double lateral_distance = 0.40) {

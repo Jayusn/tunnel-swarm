@@ -634,8 +634,8 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
             : fp_->trajectory_release_max_velocity_error_;
         const double acceleration_error =
             (trajectory_start_acceleration - release_reference_acceleration).norm();
-        // 原地转向在规划器内已经完成一次连续静止确认。这里保留位置、加速度、
-        // 地图和整条轨迹安全检查，但不再用普通平移轨迹的速度差重复拒绝。
+        // 原地转向不以实测速度作为放行门槛；这里保留位置、加速度、
+        // 地图和整条轨迹安全检查，不用普通平移轨迹的速度差拒绝。
         const bool release_state_continuous = pending_turn_in_place_
             ? exploration_policy::isTurnTrajectoryReleaseStateContinuous(
                   start_error, acceleration_error,

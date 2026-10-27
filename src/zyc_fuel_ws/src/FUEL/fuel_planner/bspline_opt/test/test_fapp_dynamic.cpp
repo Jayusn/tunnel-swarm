@@ -45,6 +45,33 @@ TEST_F(DynamicObstacleTest, UnderpassUsesFiniteVehicleHeight)
   EXPECT_LT(clearanceAt(Eigen::Vector3d(0.0, 0.0, 0.70)), 0.0);
 }
 
+TEST_F(DynamicObstacleTest, UnderpassReferenceUsesTopFivePlusGapFiveOnly)
+{
+  config.vehicle_top_height = 0.05;
+  config.vehicle_bottom_height = 0.20;
+  state.position.z() = 0.39;  // 原始底部Z=0.29，目标Z=0.19。
+  for (bool measured : {false, true}) {
+    state.size = measured ? Eigen::Vector3d::Constant(0.2) : Eigen::Vector3d::Zero();
+    config.underpass_reference_clearance = -1.0;
+    const double horizontal = clearanceAt(Eigen::Vector3d(.50,0,.39));
+    const double above = clearanceAt(Eigen::Vector3d(0,0,.85));
+    config.underpass_reference_clearance = 0.10;
+    Eigen::Vector3d gradient;
+    EXPECT_NEAR(clearanceAt(Eigen::Vector3d(0,0,.19), &gradient), 0.0, 1e-12);
+    EXPECT_NEAR(gradient.z(), -1.0, 1e-12);
+    EXPECT_GT(clearanceAt(Eigen::Vector3d(0,0,.18)), 0.0);
+    EXPECT_LT(clearanceAt(Eigen::Vector3d(0,0,.20)), 0.0);
+    EXPECT_NEAR(clearanceAt(Eigen::Vector3d(.50,0,.39)), horizontal, 1e-12);
+    EXPECT_NEAR(clearanceAt(Eigen::Vector3d(0,0,.85)), above, 1e-12);
+    const Eigen::Vector3d point(0.0, 0.0, 0.195);
+    clearanceAt(point, &gradient);
+    for (int axis=0; axis<3; ++axis) {
+      const Eigen::Vector3d delta=1e-6*Eigen::Vector3d::Unit(axis);
+      EXPECT_NEAR(gradient(axis), (clearanceAt(point+delta)-clearanceAt(point-delta))/2e-6, 1e-6);
+    }
+  }
+}
+
 TEST_F(DynamicObstacleTest, AsymmetricBodyUsesTopBelowAndBottomAbove)
 {
   config.vehicle_top_height = 0.05;

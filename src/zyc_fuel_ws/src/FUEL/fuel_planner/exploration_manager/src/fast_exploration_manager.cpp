@@ -39,6 +39,8 @@ namespace fast_planner {
 namespace {
 // 远处悬挂物只用于预见；进入半米接近段后才刹停并开始固定 XY 下穿。
 constexpr double kUnderpassStartDistance = 0.50;
+// 越障上升沿用原6cm跟踪余量，与普通巡航恢复的到高容差分开。
+constexpr double kObstacleAscentTrackingMargin = 0.06;
 }
 // SECTION interfaces for setup and query
 
@@ -917,10 +919,16 @@ bool FastExplorationManager::handleActiveLowProbe(
     }
   }
   vertical_detour::LowProbeObservation observation;
-  observation.at_probe_height =
-      std::fabs(pos.z() - low_probe_height_) <=
-      (fapp_descent ? std::min(0.02, vertical_detour_height_tolerance_)
-                    : vertical_detour_height_tolerance_);
+  if (fapp_descent) {
+    // 下穿目标是允许高度的上限；已降入可通过区间就从实际高度继续，
+    // 不因低于名义终点而反复补高。最低高度沿用同一组任务/下穿参数。
+    const double minimum = std::max(
+        underpass_min_height_, task_search_manager_->clampSearchHeight(-1e3));
+    observation.at_probe_height = pos.z() >= minimum && pos.z() <= low_probe_height_;
+  } else {
+    observation.at_probe_height =
+        std::fabs(pos.z() - low_probe_height_) <= vertical_detour_height_tolerance_;
+  }
   observation.xy_stable =
       (pos - low_probe_origin_).head<2>().norm() <= vertical_detour_xy_tolerance_;
   if (previous_phase == vertical_detour::LowProbePhase::DESCENDING &&
@@ -936,7 +944,8 @@ bool FastExplorationManager::handleActiveLowProbe(
     return false;
   }
   if (fapp_descent) {
-    if (observation.at_probe_height && observation.xy_stable) {
+    // 进入允许高度带后从实时XY重新检查穿越路径，不重发名义下降终点补高。
+    if (observation.at_probe_height) {
       cancelActiveLowProbe("FAPP descent reached actual low height; replan local crossing");
       return false;
     }
@@ -1334,8 +1343,9 @@ bool FastExplorationManager::beginSuspendedUnderpass(const Vector3d& pos,
     const double far_progress = center.dot(direction) + extent + sdf_map_->getResolution();
     first_hit_distance = mapped ? std::min(first_hit_distance, near_distance) : near_distance;
     exit_progress = mapped ? std::max(exit_progress, far_progress) : far_progress;
-    // 包围盒已扣除机体半高和动态净空，再留现有高度跟踪余量。
-    dynamic_target_z = lower.z() - underpass_height_tracking_margin_;
+    // 动态下沿若已按原始底部扣过总间距，直接作为目标，不重复扣跟踪余量。
+    dynamic_target_z = planner_manager_->fappUnderpassTargetHeight(
+        lower.z(), underpass_height_tracking_margin_);
     if (!mapped) bottom_z = std::numeric_limits<double>::infinity();
   }
   if (!mapped && !dynamic) {
@@ -1667,8 +1677,8 @@ bool FastExplorationManager::ensureObstacleTopClearance(
   if (!insufficient && actual_height >= required) return false;
   ascent_needed = true;
   Vector3d target = pos;
-  // 参考端点留出现有高度跟踪容差，但实际放行仍必须达到障碍顶部+20cm。
-  target.z() = std::max(pos.z(), required) + ground_ascent_height_tolerance_;
+  // 参考端点留出跟踪余量，但实际放行仍必须达到障碍顶部+20cm。
+  target.z() = std::max(pos.z(), required) + kObstacleAscentTrackingMargin;
   if ((task_search_manager_ &&
        target.z() > task_search_manager_->clampSearchHeight(target.z())+1e-6) ||
       !pointInsideWorkspaceLock(target) || !isKnownSafeGroundAscentPath(pos,target) ||
@@ -3420,8 +3430,6 @@ bool FastExplorationManager::requestMappedTurn(const Vector3d& position, double 
       task_search_manager_->exitVerificationActive() ||
       task_search_manager_->landingRequested())
     return false;
-  // 同一转弯的补高正在执行，不能再次用“发现转弯”打断它并重取更低锚点。
-  if (turn_in_place_session_active_ && ground_ascent_active_) return false;
   // 当前旋转圆盘有静态障碍时不抢占平移；旧轨迹仍由正常碰撞检查决定能否继续。
   if (!planner_manager_->isTurnPositionSafe(position)) return false;
   // 通道位置已由里程计回调更新，不能用重规划的未来起点覆盖它。
@@ -3430,7 +3438,6 @@ bool FastExplorationManager::requestMappedTurn(const Vector3d& position, double 
   if (!turn_in_place_session_active_) {
     turn_in_place_session_active_ = true;
     turn_in_place_final_yaw_ = std::atan2(direction.y(), direction.x());
-    turn_in_place_still_since_ = ros::Time(0);
     skip_straight_extension_after_turn_ = true;
   }
   cancelActiveLowProbe("confirmed mapped turn interrupts current trajectory");
@@ -3456,71 +3463,21 @@ bool FastExplorationManager::buildTurnInPlacePlan(
   if (!turn_in_place_session_active_) {
     turn_in_place_session_active_ = true;
     turn_in_place_final_yaw_ = detected_target_yaw;
-    turn_in_place_still_since_ = ros::Time(0);
     skip_straight_extension_after_turn_ = true;
   }
-  // 转弯只改变朝向。刹停/跟踪误差不应逐次降低已发布的高度参考。
-  // 复用原地上升及其完整碰撞检查；上升柱被挡时仍交给原有脱障逻辑。
-  const double retained_height = horizontalGoalHeight(pos.z());
-  Vector3d height_target = pos;
-  height_target.z() = retained_height;
-  if (!manual_fapp_active_ && !suspended_underpass_active_ &&
-      low_probe_phase_ == vertical_detour::LowProbePhase::IDLE &&
-      retained_height > pos.z() + ground_ascent_height_tolerance_ &&
-      pointInsideWorkspaceLock(height_target) &&
-      isKnownSafeGroundAscentPath(pos, height_target) &&
-      planner_manager_->isFappPathSafe({pos, height_target})) {
-    if (!ground_ascent_active_) {
-      ground_ascent_active_ = true;
-      ground_ascent_optional_ = true;
-      ground_ascent_anchor_valid_ = false;
-      ground_ascent_still_since_ = ros::Time(0);
-      ground_ascent_target_ = height_target;
-      ground_ascent_yaw_ = yaw[0];
-      ROS_WARN("[turn_height] retain published z=%.3f instead of relatching actual z=%.3f; "
-               "restore height at fixed xy before yaw alignment.", retained_height, pos.z());
-    }
-    turn_in_place_plan_ = false;
-    return buildGroundAscentPlan(pos, vel, yaw);
-  }
-  if (ground_ascent_active_) {
-    if (buildGroundAscentPlan(pos, vel, yaw)) return true;
-    if (ground_ascent_active_) return false;
-  }
+  // 普通转弯直接使用实时位置，不先补齐巡航高度，也不等待速度/静止计时门槛。
+  // 已发布的水平高度参考继续保留，实际障碍净空仍由碰撞检查和避障选路处理。
   // 原地转向无法退出足迹接触/膨胀区域；先复用经过完整路径和轨迹检查的
   // 脱困平移，保持最终转向目标锁存，离开接触区域后再从实时位置转向。
   if (!planner_manager_->isPositionSafe(pos)) {
     turn_in_place_plan_ = false;
-    turn_in_place_still_since_ = ros::Time(0);
     ROS_WARN_THROTTLE(0.5,
                       "[turn_in_place] clear footprint/inflation contact before yaw "
                       "alignment; final yaw remains %.1fdeg.",
                       turn_in_place_final_yaw_ * 180.0 / M_PI);
     return !external_selection_only_ && planInflationHistoryEscape(pos, vel, acc, yaw);
   }
-  const ros::Time now = ros::Time::now();
-  const double speed = vel.norm();
-  if (!std::isfinite(speed) || speed > turn_in_place_max_stationary_speed_) {
-    turn_in_place_still_since_ = ros::Time(0);
-    ROS_WARN_THROTTLE(0.5,
-                      "[turn_in_place] wait for brake before planning: speed=%.3fm/s "
-                      "limit=%.3fm/s.",
-                      speed, turn_in_place_max_stationary_speed_);
-    return false;
-  }
-  if (turn_in_place_still_since_.isZero()) turn_in_place_still_since_ = now;
-  const double stable_elapsed = (now - turn_in_place_still_since_).toSec();
-  if (!task_search::stationaryTurnReady(
-          speed, turn_in_place_max_stationary_speed_, stable_elapsed,
-          turn_in_place_still_confirm_time_)) {
-    ROS_WARN_THROTTLE(0.5,
-                      "[turn_in_place] stationary confirmation %.2f/%.2fs at "
-                      "speed=%.3fm/s.",
-                      stable_elapsed, turn_in_place_still_confirm_time_, speed);
-    return false;
-  }
-
-  // 最终yaw在整个转弯会话中保持锁存；真正准备发布时从最新静止里程计
+  // 最终yaw在整个转弯会话中保持锁存；真正准备发布时从最新里程计
   // 重新取位置锚点，避免首次检测位置与严格轨迹交接门槛永久冲突。
   turn_in_place_anchor_ = pos;
   const double turn_delta = std::atan2(
@@ -3536,7 +3493,6 @@ bool FastExplorationManager::buildTurnInPlacePlan(
                    (yaw_rate * (1.0 - kTurnRampFraction))));
   if (!planner_manager_->isTurnPositionSafe(turn_in_place_anchor_)) {
     turn_in_place_plan_ = false;
-    turn_in_place_still_since_ = ros::Time(0);
     ROS_WARN_THROTTLE(0.5, "[turn_in_place] static obstacle in rotation footprint "
                            "blocks turn; retain final yaw and recheck.");
     return false;
@@ -3548,7 +3504,6 @@ bool FastExplorationManager::buildTurnInPlacePlan(
   if (!planner_manager_->planYawTurnInPlace(yaw, turn_in_place_final_yaw_))
     return false;
   turn_in_place_plan_ = true;
-  turn_in_place_still_since_ = ros::Time(0);
   ROS_ERROR("[turn_in_place] direct candidate uses live anchor "
             "(%.2f,%.2f,%.2f), yaw %.1fdeg -> final %.1fdeg over %.2fs.",
             turn_in_place_anchor_.x(),
@@ -3576,7 +3531,6 @@ void FastExplorationManager::completeTurnInPlace(const Vector3d&) {
   turn_in_place_session_active_ = false;
   recovery_side_latched_ = false;
   wide_side_bypass_active_ = false;
-  turn_in_place_still_since_ = ros::Time(0);
 }
 
 void FastExplorationManager::initialize(ros::NodeHandle& nh) {
@@ -3674,10 +3628,6 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
            turn_in_place_completion_confirm_time_, 0.15);
   nh.param("mission/task_search/recovery/turn_in_place_tracking_grace_time",
            turn_in_place_tracking_grace_time_, 1.0);
-  nh.param("mission/task_search/recovery/turn_in_place_max_stationary_speed",
-           turn_in_place_max_stationary_speed_, 0.20);
-  nh.param("mission/task_search/recovery/turn_in_place_still_confirm_time",
-           turn_in_place_still_confirm_time_, 0.15);
   nh.param("mission/task_search/recovery/turn_in_place_min_duration",
            turn_in_place_min_duration_, 1.0);
   nh.param("mission/task_search/recovery/turn_in_place_max_duration",
@@ -3694,7 +3644,7 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
   nh.param("mission/ground_ascent/still_confirm_time",
            ground_ascent_still_confirm_time_, 0.15);
   nh.param("mission/ground_ascent/height_tolerance",
-           ground_ascent_height_tolerance_, 0.06);
+           ground_ascent_height_tolerance_, 0.10);
   nh.param("mission/wide_side_bypass/enabled", wide_side_bypass_enabled_, true);
   nh.param("mission/wide_side_bypass/min_lookahead",
            wide_side_bypass_min_lookahead_, 0.20);
@@ -3733,10 +3683,6 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
       std::max(0.0, turn_in_place_completion_confirm_time_);
   turn_in_place_tracking_grace_time_ =
       std::max(0.0, turn_in_place_tracking_grace_time_);
-  turn_in_place_max_stationary_speed_ =
-      std::max(0.01, turn_in_place_max_stationary_speed_);
-  turn_in_place_still_confirm_time_ =
-      std::max(0.0, turn_in_place_still_confirm_time_);
   turn_in_place_min_duration_ =
       std::max(0.30, turn_in_place_min_duration_);
   turn_in_place_max_duration_ =
@@ -4125,7 +4071,8 @@ bool FastExplorationManager::buildManualFappUnderpassPath(
   const double extent = (0.5 * (upper - lower)).dot(forward.cwiseAbs());
   const double near = center - extent - sdf_map_->getResolution();
   const double far = center + extent + sdf_map_->getResolution();
-  const double low = std::min(origin.z(), lower.z() - underpass_height_tracking_margin_);
+  const double low = std::min(origin.z(), planner_manager_->fappUnderpassTargetHeight(
+      lower.z(), underpass_height_tracking_margin_));
   const double minimum = std::max(underpass_min_height_, task_search_manager_->clampSearchHeight(-1e3));
   if (low < minimum || (near - begin < 0.10 && origin.z() > low + 0.02)) {
     ROS_WARN_THROTTLE(1.0, "[fapp_underpass_check] reject geometry low=%.3f min=%.3f "
@@ -4278,7 +4225,8 @@ bool FastExplorationManager::planLocalFappUnderpass(
   const Vector3d lateral(-forward.y(), forward.x(), 0.0);
   const double near = (0.5 * (lower + upper)).dot(forward) -
       (0.5 * (upper - lower)).dot(forward.cwiseAbs()) - sdf_map_->getResolution();
-  const double low = std::min(pos.z(), lower.z() - underpass_height_tracking_margin_);
+  const double low = std::min(pos.z(), planner_manager_->fappUnderpassTargetHeight(
+      lower.z(), underpass_height_tracking_margin_));
   const double minimum = std::max(underpass_min_height_, task_search_manager_->clampSearchHeight(-1e3));
   if (low < minimum) return false;
   const bool need_descent = pos.z() > low + 0.02;
@@ -4389,10 +4337,22 @@ bool FastExplorationManager::planExplorationFappCrossing(
     Vector3d lower, upper;
     double age;
     if (!planner_manager_->watchedFappBounds(lower, upper, age)) return false;
-    // 已充分低于旧目标或高于其上沿时，不让旧动态会话替换新静态路线。
-    // 刚到目标低位(2cm到达容差)仍可续接局部穿越。
-    if (pos.z() < lower.z() - underpass_height_tracking_margin_ - 0.02 ||
+    // 允许整个下穿高度区间续接；越过当前障碍或高于其上沿后，
+    // 仍不让旧动态会话替换后续静态路线。
+    const double minimum = std::max(
+        underpass_min_height_, task_search_manager_->clampSearchHeight(-1e3));
+    if (pos.z() < minimum ||
         pos.z() > upper.z() || pos.dot(manual_fapp_forward_) >= manual_fapp_exit_progress_)
+      return false;
+    const double dynamic_far = (0.5 * (lower + upper)).dot(manual_fapp_forward_) +
+        (0.5 * (upper - lower)).dot(manual_fapp_forward_.cwiseAbs());
+    const double static_front = (recovery_side_obstacle_.origin +
+        recovery_side_obstacle_.obstacle_front * recovery_side_obstacle_.forward)
+        .dot(manual_fapp_forward_);
+    // 已在旧动态物下方，且正在绕行其后另一静态物时，保留新静态路线。
+    // 不能再用“低于名义目标2cm”一刀切拒绝当前障碍的合法低位续接。
+    if (pos.z() <= planner_manager_->fappUnderpassTargetHeight(
+            lower.z(), underpass_height_tracking_margin_) && dynamic_far < static_front)
       return false;
     ROS_INFO_THROTTLE(1.0, "[fapp_local_retry] static bypass active; recheck local "
         "descent/crossing from (%.3f,%.3f,%.3f).", pos.x(), pos.y(), pos.z());
@@ -4808,7 +4768,7 @@ int FastExplorationManager::planExploreMotion(
   }
   planner_manager_->path_finder_->clearProgressConstraint();
   requestMappedTurn(pos, yaw[0]);
-  // 执行期已经确认的转弯先完成刹停和原地对准，动态穿越不能抢回旧方向。
+  // 执行期已经确认的转弯直接原地对准，动态穿越不能抢回旧方向。
   if (turn_in_place_session_active_) {
     const Vector3d direction(std::cos(turn_in_place_final_yaw_),
                             std::sin(turn_in_place_final_yaw_), 0.0);
@@ -4948,7 +4908,7 @@ int FastExplorationManager::planExploreMotion(
       const Vector3d lateral(-forward.y(), forward.x(), 0.0);
       Vector3d ascent_target = pos;
       ascent_target.z() = task_search_manager_->clampSearchHeight(
-          next_pos.z() + ground_ascent_height_tolerance_);
+          next_pos.z() + kObstacleAscentTrackingMargin);
       if (std::fabs((next_pos-pos).dot(lateral)) < 1e-6 &&
           next_pos.z() > pos.z() + 0.02 &&
           isKnownSafeGroundAscentPath(pos, ascent_target) &&
@@ -5879,7 +5839,7 @@ int FastExplorationManager::planExploreMotion(
       // 本轮前半段可能已经生成了下穿目标；转弯确认后该目标不得跨周期保留。
       cancelActiveLowProbe("new mapped turn has higher motion priority");
       if (buildTurnInPlacePlan(pos, vel, acc, yaw, mapped_direction)) return SUCCEED;
-      // 转弯已经锁存但仍在刹停/静止确认时，禁止回落到刚生成的普通平移轨迹。
+      // 转弯已经锁存但碰撞检查未通过时，禁止回落到刚生成的普通平移轨迹。
       return FAIL;
     }
   } else if (corridor_motion_yaw_exempt) {

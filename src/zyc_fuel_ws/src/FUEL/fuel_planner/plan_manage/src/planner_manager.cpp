@@ -70,6 +70,8 @@ void FastPlannerManager::initPlanModules(ros::NodeHandle& nh) {
   nh.param("fapp/enabled", fapp_config_.enabled, false);
   nh.param("fapp/vehicle_top_height", fapp_config_.vehicle_top_height, 0.125);
   nh.param("fapp/vehicle_bottom_height", fapp_config_.vehicle_bottom_height, 0.125);
+  nh.param("mission/vertical_detour/underpass/clearance",
+           fapp_config_.underpass_reference_clearance, -1.0);
   if (!std::isfinite(fapp_config_.vehicle_top_height) || fapp_config_.vehicle_top_height <= 0.0 ||
       !std::isfinite(fapp_config_.vehicle_bottom_height) || fapp_config_.vehicle_bottom_height <= 0.0)
     throw std::runtime_error("FAPP vehicle top/bottom heights must be positive");
@@ -287,10 +289,11 @@ void FastPlannerManager::includeFappHistory(
         (state.size.array() > 0.0).any()) half = 0.5 * state.size;
     half += Eigen::Vector3d(fapp_config_.vehicle_radius + fapp_config_.margin,
                            fapp_config_.vehicle_radius + fapp_config_.margin,
-                           fapp_config_.vehicle_top_height + fapp_config_.margin);
+                           fapp_config_.lowerReferenceClearance());
     lower = lower.cwiseMin(state.position - half);
     Eigen::Vector3d upper_extent = half;
-    upper_extent.z() += fapp_config_.vehicle_bottom_height - fapp_config_.vehicle_top_height;
+    upper_extent.z() += fapp_config_.vehicle_bottom_height + fapp_config_.margin -
+                        fapp_config_.lowerReferenceClearance();
     upper = upper.cwiseMax(state.position + upper_extent);
   };
   include(observation);
@@ -345,7 +348,7 @@ void FastPlannerManager::includeFappHistory(
     }
     trusted = bottom;
   }
-  lower.z() = trusted - fapp_config_.vehicle_top_height - fapp_config_.margin;
+  lower.z() = trusted - fapp_config_.lowerReferenceClearance();
 }
 
 void FastPlannerManager::watchFappObstacle(
@@ -372,8 +375,17 @@ bool FastPlannerManager::watchedFappBounds(
 
 bool FastPlannerManager::isWatchedFappPositionSafe(const Eigen::Vector3d& point) const {
   if (!fappMemoryEnabled() || !fapp_watched_valid_) return true;
+  if (fapp_config_.underpass_reference_clearance >= 0.0 &&
+      point.z() <= fapp_watched_lower_.z() + 1e-9) return true;
   return (point.array() < fapp_watched_lower_.array()).any() ||
          (point.array() > fapp_watched_upper_.array()).any();
+}
+
+double FastPlannerManager::fappUnderpassTargetHeight(
+    double lower_z, double tracking_margin) const {
+  // 已按原始底部扣过总间距的下沿就是目标高度，不能再扣跟踪余量。
+  return lower_z - (fapp_config_.underpass_reference_clearance >= 0.0
+                       ? 0.0 : tracking_margin);
 }
 
 void FastPlannerManager::publishFappMemory(const ros::TimerEvent&) {
@@ -431,6 +443,8 @@ bool FastPlannerManager::isRelayHoldDynamicallySafe(
       !std::isfinite(half_height) || half_height <= 0.0) return false;
   if (!fapp_config_.enabled) return true;
   auto config = fapp_config_;
+  // 中继悬停仍使用自身扩展机体模型，不套用飞行下穿的参考点间距。
+  config.underpass_reference_clearance = -1.0;
   config.vehicle_radius = std::max(config.vehicle_radius, radius);
   config.vehicle_top_height = std::max(config.vehicle_top_height, half_height);
   config.vehicle_bottom_height = std::max(config.vehicle_bottom_height, half_height);
@@ -484,10 +498,11 @@ bool FastPlannerManager::fappBlockingBounds(
           half = 0.5 * obstacle.size;
         half += Eigen::Vector3d(fapp_config_.vehicle_radius + fapp_config_.margin,
                                fapp_config_.vehicle_radius + fapp_config_.margin,
-                               fapp_config_.vehicle_top_height + fapp_config_.margin);
+                               fapp_config_.lowerReferenceClearance());
         lower = center - half;
         upper = center + half;
-        upper.z() += fapp_config_.vehicle_bottom_height - fapp_config_.vehicle_top_height;
+        upper.z() += fapp_config_.vehicle_bottom_height + fapp_config_.margin -
+                     fapp_config_.lowerReferenceClearance();
         if (observation) *observation = obstacle;
         return true;
       }
@@ -504,7 +519,8 @@ bool FastPlannerManager::fappBlockingBounds(
         const int count = std::max(1, static_cast<int>(std::ceil((path[i] - path[i-1]).norm()/0.05)));
         for (int j = 0; j <= count; ++j) {
           const Eigen::Vector3d p = path[i-1] + (path[i]-path[i-1]) * (double(j)/count);
-          if ((p.array() >= lo.array()).all() && (p.array() <= hi.array()).all()) {
+          if ((p.array() >= lo.array()).all() && (p.array() <= hi.array()).all() &&
+              (fapp_config_.underpass_reference_clearance < 0.0 || p.z() > lo.z()+1e-9)) {
             lower = lo; upper = hi;
             if (observation) *observation = state;
             return true;

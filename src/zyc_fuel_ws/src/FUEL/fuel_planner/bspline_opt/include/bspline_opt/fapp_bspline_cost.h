@@ -18,11 +18,24 @@ inline double bsplineCost(const std::vector<Eigen::Vector3d>& q, double dt,
     Eigen::Vector3d point=Eigen::Vector3d::Zero();
     for (int j=0;j<4;++j) point+=w[j]*q[k+j];
     for (const auto& obstacle:obstacles) {
-      double clearance; Eigen::Vector3d normal,velocity;
+      double clearance; Eigen::Vector3d normal,velocity,predicted;
       if (!evaluateDynamicObstacle(point,obstacle,start+(k+u)*dt,reference,
-                                   config,&clearance,&normal,nullptr,&velocity)) continue;
+                                   config,&clearance,&normal,&predicted,&velocity)) continue;
       // A small soft clearance outside the padded body avoids boundary tangency.
-      const double error=0.05-clearance;
+      double error=0.05-clearance;
+      if (config.underpass_reference_clearance >= 0.0) {
+        const bool measured = obstacle.size.allFinite() &&
+            (obstacle.size.array() >= 0.0).all() && (obstacle.size.array() > 0.0).any();
+        const double half_z = measured ? .5*obstacle.size.z() : config.ball_radius;
+        const double underpass_error = point.z() -
+            (predicted.z()-half_z-config.lowerReferenceClearance());
+        // 下穿总间距已含机体顶部和净距，不能再用5cm软余量把轨迹压低。
+        // 侧向和上方仍保留原软代价，预测运动及时间梯度继续使用同一观测。
+        if (underpass_error < error) {
+          error = underpass_error > 1e-9 ? underpass_error : 0.0;
+          normal = -Eigen::Vector3d::UnitZ();
+        }
+      }
       if (error<=0.0) continue;
       cost+=error*error/10.0;
       for (int j=0;j<4;++j) gradient[k+j]-=0.2*error*w[j]*normal;

@@ -87,6 +87,7 @@ public:
   bool fappSideOpening(const Eigen::Vector3d& position, const Eigen::Vector3d& side) const;
   bool isFappCrossingTrajectorySafe() const;
   bool isFappPathSafe(const vector<Eigen::Vector3d>& path) const;
+  double fappUnderpassTargetHeight(double lower_z, double tracking_margin) const;
   bool fappPlannerPriority() const { return fapp_planner_priority_; }
   bool fappMemoryEnabled() const { return fapp_config_.enabled && fapp_memory_enabled_; }
   double fappObservationRetention() const { return fapp_config_.observation_retention; }

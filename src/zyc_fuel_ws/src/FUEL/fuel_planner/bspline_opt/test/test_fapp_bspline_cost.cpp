@@ -34,4 +34,26 @@ TEST(FappSpline, LowerPassAndEmptyFrames) {
   EXPECT_EQ(bsplineCost(q,.2,{},c,10,10,g,gt),0);
 }
 
+TEST(FappSpline, RawBottomMinusTenHasNoRepeatedVerticalPadding) {
+  DynamicObstacleConfig c; c.enabled=true;
+  c.vehicle_top_height=.05; c.vehicle_bottom_height=.20;
+  c.underpass_reference_clearance=.10;
+  DynamicObstacleState o; o.stamp=10;
+  o.position=Eigen::Vector3d(0,0,.39); o.size=Eigen::Vector3d::Constant(.20);
+  std::vector<Eigen::Vector3d> q;
+  for(int i=0;i<10;++i)q.push_back(Eigen::Vector3d(-1+.25*i,0,.19));
+  std::vector<Eigen::Vector3d> g; double gt;
+  EXPECT_EQ(bsplineCost(q,.2,{o},c,10,10,g,gt),0);
+  for(auto& p:q)p.z()=.20;
+  EXPECT_GT(bsplineCost(q,.2,{o},c,10,10,g,gt),0);
+  std::vector<Eigen::Vector3d> tmp; double unused;
+  const double eps=1e-6;
+  for(size_t i=0;i<q.size();++i)for(int axis=0;axis<3;++axis) {
+    auto plus=q,minus=q;plus[i](axis)+=eps;minus[i](axis)-=eps;
+    const double numeric=(bsplineCost(plus,.2,{o},c,10,10,tmp,unused)-
+        bsplineCost(minus,.2,{o},c,10,10,tmp,unused))/(2*eps);
+    EXPECT_NEAR(g[i](axis),numeric,1e-5);
+  }
+}
+
 int main(int argc,char** argv){testing::InitGoogleTest(&argc,argv);return RUN_ALL_TESTS();}
