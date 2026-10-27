@@ -4189,7 +4189,9 @@ bool FastExplorationManager::planLocalFappUnderpass(
     return pointInsideWorkspaceLock(point) && planner_manager_->isKnownFreePosition(point) &&
         isKnownSafeVerticalPath(point, low, false);
   };
-  if (need_descent && approach <= kUnderpassStartDistance && safe_column(pos)) {
+  // 接近段的实际停点可能比目标短几厘米，不能因此反复横移、进不了下降。
+  if (need_descent && approach <= kUnderpassStartDistance + sdf_map_->getResolution() &&
+      safe_column(pos)) {
     low_probe_phase_ = vertical_detour::LowProbePhase::DESCENDING;
     low_probe_height_ = low;
     low_probe_origin_ = low_probe_target_ = pos;

@@ -149,8 +149,14 @@ public:
       EXPECT_FALSE(manager.currentPlanIsVerticalDetour());
       EXPECT_NEAR(manager.ed_->next_goal_.z(), start.z(), 1e-6);
       EXPECT_TRUE(manager.isKnownSafeVerticalPath(manager.ed_->next_goal_,0.34,false));
-      if (mode == 4) EXPECT_GT(manager.ed_->next_goal_.x(),start.x()+0.2);
-      else EXPECT_GT((manager.ed_->next_goal_-start).head<2>().norm(),0.03);
+      if (mode == 4) {
+        EXPECT_GT(manager.ed_->next_goal_.x(),start.x()+0.2);
+        const Vector3d reached = manager.ed_->next_goal_ - Vector3d(0.02,0,0);
+        manager.recordPublishedTrajectoryHeight();
+        ASSERT_TRUE(manager.planLocalFappUnderpass(reached,zero,zero,zero));
+        EXPECT_TRUE(manager.currentPlanIsVerticalDetour());
+        EXPECT_NEAR((manager.ed_->next_goal_-reached).head<2>().norm(),0.0,1e-6);
+      } else EXPECT_GT((manager.ed_->next_goal_-start).head<2>().norm(),0.03);
       return;
     }
     if (mode == 5 || mode == 7) {
