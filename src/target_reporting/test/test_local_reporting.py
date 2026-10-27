@@ -79,7 +79,7 @@ def test_local_evidence_without_network_and_upload_after_reenable(
     assert evidence_builder.call_args.args[1]["position"] == expected_position
     world_position = {"x": 1.0, "y": 2.0, "z": 3.0}
     if source == "thermal":
-        reporter._is_leader_thermal_source.assert_called_once_with(world_position, 10.0)
+        reporter._is_leader_thermal_source.assert_called_once_with(world_position, 10.0, point)
         reporter._is_ground_thermal_source.assert_called_once_with(world_position)
     expected_images = 2 if source == "thermal" else 1
     images = list(Path(reporter.store.image_dir).glob("*.jpg"))

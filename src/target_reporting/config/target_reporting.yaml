@@ -44,6 +44,13 @@ leader_odom_frame: ""
 # 与前机的水平距离在此范围内时，排除该热源候选（米）。
 leader_thermal_exclusion_radius_m: 0.50
 leader_odom_max_age_s: 0.50
+# 前机跨机里程计独立匹配容差，避免迟到 46 ms 时绕过排除；不放宽检测图像配对。
+leader_odom_match_tolerance_s: 0.06
+# 辅助过滤：热源方向落在前机投影区域内时也排除，不依赖热源深度。
+# 与前机在画面上重叠的真实热源也可能被排除；false 仅保留原水平距离过滤。
+leader_thermal_projection_filter_enabled: true
+# 前机深度处、垂直于相机光轴平面上的区域半径（米），不是固定像素半径。
+leader_thermal_projection_radius_m: 0.35
 # UAV0 默认关闭；UAV1 启动入口按自身世界坐标高度过滤地面热源误检。
 thermal_ground_filter_enabled: false
 thermal_min_height_m: -0.08

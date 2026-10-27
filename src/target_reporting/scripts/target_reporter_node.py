@@ -80,6 +80,15 @@ class TargetReporterNode:
         self.leader_odom_max_age = max(
             0.0, float(rospy.get_param("~leader_odom_max_age_s", 0.50))
         )
+        self.leader_odom_match_tolerance = max(
+            0.0, float(rospy.get_param("~leader_odom_match_tolerance_s", 0.06))
+        )
+        self.leader_thermal_projection_filter_enabled = bool(
+            rospy.get_param("~leader_thermal_projection_filter_enabled", False)
+        )
+        self.leader_thermal_projection_radius = max(
+            0.0, float(rospy.get_param("~leader_thermal_projection_radius_m", 0.35))
+        )
         self.leader_odom_frame = str(
             rospy.get_param("~leader_odom_frame", "")
         ).strip()
@@ -346,7 +355,7 @@ class TargetReporterNode:
             self.leader_odom_history.append(msg)
             self.latest_leader_odom_received = rospy.Time.now()
 
-    def _is_leader_thermal_source(self, position, event_stamp):
+    def _is_leader_thermal_source(self, position, event_stamp, camera_point=None):
         if not self.leader_thermal_filter_enabled:
             return False
         with self.lock:
@@ -360,12 +369,16 @@ class TargetReporterNode:
             history,
             key=lambda msg: abs(msg.header.stamp.to_sec() - event_stamp),
         )
-        # 沿用检测源时间匹配容差；没有匹配帧时按原有里程计不可用分支处理。
+        # 跨机里程计传输容差独立于检测点/状态/图像配对容差。
+        match_delta = leader_odom.header.stamp.to_sec() - event_stamp
         if (
             leader_odom.header.stamp == rospy.Time(0)
-            or abs(leader_odom.header.stamp.to_sec() - event_stamp)
-            > self.source_match_tolerance
+            or abs(match_delta) > self.leader_odom_match_tolerance
         ):
+            rospy.logwarn_throttle(
+                2.0, "Skip leader thermal filter: odom_dt=%.1fms tolerance=%.1fms",
+                match_delta * 1000.0, self.leader_odom_match_tolerance * 1000.0,
+            )
             return False
         leader_frame = self.leader_odom_frame or leader_odom.header.frame_id
         if not leader_frame:
@@ -393,13 +406,59 @@ class TargetReporterNode:
             position["x"] - leader.point.x,
             position["y"] - leader.point.y,
         )
-        if distance > self.leader_thermal_exclusion_radius:
+        if distance <= self.leader_thermal_exclusion_radius:
+            rospy.logwarn_throttle(
+                1.0,
+                "Filtered UAV1 thermal candidate near UAV0: distance=%.3fm radius=%.3fm",
+                distance,
+                self.leader_thermal_exclusion_radius,
+            )
+            return True
+        if not self.leader_thermal_projection_filter_enabled or camera_point is None:
+            return False
+        return self._is_in_leader_projection(leader, camera_point, event_stamp)
+
+    def _is_in_leader_projection(self, leader, camera_point, event_stamp):
+        """Compare image directions without trusting the candidate's depth.
+
+        For an optical-frame point, X/Z and Y/Z are normalized image pixels.
+        Project the candidate ray to the leader's depth plane and measure its
+        offset there. This is equivalent to a projected circular region, with
+        pixel radii fx*r/Z and fy*r/Z, without requiring another CameraInfo.
+        """
+        candidate = camera_point.point
+        if (not camera_point.header.frame_id or candidate.z <= 0.0
+                or not all(math.isfinite(v) for v in (candidate.x, candidate.y, candidate.z))):
+            return False
+        # Leader coordinates are already in the fixed localization frame.
+        # Use the camera pose at the thermal event time, not odometry receipt
+        # time or the older matched leader stamp while UAV1 is moving.
+        leader_at_event = PointStamped()
+        leader_at_event.header.frame_id = self.localization_frame
+        leader_at_event.header.stamp = rospy.Time.from_sec(event_stamp)
+        leader_at_event.point = leader.point
+        try:
+            projected = self.tf_buffer.transform(
+                leader_at_event, camera_point.header.frame_id, rospy.Duration(0.10)
+            ).point
+        except Exception as exc:
+            rospy.logwarn_throttle(
+                2.0, "Cannot project leader into thermal candidate camera: %s", exc
+            )
+            return False
+        if (projected.z <= 0.0
+                or not all(math.isfinite(v) for v in (projected.x, projected.y, projected.z))):
+            return False
+        offset = math.hypot(
+            candidate.x / candidate.z * projected.z - projected.x,
+            candidate.y / candidate.z * projected.z - projected.y,
+        )
+        if offset > self.leader_thermal_projection_radius:
             return False
         rospy.logwarn_throttle(
-            1.0,
-            "Filtered UAV1 thermal candidate near UAV0: distance=%.3fm radius=%.3fm",
-            distance,
-            self.leader_thermal_exclusion_radius,
+            1.0, "Filtered UAV1 thermal candidate in UAV0 projection: "
+            "offset=%.3fm radius=%.3fm candidate_depth=%.3fm leader_depth=%.3fm",
+            offset, self.leader_thermal_projection_radius, candidate.z, projected.z,
         )
         return True
 
@@ -504,7 +563,7 @@ class TargetReporterNode:
             self.last_processed_pair[source] = pair
         position = {"x": world.point.x, "y": world.point.y, "z": world.point.z}
         target_type = {"color": "color_tag", "qr": "qr_code", "thermal": "thermal_source"}[source]
-        if source == "thermal" and self._is_leader_thermal_source(position, event_stamp):
+        if source == "thermal" and self._is_leader_thermal_source(position, event_stamp, point):
             return
         if source == "thermal" and self._is_ground_thermal_source(position):
             return
