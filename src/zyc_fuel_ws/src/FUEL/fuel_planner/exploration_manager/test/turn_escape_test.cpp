@@ -652,12 +652,12 @@ public:
     task.turn_detection_direction_ = Eigen::Vector2d::UnitX();
     task.segment_direction_ = Eigen::Vector2d::UnitX();
     task.segment_origin_ = Eigen::Vector2d(-1.1,0);
-    task.updateRobotPose(Vector3d(mode == 11 ? .275 : -.1,0,1),0.0);
+    task.updateRobotPose(Vector3d(-.1,0,1),0.0);
     task.visited_positions_.clear();
     task.visited_positions_.push_back(Vector3d(-1.1,0,1));
-    task.visited_positions_.push_back(Vector3d(mode == 11 ? .275 : -.1,0,1));
+    task.visited_positions_.push_back(Vector3d(-.1,0,1));
     double right_width = (mode == 2 ? 0.65 : 0.90);
-    double left_width = (mode == 2 || mode == 3 || mode == 4 ? 0.90 : 0.20);
+    double left_width = (mode == 2 || mode == 3 || mode == 4 || mode == 11 ? 0.90 : 0.20);
     if (mode == 5) right_width = left_width = 0.20;
     if (mirror) std::swap(right_width, left_width);
     for (int x=0; x<map.mp_->map_voxel_num_.x(); ++x)
@@ -665,7 +665,7 @@ public:
         for (int z=0; z<map.mp_->map_voxel_num_.z(); ++z) {
           const Eigen::Vector3i id(x,y,z);
           Vector3d p; map.indexToPos(id,p);
-          const bool hall = p.x() < 0.90 && std::fabs(p.y()) < 0.55;
+          const bool hall = p.x() < 0.90 && std::fabs(p.y()) < (mode == 11 ? .35 : .55);
           const double width = p.y() < 0 ? right_width : left_width;
           bool branch = std::fabs(p.x()-0.45) < 0.5*width;
           // 看得到远处宽阔区域，但连接处被墙/低顶/未知体素切断。
@@ -687,6 +687,16 @@ public:
     ASSERT_TRUE(found);
     if (mode >= 10) {
       ASSERT_TRUE(manager.planner_manager_->isTurnPositionSafe(task.latest_robot_pos_));
+      if (mode == 10) {
+        ASSERT_FALSE(task.mapExitFootprintFree(task.latest_robot_pos_ + selected));
+        EXPECT_TRUE(task.inferOccupancyTurnDirection(
+            Vector3d::UnitX(), selected, old_free, branch_free, true));
+        EXPECT_TRUE(task.mappedCorridorDirection(0.0, selected, false));
+        EXPECT_TRUE(task.turnYawAlignmentPending());
+        return;
+      }
+      ASSERT_LT(task.knownHorizontalClearance(task.latest_robot_pos_)+map.getResolution(),
+                task.knownHorizontalClearance(Vector3d(.45,0,1)));
       EXPECT_FALSE(task.inferOccupancyTurnDirection(
           Vector3d::UnitX(), selected, old_free, branch_free, true));
       EXPECT_FALSE(task.mappedCorridorDirection(0.0, selected, false));
@@ -2381,6 +2391,77 @@ public:
     EXPECT_TRUE(fsm.active_traj_braked_);
     EXPECT_FALSE(fsm.active_turn_in_place_);
     EXPECT_TRUE(manager.turnInPlaceAlignmentPending());
+  }
+
+  static void runTurnRetreatOrEscapeRelease(bool release_check) {
+    ros::NodeHandle nh("~turn_retreat_"+std::to_string(release_check));
+    FastExplorationManager manager;
+    initialize(nh,manager);
+    auto& planner=*manager.planner_manager_;
+    auto& task=*manager.task_search_manager_;
+    auto& map=*manager.sdf_map_;
+    std::fill(map.md_->occupancy_buffer_.begin(),map.md_->occupancy_buffer_.end(),
+              map.mp_->clamp_min_log_);
+    const Vector3d start(.025,.025,1.025),zero=Vector3d::Zero();
+    for (double z : {.975,1.025,1.075}) {
+      Eigen::Vector3i id;
+      map.posToIndex(Vector3d(release_check?.225:.275,.025,z),id);
+      map.md_->occupancy_buffer_[map.toAddress(id)]=map.mp_->clamp_max_log_;
+    }
+    task.setMap(manager.sdf_map_);
+    task.setCorridorFrame(start-2.0*Vector3d::UnitX(),Vector3d::UnitX());
+    task.updateRobotPose(start,0.0);
+    manager.recovery_odom_history_={start-.5*Vector3d::UnitX(),start};
+    if (!release_check) {
+      ASSERT_TRUE(planner.isPositionSafe(start));
+      ASSERT_FALSE(planner.isTurnPositionSafe(start));
+      task.turn_yaw_follow_latch_.arm(Eigen::Vector2d::UnitY());
+      ASSERT_TRUE(manager.buildTurnInPlacePlan(start,zero,zero,zero,Vector3d::UnitY()));
+      EXPECT_TRUE(manager.currentPlanIsEscapeStep());
+      EXPECT_FALSE(manager.currentPlanIsTurnInPlace());
+      EXPECT_LT(manager.ed_->next_goal_.x(),start.x()-.03);
+      EXPECT_TRUE(planner.isTurnPositionSafe(manager.ed_->next_goal_));
+      EXPECT_TRUE(task.turnYawAlignmentPending());
+      const Vector3d end=manager.ed_->next_goal_;
+      task.updateRobotPose(end,0.0);
+      EXPECT_TRUE(manager.buildTurnInPlacePlan(end,zero,zero,zero,Vector3d::UnitY()));
+      EXPECT_TRUE(manager.currentPlanIsTurnInPlace());
+      return;
+    }
+    ASSERT_TRUE(planner.isControlledEscapePosition(start));
+    ASSERT_FALSE(planner.isRawPositionSafe(start));
+    Vector3d actual=start;
+    for (double d=.001;d<=.10;d+=.001) {
+      actual=start-d*Vector3d::UnitX();
+      if (planner.isPositionSafe(actual)) break;
+    }
+    ASSERT_TRUE(planner.isPositionSafe(actual));
+    ASSERT_FALSE(planner.isControlledEscapePosition(actual));
+    ASSERT_TRUE(planner.planExploreTraj({start,start-.15*Vector3d::UnitX(),
+        start-.30*Vector3d::UnitX()},zero,zero,0.0));
+    ASSERT_TRUE(planner.isTrajectorySafe(.03,true));
+    ASSERT_FALSE(planner.isTrajectorySafe(.03,false));
+    FastExplorationFSM fsm;
+    fsm.expl_manager_=std::shared_ptr<FastExplorationManager>(&manager,[](FastExplorationManager*){});
+    fsm.planner_manager_=manager.planner_manager_;
+    fsm.fd_=std::make_shared<FSMData>();
+    fsm.fp_=std::make_shared<FSMParam>();
+    fsm.fd_->state_str_={"INIT","WAIT","PLAN","PUB","EXEC","FINISH"};
+    fsm.fd_->odom_pos_=actual;fsm.fd_->odom_vel_.setZero();fsm.fd_->odom_yaw_=0.0;
+    fsm.fp_->trajectory_release_max_start_error_=.11;
+    fsm.fp_->trajectory_release_max_velocity_error_=.1;
+    fsm.fp_->trajectory_release_max_acceleration_error_=1.0;
+    fsm.fp_->trajectory_release_confirm_time_=10.0;
+    fsm.active_traj_valid_=true;fsm.active_traj_braked_=true;
+    fsm.pending_escape_step_=true;fsm.state_=PUB_TRAJ;
+    for (int i=0;i<5;++i) {
+      OdomReviewSample sample;sample.stamp=1.0+.01*i;
+      sample.position={{actual.x(),actual.y(),actual.z()}};
+      sample.velocity={{0,0,0}};fsm.odom_review_window_.push_back(sample);
+    }
+    fsm.FSMCallback(ros::TimerEvent());
+    EXPECT_EQ(fsm.state_,PUB_TRAJ);
+    EXPECT_FALSE(fsm.pending_traj_safe_since_.isZero());
   }
 
   static void runClimbBeforeMappedTurn(int mode) {
@@ -4700,10 +4781,10 @@ TEST(MappedTurn, PendingReplacementCannotLetYawCancelPublishedClimb) {
 TEST(MappedTurn, RealCollisionStillStopsClimb) {
   fast_planner::TurnEscapeTest::runClimbBeforeMappedTurn(2);
 }
-TEST(MappedTurn, FutureWideCornerDoesNotAuthorizeEarlyTurn) {
+TEST(MappedTurn, ClearTurnSiteAllowsConnectedBentDeparture) {
   fast_planner::TurnEscapeTest::runPassableTurn(10);
 }
-TEST(MappedTurn, NarrowDepartureWaitsForBetterTurnMargin) {
+TEST(MappedTurn, NarrowTurnSiteWaitsForBetterPositionClearance) {
   fast_planner::TurnEscapeTest::runPassableTurn(11);
 }
 TEST(FappEnvelope, HistoryExpandsLaterallyWithoutForeAftOrUpperOutlierGrowth) {
@@ -4714,6 +4795,12 @@ TEST(FappEnvelope, RotatedCorridorKeepsOriginalObstacleAxis) {
 }
 TEST(TurnStaticSafety, BlockedRotationKeepsSafeTranslationUntilClearEndpoint) {
   fast_planner::TurnEscapeTest::runStaticTurnCollision(0);
+}
+TEST(TurnStaticSafety, BlockedRotationRetreatsAlongValidatedHistoryBeforeContact) {
+  fast_planner::TurnEscapeTest::runTurnRetreatOrEscapeRelease(false);
+}
+TEST(InflationEscape, ReleaseUsesEscapeTrajectoryStartAcrossVoxelBoundary) {
+  fast_planner::TurnEscapeTest::runTurnRetreatOrEscapeRelease(true);
 }
 TEST(TurnStaticSafety, NewObstacleRejectsAlreadyGeneratedTurnBeforePublish) {
   fast_planner::TurnEscapeTest::runStaticTurnCollision(1);

@@ -3261,6 +3261,8 @@ bool FastExplorationManager::planInflationHistoryEscape(
   incremental_escape_plan_ = false;
   escape_step_plan_ = false;
   const bool controlled_start = planner_manager_->isControlledEscapePosition(pos);
+  const bool turn_clearance_needed = turn_in_place_session_active_ &&
+      !planner_manager_->isTurnPositionSafe(pos);
   if (!inflation_history_escape_enabled_ || recovery_odom_history_.size() < 2 ||
       (!controlled_start && !(after_failure && planner_manager_->isPositionSafe(pos))))
     return false;
@@ -3320,7 +3322,8 @@ bool FastExplorationManager::planInflationHistoryEscape(
         checked.push_back(point);
         traveled += advance;
         const bool fully_clear =
-            !planner_manager_->isPositionInflated(point) && contacts == 0;
+            !planner_manager_->isPositionInflated(point) && contacts == 0 &&
+            (!turn_clearance_needed || planner_manager_->isTurnPositionSafe(point));
         if (fully_clear) {
           if (!reached_clear) {
             reached_clear = true;
@@ -3340,6 +3343,7 @@ bool FastExplorationManager::planInflationHistoryEscape(
         break;
     }
     if (traveled < 0.03) return;
+    // 未完全腾出旋转空间时，仍允许沿原有净空改善规则分步退出。
     if (!reached_clear && (sdf_map_->getOccupancy(checked.back()) != SDFMap::FREE ||
         !(previous_contacts < start_contacts || previous_clearance > start_clearance+0.02))) return;
     EscapeCandidate candidate;
@@ -3374,14 +3378,15 @@ bool FastExplorationManager::planInflationHistoryEscape(
         planner_manager_->isPositionInflated(pos+step_distance*direction);
   };
   const bool front_blocked=blocked(forward), rear_blocked=blocked(-forward);
-  if (!controlled_start && !front_blocked && !rear_blocked) return false;
+  if (!controlled_start && !front_blocked && !rear_blocked && !turn_clearance_needed)
+    return false;
   if (!front_blocked) {
     validateAndTruncate(inflation_escape::buildDirectionalPath(pos,forward,max_distance,sample_step),
-                        false,0,"corridor-forward-step",step_distance);
+                        false,turn_clearance_needed ? 1 : 0,"corridor-forward-step",step_distance);
     validateAndTruncate(inflation_escape::buildDirectionalPath(pos,forward,max_distance,sample_step),
-                        false,0,"corridor-forward-exit",max_distance);
+                        false,turn_clearance_needed ? 1 : 0,"corridor-forward-exit",max_distance);
   }
-  if (front_blocked) {
+  if (front_blocked || turn_clearance_needed) {
     auto history=inflation_escape::buildBackwardHistoryPath(
         pos,recovery_odom_history_,max_distance,recovery_history_spacing_);
     // 动态穿越保持本次实际高度，不沿历史高度下降/抬升。
@@ -3413,7 +3418,8 @@ bool FastExplorationManager::planInflationHistoryEscape(
   }
   ROS_WARN_THROTTLE(0.5,"[inflation_history_escape] front_blocked=%d rear_blocked=%d "
       "candidates=%zu; prefer %s, then mapped side space.",
-      front_blocked,rear_blocked,candidates.size(),front_blocked?"history backtrack":"forward step");
+      front_blocked,rear_blocked,candidates.size(),
+      (front_blocked || turn_clearance_needed)?"history backtrack":"forward step");
   if (candidates.empty()) {
     ROS_WARN_THROTTLE(0.5,
                       "[inflation_history_escape] no improving forward/history/mapped-side step "
@@ -3543,8 +3549,8 @@ bool FastExplorationManager::buildTurnInPlacePlan(
   if (!planner_manager_->isTurnPositionSafe(turn_in_place_anchor_)) {
     turn_in_place_plan_ = false;
     ROS_WARN_THROTTLE(0.5, "[turn_in_place] static obstacle in rotation footprint "
-                           "blocks turn; retain final yaw and recheck.");
-    return false;
+                           "blocks turn; keep final yaw and try validated history retreat.");
+    return !external_selection_only_ && planInflationHistoryEscape(pos, vel, acc, yaw, true);
   }
   if (!planner_manager_->planStationaryTraj(turn_in_place_anchor_, duration)) return false;
 
@@ -5850,6 +5856,7 @@ int FastExplorationManager::planExploreMotion(
   Eigen::Vector3d mapped_direction;
   const bool mapped_turn_detected =
       !cruise_recovery_selected && mapped_turn_yaw_eligible && task_search_manager_ &&
+      planner_manager_->isTurnPositionSafe(pos) &&
       task_search_manager_->mappedCorridorDirection(yaw[0], mapped_direction);
   const bool corridor_yaw_correction =
       !mapped_turn_detected && corridor_yaw_lock_scope && task_search_manager_ &&

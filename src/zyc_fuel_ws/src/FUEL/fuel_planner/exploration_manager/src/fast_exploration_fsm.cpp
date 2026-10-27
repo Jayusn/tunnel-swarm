@@ -652,11 +652,16 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
             velocity_error <= max_velocity_error;
         const bool acceleration_continuous =
             acceleration_error <= fp_->trajectory_release_max_acceleration_error_;
-        const bool controlled_escape_start =
+        const bool controlled_actual_start =
             planner_manager_->isControlledEscapePosition(reviewed_position);
+        // 实际点与样条起点相差几毫米也可能分属栅格两侧；已标记的脱困轨迹
+        // 要按自身起点检查单调退出，不能因实际点刚好无接触而退回普通路径判据。
+        const bool controlled_escape_start = controlled_actual_start ||
+            (pending_escape_step_ &&
+             planner_manager_->isControlledEscapePosition(trajectory_start));
         const bool starts_in_inflation = planner_manager_->isPositionInflated(reviewed_position);
         const bool raw_start_safe = planner_manager_->isRawPositionSafe(reviewed_position) ||
-                                    controlled_escape_start;
+                                    controlled_actual_start;
         const bool clears_inflation =
             !controlled_escape_start || expl_manager_->incrementalEscapePlanSafe() ||
             planner_manager_->trajectoryClearsInflation(

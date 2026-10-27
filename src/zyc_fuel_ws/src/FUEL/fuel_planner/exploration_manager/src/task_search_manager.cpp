@@ -1387,31 +1387,16 @@ bool TaskSearchManager::inferOccupancyTurnDirection(
   if (!std::isfinite(best_score)) return false;
   turn_direction = Eigen::Vector3d(best_direction.x(), best_direction.y(), 0.0);
   if (require_current_turn_site) {
-    // 前方锚点的通道宽度不能授权在当前位置抢转。先检查实时高度上的出弯段，
-    // 再比较当前点与选中锚点的水平余量；保留原足迹/半径，不另加固定膨胀。
-    bool departure_free = true;
-    for (double distance = 0.0; distance <= horizon + 1e-6; distance += body_step) {
-      if (!mapExitFootprintFree(start + distance * turn_direction)) {
-        departure_free = false;
-        break;
-      }
-    }
+    // 转yaw不等于沿新方向直飞一米。上面已验证经锚点连接到分支的完整路径；
+    // 此处只比较原地转向位置的净空，弯折出弯段继续由平移规划检查。
     const double current_clearance = knownHorizontalClearance(start);
     const double anchor_clearance = knownHorizontalClearance(best_anchor);
-    const auto current_passage = route_width::measure(
-        std::vector<Eigen::Vector3d>{start, start + horizon * turn_direction},
-        turn_direction, horizon, 0.75, body_step,
-        [this](const Eigen::Vector3d& p) { return mapExitFootprintFree(p); });
-    if (!departure_free || !current_passage.complete ||
-        best_passage.clearance > current_passage.clearance + map_resolution + 1e-6 ||
-        anchor_clearance > current_clearance + map_resolution + 1e-6) {
+    if (anchor_clearance > current_clearance + map_resolution + 1e-6) {
       ROS_WARN_THROTTLE(0.5, "[turn_site] defer turn at (%.2f,%.2f,%.2f): "
-          "departure_free=%d current_clearance=%.2fm departure_margin=%.2fm; "
-          "selected anchor (%.2f,%.2f,%.2f) clearance=%.2fm departure_margin=%.2fm. "
+          "current_clearance=%.2fm; selected anchor (%.2f,%.2f,%.2f) clearance=%.2fm. "
           "Keep approaching on the valid route.",
-          start.x(), start.y(), start.z(), departure_free, current_clearance,
-          current_passage.clearance, best_anchor.x(), best_anchor.y(), best_anchor.z(),
-          anchor_clearance, best_passage.clearance);
+          start.x(), start.y(), start.z(), current_clearance,
+          best_anchor.x(), best_anchor.y(), best_anchor.z(), anchor_clearance);
       return false;
     }
   }
