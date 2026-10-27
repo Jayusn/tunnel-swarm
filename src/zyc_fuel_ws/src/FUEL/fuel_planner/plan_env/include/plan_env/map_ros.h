@@ -86,6 +86,8 @@ private:
   bool local_updated_, esdf_need_update_;
   // input
   Eigen::Vector3d camera_pos_;
+  Eigen::Vector3d lidar_offset_ = Eigen::Vector3d::Zero();
+  double lidar_blind_radius_{0.0};
   Eigen::Quaterniond camera_q_;
   unique_ptr<cv::Mat> depth_image_;
   vector<Eigen::Vector3d> proj_points_;

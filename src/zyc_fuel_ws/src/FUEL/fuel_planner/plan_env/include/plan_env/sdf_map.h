@@ -34,7 +34,7 @@ public:
 
   void initMap(ros::NodeHandle& nh);
   void inputPointCloud(const pcl::PointCloud<pcl::PointXYZ>& points, const int& point_num,
-                       const Eigen::Vector3d& camera_pos);
+                       const Eigen::Vector3d& camera_pos, double blind_radius = 0.0);
 
   void posToIndex(const Eigen::Vector3d& pos, Eigen::Vector3i& id);
   void indexToPos(const Eigen::Vector3i& id, Eigen::Vector3d& pos);

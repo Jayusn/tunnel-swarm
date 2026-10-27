@@ -279,7 +279,7 @@ void SDFMap::setCacheOccupancy(const int& adr, const int& occ) {
 
 void SDFMap::inputPointCloud(
     const pcl::PointCloud<pcl::PointXYZ>& points, const int& point_num,
-    const Eigen::Vector3d& camera_pos) {
+    const Eigen::Vector3d& camera_pos, double blind_radius) {
   if (point_num == 0) return;
   md_->raycast_num_ += 1;
 
@@ -333,8 +333,18 @@ void SDFMap::inputPointCloud(
 
     caster_->input(pt_w, camera_pos);
     caster_->nextId(idx);
-    while (caster_->nextId(idx))
+    while (caster_->nextId(idx)) {
+      if (blind_radius > 0.0) {
+        // 盲区没有回波不能证明自由；保留其中已有占据/未知，禁止远端射线清空。
+        // 按体素近边计算，避免跨越盲区边界的格子被中心点判断漏掉。
+        Eigen::Vector3d center;
+        indexToPos(idx, center);
+        const Eigen::Vector3d nearest =
+            ((center-camera_pos).cwiseAbs().array()-0.5*mp_->resolution_).max(0.0);
+        if (nearest.squaredNorm() <= blind_radius*blind_radius) continue;
+      }
       setCacheOccupancy(toAddress(idx), 0);
+    }
   }
 
   Eigen::Vector3d bound_inf(mp_->local_bound_inflate_, mp_->local_bound_inflate_, 0);

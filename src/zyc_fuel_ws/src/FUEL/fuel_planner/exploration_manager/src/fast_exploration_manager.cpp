@@ -494,19 +494,21 @@ bool FastExplorationManager::tryCruiseHeightRecovery(
   const Vector3d trajectory_end =
       planner_manager_->local_data_.position_traj_.evaluateDeBoorT(
           planner_manager_->local_data_.duration_);
-  // 只提升已验证的水平路线；专用上下绕行、已有爬升及截断后的不同终点不重写。
+  // 只提升已验证的水平路线，也允许起点修正到已发布高度；专用上下绕行和截断终点不重写。
   if ((path.front() - pos).norm() > 0.05 ||
       (path.back() - trajectory_end).norm() > 0.05 ||
-      std::any_of(path.begin(), path.end(), [&](const Vector3d& point) {
-        return std::fabs(point.z() - pos.z()) > 0.05;
+      path.back().z() < pos.z() - 0.02 ||
+      std::any_of(path.begin() + 1, path.end(), [&](const Vector3d& point) {
+        return std::fabs(point.z() - path.back().z()) > 0.05;
       }))
     return false;
   vector<double> progress(path.size(), 0.0);
   for (size_t i = 1; i < path.size(); ++i)
     progress[i] = progress[i-1] + (path[i] - path[i-1]).head<2>().norm();
   if (progress.back() < 0.10) return false;
-  // 沿原水平折线渐升：每米水平路程最多抬高0.5m，且不超过任务单段爬升量。
-  const double rise = std::min(target_z - pos.z(), 0.5 * progress.back());
+  // 沿原水平折线渐升：新增加的恢复按0.5斜率及任务单段量取值，不压低已有目标。
+  const double rise = std::max(path.back().z() - pos.z(),
+                             std::min(target_z - pos.z(), 0.5 * progress.back()));
   if (rise <= 0.02) return false;
   for (size_t i = 0; i < path.size(); ++i)
     path[i].z() = pos.z() + rise * progress[i] / progress.back();
@@ -1482,7 +1484,8 @@ bool FastExplorationManager::findForwardObstacleTop(
 
   bool found = false;
   obstacle_top = -std::numeric_limits<double>::infinity();
-  for (double ahead = vertical_detour_forward_check_distance_;
+  for (double ahead = std::min(vertical_detour_forward_check_distance_,
+                              wide_side_bypass_min_lookahead_);
        ahead <= vertical_detour_upper_forward_max_distance_ + 1e-6;
        ahead += step) {
     for (double side = -lateral_range; side <= lateral_range + 1e-6;
@@ -1512,7 +1515,7 @@ bool FastExplorationManager::findForwardObstacleTop(
 
 bool FastExplorationManager::buildRaisedSideBypass(
     const Vector3d& pos, double cur_yaw, const Vector3d& forward, double obstacle_top,
-    Vector3d& next_pos, double& next_yaw) {
+    Vector3d& next_pos, double& next_yaw, bool prefer_forward) {
   // 只为低静态障碍增加候选；高度沿用地图/任务的Z基准，不改变点云滤波或下穿。
   const double minimum_z = std::max(pos.z(), obstacle_top +
       std::max(0.20, vertical_detour_upper_obstacle_clearance_));
@@ -1537,6 +1540,22 @@ bool FastExplorationManager::buildRaisedSideBypass(
   for (double target_z = minimum_z; target_z <= maximum_z + 1e-6;
        target_z += vertical_detour_upper_step_) {
     elevated.z() = target_z;
+    // 当前低障碍优先抬高直过，既有抬高侧绕作为上方直线不通时的备选。
+    if (prefer_forward && isKnownSafeVerticalPath(pos, target_z)) {
+      const double distance = vertical_detour_forward_check_distance_;
+      const Vector3d candidate = elevated + distance * travel;
+      const vector<Vector3d> path{pos, elevated, candidate};
+      if (pointInsideWorkspaceLock(candidate) && pathInsideWorkspaceLock(path) &&
+          isKnownSafeHorizontalCorridor(elevated, travel, distance) &&
+          planner_manager_->isFappPathSafe(path) &&
+          (!task_search_manager_ || task_search_manager_->isRecoveryPathAllowed(path, false))) {
+        next_pos = candidate;
+        next_yaw = cur_yaw;
+        ROS_WARN("[raised_forward] static top=%.2fm target_z=%.2fm; prefer checked upper "
+                 "forward step %.2fm over low lateral bypass.", obstacle_top, target_z, distance);
+        return true;
+      }
+    }
     // 每层先找短段，同一距离比较左右整条路径的最小净空，不固定选择某一侧。
     for (double distance = vertical_detour_forward_check_distance_;
          distance <= vertical_detour_upper_forward_max_distance_ + 1e-6;
@@ -1554,6 +1573,7 @@ bool FastExplorationManager::buildRaisedSideBypass(
         if (planner_manager_->path_finder_->search(pos, candidate) != Astar::REACH_END) continue;
         const auto path = planner_manager_->path_finder_->getPath();
         if (!pathInsideWorkspaceLock(path) || !planner_manager_->isPathSafe(path) ||
+            !planner_manager_->isFappPathSafe(path) ||
             (task_search_manager_ && !task_search_manager_->isRecoveryPathAllowed(path, false)))
           continue;
         double clearance = std::numeric_limits<double>::infinity();
@@ -3400,6 +3420,8 @@ bool FastExplorationManager::requestMappedTurn(const Vector3d& position, double 
       task_search_manager_->exitVerificationActive() ||
       task_search_manager_->landingRequested())
     return false;
+  // 同一转弯的补高正在执行，不能再次用“发现转弯”打断它并重取更低锚点。
+  if (turn_in_place_session_active_ && ground_ascent_active_) return false;
   // 当前旋转圆盘有静态障碍时不抢占平移；旧轨迹仍由正常碰撞检查决定能否继续。
   if (!planner_manager_->isTurnPositionSafe(position)) return false;
   // 通道位置已由里程计回调更新，不能用重规划的未来起点覆盖它。
@@ -3436,6 +3458,34 @@ bool FastExplorationManager::buildTurnInPlacePlan(
     turn_in_place_final_yaw_ = detected_target_yaw;
     turn_in_place_still_since_ = ros::Time(0);
     skip_straight_extension_after_turn_ = true;
+  }
+  // 转弯只改变朝向。刹停/跟踪误差不应逐次降低已发布的高度参考。
+  // 复用原地上升及其完整碰撞检查；上升柱被挡时仍交给原有脱障逻辑。
+  const double retained_height = horizontalGoalHeight(pos.z());
+  Vector3d height_target = pos;
+  height_target.z() = retained_height;
+  if (!manual_fapp_active_ && !suspended_underpass_active_ &&
+      low_probe_phase_ == vertical_detour::LowProbePhase::IDLE &&
+      retained_height > pos.z() + ground_ascent_height_tolerance_ &&
+      pointInsideWorkspaceLock(height_target) &&
+      isKnownSafeGroundAscentPath(pos, height_target) &&
+      planner_manager_->isFappPathSafe({pos, height_target})) {
+    if (!ground_ascent_active_) {
+      ground_ascent_active_ = true;
+      ground_ascent_optional_ = true;
+      ground_ascent_anchor_valid_ = false;
+      ground_ascent_still_since_ = ros::Time(0);
+      ground_ascent_target_ = height_target;
+      ground_ascent_yaw_ = yaw[0];
+      ROS_WARN("[turn_height] retain published z=%.3f instead of relatching actual z=%.3f; "
+               "restore height at fixed xy before yaw alignment.", retained_height, pos.z());
+    }
+    turn_in_place_plan_ = false;
+    return buildGroundAscentPlan(pos, vel, yaw);
+  }
+  if (ground_ascent_active_) {
+    if (buildGroundAscentPlan(pos, vel, yaw)) return true;
+    if (ground_ascent_active_) return false;
   }
   // 原地转向无法退出足迹接触/膨胀区域；先复用经过完整路径和轨迹检查的
   // 脱困平移，保持最终转向目标锁存，离开接触区域后再从实时位置转向。
@@ -3993,8 +4043,8 @@ bool FastExplorationManager::manualFappObservationMissing(
     if (distance <= 0.15 || !planner_manager_->fappBlockingBounds(
             {pos, pos + distance * forward}, lower, upper, &observation))
       return false;
-    manual_fapp_hold_height_ = task_search_manager_->clampSearchHeight(
-        std::min(pos.z(), horizontalGoalHeight(pos.z())));
+    // 发现目标只建立观察会话；未发布下降轨迹前，不把跟踪掉高当成新的低位指令。
+    manual_fapp_hold_height_ = horizontalGoalHeight(pos.z());
     manual_fapp_active_ = true;
     planner_manager_->watchFappObstacle(&observation);
     manual_fapp_forward_ = forward;
@@ -4861,6 +4911,40 @@ int FastExplorationManager::planExploreMotion(
       ed_->global_tour_ = {pos, next_pos};
       task_search_manager_->recordSelectedGoal(next_pos);
     } else width_selected_path.clear();
+  }
+
+  // 已经通过动态障碍后，低静态障碍先比较抬高通路，避免先降在低位贴边绕行。
+  // 无当前高度的前方障碍就维持原前进逻辑；入口和专用下穿不受影响。
+  if (!use_vertical_detour_target && !use_forced_entry_target && !use_stage3_target &&
+      !use_mission_forward_fallback && !manual_fapp_active_ && vertical_detour_enabled_ &&
+      (mission_entered_search_region_ || entry_forward_complete_) && task_search_manager_ &&
+      task_search_manager_->enabled() && !task_search_manager_->stage3Active() &&
+      low_probe_phase_ == vertical_detour::LowProbePhase::IDLE) {
+    const Vector3d forward = task_search_manager_->recoveryForwardDirection(yaw[0]);
+    double obstacle_top;
+    if (hasCurrentHeightForwardObstacle(pos, forward) &&
+        findForwardObstacleTop(pos, forward, obstacle_top) &&
+        buildRaisedSideBypass(pos, yaw[0], forward, obstacle_top, next_pos, next_yaw, true)) {
+      use_vertical_detour_target = true;
+      // 直上后前进的候选不能只保留终点再交给A*斜切；先完成已检查的竖直段。
+      const Vector3d lateral(-forward.y(), forward.x(), 0.0);
+      Vector3d ascent_target = pos;
+      ascent_target.z() = task_search_manager_->clampSearchHeight(
+          next_pos.z() + ground_ascent_height_tolerance_);
+      if (std::fabs((next_pos-pos).dot(lateral)) < 1e-6 &&
+          next_pos.z() > pos.z() + 0.02 &&
+          isKnownSafeGroundAscentPath(pos, ascent_target) &&
+          planner_manager_->isFappPathSafe({pos, ascent_target})) {
+        obstacle_clearance_height_ = next_pos.z();
+        ground_ascent_active_ = true;
+        ground_ascent_optional_ = false;
+        ground_ascent_anchor_valid_ = false;
+        ground_ascent_still_since_ = ros::Time(0);
+        ground_ascent_target_ = ascent_target;
+        ground_ascent_yaw_ = yaw[0];
+        return buildGroundAscentPlan(pos, vel, yaw) ? SUCCEED : FAIL;
+      }
+    }
   }
 
   // 优先延续当前可行绕行侧；原侧不可行或已通过后，才按当前通路间距重新选侧。

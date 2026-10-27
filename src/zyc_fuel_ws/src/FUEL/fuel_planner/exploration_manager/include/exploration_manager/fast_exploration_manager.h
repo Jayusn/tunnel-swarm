@@ -464,7 +464,8 @@ private:
                               double& obstacle_top) const;
   bool buildRaisedSideBypass(const Vector3d& pos, double cur_yaw,
                              const Vector3d& forward, double obstacle_top,
-                             Vector3d& next_pos, double& next_yaw);
+                             Vector3d& next_pos, double& next_yaw,
+                             bool prefer_forward = false);
   bool trajectoryNeedsObstacleClearance(double& obstacle_top) const;
   bool ensureObstacleTopClearance(const Vector3d& pos, const Vector3d& vel,
                                   const Vector3d& yaw, bool& ascent_needed);

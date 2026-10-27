@@ -36,6 +36,10 @@ void MapROS::init() {
   node_.param("map_ros/show_esdf_time", show_esdf_time_, false);
   node_.param("map_ros/show_all_map", show_all_map_, false);
   node_.param("map_ros/frame_id", frame_id_, string("world"));
+  node_.param("map_ros/lidar_blind_radius", lidar_blind_radius_, 0.0);
+  node_.param("map_ros/lidar_offset_x", lidar_offset_.x(), 0.0);
+  node_.param("map_ros/lidar_offset_y", lidar_offset_.y(), 0.0);
+  node_.param("map_ros/lidar_offset_z", lidar_offset_.z(), 0.0);
 
   proj_points_.resize(640 * 480 / (skip_pixel_ * skip_pixel_));
   point_cloud_.points.resize(640 * 480 / (skip_pixel_ * skip_pixel_));
@@ -164,7 +168,9 @@ void MapROS::cloudPoseCallback(const sensor_msgs::PointCloud2ConstPtr& msg,
   pcl::fromROSMsg(*msg, cloud);
   int num = cloud.points.size();
 
-  map_->inputPointCloud(cloud, num, camera_pos_);
+  // 点云已经在世界系；盲区和射线起点必须使用雷达原点，而不是IMU原点。
+  const Eigen::Vector3d lidar_pos = camera_pos_ + camera_q_ * lidar_offset_;
+  map_->inputPointCloud(cloud, num, lidar_pos, lidar_blind_radius_);
 
   if (local_updated_) {
     map_->clearAndInflateLocalMap();

@@ -26,6 +26,12 @@ sdf_map:
   static_retention_enabled: false
   static_retention_required_hits: 6
 map_ros:
+  # 与FAST_LIO/config/mid360.yaml的盲区和IMU-LiDAR平移一致；仅用于点云射线融合。
+  # 不改变雷达滤点，也不把25cm无回波区域当作可通行证据。
+  lidar_blind_radius: 0.25
+  lidar_offset_x: -0.011
+  lidar_offset_y: -0.02329
+  lidar_offset_z: 0.04412
   depth_filter_mindist: 0.2
   depth_filter_margin: 2
   k_depth_scaling_factor: 1000.0
