@@ -85,6 +85,77 @@ class TurnEscapeTest {
     });
   }
 public:
+  static void runUpperContinuation(int mode) {
+    ros::NodeHandle nh("~upper_continuation");
+    nh.setParam("manager/use_geometric_path", true);
+    nh.setParam("manager/footprint_bottom_clearance", .20);
+    nh.setParam("astar/resolution_astar", .05);
+    nh.setParam("astar/allocate_num", 100000);
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    auto& map = *manager.sdf_map_;
+    auto& task = *manager.task_search_manager_;
+    const Vector3d pos(-.975, .025, .95), forward = Vector3d::UnitX();
+    task.setMap(manager.sdf_map_);
+    task.enabled_ = true;
+    task.global_no_return_ = false;
+    task.cruise_height_ = .60;
+    task.min_search_height_ = .10;
+    task.max_search_height_ = 1.50;
+    task.setCorridorFrame(pos-forward, forward);
+    task.updateRobotPose(pos, 0);
+    if (mode == 6) manager.vertical_detour_upper_max_side_angle_deg_ = 0;
+    for (int x = 0; x < map.mp_->map_voxel_num_.x(); ++x)
+      for (int y = 0; y < map.mp_->map_voxel_num_.y(); ++y)
+        for (int z = 0; z < map.mp_->map_voxel_num_.z(); ++z) {
+          const Eigen::Vector3i index(x, y, z);
+          Vector3d p; map.indexToPos(index, p);
+          const double side = (mode == 2 ? -1.0 : 1.0)*(p.y()-pos.y());
+          const bool ahead = mode != 0 && p.x() >= pos.x()+1.15 &&
+              p.x() <= pos.x()+1.45 && side >= -.075 && side <= .55 && p.z() < 1.40;
+          const bool walls = mode == 3 && std::fabs(p.y()-pos.y()) >= .25;
+          const bool lower_ahead = mode == 7 && p.x() >= pos.x()+1.05 &&
+              p.x() <= pos.x()+1.15 && std::fabs(p.y()-pos.y()) < .55 && p.z() < .65;
+          const bool occupied = ahead || walls || lower_ahead || p.z() < .35;
+          const bool unknown = mode == 4 && p.x() > pos.x()+.15 && p.y() < pos.y()-.20;
+          const int address = map.toAddress(index);
+          map.md_->occupancy_buffer_[address] = occupied ? map.mp_->clamp_max_log_ :
+              unknown ? map.mp_->clamp_min_log_-map.mp_->unknown_flag_ : map.mp_->clamp_min_log_;
+          map.md_->occupancy_buffer_inflate_[address] = occupied;
+        }
+    map.md_->local_bound_min_.setZero();
+    map.md_->local_bound_max_ = map.mp_->map_voxel_num_-Eigen::Vector3i::Ones();
+    map.updateESDF3d();
+    // 复现旧分支：0.90m本身可行，但紧接着的前方余量已经碰到下一障碍。
+    ASSERT_TRUE(manager.isKnownSafeUpperCorridor(pos, forward, .90));
+    if (mode != 0) {
+      EXPECT_FALSE(manager.isKnownSafeUpperCorridor(pos, forward, 1.10));
+    }
+    if (mode == 5) manager.recovery_odom_history_ = {Vector3d(pos.x(), pos.y(), .50)};
+    Vector3d next; double yaw = 0;
+    if (mode == 5) {
+      EXPECT_FALSE(manager.buildForwardUpperDetour(pos, 0, forward, next, yaw));
+      return;
+    }
+    ASSERT_TRUE(manager.buildForwardUpperDetour(pos, 0, forward, next, yaw));
+    EXPECT_NEAR(next.z(), mode == 7 ? pos.z() :
+        task.projectSearchHeight(task.cruise_height_,pos.z()), 1e-6);
+    EXPECT_NEAR(yaw, 0, 1e-6);
+    EXPECT_TRUE(manager.planner_manager_->isPathSafe({pos, next}));
+    Vector3d delta = next-pos; delta.z() = 0;
+    Vector3d elevated = pos; elevated.z() = next.z();
+    EXPECT_TRUE(manager.isKnownSafeUpperCorridor(elevated, delta, delta.norm()+.20));
+    if (mode == 0) {
+      EXPECT_NEAR(next.x()-pos.x(), .90, 1e-6);
+      EXPECT_NEAR(next.y(), pos.y(), 1e-6);
+    } else {
+      EXPECT_NEAR(next.x()-pos.x(), .60, 1e-6);
+      if (mode == 1) { EXPECT_LT(next.y(), pos.y()-.05); } // 机头朝+X时右侧是-Y。
+      if (mode == 2) { EXPECT_GT(next.y(), pos.y()+.05); }
+      if (mode == 3 || mode == 4 || mode == 6) { EXPECT_NEAR(next.y(), pos.y(), 1e-6); }
+    }
+  }
+
   static void runMeasuredUpperClearance(bool near_obstacle) {
     ros::NodeHandle nh("~measured_upper_clearance");
     nh.setParam("manager/use_geometric_path", true);
@@ -5153,6 +5224,30 @@ TEST(PassableTurn, RejectsRecentLeftReturnFromActualTurnAnchor) { fast_planner::
 TEST(PassableTurn, OnlyOldRouteDoesNotConfirmNewTurn) { fast_planner::TurnEscapeTest::runPassableTurn(11); }
 
 TEST(UpperTurn, LowRightObstacleConfirmsTurnThenTriggersAscent) { fast_planner::TurnEscapeTest::runUpperTurn(0); }
+TEST(UpperContinuation, OpenCorridorKeepsFullAdvance) {
+  fast_planner::TurnEscapeTest::runUpperContinuation(0);
+}
+TEST(UpperContinuation, UpcomingObstacleShortensAndMovesRight) {
+  fast_planner::TurnEscapeTest::runUpperContinuation(1);
+}
+TEST(UpperContinuation, MirroredObstacleMovesLeftInsteadOfHardcodedRight) {
+  fast_planner::TurnEscapeTest::runUpperContinuation(2);
+}
+TEST(UpperContinuation, NarrowSidesKeepShortStraightProgress) {
+  fast_planner::TurnEscapeTest::runUpperContinuation(3);
+}
+TEST(UpperContinuation, UnknownSideCannotBeSelectedForExtraClearance) {
+  fast_planner::TurnEscapeTest::runUpperContinuation(4);
+}
+TEST(UpperContinuation, ShortSideRouteStillRequiresMeasuredBottomClearance) {
+  fast_planner::TurnEscapeTest::runUpperContinuation(5);
+}
+TEST(UpperContinuation, DisabledSideAngleKeepsShortStraightProgress) {
+  fast_planner::TurnEscapeTest::runUpperContinuation(6);
+}
+TEST(UpperContinuation, ShorteningDoesNotDescendBeforeUpcomingLowObstacle) {
+  fast_planner::TurnEscapeTest::runUpperContinuation(7);
+}
 TEST(UpperDetour, NearObstacleRequiresActualHeightBeforeForwardMotion) {
   fast_planner::TurnEscapeTest::runMeasuredUpperClearance(true);
 }
