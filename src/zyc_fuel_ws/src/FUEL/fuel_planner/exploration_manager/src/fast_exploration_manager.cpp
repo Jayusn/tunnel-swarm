@@ -5019,8 +5019,17 @@ int FastExplorationManager::planExploreMotion(
       task_search_manager_->enabled() && !task_search_manager_->stage3Active() &&
       !task_search_manager_->finalExitFrontierGuardActive()) {
     const Vector3d forward=task_search_manager_->recoveryForwardDirection(yaw[0]);
-    if (hasForwardBodyObstacle(pos,forward) &&
-        planInflationHistoryEscape(pos,vel,acc,yaw,true,true)) return SUCCEED;
+    if (hasForwardBodyObstacle(pos,forward)) {
+      // 短段避障会提前返回，必须先让已有的地图转弯确认参与决策。
+      // 上方通路专用检查会跳过当前层分支，不能替代这里的普通转弯确认；
+      // 否则已识别右转仍会反复侧移，永远到不了下方发布前的转向逻辑。
+      Vector3d mapped_direction;
+      if (task_search_manager_->mappedCorridorDirection(yaw[0],mapped_direction)) {
+        ROS_WARN("[static_detour] mapped corridor turn takes priority over local side/upper steps.");
+        return buildTurnInPlacePlan(pos,vel,acc,yaw,mapped_direction) ? SUCCEED : FAIL;
+      }
+      if (planInflationHistoryEscape(pos,vel,acc,yaw,true,true)) return SUCCEED;
+    }
   }
   if (!external_selection_only_ && !use_vertical_detour_target && !low_probe_active &&
       vertical_detour::inflationEscapeAllowed(low_probe_phase_) &&

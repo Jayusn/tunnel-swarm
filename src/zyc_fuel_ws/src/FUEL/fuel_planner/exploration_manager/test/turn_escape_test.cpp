@@ -1422,11 +1422,11 @@ public:
     initialize(nh,manager);
     auto& task=*manager.task_search_manager_;
     auto& map=*manager.sdf_map_;
-    const double side=mode==6 ? 1.0 : -1.0;
+    const double side=(mode==6 || mode==9) ? 1.0 : -1.0;
     const Vector3d pos(.45,0,.525), zero=Vector3d::Zero();
     task.setMap(manager.sdf_map_);
     task.global_no_return_=false;
-    task.setCorridorFrame(Vector3d(-1,0,.525),Vector3d::UnitX());
+    task.setCorridorFrame(Vector3d(mode>=8 ? -1.7 : -1.0,0,.525),Vector3d::UnitX());
     task.segment_direction_=Eigen::Vector2d::UnitX();
     task.turn_detection_direction_=Eigen::Vector2d::UnitX();
     task.stable_progress_direction_=Eigen::Vector2d::UnitX();
@@ -1443,7 +1443,7 @@ public:
           const double along=side*p.y();
           const bool hall=p.x()<.9 && std::fabs(p.y())<.55;
           const bool branch=std::fabs(p.x()-.45)<.45;
-          const bool low_obstacle=mode!=3 && along>.30 && along<.65 && p.z()<.60;
+          const bool low_obstacle=mode!=3 && mode<8 && along>.30 && along<.65 && p.z()<.60;
           const bool roof=mode==2 && along>.30 && p.z()>.70;
           const bool occupied=(!hall && !branch) || low_obstacle || roof;
           const int address=map.toAddress(id);
@@ -1452,6 +1452,37 @@ public:
             map.md_->occupancy_buffer_[address]=map.mp_->clamp_min_log_-map.mp_->unknown_flag_;
           map.md_->occupancy_buffer_inflate_[address]=occupied;
         }
+    if (mode>=8) {
+      // 第七个接力点回归：墙前有可通行转弯和20cm侧移时，短段不能跳过转弯确认。
+      map.md_->local_bound_min_.setZero();
+      map.md_->local_bound_max_=map.mp_->map_voxel_num_-Eigen::Vector3i::Ones();
+      map.updateESDF3d();
+      manager.turn_in_place_still_confirm_time_=0.0;
+      task.recovery_turn_confirmation_count_=mode==10 ? 3 : 1;
+      task.recovery_turn_confirmation_min_interval_=0.0;
+      ASSERT_FALSE(task.entryForwardPhaseActive());
+      ASSERT_TRUE(manager.hasForwardBodyObstacle(pos,Vector3d::UnitX()));
+      ASSERT_TRUE(manager.planner_manager_->isKnownFreePosition(pos));
+      // 先确认这个场景确实存在可执行的旧侧移，避免测试绕开此次提前返回分支。
+      ASSERT_TRUE(manager.planInflationHistoryEscape(pos,zero,zero,zero,true,true));
+      ASSERT_TRUE(manager.currentPlanIsEscapeStep());
+      for (int frame=1; frame<=task.recovery_turn_confirmation_count_; ++frame) {
+        task.updateRobotPose(pos,0.0);
+        ASSERT_EQ(SUCCEED,manager.planExploreMotion(pos,zero,zero,zero));
+        if (frame<task.recovery_turn_confirmation_count_) {
+          EXPECT_FALSE(task.hasConfirmedCorridorTurn());
+          EXPECT_FALSE(manager.currentPlanIsTurnInPlace());
+        }
+      }
+      ASSERT_TRUE(task.hasConfirmedCorridorTurn());
+      ASSERT_TRUE(manager.currentPlanIsTurnInPlace());
+      EXPECT_FALSE(manager.currentPlanIsEscapeStep());
+      EXPECT_GT(task.stableProgressDirection().y()*side,.9);
+      auto& trajectory=manager.planner_manager_->local_data_.position_traj_;
+      for (double t=0.0;t<=trajectory.getTimeSum();t+=.05)
+        EXPECT_LT((trajectory.evaluateDeBoorT(t)-pos).norm(),1e-6);
+      return;
+    }
     Vector3d direction;
     const bool found=task.mappedCorridorDirection(0,direction,false,false,true);
     if (mode==1 || mode==2 || mode==3 || mode==4) {
@@ -5779,6 +5810,9 @@ TEST(InflationEscape, FailedUpperRouteInInflationUsesSideBeforeBackingTowardFoll
 TEST(UpperTurn, UnknownAboveDoesNotAuthorizeTurn) { fast_planner::TurnEscapeTest::runUpperTurn(1); }
 TEST(UpperTurn, RoofBlocksElevatedPassage) { fast_planner::TurnEscapeTest::runUpperTurn(2); }
 TEST(UpperTurn, OrdinaryTurnDoesNotUseEarlyTakeover) { fast_planner::TurnEscapeTest::runUpperTurn(3); }
+TEST(MappedTurnPriority, RightPassagePrecedesStaticSideStep) { fast_planner::TurnEscapeTest::runUpperTurn(8); }
+TEST(MappedTurnPriority, LeftPassagePrecedesStaticSideStep) { fast_planner::TurnEscapeTest::runUpperTurn(9); }
+TEST(MappedTurnPriority, RepeatedShortStepsStillAccumulateTurnEvidence) { fast_planner::TurnEscapeTest::runUpperTurn(10); }
 TEST(UpperTurn, DisabledVerticalDetourDoesNotAuthorizeElevatedTurn) { fast_planner::TurnEscapeTest::runUpperTurn(4); }
 TEST(UpperTurn, RechecksMapAfterYawCompletes) { fast_planner::TurnEscapeTest::runUpperTurn(5); }
 TEST(UpperTurn, MirroredLowObstacleUsesLeftPassage) { fast_planner::TurnEscapeTest::runUpperTurn(6); }
