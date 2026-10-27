@@ -45,6 +45,7 @@ void FastPlannerManager::initPlanModules(ros::NodeHandle& nh) {
   // 2026-07-23: 0.15m膨胀图用于A*搜索引导；路径和轨迹最终安全按此真实机体圆盘半径复核，
   // 两者不再叠成硬性的0.35m净空要求。
   nh.param("manager/footprint_check_radius", footprint_check_radius_, 0.18);
+  nh.param("manager/turn_check_radius", turn_check_radius_, 0.25);
   nh.param("manager/footprint_check_samples", footprint_check_samples_, 12);
   nh.param("manager/footprint_min_occupied_support",
            footprint_min_occupied_support_, 2);
@@ -56,6 +57,7 @@ void FastPlannerManager::initPlanModules(ros::NodeHandle& nh) {
   nh.param("manager/turn_slowdown_angle_deg", turn_slowdown_angle_deg_, 30.0);
   nh.param("manager/turn_time_scale", turn_time_scale_, 1.5);
   footprint_check_radius_ = std::max(0.0, footprint_check_radius_);
+  turn_check_radius_ = std::max(0.0, turn_check_radius_);
   footprint_check_samples_ = std::max(4, footprint_check_samples_);
   footprint_min_occupied_support_ = std::max(1, footprint_min_occupied_support_);
   footprint_support_radius_ = std::max(0.0, footprint_support_radius_);
@@ -775,8 +777,8 @@ int FastPlannerManager::lowerFootprintObstacleCount(
 
 bool FastPlannerManager::isTurnPositionSafe(const Eigen::Vector3d& position) const {
   if (!position.allFinite() || !isPositionSafe(position)) return false;
-  // 圆盘是现有机体半径在整个yaw转动中的包络；枚举相交体素，补齐稀疏圆环采样间隙。
-  const double radius = footprint_check_radius_;
+  // 转弯使用独立检测半径，不改变平移足迹；枚举整个yaw包络相交的体素。
+  const double radius = turn_check_radius_;
   constexpr double half_height = 0.06;
   const double half_voxel = 0.5 * sdf_map_->getResolution();
   Eigen::Vector3i lower, upper;

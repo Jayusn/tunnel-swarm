@@ -184,6 +184,8 @@
     <param name="manager/clearance_threshold" value="0.2" type="double"/>
     <!-- 最终路径/轨迹按0.18m机体圆盘复核；孤立占据点按噪声忽略，连续墙柱仍硬拒绝。 -->
     <param name="manager/footprint_check_radius" value="0.18" type="double"/>
+    <!-- 转弯单独按0.25m半径复核，水平平移仍使用上面的0.18m足迹。 -->
+    <param name="manager/turn_check_radius" value="0.25" type="double"/>
     <param name="manager/footprint_check_samples" value="12" type="int"/>
     <param name="manager/footprint_min_occupied_support" value="2" type="int"/>
     <param name="manager/footprint_support_radius" value="0.10" type="double"/>

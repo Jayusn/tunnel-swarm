@@ -1836,6 +1836,27 @@ public:
     EXPECT_FALSE(manager.obstacleAscentPending());
   }
 
+  static void runTurnRadiusIndependentOfTranslation(bool inside_turn_radius) {
+    ros::NodeHandle nh("~turn_radius_independent");
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    auto& planner = *manager.planner_manager_;
+    const Vector3d start(0.025, 0.025, 1.025);
+    // 障碍体素近边距机心22.5cm或27.5cm；均在原平移18cm检测之外。
+    const double lateral_distance = inside_turn_radius ? 0.25 : 0.30;
+    pcl::PointCloud<pcl::PointXYZ> obstacle;
+    for (double z : {0.975, 1.025, 1.075})
+      obstacle.push_back(pcl::PointXYZ(start.x(), start.y() + lateral_distance, z));
+    for (int i = 0; i < 8; ++i)
+      manager.sdf_map_->inputPointCloud(obstacle, obstacle.size(), start);
+    manager.sdf_map_->updateESDF3d();
+    EXPECT_DOUBLE_EQ(planner.footprintRadius(), 0.18);
+    ASSERT_TRUE(planner.isPositionSafe(start));
+    EXPECT_EQ(planner.isTurnPositionSafe(start), !inside_turn_radius);
+    ASSERT_TRUE(planner.planStraightTraj(start, start - 0.4 * Vector3d::UnitX()));
+    EXPECT_TRUE(planner.isTrajectorySafe());
+  }
+
   static void runStaticTurnCollision(int stage) {
     ros::NodeHandle nh("~static_turn_safety");
     FastExplorationManager manager;
@@ -3899,6 +3920,12 @@ TEST(TurnStaticSafety, BlockedRotationKeepsSafeTranslationUntilClearEndpoint) {
 }
 TEST(TurnStaticSafety, NewObstacleRejectsAlreadyGeneratedTurnBeforePublish) {
   fast_planner::TurnEscapeTest::runStaticTurnCollision(1);
+}
+TEST(TurnStaticSafety, ExpandedRadiusBlocksTurnButAllowsHorizontalTranslation) {
+  fast_planner::TurnEscapeTest::runTurnRadiusIndependentOfTranslation(true);
+}
+TEST(TurnStaticSafety, ObstacleOutsideTwentyFiveCentimetresAllowsTurn) {
+  fast_planner::TurnEscapeTest::runTurnRadiusIndependentOfTranslation(false);
 }
 TEST(TurnStaticSafety, ActualFootprintCollisionStopsTurnDespiteSafeReference) {
   fast_planner::TurnEscapeTest::runStaticTurnCollision(2);
