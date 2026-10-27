@@ -106,8 +106,9 @@ void TaskSearchManager::initialize(ros::NodeHandle& nh) {
   nh.param("mission/vertical_detour/upper_max_rise", turn_upper_max_rise_, 0.60);
   nh.param("astar/max_search_height", turn_upper_max_height_, 1.90);
   nh.param("manager/footprint_bottom_clearance", turn_bottom_clearance_, 0.20);
-  // 上绕目标距障碍顶面的间距不是机体尺寸；转弯沿用实际配置的下方包络。
-  turn_bottom_clearance_ = std::max(0.06, turn_bottom_clearance_);
+  double upper_clearance;
+  nh.param("mission/vertical_detour/upper_obstacle_clearance", upper_clearance, 0.20);
+  turn_bottom_clearance_ = std::max(0.20, std::max(turn_bottom_clearance_,upper_clearance));
   turn_upper_step_ = std::max(0.10,turn_upper_step_);
   turn_upper_max_rise_ = std::max(turn_upper_step_,turn_upper_max_rise_);
   nh.param("mission/task_search/recovery/occupancy_turn_enabled",
@@ -2160,7 +2161,7 @@ bool TaskSearchManager::mapExitFootprintFree(const Eigen::Vector3d& center,
   const double half_height = std::max(0.0, exit_footprint_half_height_);
   const int xy_bins = std::max(1, static_cast<int>(std::ceil(radius / step)));
   const int z_bins = std::max(1, static_cast<int>(std::ceil(half_height / step)));
-  const double bottom = bottom_height < 0.0 ? half_height : bottom_height;
+  const double bottom = bottom_height < 0.0 ? half_height : std::max(half_height,bottom_height);
   const int bottom_bins = std::max(1,static_cast<int>(std::ceil(bottom/step)));
   for (int x = -xy_bins; x <= xy_bins; ++x) {
     for (int y = -xy_bins; y <= xy_bins; ++y) {

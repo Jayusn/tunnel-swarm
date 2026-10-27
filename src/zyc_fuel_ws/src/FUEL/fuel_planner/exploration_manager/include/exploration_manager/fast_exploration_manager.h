@@ -169,7 +169,6 @@ private:
   bool fapp_rush_active_{false}, fapp_rush_pending_{false};
   ros::Publisher fapp_rush_pub_;
   bool keepsDynamicSide(const std::vector<Vector3d>& path) const;
-  double fappApproachLength(const Vector3d& pos) const;
   bool planFappOpeningCrossing(const Vector3d& pos, const Vector3d& vel,
                                const Vector3d& acc, const Vector3d& yaw);
   bool fapp_exploration_crossing_enabled_{false};
@@ -387,7 +386,6 @@ private:
   double underpass_lidar_above_odom_{0.044};
   double underpass_clearance_{0.10};
   double underpass_height_tracking_margin_{0.06};
-  double underpass_descent_step_{0.0};
   double underpass_lookahead_{2.00};
   double underpass_min_height_{0.25};
 
@@ -472,8 +470,7 @@ private:
   bool hasKnownFreeSpaceBelowObstacle(const Vector3d& point,
                                       double bottom_z) const;
   bool planInflationHistoryEscape(const Vector3d& pos, const Vector3d& vel,
-                                  const Vector3d& acc, const Vector3d& yaw,
-                                  bool after_failure = false, bool compare_static_routes = false);
+                                  const Vector3d& acc, const Vector3d& yaw, bool after_failure = false);
   bool shouldStartGroundAscent(const Vector3d& pos) const;
   bool buildGroundAscentPlan(const Vector3d& pos, const Vector3d& vel,
                              const Vector3d& yaw);

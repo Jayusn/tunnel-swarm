@@ -39,21 +39,6 @@ namespace fast_planner {
 namespace {
 // 远处悬挂物只用于预见；进入半米接近段后才刹停并开始固定 XY 下穿。
 constexpr double kUnderpassStartDistance = 0.50;
-
-std::vector<double> underpassHeights(double start, double ceiling, double minimum,
-                                    double descent_step) {
-  std::vector<double> heights;
-  if (start < minimum || ceiling < minimum) return heights;
-  if (descent_step <= 0.0) return {std::min(start, ceiling)};
-  // 10cm是从当前高度向下的动作量，先试这一层，不通再继续向下；已低于障碍时不重复下降。
-  double height = start <= ceiling ? start : std::max(minimum, start - descent_step);
-  while (true) {
-    if (height <= ceiling + 1e-6) heights.push_back(height);
-    if (height <= minimum + 1e-6) break;
-    height = std::max(minimum, height - descent_step);
-  }
-  return heights;
-}
 }
 // SECTION interfaces for setup and query
 
@@ -97,14 +82,13 @@ void FastExplorationManager::recordPublishedTrajectoryHeight() {
     width_route_plan_ = false;
     planned_split_route_ = {};
   }
-  if (manual_fapp_active_ && (vertical_detour_plan_ || upper_detour_plan_) &&
+  if (manual_fapp_active_ && vertical_detour_plan_ &&
       low_probe_phase_ == vertical_detour::LowProbePhase::IDLE &&
       std::isfinite(pending_reference_height_))
     manual_fapp_hold_height_ = pending_reference_height_;
   if (manual_fapp_active_ && manual_fapp_curve_active_ &&
       std::isfinite(pending_reference_height_)) {
-    // 短接近段尚未下降到球下方，不能提前提交远端穿越的低位高度。
-    manual_fapp_hold_height_ = pending_reference_height_;
+    manual_fapp_hold_height_ = low_probe_height_; // 仅已发布的下穿轨迹可更新低位参考。
     // 下穿回退为普通规划时仍保留已发布曲线的侧向，不能重新默认选左侧。
     if (!recovery_side_latched_) recovery_side_origin_ = manual_fapp_curve_origin_;
     recovery_side_latched_ = true;
@@ -874,82 +858,29 @@ bool FastExplorationManager::buildForwardUpperDetour(
   Vector3d actual_height_start = pos;
   if (!recovery_odom_history_.empty())
     actual_height_start.z() = std::min(pos.z(), recovery_odom_history_.back().z());
-  // 上绕续行也要在终点前方留出观察余量，不能把0.90m探测长度全部用作位移。
-  // 长直段受阻时比较短段左右净空，提前斜向绕开，而不是走到障碍前再退后。
+  // 已经越过顶部时，先验证完整前进段。能安全回巡航层则边走边回落；
+  // 下方仍有障碍就保持当前高度前进，不能因扇区里还有更高的点再抬升。
   if ((pos.z() > cruise + 0.03 || std::isfinite(published_upper_height_)) &&
       isKnownSafeHorizontalCorridor(actual_height_start,direction,lookahead)) {
     const double upper_height = std::isfinite(published_upper_height_)
         ? std::max(pos.z(),published_upper_height_) : pos.z();
-    const vector<double> heights{cruise,
-        task_search_manager_->projectSearchHeight(cruise,pos.z()), upper_height, pos.z()};
-    const double reserve = std::max(vertical_detour_forward_check_distance_,
-                                    vertical_detour_footprint_radius_);
-    const Vector3d lateral(-direction.y(), direction.x(), 0.0);
-    const auto valid = [&](const Vector3d& candidate) {
-      Vector3d delta = candidate - pos;
-      const double distance = delta.head<2>().norm();
-      Vector3d horizontal = delta; horizontal.z() = 0.0;
-      Vector3d elevated = pos; elevated.z() = candidate.z();
+    for (const double z : {cruise, task_search_manager_->projectSearchHeight(cruise,pos.z()),
+                           upper_height, pos.z()}) {
+      Vector3d candidate = pos + lookahead * direction;
+      candidate.z() = z;
+      Vector3d elevated = pos; elevated.z() = z;
       const vector<Vector3d> path{pos,candidate};
-      return isKnownSafeHorizontalCorridor(actual_height_start,horizontal,distance) &&
-          isKnownSafeUpperCorridor(elevated,horizontal,distance+reserve) &&
-          isKnownSafeHorizontalCorridor(pos,delta,distance) &&
-          pathInsideWorkspaceLock(path) && planner_manager_->isPathSafe(path) &&
-          task_search_manager_->isRecoveryPathAllowed(path,false);
-    };
-    const auto accept = [&](const Vector3d& candidate) {
+      if (!isKnownSafeUpperCorridor(elevated,direction,lookahead) ||
+          !isKnownSafeHorizontalCorridor(pos,candidate-pos,lookahead) ||
+          !pathInsideWorkspaceLock(path) || !planner_manager_->isPathSafe(path) ||
+          !task_search_manager_->isRecoveryPathAllowed(path,false)) continue;
       next_pos = candidate; next_yaw = cur_yaw; upper_detour_plan_ = true;
       recovery_side_latched_ = false;
       wide_side_bypass_active_ = false;
       recovery_side_continuation_pending_ = false;
-      ROS_WARN("[upper_continue] advance %.2fm lateral=%+.2fm z=%.2f -> %.2f, "
-               "cruise=%.2f reserve=%.2fm; verified continuation before next obstacle.",
-               (candidate-pos).dot(direction), (candidate-pos).dot(lateral),
-               pos.z(),candidate.z(),cruise,reserve);
-    };
-    for (const double z : heights) {
-      Vector3d candidate = pos + lookahead * direction; candidate.z() = z;
-      if (!valid(candidate)) continue;
-      accept(candidate); return true;
-    }
-    const double short_step = std::max(0.05, vertical_detour_forward_check_distance_);
-    const double maximum_advance = std::min(vertical_detour_upper_forward_max_distance_,
-                                            lookahead-short_step);
-    for (double advance = maximum_advance; advance >= short_step-1e-6;
-         advance -= short_step) {
-      const double side_step = std::min(0.10, 0.5*advance);
-      const double max_offset = std::min(wide_side_bypass_max_lateral_step_,
-          advance*std::tan(std::min(89.0, std::max(0.0,
-              vertical_detour_upper_max_side_angle_deg_))*M_PI/180.0));
-      for (const double z : heights) {
-        // 只缩短原本已可续行的高度层，不能趁短段尚未碰障就提前下降。
-        Vector3d elevated = pos; elevated.z() = z;
-        if (!isKnownSafeUpperCorridor(elevated,direction,lookahead)) continue;
-        bool found = false;
-        Vector3d best;
-        double best_score = -std::numeric_limits<double>::infinity();
-        for (const int side : {0, -1, 1, -2, 2}) {
-          const double offset = side*side_step;
-          if (std::fabs(offset) > max_offset+1e-6) continue;
-          Vector3d candidate = pos + advance*direction + offset*lateral;
-          candidate.z() = z;
-          if (!valid(candidate)) continue;
-          // 比较后半段及终点前方的最小净空；共同起点的净空不应掩盖侧移收益。
-          Vector3d horizontal = candidate-pos; horizontal.z() = 0.0;
-          const double distance = horizontal.norm(); horizontal /= distance;
-          double clearance = std::numeric_limits<double>::infinity();
-          for (double along = 0.5*distance; along <= distance+reserve+1e-6; along += 0.05) {
-            Vector3d probe = pos + along*horizontal;
-            probe.z() = z-vertical_detour_upper_tracking_margin_;
-            clearance = std::min(clearance, sdf_map_->getDistance(probe));
-          }
-          const double score = clearance-0.25*std::fabs(offset);
-          if (!found || score > best_score+1e-6) {
-            found = true; best = candidate; best_score = score;
-          }
-        }
-        if (found) { accept(best); return true; }
-      }
+      ROS_WARN("[upper_continue] forward corridor clear; advance %.2fm z=%.2f -> %.2f, "
+               "cruise=%.2f; no additional ascent.", lookahead,pos.z(),z,cruise);
+      return true;
     }
   }
   if (!hasForwardBodyObstacle(pos,forward) &&
@@ -1609,28 +1540,19 @@ bool FastExplorationManager::beginSuspendedUnderpass(const Vector3d& pos,
   }
   // 狭窄通道按雷达到悬挂障碍底部0.10m净空下穿，并额外留出高度跟踪余量。
   const double return_height = manual ? pos.z() : task_search_manager_->preferredSearchHeight();
-  const double ceiling = std::min(dynamic_target_z, vertical_detour::underpassTargetHeight(
+  const double target_z = std::min(dynamic_target_z, vertical_detour::underpassTargetHeight(
       bottom_z, underpass_lidar_above_odom_, underpass_clearance_,
       underpass_height_tracking_margin_, return_height));
   // 下穿最低参考点Z使用独立参数，不将定位原点当作地面。
   const double minimum_height =
       std::max(underpass_min_height_, task_search_manager_->clampSearchHeight(-1e3));
-  double target_z = ceiling;
-  bool passage_available = false;
+  Vector3d low_start = pos;
+  low_start.z() = std::min(target_z, pos.z());
   const double crossing_distance = std::max(step, exit_progress - pos.dot(direction));
-  for (double height : underpassHeights(pos.z(), ceiling, minimum_height,
-                                        underpass_descent_step_)) {
-    Vector3d low_start = pos;
-    low_start.z() = height;
-    if ((pos.z() > height + vertical_detour_height_tolerance_ &&
-         !isKnownSafeVerticalPath(pos, height, !manual)) ||
-        (manual && !isLowProbeCorridorSafe(low_start, direction, crossing_distance)))
-      continue;
-    target_z = height;
-    passage_available = true;
-    break;
-  }
-  if (!passage_available) {
+  if (target_z < minimum_height ||
+      (pos.z() > target_z + vertical_detour_height_tolerance_ &&
+       !isKnownSafeVerticalPath(pos, target_z, !manual)) ||
+      (manual && !isLowProbeCorridorSafe(low_start, direction, crossing_distance))) {
     suspended_underpass_blocked_ = true;
     ROS_ERROR_THROTTLE(1.0, "[suspended_underpass] confirmed obstacle (map=%d FAPP=%d) "
                        "but lower passage z=%.2f is unavailable; use side selection in waypoint mode.",
@@ -3263,7 +3185,7 @@ bool FastExplorationManager::incrementalEscapePlanSafe() const {
 
 bool FastExplorationManager::planInflationHistoryEscape(
     const Vector3d& pos, const Vector3d& vel, const Vector3d& acc,
-    const Vector3d& yaw, bool after_failure, bool compare_static_routes) {
+    const Vector3d& yaw, bool after_failure) {
   incremental_escape_plan_ = false;
   escape_step_plan_ = false;
   const bool controlled_start = planner_manager_->isControlledEscapePosition(pos);
@@ -3274,8 +3196,7 @@ bool FastExplorationManager::planInflationHistoryEscape(
     return false;
 
   const double max_distance = inflation_history_escape_max_distance_;
-  const double step_distance = std::min(0.20, compare_static_routes ?
-      std::min(max_distance,fappApproachLength(pos)) : max_distance);
+  const double step_distance = std::min(0.20, max_distance);
   const double sample_step = inflation_history_escape_sample_step_;
   const double start_clearance = sdf_map_->getDistance(pos);
   const int start_contacts = planner_manager_->rawFootprintCollisionCount(pos);
@@ -3283,12 +3204,9 @@ bool FastExplorationManager::planInflationHistoryEscape(
     vector<Vector3d> path;
     double length{0.0};
     double end_clearance{-1.0};
-    double route_clearance{-1.0};
     int priority{1};
     bool backward{false};
     bool incremental{false};
-    bool upper{false};
-    bool stationary_upper{false};
     const char* label{"history-tangent"};
   };
   vector<EscapeCandidate> candidates;
@@ -3324,8 +3242,8 @@ bool FastExplorationManager::planInflationHistoryEscape(
         const int contacts = planner_manager_->rawFootprintCollisionCount(point);
         const double clearance = sdf_map_->getDistance(point);
         if (!std::isfinite(clearance) || contacts > previous_contacts ||
-            ((!compare_static_routes || controlled_start) &&
-             clearance + inflation_history_escape_clearance_tolerance_ < previous_clearance))
+            clearance + inflation_history_escape_clearance_tolerance_ <
+                previous_clearance)
           return;
         previous_contacts = std::min(previous_contacts, contacts);
         previous_clearance = std::max(previous_clearance, clearance);
@@ -3340,14 +3258,14 @@ bool FastExplorationManager::planInflationHistoryEscape(
           } else {
             clear_run += advance;
           }
-          if (!compare_static_routes && clear_run + 1e-6 >= inflation_escape_clear_margin_) break;
+          if (clear_run + 1e-6 >= inflation_escape_clear_margin_) break;
         } else if (reached_clear) {
           // 离开膨胀层后禁止为了凑路径长度再次擦回墙面。
           return;
         }
         if (traveled >= limit - 1e-6) break;
       }
-      if ((!compare_static_routes && reached_clear && clear_run + 1e-6 >= inflation_escape_clear_margin_) ||
+      if ((reached_clear && clear_run + 1e-6 >= inflation_escape_clear_margin_) ||
           traveled >= limit - 1e-6)
         break;
     }
@@ -3386,14 +3304,14 @@ bool FastExplorationManager::planInflationHistoryEscape(
         planner_manager_->isPositionInflated(pos+step_distance*direction);
   };
   const bool front_blocked=blocked(forward), rear_blocked=blocked(-forward);
-  if (!compare_static_routes && !controlled_start && !front_blocked && !rear_blocked) return false;
-  if (!compare_static_routes && !front_blocked) {
+  if (!controlled_start && !front_blocked && !rear_blocked) return false;
+  if (!front_blocked) {
     validateAndTruncate(inflation_escape::buildDirectionalPath(pos,forward,max_distance,sample_step),
                         false,0,"corridor-forward-step",step_distance);
     validateAndTruncate(inflation_escape::buildDirectionalPath(pos,forward,max_distance,sample_step),
                         false,0,"corridor-forward-exit",max_distance);
   }
-  if (!compare_static_routes && front_blocked) {
+  if (front_blocked) {
     // 后方检查通过就直接生成等高直退小步，不能用含侧移/高度变化的历史代替。
     // 仍走同一接触、净空与样条检查；优先于历史回退和斜向侧移。
     if (!rear_blocked)
@@ -3414,67 +3332,24 @@ bool FastExplorationManager::planInflationHistoryEscape(
       const double angle=2.0*M_PI*sample/16.0;
       const Vector3d direction(std::cos(angle),std::sin(angle),0);
       if (std::fabs(direction.dot(forward))>0.93) continue;
-      if (compare_static_routes && direction.dot(forward)<-1e-6) continue;
-      for (double d=step_distance;
-           d<=(compare_static_routes ? step_distance : std::max(max_distance,1.20))+1e-6; d+=0.10) {
+      for (double d=step_distance; d<=std::max(max_distance,1.20)+1e-6; d+=0.10) {
         const Vector3d target=pos+d*direction;
         if (!pointInsideWorkspaceLock(target) ||
             (!turn_in_place_session_active_ && !planner_manager_->isKnownFreePosition(target))) continue;
         const auto route=inflation_escape::buildDirectionalPath(pos,direction,d,sample_step);
         if (!planner_manager_->isPathSafe(route,true)) continue;
-        // 先验证眼前这一小段，不用远处完整通路决定能否开始侧移。
-        if (compare_static_routes && (!planner_manager_->isFappPathSafe(route) ||
-            !task_search_manager_->isRecoveryPathAllowed(route,false)))
-          continue;
         const size_t before=candidates.size();
         validateAndTruncate(route,false,1,"mapped-side-step",step_distance);
-        if (!compare_static_routes) validateAndTruncate(route,false,1,"mapped-side-exit",max_distance);
+        validateAndTruncate(route,false,1,"mapped-side-exit",max_distance);
         for (size_t i=before; i<candidates.size(); ++i)
           candidates[i].end_clearance=sdf_map_->getDistance(target);
         break;
       }
     }
   }
-  if (compare_static_routes) {
-    // 侧移与抬升同时进入候选集，不让任一方向成功生成就抢先返回。
-    Vector3d upper_target;
-    double upper_yaw=yaw[0];
-    const bool previous_upper=upper_detour_plan_;
-    if (buildVerticalDetourFallback(pos,yaw[0],forward,upper_target,upper_yaw,false,false)) {
-      const bool stationary=(upper_target-pos).head<2>().norm()<=vertical_detour_xy_tolerance_;
-      if (stationary) upper_target.head<2>()=pos.head<2>();
-      auto path=manualPathPrefix({pos,upper_target},
-          std::min(fappApproachLength(pos),2.0*vertical_detour_forward_check_distance_));
-      if (path.size()>=2 && (!stationary || isKnownSafeVerticalPath(pos,path.back().z())) &&
-          planner_manager_->isFappPathSafe(path)) {
-        EscapeCandidate candidate;
-        candidate.path=std::move(path);
-        candidate.length=Astar::pathLength(candidate.path);
-        candidate.end_clearance=sdf_map_->getDistance(candidate.path.back());
-        candidate.upper=true;
-        candidate.stationary_upper=stationary;
-        candidate.label="mapped-upper-step";
-        candidates.push_back(std::move(candidate));
-      }
-    }
-    upper_detour_plan_=previous_upper;
-    for (auto& candidate : candidates) {
-      // 共同起点不区分方向；比较实际短段后半程及底部的最小净空。
-      // 这里只排序，机体足迹、已知空间和动态障碍检查仍独立执行。
-      candidate.route_clearance=std::numeric_limits<double>::infinity();
-      const Vector3d delta=candidate.path.back()-pos;
-      const int samples=std::max(2,static_cast<int>(std::ceil(delta.norm()/sample_step)));
-      for (int i=(samples+1)/2; i<=samples; ++i) {
-        const Vector3d point=pos+delta*(static_cast<double>(i)/samples);
-        const Vector3d bottom=point-planner_manager_->footprintBottomClearance()*Vector3d::UnitZ();
-        candidate.route_clearance=std::min(candidate.route_clearance,
-            std::min(sdf_map_->getDistance(point),sdf_map_->getDistance(bottom)));
-      }
-    }
-  }
   ROS_WARN_THROTTLE(0.5,"[inflation_history_escape] front_blocked=%d rear_blocked=%d "
       "candidates=%zu; prefer %s, then mapped side space.",
-      front_blocked,rear_blocked,candidates.size(),compare_static_routes ? "equal-rank side/upper short routes by clearance" : prefer_side_after_failure ?
+      front_blocked,rear_blocked,candidates.size(),prefer_side_after_failure ?
           "forward/side alternatives before backward fallback" :
           front_blocked ? "straight rear step/history backtrack" : "forward step");
   if (candidates.empty()) {
@@ -3485,7 +3360,7 @@ bool FastExplorationManager::planInflationHistoryEscape(
     return false;
   }
 
-  if (prefer_side_after_failure && !compare_static_routes) {
+  if (prefer_side_after_failure) {
     // 上绕失败或当前机体已安全时，规划失败不等于必须倒车脱障。先用现有的前进/
     // 侧移候选继续通行，所有朝后的候选留到最后，避免反复退向跟随飞机。
     for (auto& candidate : candidates) {
@@ -3494,13 +3369,8 @@ bool FastExplorationManager::planInflationHistoryEscape(
     }
   }
   std::stable_sort(candidates.begin(), candidates.end(),
-                   [compare_static_routes](const EscapeCandidate& lhs, const EscapeCandidate& rhs) {
+                   [](const EscapeCandidate& lhs, const EscapeCandidate& rhs) {
     if (lhs.priority != rhs.priority) return lhs.priority < rhs.priority;
-    if (compare_static_routes) {
-      if (lhs.route_clearance != rhs.route_clearance)
-        return lhs.route_clearance > rhs.route_clearance;
-      return lhs.length < rhs.length;
-    }
     if (lhs.priority == 1 && std::fabs(lhs.end_clearance-rhs.end_clearance)>0.02)
       return lhs.end_clearance > rhs.end_clearance;
     if (std::fabs(lhs.length - rhs.length) > 0.02) return lhs.length < rhs.length;
@@ -3510,7 +3380,7 @@ bool FastExplorationManager::planInflationHistoryEscape(
     if (candidate.path.size() == 2)
       candidate.path.insert(candidate.path.begin() + 1,
                             0.5 * (candidate.path.front() + candidate.path.back()));
-    if (!planner_manager_->isPathSafe(candidate.path, !candidate.upper)) continue;
+    if (!planner_manager_->isPathSafe(candidate.path, true)) continue;
     Vector3d escape_vel = Vector3d::Zero();
     const Vector3d escape_direction =
         (candidate.path[1] - candidate.path.front()).normalized();
@@ -3521,12 +3391,10 @@ bool FastExplorationManager::planInflationHistoryEscape(
         candidate.path.end(), [&](const Vector3d& p) {
           return (p-candidate.path.front()).cross(delta).norm()/delta.norm()<1e-6;
         });
-    const bool generated = candidate.upper && delta.head<2>().norm()<1e-6
-        ? planner_manager_->planVerticalTraj(candidate.path.front(),candidate.path.back())
-        : straight
+    const bool generated = straight
         ? planner_manager_->planStraightTraj(candidate.path.front(),candidate.path.back())
         : planner_manager_->planExploreTraj(candidate.path, escape_vel, acc, 0.0);
-    if (!generated || !planner_manager_->isTrajectorySafe(0.03, !candidate.upper)) continue;
+    if (!generated || !planner_manager_->isTrajectorySafe(0.03, true)) continue;
     incremental_escape_plan_ = candidate.incremental;
     if (candidate.incremental ? !incrementalEscapePlanSafe() :
         !planner_manager_->trajectoryClearsInflation(max_distance, 0.02, true)) {
@@ -3540,18 +3408,10 @@ bool FastExplorationManager::planInflationHistoryEscape(
     has_last_requested_goal_ = true;
     // 脱障保持当前朝向，恒定零航向也使用确定性样条，避免普通优化器退化。
     if (!planner_manager_->planYawTurnInPlace(yaw,yaw[0])) continue;
-    upper_detour_plan_ = candidate.upper;
-    vertical_detour_plan_ = candidate.stationary_upper;
-    pending_reference_height_ = candidate.upper ? ed_->next_goal_.z() :
-        std::numeric_limits<double>::quiet_NaN();
-    escape_step_plan_ = !candidate.upper;
-    if (compare_static_routes) {
-      ed_->global_tour_={pos,ed_->next_goal_};
-      recovery_side_continuation_pending_=false;
-      ROS_WARN("[static_detour] selected %s length=%.2fm clearance=%.3fm from %zu "
-               "equal-rank side/upper candidates; replan next segment from reached position.",
-               candidate.label,candidate.length,candidate.route_clearance,candidates.size());
-    }
+    upper_detour_plan_ = false;
+    vertical_detour_plan_ = false;
+    pending_reference_height_ = std::numeric_limits<double>::quiet_NaN();
+    escape_step_plan_ = true;
     const double longitudinal = (ed_->next_goal_-pos).dot(forward);
     ROS_WARN("[inflation_history_escape] selected %s %s escape %.2fm "
               "to (%.2f %.2f %.2f), yaw held at %.1fdeg, start_contacts=%d.",
@@ -3907,8 +3767,6 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
            underpass_clearance_, 0.10);
   nh.param("mission/vertical_detour/underpass/height_tracking_margin",
            underpass_height_tracking_margin_, 0.06);
-  nh.param("mission/vertical_detour/underpass/descent_step", underpass_descent_step_, 0.0);
-  underpass_descent_step_ = std::max(0.0, underpass_descent_step_);
   nh.param("mission/vertical_detour/underpass/min_height", underpass_min_height_, 0.25);
   nh.param("mission/vertical_detour/underpass/lookahead",
            underpass_lookahead_, 2.00);
@@ -4153,9 +4011,6 @@ bool FastExplorationManager::manualFappObservationMissing(
       return false;
     manual_fapp_hold_height_ = task_search_manager_->clampSearchHeight(
         std::min(pos.z(), horizontalGoalHeight(pos.z())));
-    // 静态上绕尚在执行时，发现远球不能把已发布的越障高度改回巡航层。
-    if (std::isfinite(published_upper_height_))
-      manual_fapp_hold_height_ = std::max(manual_fapp_hold_height_, published_upper_height_);
     manual_fapp_active_ = true;
     planner_manager_->watchFappObstacle(&observation);
     manual_fapp_forward_ = forward;
@@ -4224,15 +4079,14 @@ bool FastExplorationManager::planFappVerticalDescent(
   double age;
   if (!manual_fapp_active_ || !planner_manager_->watchedFappBounds(lower, upper, age))
     return false;
-  const double ceiling = lower.z() - underpass_height_tracking_margin_;
+  const double low = lower.z() - underpass_height_tracking_margin_;
   const double minimum = std::max(underpass_min_height_, task_search_manager_->clampSearchHeight(-1e3));
   // 斜下穿受阻时就检查固定XY下降，不能等进入包络后才尝试。
   // 整根下降柱仍须通过原有机体和动态检查。
-  const auto heights = underpassHeights(pos.z(), ceiling, minimum, underpass_descent_step_);
-  if (heights.empty() || pos.z() <= heights.front() + 0.02)
+  if (low < minimum || pos.z() <= low + 0.02)
     return false;
   Vector3d target = pos;
-  target.z() = heights.front();
+  target.z() = low;
   if (manual_path_enabled_ && manual_path_max_segment_length_ > 0.0)
     target.z() = std::max(target.z(), pos.z() - manual_path_max_segment_length_);
   const int count = std::max(1, static_cast<int>(std::ceil((pos.z()-target.z()) / 0.025)));
@@ -4282,13 +4136,12 @@ bool FastExplorationManager::buildManualFappUnderpassPath(
   const double extent = (0.5 * (upper - lower)).dot(forward.cwiseAbs());
   const double near = center - extent - sdf_map_->getResolution();
   const double far = center + extent + sdf_map_->getResolution();
-  const double ceiling = std::min(origin.z(), lower.z() - underpass_height_tracking_margin_);
+  const double low = std::min(origin.z(), lower.z() - underpass_height_tracking_margin_);
   const double minimum = std::max(underpass_min_height_, task_search_manager_->clampSearchHeight(-1e3));
-  const auto heights = underpassHeights(origin.z(), ceiling, minimum, underpass_descent_step_);
-  if (heights.empty() || (near - begin < 0.10 && origin.z() > ceiling + 0.02)) {
+  if (low < minimum || (near - begin < 0.10 && origin.z() > low + 0.02)) {
     ROS_WARN_THROTTLE(1.0, "[fapp_underpass_check] reject geometry low=%.3f min=%.3f "
         "start_z=%.3f approach=%.3f lower_z=%.3f age=%.2f",
-        ceiling, minimum, origin.z(), near-begin, lower.z(), age);
+        low, minimum, origin.z(), near-begin, lower.z(), age);
     return false;
   }
   // 只生成前进下降和低位穿越，末端仍低位；航点位于包络内时先到该点再续接。
@@ -4307,7 +4160,6 @@ bool FastExplorationManager::buildManualFappUnderpassPath(
   const double descent_begin = std::max(begin, near - 0.50);
   const Vector3d lateral(-forward.y(), forward.x(), 0.0);
   const int count = std::max(2, static_cast<int>(std::ceil((end-current)/0.10)));
-  double low = heights.front();
   const auto side_path = [&](double side, std::vector<Vector3d>& candidate) {
     candidate = {pos};
     for (int i = 1; i <= count; ++i) {
@@ -4341,29 +4193,26 @@ bool FastExplorationManager::buildManualFappUnderpassPath(
     return true;
   };
   double side = manual_fapp_curve_side_;
-  bool found = false;
-  for (double height : heights) {
-    low = height;
-    if (manual_fapp_curve_active_) {
-      found = side_path(side, path);
-    } else {
-      // 当前下降层不可通时才继续检查更低层；已有侧向仅决定左右尝试顺序。
-      const double first_sign = recovery_side_latched_ && recovery_side_dir_.dot(lateral) < 0.0
-          ? -1.0 : 1.0;
-      const double step = std::max(0.10, sdf_map_->getResolution());
-      for (double sign : {first_sign, -first_sign}) {
-        for (double offset = 0.20; offset <= wide_side_bypass_lateral_range_ + 1e-6;
-             offset += step) {
-          side = sign * offset;
-          if (side_path(side, path)) { found = true; break; }
-        }
-        if (found) break;
+  if (manual_fapp_curve_active_) {
+    if (!side_path(side, path)) return false;
+  } else {
+    // 固定20cm可能仍扫到侧障碍；在已有横移范围内寻找最近的可通行低位通路。
+    // 普通侧绕偏好只决定尝试顺序，不能否决另一侧；已选中的下穿曲线仍保持原侧。
+    const double first_sign = recovery_side_latched_ && recovery_side_dir_.dot(lateral) < 0.0
+        ? -1.0 : 1.0;
+    bool found = false;
+    const double step = std::max(0.10, sdf_map_->getResolution());
+    for (double sign : {first_sign, -first_sign}) {
+      for (double offset = 0.20; offset <= wide_side_bypass_lateral_range_ + 1e-6;
+           offset += step) {
+        side = sign * offset;
+        if (side_path(side, path)) { found = true; break; }
       }
+      if (found) break;
     }
-    if (found) break;
+    if (!found) return false;
+    if (recovery_side_latched_) recovery_side_dir_ = (side > 0.0 ? 1.0 : -1.0) * lateral;
   }
-  if (!found) return false;
-  if (recovery_side_latched_) recovery_side_dir_ = (side > 0.0 ? 1.0 : -1.0) * lateral;
   if (!manual_fapp_curve_active_)
     ROS_WARN("[manual_fapp] continuous underpass from=(%.2f,%.2f,%.2f) "
              "clearance_z=%.2f low=%.2f near=%.2f far=%.2f side=%.2f age=%.2f descent_begin=%.2f",
@@ -4392,23 +4241,6 @@ bool FastExplorationManager::keepsDynamicSide(const std::vector<Vector3d>& path)
   return true;
 }
 
-double FastExplorationManager::fappApproachLength(const Vector3d& pos) const {
-  Vector3d lower, upper; double age;
-  if (!manual_fapp_active_ || !planner_manager_->watchedFappBounds(lower, upper, age))
-    return std::numeric_limits<double>::infinity();
-  const double near = (0.5*(lower+upper)).dot(manual_fapp_forward_) -
-      (0.5*(upper-lower)).dot(manual_fapp_forward_.cwiseAbs()) - sdf_map_->getResolution();
-  const double approach = near-pos.dot(manual_fapp_forward_);
-  // 默认距包络前沿超过20cm时先走至多40cm；靠近后仍允许原来的完整穿越。
-  if (approach <= vertical_detour_forward_check_distance_)
-    return std::numeric_limits<double>::infinity();
-  double length = std::min(2.0*vertical_detour_forward_check_distance_,
-                           approach-0.5*vertical_detour_forward_check_distance_);
-  if (manual_path_enabled_ && manual_path_max_segment_length_ > 0.0)
-    length = std::min(length, manual_path_max_segment_length_);
-  return length;
-}
-
 bool FastExplorationManager::planFappOpeningCrossing(
     const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, const Vector3d& yaw) {
   fapp_rush_pending_ = false;
@@ -4428,11 +4260,6 @@ bool FastExplorationManager::planFappOpeningCrossing(
   Vector3d target = pos + (end - pos.dot(forward)) * forward;
   target.z() = horizontalGoalHeight(pos.z());
   vector<Vector3d> path{pos, 0.5 * (pos + target), target};
-  const double approach_length = fappApproachLength(pos);
-  const bool approaching = std::isfinite(approach_length);
-  path = manualPathPrefix(path, approach_length);
-  target = path.back();
-  if (path.size() == 2) path.insert(path.begin()+1, 0.5*(pos+target));
   if (!fapp_rush_active_ && !planner_manager_->fappSideOpening(pos, side) &&
       !planner_manager_->isFappPathSafe(path)) return false;
   if (!pathInsideWorkspaceLock(path) || !task_search_manager_->isRecoveryPathAllowed(path, false) ||
@@ -4440,8 +4267,7 @@ bool FastExplorationManager::planFappOpeningCrossing(
   // 同侧直穿到历史包络后方，保持高度；不用整段摆幅否决当前已让开的通路。
   for (int sample=0; sample<=40; ++sample)
     if (!planner_manager_->isKnownFreePosition(pos + (sample/40.0)*(target-pos))) return false;
-  if (!planner_manager_->planExploreTraj(path, vel, acc, 0.0, true,
-          approaching ? 0.0 : 1.0, approaching ? 0.0 : 1.0) ||
+  if (!planner_manager_->planExploreTraj(path, vel, acc, 0.0, true, 1.0, 1.0) ||
       !planner_manager_->isTrajectorySafe() || !planner_manager_->isFappCrossingTrajectorySafe() ||
       !planner_manager_->planYawTurnInPlace(yaw, yaw[0])) return false;
   manual_fapp_curve_active_ = false;
@@ -4453,10 +4279,9 @@ bool FastExplorationManager::planFappOpeningCrossing(
   has_last_requested_goal_ = true;
   pending_reference_height_ = target.z();
   recovery_side_continuation_pending_ = false;
-  fapp_rush_pending_ = !approaching; // 远处接近段仍用普通限速，靠近再完整穿越。
-  ROS_WARN("[fapp_rush] %s target=(%.2f,%.2f,%.2f); restore after actual passage.",
-           approaching ? "short approach at nominal limits" : "cross opening at 1.00m/s and 1.00m/s^2",
-           target.x(), target.y(), target.z());
+  fapp_rush_pending_ = true; // 仅发布成功后通知执行端，候选失败不改变限速。
+  ROS_WARN("[fapp_rush] keep selected side and cross opening: target=(%.2f,%.2f,%.2f) "
+           "max_vel=1.00m/s max_acc=1.00m/s^2; restore after actual passage.", target.x(), target.y(), target.z());
   return true;
 }
 
@@ -4474,26 +4299,14 @@ bool FastExplorationManager::planExplorationFappCrossing(
   if (!manual_fapp_active_) return false;
   // 临时失败不消费穿越机会；执行普通入口/前进段时，FSM 仍可重新尝试。
   fapp_crossing_retry_needed_ = true;
-  upper_detour_plan_ = false;
-  vertical_detour_plan_ = false;
+  if (!manual_fapp_curve_active_ && planFappOpeningCrossing(pos, vel, acc, yaw)) {
+    fapp_crossing_retry_needed_ = false;
+    return true;
+  }
   Vector3d lower, upper;
   double age;
   if (!planner_manager_->watchedFappBounds(lower, upper, age)) return false;
   const Vector3d forward = manual_fapp_forward_;
-  const double approach_length = fappApproachLength(pos);
-  const double near = (0.5 * (lower + upper) - pos).dot(forward) -
-      (0.5 * (upper - lower)).dot(forward.cwiseAbs()) - sdf_map_->getResolution();
-  const double static_horizon = std::min(near-sdf_map_->getResolution(),
-      std::max(vertical_detour_upper_forward_max_distance_, wide_side_bypass_max_lookahead_));
-  const bool static_blocked = static_horizon > 0.02 && !planner_manager_->isPathSafe(
-      {pos, pos + static_horizon*forward});
-  const bool distant_dynamic = near > kUnderpassStartDistance + 0.02;
-  const bool static_approach = distant_dynamic || static_blocked;
-  if (!static_approach && !manual_fapp_curve_active_ &&
-      planFappOpeningCrossing(pos, vel, acc, yaw)) {
-    fapp_crossing_retry_needed_ = false;
-    return true;
-  }
   const double far = (0.5 * (lower + upper)).dot(forward) +
       (0.5 * (upper - lower)).dot(forward.cwiseAbs()) + sdf_map_->getResolution();
   // 自动探索先低位越过历史障碍；无需提前把后方回升空间纳入同一条曲线。
@@ -4502,92 +4315,28 @@ bool FastExplorationManager::planExplorationFappCrossing(
                           : Vector3d(pos + (end - pos.dot(forward)) * forward);
   std::vector<Vector3d> path;
   double target_yaw = yaw[0];
-  bool crossing = false;
-  if (static_approach) {
-    // 远处接近或球前仍有静态障碍时，先处理静态，不能先选球下方高度。
+  // 普通绕障的左右偏好不能封死下穿：每轮仍先检查侧下方通路。
+  bool crossing = buildManualFappUnderpassPath(pos, target, path);
+  if (!crossing) {
     manual_fapp_curve_active_ = false;
     suspended_underpass_active_ = false;
-    // 侧移与上绕按短段净空同级比较，不等待入口一米完成，也不固定优先抬升。
-    if (static_blocked && !hasSuspendedForwardObstacle(pos,forward) &&
-        planInflationHistoryEscape(pos, vel, acc, yaw, true, true)) {
+    if (planFappVerticalDescent(pos, yaw)) {
       fapp_crossing_retry_needed_ = false;
       return true;
     }
-    double distance = std::min(approach_length,
-        distant_dynamic ? near-kUnderpassStartDistance : static_horizon);
-    if (manual) distance = std::min(distance, (target-pos).dot(forward));
-    if (distance <= 0.02) return false;
-    target = pos + distance*forward;
-    target.z() = horizontalGoalHeight(pos.z());
-    if (static_blocked && buildVerticalDetourFallback(
-            pos, yaw[0], forward, target, target_yaw, false, false)) {
-      path = {pos, target};
-    } else {
-      // 近处静态横梁确认为悬空时仍可下穿；不能把静态优先变成禁止下降。
-      if (static_blocked && hasSuspendedForwardObstacle(pos, forward) &&
-          planFappVerticalDescent(pos, yaw)) {
-        fapp_crossing_retry_needed_ = false;
-        return true;
-      }
-      path = {pos, target};
-      if (!isKnownSafeHorizontalCorridor(pos, target-pos, distance)) {
-        auto& finder = planner_manager_->path_finder_;
-        if (!finder) return false;
-        finder->reset();
-        if (finder->search(pos, target, true) != Astar::REACH_END) return false;
-        path = finder->getPath();
-        path.insert(path.begin(), pos);
-        path.push_back(target);
-      }
-    }
-    path = manualPathPrefix(path, std::min(approach_length,
-                                          2.0*vertical_detour_forward_check_distance_));
-    crossing = path.size() >= 2;
-    for (size_t i=1; i<path.size() && crossing; ++i)
-      crossing = passage_centering::knownSegment(path[i-1], path[i], 0.05,
-          [&](const Vector3d& p) { return planner_manager_->isKnownFreePosition(p); });
-  } else {
-    // 接近后再选动态穿越；普通绕障的左右偏好不能封死下穿。
-    crossing = buildManualFappUnderpassPath(pos, target, path);
+    bool obstacle = false;
+    crossing = buildFappSideBypass(pos, yaw[0], forward, target, target_yaw, obstacle, &path);
   }
-  if (!crossing && !static_approach) {
-    manual_fapp_curve_active_ = false;
-    suspended_underpass_active_ = false;
-    // 远处整段尚不可验证时，也允许眼前已知可通的短段先靠近补充观测。
-    if (std::isfinite(approach_length)) {
-      const double distance = manual ? std::min(approach_length, (target-pos).dot(forward))
-                                     : approach_length;
-      target = pos+distance*forward;
-      target.z() = horizontalGoalHeight(pos.z());
-      path = {pos, 0.5*(pos+target), target};
-      crossing = distance > 0.02 && isKnownSafeHorizontalCorridor(pos,target-pos,distance) &&
-          planner_manager_->isFappPathSafe(path);
-    }
-    if (!crossing && planFappVerticalDescent(pos, yaw)) {
-      fapp_crossing_retry_needed_ = false;
-      return true;
-    }
-    if (!crossing) {
-      bool obstacle = false;
-      crossing = buildFappSideBypass(pos, yaw[0], forward, target, target_yaw, obstacle, &path);
-    }
-  }
-  path = manualPathPrefix(path, approach_length);
-  if (path.size() == 2) path.insert(path.begin()+1, 0.5*(path.front()+path.back()));
   if (!crossing || !pathInsideWorkspaceLock(path) ||
       !task_search_manager_->isRecoveryPathAllowed(path, false) ||
       !planner_manager_->isPathSafe(path) ||
       !planner_manager_->isFappPathSafe(path) ||
-      !(upper_detour_plan_ ? planner_manager_->planStraightTraj(pos, path.back()) :
-        planner_manager_->planExploreTraj(path, vel, acc, 0.0, false,
-            !static_approach && fapp_rush_active_ ? 1.0 : 0.0,
-            !static_approach && fapp_rush_active_ ? 1.0 : 0.0)) ||
+      !planner_manager_->planExploreTraj(path, vel, acc, 0.0, false, fapp_rush_active_ ? 1.0 : 0.0, fapp_rush_active_ ? 1.0 : 0.0) ||
       !planner_manager_->isTrajectorySafe() ||
       !planner_manager_->planYawTurnInPlace(yaw, target_yaw)) {
     // 避让候选不可用时继续原探索选路，不能封死普通前进规划。
     manual_fapp_curve_active_ = false;
     suspended_underpass_active_ = false;
-    if (static_approach) upper_detour_plan_ = false;
     return false;
   }
   // 完整动态穿越沿用航点版长度豁免，不进入普通探索的1.2m截断。
@@ -4597,14 +4346,10 @@ bool FastExplorationManager::planExplorationFappCrossing(
   last_requested_goal_ = path.back();
   has_last_requested_goal_ = true;
   pending_reference_height_ = path.back().z();
-  vertical_detour_plan_ = upper_detour_plan_ &&
-      (path.back()-pos).head<2>().norm() <= vertical_detour_xy_tolerance_;
   recovery_side_continuation_pending_ = false;
   fapp_crossing_retry_needed_ = false;
-  ROS_WARN("[exploration_fapp] %s target=(%.2f,%.2f,%.2f) "
-           "curve=%d side=%d; complete crossing remains allowed after approach.",
-           static_approach ? "static-map approach before dynamic crossing" :
-             std::isfinite(approach_length) ? "short approach" : "continuous crossing",
+  ROS_WARN("[exploration_fapp] continuous crossing target=(%.2f,%.2f,%.2f) "
+           "curve=%d side=%d; complete crossing is exempt from route length limit.",
            path.back().x(), path.back().y(), path.back().z(),
            static_cast<int>(manual_fapp_curve_active_), static_cast<int>(recovery_side_latched_));
   return true;
@@ -4856,7 +4601,6 @@ int FastExplorationManager::planManualWaypointMotion(
   double budget = !dynamic_crossing_length_exempt && manual_path_max_segment_length_ > 0.0
       ? std::min(manual_path_max_segment_length_, Astar::pathLength(full_path))
       : Astar::pathLength(full_path);
-  if (!dynamic_crossing_length_exempt) budget = std::min(budget, fappApproachLength(pos));
   bool planned = false;
   for (int attempt = 0; attempt < 3; ++attempt) {
     ed_->path_next_goal_ = dynamic_crossing_length_exempt
@@ -5011,25 +4755,6 @@ int FastExplorationManager::planExploreMotion(
                                 !hasSafeCruiseContinuation(pos, yaw[0])))) {
     if (buildGroundAscentPlan(pos, vel, yaw)) return SUCCEED;
     if (ground_ascent_active_) return FAIL;
-  }
-  // 普通探索和动态障碍前的静态接近使用同一短段比较，避免回退分支又固定先上绕。
-  if (!external_selection_only_ && !hold_fapp_height && !use_vertical_detour_target &&
-      !low_probe_active && !suspended_underpass_active_ &&
-      !shouldUseMissionEntryTransit(pos) && task_search_manager_ &&
-      task_search_manager_->enabled() && !task_search_manager_->stage3Active() &&
-      !task_search_manager_->finalExitFrontierGuardActive()) {
-    const Vector3d forward=task_search_manager_->recoveryForwardDirection(yaw[0]);
-    if (hasForwardBodyObstacle(pos,forward)) {
-      // 短段避障会提前返回，必须先让已有的地图转弯确认参与决策。
-      // 上方通路专用检查会跳过当前层分支，不能替代这里的普通转弯确认；
-      // 否则已识别右转仍会反复侧移，永远到不了下方发布前的转向逻辑。
-      Vector3d mapped_direction;
-      if (task_search_manager_->mappedCorridorDirection(yaw[0],mapped_direction)) {
-        ROS_WARN("[static_detour] mapped corridor turn takes priority over local side/upper steps.");
-        return buildTurnInPlacePlan(pos,vel,acc,yaw,mapped_direction) ? SUCCEED : FAIL;
-      }
-      if (planInflationHistoryEscape(pos,vel,acc,yaw,true,true)) return SUCCEED;
-    }
   }
   if (!external_selection_only_ && !use_vertical_detour_target && !low_probe_active &&
       vertical_detour::inflationEscapeAllowed(low_probe_phase_) &&

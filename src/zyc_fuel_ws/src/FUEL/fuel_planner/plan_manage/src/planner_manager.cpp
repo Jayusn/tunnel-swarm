@@ -826,10 +826,6 @@ bool FastPlannerManager::isRawPositionSafe(const Eigen::Vector3d& position) cons
   return isRawFootprintSafe(position);
 }
 
-double FastPlannerManager::footprintBottomClearance() const {
-  return -*std::min_element(footprint_z_offsets_.begin(), footprint_z_offsets_.end());
-}
-
 bool FastPlannerManager::isKnownFreePosition(const Eigen::Vector3d& position) const {
   if (!position.allFinite() || !isPositionSafe(position)) return false;
   for (double z_offset : footprint_z_offsets_) {

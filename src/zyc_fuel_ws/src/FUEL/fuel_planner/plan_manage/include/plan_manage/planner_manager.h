@@ -76,7 +76,6 @@ public:
   bool isRawPositionSafe(const Eigen::Vector3d& position) const;
   // 巡航爬升要求整个采样圆盘已知自由，不能把未知上方空间当成可通过。
   bool isKnownFreePosition(const Eigen::Vector3d& position) const;
-  double footprintBottomClearance() const;
   // Relay stopping space is checked even when FUEL uses soft dynamic costs.
   bool isRelayHoldDynamicallySafe(const Eigen::Vector3d& position, double radius,
                                  double half_height, double horizon) const;
