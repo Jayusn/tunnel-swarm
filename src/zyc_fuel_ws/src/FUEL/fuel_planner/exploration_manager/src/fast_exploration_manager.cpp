@@ -943,20 +943,21 @@ bool FastExplorationManager::buildVerticalDetourFallback(
   height_candidates.erase(std::unique(height_candidates.begin(),height_candidates.end(),
       [](const auto& a,const auto& b) { return std::fabs(a.first-b.first) < 1e-6; }),
       height_candidates.end());
-  for (const auto& height : height_candidates) {
-    const double z = height.first;
-    const Vector3d& top = height.second;
-    Vector3d elevated = pos; elevated.z() = z;
-    for (const double angle : side_angles) {
-      const double c=std::cos(angle), sn=std::sin(angle);
-      const Vector3d upper_direction(c*direction.x()-sn*direction.y(),
-                                     sn*direction.x()+c*direction.y(), 0.0);
-      // 验证前方整段高层通路，不仅验证脚下0.20m空地。
-      if (!isKnownSafeHorizontalCorridor(elevated, upper_direction, lookahead)) {
-        ++rejected_corridor; continue;
-      }
-      for (double distance=vertical_detour_forward_check_distance_;
-           distance>=-1e-6; distance-=vertical_detour_forward_check_distance_) {
+  // 先检查整个高度/方向候选集的斜升，再考虑原地升高；不能在低层某一方向
+  // 斜升失败后立即选原地上升，漏掉更高或侧前方可执行的斜升通路。
+  for (const double distance : {vertical_detour_forward_check_distance_, 0.0}) {
+    for (const auto& height : height_candidates) {
+      const double z = height.first;
+      const Vector3d& top = height.second;
+      Vector3d elevated = pos; elevated.z() = z;
+      for (const double angle : side_angles) {
+        const double c=std::cos(angle), sn=std::sin(angle);
+        const Vector3d upper_direction(c*direction.x()-sn*direction.y(),
+                                       sn*direction.x()+c*direction.y(), 0.0);
+        // 验证前方整段高层通路，不仅验证脚下0.20m空地。
+        if (!isKnownSafeHorizontalCorridor(elevated, upper_direction, lookahead)) {
+          ++rejected_corridor; continue;
+        }
         const Vector3d candidate=elevated+std::max(0.0,distance)*upper_direction;
         const vector<Vector3d> path{pos,candidate};
         const bool known = distance>1e-6
@@ -1233,15 +1234,18 @@ bool FastExplorationManager::handleActiveLowProbe(
 
 bool FastExplorationManager::buildStationaryVerticalDetourPlan(
     const Vector3d& pos, const Vector3d& yaw) {
+  const bool upper = upper_detour_plan_ &&
+      low_probe_phase_ == vertical_detour::LowProbePhase::IDLE;
   const bool descending =
       low_probe_phase_ == vertical_detour::LowProbePhase::DESCENDING;
   const bool ascending =
       low_probe_phase_ == vertical_detour::LowProbePhase::ASCENDING;
-  if (!descending && !ascending) return false;
+  if (!upper && !descending && !ascending) return false;
 
-  // 目标高度属于低空探测会话，但 XY 始终以本次调用的实时位置为准，杜绝斜向
-  // 下降/上升。下降允许沿 UNKNOWN 补图，上升仍要求整根柱已知自由。
-  Vector3d target = low_probe_target_;
+  // 普通上绕不属于低空探测会话，使用本轮已验证的上绕目标；发布复核时仍从
+  // 最新 XY 生成竖直段。低空探测保留自己的目标和状态，不互相冒用。
+  if (upper && !has_last_requested_goal_) return false;
+  Vector3d target = upper ? last_requested_goal_ : low_probe_target_;
   target.x() = pos.x();
   target.y() = pos.y();
   if (manual_path_enabled_ && manual_path_max_segment_length_ > 0.0)
@@ -1252,17 +1256,20 @@ bool FastExplorationManager::buildStationaryVerticalDetourPlan(
   const bool controlled_escape =
       planner_manager_->isControlledEscapePosition(pos);
   if (!planner_manager_->isTrajectorySafe(0.03, controlled_escape)) return false;
-  if (!planner_manager_->planYawTurnInPlace(yaw, low_probe_yaw_)) return false;
+  if (!planner_manager_->planYawTurnInPlace(yaw, upper ? yaw[0] : low_probe_yaw_))
+    return false;
 
   // 竖直短段可以截断，低位会话仍保留最终高度，下一段继续下降/回升。
-  low_probe_target_.x() = target.x();
-  low_probe_target_.y() = target.y();
-  if (descending) {
-    low_probe_origin_.x() = pos.x();
-    low_probe_origin_.y() = pos.y();
-  } else {
-    low_probe_ascent_origin_.x() = pos.x();
-    low_probe_ascent_origin_.y() = pos.y();
+  if (!upper) {
+    low_probe_target_.x() = target.x();
+    low_probe_target_.y() = target.y();
+    if (descending) {
+      low_probe_origin_.x() = pos.x();
+      low_probe_origin_.y() = pos.y();
+    } else {
+      low_probe_ascent_origin_.x() = pos.x();
+      low_probe_ascent_origin_.y() = pos.y();
+    }
   }
   ed_->path_next_goal_ = {pos, 0.5 * (pos + target), target};
   ed_->next_goal_ = target;
@@ -1272,7 +1279,7 @@ bool FastExplorationManager::buildStationaryVerticalDetourPlan(
   pending_reference_height_ = target.z();
   ROS_ERROR("[vertical_detour] build live fixed-xy %s at (%.2f,%.2f), "
             "z %.2f -> %.2f.",
-            descending ? "descent" : "ascent", pos.x(), pos.y(), pos.z(),
+            upper ? "upper ascent" : descending ? "descent" : "ascent", pos.x(), pos.y(), pos.z(),
             target.z());
   return true;
 }
@@ -1280,7 +1287,8 @@ bool FastExplorationManager::buildStationaryVerticalDetourPlan(
 bool FastExplorationManager::reanchorVerticalDetourForRelease(
     const Vector3d& pos, const Vector3d& yaw) {
   if (!vertical_detour_plan_) return false;
-  if (manual_fapp_active_ && low_probe_phase_ == vertical_detour::LowProbePhase::IDLE)
+  if (!upper_detour_plan_ && manual_fapp_active_ &&
+      low_probe_phase_ == vertical_detour::LowProbePhase::IDLE)
     return planFappVerticalDescent(pos, yaw);
   return buildStationaryVerticalDetourPlan(pos, yaw);
 }
@@ -3116,6 +3124,8 @@ bool FastExplorationManager::planInflationHistoryEscape(
   incremental_escape_plan_ = false;
   escape_step_plan_ = false;
   const bool controlled_start = planner_manager_->isControlledEscapePosition(pos);
+  const bool prefer_side_after_failure = after_failure &&
+      (!controlled_start || upper_detour_plan_);
   if (!inflation_history_escape_enabled_ ||
       (!controlled_start && !(after_failure && planner_manager_->isPositionSafe(pos))))
     return false;
@@ -3274,7 +3284,9 @@ bool FastExplorationManager::planInflationHistoryEscape(
   }
   ROS_WARN_THROTTLE(0.5,"[inflation_history_escape] front_blocked=%d rear_blocked=%d "
       "candidates=%zu; prefer %s, then mapped side space.",
-      front_blocked,rear_blocked,candidates.size(),front_blocked?"straight rear step/history backtrack":"forward step");
+      front_blocked,rear_blocked,candidates.size(),prefer_side_after_failure ?
+          "forward/side alternatives before backward fallback" :
+          front_blocked ? "straight rear step/history backtrack" : "forward step");
   if (candidates.empty()) {
     ROS_WARN_THROTTLE(0.5,
                       "[inflation_history_escape] no improving forward/rear/history/mapped-side step "
@@ -3283,6 +3295,14 @@ bool FastExplorationManager::planInflationHistoryEscape(
     return false;
   }
 
+  if (prefer_side_after_failure) {
+    // 上绕失败或当前机体已安全时，规划失败不等于必须倒车脱障。先用现有的前进/
+    // 侧移候选继续通行，所有朝后的候选留到最后，避免反复退向跟随飞机。
+    for (auto& candidate : candidates) {
+      const double progress = (candidate.path.back() - pos).dot(forward);
+      candidate.priority = progress < -0.03 ? 2 : progress > 0.03 ? 0 : 1;
+    }
+  }
   std::stable_sort(candidates.begin(), candidates.end(),
                    [](const EscapeCandidate& lhs, const EscapeCandidate& rhs) {
     if (lhs.priority != rhs.priority) return lhs.priority < rhs.priority;
@@ -3323,6 +3343,9 @@ bool FastExplorationManager::planInflationHistoryEscape(
     has_last_requested_goal_ = true;
     // 脱障保持当前朝向，恒定零航向也使用确定性样条，避免普通优化器退化。
     if (!planner_manager_->planYawTurnInPlace(yaw,yaw[0])) continue;
+    upper_detour_plan_ = false;
+    vertical_detour_plan_ = false;
+    pending_reference_height_ = std::numeric_limits<double>::quiet_NaN();
     escape_step_plan_ = true;
     const double longitudinal = (ed_->next_goal_-pos).dot(forward);
     ROS_WARN("[inflation_history_escape] selected %s %s escape %.2fm "
