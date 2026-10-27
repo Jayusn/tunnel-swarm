@@ -95,10 +95,16 @@ void FastExplorationManager::recordPublishedTrajectoryHeight() {
     recovery_side_dir_ = (manual_fapp_curve_side_ < 0.0 ? -1.0 : 1.0) *
         Vector3d(-manual_fapp_forward_.y(), manual_fapp_forward_.x(), 0.0);
   }
-  if (std::isfinite(pending_reference_height_))
+  if (std::isfinite(pending_reference_height_)) {
+    // 保留已发布上绕段的临时高度，供下一段跨越时维持跟踪余量。
+    // 它不改变巡航参考；安全回落段发布后即清除。
+    published_upper_height_ = upper_detour_plan_ && task_search_manager_ &&
+        pending_reference_height_ > task_search_manager_->preferredSearchHeight() + 0.03
+        ? pending_reference_height_ : std::numeric_limits<double>::quiet_NaN();
     // 上绕高度只属于本段避障轨迹，不能把临时高位写成新的巡航高度。
     horizontal_reference_height_ = upper_detour_plan_ && task_search_manager_
         ? task_search_manager_->preferredSearchHeight() : pending_reference_height_;
+  }
   pending_reference_height_ = std::numeric_limits<double>::quiet_NaN();
 }
 
@@ -385,7 +391,9 @@ bool FastExplorationManager::isKnownSafeHorizontalCorridor(
   const Vector3d unit = direction / direction.head<2>().norm();
   const double sample_step = std::max(0.05, 0.5 * sdf_map_->getResolution());
   const int ring_samples = 12;
-  for (double along = 0.0; along <= distance + 1e-6; along += sample_step) {
+  const int samples = std::max(1, static_cast<int>(std::ceil(distance / sample_step)));
+  for (int i = 0; i <= samples; ++i) {
+    const double along = distance * i / samples;
     Vector3d center = start + along * unit;
     if (!planner_manager_->isPositionSafe(center)) return false;
     for (double z_offset : {-0.06, 0.0, 0.06}) {
@@ -403,6 +411,18 @@ bool FastExplorationManager::isKnownSafeHorizontalCorridor(
     }
   }
   return true;
+}
+
+bool FastExplorationManager::isKnownSafeUpperCorridor(
+    const Vector3d& start, const Vector3d& direction, double distance) const {
+  // 上绕同时保留实飞掉高余量；20cm是实际底部包络，不是指令恰好擦顶的高度。
+  // 仅用于上绕，不扩大下穿时的机体，也不把临时高度写成巡航高度。
+  Vector3d lower = start;
+  // 向上取相邻浮点数，避免0.70-0.10-0.20落进0.40下方的占据体素。
+  lower.z() = std::nextafter(start.z() - vertical_detour_upper_tracking_margin_,
+                            std::numeric_limits<double>::infinity());
+  return isKnownSafeHorizontalCorridor(start, direction, distance) &&
+      isKnownSafeHorizontalCorridor(lower, direction, distance);
 }
 
 bool FastExplorationManager::isKnownSafeVerticalPath(const Vector3d& start,
@@ -754,17 +774,34 @@ bool FastExplorationManager::buildPostTurnUpperRecovery(
       low_probe_phase_ != vertical_detour::LowProbePhase::IDLE) return false;
   Vector3d direction;
   double height;
-  if (!task_search_manager_->upperTurnRecovery(direction,height) ||
-      pos.z() >= height - 0.03 || !hasForwardBodyObstacle(pos,direction)) return false;
+  if (!task_search_manager_->upperTurnRecovery(direction,height)) return false;
+  if (pos.z() >= height - 0.03 ||
+      !hasForwardBodyObstacle(pos - vertical_detour_upper_tracking_margin_ *
+                             Vector3d::UnitZ(),direction)) return false;
   // 转弯已按完整机体包络确认高层通道，沿新方向复查实际连接。
   // 不再把旧前向宽扇区内的侧墙最高点当成此通道低障碍的高度。
   Vector3d elevated = pos;
   elevated.z() = height;
-  if (!isKnownSafeHorizontalCorridor(elevated,direction,
-      std::max(vertical_detour_upper_forward_max_distance_,wide_side_bypass_max_lookahead_)))
-    return false;
-  for (double distance = vertical_detour_forward_check_distance_;
-       distance >= -1e-6; distance -= vertical_detour_forward_check_distance_) {
+  // 地图转弯按离散层选高，可能已经包含足够余量；仅不足时补高。
+  if (!isKnownSafeUpperCorridor(elevated,direction,
+      std::max(vertical_detour_upper_forward_max_distance_,wide_side_bypass_max_lookahead_))) {
+    height += vertical_detour_upper_tracking_margin_;
+    elevated.z() = height;
+    if (height > task_search_manager_->clampSearchHeight(1e3) + 1e-6 ||
+        !isKnownSafeUpperCorridor(elevated,direction,
+          std::max(vertical_detour_upper_forward_max_distance_,wide_side_bypass_max_lookahead_)))
+      return false;
+  }
+  const int approach_steps = std::max(1, static_cast<int>(
+      std::ceil(vertical_detour_forward_check_distance_ / 0.05)));
+  for (int step = approach_steps; step >= 0; --step) {
+    const double distance = vertical_detour_forward_check_distance_ * step / approach_steps;
+    Vector3d actual_height_start = pos;
+    if (!recovery_odom_history_.empty())
+      actual_height_start.z() = std::min(pos.z(), recovery_odom_history_.back().z());
+    // 只在当前实测高度已经可通过的接近段内斜升；否则缩短接近段或原地补高。
+    if (distance > 1e-6 && !isKnownSafeHorizontalCorridor(
+            actual_height_start,direction,distance)) continue;
     const Vector3d candidate = elevated + std::max(0.0,distance)*direction;
     const vector<Vector3d> path{pos,candidate};
     const bool known = distance>1e-6
@@ -818,16 +855,23 @@ bool FastExplorationManager::buildForwardUpperDetour(
   const double lookahead = std::max(vertical_detour_upper_forward_max_distance_,
                                     wide_side_bypass_max_lookahead_);
   const double cruise = task_search_manager_->preferredSearchHeight();
+  Vector3d actual_height_start = pos;
+  if (!recovery_odom_history_.empty())
+    actual_height_start.z() = std::min(pos.z(), recovery_odom_history_.back().z());
   // 已经越过顶部时，先验证完整前进段。能安全回巡航层则边走边回落；
   // 下方仍有障碍就保持当前高度前进，不能因扇区里还有更高的点再抬升。
-  if (pos.z() > cruise + 0.03 &&
-      isKnownSafeHorizontalCorridor(pos,direction,lookahead)) {
+  if ((pos.z() > cruise + 0.03 || std::isfinite(published_upper_height_)) &&
+      isKnownSafeHorizontalCorridor(actual_height_start,direction,lookahead)) {
+    const double upper_height = std::isfinite(published_upper_height_)
+        ? std::max(pos.z(),published_upper_height_) : pos.z();
     for (const double z : {cruise, task_search_manager_->projectSearchHeight(cruise,pos.z()),
-                           pos.z()}) {
+                           upper_height, pos.z()}) {
       Vector3d candidate = pos + lookahead * direction;
       candidate.z() = z;
+      Vector3d elevated = pos; elevated.z() = z;
       const vector<Vector3d> path{pos,candidate};
-      if (!isKnownSafeHorizontalCorridor(pos,candidate-pos,lookahead) ||
+      if (!isKnownSafeUpperCorridor(elevated,direction,lookahead) ||
+          !isKnownSafeHorizontalCorridor(pos,candidate-pos,lookahead) ||
           !pathInsideWorkspaceLock(path) || !planner_manager_->isPathSafe(path) ||
           !task_search_manager_->isRecoveryPathAllowed(path,false)) continue;
       next_pos = candidate; next_yaw = cur_yaw; upper_detour_plan_ = true;
@@ -839,7 +883,10 @@ bool FastExplorationManager::buildForwardUpperDetour(
       return true;
     }
   }
-  if (!hasForwardBodyObstacle(pos,forward)) return false;
+  if (!hasForwardBodyObstacle(pos,forward) &&
+      !((pos.z() > cruise + 0.03 || std::isfinite(published_upper_height_)) && hasForwardBodyObstacle(
+          pos - vertical_detour_upper_tracking_margin_ * Vector3d::UnitZ(),forward)))
+    return false;
   if (!buildVerticalDetourFallback(pos, cur_yaw, forward, next_pos, next_yaw,
                                    false, false)) return false;
   recovery_side_latched_ = false;
@@ -907,7 +954,12 @@ bool FastExplorationManager::buildVerticalDetourFallback(
     return true;
   }
 
-  if (!hasForwardBodyObstacle(pos,direction)) return false;
+  if (!hasForwardBodyObstacle(pos,direction) &&
+      !(task_search_manager_ &&
+        (pos.z() > task_search_manager_->preferredSearchHeight() + 0.03 ||
+         std::isfinite(published_upper_height_)) &&
+        hasForwardBodyObstacle(pos - vertical_detour_upper_tracking_margin_ *
+                               Vector3d::UnitZ(),direction))) return false;
 
   // 高层按正前及左右前斜向组成扇形搜索，并逐段扩大前进距离；始终不生成后向候选。
   const double max_side_angle =
@@ -929,7 +981,8 @@ bool FastExplorationManager::buildVerticalDetourFallback(
   // 也不能要求每次至少再升0.20m；已经足够通过就不继续加高。
   vector<std::pair<double,Vector3d>> height_candidates;
   for (const Vector3d& top : local_tops) {
-    const double required_z = top.z() + vertical_detour_upper_obstacle_clearance_;
+    const double required_z = top.z() + vertical_detour_upper_obstacle_clearance_ +
+                              vertical_detour_upper_tracking_margin_;
     if (required_z <= pos.z() + 1e-6) continue;
     const double first_z = required_z;
     if (first_z > height_limit + 1e-6) { ++rejected_height; continue; }
@@ -945,7 +998,13 @@ bool FastExplorationManager::buildVerticalDetourFallback(
       height_candidates.end());
   // 先检查整个高度/方向候选集的斜升，再考虑原地升高；不能在低层某一方向
   // 斜升失败后立即选原地上升，漏掉更高或侧前方可执行的斜升通路。
-  for (const double distance : {vertical_detour_forward_check_distance_, 0.0}) {
+  Vector3d actual_height_start = pos;
+  if (!recovery_odom_history_.empty())
+    actual_height_start.z() = std::min(pos.z(), recovery_odom_history_.back().z());
+  const int approach_steps = std::max(1, static_cast<int>(
+      std::ceil(vertical_detour_forward_check_distance_ / 0.05)));
+  for (int step = approach_steps; step >= 0; --step) {
+    const double distance = vertical_detour_forward_check_distance_ * step / approach_steps;
     for (const auto& height : height_candidates) {
       const double z = height.first;
       const Vector3d& top = height.second;
@@ -954,8 +1013,12 @@ bool FastExplorationManager::buildVerticalDetourFallback(
         const double c=std::cos(angle), sn=std::sin(angle);
         const Vector3d upper_direction(c*direction.x()-sn*direction.y(),
                                        sn*direction.x()+c*direction.y(), 0.0);
-        // 验证前方整段高层通路，不仅验证脚下0.20m空地。
-        if (!isKnownSafeHorizontalCorridor(elevated, upper_direction, lookahead)) {
+        if (distance > 1e-6 && !isKnownSafeHorizontalCorridor(
+                actual_height_start,upper_direction,distance)) {
+          ++rejected_path; continue;
+        }
+        // 验证前方整段高层通路以及掉高余量，不仅验证脚下0.20m空地。
+        if (!isKnownSafeUpperCorridor(elevated, upper_direction, lookahead)) {
           ++rejected_corridor; continue;
         }
         const Vector3d candidate=elevated+std::max(0.0,distance)*upper_direction;
@@ -970,9 +1033,11 @@ bool FastExplorationManager::buildVerticalDetourFallback(
         }
         next_pos=candidate; next_yaw=cur_yaw; upper_detour_plan_=true;
         ROS_WARN("[vertical_detour] direct upper %s target=(%.2f,%.2f,%.2f) "
-            "local_top=(%.2f,%.2f,%.2f) field_max=%.2f clearance=%.2f lookahead=%.2f.",
+            "local_top=(%.2f,%.2f,%.2f) field_max=%.2f clearance=%.2f "
+            "tracking_margin=%.2f lookahead=%.2f.",
             distance>1e-6?"diagonal":"vertical",next_pos.x(),next_pos.y(),next_pos.z(),
-            top.x(),top.y(),top.z(),field_maximum,next_pos.z()-top.z(),lookahead);
+            top.x(),top.y(),top.z(),field_maximum,next_pos.z()-top.z(),
+            vertical_detour_upper_tracking_margin_,lookahead);
         return true;
       }
     }
@@ -3677,6 +3742,8 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
            vertical_detour_upper_max_side_angle_deg_, 45.0);
   nh.param("mission/vertical_detour/upper_obstacle_clearance",
            vertical_detour_upper_obstacle_clearance_, 0.20);
+  nh.param("mission/vertical_detour/upper_tracking_margin",
+           vertical_detour_upper_tracking_margin_, 0.10);
   nh.param("mission/vertical_detour/down_first_height",
            vertical_detour_down_first_height_, 0.75);
   nh.param("mission/vertical_detour/height_tolerance",
@@ -3714,6 +3781,9 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
                vertical_detour_upper_forward_max_distance_);
   vertical_detour_upper_obstacle_clearance_ =
       std::max(0.20, vertical_detour_upper_obstacle_clearance_);
+  if (!std::isfinite(vertical_detour_upper_tracking_margin_) ||
+      vertical_detour_upper_tracking_margin_ < 0.0)
+    throw std::runtime_error("upper tracking margin must be finite and nonnegative");
   vertical_detour_footprint_radius_ =
       std::max(0.05, vertical_detour_footprint_radius_);
   underpass_lidar_above_odom_ = std::max(0.0, underpass_lidar_above_odom_);

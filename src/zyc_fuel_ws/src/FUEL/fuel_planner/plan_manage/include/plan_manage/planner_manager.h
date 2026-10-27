@@ -66,8 +66,10 @@ public:
   // 2026-07-28: 膨胀层脱困轨迹在执行期沿用“原始足迹安全且净空单调增加”的判据，
   // 避免发布前允许逃逸、发布后20ms又被普通膨胀层检查立即否决。
   bool checkTrajCollision(double& distance, bool allow_inflation_escape = false);
+  // 传入实测位置时，参考轨迹与叠加当前跟踪偏差的轨迹都必须通过。
   bool checkTrajCollision(LocalTrajData& trajectory, double& distance,
-                          bool allow_inflation_escape = false);
+                          bool allow_inflation_escape = false,
+                          const Eigen::Vector3d* actual_position = nullptr);
   // 2026-07-13: 使用独立机体足迹检查轨迹/路径，避免 0.15m 建图膨胀小于 Iris 实际旋翼半径。
   bool isPositionSafe(const Eigen::Vector3d& position) const;
   // 2026-07-28: FSM发布门控需要区分原始占据碰撞与仅接触膨胀层，决定能否执行受控逃逸。

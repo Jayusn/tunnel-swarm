@@ -638,12 +638,24 @@ bool FastPlannerManager::checkTrajCollision(double& distance, bool allow_inflati
 }
 
 bool FastPlannerManager::checkTrajCollision(LocalTrajData& trajectory, double& distance,
-                                            bool allow_inflation_escape) {
+                                            bool allow_inflation_escape,
+                                            const Eigen::Vector3d* actual_position) {
+  // 同时检查参考轨迹和当前跟踪偏差下的机体包络。小于通用跟踪阈值的
+  // 8~10cm掉高也能吃掉越障净空，不能等误差达到28cm才处理。
+  if (actual_position &&
+      !checkTrajCollision(trajectory, distance, allow_inflation_escape)) return false;
+  if (actual_position && !actual_position->allFinite()) {
+    distance = 0.0;
+    return false;
+  }
   const double t_now = std::max(
       0.0, std::min((ros::Time::now() - trajectory.start_time_).toSec(), trajectory.duration_));
 
   const double reference = ros::Time::now().toSec();
   Eigen::Vector3d cur_pt = trajectory.position_traj_.evaluateDeBoorT(t_now);
+  const Eigen::Vector3d tracking_offset = actual_position
+      ? Eigen::Vector3d(*actual_position - cur_pt) : Eigen::Vector3d::Zero();
+  cur_pt += tracking_offset;
   if (!fapp_planner_priority_ && !fappPositionSafe(cur_pt, trajectory.start_time_.toSec()+t_now, reference)) {
     distance=0.0; return false;
   }
@@ -666,13 +678,14 @@ bool FastPlannerManager::checkTrajCollision(LocalTrajData& trajectory, double& d
     distance = 0.0;
     ROS_WARN_THROTTLE(0.5,
                       "[footprint_safety] active trajectory point is occupied at %.2f %.2f %.2f, "
-                      "radius=%.2f.",
-                      cur_pt.x(), cur_pt.y(), cur_pt.z(), footprint_check_radius_);
+                      "radius=%.2f source=%s offset_z=%.3f.",
+                      cur_pt.x(), cur_pt.y(), cur_pt.z(), footprint_check_radius_,
+                      actual_position ? "odometry-offset" : "reference", tracking_offset.z());
     return false;
   }
 
   while (radius < 6.0 && t_now + fut_t < trajectory.duration_) {
-    fut_pt = trajectory.position_traj_.evaluateDeBoorT(t_now + fut_t);
+    fut_pt = trajectory.position_traj_.evaluateDeBoorT(t_now + fut_t) + tracking_offset;
     if (!fapp_planner_priority_ && !fappPositionSafe(fut_pt, trajectory.start_time_.toSec()+t_now+fut_t, reference)) {
       distance=radius; return false;
     }
@@ -695,8 +708,9 @@ bool FastPlannerManager::checkTrajCollision(LocalTrajData& trajectory, double& d
     if (!safe) {
       distance = radius;
       ROS_WARN_THROTTLE(0.5, "[footprint_safety] future footprint collision at %.2f %.2f %.2f, "
-                             "path_dist=%.2f radius=%.2f.",
-                        fut_pt.x(), fut_pt.y(), fut_pt.z(), radius, footprint_check_radius_);
+                             "path_dist=%.2f radius=%.2f source=%s offset_z=%.3f.",
+                        fut_pt.x(), fut_pt.y(), fut_pt.z(), radius, footprint_check_radius_,
+                        actual_position ? "odometry-offset" : "reference", tracking_offset.z());
       return false;
     }
     radius = (fut_pt - cur_pt).norm();

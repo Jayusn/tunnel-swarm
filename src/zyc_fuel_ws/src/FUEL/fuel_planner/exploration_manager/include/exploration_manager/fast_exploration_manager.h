@@ -359,6 +359,8 @@ private:
   double vertical_detour_upper_forward_max_distance_{0.60};
   double vertical_detour_upper_max_side_angle_deg_{45.0};
   double vertical_detour_upper_obstacle_clearance_{0.20};
+  double vertical_detour_upper_tracking_margin_{0.10};
+  double published_upper_height_{std::numeric_limits<double>::quiet_NaN()};
   double vertical_detour_down_first_height_{0.75};
   double vertical_detour_height_tolerance_{0.06};
   double vertical_detour_xy_tolerance_{0.08};
@@ -496,6 +498,8 @@ private:
   void cancelActiveLowProbe(const char* reason);
   bool isKnownSafeHorizontalCorridor(const Vector3d& start, const Vector3d& direction,
                                      double distance) const;
+  bool isKnownSafeUpperCorridor(const Vector3d& start, const Vector3d& direction,
+                                double distance) const;
   bool isLowProbeCorridorSafe(const Vector3d& start, const Vector3d& direction,
                               double distance) const;
   bool isKnownSafeVerticalPath(const Vector3d& start, double target_z,

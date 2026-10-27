@@ -442,9 +442,10 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
             planner_manager_->isControlledEscapePosition(fd_->odom_pos_);
         const bool active_safe = raw_escape_safe && planner_manager_->checkTrajCollision(
                                                         active_traj_, active_collision_distance,
-                                                        inflation_escape_active_);
+                                                        inflation_escape_active_, &fd_->odom_pos_);
         if (!active_safe) {
           requestActiveTrajectoryBrake("unsafe old trajectory before replanning");
+          fd_->static_state_ = true;
           expl_manager_->reportTrajectoryCollision();
           ROS_WARN("[trajectory_brake] old trajectory rejected before planner call, "
                    "path_dist=%.2fm.",
@@ -960,7 +961,8 @@ bool FastExplorationFSM::resumeAfterWidthAttempt(const string& reason) {
       expl_manager_->currentPlanIsVerticalDetour() ||
       expl_manager_->currentPlanIsGroundAscent()) return false;
   double collision_distance = 0.0;
-  if (!planner_manager_->checkTrajCollision(active_traj_, collision_distance, false))
+  if (!planner_manager_->checkTrajCollision(active_traj_, collision_distance, false,
+                                           &fd_->odom_pos_))
     return false;
   fd_->static_state_ = false;
   next_plan_retry_time_ = ros::Time(0);
@@ -1283,10 +1285,12 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
 
   double dist;
   const bool safe =
-      planner_manager_->checkTrajCollision(active_traj_, dist, inflation_escape_active_);
+      planner_manager_->checkTrajCollision(active_traj_, dist, inflation_escape_active_,
+                                          &fd_->odom_pos_);
   if (exploration_policy::shouldBrakePublishedTrajectory(active_traj_valid_, !safe,
                                                           active_traj_braked_)) {
     requestActiveTrajectoryBrake("future footprint collision");
+    fd_->static_state_ = true; // 从实际高度重新选路，不能沿已偏高的参考继续预测。
     expl_manager_->reportTrajectoryCollision();
     ROS_WARN("Replan: collision detected, old trajectory short-braked at path_dist=%.2fm", dist);
     if (state_ != EXPL_STATE::PLAN_TRAJ)

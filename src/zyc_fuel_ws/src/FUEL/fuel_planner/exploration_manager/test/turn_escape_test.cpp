@@ -85,6 +85,94 @@ class TurnEscapeTest {
     });
   }
 public:
+  static void runMeasuredUpperClearance(bool near_obstacle) {
+    ros::NodeHandle nh("~measured_upper_clearance");
+    nh.setParam("manager/use_geometric_path", true);
+    nh.setParam("manager/footprint_bottom_clearance", .20);
+    nh.setParam("astar/resolution_astar", .05);
+    nh.setParam("astar/allocate_num", 100000);
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    auto& planner = *manager.planner_manager_;
+    auto& map = *manager.sdf_map_;
+    auto& task = *manager.task_search_manager_;
+    const Vector3d pos(.025, .025, .575), forward = Vector3d::UnitX();
+    task.setMap(manager.sdf_map_);
+    task.enabled_ = true;
+    task.global_no_return_ = false;
+    task.cruise_height_ = .60;
+    task.min_search_height_ = .10;
+    task.max_search_height_ = 1.50;
+    task.setCorridorFrame(pos - forward, forward);
+    task.updateRobotPose(pos, 0);
+    manager.vertical_detour_upper_max_side_angle_deg_ = 0;
+    for (int x = 0; x < map.mp_->map_voxel_num_.x(); ++x)
+      for (int y = 0; y < map.mp_->map_voxel_num_.y(); ++y)
+        for (int z = 0; z < map.mp_->map_voxel_num_.z(); ++z) {
+          const Eigen::Vector3i index(x, y, z);
+          Vector3d p; map.indexToPos(index, p);
+          const bool occupied = p.x() > (near_obstacle ? .25 : .55) &&
+              p.x() <= .775 && std::fabs(p.y() - pos.y()) < .55 && p.z() < .40;
+          const int address = map.toAddress(index);
+          map.md_->occupancy_buffer_[address] = occupied ? map.mp_->clamp_max_log_
+                                                        : map.mp_->clamp_min_log_;
+          map.md_->occupancy_buffer_inflate_[address] = occupied;
+        }
+    Vector3d next; double yaw = 0;
+    ASSERT_TRUE(manager.buildForwardUpperDetour(pos, 0, forward, next, yaw));
+    EXPECT_GE(next.z(), .70 - 1e-6); // 顶面0.40 + 实际净空0.20 + 跟踪余量0.10。
+    if (near_obstacle) EXPECT_LT((next - pos).head<2>().norm(), 1e-6);
+    else EXPECT_GT(next.x() - pos.x(), .15); // 足够远时仍然优先斜升。
+    EXPECT_TRUE(planner.isPathSafe({pos, next}));
+    EXPECT_TRUE(manager.isKnownSafeUpperCorridor(next, forward, .60));
+    // 指令已经到高处但实机尚未升够，不能直接走完前方0.9m。
+    const Vector3d high(pos.x(), pos.y(), .70);
+    manager.recovery_odom_history_ = {pos};
+    EXPECT_FALSE(manager.buildForwardUpperDetour(high, 0, forward, next, yaw));
+    manager.recovery_odom_history_ = {high};
+    ASSERT_TRUE(manager.buildForwardUpperDetour(high, 0, forward, next, yaw));
+    EXPECT_GT(next.x() - high.x(), .80);
+    EXPECT_GE(next.z(), .70 - 1e-6);
+  }
+
+  static void runTrackingFootprint(bool actual_contact, bool reference_collision = false) {
+    ros::NodeHandle nh("~tracking_footprint");
+    nh.setParam("manager/use_geometric_path", true);
+    nh.setParam("manager/footprint_bottom_clearance", .20);
+    nh.setParam("astar/resolution_astar", .05);
+    nh.setParam("astar/allocate_num", 100000);
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    auto& planner = *manager.planner_manager_;
+    auto& map = *manager.sdf_map_;
+    for (int x = 0; x < map.mp_->map_voxel_num_.x(); ++x)
+      for (int y = 0; y < map.mp_->map_voxel_num_.y(); ++y)
+        for (int z = 0; z < map.mp_->map_voxel_num_.z(); ++z) {
+          const Eigen::Vector3i index(x, y, z);
+          Vector3d p; map.indexToPos(index, p);
+          const bool occupied = p.x() >= (actual_contact ? -.175 : .325) &&
+              p.x() <= .575 && std::fabs(p.y()) <= .25 && p.z() < .40;
+          const int address = map.toAddress(index);
+          map.md_->occupancy_buffer_[address] = occupied ? map.mp_->clamp_max_log_
+                                                        : map.mp_->clamp_min_log_;
+          map.md_->occupancy_buffer_inflate_[address] = occupied;
+        }
+    const Vector3d start(.025, .025, reference_collision ? .525 : .625);
+    ASSERT_TRUE(planner.planStraightTraj(start, start + .80 * Vector3d::UnitX()));
+    auto& trajectory = planner.local_data_;
+    trajectory.start_time_ = ros::Time::now() + ros::Duration(1);
+    const Vector3d live = start + Vector3d(0, 0, reference_collision ? .10 : -.10);
+    double distance = -1;
+    EXPECT_EQ(!reference_collision, planner.checkTrajCollision(trajectory, distance));
+    EXPECT_EQ(!actual_contact || reference_collision, planner.isRawPositionSafe(live));
+    EXPECT_FALSE(planner.checkTrajCollision(trajectory, distance, false, &live));
+    if (actual_contact) EXPECT_DOUBLE_EQ(0.0, distance);
+    else if (!reference_collision) EXPECT_GT(distance, 0.0); // 真正接触之前就发现前方不足。
+    const Vector3d safe = start;
+    if (!reference_collision)
+      EXPECT_TRUE(planner.checkTrajCollision(trajectory, distance, false, &safe));
+  }
+
   static void runUpperExecution(bool diagonal, bool passed_fapp = false) {
     ros::NodeHandle nh("~upper_execution");
     nh.setParam("manager/use_geometric_path", true);
@@ -155,7 +243,9 @@ public:
     EXPECT_GT(goal.z(), pos.z() + .20);
     if (diagonal) {
       // 低层只支持原地升高，更高一层可斜升时必须先执行斜升。
-      EXPECT_GT(goal.x(), pos.x() + .15);
+      EXPECT_GT(goal.x(), pos.x() + .04);
+      EXPECT_TRUE(manager.isKnownSafeHorizontalCorridor(
+          pos, Vector3d::UnitX(), goal.x() - pos.x()));
       EXPECT_GT(goal.z(), .80);
     } else {
       EXPECT_LT((goal - pos).head<2>().norm(), 1e-6);
@@ -309,7 +399,7 @@ public:
       } else {
         auto& curve=manager.planner_manager_->local_data_.position_traj_;
         const Vector3d end=curve.evaluateDeBoorT(curve.getTimeSum());
-        EXPECT_NEAR(.90,end.z(),1e-4);
+        EXPECT_NEAR(.90 + manager.vertical_detour_upper_tracking_margin_,end.z(),1e-4);
         EXPECT_GT(end.x(),pos.x());
         EXPECT_LT(end.x(),.775); // 在物体前完成抬升，不能把上升弧线拖进中缝。
         double previous=pos.z();
@@ -432,7 +522,7 @@ public:
     }
     ASSERT_TRUE(manager.hasForwardBodyObstacle(pos,forward));
     ASSERT_TRUE(manager.buildForwardUpperDetour(pos,0,forward,next,yaw));
-    EXPECT_NEAR(.90,next.z(),1e-6);
+    EXPECT_NEAR(.90 + manager.vertical_detour_upper_tracking_margin_,next.z(),1e-6);
     if (mode==2) {
       EXPECT_LT(next.z()-pos.z(),.20); // 只差5cm净空不能再被强加20cm上升。
       return;
@@ -442,9 +532,10 @@ public:
     EXPECT_DOUBLE_EQ(.60,manager.horizontalGoalHeight(next.z()));
     // 到达上绕段末端，前方高层通了，但斜下降仍会碰到原障碍：保持高度往前走。
     pos=next; manager.upper_detour_plan_=false;
+    if (mode == 3) pos.z() -= .04; // 实测未精确到达目标，但20cm实际净空已满足。
     ASSERT_FALSE(manager.hasForwardBodyObstacle(pos,forward));
     ASSERT_TRUE(manager.buildForwardUpperDetour(pos,0,forward,next,yaw));
-    EXPECT_NEAR(.90,next.z(),1e-6);
+    EXPECT_NEAR(.90 + manager.vertical_detour_upper_tracking_margin_,next.z(),1e-6);
     EXPECT_NEAR(.90,next.x()-pos.x(),1e-6);
     EXPECT_TRUE(manager.planner_manager_->isPathSafe({pos,next}));
     // 通过障碍后，边向前走边回到0.6m，不停在原地继续升高。
@@ -950,9 +1041,10 @@ public:
       return;
     }
     ASSERT_TRUE(manager.buildPostTurnUpperRecovery(pos,side*M_PI_2,target,target_yaw));
-    // 障碍仅在0.30m前方：旧A*弧线可绕过，但直接斜升会擦进底部包络。
-    // 应保留当前位置先竖升，不能为满足水平位移断言而重新贴近障碍。
-    EXPECT_NEAR(0.0,(target-pos).head<2>().norm(),1e-6);
+    // 障碍仅在0.30m前方：可在机体尚未接近障碍的短段内斜升，不能硬走0.20m。
+    EXPECT_LE((target-pos).head<2>().norm(),.10 + 1e-6);
+    EXPECT_TRUE(manager.isKnownSafeHorizontalCorridor(
+        pos,direction,(target-pos).head<2>().norm()));
     EXPECT_GE(target.z(),.80);
     EXPECT_TRUE(manager.isKnownSafeVerticalPath(pos,target.z()));
     EXPECT_TRUE(manager.planner_manager_->isPositionSafe(target));
@@ -970,7 +1062,7 @@ public:
       ASSERT_EQ(SUCCEED, manager.planExploreMotion(pos, zero, zero, Vector3d(side*M_PI_2,0,0)));
       EXPECT_FALSE(manager.mission_entered_search_region_);
       EXPECT_GE(manager.external_selected_viewpoint_.z(), .80);
-      EXPECT_NEAR(0.0,(manager.external_selected_viewpoint_-pos).head<2>().norm(),1e-6);
+      EXPECT_LE((manager.external_selected_viewpoint_-pos).head<2>().norm(),.10 + 1e-6);
     }
     EXPECT_FALSE(manager.buildPostTurnUpperRecovery(target,side*M_PI_2,target,target_yaw));
   }
@@ -2171,6 +2263,7 @@ public:
     fsm.expl_manager_ = std::shared_ptr<FastExplorationManager>(&manager, [](FastExplorationManager*) {});
     fsm.planner_manager_ = manager.planner_manager_;
     fsm.fd_ = std::make_shared<FSMData>();
+    fsm.fd_->odom_pos_ = trajectory.evaluateDeBoorT(0.0);
     fsm.fd_->state_str_ = {"INIT", "WAIT", "PLAN", "PUB", "EXEC", "FINISH"};
     fsm.active_traj_ = manager.planner_manager_->local_data_;
     fsm.active_traj_.start_time_ = ros::Time::now();
@@ -5060,6 +5153,21 @@ TEST(PassableTurn, RejectsRecentLeftReturnFromActualTurnAnchor) { fast_planner::
 TEST(PassableTurn, OnlyOldRouteDoesNotConfirmNewTurn) { fast_planner::TurnEscapeTest::runPassableTurn(11); }
 
 TEST(UpperTurn, LowRightObstacleConfirmsTurnThenTriggersAscent) { fast_planner::TurnEscapeTest::runUpperTurn(0); }
+TEST(UpperDetour, NearObstacleRequiresActualHeightBeforeForwardMotion) {
+  fast_planner::TurnEscapeTest::runMeasuredUpperClearance(true);
+}
+TEST(UpperDetour, DistantObstacleKeepsDiagonalAscentWithTrackingMargin) {
+  fast_planner::TurnEscapeTest::runMeasuredUpperClearance(false);
+}
+TEST(FootprintSafety, TenCentimetreTrackingDropRejectsActualBottomContact) {
+  fast_planner::TurnEscapeTest::runTrackingFootprint(true);
+}
+TEST(FootprintSafety, TrackingDropDetectsObstacleBeforeActualContact) {
+  fast_planner::TurnEscapeTest::runTrackingFootprint(false);
+}
+TEST(FootprintSafety, ActualOffsetDoesNotHideReferenceCollision) {
+  fast_planner::TurnEscapeTest::runTrackingFootprint(false, true);
+}
 TEST(UpperDetour, ObstacleBelowFortyCentimetresCanTriggerAscent) {
   fast_planner::TurnEscapeTest::runLowObstacleUpperDetour(false);
 }
@@ -5104,6 +5212,9 @@ TEST(UpperDetour, ClimbThenAdvanceOverObstacleThenReturnToCruise) {
 }
 TEST(UpperDetour, NearlyClearedTopDoesNotForceAnotherTwentyCentimetres) {
   fast_planner::TurnEscapeTest::runUpperProgress(2);
+}
+TEST(UpperDetour, SmallTrackingLagKeepsPublishedHeightWhileAdvancing) {
+  fast_planner::TurnEscapeTest::runUpperProgress(3);
 }
 TEST(UpperDetour, IdlePhaseVerticalAscentExecutesAndReanchorsAtRelease) {
   fast_planner::TurnEscapeTest::runUpperExecution(false);
