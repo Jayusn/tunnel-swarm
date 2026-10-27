@@ -85,6 +85,88 @@ class TurnEscapeTest {
     });
   }
 public:
+  static void runEarlyUpperCombination(int mode) {
+    ros::NodeHandle nh("~early_upper_combination");
+    nh.setParam("manager/use_geometric_path", true);
+    nh.setParam("manager/footprint_bottom_clearance", .20);
+    nh.setParam("astar/min_search_height", .10);
+    nh.setParam("astar/max_search_height", 1.50);
+    nh.setParam("astar/resolution_astar", .05);
+    nh.setParam("astar/allocate_num", 100000);
+    nh.setParam("astar/lambda_heu", 1.0);
+    nh.setParam("astar/max_search_time", 1.0);
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    auto& map = *manager.sdf_map_;
+    auto& task = *manager.task_search_manager_;
+    const Vector3d pos(.025, .025, mode == 3 ? .975 : .575), forward(1, 0, 0);
+    task.setMap(manager.sdf_map_);
+    task.enabled_ = true;
+    task.global_no_return_ = false;
+    task.exit_detection_enabled_ = false;
+    task.cruise_height_ = pos.z();
+    task.max_search_height_ = mode == 5 ? 1.10 : 1.50;
+    task.setCorridorFrame(pos - forward, forward);
+    task.updateRobotPose(pos, 0);
+    manager.ep_->mission_use_forward_fallback_ = true;
+    manager.ep_->mission_use_workspace_lock_ = true;
+    manager.mission_workspace_lock_received_ = true;
+    manager.mission_workspace_origin_ = pos - forward;
+    manager.mission_workspace_dir_ = forward;
+    manager.entry_forward_complete_ = true;
+    for (int x=0; x<map.mp_->map_voxel_num_.x(); ++x)
+      for (int y=0; y<map.mp_->map_voxel_num_.y(); ++y)
+        for (int z=0; z<map.mp_->map_voxel_num_.z(); ++z) {
+          const Eigen::Vector3i index(x,y,z);
+          Vector3d p; map.indexToPos(index,p);
+          // 两个锥桶的保守体素包络，中间低泡沫箱；当前高度中缝仍可通。
+          // 整体距机体约0.75m，超出旧上绕0.60m扫描范围。
+          const bool cone = p.x() >= .775 && p.x() <= .925 &&
+              std::fabs(std::fabs(p.y() - pos.y()) - .40) <= .075 && p.z() < .65;
+          const bool box = p.x() >= .875 && p.x() <= 1.125 &&
+              std::fabs(p.y() - pos.y()) <= .20 && p.z() < .30;
+          const bool roof = mode == 1 && p.z() >= .725;
+          const bool unknown = mode == 2 && p.z() >= .725;
+          const bool high_barrier = mode >= 4 && p.x() >= .775 && p.x() <= .925 &&
+              std::fabs(p.y() - pos.y()) <= .50 && p.z() < 1.05;
+          const bool side_wall = mode >= 4 && std::fabs(p.y() - pos.y()) >= .65;
+          const bool occupied = cone || box || roof || high_barrier || side_wall;
+          const int address = map.toAddress(index);
+          map.md_->occupancy_buffer_[address] = occupied ? map.mp_->clamp_max_log_
+              : unknown ? map.mp_->clamp_min_log_ - map.mp_->unknown_flag_ : map.mp_->clamp_min_log_;
+          map.md_->occupancy_buffer_inflate_[address] = occupied ? 1 : 0;
+        }
+    double top;
+    ASSERT_TRUE(manager.findForwardObstacleTop(pos, forward, top));
+    if (mode != 1) EXPECT_NEAR(mode >= 4 ? 1.05 : .65, top, .001);
+    Vector3d next; double next_yaw=0;
+    if (mode == 0) {
+      bool gate = false;
+      ASSERT_TRUE(manager.buildCenterGatePassage(pos, 0, forward, next, next_yaw, gate));
+      ASSERT_TRUE(gate);
+      EXPECT_DOUBLE_EQ(pos.z(), next.z());
+      manager.recovery_side_latched_ = true;
+      ASSERT_TRUE(manager.buildMissionForwardFallback(pos, 0, next, next_yaw));
+      EXPECT_GE(next.z(), top + .20 - 1e-6);
+      EXPECT_GT(next.x(), pos.x());
+      EXPECT_FALSE(manager.recovery_side_latched_);
+      EXPECT_TRUE(manager.planner_manager_->isPathSafe(manager.planner_manager_->path_finder_->getPath()));
+    } else if (mode == 4) {
+      ASSERT_GT(top + .20 - pos.z(), manager.vertical_detour_upper_max_rise_);
+      manager.edt_environment_ = manager.planner_manager_->edt_environment_;
+      nh.setParam("frontier/cluster_min", 1000000);
+      manager.frontier_finder_ = std::make_shared<FrontierFinder>(manager.edt_environment_, nh);
+      manager.external_selection_only_ = true;
+      ASSERT_EQ(SUCCEED, manager.planExploreMotion(pos, Vector3d::Zero(),
+                                                   Vector3d::Zero(), Vector3d::Zero()));
+      EXPECT_GE(manager.external_selected_viewpoint_.z(), top + .20 - 1e-6);
+      EXPECT_LE(manager.external_selected_viewpoint_.z(), 1.50);
+      EXPECT_GT(manager.external_selected_viewpoint_.x(), pos.x());
+    } else {
+      EXPECT_FALSE(manager.buildForwardUpperDetour(pos, 0, forward, next, next_yaw));
+    }
+  }
+
   static void runLowObstacleUpperDetour(bool blocked_above) {
     ros::NodeHandle nh("~low_obstacle_upper");
     nh.setParam("manager/use_geometric_path", true);
@@ -122,6 +204,10 @@ public:
     double same_top = 0;
     ASSERT_TRUE(manager.findForwardObstacleTop(pos, forward, same_top));
     EXPECT_DOUBLE_EQ(top, same_top);
+    // 靠近后也不能因为动作步长0.20m而漏掉0.10m前方的已占据障碍。
+    double near_top = 0;
+    ASSERT_TRUE(manager.findForwardObstacleTop(pos + .20*forward, forward, near_top));
+    EXPECT_DOUBLE_EQ(top, near_top);
     if (blocked_above) {
       for (int x=0; x<map.mp_->map_voxel_num_.x(); ++x)
         for (int y=0; y<map.mp_->map_voxel_num_.y(); ++y)
@@ -4722,6 +4808,24 @@ TEST(PassableTurn, OnlyOldRouteDoesNotConfirmNewTurn) { fast_planner::TurnEscape
 TEST(UpperTurn, LowRightObstacleConfirmsTurnThenTriggersAscent) { fast_planner::TurnEscapeTest::runUpperTurn(0); }
 TEST(UpperDetour, ObstacleBelowFortyCentimetresCanTriggerAscent) {
   fast_planner::TurnEscapeTest::runLowObstacleUpperDetour(false);
+}
+TEST(UpperDetour, CombinationObstaclePrefersEarlyAscentOverFeasibleCenterGap) {
+  fast_planner::TurnEscapeTest::runEarlyUpperCombination(0);
+}
+TEST(UpperDetour, EarlyAscentRejectsBlockedRoof) {
+  fast_planner::TurnEscapeTest::runEarlyUpperCombination(1);
+}
+TEST(UpperDetour, EarlyAscentRejectsUnknownUpperSpace) {
+  fast_planner::TurnEscapeTest::runEarlyUpperCombination(2);
+}
+TEST(UpperDetour, AlreadyAboveCombinationDoesNotKeepClimbing) {
+  fast_planner::TurnEscapeTest::runEarlyUpperCombination(3);
+}
+TEST(UpperDetour, TallObstacleUsesEarlyUpperRouteBeyondOldRiseLimit) {
+  fast_planner::TurnEscapeTest::runEarlyUpperCombination(4);
+}
+TEST(UpperDetour, TallObstacleCannotExceedCorridorHeight) {
+  fast_planner::TurnEscapeTest::runEarlyUpperCombination(5);
 }
 TEST(UpperDetour, LowObstacleDoesNotAuthorizeBlockedUpperSpace) {
   fast_planner::TurnEscapeTest::runLowObstacleUpperDetour(true);
