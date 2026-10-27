@@ -80,6 +80,140 @@ class TurnEscapeTest {
     manager.task_search_manager_->initialize(nh);
   }
 public:
+  static void runIsolatedInflationNearVehicle() {
+    ros::NodeHandle nh("~isolated_inflation_near_vehicle");
+    FastExplorationManager manager;
+    initialize(nh, manager, false, true);
+    auto& map = *manager.sdf_map_;
+    auto& planner = *manager.planner_manager_;
+    const Vector3d noise(.225,.025,.625), sensor(.025,.025,.625);
+    pcl::PointCloud<pcl::PointXYZ> hit, background;
+    hit.push_back(pcl::PointXYZ(noise.x(),noise.y(),noise.z()));
+    background.push_back(pcl::PointXYZ(1.225,.025,.625));
+    for (int i=0; i<8; ++i)
+      map.inputPointCloud(hit,hit.size(),sensor-Vector3d(.5,0,0));
+    Eigen::Vector3i index; map.posToIndex(noise,index);
+    const int address = map.toAddress(index);
+    ASSERT_EQ(map.getOccupancy(noise),SDFMap::OCCUPIED);
+    ASSERT_GE(map.md_->static_hit_evidence_[address],map.mp_->inflation_min_hit_evidence_);
+    // 接近后没有近点回波：保留原始证据，但孤点不能重新膨胀封住机体旁通路。
+    for (int i=0; i<12; ++i) {
+      map.inputPointCloud(background,background.size(),sensor,.25);
+      map.clearAndInflateLocalMap();
+      EXPECT_EQ(map.getOccupancy(noise),SDFMap::OCCUPIED);
+      EXPECT_EQ(map.getInflateOccupancy(noise),0);
+      EXPECT_EQ(map.getInflateOccupancy(Vector3d(.325,.125,.625)),0);
+      EXPECT_TRUE(planner.isPositionSafe(Vector3d(.325,.125,.625)));
+    }
+  }
+
+  static void runCurrentInflationSupport() {
+    ros::NodeHandle nh("~current_inflation_support");
+    FastExplorationManager manager;
+    initialize(nh,manager,false,true);
+    auto& map = *manager.sdf_map_;
+    std::fill(map.md_->occupancy_buffer_.begin(),map.md_->occupancy_buffer_.end(),
+              map.mp_->clamp_min_log_);
+    map.md_->local_bound_min_.setZero();
+    map.md_->local_bound_max_ = map.mp_->map_voxel_num_-Eigen::Vector3i::Ones();
+    const Vector3d source(.025,.025,.625), adjacent(.125,.025,.625);
+    const auto address = [&](const Vector3d& p) {
+      Eigen::Vector3i index; map.posToIndex(p,index); return map.toAddress(index);
+    };
+    map.md_->occupancy_buffer_[address(source)] = map.mp_->clamp_max_log_;
+    map.md_->static_hit_evidence_[address(source)] = 2;
+    map.clearAndInflateLocalMap();
+    EXPECT_EQ(map.getInflateOccupancy(source),0);
+    map.md_->occupancy_buffer_[address(adjacent)] = map.mp_->clamp_max_log_;
+    map.clearAndInflateLocalMap();
+    EXPECT_EQ(map.getInflateOccupancy(source),1); // 历史命中加当前邻格仍是有效障碍。
+    EXPECT_FALSE(manager.planner_manager_->isPositionSafe(source));
+    map.md_->occupancy_buffer_[address(adjacent)] = map.mp_->clamp_min_log_;
+    map.clearAndInflateLocalMap();
+    EXPECT_EQ(map.getInflateOccupancy(source),0); // 支撑消失后清掉旧膨胀，不清原始格。
+    EXPECT_EQ(map.getOccupancy(source),SDFMap::OCCUPIED);
+    map.md_->static_hit_evidence_[address(source)] = 0;
+    const Vector3d vertical = source+Vector3d(0,0,.20);
+    map.md_->occupancy_buffer_[address(vertical)] = map.mp_->clamp_max_log_;
+    map.clearAndInflateLocalMap();
+    EXPECT_EQ(map.getInflateOccupancy(source),1); // 稀疏细柱的竖向支撑保留。
+    EXPECT_EQ(map.getInflateOccupancy(vertical),1);
+    map.md_->occupancy_buffer_[address(vertical)] = map.mp_->clamp_min_log_;
+    const Vector3d neighbors[] = {adjacent,source+Vector3d(0,.10,0)};
+    for (const Vector3d& p : neighbors)
+      map.md_->occupancy_buffer_[address(p)] = map.mp_->clamp_max_log_;
+    map.clearAndInflateLocalMap();
+    EXPECT_EQ(map.getInflateOccupancy(source),1); // 当前多邻格无需等待历史命中。
+    for (const Vector3d& p : neighbors)
+      map.md_->occupancy_buffer_[address(p)] = map.mp_->clamp_min_log_;
+    map.mp_->inflation_noise_filter_enabled_ = false;
+    map.clearAndInflateLocalMap();
+    EXPECT_EQ(map.getInflateOccupancy(source),1); // 显式关闭过滤的语义不变。
+  }
+
+  static void runInflationEvidenceDecay(bool static_lock) {
+    ros::NodeHandle nh(static_lock ? "~locked_static_evidence" : "~decaying_inflation_evidence");
+    nh.setParam("sdf_map/static_retention_enabled",static_lock);
+    nh.setParam("sdf_map/static_retention_required_hits",2);
+    nh.setParam("sdf_map/p_hit",.65);
+    nh.setParam("sdf_map/p_miss",.35);
+    nh.setParam("sdf_map/p_max",.90);
+    FastExplorationManager manager;
+    initialize(nh,manager,false,true);
+    auto& map = *manager.sdf_map_;
+    const Vector3d sensor(-.475,.025,.625), source(.225,.025,.625);
+    pcl::PointCloud<pcl::PointXYZ> hit, background;
+    hit.push_back(pcl::PointXYZ(source.x(),source.y(),source.z()));
+    background.push_back(pcl::PointXYZ(1.225,.025,.625));
+    Eigen::Vector3i index; map.posToIndex(source,index);
+    const int address = map.toAddress(index);
+    for (int i=0; i<8; ++i) map.inputPointCloud(hit,hit.size(),sensor);
+    ASSERT_EQ(map.md_->static_hit_evidence_[address],2);
+    ASSERT_EQ(bool(map.md_->static_occupancy_locked_[address]),static_lock);
+    map.inputPointCloud(background,background.size(),sensor,.25);
+    EXPECT_EQ(map.md_->static_hit_evidence_[address],static_lock ? 2 : 1);
+    EXPECT_EQ(map.getOccupancy(source),SDFMap::OCCUPIED); // 一次MISS未必清空概率占据。
+    map.inputPointCloud(background,background.size(),sensor,.25);
+    EXPECT_EQ(map.md_->static_hit_evidence_[address],static_lock ? 2 : 0);
+    EXPECT_EQ(map.getOccupancy(source),static_lock ? SDFMap::OCCUPIED : SDFMap::FREE);
+    if (!static_lock) {
+      map.inputPointCloud(hit,hit.size(),sensor);
+      EXPECT_EQ(map.md_->static_hit_evidence_[address],1);
+      EXPECT_EQ(map.getOccupancy(source),SDFMap::OCCUPIED);
+      map.clearAndInflateLocalMap();
+      EXPECT_EQ(map.getInflateOccupancy(source),0);
+    }
+  }
+
+  static void runRecordedStaticInflation(const char* fixture) {
+    ros::NodeHandle nh("~recorded_static_inflation");
+    FastExplorationManager manager;
+    initialize(nh,manager,false,true);
+    auto& map = *manager.sdf_map_;
+    std::fill(map.md_->occupancy_buffer_.begin(),map.md_->occupancy_buffer_.end(),
+              map.mp_->clamp_min_log_);
+    std::ifstream input(fixture);
+    Vector3d source, probe; int count;
+    ASSERT_TRUE(bool(input >> source.x() >> source.y() >> source.z()
+                           >> probe.x() >> probe.y() >> probe.z() >> count));
+    for (int i=0; i<count; ++i) {
+      Vector3d p; ASSERT_TRUE(bool(input >> p.x() >> p.y() >> p.z()));
+      if (!map.isInMap(p)) continue;
+      Eigen::Vector3i index; map.posToIndex(p,index);
+      const int address = map.toAddress(index);
+      map.md_->occupancy_buffer_[address] = map.mp_->clamp_max_log_;
+      // 对记录中未知的历史命中次数取已达标，复现最容易被旧规则膨胀的情况。
+      map.md_->static_hit_evidence_[address] = map.mp_->inflation_min_hit_evidence_;
+    }
+    map.md_->local_bound_min_.setZero();
+    map.md_->local_bound_max_ = map.mp_->map_voxel_num_-Eigen::Vector3i::Ones();
+    map.clearAndInflateLocalMap();
+    EXPECT_EQ(map.getOccupancy(source),SDFMap::OCCUPIED);
+    EXPECT_FALSE(manager.planner_manager_->isSupportedOccupied(source));
+    EXPECT_EQ(map.getInflateOccupancy(probe),0);
+    EXPECT_TRUE(manager.planner_manager_->isPositionSafe(probe));
+  }
+
   static void runBlindRangeFusion(bool observed) {
     ros::NodeHandle nh("~blind_range_fusion");
     FastExplorationManager manager;
@@ -4119,6 +4253,23 @@ TEST(FappLocalStep, StaticBypassStillRechecksStationaryDescent) {
 }
 TEST(FappLocalStep, RejectedStaticColumnRetriesAfterMapClears) {
   fast_planner::TurnEscapeTest::runLocalFappStep(9);
+}
+TEST(StaticInflationNoise, RepeatedIsolatedReturnsStayOutOfInflationNearVehicle) {
+  fast_planner::TurnEscapeTest::runIsolatedInflationNearVehicle();
+}
+TEST(StaticInflationNoise, CurrentSupportRequiredAndThinPostsPreserved) {
+  fast_planner::TurnEscapeTest::runCurrentInflationSupport();
+}
+TEST(StaticInflationNoise, FreeRaysDecayPreviouslySaturatedEvidence) {
+  fast_planner::TurnEscapeTest::runInflationEvidenceDecay(false);
+}
+TEST(StaticInflationNoise, ExplicitStaticLockStillRetainsConfirmedObstacles) {
+  fast_planner::TurnEscapeTest::runInflationEvidenceDecay(true);
+}
+TEST(StaticInflationNoise, RecordedOctober27IsolatedVoxelDoesNotClosePassage) {
+  const char* fixture = std::getenv("STATIC_INFLATION_FIXTURE");
+  if (!fixture) GTEST_SKIP();
+  fast_planner::TurnEscapeTest::runRecordedStaticInflation(fixture);
 }
 TEST(BlindRangeFusion, NearbyObstacleSurvivesMissingReturnsAndBlocksTurn) {
   fast_planner::TurnEscapeTest::runBlindRangeFusion(true);

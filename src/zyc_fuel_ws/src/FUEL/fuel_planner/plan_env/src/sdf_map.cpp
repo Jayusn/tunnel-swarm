@@ -496,12 +496,15 @@ void SDFMap::clearAndInflateLocalMap() {
       for (int z = md_->local_bound_min_(2); z <= md_->local_bound_max_(2); ++z) {
         int id1 = toAddress(x, y, z);
         if (md_->occupancy_buffer_[id1] > mp_->min_occupancy_log_) {
-          bool supported = !mp_->inflation_noise_filter_enabled_ ||
-                           md_->static_hit_evidence_[id1] >=
-                               mp_->inflation_min_hit_evidence_;
-          if (!supported && mp_->inflation_min_neighbors_ > 0) {
+          bool supported = !mp_->inflation_noise_filter_enabled_;
+          // 重复回波仍须有当前空间支撑，不能让盲区内保留的孤点凭旧命中膨胀。
+          // 时间证据充分时允许一个相邻占据格；否则保持原有邻域数量要求。
+          const int required_neighbors =
+              md_->static_hit_evidence_[id1] >= mp_->inflation_min_hit_evidence_
+                  ? 1 : mp_->inflation_min_neighbors_;
+          if (!supported && required_neighbors > 0) {
             supported = metric_voxel::hasMinimumSupport(
-                support_radius, mp_->inflation_min_neighbors_, false,
+                support_radius, required_neighbors, false,
                 [&](int dx, int dy, int dz) {
                   const Eigen::Vector3i neighbor(x + dx, y + dy, z + dz);
                   return isInMap(neighbor) &&

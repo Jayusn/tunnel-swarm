@@ -27,8 +27,8 @@ private:
 
 inline unsigned short updateEvidence(unsigned short evidence, bool hit,
                                      unsigned short required_hits) {
-  if (evidence >= required_hits) return required_hits;
-  if (hit) return std::min<unsigned short>(required_hits, evidence + 1);
+  // 命中只限制计数上限，不能永久锁住膨胀资格；明确的静态锁定由调用方处理。
+  if (hit) return evidence >= required_hits ? required_hits : evidence + 1;
   return evidence > 0 ? evidence - 1 : 0;
 }
 
