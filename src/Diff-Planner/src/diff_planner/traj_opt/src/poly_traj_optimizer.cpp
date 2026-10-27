@@ -445,6 +445,11 @@ namespace diff_planner
       return CHK_RET::ERR;
     }
 
+    std::vector<Eigen::Vector3d> selected_path;
+    for (const auto &piece : pts_check)
+      for (const auto &point : piece) selected_path.push_back(point.second);
+    selectUpperRoute(selected_path);
+
     for (int i = 0; i < i_end; ++i)
     {
       if (checkPlanningTimeout("fine collision occupancy scan")) return CHK_RET::ERR;
@@ -872,6 +877,39 @@ namespace diff_planner
   }
 
   ASTAR_RET PolyTrajOptimizer::searchObstaclePath(
+      const Eigen::Vector3d &start, const Eigen::Vector3d &end,
+      std::vector<Eigen::Vector3d> &path)
+  {
+    if (!std::isfinite(upper_route_reference_z_)) prepareUpperRoute(start, end);
+    ASTAR_RET result = searchObstaclePathImpl(start, end, path);
+    if (result != ASTAR_RET::SUCCESS || dynamic_candidate_active_ ||
+        upper_obstacle_clearance_ <= 0.0) return result;
+
+    // 先沿用原选路；只有实际选出的通路跨到障碍上方时，才加入越障顶面净空。
+    selectUpperRoute(path);
+    const auto path_clear = [&]() {
+      const double step = 0.5 * grid_map_->getResolution();
+      for (size_t i = 1; i < path.size(); ++i) {
+        const int count = std::max(1, int(std::ceil((path[i] - path[i-1]).norm() / step)));
+        for (int j = 0; j <= count; ++j)
+          if (staticPositionOccupied(path[i-1] + (path[i] - path[i-1]) * (double(j) / count)))
+            return false;
+      }
+      return !path.empty();
+    };
+    if (path_clear()) return result;
+    // 使用同一个A*和同一规划时限重新生成满足顶面净空的引导线。
+    result = searchObstaclePathImpl(start, end, path);
+    if (result == ASTAR_RET::SUCCESS) {
+      selectUpperRoute(path);
+      if (path_clear()) return result;
+      result = ASTAR_RET::SEARCH_ERR;
+    }
+    path.clear();
+    return result;
+  }
+
+  ASTAR_RET PolyTrajOptimizer::searchObstaclePathImpl(
       const Eigen::Vector3d &start, const Eigen::Vector3d &end,
       std::vector<Eigen::Vector3d> &path)
   {
@@ -2297,6 +2335,8 @@ namespace diff_planner
 
   void PolyTrajOptimizer::beginDynamicCandidate(const double time_budget)
   {
+    // 下穿/侧绕是另一条候选通路，不继承上一条上绕候选的顶面约束。
+    upper_crossing_tops_.clear();
     candidate_deadline_active_ = true;
     candidate_deadline_ = ros::WallTime::now() + ros::WallDuration(std::max(0.0, time_budget));
     dynamic_candidate_active_ = false;
@@ -2314,36 +2354,75 @@ namespace diff_planner
   {
     if (grid_map_->getInflateOccupancy(position) != 0)
       return true;
-    if (upper_obstacle_clearance_ <= 0.0)
+    if (upper_obstacle_clearance_ <= 0.0 || dynamic_candidate_active_)
       return false;
 
-    // 上绕净空按原始占据体素的顶面计算，不在已有Z膨胀上再叠加20cm。
-    // XY沿用地图膨胀范围，所有高度的占据体素都参与上方净空检查。
+    // 仅在所选上绕障碍的水平覆盖范围约束高度，接近和离开段可正常升降。
     const double resolution = grid_map_->getResolution();
     const Eigen::Vector3i center =
         (position / resolution).array().floor().cast<int>();
     const int horizontal_steps = std::max(0, static_cast<int>(
         std::ceil((obstacle_inflation_ - 1.0e-5) / resolution)));
-    // 多检查边界下方一层，确保恰好20cm时也能找到顶面所在体素。
-    const int lowest_z = static_cast<int>(std::floor(
-        (position.z() - upper_obstacle_clearance_) / resolution)) - 1;
-    for (int z = center.z(); z >= lowest_z; --z)
-    {
-      const double voxel_center_z = (z + 0.5) * resolution;
-      const double obstacle_top = (z + 1) * resolution;
-      if (position.z() > obstacle_top + upper_obstacle_clearance_ + 1.0e-6)
-        continue;
-      for (int dx = -horizontal_steps; dx <= horizontal_steps; ++dx)
-        for (int dy = -horizontal_steps; dy <= horizontal_steps; ++dy)
-        {
-          const Eigen::Vector3d probe((center.x() + dx + 0.5) * resolution,
-                                      (center.y() + dy + 0.5) * resolution,
-                                      voxel_center_z);
-          if (grid_map_->getOccupancy(probe) > 0)
-            return true;
-        }
-    }
+    for (int dx = -horizontal_steps; dx <= horizontal_steps; ++dx)
+      for (int dy = -horizontal_steps; dy <= horizontal_steps; ++dy) {
+        const auto top = upper_crossing_tops_.find({center.x() + dx, center.y() + dy});
+        if (top != upper_crossing_tops_.end() &&
+            position.z() + 1.0e-6 < top->second + upper_obstacle_clearance_)
+          return true;
+      }
     return false;
+  }
+
+  void PolyTrajOptimizer::prepareUpperRoute(const Eigen::Vector3d &start,
+                                           const Eigen::Vector3d &goal)
+  {
+    upper_crossing_tops_.clear();
+    // 同一目标的滚动规划保留绕行前高度，不能升到障碍上方后就忘记越障要求。
+    const double reference = std::min(start.z(), goal.z());
+    if (!upper_route_goal_.allFinite() || (goal - upper_route_goal_).norm() > 1e-3)
+      upper_route_reference_z_ = reference;
+    else
+      upper_route_reference_z_ = std::min(upper_route_reference_z_, reference);
+    upper_route_goal_ = goal;
+  }
+
+  void PolyTrajOptimizer::selectUpperRoute(const std::vector<Eigen::Vector3d> &path)
+  {
+    if (upper_obstacle_clearance_ <= 0.0 || dynamic_candidate_active_ || path.size() < 2)
+      return;
+    if (!std::isfinite(upper_route_reference_z_)) prepareUpperRoute(path.front(), path.back());
+    const double resolution = grid_map_->getResolution();
+    const int horizontal_steps = std::max(0, int(std::ceil(
+        (obstacle_inflation_ - 1.0e-5) / resolution)));
+    // 判断原行进层被哪个障碍挡住，而非给所有位置施加离地高度限制。
+    // 这里是本次路线的相对高度，没有0.40m等绝对障碍高度门槛。
+    const int bottom = int(std::floor(upper_route_reference_z_ / resolution)) - horizontal_steps;
+    for (size_t i = 1; i < path.size(); ++i) {
+      const int count = std::max(1, int(std::ceil(
+          (path[i] - path[i-1]).norm() / (0.5 * resolution))));
+      for (int j = 0; j <= count; ++j) {
+        if (checkPlanningTimeout("upper crossing selection")) return;
+        const Eigen::Vector3d point = path[i-1] + (path[i] - path[i-1]) * (double(j) / count);
+        const Eigen::Vector3i center = (point / resolution).array().floor().cast<int>();
+        for (int dx = -horizontal_steps; dx <= horizontal_steps; ++dx)
+          for (int dy = -horizontal_steps; dy <= horizontal_steps; ++dy) {
+            const std::pair<int, int> column(center.x() + dx, center.y() + dy);
+            for (int z = center.z() - 1; z >= bottom; --z) {
+              const Eigen::Vector3d probe((column.first + 0.5) * resolution,
+                                          (column.second + 0.5) * resolution,
+                                          (z + 0.5) * resolution);
+              if (grid_map_->getOccupancy(probe) <= 0) continue;
+              const double top = (z + 1) * resolution;
+              if (top + horizontal_steps * resolution <= upper_route_reference_z_ + 1.0e-6)
+                break;
+              auto found = upper_crossing_tops_.find(column);
+              if (found == upper_crossing_tops_.end()) upper_crossing_tops_[column] = top;
+              else found->second = std::max(found->second, top);
+              break;
+            }
+          }
+      }
+    }
   }
 
   bool PolyTrajOptimizer::trajectoryCollisionFree(
@@ -2353,6 +2432,13 @@ namespace diff_planner
     const auto samples = sampleCollisionTrajectory(trajectory, 0.0,
         trajectory.getTotalDuration(), 0.5 * grid_map_->getResolution());
     if (samples.empty()) return false;
+    // 用最终曲线补查跨越范围，不能仅以引导点/终点足够高作为验收依据。
+    if (max_initial_occupied_prefix <= 0.0) {
+      std::vector<Eigen::Vector3d> path;
+      path.reserve(samples.size());
+      for (const auto &sample : samples) path.push_back(sample.second);
+      selectUpperRoute(path);
+    }
     bool reached_free_space = false;
     double prefix_distance = 0.0;
     Eigen::Vector3d previous_position = samples.front().second;

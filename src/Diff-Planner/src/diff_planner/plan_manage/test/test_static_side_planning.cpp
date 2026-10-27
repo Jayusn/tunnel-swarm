@@ -762,7 +762,7 @@ protected:
               std::abs(p.y()) < 0.8 && p.z() >= bottom && p.z() < top;
           const bool inflated = std::abs(p.x()) < 0.35 &&
               std::abs(p.y()) < 0.9 && p.z() >= bottom - 0.1 && p.z() < top + 0.1;
-          // 地面点单独保留，验证取消高度筛选后也参与净空检查。
+          // 保留地面，验证普通低飞不再被统一的20cm检查拦截。
           map->md_.occupancy_buffer_[map->globalIdx2BufIdx(cell)] =
               raw || z == 0 ? 2.0 : -2.0;
           map->md_.occupancy_buffer_inflate_[map->globalIdx2InfBufIdx(cell)] =
@@ -778,44 +778,50 @@ protected:
     auto side = optimizer.vertical_obstacle_side_lock_.config();
     side.enabled = false;
     optimizer.vertical_obstacle_side_lock_.setConfig(side);
+    optimizer.prepareUpperRoute(start, end);
+  }
+
+  void selectUpper(PolyTrajOptimizer &optimizer, double height = 1.05)
+  {
+    optimizer.selectUpperRoute({start, Vector3d(-0.4, 0, height),
+        Vector3d(0.4, 0, height), end});
   }
 };
 
-TEST_F(UpperClearancePlanning, UsesRawVoxelTopAndRequiresMoreThanTwentyCentimeters)
+TEST_F(UpperClearancePlanning, ClearanceAppliesOnlyAfterSelectingAnUpperCrossing)
 {
   PolyTrajOptimizer optimizer;
   configureUpper(optimizer, false);
-  EXPECT_EQ(map->getInflateOccupancy(Vector3d(0.025, 0.025, 0.99)), 0);
+  EXPECT_FALSE(optimizer.staticPositionOccupied(Vector3d(0.025, 0.025, 0.99)));
+  selectUpper(optimizer);
   EXPECT_TRUE(optimizer.staticPositionOccupied(Vector3d(0.025, 0.025, 0.99)));
-  EXPECT_TRUE(optimizer.staticPositionOccupied(Vector3d(0.025, 0.025, 1.0)));
+  EXPECT_FALSE(optimizer.staticPositionOccupied(Vector3d(0.025, 0.025, 1.0)));
   EXPECT_FALSE(optimizer.staticPositionOccupied(Vector3d(0.025, 0.025, 1.01)));
-  // XY仍覆盖原有两格膨胀；侧面不额外增加距离。
   EXPECT_TRUE(optimizer.staticPositionOccupied(Vector3d(0.325, 0.025, 0.99)));
-  EXPECT_FALSE(optimizer.staticPositionOccupied(Vector3d(0.375, 0.025, 0.6)));
-  // 通用入口默认关闭时，保持原有膨胀地图判定。
+  EXPECT_FALSE(optimizer.staticPositionOccupied(Vector3d(-0.5, 0.025, 0.6)));
+  EXPECT_FALSE(optimizer.staticPositionOccupied(Vector3d(0.5, 0.025, 0.6)));
   optimizer.upper_obstacle_clearance_ = 0.0;
   EXPECT_FALSE(optimizer.staticPositionOccupied(Vector3d(0.025, 0.025, 0.99)));
 }
 
-TEST_F(UpperClearancePlanning, LowObstaclesAndGroundHaveNoHeightExemption)
+TEST_F(UpperClearancePlanning, LowObstacleStillRequiresClearanceButOrdinaryGroundDoesNot)
 {
   fillObstacle(0.0, 0.25);
   for (bool fapp : {false, true})
   {
     PolyTrajOptimizer optimizer;
     configureUpper(optimizer, fapp);
-    // 顶面低于旧0.40m门槛的障碍，同样拒绝19cm和恰好20cm。
+    optimizer.prepareUpperRoute(Vector3d(-0.9, 0, 0.20), Vector3d(0.9, 0, 0.20));
+    optimizer.selectUpperRoute({Vector3d(-0.9, 0, 0.20), Vector3d(-0.4, 0, 0.5),
+        Vector3d(0.4, 0, 0.5), Vector3d(0.9, 0, 0.20)});
     EXPECT_TRUE(optimizer.staticPositionOccupied(Vector3d(0.025, 0.025, 0.44)));
-    EXPECT_TRUE(optimizer.staticPositionOccupied(Vector3d(0.025, 0.025, 0.45)));
-    EXPECT_FALSE(optimizer.staticPositionOccupied(Vector3d(0.025, 0.025, 0.46)));
-    // 此处只有顶面为0.05m的地面占据层。
-    EXPECT_TRUE(optimizer.staticPositionOccupied(Vector3d(-0.9, 0.025, 0.25)));
-    EXPECT_FALSE(optimizer.staticPositionOccupied(Vector3d(-0.9, 0.025, 0.26)));
+    EXPECT_FALSE(optimizer.staticPositionOccupied(Vector3d(0.025, 0.025, 0.45)));
+    EXPECT_FALSE(optimizer.staticPositionOccupied(Vector3d(-0.9, 0.025, 0.20)));
     const double now = ros::Time::now().toSec();
     EXPECT_FALSE(optimizer.trajectoryCollisionFree(
-        recoveryLine(Vector3d(-0.9, 0, 0.45), Vector3d(0.9, 0, 0.45)), now, now));
+        recoveryLine(Vector3d(-0.9, 0, 0.44), Vector3d(0.9, 0, 0.44)), now, now));
     EXPECT_TRUE(optimizer.trajectoryCollisionFree(
-        recoveryLine(Vector3d(-0.9, 0, 0.46), Vector3d(0.9, 0, 0.46)), now, now));
+        recoveryLine(Vector3d(-0.9, 0, 0.45), Vector3d(0.9, 0, 0.45)), now, now));
   }
 }
 
@@ -837,7 +843,7 @@ TEST_F(UpperClearancePlanning, FappEnabledAndDisabledBothSearchAboveRequiredHeig
         if (std::abs(p.x()) < 0.35)
         {
           crossed = true;
-          EXPECT_GT(p.z(), 1.0);
+          EXPECT_GE(p.z() + 1e-6, 1.0);
         }
       }
     EXPECT_TRUE(crossed);
@@ -850,23 +856,24 @@ TEST_F(UpperClearancePlanning, FinalTrajectoryRejectsInsufficientClearanceEvenWi
   PolyTrajOptimizer optimizer;
   configureUpper(optimizer, true);
   optimizer.fapp_planner_priority_ = true;
+  selectUpper(optimizer);
   const double now = ros::Time::now().toSec();
   EXPECT_FALSE(optimizer.trajectoryCollisionFree(
       recoveryLine(Vector3d(-0.9, 0, 0.99), Vector3d(0.9, 0, 0.99)), now, now));
-  EXPECT_FALSE(optimizer.trajectoryCollisionFree(
+  EXPECT_TRUE(optimizer.trajectoryCollisionFree(
       recoveryLine(Vector3d(-0.9, 0, 1.0), Vector3d(0.9, 0, 1.0)), now, now));
   EXPECT_TRUE(optimizer.trajectoryCollisionFree(
       recoveryLine(Vector3d(-0.9, 0, 1.01), Vector3d(0.9, 0, 1.01)), now, now));
 }
 
-TEST_F(UpperClearancePlanning, UnderpassRemainsAvailableWithRequiredGroundClearance)
+TEST_F(UpperClearancePlanning, UnderpassAndOrdinaryLowFlightDoNotAcquireUpperClearance)
 {
   fillObstacle(0.5);
   PolyTrajOptimizer optimizer;
   configureUpper(optimizer, false);
   const double now = ros::Time::now().toSec();
-  EXPECT_TRUE(optimizer.staticPositionOccupied(Vector3d(0.025, 0.025, 0.15)));
-  EXPECT_FALSE(optimizer.trajectoryCollisionFree(
+  EXPECT_FALSE(optimizer.staticPositionOccupied(Vector3d(0.025, 0.025, 0.15)));
+  EXPECT_TRUE(optimizer.trajectoryCollisionFree(
       recoveryLine(Vector3d(-0.9, 0, 0.15), Vector3d(0.9, 0, 0.15)), now, now));
   EXPECT_TRUE(optimizer.trajectoryCollisionFree(
       recoveryLine(Vector3d(-0.9, 0, 0.30), Vector3d(0.9, 0, 0.30)), now, now));
@@ -882,7 +889,7 @@ TEST_F(UpperClearancePlanning, InsufficientHeadroomCannotProduceAnUpperPath)
   EXPECT_TRUE(path.empty());
 }
 
-TEST_F(UpperClearancePlanning, OptimizedUpperTrajectoryKeepsMoreThanTwentyCentimeters)
+TEST_F(UpperClearancePlanning, OptimizedUpperTrajectoryKeepsAtLeastTwentyCentimeters)
 {
   PolyTrajOptimizer optimizer;
   configureUpper(optimizer, true);
@@ -913,10 +920,42 @@ TEST_F(UpperClearancePlanning, OptimizedUpperTrajectoryKeepsMoreThanTwentyCentim
     const Vector3d p = trajectory.getPos(trajectory.getTotalDuration() * i / 2000.0);
     if (std::abs(p.x()) < 0.35)
     {
-      EXPECT_GT(p.z(), 1.0);
+      EXPECT_GE(p.z() + 1e-6, 1.0);
     }
   }
   optimizer.endPlanningCycle();
+}
+
+TEST_F(UpperClearancePlanning, HighEndpointsCannotHideADipOverTheObstacle)
+{
+  PolyTrajOptimizer optimizer;
+  configureUpper(optimizer, true);
+  selectUpper(optimizer);
+  Eigen::Matrix3d head, tail;
+  head << Vector3d(-0.9, 0, 1.15), Vector3d::Zero(), Vector3d::Zero();
+  tail << Vector3d(0.9, 0, 1.15), Vector3d::Zero(), Vector3d::Zero();
+  Eigen::MatrixXd inner(3, 1);
+  inner.col(0) = Vector3d(0, 0, 0.95);
+  poly_traj::MinJerkOpt curve;
+  curve.reset(head, tail, 2);
+  curve.generate(inner, Eigen::VectorXd::Constant(2, 3.0));
+  const double now = ros::Time::now().toSec();
+  EXPECT_FALSE(optimizer.trajectoryCollisionFree(curve.getTraj(), now, now));
+}
+
+TEST_F(UpperClearancePlanning, RollingRouteRetainsCrossingReferenceAndNewGoalClearsIt)
+{
+  PolyTrajOptimizer optimizer;
+  configureUpper(optimizer, false);
+  selectUpper(optimizer);
+  optimizer.prepareUpperRoute(Vector3d(-0.4, 0, 1.05), end);
+  optimizer.selectUpperRoute({Vector3d(-0.4, 0, 1.05), Vector3d(0.4, 0, 1.05), end});
+  EXPECT_TRUE(optimizer.staticPositionOccupied(Vector3d(0, 0, 0.99)));
+  optimizer.prepareUpperRoute(Vector3d(-0.9, -0.6, 0.20), Vector3d(-0.5, -0.6, 0.20));
+  EXPECT_TRUE(optimizer.upper_crossing_tops_.empty());
+  const double now = ros::Time::now().toSec();
+  EXPECT_TRUE(optimizer.trajectoryCollisionFree(
+      recoveryLine(Vector3d(-0.9, -0.6, 0.20), Vector3d(-0.5, -0.6, 0.20)), now, now));
 }
 
 class UnderpassEndpointPlanning : public StaticSidePlanning

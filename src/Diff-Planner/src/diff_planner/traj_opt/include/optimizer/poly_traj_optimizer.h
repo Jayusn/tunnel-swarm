@@ -4,6 +4,7 @@
 #include <Eigen/Eigen>
 #include <array>
 #include <map>
+#include <limits>
 #include <optimizer/dynamic_obstacle.h>
 #include <optimizer/trajectory_sampling.h>
 #include <optimizer/suspended_obstacle_underpass.h>
@@ -114,6 +115,11 @@ namespace diff_planner
     double obs_clearance_, obs_clearance_soft_, swarm_clearance_; // safe distance
     double upper_obstacle_clearance_{0.0};
     double obstacle_inflation_{0.0};
+    // 本次完整通路选中的上绕障碍；XY是原始体素列，值为越障顶面高度。
+    std::map<std::pair<int, int>, double> upper_crossing_tops_;
+    double upper_route_reference_z_{std::numeric_limits<double>::quiet_NaN()};
+    Eigen::Vector3d upper_route_goal_{Eigen::Vector3d::Constant(
+        std::numeric_limits<double>::quiet_NaN())};
     double max_vel_, max_acc_, max_jer_, vel_tolerance_, acc_tolerance_; // dynamic limits
 
     // One difficult local plan must not block the single-threaded ROS callback queue.
@@ -183,6 +189,8 @@ namespace diff_planner
     bool searchRouteGuide(const Eigen::Vector3d& start, const Eigen::Vector3d& end,
                           std::vector<Eigen::Vector3d>& path);
     bool staticPositionOccupied(const Eigen::Vector3d &position) const;
+    void prepareUpperRoute(const Eigen::Vector3d &start, const Eigen::Vector3d &goal);
+    void selectUpperRoute(const std::vector<Eigen::Vector3d> &path);
     bool allowsDirectRoute(const Eigen::Vector3d &start, const Eigen::Vector3d &end) const {
       return vertical_obstacle_side_lock_.allowsDirectRoute(start, end);
     }
@@ -264,6 +272,9 @@ namespace diff_planner
     ASTAR_RET searchObstaclePath(const Eigen::Vector3d &start,
                                  const Eigen::Vector3d &end,
                                  std::vector<Eigen::Vector3d> &path);
+    ASTAR_RET searchObstaclePathImpl(const Eigen::Vector3d &start,
+                                     const Eigen::Vector3d &end,
+                                     std::vector<Eigen::Vector3d> &path);
     bool candidatePointInside(const Eigen::Vector3d &point) const;
 
     bool swarmGradCostP(const int i_dp,

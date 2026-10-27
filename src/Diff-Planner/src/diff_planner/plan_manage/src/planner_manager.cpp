@@ -917,6 +917,7 @@ namespace diff_planner
       Eigen::Vector3d& velocity, bool& final)
   {
     route_segment_guide_.clear();
+    ploy_traj_opt_->prepareUpperRoute(start, goal);
     std::vector<Eigen::Vector3d> path;
     if (!start.allFinite() || !goal.allFinite() ||
         grid_map_->getInflateOccupancy(start) != 0 ||
@@ -935,6 +936,11 @@ namespace diff_planner
         break;
       }
       path.push_back(point);
+    }
+    if (!path.empty()) {
+      ploy_traj_opt_->selectUpperRoute(path);
+      for (const auto &point : path)
+        if (ploy_traj_opt_->staticPositionOccupied(point)) { path.clear(); break; }
     }
     if (path.empty() &&
         (!ploy_traj_opt_->searchRouteGuide(start, goal, path) || path.empty())) return false;
