@@ -85,6 +85,35 @@ class TurnEscapeTest {
     });
   }
 public:
+  static void runSixCentimetreFootprint() {
+    ros::NodeHandle nh("~six_centimetre_footprint");
+    nh.setParam("manager/footprint_bottom_clearance", .06);
+    nh.setParam("mission/vertical_detour/upper_obstacle_clearance", .20);
+    nh.setParam("mission/task_search/exit/footprint_half_height", .15);
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    auto& planner = *manager.planner_manager_;
+    auto& map = *manager.sdf_map_;
+    auto& task = *manager.task_search_manager_;
+    task.setMap(manager.sdf_map_);
+    for (int x=0; x<map.mp_->map_voxel_num_.x(); ++x)
+      for (int y=0; y<map.mp_->map_voxel_num_.y(); ++y)
+        for (int z=0; z<map.mp_->map_voxel_num_.z(); ++z) {
+          const Eigen::Vector3i id(x,y,z); Vector3d p; map.indexToPos(id,p);
+          const bool occupied = p.z() > .45 && p.z() < .55;
+          map.md_->occupancy_buffer_[map.toAddress(id)] = occupied
+              ? map.mp_->clamp_max_log_ : map.mp_->clamp_min_log_;
+          map.md_->occupancy_buffer_inflate_[map.toAddress(id)] = occupied;
+        }
+    const Vector3d center(0.,0.,.65);
+    EXPECT_NEAR(task.turn_bottom_clearance_, .06, 1e-9);
+    EXPECT_TRUE(planner.isKnownFreePosition(center));
+    EXPECT_TRUE(task.mapExitFootprintFree(center, task.turn_bottom_clearance_));
+    EXPECT_FALSE(task.mapExitFootprintFree(center)); // 出口默认15cm包络仍独立。
+    EXPECT_FALSE(planner.isRawPositionSafe(Vector3d(0.,0.,.575)));
+    EXPECT_FALSE(task.mapExitFootprintFree(Vector3d(0.,0.,.575),task.turn_bottom_clearance_));
+  }
+
   static void runMeasuredUpperClearance(bool near_obstacle) {
     ros::NodeHandle nh("~measured_upper_clearance");
     nh.setParam("manager/use_geometric_path", true);
@@ -4966,6 +4995,10 @@ TEST(ManualLocalGoal, AutonomousExplorationIsUnaffected) {
 TEST(ManualLocalGoal, UnreachableBetterPocketRetainsOriginalWaypoint) {
   fast_planner::TurnEscapeTest::runManualLocalGoal(5);
 }
+TEST(FootprintSafety, SixCentimetresDoesNotInheritUpperOrExitClearance) {
+  fast_planner::TurnEscapeTest::runSixCentimetreFootprint();
+}
+
 int main(int argc,char** argv) {
   ros::init(argc,argv,"turn_escape_test");
   testing::InitGoogleTest(&argc, argv);
