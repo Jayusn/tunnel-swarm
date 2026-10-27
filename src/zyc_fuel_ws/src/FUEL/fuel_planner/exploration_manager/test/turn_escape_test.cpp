@@ -124,7 +124,8 @@ public:
           const bool cone = p.x() >= .775 && p.x() <= .925 &&
               std::fabs(std::fabs(p.y() - pos.y()) - .40) <= .075 && p.z() < (mode>=6 ? .70 : .65);
           const bool box = p.x() >= .875 && p.x() <= 1.125 &&
-              std::fabs(p.y() - pos.y()) <= .20 && p.z() < .30;
+              std::fabs(p.y() - pos.y()) <= .20 &&
+              p.z() < (mode>=6 ? .70 : (mode==1 || mode==2) ? .65 : .30);
           const bool roof = mode == 1 && p.z() >= .725;
           const bool unknown = mode == 2 && p.z() >= .725;
           const bool high_barrier = (mode == 4 || mode == 5) && p.x() >= .775 && p.x() <= .925 &&
@@ -156,11 +157,12 @@ public:
       ASSERT_TRUE(manager.buildCenterGatePassage(pos, 0, forward, next, next_yaw, gate));
       ASSERT_TRUE(gate);
       EXPECT_DOUBLE_EQ(pos.z(), next.z());
-      manager.recovery_side_latched_ = true;
+      EXPECT_FALSE(manager.buildForwardUpperDetour(pos, 0, forward, next, next_yaw));
+      EXPECT_FALSE(manager.buildVerticalDetourFallback(pos, 0, forward, next, next_yaw,
+                                                      false, false));
       ASSERT_TRUE(manager.buildMissionForwardFallback(pos, 0, next, next_yaw));
-      EXPECT_GE(next.z(), top + .20 - 1e-6);
+      EXPECT_DOUBLE_EQ(pos.z(), next.z());
       EXPECT_GT(next.x(), pos.x());
-      EXPECT_FALSE(manager.recovery_side_latched_);
       EXPECT_TRUE(manager.planner_manager_->isPathSafe({pos,next}));
     } else if (mode == 4 || mode==6 || mode==8 || mode==9) {
       if (mode==4) ASSERT_GT(top + .20 - pos.z(), manager.vertical_detour_upper_max_rise_);
@@ -197,6 +199,7 @@ public:
   static void runLowObstacleUpperDetour(bool blocked_above) {
     ros::NodeHandle nh("~low_obstacle_upper");
     nh.setParam("manager/use_geometric_path", true);
+    nh.setParam("manager/footprint_bottom_clearance", .20);
     nh.setParam("mission/task_search/min_height", .10);
     nh.setParam("astar/min_search_height", .10);
     nh.setParam("astar/max_search_height", 1.50);
@@ -255,6 +258,71 @@ public:
       EXPECT_GE(next.z() - top, manager.vertical_detour_upper_obstacle_clearance_ - 1e-6);
       EXPECT_TRUE(manager.planner_manager_->isPathSafe({pos,next}));
     }
+  }
+  static void runUpperProgress(int mode) {
+    ros::NodeHandle nh("~upper_progress");
+    nh.setParam("manager/use_geometric_path",true);
+    nh.setParam("manager/footprint_bottom_clearance",.20);
+    nh.setParam("astar/resolution_astar",.05);
+    nh.setParam("astar/allocate_num",100000);
+    nh.setParam("astar/lambda_heu",1.0);
+    nh.setParam("astar/max_search_time",1.0);
+    FastExplorationManager manager;
+    initialize(nh,manager);
+    auto& map=*manager.sdf_map_;
+    auto& task=*manager.task_search_manager_;
+    Vector3d pos(-.975,.025,mode==2 ? .85 : .60), forward(1,0,0);
+    task.enabled_=true;
+    task.cruise_height_=.60;
+    task.min_search_height_=.10;
+    task.max_search_height_=1.50;
+    task.global_no_return_=false;
+    task.setMap(manager.sdf_map_);
+    task.setCorridorFrame(pos-forward,forward);
+    task.updateRobotPose(pos,0);
+    for (int x=0;x<map.mp_->map_voxel_num_.x();++x)
+      for (int y=0;y<map.mp_->map_voxel_num_.y();++y)
+        for (int z=0;z<map.mp_->map_voxel_num_.z();++z) {
+          const Eigen::Vector3i index(x,y,z); Vector3d p; map.indexToPos(index,p);
+          const bool blocker=mode!=0 && p.x()>=-.225 && p.x()<=-.075 &&
+              std::fabs(p.y()-pos.y())<=.25 && p.z()<.70;
+          const bool side_high=p.x()>=-.225 && p.x()<=-.075 &&
+              std::fabs(p.y()-pos.y()-.55)<=.075 && p.z()<1.35;
+          const int address=map.toAddress(index);
+          map.md_->occupancy_buffer_[address]=(blocker || side_high)
+              ? map.mp_->clamp_max_log_ : map.mp_->clamp_min_log_;
+          map.md_->occupancy_buffer_inflate_[address]=blocker || side_high;
+        }
+    Vector3d next; double yaw=0;
+    if (mode==0) {
+      ASSERT_FALSE(manager.hasForwardBodyObstacle(pos,forward));
+      EXPECT_FALSE(manager.buildForwardUpperDetour(pos,0,forward,next,yaw));
+      EXPECT_FALSE(manager.buildVerticalDetourFallback(pos,0,forward,next,yaw,false,false));
+      return;
+    }
+    ASSERT_TRUE(manager.hasForwardBodyObstacle(pos,forward));
+    ASSERT_TRUE(manager.buildForwardUpperDetour(pos,0,forward,next,yaw));
+    EXPECT_NEAR(.90,next.z(),1e-6);
+    if (mode==2) {
+      EXPECT_LT(next.z()-pos.z(),.20); // 只差5cm净空不能再被强加20cm上升。
+      return;
+    }
+    manager.pending_reference_height_=next.z();
+    manager.recordPublishedTrajectoryHeight();
+    EXPECT_DOUBLE_EQ(.60,manager.horizontalGoalHeight(next.z()));
+    // 到达上绕段末端，前方高层通了，但斜下降仍会碰到原障碍：保持高度往前走。
+    pos=next; manager.upper_detour_plan_=false;
+    ASSERT_FALSE(manager.hasForwardBodyObstacle(pos,forward));
+    ASSERT_TRUE(manager.buildForwardUpperDetour(pos,0,forward,next,yaw));
+    EXPECT_NEAR(.90,next.z(),1e-6);
+    EXPECT_NEAR(.90,next.x()-pos.x(),1e-6);
+    EXPECT_TRUE(manager.planner_manager_->isPathSafe({pos,next}));
+    // 通过障碍后，边向前走边回到0.6m，不停在原地继续升高。
+    pos=next; manager.upper_detour_plan_=false;
+    ASSERT_TRUE(manager.buildForwardUpperDetour(pos,0,forward,next,yaw));
+    EXPECT_NEAR(.60,next.z(),1e-6);
+    EXPECT_NEAR(.90,next.x()-pos.x(),1e-6);
+    EXPECT_TRUE(manager.planner_manager_->isPathSafe({pos,next}));
   }
   static void runRecordedLowCrossing(const char* fixture, bool manual_mission = false) {
     ros::NodeHandle nh("/exploration_node");
@@ -4865,7 +4933,7 @@ TEST(UpperTurn, LowRightObstacleConfirmsTurnThenTriggersAscent) { fast_planner::
 TEST(UpperDetour, ObstacleBelowFortyCentimetresCanTriggerAscent) {
   fast_planner::TurnEscapeTest::runLowObstacleUpperDetour(false);
 }
-TEST(UpperDetour, CombinationObstaclePrefersEarlyAscentOverFeasibleCenterGap) {
+TEST(UpperDetour, FeasibleCenterGapDoesNotTriggerUnnecessaryAscent) {
   fast_planner::TurnEscapeTest::runEarlyUpperCombination(0);
 }
 TEST(UpperDetour, EarlyAscentRejectsBlockedRoof) {
@@ -4897,6 +4965,15 @@ TEST(UpperDetour, SeparateCeilingDoesNotReplaceLocalObstacleTop) {
 }
 TEST(UpperDetour, LowObstacleDoesNotAuthorizeBlockedUpperSpace) {
   fast_planner::TurnEscapeTest::runLowObstacleUpperDetour(true);
+}
+TEST(UpperDetour, SideHighObjectCannotTriggerAscentWhenForwardIsClear) {
+  fast_planner::TurnEscapeTest::runUpperProgress(0);
+}
+TEST(UpperDetour, ClimbThenAdvanceOverObstacleThenReturnToCruise) {
+  fast_planner::TurnEscapeTest::runUpperProgress(1);
+}
+TEST(UpperDetour, NearlyClearedTopDoesNotForceAnotherTwentyCentimetres) {
+  fast_planner::TurnEscapeTest::runUpperProgress(2);
 }
 TEST(UpperTurn, UnknownAboveDoesNotAuthorizeTurn) { fast_planner::TurnEscapeTest::runUpperTurn(1); }
 TEST(UpperTurn, RoofBlocksElevatedPassage) { fast_planner::TurnEscapeTest::runUpperTurn(2); }

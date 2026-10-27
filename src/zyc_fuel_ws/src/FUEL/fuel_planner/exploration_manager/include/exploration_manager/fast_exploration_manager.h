@@ -338,7 +338,7 @@ private:
   bool ground_ascent_optional_{false};
   bool ground_ascent_plan_{false};
   bool vertical_detour_plan_{false};
-  bool upper_detour_plan_{false};  // 本轮已验证的直接上升线段，不交给普通A*改道。
+  bool upper_detour_plan_{false};  // 本轮已验证的上绕/越障后前进线段，不交给普通A*改道。
   double ground_ascent_cruise_height_{0.60};
   double ground_ascent_lower_probe_depth_{0.20};
   int ground_ascent_min_lower_obstacles_{2};
@@ -486,6 +486,7 @@ private:
                                    bool allow_descend = true);
   bool buildForwardUpperDetour(const Vector3d& pos, double cur_yaw,
                                const Vector3d& forward, Vector3d& next_pos, double& next_yaw);
+  bool hasForwardBodyObstacle(const Vector3d& pos, const Vector3d& forward) const;
   bool buildPostTurnUpperRecovery(const Vector3d& pos, double cur_yaw,
                                    Vector3d& next_pos, double& next_yaw);
   bool buildStationaryVerticalDetourPlan(const Vector3d& pos,
