@@ -2,8 +2,8 @@
   <!-- 通道内规划高度上限；出口、门外搜索及降落沿用各自原配置。 -->
   <arg name="corridor_max_height" default="1.50"/>
   <param name="/exploration_node/mission/task_search/corridor_max_height" value="$(arg corridor_max_height)" type="double"/>
-    <!-- 定位中心下方只检查6cm机体包络；下降动作量与此独立。 -->
-    <arg name="footprint_bottom_clearance" default="0.06"/>
+    <!-- 定位中心下方的机体净空：障碍顶部0.60m时中心至少0.80m。 -->
+    <arg name="footprint_bottom_clearance" default="0.20"/>
     <!-- 到出口后、搜索降落码前沿出口方向前进的距离，单位m。 -->
     <arg name="front_approach_distance" default="0.2"/>
     <!-- 与单机航点入口共用已验证的检测、历史包络及连续穿越策略。 -->
@@ -335,8 +335,6 @@
     <!-- 狭窄通道按悬挂障碍底部到雷达至少0.10m净空下穿，另留0.06m高度跟踪余量。 -->
     <rosparam param="/exploration_node/mission/vertical_detour/underpass/clearance">0.10</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/underpass/height_tracking_margin">0.06</rosparam>
-    <!-- 下降先试10cm动作；该层不通则继续检查更低候选，不是最低高度或总下降上限。 -->
-    <rosparam param="/exploration_node/mission/vertical_detour/underpass/descent_step">0.10</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/underpass/lookahead">2.00</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/forward_check_distance">0.20</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/upper_step">0.20</rosparam>
