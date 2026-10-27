@@ -258,6 +258,8 @@ private:
   bool width_route_plan_{false};
   route_width::SplitRoute pending_split_route_, planned_split_route_;
   route_width::SplitRoute active_split_lane_;
+  // 选侧对应的静态障碍范围，不能把旧障碍的侧向移交给下一处障碍。
+  route_width::SplitRoute recovery_side_obstacle_;
   bool split_route_committed_{false};
   bool incremental_escape_plan_{false};
   bool escape_step_plan_{false};
@@ -442,6 +444,8 @@ private:
   };
   SplitEvidence findWideSideSplit(const Vector3d& pos, const Vector3d& forward,
                                   bool entry_exempt = false) const;
+  bool sameRecoveryObstacle(const Vector3d& pos, const Vector3d& forward,
+                            const SplitEvidence& split) const;
   route_width::SplitRoute makeSplitLane(const Vector3d& pos, const Vector3d& forward,
                                         const SplitEvidence& split, int side) const;
   bool selectEntryForwardGoal(const Vector3d& pos, const Vector3d& forward,

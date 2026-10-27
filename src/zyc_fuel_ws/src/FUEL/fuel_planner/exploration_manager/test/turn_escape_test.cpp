@@ -1250,7 +1250,9 @@ public:
     EXPECT_GT(vmax, .40);
     EXPECT_LE(vmax, 1.001);
     EXPECT_LE(amax, 1.001);
-    EXPECT_FALSE(manager.keepsDynamicSide({start, start - .3*manager.recovery_side_dir_}));
+    // 远离球的短段可换侧；真正穿过球的路径仍须拒绝。
+    EXPECT_TRUE(manager.keepsDynamicSide({start, start - .3*manager.recovery_side_dir_}));
+    EXPECT_FALSE(manager.keepsDynamicSide({start, Vector3d(.2, 0, 1)}));
     manager.recordPublishedTrajectoryHeight();
     EXPECT_TRUE(manager.fapp_rush_active_);
     const Vector3d end = manager.ed_->next_goal_;
@@ -3160,7 +3162,7 @@ public:
 
   static void runWiderSideRecovery(double wide_side, bool fallback_only,
                                    bool remember_side = true, bool entry = false,
-                                   bool expired_descent = false) {
+                                   bool expired_descent = false, int previous_obstacle = 0) {
     ros::NodeHandle nh("~");
     nh.setParam("manager/use_geometric_path", true);
     nh.setParam("astar/resolution_astar", 0.05);
@@ -3234,6 +3236,54 @@ public:
     check(split.valid && (wide_side > 0 ? split.left_width > split.right_width
                                        : split.right_width > split.left_width),
           "fixture did not provide a wider lane opposite the old detour");
+    if (remember_side)
+      manager.recovery_side_obstacle_ = manager.makeSplitLane(
+          start, Vector3d::UnitX(), split, wide_side > 0 ? -1 : 1);
+    if (previous_obstacle == 1) {
+      // 前一个静态障碍尚在保持侧向的尾部余量内，但当前挡路的是另一个柱子。
+      manager.recovery_side_obstacle_.origin.x() -= 0.65;
+      manager.wide_side_bypass_active_ = true;
+      manager.wide_side_bypass_forward_ = Vector3d::UnitX();
+      manager.wide_side_bypass_release_distance_ = 2.0;
+      ASSERT_FALSE(manager.sameRecoveryObstacle(start, Vector3d::UnitX(), split));
+    } else if (previous_obstacle >= 2) {
+      manager.recovery_side_obstacle_ = {};
+      manager.manual_fapp_active_ = true;
+      manager.manual_fapp_forward_ = Vector3d::UnitX();
+      manager.manual_fapp_exit_progress_ = 0.30;
+      manager.manual_fapp_hold_height_ = start.z();
+      planner.fapp_config_.enabled = planner.fapp_memory_enabled_ = true;
+      planner.fapp_planner_priority_ = true;
+      planner.fapp_watched_valid_ = true;
+      auto& ball = planner.fapp_watched_state_;
+      ball.position = previous_obstacle == 2 ? Vector3d(-.2, 0, 1.6) :
+          (previous_obstacle >= 4 ? Vector3d(.55, 0, start.z())
+                                  : Vector3d(.1, wide_side*.5, start.z()));
+      ball.size = Vector3d::Constant(.10);
+      ball.stamp = ros::Time::now().toSec();
+      planner.fapp_watched_lower_ = ball.position - Vector3d(.412, .412, .275);
+      planner.fapp_watched_upper_ = ball.position + Vector3d(.412, .412, .275);
+      planner.fapp_states_ = {ball};
+      ASSERT_FALSE(manager.sameRecoveryObstacle(start, Vector3d::UnitX(), split));
+    }
+    if (previous_obstacle >= 4) {
+      if (previous_obstacle == 4) {
+        manager.recovery_side_obstacle_ = manager.makeSplitLane(
+            start, Vector3d::UnitX(), split, wide_side > 0 ? -1 : 1);
+        manager.recovery_side_obstacle_.origin.x() -= .65;
+      }
+      manager.fapp_exploration_crossing_enabled_ = true;
+      Vector3d target; double target_yaw; bool detected = false;
+      vector<Vector3d> route;
+      ASSERT_TRUE(manager.buildFappSideBypass(start, 0, Vector3d::UnitX(),
+          target, target_yaw, detected, &route));
+      EXPECT_TRUE(detected);
+      EXPECT_GT((target.y()-start.y())*wide_side, .4);
+      EXPECT_TRUE(planner.isPathSafe(route));
+      EXPECT_TRUE(planner.isFappPathSafe(route));
+      EXPECT_EQ(manager.recovery_side_obstacle_.side, 0);
+      return;
+    }
     check(manager.isLowProbeCorridorSafe(start, manager.recovery_side_dir_, 0.20),
           "old narrow-side short step must be feasible to reproduce the priority bug");
     if (entry) {
@@ -3271,11 +3321,36 @@ public:
               << " widths=" << split.left_width << "," << split.right_width
               << " next=" << next.transpose()
               << " remembered=" << manager.recovery_side_dir_.transpose() << std::endl;
-    const double expected_side = remember_side ? -wide_side : wide_side;
+    const double expected_side = previous_obstacle == 1 || previous_obstacle == 2
+        ? wide_side : (remember_side ? -wide_side : wide_side);
     check((next-start).y()*expected_side >= 0.10 &&
           std::fabs(next.z()-start.z()) < 0.05 &&
           manager.recovery_side_dir_.y()*expected_side > 0.9,
           "width comparison replaced a feasible remembered side or initial choice ignored width");
+    if (previous_obstacle) {
+      EXPECT_TRUE(planner.isPathSafe(manager.ed_->path_next_goal_.empty()
+          ? vector<Vector3d>{start, next} : manager.ed_->path_next_goal_));
+      if (previous_obstacle >= 2) {
+        EXPECT_TRUE(planner.isFappPathSafe(manager.ed_->path_next_goal_.empty()
+            ? vector<Vector3d>{start, next} : manager.ed_->path_next_goal_));
+      }
+      if (previous_obstacle == 2) {
+        // 旧动态会话结束，也不能清掉已为新静态障碍选好的另一侧。
+        manager.recordPublishedTrajectoryHeight();
+        manager.fapp_exploration_crossing_enabled_ = true;
+        const auto selected_obstacle = manager.recovery_side_obstacle_;
+        ASSERT_NE(selected_obstacle.side, 0);
+        const auto chosen_controls = planner.local_data_.position_traj_.getControlPoint();
+        EXPECT_FALSE(manager.planExplorationFappCrossing(
+            start, Vector3d::Zero(), Vector3d::Zero(), Vector3d::Zero()));
+        EXPECT_TRUE(chosen_controls.isApprox(planner.local_data_.position_traj_.getControlPoint()));
+        EXPECT_FALSE(manager.manualFappObservationMissing(
+            start + Vector3d(.5, 0, 0), 0.0, true));
+        EXPECT_FALSE(manager.manual_fapp_active_);
+        EXPECT_TRUE(manager.recovery_side_latched_);
+        EXPECT_EQ(manager.recovery_side_obstacle_.side, selected_obstacle.side);
+      }
+    }
     if (!fallback_only && !remember_side) checkPublishedCorridorExecution(manager);
   }
 
@@ -4192,6 +4267,37 @@ TEST(CruiseHeightRecovery, FullPlannerRaisesCommittedRightBypass) {
 
 TEST(SideRecovery, BlockedSameSideYieldsToExistingRecovery) {
   fast_planner::TurnEscapeTest::runSideRecovery(1.0, true);
+}
+
+TEST(SideRecoveryScope, PreviousStaticObstacleDoesNotChooseNextRightPassage) {
+  fast_planner::TurnEscapeTest::runWiderSideRecovery(-1.0, false, true, false, false, 1);
+}
+TEST(SideRecoveryScope, PreviousStaticObstacleDoesNotChooseNextLeftPassage) {
+  fast_planner::TurnEscapeTest::runWiderSideRecovery(1.0, false, true, false, false, 1);
+}
+TEST(SideRecoveryScope, PreviousDynamicObstacleDoesNotChooseNextRightPassage) {
+  fast_planner::TurnEscapeTest::runWiderSideRecovery(-1.0, false, true, false, false, 2);
+}
+TEST(SideRecoveryScope, PreviousDynamicObstacleDoesNotChooseNextLeftPassage) {
+  fast_planner::TurnEscapeTest::runWiderSideRecovery(1.0, false, true, false, false, 2);
+}
+TEST(SideRecoveryScope, WiderRightPassageStillRejectsActualDynamicCollision) {
+  fast_planner::TurnEscapeTest::runWiderSideRecovery(-1.0, true, true, false, false, 3);
+}
+TEST(SideRecoveryScope, WiderLeftPassageStillRejectsActualDynamicCollision) {
+  fast_planner::TurnEscapeTest::runWiderSideRecovery(1.0, true, true, false, false, 3);
+}
+TEST(SideRecoveryScope, PreviousStaticSideDoesNotChooseNextDynamicRightPassage) {
+  fast_planner::TurnEscapeTest::runWiderSideRecovery(-1.0, true, true, false, false, 4);
+}
+TEST(SideRecoveryScope, PreviousStaticSideDoesNotChooseNextDynamicLeftPassage) {
+  fast_planner::TurnEscapeTest::runWiderSideRecovery(1.0, true, true, false, false, 4);
+}
+TEST(SideRecoveryScope, PreviousDynamicSideDoesNotChooseNextDynamicRightPassage) {
+  fast_planner::TurnEscapeTest::runWiderSideRecovery(-1.0, true, true, false, false, 5);
+}
+TEST(SideRecoveryScope, PreviousDynamicSideDoesNotChooseNextDynamicLeftPassage) {
+  fast_planner::TurnEscapeTest::runWiderSideRecovery(1.0, true, true, false, false, 5);
 }
 
 TEST(SideRecovery, FeasibleOrdinaryLeftRouteSurvivesWiderRightLane) {
