@@ -141,6 +141,7 @@ private:
 
   /* helper functions */
   int callExplorationPlanner();
+  bool executingAscent();
   bool keepExecutingCorridorTrajectory() const;
   bool checkWiderExecutionRoute();
   bool resumeAfterWidthAttempt(const string& reason);

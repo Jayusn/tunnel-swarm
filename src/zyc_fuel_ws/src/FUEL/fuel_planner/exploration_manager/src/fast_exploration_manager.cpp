@@ -514,8 +514,7 @@ bool FastExplorationManager::tryCruiseHeightRecovery(
   const double rise = std::max(path.back().z() - pos.z(),
                              std::min(target_z - pos.z(), 0.5 * progress.back()));
   if (rise <= 0.02) return false;
-  vector<Vector3d> best_path;
-  double best_clearance = -std::numeric_limits<double>::infinity();
+  vector<std::pair<double, vector<Vector3d>>> candidates;
   for (double candidate_rise = rise;
        candidate_rise > 0.02 && candidate_rise >= path.back().z() - pos.z() - 1e-6;
        candidate_rise -= 0.10) {
@@ -541,39 +540,70 @@ bool FastExplorationManager::tryCruiseHeightRecovery(
       }
     }
     if (!known_free) continue;
-    const double clearance = sdf_map_->getDistance(candidate.back());
-    if (best_path.empty() || clearance > best_clearance + 1e-6) {
-      best_path = candidate;
-      best_clearance = clearance;
-    }
+    candidates.emplace_back(sdf_map_->getDistance(candidate.back()), std::move(candidate));
   }
-  if (best_path.empty()) return false;
-  path = best_path;
-  // 高度恢复是原路线的可选改进。优化或动态边界失败时恢复整条原轨迹，不能换边。
+  if (candidates.empty()) return false;
+  std::stable_sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) {
+    return a.first > b.first;
+  });
+  // 高净空候选的几何路径通过，不代表优化后的曲线一定通过。逐个验证候选，
+  // 不能首条优化失败就放弃其余斜升路线，继续在低位挤过障碍。
   const LocalTrajData original = planner_manager_->local_data_;
-  bool safe = planner_manager_->planExploreTraj(path, vel, acc, time_lb) &&
-              planner_manager_->isTrajectorySafe();
-  if (safe) {
-    auto& trajectory = planner_manager_->local_data_.position_traj_;
-    const double duration = planner_manager_->local_data_.duration_;
-    const int count = std::max(1, static_cast<int>(std::ceil(duration / 0.02)));
-    vector<Vector3d> swept;
-    swept.reserve(count + 1);
-    for (int j = 0; j <= count; ++j) {
-      const Vector3d point = trajectory.evaluateDeBoorT(duration * double(j) / count);
-      if (!planner_manager_->isKnownFreePosition(point) ||
-          point.z() < pos.z() - 0.02 || point.z() > target_z + 0.02) {
-        safe = false;
-        break;
-      }
-      swept.push_back(point);
+  bool safe = false;
+  double best_clearance = 0.0;
+  for (const auto& candidate : candidates) {
+    planner_manager_->local_data_ = original;
+    path = candidate.second;
+    const char* rejected_by = "trajectory generation";
+    safe = planner_manager_->planExploreTraj(path, vel, acc, time_lb);
+    if (safe) {
+      rejected_by = "static trajectory footprint";
+      safe = planner_manager_->isTrajectorySafe();
     }
-    safe = safe && pathInsideWorkspaceLock(swept) && planner_manager_->isFappPathSafe(swept) &&
-           task_search_manager_->isRecoveryPathAllowed(swept, false);
+    if (safe) {
+      auto& trajectory = planner_manager_->local_data_.position_traj_;
+      const double duration = planner_manager_->local_data_.duration_;
+      const int count = std::max(1, static_cast<int>(std::ceil(duration / 0.02)));
+      vector<Vector3d> swept;
+      swept.reserve(count + 1);
+      for (int j = 0; j <= count; ++j) {
+        const Vector3d point = trajectory.evaluateDeBoorT(duration * double(j) / count);
+        if (!planner_manager_->isKnownFreePosition(point)) {
+          rejected_by = "known-free swept footprint";
+          safe = false;
+          break;
+        }
+        if (point.z() < pos.z() - 0.02 || point.z() > target_z + 0.02) {
+          rejected_by = "height envelope";
+          safe = false;
+          break;
+        }
+        swept.push_back(point);
+      }
+      if (safe && !pathInsideWorkspaceLock(swept)) {
+        rejected_by = "workspace boundary";
+        safe = false;
+      }
+      if (safe && !planner_manager_->isFappPathSafe(swept)) {
+        rejected_by = "dynamic obstacle";
+        safe = false;
+      }
+      if (safe && !task_search_manager_->isRecoveryPathAllowed(swept, false)) {
+        rejected_by = "task path boundary";
+        safe = false;
+      }
+    }
+    if (safe) {
+      best_clearance = candidate.first;
+      break;
+    }
+    ROS_WARN("[cruise_recovery] candidate z=%.2fm rejected by %s; try next raised point.",
+             path.back().z(), rejected_by);
   }
   if (!safe) {
     planner_manager_->local_data_ = original;
-    ROS_WARN("[cruise_recovery] raised trajectory rejected; retain original horizontal trajectory.");
+    ROS_WARN("[cruise_recovery] all %zu raised candidates rejected; retain original horizontal trajectory.",
+             candidates.size());
     return false;
   }
   ed_->path_next_goal_ = path;
@@ -5801,9 +5831,11 @@ int FastExplorationManager::planExploreMotion(
 
   // 水平路线已生成并通过足迹检查后，再可选地恢复巡航高度；失败保留原路线。
   // 当前段的左右选择与人工、入口/出口、下穿等专用高度所有权不受影响。
-  if (!use_forced_entry_target && !use_stage3_target && !use_entry_forward_target &&
+  const bool cruise_recovery_selected =
+      !use_forced_entry_target && !use_stage3_target && !use_entry_forward_target &&
       !use_vertical_detour_target && !pending_short_backtrack_ &&
-      tryCruiseHeightRecovery(pos, vel, acc, time_lb))
+      tryCruiseHeightRecovery(pos, vel, acc, time_lb);
+  if (cruise_recovery_selected)
     next_pos = ed_->next_goal_;
 
   if (!use_forced_entry_target && !use_stage3_target && !stationary_vertical_path) {
@@ -5817,7 +5849,7 @@ int FastExplorationManager::planExploreMotion(
   bool look_forward_along_trajectory = !camera_head_sweep_active && !use_locked_exit_yaw;
   Eigen::Vector3d mapped_direction;
   const bool mapped_turn_detected =
-      mapped_turn_yaw_eligible && task_search_manager_ &&
+      !cruise_recovery_selected && mapped_turn_yaw_eligible && task_search_manager_ &&
       task_search_manager_->mappedCorridorDirection(yaw[0], mapped_direction);
   const bool corridor_yaw_correction =
       !mapped_turn_detected && corridor_yaw_lock_scope && task_search_manager_ &&
@@ -6061,6 +6093,9 @@ void FastExplorationManager::updateMissionOdometry(const Vector3d& pos, double y
   if (task_search_manager_ &&
       !(manual_path_enabled_ && (manual_exit_enabled_ || manual_path_exploration_style_)))
     task_search_manager_->updateRobotPose(pos, yaw);
+  if (task_search_manager_ && planner_manager_)
+    planner_manager_->setFappCorridorDirection(
+        task_search_manager_->recoveryForwardDirection(yaw));
 }
 
 bool FastExplorationManager::consumeRcSearchLandingStartRequest() {

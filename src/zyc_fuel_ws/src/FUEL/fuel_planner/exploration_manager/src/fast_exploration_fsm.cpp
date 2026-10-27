@@ -862,6 +862,8 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
         transitState(PLAN_TRAJ, "escape-step-complete");
         return;
       }
+      // 已发布的斜升先走完本段；安全回调仍可因真实碰撞/跟踪问题重规划。
+      if (executingAscent()) return;
       // 动态穿越的临时拒绝不能等入口等高段飞完才重试。保留普通路线，
       // 进门后单独尝试穿越；候选通过完整发布检查后再替换。
       if (checkFappExecutionRetry()) {
@@ -906,6 +908,14 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
       break;
     }
   }
+}
+
+bool FastExplorationFSM::executingAscent() {
+  if (!active_traj_valid_ || active_traj_braked_) return false;
+  const double elapsed = (ros::Time::now() - active_traj_.start_time_).toSec();
+  return active_traj_.duration_ - elapsed > 0.05 &&
+      active_traj_.position_traj_.evaluateDeBoorT(active_traj_.duration_).z() -
+          active_traj_.position_traj_.evaluateDeBoorT(0.0).z() > 0.02;
 }
 
 bool FastExplorationFSM::checkWiderExecutionRoute() {
@@ -1181,8 +1191,9 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
                               active_traj_braked_))
     return;
 
-  // 累计地图确认整机可通行的新通道后允许抢占当前段，不必先飞到旧终点。
-  const bool check_mapped_turn = !active_turn_in_place_ &&
+  // 新通道可提前发现，但已发布的升高段须先执行完，不能在原低位点抢转。
+  // 只看当前已发布轨迹及其终点，不要求达到固定巡航高度，也不增加速度门槛。
+  const bool check_mapped_turn = !active_turn_in_place_ && !executingAscent() &&
       (last_mapped_turn_check_.isZero() ||
        (ros::Time::now()-last_mapped_turn_check_).toSec() >= 0.20);
   if (check_mapped_turn) last_mapped_turn_check_ = ros::Time::now();

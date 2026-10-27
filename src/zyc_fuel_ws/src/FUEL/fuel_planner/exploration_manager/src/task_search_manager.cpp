@@ -1119,7 +1119,8 @@ int TaskSearchManager::selectSearchCandidate(
 // 允许一侧墙在拐角中断，但另一侧必须有连续地图轮廓，避免孤立障碍物误触发。
 bool TaskSearchManager::inferOccupancyTurnDirection(
     const Eigen::Vector3d& travel_direction, Eigen::Vector3d& turn_direction,
-    double& forward_free_length, double& turn_free_length) const {
+    double& forward_free_length, double& turn_free_length,
+    bool require_current_turn_site) const {
   forward_free_length = 0.0;
   turn_free_length = 0.0;
   if (!recovery_occupancy_turn_enabled_ || !sdf_map_ || visited_positions_.empty() ||
@@ -1323,6 +1324,7 @@ bool TaskSearchManager::inferOccupancyTurnDirection(
   double side_score[2] = {best_score, best_score};
   double side_width[2] = {0.0, 0.0};
   double best_width = 0.0;
+  route_width::Score best_passage;
   Eigen::Vector3d best_anchor = start;
   Eigen::Vector2d best_direction = travel;
   const double max_angle = recovery_turn_max_angle_deg_ * M_PI / 180.0;
@@ -1360,16 +1362,21 @@ bool TaskSearchManager::inferOccupancyTurnDirection(
         // 宽度为可容纳机体的中心移动范围；包络本身已在上面逐点验证。
         const double shape_bonus = 0.05 * u_shape_confidence *
                                    direction.dot(return_direction);
-        const double score = width.minimum + 0.25 * width.mean +
+        // 总宽度不能掩盖一侧几乎没有余量；将较窄一侧的净空纳入同一米制评分。
+        const double score = width.minimum + width.clearance + 0.25 * width.mean +
                              0.10 * free_length - 0.02 * std::fabs(angle) + shape_bonus;
         const int side = sign > 0.0 ? 1 : 0;
         if (score > side_score[side]) {
           side_score[side] = score;
           side_width[side] = width.minimum + 2.0 * exit_footprint_extra_radius_;
         }
-        if (score > best_score) {
+        // 同宽、同长度的入口也要比较单侧余量，避免并列时保留最早的贴边锚点。
+        if (score > best_score + 1e-6 ||
+            (std::fabs(score - best_score) <= 1e-6 &&
+             width.clearance > best_passage.clearance + 1e-6)) {
           best_score = score;
           best_width = width.minimum + 2.0 * exit_footprint_extra_radius_;
+          best_passage = width;
           best_anchor = anchor;
           best_direction = direction;
           turn_free_length = free_length;
@@ -1379,6 +1386,35 @@ bool TaskSearchManager::inferOccupancyTurnDirection(
   }
   if (!std::isfinite(best_score)) return false;
   turn_direction = Eigen::Vector3d(best_direction.x(), best_direction.y(), 0.0);
+  if (require_current_turn_site) {
+    // 前方锚点的通道宽度不能授权在当前位置抢转。先检查实时高度上的出弯段，
+    // 再比较当前点与选中锚点的水平余量；保留原足迹/半径，不另加固定膨胀。
+    bool departure_free = true;
+    for (double distance = 0.0; distance <= horizon + 1e-6; distance += body_step) {
+      if (!mapExitFootprintFree(start + distance * turn_direction)) {
+        departure_free = false;
+        break;
+      }
+    }
+    const double current_clearance = knownHorizontalClearance(start);
+    const double anchor_clearance = knownHorizontalClearance(best_anchor);
+    const auto current_passage = route_width::measure(
+        std::vector<Eigen::Vector3d>{start, start + horizon * turn_direction},
+        turn_direction, horizon, 0.75, body_step,
+        [this](const Eigen::Vector3d& p) { return mapExitFootprintFree(p); });
+    if (!departure_free || !current_passage.complete ||
+        best_passage.clearance > current_passage.clearance + map_resolution + 1e-6 ||
+        anchor_clearance > current_clearance + map_resolution + 1e-6) {
+      ROS_WARN_THROTTLE(0.5, "[turn_site] defer turn at (%.2f,%.2f,%.2f): "
+          "departure_free=%d current_clearance=%.2fm departure_margin=%.2fm; "
+          "selected anchor (%.2f,%.2f,%.2f) clearance=%.2fm departure_margin=%.2fm. "
+          "Keep approaching on the valid route.",
+          start.x(), start.y(), start.z(), departure_free, current_clearance,
+          current_passage.clearance, best_anchor.x(), best_anchor.y(), best_anchor.z(),
+          anchor_clearance, best_passage.clearance);
+      return false;
+    }
+  }
   ROS_ERROR_THROTTLE(
       0.5,
       "[task_search] PASSABLE TURN selected yaw=%.1fdeg old_free=%.2fm "
@@ -1524,7 +1560,8 @@ bool TaskSearchManager::mappedCorridorDirection(
   double forward_free_length = 0.0;
   double turn_free_length = 0.0;
   if (!inferOccupancyTurnDirection(
-          travel, direction, forward_free_length, turn_free_length))
+          travel, direction, forward_free_length, turn_free_length,
+          !require_observed_yaw))
     return false;
   // 手持模式没有控制器去执行地图建议的转向。实际朝向尚未与该分支一致时，
   // 保留旧段，避免提前锁定一条未走入的支路后永远等待对准。

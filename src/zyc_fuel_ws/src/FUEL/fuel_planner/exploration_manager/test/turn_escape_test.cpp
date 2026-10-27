@@ -637,8 +637,8 @@ public:
     auto& map = *manager.sdf_map_;
     auto& task = *manager.task_search_manager_;
     task.setMap(manager.sdf_map_);
-    task.recovery_turn_min_angle_deg_ = 45.0;
-    task.recovery_turn_max_angle_deg_ = 120.0;
+    task.recovery_turn_min_angle_deg_ = mode >= 10 ? 90.0 : 45.0;
+    task.recovery_turn_max_angle_deg_ = mode >= 10 ? 90.0 : 120.0;
     task.recovery_turn_probe_length_ = 1.5;
     task.exit_footprint_extra_radius_ = 0.22;
     task.exit_footprint_half_height_ = 0.15;
@@ -652,10 +652,10 @@ public:
     task.turn_detection_direction_ = Eigen::Vector2d::UnitX();
     task.segment_direction_ = Eigen::Vector2d::UnitX();
     task.segment_origin_ = Eigen::Vector2d(-1.1,0);
-    task.updateRobotPose(Vector3d(-0.1,0,1),0.0);
+    task.updateRobotPose(Vector3d(mode == 11 ? .275 : -.1,0,1),0.0);
     task.visited_positions_.clear();
     task.visited_positions_.push_back(Vector3d(-1.1,0,1));
-    task.visited_positions_.push_back(Vector3d(-0.1,0,1));
+    task.visited_positions_.push_back(Vector3d(mode == 11 ? .275 : -.1,0,1));
     double right_width = (mode == 2 ? 0.65 : 0.90);
     double left_width = (mode == 2 || mode == 3 || mode == 4 ? 0.90 : 0.20);
     if (mode == 5) right_width = left_width = 0.20;
@@ -685,6 +685,17 @@ public:
       return;
     }
     ASSERT_TRUE(found);
+    if (mode >= 10) {
+      ASSERT_TRUE(manager.planner_manager_->isTurnPositionSafe(task.latest_robot_pos_));
+      EXPECT_FALSE(task.inferOccupancyTurnDirection(
+          Vector3d::UnitX(), selected, old_free, branch_free, true));
+      EXPECT_FALSE(task.mappedCorridorDirection(0.0, selected, false));
+      EXPECT_FALSE(task.turnYawAlignmentPending());
+      task.updateRobotPose(Vector3d(.45,0,1),0.0);
+      EXPECT_TRUE(task.inferOccupancyTurnDirection(
+          Vector3d::UnitX(), selected, old_free, branch_free, true));
+      return;
+    }
     const bool expect_left = mode == 1 || mode == 2 || mode == 4;
     EXPECT_GT((expect_left ? 1.0 : -1.0)*selected.y(), 0.70)
         << "direction=" << selected.transpose();
@@ -2370,6 +2381,118 @@ public:
     EXPECT_TRUE(fsm.active_traj_braked_);
     EXPECT_FALSE(fsm.active_turn_in_place_);
     EXPECT_TRUE(manager.turnInPlaceAlignmentPending());
+  }
+
+  static void runClimbBeforeMappedTurn(int mode) {
+    ros::NodeHandle nh("~climb_before_turn_" + std::to_string(mode));
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    auto& planner = *manager.planner_manager_;
+    auto& task = *manager.task_search_manager_;
+    auto& map = *manager.sdf_map_;
+    std::fill(map.md_->occupancy_buffer_.begin(), map.md_->occupancy_buffer_.end(),
+              map.mp_->clamp_min_log_);
+    const Vector3d start(.025,.025,.125), end(.465,.025,.345), zero=Vector3d::Zero();
+    task.setMap(manager.sdf_map_);
+    task.setCorridorFrame(start-2.0*Vector3d::UnitX(),Vector3d::UnitX());
+    task.updateRobotPose(start,0.0);
+    task.turn_yaw_follow_latch_.arm(Eigen::Vector2d::UnitY());
+    ASSERT_TRUE(planner.planStraightTraj(start,end));
+    ASSERT_TRUE(planner.planYawTurnInPlace(zero,0.0));
+    FastExplorationFSM fsm;
+    fsm.expl_manager_=std::shared_ptr<FastExplorationManager>(&manager,[](FastExplorationManager*){});
+    fsm.planner_manager_=manager.planner_manager_;
+    fsm.fd_=std::make_shared<FSMData>();
+    fsm.fp_=std::make_shared<FSMParam>();
+    fsm.fd_->state_str_={"INIT","WAIT","PLAN","PUB","EXEC","FINISH"};
+    fsm.fd_->odom_pos_=start;
+    fsm.fd_->odom_vel_=Vector3d(.1,0,.05);
+    fsm.fd_->odom_yaw_=0.0;
+    fsm.fp_->tracking_error_grace_time_=100.0;
+    fsm.fp_->max_tracking_error_xy_=fsm.fp_->max_tracking_error_z_=1.0;
+    fsm.fp_->emergency_brake_horizon_=.12;
+    fsm.active_traj_=planner.local_data_;
+    fsm.active_traj_.start_time_=ros::Time::now();
+    fsm.active_traj_valid_=true;
+    fsm.narrow_corridor_stage_=true;
+    fsm.state_=mode==1 ? PUB_TRAJ : EXEC_TRAJ;
+    fsm.last_suspended_underpass_check_=ros::Time::now()+ros::Duration(30.0);
+    fsm.emergency_brake_pub_=nh.advertise<std_msgs::Int32>("brake",1);
+    if (mode==2) map.setOccupied(end);
+    fsm.safetyCallback(ros::TimerEvent());
+    if (mode==2) {
+      EXPECT_TRUE(fsm.active_traj_braked_);
+      EXPECT_EQ(fsm.state_,PLAN_TRAJ);
+      EXPECT_FALSE(manager.turn_in_place_session_active_);
+      return;
+    }
+    EXPECT_FALSE(fsm.active_traj_braked_);
+    EXPECT_FALSE(manager.turn_in_place_session_active_);
+    EXPECT_EQ(fsm.state_,mode==1 ? PUB_TRAJ : EXEC_TRAJ);
+    if (mode==0) {
+      fsm.FSMCallback(ros::TimerEvent());
+      EXPECT_EQ(fsm.state_,EXEC_TRAJ);
+    }
+    // 只完成本段0.345m目标就允许重评转弯，不等0.6m，也不以速度判完成。
+    fsm.active_traj_.start_time_=ros::Time::now()-ros::Duration(fsm.active_traj_.duration_+.1);
+    fsm.fd_->odom_pos_=end;
+    task.updateRobotPose(end,0.0);
+    fsm.safetyCallback(ros::TimerEvent());
+    EXPECT_TRUE(fsm.active_traj_braked_);
+    EXPECT_TRUE(manager.turn_in_place_session_active_);
+  }
+
+  static void runLateralFappEnvelope(bool rotated) {
+    ros::NodeHandle nh("~lateral_fapp_" + std::to_string(rotated));
+    nh.setParam("fapp/enabled",true);
+    nh.setParam("fapp/memory_enabled",true);
+    nh.setParam("fapp/lateral_motion_only",true);
+    FastExplorationManager manager;
+    initialize(nh,manager);
+    auto& planner=*manager.planner_manager_;
+    const Vector3d forward=rotated ? Vector3d(1,1,0).normalized() : Vector3d::UnitX();
+    const Vector3d side(-forward.y(),forward.x(),0);
+    planner.setFappCorridorDirection(forward);
+    auto message=boost::make_shared<obj_state_msgs::ObjectsStates>();
+    message->header.frame_id="UAV0/camera_init";
+    const double now=ros::Time::now().toSec();
+    for (int i=0;i<7;++i) {
+      obj_state_msgs::State ball;
+      const Vector3d p=(i==6?.25:0.0)*forward + (.1*(i%5)-.2)*side +
+          Vector3d(0,0,i==6?1.0:.6);
+      const Vector3d v=.8*forward+.4*side+Vector3d(0,0,.7);
+      ball.position.x=p.x();ball.position.y=p.y();ball.position.z=p.z();
+      ball.velocity.x=v.x();ball.velocity.y=v.y();ball.velocity.z=v.z();
+      ball.size.x=ball.size.y=ball.size.z=.10;
+      message->header.stamp.fromSec(now-.65+.1*i);
+      message->states={ball};
+      planner.fappCallback(message);
+    }
+    ASSERT_FALSE(planner.fapp_states_.empty());
+    const auto ball=planner.fapp_states_.back();
+    EXPECT_NEAR(ball.velocity.dot(forward),0.0,1e-9);
+    EXPECT_NEAR(ball.velocity.z(),0.0,1e-9);
+    EXPECT_NEAR(ball.velocity.dot(side),.4,1e-9);
+    planner.watchFappObstacle(&ball);
+    Vector3d lower,upper;double age;
+    ASSERT_TRUE(planner.watchedFappBounds(lower,upper,age));
+    EXPECT_LT(upper.z(),.95); // 单帧高点不能把整个历史包络拉高。
+    EXPECT_LT(planner.fapp_watched_along_bounds_.y(),.45);
+    EXPECT_FALSE(planner.isWatchedFappPositionSafe(.2*side+Vector3d(0,0,.6)));
+    EXPECT_TRUE(planner.isWatchedFappPositionSafe(.55*forward+Vector3d(0,0,.6)));
+    EXPECT_TRUE(planner.isWatchedFappPositionSafe(Vector3d(0,0,1.0)));
+    // 未锁定障碍时的历史查询也必须裁去旋转AABB多出的前后角落。
+    planner.watchFappObstacle(nullptr);
+    planner.fapp_states_.clear();
+    const Vector3d beyond=.55*forward+Vector3d(0,0,.6);
+    EXPECT_TRUE(planner.isFappPathSafe({beyond-.02*side,beyond+.02*side}));
+    EXPECT_FALSE(planner.isFappPathSafe({Vector3d(0,0,.6),.2*side+Vector3d(0,0,.6)}));
+    planner.watchFappObstacle(&ball);
+    const auto old_axis=ball.motion_axis;
+    planner.setFappCorridorDirection(side); // 飞机拐弯不能改变原障碍摆动方向。
+    message->header.stamp.fromSec(now);
+    planner.fappCallback(message);
+    EXPECT_TRUE(planner.fapp_watched_state_.motion_axis.isApprox(old_axis));
   }
 
   static void runTurnPreemptsSpecialMotion() {
@@ -4565,8 +4688,29 @@ TEST(UpperClearance, BlockedAscentLeavesOtherRoutesAvailable) {
 TEST(UpperClearance, SafeHighReferenceStillWaitsForAircraftHeight) {
   fast_planner::TurnEscapeTest::runObstacleClearance(false,true);
 }
-TEST(MappedTurn, InterruptsDynamicCrossingAndClimb) {
+TEST(MappedTurn, InterruptsFlatCrossingWithStaleVerticalFlags) {
   fast_planner::TurnEscapeTest::runTurnPreemptsSpecialMotion();
+}
+TEST(MappedTurn, PublishedDiagonalClimbFinishesBeforeYaw) {
+  fast_planner::TurnEscapeTest::runClimbBeforeMappedTurn(0);
+}
+TEST(MappedTurn, PendingReplacementCannotLetYawCancelPublishedClimb) {
+  fast_planner::TurnEscapeTest::runClimbBeforeMappedTurn(1);
+}
+TEST(MappedTurn, RealCollisionStillStopsClimb) {
+  fast_planner::TurnEscapeTest::runClimbBeforeMappedTurn(2);
+}
+TEST(MappedTurn, FutureWideCornerDoesNotAuthorizeEarlyTurn) {
+  fast_planner::TurnEscapeTest::runPassableTurn(10);
+}
+TEST(MappedTurn, NarrowDepartureWaitsForBetterTurnMargin) {
+  fast_planner::TurnEscapeTest::runPassableTurn(11);
+}
+TEST(FappEnvelope, HistoryExpandsLaterallyWithoutForeAftOrUpperOutlierGrowth) {
+  fast_planner::TurnEscapeTest::runLateralFappEnvelope(false);
+}
+TEST(FappEnvelope, RotatedCorridorKeepsOriginalObstacleAxis) {
+  fast_planner::TurnEscapeTest::runLateralFappEnvelope(true);
 }
 TEST(TurnStaticSafety, BlockedRotationKeepsSafeTranslationUntilClearEndpoint) {
   fast_planner::TurnEscapeTest::runStaticTurnCollision(0);

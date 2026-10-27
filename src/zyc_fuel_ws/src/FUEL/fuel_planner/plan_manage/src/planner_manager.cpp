@@ -68,6 +68,7 @@ void FastPlannerManager::initPlanModules(ros::NodeHandle& nh) {
   turn_time_scale_ = std::max(1.0, turn_time_scale_);
 
   nh.param("fapp/enabled", fapp_config_.enabled, false);
+  nh.param("fapp/lateral_motion_only", fapp_lateral_motion_only_, false);
   nh.param("fapp/vehicle_top_height", fapp_config_.vehicle_top_height, 0.125);
   nh.param("fapp/vehicle_bottom_height", fapp_config_.vehicle_bottom_height, 0.125);
   nh.param("mission/vertical_detour/underpass/clearance",
@@ -167,6 +168,20 @@ void FastPlannerManager::fappCallback(const obj_state_msgs::ObjectsStates::Const
     obstacle.size = Eigen::Vector3d(state.size.x,state.size.y,state.size.z);
     const ros::Time stamp = state.header.stamp.isZero() ? message->header.stamp : state.header.stamp;
     obstacle.stamp = stamp.isZero() ? ros::Time::now().toSec() : stamp.toSec();
+    if (fapp_lateral_motion_only_) {
+      obstacle.motion_axis = fapp_lateral_axis_;
+      // 同一障碍沿其原通道摆动，飞机转向不能旋转旧障碍的运动轴。
+      double nearest = fapp_association_distance_;
+      for (const auto& old : fapp_memory_) {
+        const double distance = (old.position - obstacle.position).norm();
+        if (now - old.stamp <= fapp_config_.observation_retention &&
+            old.motion_axis.squaredNorm() > 0.5 && distance < nearest) {
+          nearest = distance;
+          obstacle.motion_axis = old.motion_axis;
+        }
+      }
+      obstacle.velocity = obstacle.motion_axis * obstacle.velocity.dot(obstacle.motion_axis);
+    }
     if (fapp_memory_enabled_ &&
         (stamp.isZero() || !obstacle.position.allFinite() || !obstacle.velocity.allFinite() ||
          (!state.header.frame_id.empty() && state.header.frame_id != fapp_frame_) ||
@@ -220,7 +235,7 @@ void FastPlannerManager::fappCallback(const obj_state_msgs::ObjectsStates::Const
       if (update) {
         fapp_watched_state_ = *update;
         includeFappHistory(*update, fapp_watched_lower_, fapp_watched_upper_,
-                           &fapp_watched_bottom_history_);
+                           &fapp_watched_bottom_history_, &fapp_watched_along_bounds_);
       }
     }
     // 每个已有区域每帧最多更新一次，避免不同位置的障碍互相覆盖。
@@ -274,7 +289,8 @@ bool FastPlannerManager::fappSizeOutlier(
 void FastPlannerManager::includeFappHistory(
     const fuel_fapp::DynamicObstacleState& observation,
     Eigen::Vector3d& lower, Eigen::Vector3d& upper,
-    std::vector<fuel_fapp::DynamicObstacleState>* bottom_history) const {
+    std::vector<fuel_fapp::DynamicObstacleState>* bottom_history,
+    Eigen::Vector2d* along_bounds) const {
   std::vector<fuel_fapp::DynamicObstacleState> local_bottom_history;
   auto& sources = bottom_history ? *bottom_history : local_bottom_history;
   const auto include = [&](const fuel_fapp::DynamicObstacleState& state) {
@@ -302,7 +318,7 @@ void FastPlannerManager::includeFappHistory(
         (state.position - observation.position).norm() <= fapp_association_distance_)
       include(state);
 
-  // 仅重算下沿；XY包络、上沿和当前运动状态保持原合并逻辑。
+  // 下沿仍按独立帧证据复核；横向模式随后单独约束前后和上沿。
   // 保留来源而非只保存min，后续正常证据才能撤销早期混入的孤立低点。
   std::map<double, double> frame_bottoms;
   for (const auto& state : sources) {
@@ -348,6 +364,44 @@ void FastPlannerManager::includeFappHistory(
     }
     trusted = bottom;
   }
+  if (observation.motion_axis.squaredNorm() > 0.5) {
+    const Eigen::Vector3d side = observation.motion_axis.normalized();
+    const Eigen::Vector3d forward(side.y(), -side.x(), 0.0);
+    std::vector<double> along, tops;
+    double side_min = std::numeric_limits<double>::infinity();
+    double side_max = -side_min, along_half = 0.0;
+    for (const auto& state : sources) {
+      if (fappSizeOutlier(state)) continue;
+      Eigen::Vector3d half = Eigen::Vector3d::Constant(fapp_config_.ball_radius);
+      if (state.size.allFinite() && (state.size.array() >= 0.0).all() &&
+          (state.size.array() > 0.0).any()) half = 0.5 * state.size;
+      along.push_back(state.position.dot(forward));
+      tops.push_back(state.position.z() + half.z());
+      along_half = std::max(along_half, half.dot(forward.cwiseAbs()));
+      const double side_half = half.dot(side.cwiseAbs());
+      side_min = std::min(side_min, state.position.dot(side) - side_half);
+      side_max = std::max(side_max, state.position.dot(side) + side_half);
+    }
+    if (!along.empty()) {
+      std::sort(along.begin(), along.end());
+      std::sort(tops.begin(), tops.end());
+      const double center_along = along[along.size()/2];
+      const double padding = fapp_config_.vehicle_radius + fapp_config_.margin;
+      along_half += padding;
+      side_min -= padding;
+      side_max += padding;
+      // 历史只扩展左右摆幅；前后中心及上沿取观测中值，不累计抖动极值。
+      const Eigen::Vector3d center = center_along * forward + 0.5*(side_min+side_max)*side;
+      const Eigen::Vector3d extent = along_half*forward.cwiseAbs() +
+                                    0.5*(side_max-side_min)*side.cwiseAbs();
+      lower.head<2>() = (center-extent).head<2>();
+      upper.head<2>() = (center+extent).head<2>();
+      upper.z() = std::max(trusted, tops[tops.size()/2]) +
+                  fapp_config_.vehicle_bottom_height + fapp_config_.margin;
+      if (along_bounds) *along_bounds = Eigen::Vector2d(center_along-along_half,
+                                                        center_along+along_half);
+    }
+  }
   lower.z() = trusted - fapp_config_.lowerReferenceClearance();
 }
 
@@ -360,14 +414,14 @@ void FastPlannerManager::watchFappObstacle(
   fapp_watched_lower_.setConstant(std::numeric_limits<double>::infinity());
   fapp_watched_upper_.setConstant(-std::numeric_limits<double>::infinity());
   includeFappHistory(*observation, fapp_watched_lower_, fapp_watched_upper_,
-                     &fapp_watched_bottom_history_);
+                     &fapp_watched_bottom_history_, &fapp_watched_along_bounds_);
 }
 
 bool FastPlannerManager::watchedFappBounds(
     Eigen::Vector3d& lower, Eigen::Vector3d& upper, double& age) const {
   if (!fappMemoryEnabled() || !fapp_watched_valid_) return false;
   age = std::max(0.0, ros::Time::now().toSec() - fapp_watched_state_.stamp);
-  // XY/上沿保持历史包络；下沿可撤销无重复观测支持的孤立低点。
+  // 返回已按运动轴整理的历史包络，下沿保留独立帧确认规则。
   lower = fapp_watched_lower_;
   upper = fapp_watched_upper_;
   return true;
@@ -375,6 +429,12 @@ bool FastPlannerManager::watchedFappBounds(
 
 bool FastPlannerManager::isWatchedFappPositionSafe(const Eigen::Vector3d& point) const {
   if (!fappMemoryEnabled() || !fapp_watched_valid_) return true;
+  if (fapp_watched_state_.motion_axis.squaredNorm() > 0.5) {
+    const Eigen::Vector3d side = fapp_watched_state_.motion_axis.normalized();
+    const double along = point.dot(Eigen::Vector3d(side.y(), -side.x(), 0.0));
+    if (along < fapp_watched_along_bounds_.x() || along > fapp_watched_along_bounds_.y())
+      return true;
+  }
   if (fapp_config_.underpass_reference_clearance >= 0.0 &&
       point.z() <= fapp_watched_lower_.z() + 1e-9) return true;
   return (point.array() < fapp_watched_lower_.array()).any() ||
@@ -417,9 +477,13 @@ void FastPlannerManager::publishFappMemory(const ros::TimerEvent&) {
            << " xyz=" << obstacle.position.transpose();
   }
   std_msgs::String status;
-  if (fapp_watched_valid_)
+  if (fapp_watched_valid_) {
     detail << "; historical_lower=" << fapp_watched_lower_.transpose()
            << " historical_upper=" << fapp_watched_upper_.transpose();
+    if (fapp_watched_state_.motion_axis.squaredNorm() > 0.5)
+      detail << " lateral_axis=" << fapp_watched_state_.motion_axis.transpose()
+             << " along_bounds=" << fapp_watched_along_bounds_.transpose();
+  }
   status.data = detail.str();
   fapp_memory_pub_.publish(message);
   fapp_memory_status_pub_.publish(status);
@@ -514,11 +578,18 @@ bool FastPlannerManager::fappBlockingBounds(
       if (reference - state.stamp > fapp_history_duration_) continue;
       Eigen::Vector3d lo = Eigen::Vector3d::Constant(std::numeric_limits<double>::infinity());
       Eigen::Vector3d hi = -lo;
-      includeFappHistory(state, lo, hi);
+      Eigen::Vector2d along_bounds(-std::numeric_limits<double>::infinity(),
+                                   std::numeric_limits<double>::infinity());
+      includeFappHistory(state, lo, hi, nullptr, &along_bounds);
       for (size_t i = 1; i < path.size(); ++i) {
         const int count = std::max(1, static_cast<int>(std::ceil((path[i] - path[i-1]).norm()/0.05)));
         for (int j = 0; j <= count; ++j) {
           const Eigen::Vector3d p = path[i-1] + (path[i]-path[i-1]) * (double(j)/count);
+          if (state.motion_axis.squaredNorm() > 0.5) {
+            const Eigen::Vector3d side = state.motion_axis.normalized();
+            const double along = p.dot(Eigen::Vector3d(side.y(), -side.x(), 0.0));
+            if (along < along_bounds.x() || along > along_bounds.y()) continue;
+          }
           if ((p.array() >= lo.array()).all() && (p.array() <= hi.array()).all() &&
               (fapp_config_.underpass_reference_clearance < 0.0 || p.z() > lo.z()+1e-9)) {
             lower = lo; upper = hi;

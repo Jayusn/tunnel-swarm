@@ -39,6 +39,19 @@ TEST_F(DynamicObstacleTest, HorizontalClearanceIncludesBallAndVehicle)
   EXPECT_LT(clearanceAt(Eigen::Vector3d(0.40, 0.0, 1.0)), 0.0);
 }
 
+TEST_F(DynamicObstacleTest, CorridorAxisRemovesForeAftAndVerticalPrediction)
+{
+  state.motion_axis=Eigen::Vector3d(-1,1,0).normalized();
+  const Eigen::Vector3d forward(1/std::sqrt(2.0),1/std::sqrt(2.0),0);
+  state.velocity=.8*forward+.4*state.motion_axis+Eigen::Vector3d(0,0,.7);
+  Eigen::Vector3d center,velocity;
+  double clearance;
+  ASSERT_TRUE(evaluateDynamicObstacle(Eigen::Vector3d(1,1,1),state,10.5,10.0,
+      config,&clearance,nullptr,&center,&velocity));
+  EXPECT_TRUE(center.isApprox(state.position+.2*state.motion_axis));
+  EXPECT_TRUE(velocity.isApprox(.4*state.motion_axis));
+}
+
 TEST_F(DynamicObstacleTest, UnderpassUsesFiniteVehicleHeight)
 {
   EXPECT_NEAR(clearanceAt(Eigen::Vector3d(0.0, 0.0, 0.65)), 0.025, 1.0e-12);

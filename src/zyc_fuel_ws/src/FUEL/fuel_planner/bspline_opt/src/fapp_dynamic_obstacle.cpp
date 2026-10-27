@@ -40,9 +40,13 @@ bool evaluateDynamicObstacle(
   const double raw_prediction_time = query_time - state.stamp;
   const double prediction_time = std::max(
       0.0, std::min(raw_prediction_time, config.prediction_horizon));
-  Eigen::Vector3d predicted_position =
-      state.position + prediction_time * state.velocity;
   Eigen::Vector3d predicted_velocity = state.velocity;
+  if (state.motion_axis.allFinite() && state.motion_axis.squaredNorm() > 0.5) {
+    const Eigen::Vector3d axis = state.motion_axis.normalized();
+    predicted_velocity = axis * state.velocity.dot(axis);
+  }
+  const Eigen::Vector3d predicted_position =
+      state.position + prediction_time * predicted_velocity;
   if (raw_prediction_time < 0.0 ||
       raw_prediction_time >= config.prediction_horizon)
     predicted_velocity.setZero();

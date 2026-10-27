@@ -11,6 +11,8 @@ struct DynamicObstacleState
 {
   Eigen::Vector3d position{Eigen::Vector3d::Zero()};
   Eigen::Vector3d velocity{Eigen::Vector3d::Zero()};
+  // 非零时仅沿该通道横向摆动；零值保留通用三维运动模型。
+  Eigen::Vector3d motion_axis{Eigen::Vector3d::Zero()};
   // Measured full AABB extents; all-zero or invalid extents use the sphere fallback.
   Eigen::Vector3d size{Eigen::Vector3d::Zero()};
   double stamp{0.0};

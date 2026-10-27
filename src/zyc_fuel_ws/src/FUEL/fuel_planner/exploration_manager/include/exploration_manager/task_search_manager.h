@@ -181,7 +181,8 @@ private:
   bool inferOccupancyTurnDirection(const Eigen::Vector3d& travel_direction,
                                    Eigen::Vector3d& turn_direction,
                                    double& forward_free_length,
-                                   double& turn_free_length) const;
+                                   double& turn_free_length,
+                                   bool require_current_turn_site = false) const;
   bool turnDirectionRetracesVisitedRoute(
       const Eigen::Vector2d& anchor,
       const Eigen::Vector2d& direction) const;

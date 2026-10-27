@@ -91,6 +91,10 @@ public:
   bool fappPlannerPriority() const { return fapp_planner_priority_; }
   bool fappMemoryEnabled() const { return fapp_config_.enabled && fapp_memory_enabled_; }
   double fappObservationRetention() const { return fapp_config_.observation_retention; }
+  void setFappCorridorDirection(const Eigen::Vector3d& forward) {
+    if (forward.allFinite() && forward.head<2>().norm() > 1e-3)
+      fapp_lateral_axis_ = Eigen::Vector3d(-forward.y(), forward.x(), 0.0).normalized();
+  }
   void watchFappObstacle(const fuel_fapp::DynamicObstacleState* observation);
   bool isWatchedFappPositionSafe(const Eigen::Vector3d& point) const;
   bool watchedFappBounds(Eigen::Vector3d& lower, Eigen::Vector3d& upper,
@@ -127,6 +131,9 @@ private:
   ros::Subscriber fapp_sub_;
   fuel_fapp::DynamicObstacleConfig fapp_config_;
   bool fapp_planner_priority_{false};
+  bool fapp_lateral_motion_only_{false};
+  Eigen::Vector3d fapp_lateral_axis_{Eigen::Vector3d::Zero()};
+  Eigen::Vector2d fapp_watched_along_bounds_{Eigen::Vector2d::Zero()};
   std::vector<fuel_fapp::DynamicObstacleState> fapp_states_;
   bool fapp_memory_enabled_{false};
   double fapp_association_distance_{0.60};
@@ -140,7 +147,8 @@ private:
   bool fappSizeOutlier(const fuel_fapp::DynamicObstacleState& candidate) const;
   void includeFappHistory(const fuel_fapp::DynamicObstacleState& observation,
                           Eigen::Vector3d& lower, Eigen::Vector3d& upper,
-                          std::vector<fuel_fapp::DynamicObstacleState>* bottom_history = nullptr) const;
+                          std::vector<fuel_fapp::DynamicObstacleState>* bottom_history = nullptr,
+                          Eigen::Vector2d* along_bounds = nullptr) const;
   ros::Publisher fapp_memory_pub_, fapp_memory_status_pub_;
   ros::Timer fapp_memory_timer_;
   void publishFappMemory(const ros::TimerEvent& event);
