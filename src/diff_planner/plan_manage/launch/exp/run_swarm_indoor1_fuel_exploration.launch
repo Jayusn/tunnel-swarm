@@ -38,7 +38,7 @@
     <param name="/exploration_node/fapp/vehicle_bottom_height" value="0.20" type="double"/>
     <!-- 自主选点保持原流程；摆球可分段接近、原地下降再穿越，也可连续侧下穿/侧绕。 -->
     <param name="/exploration_node/fapp/exploration_crossing_enabled" value="true" type="bool"/>
-    <param name="/exploration_node/mission/vertical_detour/underpass/min_height" value="0.05" type="double"/>
+    <param name="/exploration_node/mission/vertical_detour/underpass/min_height" value="0.10" type="double"/>
 
     <!-- 2026-07-07: 这是给 indoor1 雷达未知环境做验证的混合探索入口，保留当前 /Odometry + /cloud_registered 链路，但上层任务从固定 waypoint 改成 FUEL exploration_manager。 -->
     <!-- 2026-07-07: 该 launch 依赖 /home/togan/老张/zyc_fuel_ws 已经 source 且其中的 exploration_manager、plan_manage、waypoint_generator 已编译可用。 -->
@@ -317,17 +317,17 @@
     <rosparam param="/exploration_node/mission/task_search/max_goal_repeats">2</rosparam>
     <!-- FUEL只负责通道，继续保持原1.90m搜索上限；门外1.7m搜索由独立Diff地图负责。 -->
     <rosparam param="/exploration_node/mission/task_search/cruise_height">0.6</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/min_height">0.05</rosparam>
+    <rosparam param="/exploration_node/mission/task_search/min_height">0.10</rosparam>
     <rosparam param="/exploration_node/mission/task_search/max_height">1.90</rosparam>
-    <!-- 任务目标、A*中间节点和下穿动作共用最低里程计Z=0.05m。 -->
-    <rosparam param="/exploration_node/astar/min_search_height">0.05</rosparam>
+    <!-- 任务目标、A*中间节点和下穿动作共用最低里程计Z=0.10m。 -->
+    <rosparam param="/exploration_node/astar/min_search_height">0.10</rosparam>
     <rosparam param="/exploration_node/astar/max_search_height">1.90</rosparam>
     <!-- 水平恢复全部失败后才启用上下绕行；普通下探固定XY/Yaw降到0.40m，确认前方0.20m后推进。 -->
     <rosparam param="/exploration_node/mission/vertical_detour/enabled">true</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/low_height">0.40</rosparam>
     <!-- 雷达是机体最高点；UAV0 FAST-LIO 外参中雷达高于里程计原点约4.4cm。 -->
     <rosparam param="/exploration_node/mission/vertical_detour/underpass/lidar_above_odom">0.044</rosparam>
-    <!-- 动态下穿高度上限=原始检测底部Z-0.10m；实际Z在0.05m至该上限之间即可接续。
+    <!-- 动态下穿高度上限=原始检测底部Z-0.10m；实际Z在0.10m至该上限之间即可接续。
          总间距不再叠加机体顶部或跟踪余量。
          静态悬挂物仍单独使用雷达偏移和高度跟踪余量。 -->
     <rosparam param="/exploration_node/mission/vertical_detour/underpass/clearance">0.10</rosparam>
