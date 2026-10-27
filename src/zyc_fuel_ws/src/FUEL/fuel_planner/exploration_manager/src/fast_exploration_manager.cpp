@@ -482,7 +482,8 @@ bool FastExplorationManager::hasSafeCruiseContinuation(
 
 bool FastExplorationManager::tryCruiseHeightRecovery(
     const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, double time_lb) {
-  if (manual_fapp_active_ || !ground_ascent_enabled_ || !mission_entered_search_region_ ||
+  if (manual_fapp_active_ || !ground_ascent_enabled_ ||
+      (!mission_entered_search_region_ && !entry_forward_complete_) ||
       !task_search_manager_ || !planner_manager_ || ground_ascent_active_ ||
       low_probe_phase_ != vertical_detour::LowProbePhase::IDLE ||
       suspended_underpass_active_ || ed_->path_next_goal_.size() < 2)
@@ -508,29 +509,46 @@ bool FastExplorationManager::tryCruiseHeightRecovery(
   for (size_t i = 1; i < path.size(); ++i)
     progress[i] = progress[i-1] + (path[i] - path[i-1]).head<2>().norm();
   if (progress.back() < 0.10) return false;
-  // 沿原水平折线渐升：新增加的恢复按0.5斜率及任务单段量取值，不压低已有目标。
+  // 沿当前已选通路寻找较高且净空好的点，巡航高度只限定本轮搜索上限。
+  // 新增加的恢复仍按原0.5斜率及任务单段量取值，不强制一次回到0.6m。
   const double rise = std::max(path.back().z() - pos.z(),
                              std::min(target_z - pos.z(), 0.5 * progress.back()));
   if (rise <= 0.02) return false;
-  for (size_t i = 0; i < path.size(); ++i)
-    path[i].z() = pos.z() + rise * progress[i] / progress.back();
-  if (path.size() == 2)
-    path.insert(path.begin() + 1, 0.5 * (path.front() + path.back()));
-  if (!pathInsideWorkspaceLock(path) ||
-      !task_search_manager_->isRecoveryPathAllowed(path, false))
-    return false;
-  // 先检查斜升整段的三维机体空间；抬高后的终点自由并不足以授权爬升。
-  for (size_t i = 1; i < path.size(); ++i) {
-    const Vector3d delta = path[i] - path[i-1];
-    const int count = std::max(1, static_cast<int>(std::ceil(delta.norm() / 0.025)));
-    for (int j = 0; j <= count; ++j) {
-      if (!planner_manager_->isKnownFreePosition(path[i-1] + delta * (double(j) / count))) {
-        ROS_INFO_THROTTLE(1.0, "[cruise_recovery] upper swept space unavailable; "
-                         "keep the validated horizontal route and observe while moving.");
-        return false;
+  vector<Vector3d> best_path;
+  double best_clearance = -std::numeric_limits<double>::infinity();
+  for (double candidate_rise = rise;
+       candidate_rise > 0.02 && candidate_rise >= path.back().z() - pos.z() - 1e-6;
+       candidate_rise -= 0.10) {
+    auto candidate = path;
+    for (size_t i = 0; i < candidate.size(); ++i)
+      candidate[i].z() = pos.z() + candidate_rise * progress[i] / progress.back();
+    if (candidate.size() == 2)
+      candidate.insert(candidate.begin() + 1, 0.5 * (candidate.front() + candidate.back()));
+    if (!pathInsideWorkspaceLock(candidate) ||
+        !task_search_manager_->isRecoveryPathAllowed(candidate, false) ||
+        !planner_manager_->isFappPathSafe(candidate)) continue;
+    // 终点和整段三维机体空间都必须可通过，不能只看高处终点空闲。
+    bool known_free = true;
+    for (size_t i = 1; i < candidate.size() && known_free; ++i) {
+      const Vector3d delta = candidate[i] - candidate[i-1];
+      const int count = std::max(1, static_cast<int>(std::ceil(delta.norm() / 0.025)));
+      for (int j = 0; j <= count; ++j) {
+        if (!planner_manager_->isKnownFreePosition(
+                candidate[i-1] + delta * (double(j) / count))) {
+          known_free = false;
+          break;
+        }
       }
     }
+    if (!known_free) continue;
+    const double clearance = sdf_map_->getDistance(candidate.back());
+    if (best_path.empty() || clearance > best_clearance + 1e-6) {
+      best_path = candidate;
+      best_clearance = clearance;
+    }
   }
+  if (best_path.empty()) return false;
+  path = best_path;
   // 高度恢复是原路线的可选改进。优化或动态边界失败时恢复整条原轨迹，不能换边。
   const LocalTrajData original = planner_manager_->local_data_;
   bool safe = planner_manager_->planExploreTraj(path, vel, acc, time_lb) &&
@@ -550,7 +568,7 @@ bool FastExplorationManager::tryCruiseHeightRecovery(
       }
       swept.push_back(point);
     }
-    safe = safe && pathInsideWorkspaceLock(swept) &&
+    safe = safe && pathInsideWorkspaceLock(swept) && planner_manager_->isFappPathSafe(swept) &&
            task_search_manager_->isRecoveryPathAllowed(swept, false);
   }
   if (!safe) {
@@ -564,8 +582,9 @@ bool FastExplorationManager::tryCruiseHeightRecovery(
   has_last_requested_goal_ = true;
   task_search_manager_->recordSelectedGoal(path.back());
   ROS_INFO("[cruise_recovery] retain horizontal route and climb %.2f -> %.2fm "
-           "over %.2fm toward cruise height %.2fm.",
-           pos.z(), path.back().z(), progress.back(), task_search_manager_->preferredSearchHeight());
+           "over %.2fm; selected endpoint clearance=%.2fm, preferred cruise=%.2fm.",
+           pos.z(), path.back().z(), progress.back(), best_clearance,
+           task_search_manager_->preferredSearchHeight());
   return true;
 }
 

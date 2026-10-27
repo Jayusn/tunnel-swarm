@@ -2542,7 +2542,7 @@ public:
     Vector3d velocity = Vector3d::Zero();
     if (mode == 4) velocity.x() = std::numeric_limits<double>::quiet_NaN();
     const bool raised = manager.tryCruiseHeightRecovery(start, velocity, Vector3d::Zero(), 0.0);
-    check(raised == (mode == 0 || mode == 5 || mode == 7),
+    check(raised == (mode == 0 || mode == 1 || mode == 5 || mode == 7),
           "moving climb did not match overhead visibility, occupancy or active underpass");
     check(manager.recovery_side_latched_ && manager.recovery_side_dir_.y() < -0.9,
           "height recovery replaced the committed right-hand side");
@@ -2559,7 +2559,7 @@ public:
       }
       return;
     }
-    const double rise = mode == 5 ? 0.06 : 0.275;
+    const double rise = mode == 1 ? 0.075 : (mode == 5 ? 0.06 : 0.275);
     check((manager.ed_->next_goal_.head<2>() - end.head<2>()).norm() < 1e-9 &&
           std::fabs(manager.ed_->next_goal_.z() - start.z() - rise) < 1e-6,
           "moving climb changed XY or ignored cruise/per-segment climb limits");
@@ -2574,6 +2574,86 @@ public:
         planner.local_data_.duration_);
     check(actual_end.x() > start.x()+0.5 && actual_end.z() > start.z()+rise-0.02,
           "generated trajectory did not both advance and regain height");
+  }
+
+  static void runPostFappClearanceRecovery(int mode) {
+    ros::NodeHandle nh("~post_fapp_clearance_" + std::to_string(mode));
+    nh.setParam("sdf_map/virtual_ceil_height", -10.0);
+    nh.setParam("mission/task_search/min_height", .10);
+    nh.setParam("mission/task_search/cruise_height", .60);
+    nh.setParam("mission/task_search/max_goal_climb", .30);
+    nh.setParam("fapp/enabled", true);
+    nh.setParam("fapp/memory_enabled", true);
+    nh.setParam("fapp/planner_priority", true);
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    auto& planner = *manager.planner_manager_;
+    auto& map = *manager.sdf_map_;
+    auto& task = *manager.task_search_manager_;
+    task.setMap(manager.sdf_map_);
+    task.global_no_return_ = false;
+    task.stable_progress_direction_ = Eigen::Vector2d::UnitX();
+    task.stable_progress_direction_valid_ = true;
+    manager.entry_forward_complete_ = true;
+    manager.mission_entered_search_region_ = false; // 动态入口无需命中旧固定搜索框。
+    manager.fapp_exploration_crossing_enabled_ = true;
+    const Vector3d start(.025,.025,.125), end(.825,-.275,.125), zero=Vector3d::Zero();
+    task.updateRobotPose(start,0.0);
+    std::fill(map.md_->occupancy_buffer_.begin(),map.md_->occupancy_buffer_.end(),
+              map.mp_->clamp_min_log_);
+    for (int ix=-39; ix<40; ++ix) for (int iy=-39; iy<40; ++iy) {
+      const auto fill = [&](double z, double value) {
+        Eigen::Vector3i index;
+        map.posToIndex(Vector3d(ix*.05+.025,iy*.05+.025,z),index);
+        map.md_->occupancy_buffer_[map.toAddress(index)] = value;
+      };
+      fill(.025,map.mp_->clamp_max_log_);
+      if (mode == 1) fill(.475,map.mp_->clamp_max_log_);
+      if (mode == 2) fill(.225,map.mp_->clamp_max_log_);
+      if (mode == 3) for (int iz=4; iz<39; ++iz)
+        fill(iz*.05+.025,map.mp_->clamp_min_log_-1.0);
+    }
+    map.md_->local_bound_min_.setZero();
+    map.md_->local_bound_max_ = map.mp_->map_voxel_num_-Eigen::Vector3i::Ones();
+    map.clearAndInflateLocalMap(); map.updateESDF3d();
+    manager.ed_->path_next_goal_ = {start,.5*(start+end),end};
+    manager.ed_->next_goal_ = end;
+    ASSERT_TRUE(planner.planExploreTraj(manager.ed_->path_next_goal_,zero,zero,0.0));
+    ASSERT_TRUE(planner.isTrajectorySafe());
+    LocalTrajData original = planner.local_data_;
+    fuel_fapp::DynamicObstacleState ball;
+    ball.position=Vector3d(-.65,0,.65); ball.size=Vector3d::Constant(.20);
+    ball.stamp=ros::Time::now().toSec();
+    planner.fapp_states_={ball}; planner.watchFappObstacle(&ball);
+    manager.manual_fapp_active_=true;
+    manager.manual_fapp_forward_=Vector3d::UnitX();
+    manager.manual_fapp_exit_progress_=-1.0;
+    manager.manual_fapp_hold_height_=manager.horizontal_reference_height_=start.z();
+    // 未来轨迹端点过线不释放低位；必须由实际位置确认已经通过。
+    EXPECT_FALSE(manager.manualFappObservationMissing(start,0.0));
+    ASSERT_TRUE(manager.manual_fapp_active_);
+    EXPECT_FALSE(manager.tryCruiseHeightRecovery(start,zero,zero,0.0));
+    EXPECT_FALSE(manager.manualFappObservationMissing(start,0.0,true));
+    ASSERT_FALSE(manager.manual_fapp_active_);
+    const bool raised=manager.tryCruiseHeightRecovery(start,zero,zero,0.0);
+    ASSERT_EQ(raised,mode<2);
+    if (!raised) {
+      EXPECT_TRUE(original.position_traj_.getControlPoint().isApprox(
+          planner.local_data_.position_traj_.getControlPoint()));
+      EXPECT_TRUE(manager.ed_->next_goal_.isApprox(end));
+      return;
+    }
+    const Vector3d selected=manager.ed_->next_goal_;
+    EXPECT_GT(selected.z(),start.z()+.05);
+    EXPECT_LT(selected.z(),.60); // 可行点不必固定在巡航0.6m。
+    EXPECT_TRUE(selected.head<2>().isApprox(end.head<2>()));
+    EXPECT_TRUE(planner.isTrajectorySafe());
+    if (mode==1) {
+      EXPECT_LT(selected.z(),.40); // 高候选被顶棚挡住，改走更低且净空更好的点。
+      EXPECT_GE(map.getDistance(selected),map.getDistance(Vector3d(end.x(),end.y(),.325)));
+    }
+    for (double t=0; t<=planner.local_data_.duration_; t+=.02)
+      EXPECT_TRUE(planner.isKnownFreePosition(planner.local_data_.position_traj_.evaluateDeBoorT(t)));
   }
 
   static void checkPublishedCorridorExecution(FastExplorationManager& manager) {
@@ -4507,7 +4587,7 @@ TEST(TurnStaticSafety, ActualFootprintCollisionStopsTurnDespiteSafeReference) {
 TEST(CruiseHeightRecovery, OpenSpaceClimbsAlongCommittedRightRoute) {
   fast_planner::TurnEscapeTest::runMovingClimb(0);
 }
-TEST(CruiseHeightRecovery, MidRouteRoofKeepsOriginalHorizontalTrajectory) {
+TEST(CruiseHeightRecovery, MidRouteRoofUsesLowerClearClimb) {
   fast_planner::TurnEscapeTest::runMovingClimb(1);
 }
 TEST(CruiseHeightRecovery, UnknownOverheadKeepsOriginalHorizontalTrajectory) {
@@ -4521,6 +4601,18 @@ TEST(CruiseHeightRecovery, RejectedGenerationRestoresOriginalTrajectory) {
 }
 TEST(CruiseHeightRecovery, SmallClimbStepStillRecoversHeight) {
   fast_planner::TurnEscapeTest::runMovingClimb(5);
+}
+TEST(PostFappRecovery, ActualPassageSelectsRaisedPointAfterDynamicEntrance) {
+  fast_planner::TurnEscapeTest::runPostFappClearanceRecovery(0);
+}
+TEST(PostFappRecovery, LowCeilingSelectsClearerPointBelowCruiseHeight) {
+  fast_planner::TurnEscapeTest::runPostFappClearanceRecovery(1);
+}
+TEST(PostFappRecovery, BlockedAscentRetainsValidatedRoute) {
+  fast_planner::TurnEscapeTest::runPostFappClearanceRecovery(2);
+}
+TEST(PostFappRecovery, UnknownAscentRetainsValidatedRoute) {
+  fast_planner::TurnEscapeTest::runPostFappClearanceRecovery(3);
 }
 
 TEST(SideBypassProgress, PartialStepsPassPillarOnLeft) {
