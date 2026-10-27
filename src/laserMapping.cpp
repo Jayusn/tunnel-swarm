@@ -1095,11 +1095,6 @@ int main(int argc, char** argv)
         ros::spinOnce();
         if(sync_packages(Measures)) 
         {
-            // 空 IMU 扫描不参与处理，避免复用上一帧点云并访问空 IMU 集合。
-            if (Measures.imu.empty())
-            {
-                continue;
-            }
             if (flg_first_scan)
             {
                 first_lidar_time = Measures.lidar_beg_time;
