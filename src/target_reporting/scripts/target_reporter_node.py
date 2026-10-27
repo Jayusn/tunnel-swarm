@@ -110,9 +110,12 @@ class TargetReporterNode:
         )
         configured_mission_id = str(rospy.get_param("~mission_id", "")).strip()
         if not configured_mission_id or configured_mission_id.lower() == "auto":
-            configured_mission_id = "onboard_test_{}".format(
-                time.strftime("%Y%m%d")
-            )
+            if self.drone_id == "uav1":
+                configured_mission_id = time.strftime("%Y%m%d/flight_%H%M%S")
+            else:
+                configured_mission_id = "onboard_test_{}".format(
+                    time.strftime("%Y%m%d")
+                )
         self.mission_id = configured_mission_id
         self.store = MissionStore(
             rospy.get_param("~record_root", "~/target_reports"), self.drone_id,

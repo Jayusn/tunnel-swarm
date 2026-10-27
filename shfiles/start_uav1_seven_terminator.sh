@@ -401,9 +401,10 @@ run_pose_pane() {
 }
 
 run_detection_pane() {
-  local mission_id="uav1_single_$(date +%Y%m%d)"
+  local mission_id
   pane_init 5 D435与目标检测
   wait_for_topic_message "${ODOM_TOPIC}" || keep_pane_open
+  mission_id="$(date +%Y%m%d/flight_%H%M%S)"
   printf '[启动] UAV1 D435、颜色、二维码、目标上报和RViz标记\n'
   printf '[参数] thermal=%s, odom=%s, mission_id=%s\n' \
     "${THERMAL}" "${ODOM_TOPIC}" "${mission_id}"

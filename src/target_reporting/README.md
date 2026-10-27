@@ -254,8 +254,26 @@ UAV1 保存到 `~/match_ws/target_reports/uav1/<任务编号>/`。
 `image_wait_timeout_s`（默认 0.50 秒）让同帧调试图进入缓存；超时只发送确认 JSON，绝不使用
 前后时刻的未稳定候选图替代。
 
-`mission_id: auto` 会按当天自动生成 `onboard_test_YYYYMMDD`。Windows 端也要使用同一个日期编号；
-同一场任务中机载端和远程端必须保持该值不变。节点或电脑重启后会重新打开同一目录，根据
+后机每次飞行都会重新启动检测程序，因此按启动时间区分保存目录。
+`start_uav1_six_terminator.sh`、`start_uav1_seven_terminator.sh` 和后机 `mission_id: auto`
+统一使用 `YYYYMMDD/flight_HHMMSS`，先按日期，再在日期下面分每次飞行。
+日期和时间取本机启动时的当地时间，精确到秒。
+例如两次飞行分别保存为：
+
+```text
+~/match_ws/target_reports/uav1/20261027/flight_143000/
+  reports.jsonl
+  images/annotated/*.jpg
+~/match_ws/target_reports/uav1/20261027/flight_150500/
+  reports.jsonl
+  images/annotated/*.jpg
+```
+
+各目录独立编号，不再把同一天后续飞行追加进前一次目录；旧的按日期目录保留。
+目录按启动而非解锁/起飞切换：同一次启动中连续起降仍写同一目录；中途重启且使用自动编号会创建新目录。
+前机 `auto` 仍生成 `onboard_test_YYYYMMDD`。显式指定 `mission_id` 则保持原有目录复用行为。
+若开启远端上传，Windows 端要使用与机载端完全相同的任务编号；
+同一场任务中机载端和远程端必须保持该值不变。显式指定旧编号重启，会根据
 `event_acks.jsonl` 和 `image_acks.jsonl` 只补发尚未确认的最终 JSON 和图片。若需要手动指定编号，
 可在机载端启动时传入 `mission_id:=final_20260811_01`，Windows 端的 `--mission-id` 使用完全相同的值。
 

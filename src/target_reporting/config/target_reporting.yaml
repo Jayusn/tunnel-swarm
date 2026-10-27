@@ -1,5 +1,6 @@
 drone_id: "uav0"
-# auto 生成当天的 onboard_test_YYYYMMDD；正式任务也可以显式覆盖这个参数。
+# auto：后机按启动时间生成 YYYYMMDD/flight_HHMMSS 两层目录；前机保留 onboard_test_YYYYMMDD。
+# 显式指定 mission_id 时沿用指定目录，可用于继续同一场任务。
 mission_id: "auto"
 localization_frame: "UAV0/camera_init"
 report_frame: "channel"

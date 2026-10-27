@@ -16,6 +16,34 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 
+@pytest.mark.parametrize("configured_id", ["auto", ""])
+def test_uav1_restarts_create_separate_mission_directories(monkeypatch, tmp_path, configured_id):
+    params = {"~drone_id": "uav1", "~mission_id": configured_id,
+              "~record_root": str(tmp_path), "~enable_remote_upload": False}
+    monkeypatch.setattr(MODULE.rospy, "get_param", lambda key, default=None: params.get(key, default))
+    for name in ("Publisher", "Subscriber", "Timer", "on_shutdown", "loginfo"):
+        monkeypatch.setattr(MODULE.rospy, name, MagicMock())
+    monkeypatch.setattr(MODULE.tf2_ros, "Buffer", MagicMock())
+    monkeypatch.setattr(MODULE.tf2_ros, "TransformListener", MagicMock())
+    times = iter([(2026, 10, 27, 14, 30, 0, 1, 300, -1),
+                  (2026, 10, 27, 15, 5, 0, 1, 300, -1)])
+    strftime = MODULE.time.strftime
+    monkeypatch.setattr(MODULE.time, "strftime", lambda fmt: strftime(fmt, next(times)))
+
+    first = MODULE.TargetReporterNode()
+    evidence_path = Path(first.store.save_image("first.jpg", b"existing evidence"))
+    first.shutdown()
+    second = MODULE.TargetReporterNode()
+
+    assert Path(first.store.mission_dir) == tmp_path / "20261027" / "flight_143000"
+    assert Path(second.store.mission_dir) == tmp_path / "20261027" / "flight_150500"
+    assert first.store.mission_dir != second.store.mission_dir
+    assert evidence_path.read_bytes() == b"existing evidence"
+    assert list(Path(second.store.image_dir).glob("*.jpg")) == []
+    assert second.store.all_events() == [] and second.seq == 0
+    second.shutdown()
+
+
 @pytest.mark.parametrize("source", ["color", "qr", "thermal"])
 @pytest.mark.parametrize("calibrated", [False, True])
 def test_local_evidence_without_network_and_upload_after_reenable(
