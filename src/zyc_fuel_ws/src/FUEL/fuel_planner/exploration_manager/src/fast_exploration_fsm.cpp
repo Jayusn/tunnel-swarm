@@ -502,6 +502,9 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
 
       int res = callExplorationPlanner();
       if (res == SUCCEED) {
+        if (expl_manager_->explorationFappCrossingActive() &&
+            expl_manager_->currentPlanIsVerticalDetour())
+          requestActiveTrajectoryBrake("stop at local FAPP descent column");
         // 候选轨迹还要经过 PUB_TRAJ 的连续地图复核；复核通过前不能截断旧轨迹。
         next_plan_retry_time_ = ros::Time(0);
         pending_traj_safe_since_ = ros::Time(0);

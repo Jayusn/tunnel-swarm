@@ -59,6 +59,7 @@ public:
     manual_fapp_curve_active_ = false;
     suspended_underpass_active_ = false;
     fapp_rush_pending_ = false;
+    fapp_local_step_pending_ = false;
   }
   // 只有真实里程计可释放未越过的动态障碍；预测规划起点不能提前解除等待。
   bool manualFappObservationMissing(const Vector3d& pos, double yaw,
@@ -167,6 +168,9 @@ private:
   bool manual_path_exploration_style_{false};
   bool manual_fapp_active_{false};
   bool fapp_rush_active_{false}, fapp_rush_pending_{false};
+  bool fapp_local_step_pending_{false};
+  bool planLocalFappUnderpass(const Vector3d& pos, const Vector3d& vel,
+                            const Vector3d& acc, const Vector3d& yaw);
   ros::Publisher fapp_rush_pub_;
   bool keepsDynamicSide(const std::vector<Vector3d>& path) const;
   bool planFappOpeningCrossing(const Vector3d& pos, const Vector3d& vel,

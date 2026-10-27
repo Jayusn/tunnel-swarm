@@ -52,6 +52,10 @@ FastExplorationManager::~FastExplorationManager() {
 }
 
 void FastExplorationManager::recordPublishedTrajectoryHeight() {
+  if (manual_fapp_active_ && fapp_local_step_pending_ &&
+      std::isfinite(pending_reference_height_))
+    manual_fapp_hold_height_ = pending_reference_height_;
+  fapp_local_step_pending_ = false;
   if (obstacleAscentPending() && manual_fapp_active_ &&
       std::isfinite(pending_reference_height_))
     manual_fapp_hold_height_ = pending_reference_height_;
@@ -419,12 +423,14 @@ bool FastExplorationManager::isKnownSafeVerticalPath(const Vector3d& start,
                               ? sdf_map_->getOccupancy(point)
                               : SDFMap::OCCUPIED;
     if (!sdf_map_->isInMap(point) || occupancy == SDFMap::OCCUPIED ||
-        (!allow_unknown && occupancy != SDFMap::FREE))
+        (!allow_unknown && occupancy != SDFMap::FREE) ||
+        (explorationFappCrossingActive() && !planner_manager_->isKnownFreePosition(point)))
       return false;
     path.push_back(point);
   }
   return planner_manager_->isPathSafe(path) &&
-      (!(manual_path_enabled_ && manual_path_exploration_style_) ||
+      ((!(manual_path_enabled_ && manual_path_exploration_style_) &&
+        !explorationFappCrossingActive()) ||
        planner_manager_->isFappPathSafe(path));
 }
 
@@ -863,7 +869,11 @@ bool FastExplorationManager::handleActiveLowProbe(
   if (low_probe_phase_ == vertical_detour::LowProbePhase::IDLE) return false;
 
   const auto previous_phase = low_probe_phase_;
-  if (sdf_map_ &&
+  // 动态分段下穿只借用现有原地下降步骤。到达真实低位后重新选路，
+  // 不把前方另一个落地静态物当成取消当前安全下降柱的依据。
+  const bool fapp_descent = explorationFappCrossingActive() && !manual_path_enabled_ &&
+      previous_phase == vertical_detour::LowProbePhase::DESCENDING;
+  if (sdf_map_ && !fapp_descent &&
       (previous_phase == vertical_detour::LowProbePhase::DESCENDING ||
       previous_phase == vertical_detour::LowProbePhase::VERIFYING ||
        previous_phase == vertical_detour::LowProbePhase::ADVANCING)) {
@@ -905,7 +915,8 @@ bool FastExplorationManager::handleActiveLowProbe(
   vertical_detour::LowProbeObservation observation;
   observation.at_probe_height =
       std::fabs(pos.z() - low_probe_height_) <=
-      vertical_detour_height_tolerance_;
+      (fapp_descent ? std::min(0.02, vertical_detour_height_tolerance_)
+                    : vertical_detour_height_tolerance_);
   observation.xy_stable =
       (pos - low_probe_origin_).head<2>().norm() <= vertical_detour_xy_tolerance_;
   if (previous_phase == vertical_detour::LowProbePhase::DESCENDING &&
@@ -919,6 +930,16 @@ bool FastExplorationManager::handleActiveLowProbe(
              std::fabs(pos.z() - low_probe_height_));
     cancelActiveLowProbe("descent endpoint tracking timeout");
     return false;
+  }
+  if (fapp_descent) {
+    if (observation.at_probe_height && observation.xy_stable) {
+      cancelActiveLowProbe("FAPP descent reached actual low height; replan local crossing");
+      return false;
+    }
+    next_pos = pos;
+    next_pos.z() = low_probe_height_;
+    next_yaw = low_probe_yaw_;
+    return true;
   }
   observation.low_corridor_safe =
       previous_phase == vertical_detour::LowProbePhase::VERIFYING &&
@@ -1119,7 +1140,8 @@ bool FastExplorationManager::buildStationaryVerticalDetourPlan(
   if (manual_path_enabled_ && manual_path_max_segment_length_ > 0.0)
     target.z() = pos.z() + std::max(-manual_path_max_segment_length_,
         std::min(manual_path_max_segment_length_, target.z() - pos.z()));
-  if (!isKnownSafeVerticalPath(pos, target.z(), descending)) return false;
+  if (!isKnownSafeVerticalPath(pos, target.z(),
+                              descending && !explorationFappCrossingActive())) return false;
   if (!planner_manager_->planVerticalTraj(pos, target)) return false;
   const bool controlled_escape =
       planner_manager_->isControlledEscapePosition(pos);
@@ -1141,6 +1163,7 @@ bool FastExplorationManager::buildStationaryVerticalDetourPlan(
   last_requested_goal_ = target;
   has_last_requested_goal_ = true;
   vertical_detour_plan_ = true;
+  if (explorationFappCrossingActive()) fapp_local_step_pending_ = true;
   pending_reference_height_ = target.z();
   ROS_ERROR("[vertical_detour] build live fixed-xy %s at (%.2f,%.2f), "
             "z %.2f -> %.2f.",
@@ -4015,10 +4038,12 @@ bool FastExplorationManager::buildManualFappUnderpassPath(
         low, minimum, origin.z(), near-begin, lower.z(), age);
     return false;
   }
-  // 只生成前进下降和低位穿越，末端仍低位且超过已膨胀远端0.20m。
+  // 末端保持低位。自主探索无需再强制越过已膨胀远端20cm，
+  // 后方静态物阻挡时另选安全局部终点；航点模式保持原有终点语义。
   // 回升交给实际越过后的下一次规划，后方回升受阻不能否决眼前可行的下穿。
-  const double end = std::min(far + 0.20, waypoint.dot(forward));
-  if (end <= far + 0.10 || end <= current + 0.03) {
+  const double end = std::min(far + (manual_path_enabled_ ? 0.20 : 0.0),
+                              waypoint.dot(forward));
+  if ((manual_path_enabled_ && end <= far + 0.10) || end <= current + 0.03) {
     ROS_WARN_THROTTLE(1.0, "[fapp_underpass_check] reject endpoint current=%.3f far=%.3f end=%.3f",
         current, far, end);
     return false;
@@ -4145,15 +4170,109 @@ bool FastExplorationManager::planFappOpeningCrossing(
   return true;
 }
 
+bool FastExplorationManager::planLocalFappUnderpass(
+    const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, const Vector3d& yaw) {
+  if (!pointInsideWorkspaceLock(pos)) return false;
+  Vector3d lower, upper;
+  double age;
+  if (!planner_manager_->watchedFappBounds(lower, upper, age)) return false;
+  const Vector3d forward = manual_fapp_forward_.normalized();
+  const Vector3d lateral(-forward.y(), forward.x(), 0.0);
+  const double near = (0.5 * (lower + upper)).dot(forward) -
+      (0.5 * (upper - lower)).dot(forward.cwiseAbs()) - sdf_map_->getResolution();
+  const double low = std::min(pos.z(), lower.z() - underpass_height_tracking_margin_);
+  const double minimum = std::max(underpass_min_height_, task_search_manager_->clampSearchHeight(-1e3));
+  if (low < minimum) return false;
+  const bool need_descent = pos.z() > low + 0.02;
+  const double approach = near - pos.dot(forward);
+  const auto safe_column = [&](const Vector3d& point) {
+    return pointInsideWorkspaceLock(point) && planner_manager_->isKnownFreePosition(point) &&
+        isKnownSafeVerticalPath(point, low, false);
+  };
+  if (need_descent && approach <= kUnderpassStartDistance && safe_column(pos)) {
+    low_probe_phase_ = vertical_detour::LowProbePhase::DESCENDING;
+    low_probe_height_ = low;
+    low_probe_origin_ = low_probe_target_ = pos;
+    low_probe_target_.z() = low;
+    low_probe_direction_ = forward;
+    low_probe_yaw_ = yaw[0];
+    low_probe_descent_end_time_ = ros::Time();
+    manual_fapp_curve_active_ = suspended_underpass_active_ = false;
+    if (buildStationaryVerticalDetourPlan(pos, yaw)) {
+      fapp_crossing_retry_needed_ = false;
+      ROS_WARN("[fapp_local_step] fixed-xy descent z=%.3f -> %.3f; next crossing is replanned after arrival.", pos.z(), low);
+      return true;
+    }
+    cancelActiveLowProbe("local FAPP descent candidate unavailable");
+    return false;
+  }
+
+  // 终点由本段已知可行空间决定，不要求一次到达动态包络远端+20cm。
+  // 高位先接近一个下降柱可用的停留点；低位沿自由前缀逐段穿越。
+  const double horizon = need_descent
+      ? std::min(route_width_horizon_, std::max(0.0, approach - kUnderpassStartDistance))
+      : route_width_horizon_;
+  const double step = std::max(0.025, sdf_map_->getResolution());
+  vector<Vector3d> best;
+  double best_progress = -1.0, best_clearance = -1.0;
+  for (double side : {0.0, 0.20, -0.20, 0.40, -0.40}) {
+    const Vector3d delta = horizon * forward + side * lateral;
+    const int count = std::max(1, static_cast<int>(std::ceil(delta.norm() / step)));
+    vector<Vector3d> candidate{pos};
+    double clearance = std::numeric_limits<double>::infinity();
+    for (int i = 1; i <= count; ++i) {
+      const Vector3d point = pos + (static_cast<double>(i) / count) * delta;
+      if (!pointInsideWorkspaceLock(point) || !planner_manager_->isKnownFreePosition(point)) break;
+      candidate.push_back(point);
+      if (!pathInsideWorkspaceLock(candidate) || !planner_manager_->isPathSafe(candidate) ||
+          !planner_manager_->isFappPathSafe(candidate) ||
+          !keepsDynamicSide(candidate) || !task_search_manager_->isRecoveryPathAllowed(candidate, false)) break;
+      clearance = std::min(clearance, sdf_map_->getDistance(point));
+      if ((point-pos).norm() < 0.05 || (need_descent && !safe_column(point))) continue;
+      const double progress = (point-pos).dot(forward);
+      if (progress > best_progress + 0.01 ||
+          (std::fabs(progress-best_progress) <= 0.01 && clearance > best_clearance + 0.01)) {
+        best = candidate;
+        best_progress = progress;
+        best_clearance = clearance;
+      }
+    }
+  }
+  if (best.empty() || !planner_manager_->planExploreTraj(best, vel, acc, 0.0, true) ||
+      !planner_manager_->isTrajectorySafe() ||
+      !planner_manager_->planYawTurnInPlace(yaw, yaw[0])) return false;
+  manual_fapp_curve_active_ = suspended_underpass_active_ = false;
+  ed_->path_next_goal_ = best;
+  ed_->global_tour_ = {pos, best.back()};
+  ed_->next_goal_ = last_requested_goal_ = best.back();
+  has_last_requested_goal_ = true;
+  pending_reference_height_ = best.back().z();
+  fapp_local_step_pending_ = true;
+  fapp_crossing_retry_needed_ = false;
+  recovery_side_continuation_pending_ = false;
+  ROS_WARN("[fapp_local_step] %s target=(%.3f,%.3f,%.3f), forward=%.3fm; replan from endpoint.",
+           need_descent ? "approach descent column" : "low crossing prefix",
+           best.back().x(), best.back().y(), best.back().z(), best_progress);
+  return true;
+}
+
 bool FastExplorationManager::planExplorationFappCrossing(
     const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, const Vector3d& yaw) {
   if (!fapp_exploration_crossing_enabled_ || manual_path_enabled_ || external_selection_only_ ||
       !task_search_manager_ || !task_search_manager_->enabled() ||
       task_search_manager_->stage3Active() || task_search_manager_->landingRequested() ||
-      turn_in_place_session_active_ || low_probe_phase_ != vertical_detour::LowProbePhase::IDLE)
+      turn_in_place_session_active_ ||
+      (low_probe_phase_ != vertical_detour::LowProbePhase::IDLE &&
+       !(manual_fapp_active_ && low_probe_phase_ == vertical_detour::LowProbePhase::DESCENDING)))
     return false;
   manualFappObservationMissing(pos, yaw[0]);
   if (!manual_fapp_active_) return false;
+  fapp_local_step_pending_ = false;
+  if (low_probe_phase_ == vertical_detour::LowProbePhase::DESCENDING) {
+    Vector3d next; double next_yaw; bool wait;
+    if (handleActiveLowProbe(pos, next, next_yaw, wait))
+      return buildStationaryVerticalDetourPlan(pos, yaw);
+  }
   // 临时失败不消费穿越机会；执行普通入口/前进段时，FSM 仍可重新尝试。
   fapp_crossing_retry_needed_ = true;
   if (planFappOpeningCrossing(pos, vel, acc, yaw)) {
@@ -4170,15 +4289,18 @@ bool FastExplorationManager::planExplorationFappCrossing(
   const double far = (0.5 * (lower + upper)).dot(forward) +
       (0.5 * (upper - lower)).dot(forward.cwiseAbs()) + sdf_map_->getResolution();
   // 自动探索先低位越过历史障碍；无需提前把后方回升空间纳入同一条曲线。
-  const double end = far + 0.20;
+  const double end = far;
   Vector3d target = pos + (end - pos.dot(forward)) * forward;
   std::vector<Vector3d> path;
   double target_yaw = yaw[0];
   // 普通绕障的左右偏好不能封死下穿：每轮仍先检查侧下方通路。
   bool crossing = buildManualFappUnderpassPath(pos, target, path);
+  bool local_attempted = false;
   if (!crossing) {
     manual_fapp_curve_active_ = false;
     suspended_underpass_active_ = false;
+    local_attempted = true;
+    if (planLocalFappUnderpass(pos, vel, acc, yaw)) return true;
     bool obstacle = false;
     crossing = buildFappSideBypass(pos, yaw[0], forward, target, target_yaw, obstacle, &path);
   }
@@ -4192,7 +4314,7 @@ bool FastExplorationManager::planExplorationFappCrossing(
     // 避让候选不可用时继续原探索选路，不能封死普通前进规划。
     manual_fapp_curve_active_ = false;
     suspended_underpass_active_ = false;
-    return false;
+    return !local_attempted && planLocalFappUnderpass(pos, vel, acc, yaw);
   }
   // 完整动态穿越沿用航点版长度豁免，不进入普通探索的1.2m截断。
   ed_->path_next_goal_ = path;
@@ -4524,6 +4646,7 @@ int FastExplorationManager::planExploreMotion(
   planned_split_route_ = {};
   fapp_rush_pending_ = false;
   pending_reference_height_ = std::numeric_limits<double>::quiet_NaN();
+  fapp_local_step_pending_ = false;
   // 上轮同侧短步若未生成成功，不在下一轮反复强选同一点。
   if (recovery_side_continuation_pending_ && !manual_fapp_active_ && !committedSplitRoute()) {
     recovery_side_latched_ = false;
