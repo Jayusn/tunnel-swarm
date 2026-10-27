@@ -11,6 +11,7 @@ import rospy
 from cv_bridge import CvBridge
 from geometry_msgs.msg import PointStamped
 from sensor_msgs.msg import CameraInfo
+from std_msgs.msg import String
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import thermal_ros_node as detector
@@ -37,6 +38,18 @@ def make_node(monkeypatch):
     node.bridge = CvBridge()
     node.depth_frames = deque(maxlen=10)
     node.color_frames = deque(maxlen=10)
+    node.fusion_delay_s = 0
+    node.pending_candidate_statuses = deque(maxlen=100)
+    node.fusion_candidate_status = None
+    node.fusion_candidate_status_version = 0
+    node.candidate_status = None
+    node.candidate_status_version = 0
+    node.published_candidate_status_version = 0
+    node.target_detected = False
+    node.thermal_pixel_msg = None
+    node.candidate_target_detected = False
+    node.candidate_thermal_pixel_msg = None
+    node.candidate_thermal_bbox = None
     node.first_color_wall_time = None
     node.d435_exposure_warmup_seconds = 0
     node.homography = np.eye(3)
@@ -121,6 +134,101 @@ def test_cache_selects_each_stream_independently_without_new_age_gate(monkeypatc
     for i in range(20):
         add_frame(node, 20 + i, 1000, i)
     assert len(node.depth_frames) == len(node.color_frames) == 10
+
+
+def send_candidate(node, seconds, cx=2):
+    status = {"stamp": seconds, "detected": cx is not None,
+              "candidates": [] if cx is None else [
+                  {"cx": cx, "cy": 2, "bbox": [1, 1, 4, 4], "stable": True}]}
+    node.candidate_status_callback(String(data=json.dumps(status)))
+
+
+def test_delay_pairs_late_images_with_original_event_not_latest_detection(monkeypatch):
+    node = make_node(monkeypatch)
+    node.fusion_delay_s = .4
+    clock = [10.0]
+    monkeypatch.setattr(rospy.Time, "now", staticmethod(lambda: stamp(clock[0])))
+    add_frame(node, 9.8, 3000, 99)
+    send_candidate(node, 10.0)
+    node.timer_callback(None)
+    assert not node.report_candidate_pub.messages
+    # A new detection arrives before the images for the old detection.
+    clock[0] = 10.2
+    send_candidate(node, 10.2, cx=8)
+    clock[0] = 10.35
+    _, original_color = add_frame(node, 10.01, 1000, 11)
+    node.timer_callback(None)
+    assert not node.report_candidate_pub.messages
+    clock[0] = 10.401
+    node.timer_callback(None)
+    result = json.loads(node.report_candidate_pub.messages[0].data)
+    assert result["stamp"] == 10
+    assert result["cx"] == 2
+    assert result["camera_point"]["z"] == pytest.approx(1)
+    assert result["source_timing"]["depth_dt_s"] == pytest.approx(.01)
+    assert result["source_timing"]["color_dt_s"] == pytest.approx(.012)
+    assert result["source_timing"]["fusion_age_s"] == pytest.approx(.401)
+    assert result["source_timing"]["color_depth_dt_s"] == pytest.approx(.002)
+    assert original_color.header.stamp == stamp(10.012)
+    assert node.d435_evidence_image_pub.messages[0].header.stamp == stamp(10)
+    assert node.camera_point_pub.messages[0].header.stamp == stamp(10)
+    assert node.candidate_camera_point_pub.messages[0].header.stamp == stamp(10)
+    assert node.candidate_camera_point_pub.messages[0].point.x == pytest.approx(0)
+    node.timer_callback(None)
+    assert len(node.report_candidate_pub.messages) == 1
+    clock[0] = 10.601
+    add_frame(node, 10.20, 2000, 22)
+    node.timer_callback(None)
+    result = json.loads(node.report_candidate_pub.messages[1].data)
+    assert result["stamp"] == 10.2 and result["cx"] == 8
+    assert result["camera_point"]["z"] == pytest.approx(2)
+
+
+def test_delayed_empty_event_clears_fused_target_without_using_live_flags(monkeypatch):
+    node = make_node(monkeypatch)
+    node.fusion_delay_s = .4
+    send_candidate(node, 10, cx=None)
+    send_candidate(node, 10.3, cx=8)
+    node.target_detected = node.candidate_target_detected = True
+    monkeypatch.setattr(rospy.Time, "now", staticmethod(lambda: stamp(10.401)))
+    add_frame(node, 10, 1000, 11)
+    node.timer_callback(None)
+    assert not node.report_candidate_pub.messages
+    assert not node.candidate_camera_point_pub.messages
+    assert node.fusion_valid_pub.messages[-1].data is False
+
+
+def test_delay_uses_newest_ready_event_after_timer_stall(monkeypatch):
+    node = make_node(monkeypatch)
+    node.fusion_delay_s = .4
+    for s in [10, 10.05, 10.10, 10.15]:
+        send_candidate(node, s)
+    status, version = node.fusion_status_snapshot(stamp(10.511))
+    assert status["stamp"] == 10.10 and version == 3
+    assert len(node.pending_candidate_statuses) == 1
+    assert node.fusion_status_snapshot(stamp(10.52)) == (status, version)
+
+
+def test_zero_delay_keeps_immediate_fusion_and_old_frames_are_not_rejected(monkeypatch):
+    node = make_node(monkeypatch)
+    add_frame(node, 9.7, 1000, 11)
+    send_candidate(node, 10)
+    node.timer_callback(None)
+    result = json.loads(node.report_candidate_pub.messages[0].data)
+    assert result["stamp"] == 10
+    assert result["source_timing"]["depth_dt_s"] == pytest.approx(-.3)
+    assert not node.pending_candidate_statuses
+
+
+def test_delayed_fusion_keeps_existing_nearest_frame_behavior_when_input_is_late(monkeypatch):
+    node = make_node(monkeypatch)
+    node.fusion_delay_s = .4
+    add_frame(node, 9.7, 1000, 11)
+    send_candidate(node, 10)
+    monkeypatch.setattr(rospy.Time, "now", staticmethod(lambda: stamp(10.401)))
+    node.timer_callback(None)
+    result = json.loads(node.report_candidate_pub.messages[0].data)
+    assert result["source_timing"]["depth_dt_s"] == pytest.approx(-.3)
 
 
 def test_detector_records_time_before_detection_and_reuses_it(monkeypatch):

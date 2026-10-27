@@ -102,6 +102,15 @@ class ThermalD435FusionNode:
         cache_size = max(1, int(self.get_param("d435_image_cache_size", 10)))
         self.depth_frames = deque(maxlen=cache_size)
         self.color_frames = deque(maxlen=cache_size)
+        self.fusion_delay_s = max(0.0, float(self.get_param("fusion_delay_s", 0.0)))
+        image_buff_size = int(self.get_param("d435_image_buff_size", 16777216))
+        # Retain thermal events while the corresponding RealSense frames arrive.
+        # Only metadata is queued; image buffers remain in the two frame caches.
+        self.pending_candidate_statuses = deque(
+            maxlen=max(100, int(math.ceil(self.fusion_delay_s * max(self.publish_rate, 20))) + 20)
+        )
+        self.fusion_candidate_status = None
+        self.fusion_candidate_status_version = 0
 
         self.target_detected = False
         self.thermal_pixel_msg = None
@@ -168,8 +177,14 @@ class ThermalD435FusionNode:
             self.candidate_status_callback,
         )
         rospy.Subscriber(self.d435_camera_info_topic, CameraInfo, self.camera_info_callback)
-        rospy.Subscriber(self.d435_depth_topic, Image, self.depth_callback, queue_size=1)
-        rospy.Subscriber(self.d435_color_topic, Image, self.color_callback, queue_size=1)
+        rospy.Subscriber(
+            self.d435_depth_topic, Image, self.depth_callback,
+            queue_size=1, buff_size=image_buff_size,
+        )
+        rospy.Subscriber(
+            self.d435_color_topic, Image, self.color_callback,
+            queue_size=1, buff_size=image_buff_size,
+        )
 
         period = 1.0 / self.publish_rate if self.publish_rate > 0 else 0.05
         self.timer = rospy.Timer(rospy.Duration(period), self.timer_callback)
@@ -223,6 +238,33 @@ class ThermalD435FusionNode:
             self.candidate_thermal_bbox = bbox
             self.candidate_status = status
             self.candidate_status_version += 1
+            if self.fusion_delay_s > 0.0:
+                try:
+                    event_time = float(status["stamp"])
+                except (TypeError, ValueError, KeyError):
+                    event_time = rospy.Time.now().to_sec()
+                self.pending_candidate_statuses.append(
+                    (event_time, self.candidate_status_version, status)
+                )
+
+    def fusion_status_snapshot(self, now):
+        """Called under self.lock; choose the newest event whose delay has elapsed.
+
+        Keep the last selected event for display/retry if no new one is ready.
+        This retains the existing latest-event policy without accumulating work
+        when the timer runs slower than the detector. No callback sleeps here.
+        """
+        if self.fusion_delay_s <= 0.0:
+            return self.candidate_status, self.candidate_status_version
+        cutoff = now.to_sec() - self.fusion_delay_s
+        while self.pending_candidate_statuses:
+            event_time, version, status = self.pending_candidate_statuses[0]
+            if event_time > cutoff:
+                break
+            self.pending_candidate_statuses.popleft()
+            self.fusion_candidate_status = status
+            self.fusion_candidate_status_version = version
+        return self.fusion_candidate_status, self.fusion_candidate_status_version
 
     def _pixel_callback(self, msg, candidate):
         msg_type = msg._connection_header.get("type", "")
@@ -292,7 +334,7 @@ class ThermalD435FusionNode:
                     )
 
     def matched_d435_frames(self, stamp):
-        """Select nearest received frames; do not wait for or reject frames.
+        """Select nearest received frames for the chosen thermal event.
 
         Callback arrays are replaced, never edited, so retaining references
         here gives the entire fusion operation a consistent input snapshot.
@@ -665,11 +707,18 @@ class ThermalD435FusionNode:
             "color_dt_s": None if color_stamp is None else color_stamp - base_stamp,
             "depth_dt_s": None if depth_time is None else depth_time - base_stamp,
         }
+        fusion_stamp = rospy.Time.now().to_sec()
+        source_timing["fusion_stamp"] = fusion_stamp
+        source_timing["fusion_age_s"] = fusion_stamp - base_stamp
+        source_timing["color_depth_dt_s"] = (
+            None if color_stamp is None or depth_time is None else color_stamp - depth_time
+        )
         if color_stamp is not None and depth_time is not None:
             rospy.loginfo_throttle(
-                1.0, "Thermal frame match: color_dt=%.1f ms depth_dt=%.1f ms",
+                1.0, "Thermal frame match: color_dt=%.1f ms depth_dt=%.1f ms fusion_age=%.1f ms",
                 source_timing["color_dt_s"] * 1000.0,
                 source_timing["depth_dt_s"] * 1000.0,
+                source_timing["fusion_age_s"] * 1000.0,
             )
 
         for index, candidate in enumerate(self.status_candidates(status)):
@@ -807,9 +856,32 @@ class ThermalD435FusionNode:
             candidate_detected = self.candidate_target_detected
             candidate_pixel_msg = self.candidate_thermal_pixel_msg
             candidate_thermal_bbox = self.candidate_thermal_bbox
-            candidate_status = self.candidate_status
-            candidate_status_version = self.candidate_status_version
+            candidate_status, candidate_status_version = self.fusion_status_snapshot(
+                rospy.Time.now()
+            )
             camera_info = self.camera_info
+
+        if self.fusion_delay_s > 0.0:
+            if candidate_status is None:
+                return  # Startup: thermal events are still waiting for their frames.
+            # Do not combine a delayed event with the latest Bool/Point messages.
+            detected = False
+            thermal_pixel_msg = None
+            candidates = self.status_candidates(candidate_status)
+            candidate_detected = bool(candidates)
+            candidate_pixel_msg = None
+            candidate_thermal_bbox = None
+            if candidates:
+                candidate = candidates[0]
+                candidate_pixel_msg = PointStamped()
+                candidate_pixel_msg.header.stamp = rospy.Time.from_sec(
+                    float(candidate_status["stamp"])
+                )
+                candidate_pixel_msg.header.frame_id = "thermal_camera"
+                candidate_pixel_msg.point.x = float(candidate["cx"])
+                candidate_pixel_msg.point.y = float(candidate["cy"])
+                candidate_pixel_msg.point.z = 1.0
+                candidate_thermal_bbox = candidate.get("bbox")
 
         try:
             status_stamp = rospy.Time.from_sec(float(candidate_status["stamp"]))

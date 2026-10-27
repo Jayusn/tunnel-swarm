@@ -3,6 +3,9 @@ import json
 import os
 import sys
 import unittest
+from unittest.mock import patch
+
+import rospy
 
 from geometry_msgs.msg import PointStamped
 from sensor_msgs.msg import CameraInfo
@@ -23,6 +26,11 @@ class RecordingPublisher:
 
 
 class MultiCandidateFusionTests(unittest.TestCase):
+    def setUp(self):
+        clock = patch.object(rospy.Time, "now", return_value=rospy.Time.from_sec(13))
+        clock.start()
+        self.addCleanup(clock.stop)
+
     def make_node(self):
         node = ThermalD435FusionNode.__new__(ThermalD435FusionNode)
         node.report_candidate_pub = RecordingPublisher()
