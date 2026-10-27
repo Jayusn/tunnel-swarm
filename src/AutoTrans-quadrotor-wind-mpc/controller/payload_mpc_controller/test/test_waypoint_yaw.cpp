@@ -631,28 +631,36 @@ TEST_F(WaypointYaw, ExistingExitLockStillHasPriority) {
   for (int i = 0; i <= kSamples; ++i) EXPECT_NEAR(yaw(i), 0.4, 1e-5);
 }
 
-TEST_F(WaypointYaw, TrackingDeviationStopsWithoutWaitingForPlanner) {
+TEST_F(WaypointYaw, TrackingDeviationDoesNotRequestReplanOrStopTheReference) {
+  // 即使旧参数仍留在参数服务器，控制器也不再自行按10/15cm换轨或停止。
+  nh.setParam("tracking_replan/enabled", true);
+  fsm.reset(new MPCFSM(nh, params, *controller));
+  nh.deleteParam("tracking_replan/enabled");
   auto info = trajectoryInfo();
   prepareStop(info);
-  fsm->tracking_replan_enabled_ = true;
-  fsm->tracking_replan_pub_ = nh.advertise<traj_utils::TrackingReplan>("tracking_request_test", 10);
-  fsm->odom_data.p = Eigen::Vector3d(.3, .11, .6);
-  ros::Time::setNow(ros::Time(1002));
-  fsm->checkTrackingDeviation(ros::Time::now());
-  EXPECT_FALSE(fsm->trajectory_data.replan_pending);
-  ros::Time::setNow(ros::Time(1002.11));
-  fsm->checkTrackingDeviation(ros::Time::now());
-  EXPECT_TRUE(fsm->trajectory_data.replan_pending);
-  EXPECT_FALSE(fsm->trajectory_data.replan_stopped);
-  const auto soft = fsm->trajectory_data.replan_request_id;
-  fsm->odom_data.p.y() = .16;
-  ros::Time::setNow(ros::Time(1002.12));
-  fsm->checkTrackingDeviation(ros::Time::now());
-  EXPECT_TRUE(fsm->trajectory_data.replan_stopped);
-  EXPECT_TRUE(fsm->trajectory_data.traj_queue.empty());
-  EXPECT_GT(fsm->trajectory_data.replan_request_id, soft);
-  EXPECT_EQ(fsm->exec_traj_state_, MPCFSM::HOVER);
-  EXPECT_LT((fsm->hover_pose_ - fsm->odom_data.p).norm(), 1e-9);
+  const Eigen::Vector3d positions[] = {
+      Eigen::Vector3d(.3, .11, .6), // 超过旧重规划阈值。
+      Eigen::Vector3d(.3, .16, .6), // 超过旧立即停止阈值。
+      Eigen::Vector3d(.05, 0, .6)   // 仍在路径上，但落后当前时刻参考超过15cm。
+  };
+  double time = 1002.0;
+  for (const auto &position : positions) {
+    fsm->odom_data.p = position;
+    fsm->est_state_.head<3>() = position.cast<real_t>();
+    for (int sample = 0; sample < 2; ++sample) {
+      ros::Time::setNow(ros::Time(time));
+      fsm->CMD_CTRL_process();
+      controller->waitForPreparation();
+      EXPECT_FALSE(fsm->trajectory_data.replan_pending);
+      EXPECT_FALSE(fsm->trajectory_data.replan_stopped);
+      EXPECT_EQ(fsm->trajectory_data.replan_request_id, 0U);
+      ASSERT_EQ(fsm->trajectory_data.traj_queue.size(), 1U);
+      EXPECT_EQ(fsm->exec_traj_state_, MPCFSM::POLY_TRAJ);
+      EXPECT_NEAR(controller->reference_states_(kPosX, 0),
+                  .3 * (time - 1001.0), 1e-5);
+      time += 0.11;
+    }
+  }
 }
 
 

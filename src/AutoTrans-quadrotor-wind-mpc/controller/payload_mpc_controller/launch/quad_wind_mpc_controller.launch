@@ -1,7 +1,4 @@
 <launch>
-  <arg name="tracking_replan_enabled" default="false"/>
-  <arg name="tracking_replan_error" default="0.10"/>
-  <arg name="tracking_stop_error" default="0.15"/>
   <arg name="force_estimator_method" default="window_opt"/>
   <arg name="ndob_rate" default="20.0"/>
   <arg name="ndob_cutoff_freq" default="20.0"/>
@@ -76,9 +73,6 @@
     <param name="filter/sample_freq_quad_acc" value="$(arg imu_sample_freq)"/>
     <param name="filter/sample_freq_quad_omg" value="$(arg imu_sample_freq)"/>
     <param name="force_estimator/force_sync_max_interp_gap" value="$(arg force_sync_max_interp_gap)"/>
-    <param name="tracking_replan/enabled" value="$(arg tracking_replan_enabled)"/>
-    <param name="tracking_replan/error" value="$(arg tracking_replan_error)"/>
-    <param name="tracking_replan/stop_error" value="$(arg tracking_stop_error)"/>
     <param name="force_estimator/method" value="$(arg force_estimator_method)"/>
     <param name="force_estimator/ndob_rate" value="$(arg ndob_rate)"/>
     <param name="force_estimator/ndob_cutoff_freq" value="$(arg ndob_cutoff_freq)"/>

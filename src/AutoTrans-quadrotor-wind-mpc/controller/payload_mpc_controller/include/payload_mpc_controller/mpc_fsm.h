@@ -12,7 +12,6 @@
 #include <std_msgs/Bool.h>
 #include <std_msgs/String.h>
 #include <traj_utils/TrackingReplan.h>
-#include "tracking_deviation.h"
 #include "mpc_params.h"
 #include "mpc_input.h"
 #include "mpc_controller.h"
@@ -69,12 +68,6 @@ namespace PayloadMPC
 		ros::ServiceClient reboot_FCU_srv;
 
 		ros::Publisher des_yaw_pub;
-        bool tracking_replan_enabled_{false};
-        double tracking_replan_error_{0.10}, tracking_stop_error_{0.15};
-        double tracking_error_since_{-1.0};
-        ros::Publisher tracking_replan_pub_;
-        ros::Subscriber tracking_result_sub_;
-        void checkTrackingDeviation(const ros::Time& now);
 		ros::Publisher planning_stop_pub_;
 		ros::Publisher planning_restart_pub_;
 
