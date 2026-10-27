@@ -1528,6 +1528,150 @@ public:
     }
   }
 
+  static void runObstacleClearance(bool roof, bool high_reference = false) {
+    ros::NodeHandle nh("~");
+    FastExplorationManager manager;
+    initialize(nh,manager);
+    auto& planner = *manager.planner_manager_;
+    auto& map = *manager.sdf_map_;
+    auto& task = *manager.task_search_manager_;
+    task.setMap(manager.sdf_map_);
+    task.max_search_height_ = 1.90;
+    manager.ground_ascent_still_confirm_time_ = 0.0;
+    manager.vertical_detour_low_height_ = 0.10;
+    const Vector3d start(-0.525,0.025,0.625), end(1.025,0.025,0.625);
+    // 用真实射线构建已观测的上升柱和路线，再添加顶部为0.55m的障碍。
+    for (int layer=2;layer<=24;++layer) {
+      const double z=(layer+0.5)*0.05;
+      for (double x : {-1.525,1.525}) {
+        pcl::PointCloud<pcl::PointXYZ> cloud;
+        for (double y=-1.5;y<=1.5;y+=0.025)
+          cloud.push_back(pcl::PointXYZ(x,y,z));
+        for (int i=0;i<5;++i) map.inputPointCloud(cloud,cloud.size(),Vector3d(-0.85*x,0.0,z));
+      }
+    }
+    pcl::PointCloud<pcl::PointXYZ> obstacle;
+    for (double x : {0.425,0.475,0.525,0.575})
+      for (double y : {-0.075,-0.025,0.025,0.075})
+        for (double z : {0.425,0.475,0.525})
+          obstacle.push_back(pcl::PointXYZ(x,y,z));
+    for (int i=0;i<8;++i) map.inputPointCloud(obstacle,obstacle.size(),start);
+    if (roof) {
+      pcl::PointCloud<pcl::PointXYZ> ceiling;
+      for (double x : {-0.575,-0.525,-0.475})
+        for (double y : {-0.025,0.025,0.075})
+          ceiling.push_back(pcl::PointXYZ(x,y,0.775));
+      for (int i=0;i<8;++i) map.inputPointCloud(ceiling,ceiling.size(),start);
+    }
+    map.updateESDF3d();
+    ASSERT_TRUE(planner.planStraightTraj(start,end));
+    ASSERT_TRUE(planner.isTrajectorySafe());
+    manager.ed_->next_goal_=end;
+    double top;
+    ASSERT_TRUE(manager.trajectoryNeedsObstacleClearance(top));
+    EXPECT_NEAR(top,0.55,1e-6);
+    if (!roof) {
+      const Vector3d high_start(start.x(),start.y(),0.75), high_end(end.x(),end.y(),0.75);
+      ASSERT_TRUE(planner.planStraightTraj(high_start,high_end));
+      EXPECT_FALSE(manager.trajectoryNeedsObstacleClearance(top));
+      ASSERT_TRUE(planner.planStraightTraj(start+Vector3d(0,.7,0),end+Vector3d(0,.7,0)));
+      EXPECT_FALSE(manager.trajectoryNeedsObstacleClearance(top));
+      ASSERT_TRUE(planner.planStraightTraj(start,end));
+    }
+    manager.manual_fapp_active_=true;
+    manager.manual_fapp_curve_active_=false;
+    manager.manual_fapp_hold_height_=0.625;
+    Vector3d predicted_start=start;
+    if (high_reference) {
+      manager.updateMissionOdometry(start,0,ros::Time::now());
+      predicted_start.z()=0.75;
+      ASSERT_TRUE(planner.planStraightTraj(Vector3d(start.x(),start.y(),0.75),
+                                          Vector3d(end.x(),end.y(),0.75)));
+      ASSERT_FALSE(manager.trajectoryNeedsObstacleClearance(top));
+    }
+    bool needed=false;
+    const bool planned=manager.ensureObstacleTopClearance(predicted_start,Vector3d::Zero(),Vector3d::Zero(),needed);
+    ASSERT_TRUE(needed);
+    if (roof) {
+      EXPECT_FALSE(planned);
+      EXPECT_FALSE(manager.obstacleAscentPending());
+      return;
+    }
+    ASSERT_TRUE(planned);
+    ASSERT_TRUE(manager.currentPlanIsGroundAscent());
+    EXPECT_NEAR(manager.obstacle_clearance_height_,0.75,1e-6);
+    auto& trajectory=planner.local_data_.position_traj_;
+    for (double t=0;t<trajectory.getTimeSum();t+=.02)
+      EXPECT_LT((trajectory.evaluateDeBoorT(t)-start).head<2>().norm(),1e-6);
+    const Vector3d target=trajectory.evaluateDeBoorT(trajectory.getTimeSum());
+    EXPECT_GE(target.z(),0.75);
+    manager.recordPublishedTrajectoryHeight();
+    EXPECT_GE(manager.manual_fapp_hold_height_,0.75);
+    Vector3d actual=start;
+    actual.z()=.74;
+    manager.updateMissionOdometry(actual,0,ros::Time::now());
+    manager.buildGroundAscentPlan(actual,Vector3d::Zero(),Vector3d::Zero());
+    EXPECT_TRUE(manager.obstacleAscentPending());
+    actual.z()=.751;
+    manager.updateMissionOdometry(actual,0,ros::Time::now());
+    EXPECT_FALSE(manager.buildGroundAscentPlan(actual,Vector3d::Zero(),Vector3d::Zero()));
+    EXPECT_FALSE(manager.obstacleAscentPending());
+  }
+
+  static void runTurnPreemptsSpecialMotion() {
+    ros::NodeHandle nh("~");
+    nh.setParam("manager/use_geometric_path", true);
+    nh.setParam("astar/resolution_astar", 0.05);
+    nh.setParam("astar/allocate_num", 100000);
+    nh.setParam("astar/lambda_heu", 1.0);
+    nh.setParam("astar/max_search_time", 0.1);
+    FastExplorationManager manager;
+    initialize(nh,manager);
+    const Vector3d start(0.025,0.025,0.625);
+    auto& task=*manager.task_search_manager_;
+    task.setMap(manager.sdf_map_);
+    task.enabled_=true;
+    task.setCorridorFrame(Vector3d(-2,0,.625),Vector3d::UnitX());
+    task.updateRobotPose(start,0);
+    task.turn_yaw_follow_latch_.arm(Eigen::Vector2d::UnitY());
+    manager.turn_in_place_enabled_=true;
+    manager.manual_fapp_active_=true;
+    manager.ground_ascent_active_=true;
+    manager.obstacle_clearance_height_=0.8;
+    manager.low_probe_phase_=vertical_detour::LowProbePhase::DESCENDING;
+    ASSERT_TRUE(manager.planner_manager_->planStraightTraj(start,start+Vector3d(1,0,0)));
+    FastExplorationFSM fsm;
+    fsm.expl_manager_=std::shared_ptr<FastExplorationManager>(&manager,[](FastExplorationManager*){});
+    fsm.planner_manager_=manager.planner_manager_;
+    fsm.fd_=std::make_shared<FSMData>();
+    fsm.fp_=std::make_shared<FSMParam>();
+    fsm.fd_->state_str_={"INIT","WAIT","PLAN","PUB","EXEC","FINISH"};
+    fsm.fp_->emergency_brake_horizon_=.12;
+    fsm.fd_->odom_pos_=start;
+    fsm.fd_->odom_yaw_=0;
+    fsm.active_traj_=manager.planner_manager_->local_data_;
+    fsm.active_traj_.start_time_=ros::Time::now();
+    fsm.active_traj_valid_=true;
+    fsm.active_vertical_detour_=true;
+    fsm.active_ground_ascent_=true;
+    fsm.fapp_replan_pending_=true;
+    fsm.state_=EXEC_TRAJ;
+    fsm.emergency_brake_pub_=nh.advertise<std_msgs::Int32>("test_turn_brake",1);
+    fsm.safetyCallback(ros::TimerEvent());
+    EXPECT_EQ(fsm.state_,PLAN_TRAJ);
+    EXPECT_TRUE(fsm.active_traj_braked_);
+    EXPECT_TRUE(manager.turnInPlaceAlignmentPending());
+    EXPECT_FALSE(fsm.active_ground_ascent_);
+    EXPECT_FALSE(fsm.active_vertical_detour_);
+    EXPECT_FALSE(fsm.fapp_replan_pending_);
+    EXPECT_FALSE(manager.obstacleAscentPending());
+    EXPECT_EQ(manager.low_probe_phase_,vertical_detour::LowProbePhase::IDLE);
+    EXPECT_NEAR(manager.turn_in_place_final_yaw_,M_PI/2,1e-6);
+    // 转弯会话进入规划后仍优先于FAPP，不被旧动态穿越提前返回截走。
+    EXPECT_EQ(manager.planExploreMotion(start,Vector3d(.4,0,0),Vector3d::Zero(),Vector3d::Zero()),FAIL);
+    EXPECT_TRUE(manager.turnInPlaceAlignmentPending());
+  }
+
   static void runHeightReferenceOwnership() {
     ros::NodeHandle nh("~");
     FastExplorationManager manager;
@@ -1703,7 +1847,7 @@ public:
     task.curve_geometry_.center.setZero();
     check(manager.shouldReplanCurveHeading(fsm.fd_->odom_pos_, reference_yaw),
           "fixture did not request a new corridor heading");
-    // 即使已有待转航向，执行中的安全回调也不能以转弯为由结束平移。
+    // 普通弧形航向变化不抢占；地图已确认的离散转弯应立即打断旧平移。
     manager.turn_in_place_enabled_ = true;
     manager.mission_workspace_lock_received_ = true;
     manager.entry_forward_complete_ = true;
@@ -1711,21 +1855,21 @@ public:
     task.updateRobotPose(fsm.fd_->odom_pos_, 0.0);
     task.turn_yaw_follow_latch_.arm(Eigen::Vector2d::UnitY());
     fsm.last_suspended_underpass_check_ = ros::Time::now() + ros::Duration(30.0);
+    ros::NodeHandle nh("~");
+    fsm.emergency_brake_pub_ = nh.advertise<std_msgs::Int32>("test_route_brake", 1);
     fsm.safetyCallback(ros::TimerEvent());
-    check(fsm.state_ == EXEC_TRAJ && !fsm.active_traj_braked_,
-          "heading update replaced a collision-free published corridor route");
-
-    fsm.active_traj_.start_time_ = ros::Time::now() -
-        ros::Duration(fsm.active_traj_.duration_ - 0.02);
-    fsm.FSMCallback(ros::TimerEvent());
-    check(fsm.state_ == PLAN_TRAJ, "completed corridor route never resumed planning");
+    check(fsm.state_ == PLAN_TRAJ && fsm.active_traj_braked_ &&
+          manager.turnInPlaceAlignmentPending(),
+          "confirmed mapped turn waited for the old translation endpoint");
     Vector3d turn_direction;
     EXPECT_TRUE(task.mappedCorridorDirection(0.0, turn_direction));
     EXPECT_TRUE(turn_direction.isApprox(Vector3d::UnitY()));
-    task.completeTurnYawAlignment();
+    manager.completeTurnInPlace(fsm.fd_->odom_pos_);
 
     // 路线保持不能屏蔽新出现的占据：安全回调必须立刻刹停并交回规划。
     fsm.state_ = EXEC_TRAJ;
+    fsm.active_traj_braked_ = false;
+    fsm.active_traj_ = manager.planner_manager_->local_data_;
     fsm.active_traj_.start_time_ = ros::Time::now();
     fsm.fd_->odom_pos_ = fsm.active_traj_.position_traj_.evaluateDeBoorT(0.0);
     const Vector3d blocked = fsm.active_traj_.position_traj_.evaluateDeBoorT(
@@ -1738,7 +1882,6 @@ public:
     for (int i=0; i<8; ++i)
       manager.sdf_map_->inputPointCloud(cloud, cloud.size(), fsm.fd_->odom_pos_);
     manager.sdf_map_->updateESDF3d();
-    ros::NodeHandle nh("~");
     fsm.emergency_brake_pub_ = nh.advertise<std_msgs::Int32>("test_route_brake", 1);
     fsm.safetyCallback(ros::TimerEvent());
     check(fsm.active_traj_braked_ && fsm.state_ == PLAN_TRAJ &&
@@ -3377,6 +3520,19 @@ public:
   }
 };
 }
+TEST(UpperClearance, HighestVoxelPlusTwentyBeforeForward) {
+  fast_planner::TurnEscapeTest::runObstacleClearance(false);
+}
+TEST(UpperClearance, BlockedAscentLeavesOtherRoutesAvailable) {
+  fast_planner::TurnEscapeTest::runObstacleClearance(true);
+}
+TEST(UpperClearance, SafeHighReferenceStillWaitsForAircraftHeight) {
+  fast_planner::TurnEscapeTest::runObstacleClearance(false,true);
+}
+TEST(MappedTurn, InterruptsDynamicCrossingAndClimb) {
+  fast_planner::TurnEscapeTest::runTurnPreemptsSpecialMotion();
+}
+
 TEST(CruiseHeightRecovery, OpenSpaceClimbsAlongCommittedRightRoute) {
   fast_planner::TurnEscapeTest::runMovingClimb(0);
 }

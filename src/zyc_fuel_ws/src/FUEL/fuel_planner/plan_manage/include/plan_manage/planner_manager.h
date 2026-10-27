@@ -71,6 +71,7 @@ public:
   bool isPositionSafe(const Eigen::Vector3d& position) const;
   // 2026-07-28: FSM发布门控需要区分原始占据碰撞与仅接触膨胀层，决定能否执行受控逃逸。
   bool isRawPositionSafe(const Eigen::Vector3d& position) const;
+  double footprintRadius() const { return footprint_check_radius_; }
   // 巡航爬升要求整个采样圆盘已知自由，不能把未知上方空间当成可通过。
   bool isKnownFreePosition(const Eigen::Vector3d& position) const;
   // Relay stopping space is checked even when FUEL uses soft dynamic costs.

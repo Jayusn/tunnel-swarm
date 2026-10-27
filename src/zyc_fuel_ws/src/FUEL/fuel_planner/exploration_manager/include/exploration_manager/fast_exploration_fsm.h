@@ -63,6 +63,7 @@ private:
   ros::NodeHandle node_;
   ros::Timer exec_timer_, safety_timer_, vis_timer_;
   ros::Time last_suspended_underpass_check_;
+  ros::Time last_mapped_turn_check_;
   ros::CallbackQueue odom_callback_queue_;
   ros::Subscriber trigger_sub_, odom_sub_, mission_status_sub_;
   ros::Subscriber external_status_sub_;

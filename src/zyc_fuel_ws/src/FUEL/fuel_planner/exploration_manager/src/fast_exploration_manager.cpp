@@ -52,6 +52,9 @@ FastExplorationManager::~FastExplorationManager() {
 }
 
 void FastExplorationManager::recordPublishedTrajectoryHeight() {
+  if (obstacleAscentPending() && manual_fapp_active_ &&
+      std::isfinite(pending_reference_height_))
+    manual_fapp_hold_height_ = pending_reference_height_;
   if (manual_fapp_active_ && fapp_rush_pending_) {
     fapp_rush_active_ = true;
     fapp_rush_pending_ = false;
@@ -609,7 +612,11 @@ bool FastExplorationManager::buildGroundAscentPlan(
   const double height_error = ground_ascent_target_.z() - pos.z();
   const double xy_error = (pos - ground_ascent_target_).head<2>().norm();
   const double speed = vel.norm();
-  if (height_error <= ground_ascent_height_tolerance_ &&
+  const double actual_height = std::isfinite(latest_odom_height_) ? latest_odom_height_ : pos.z();
+  const bool height_reached = std::isfinite(obstacle_clearance_height_)
+      ? ground_ascent_anchor_valid_ && actual_height >= obstacle_clearance_height_
+      : height_error <= ground_ascent_height_tolerance_;
+  if (height_reached &&
       xy_error <= vertical_detour_xy_tolerance_) {
     if (!std::isfinite(speed) || speed > ground_ascent_max_stationary_speed_) {
       ground_ascent_still_since_ = ros::Time(0);
@@ -620,6 +627,7 @@ bool FastExplorationManager::buildGroundAscentPlan(
         ground_ascent_still_confirm_time_)
       return false;
     ground_ascent_active_ = false;
+    obstacle_clearance_height_ = std::numeric_limits<double>::quiet_NaN();
     ground_ascent_optional_ = false;
     ground_ascent_anchor_valid_ = false;
     ground_ascent_still_since_ = ros::Time(0);
@@ -1461,13 +1469,100 @@ bool FastExplorationManager::findForwardObstacleTop(
           continue;
         if (sdf_map_->isInMap(probe) &&
             sdf_map_->getOccupancy(probe) == SDFMap::OCCUPIED) {
-          obstacle_top = std::max(obstacle_top, z + 0.5 * step);
+          Eigen::Vector3i index;
+          Vector3d voxel_center;
+          sdf_map_->posToIndex(probe, index);
+          sdf_map_->indexToPos(index, voxel_center);
+          obstacle_top = std::max(obstacle_top,
+              voxel_center.z() + 0.5 * sdf_map_->getResolution());
           found = true;
         }
       }
     }
   }
   return found;
+}
+
+bool FastExplorationManager::trajectoryNeedsObstacleClearance(double& obstacle_top) const {
+  obstacle_top = -std::numeric_limits<double>::infinity();
+  if (!sdf_map_ || !planner_manager_) return false;
+  auto& trajectory = planner_manager_->local_data_.position_traj_;
+  const double duration = trajectory.getTimeSum();
+  if (!std::isfinite(duration) || duration <= 0.0) return false;
+  const double resolution = sdf_map_->getResolution();
+  const double radius = planner_manager_->footprintRadius();
+  const double clearance = std::max(0.20, vertical_detour_upper_obstacle_clearance_);
+  Vector3d origin, size;
+  sdf_map_->getRegion(origin, size);
+  // 与上绕取高使用同一最低障碍层，避免把地面当作需要上绕的障碍物。
+  const double minimum_z = std::max(origin.z(), vertical_detour_low_height_);
+  const int samples = std::max(1, static_cast<int>(std::ceil(duration / 0.05)));
+  bool insufficient = false;
+  for (int sample = 0; sample <= samples; ++sample) {
+    const Vector3d point = trajectory.evaluateDeBoorT(duration * sample / samples);
+    Eigen::Vector3i low, high;
+    sdf_map_->posToIndex(Vector3d(point.x()-radius, point.y()-radius, minimum_z), low);
+    sdf_map_->posToIndex(Vector3d(point.x()+radius, point.y()+radius, point.z()), high);
+    for (int x = low.x(); x <= high.x(); ++x) {
+      for (int y = low.y(); y <= high.y(); ++y) {
+        for (int z = high.z(); z >= low.z(); --z) {
+          const Eigen::Vector3i index(x,y,z);
+          if (!sdf_map_->isInMap(index)) continue;
+          Vector3d center;
+          sdf_map_->indexToPos(index, center);
+          const double dx = std::max(0.0, std::fabs(center.x()-point.x())-0.5*resolution);
+          const double dy = std::max(0.0, std::fabs(center.y()-point.y())-0.5*resolution);
+          if (dx*dx+dy*dy > radius*radius+1e-9) break;
+          const double top = center.z()+0.5*resolution;
+          // 只测将从上方经过的物体；头顶障碍仍由原三维碰撞检查处理。
+          if (top > point.z()+1e-6 || center.z() < minimum_z ||
+              sdf_map_->getOccupancy(index) != SDFMap::OCCUPIED) continue;
+          obstacle_top = std::max(obstacle_top, top);
+          insufficient = insufficient || point.z() < top+clearance-1e-6;
+          break;
+        }
+      }
+    }
+  }
+  return insufficient;
+}
+
+bool FastExplorationManager::ensureObstacleTopClearance(
+    const Vector3d& pos, const Vector3d& vel, const Vector3d& yaw, bool& ascent_needed) {
+  ascent_needed = false;
+  if (manual_fapp_curve_active_ || suspended_underpass_active_ ||
+      low_probe_phase_ != vertical_detour::LowProbePhase::IDLE) return false;
+  double top;
+  const bool insufficient = trajectoryNeedsObstacleClearance(top);
+  if (!std::isfinite(top)) return false;
+  const double required = top + std::max(0.20, vertical_detour_upper_obstacle_clearance_);
+  // 预测起点可能已经抬高，放行必须以连续里程计回调记录的真实高度为准。
+  const double actual_height = std::isfinite(latest_odom_height_) ? latest_odom_height_ : pos.z();
+  if (!insufficient && actual_height >= required) return false;
+  ascent_needed = true;
+  Vector3d target = pos;
+  // 参考端点留出现有高度跟踪容差，但实际放行仍必须达到障碍顶部+20cm。
+  target.z() = std::max(pos.z(), required) + ground_ascent_height_tolerance_;
+  if ((task_search_manager_ &&
+       target.z() > task_search_manager_->clampSearchHeight(target.z())+1e-6) ||
+      !pointInsideWorkspaceLock(target) || !isKnownSafeGroundAscentPath(pos,target) ||
+      !planner_manager_->isFappPathSafe({pos,target})) {
+    if (task_search_manager_) task_search_manager_->reportGoalFailure(ed_->next_goal_);
+    ROS_WARN("[upper_clearance] route crosses obstacle top %.2fm without 20cm clearance; "
+             "ascent to %.2fm unavailable, select another route.", top,target.z());
+    return false;
+  }
+  obstacle_clearance_height_ = required;
+  ground_ascent_active_ = true;
+  ground_ascent_optional_ = false;
+  ground_ascent_anchor_valid_ = false;
+  ground_ascent_still_since_ = ros::Time(0);
+  ground_ascent_target_ = target;
+  ground_ascent_yaw_ = yaw[0];
+  fapp_rush_pending_ = false;
+  ROS_WARN("[upper_clearance] obstacle_top=%.2fm required_actual_z=%.2fm target_z=%.2fm; "
+           "gain clearance before crossing obstacle.",top,required,target.z());
+  return buildGroundAscentPlan(pos,vel,yaw);
 }
 
 bool FastExplorationManager::buildCenterGatePassage(
@@ -3151,6 +3246,32 @@ bool FastExplorationManager::planInflationHistoryEscape(
   return false;
 }
 
+bool FastExplorationManager::requestMappedTurn(double yaw) {
+  if (!turn_in_place_enabled_ || external_selection_only_ || manual_path_enabled_ ||
+      !task_search_manager_ || !task_search_manager_->enabled() ||
+      task_search_manager_->stage3Active() ||
+      task_search_manager_->exitVerificationActive() ||
+      task_search_manager_->landingRequested())
+    return false;
+  // 通道位置已由里程计回调更新，不能用重规划的未来起点覆盖它。
+  Vector3d direction;
+  if (!task_search_manager_->mappedCorridorDirection(yaw, direction)) return false;
+  if (!turn_in_place_session_active_) {
+    turn_in_place_session_active_ = true;
+    turn_in_place_final_yaw_ = std::atan2(direction.y(), direction.x());
+    turn_in_place_still_since_ = ros::Time(0);
+    skip_straight_extension_after_turn_ = true;
+  }
+  cancelActiveLowProbe("confirmed mapped turn interrupts current trajectory");
+  fapp_rush_pending_ = false;
+  ground_ascent_active_ = false;
+  ground_ascent_optional_ = false;
+  ground_ascent_anchor_valid_ = false;
+  obstacle_clearance_height_ = std::numeric_limits<double>::quiet_NaN();
+  clearWiderRoute();
+  return true;
+}
+
 bool FastExplorationManager::buildTurnInPlacePlan(
     const Vector3d& pos, const Vector3d& vel, const Vector3d& acc,
     const Vector3d& yaw, const Vector3d& turn_direction) {
@@ -3944,6 +4065,9 @@ bool FastExplorationManager::planExplorationFappCrossing(
   // 临时失败不消费穿越机会；执行普通入口/前进段时，FSM 仍可重新尝试。
   fapp_crossing_retry_needed_ = true;
   if (planFappOpeningCrossing(pos, vel, acc, yaw)) {
+    bool clearance_ascent_needed = false;
+    if (ensureObstacleTopClearance(pos,vel,yaw,clearance_ascent_needed)) return true;
+    if (clearance_ascent_needed) return false;
     fapp_crossing_retry_needed_ = false;
     return true;
   }
@@ -3984,6 +4108,9 @@ bool FastExplorationManager::planExplorationFappCrossing(
   ed_->next_goal_ = path.back();
   last_requested_goal_ = path.back();
   has_last_requested_goal_ = true;
+  bool clearance_ascent_needed = false;
+  if (ensureObstacleTopClearance(pos,vel,yaw,clearance_ascent_needed)) return true;
+  if (clearance_ascent_needed) return false;
   pending_reference_height_ = path.back().z();
   recovery_side_continuation_pending_ = false;
   fapp_crossing_retry_needed_ = false;
@@ -4342,7 +4469,19 @@ int FastExplorationManager::planExploreMotion(
     return NO_FRONTIER;
   }
   planner_manager_->path_finder_->clearProgressConstraint();
+  requestMappedTurn(yaw[0]);
+  // 执行期已经确认的转弯先完成刹停和原地对准，动态穿越不能抢回旧方向。
+  if (turn_in_place_session_active_) {
+    const Vector3d direction(std::cos(turn_in_place_final_yaw_),
+                            std::sin(turn_in_place_final_yaw_), 0.0);
+    return buildTurnInPlacePlan(pos, vel, acc, yaw, direction) ? SUCCEED : FAIL;
+  }
+  if (obstacleAscentPending()) {
+    if (buildGroundAscentPlan(pos,vel,yaw)) return SUCCEED;
+    if (obstacleAscentPending()) return FAIL;
+  }
   if (planExplorationFappCrossing(pos, vel, acc, yaw)) return SUCCEED;
+  if (obstacleAscentPending()) return FAIL;
   const bool hold_fapp_height = manual_fapp_active_ && std::isfinite(manual_fapp_hold_height_);
   if (hold_fapp_height)
     ROS_WARN_THROTTLE(1.0, "[exploration_fapp] ordinary fallback holds z=%.3f until actual "
@@ -4352,16 +4491,7 @@ int FastExplorationManager::planExploreMotion(
   if (!hold_fapp_height && low_probe_phase_ == vertical_detour::LowProbePhase::IDLE &&
       beginSuspendedUnderpass(pos, yaw[0]) && suspended_underpass_blocked_)
     return FAIL;
-  // 地图确认的转弯拥有最高运动优先级。若此前刚启动低位探测，立即撤销其
-  // 固定XY/高度目标，避免下穿状态阻塞已经确认的新通道转向。
-  if (turn_in_place_session_active_ && !suspended_underpass_active_) {
-    cancelActiveLowProbe("confirmed mapped turn has higher motion priority");
-    const Vector3d locked_direction(std::cos(turn_in_place_final_yaw_),
-                                    std::sin(turn_in_place_final_yaw_), 0.0);
-    return buildTurnInPlacePlan(pos, vel, acc, yaw, locked_direction) ? SUCCEED : FAIL;
-  }
-  // 先生成并验证本轮平移目标，再在轨迹发布前检查是否为真实弯道。局部左右绕障
-  // 必须先拥有解释权，不能在A*尚未选路时被独立占据射线提前改写通道方向。
+  // 尚未确认整机可通行的转弯时，继续原有局部绕障和前沿选点。
   // 低空探测状态具有XY所有权。状态结束或被显式取消前，膨胀层历史逃逸不得
   // 沿旧航迹横移，从而避免原地上升目标被带到数米之外仍继续生效。
   bool wait_for_low_confirmation = false;
@@ -5325,6 +5455,12 @@ int FastExplorationManager::planExploreMotion(
       tryCruiseHeightRecovery(pos, vel, acc, time_lb))
     next_pos = ed_->next_goal_;
 
+  if (!use_forced_entry_target && !use_stage3_target && !stationary_vertical_path) {
+    bool clearance_ascent_needed = false;
+    if (ensureObstacleTopClearance(pos,vel,yaw,clearance_ascent_needed)) return SUCCEED;
+    if (clearance_ascent_needed) return FAIL;
+  }
+
   // 2026-07-24: 扫描段关闭“整段始终看前方”的约束；全向模式在位置轨迹全程插入单方向
   // 连续yaw约束，非扫描阶段完全保留原有沿路径看前方或任务固定朝向的行为。
   bool look_forward_along_trajectory = !camera_head_sweep_active && !use_locked_exit_yaw;
@@ -5485,6 +5621,7 @@ void FastExplorationManager::reportTrajectoryCollision() {
 
 void FastExplorationManager::updateMissionOdometry(const Vector3d& pos, double yaw,
                                                    const ros::Time& stamp) {
+  latest_odom_height_ = pos.z();
   if (safe_relay_) {
     if (mission_workspace_lock_received_)
       safe_relay_->setEntrance(mission_workspace_origin_, mission_workspace_dir_);

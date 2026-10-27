@@ -517,6 +517,11 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
         fd_->static_state_ = true;
         clearVisMarker();
       } else if (res == FAIL) {
+        if (expl_manager_->obstacleAscentPending()) {
+          fapp_replan_pending_ = false;
+          width_replan_pending_ = false;
+          requestActiveTrajectoryBrake("gain obstacle-top clearance before advancing");
+        }
         if (resumeAfterWidthAttempt("alternative planning failed")) break;
         // Still in PLAN_TRAJ state, keep replanning
         // 转弯可能恰好在普通重规划阶段确认，此时安全定时器不在EXEC分支，必须在这里
@@ -953,6 +958,7 @@ bool FastExplorationFSM::resumeAfterWidthAttempt(const string& reason) {
   expl_manager_->clearWiderRoute();
   if (!keepExecutingCorridorTrajectory() ||
       expl_manager_->turnInPlaceAlignmentPending() ||
+      expl_manager_->obstacleAscentPending() ||
       expl_manager_->currentPlanIsVerticalDetour() ||
       expl_manager_->currentPlanIsGroundAscent()) return false;
   double collision_distance = 0.0;
@@ -1168,6 +1174,24 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
                               active_traj_braked_))
     return;
 
+  // 累计地图确认整机可通行的新通道后允许抢占当前段，不必先飞到旧终点。
+  const bool check_mapped_turn = !active_turn_in_place_ &&
+      (last_mapped_turn_check_.isZero() ||
+       (ros::Time::now()-last_mapped_turn_check_).toSec() >= 0.20);
+  if (check_mapped_turn) last_mapped_turn_check_ = ros::Time::now();
+  if (check_mapped_turn && expl_manager_->requestMappedTurn(fd_->odom_yaw_)) {
+    requestActiveTrajectoryBrake("confirmed mapped turn");
+    active_vertical_detour_ = false;
+    active_ground_ascent_ = false;
+    inflation_escape_active_ = false;
+    active_escape_step_ = false;
+    width_replan_pending_ = false;
+    fapp_replan_pending_ = false;
+    fd_->static_state_ = true;
+    transitState(PLAN_TRAJ, "safetyCallback-mapped-turn");
+    return;
+  }
+
   if (expl_manager_->manualFappObservationMissing(fd_->odom_pos_, fd_->odom_yaw_, true)) {
     requestActiveTrajectoryBrake("FAPP observation lost before passing obstacle");
     fd_->static_state_ = true;
@@ -1193,8 +1217,7 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
     }
   }
 
-  // 地图转弯只在当前段执行结束后的正常规划中确认，不能截断正在执行的平移。
-  // 通道内有效路线不因墙体航向变化而重新选位置目标；待该段完成后更新航向。
+  // 普通弧形墙面跟随仍沿用原滚动更新；确认的离散转弯由上面的抢占处理。
   if (!expl_manager_->manualWaypointsEnabled() &&
       state_ == EXPL_STATE::EXEC_TRAJ && !active_turn_in_place_ &&
       !active_vertical_detour_ && !active_ground_ascent_ && !inflation_escape_active_ &&

@@ -87,6 +87,7 @@ public:
   bool shouldStartInflationHistoryEscape(const Vector3d& odom_pos) const;
   bool exitTransitActive() const;
   bool shouldReplanCurveHeading(const Vector3d& position, double reference_yaw) const;
+  bool requestMappedTurn(double yaw);
   bool prepareWiderRoute(const vector<Vector3d>& current_path, double yaw);
   bool widthReplacementImproves(const vector<Vector3d>& current_path,
                                 const vector<Vector3d>& replacement, double yaw) const;
@@ -101,6 +102,9 @@ public:
   bool planFailedMotionEscape(const Vector3d& pos, const Vector3d& vel,
                              const Vector3d& acc, const Vector3d& yaw);
   bool currentPlanIsGroundAscent() const { return ground_ascent_plan_; }
+  bool obstacleAscentPending() const {
+    return ground_ascent_active_ && std::isfinite(obstacle_clearance_height_);
+  }
   bool currentPlanIsVerticalDetour() const { return vertical_detour_plan_; }
   void completeVerticalDetourReference();
   // 发布门控可能等待多帧地图更新；竖直段在真正发布前必须重新锁定实时里程计 XY。
@@ -449,6 +453,11 @@ private:
                               double& next_yaw, bool& gate_detected);
   bool findForwardObstacleTop(const Vector3d& pos, const Vector3d& forward,
                               double& obstacle_top) const;
+  bool trajectoryNeedsObstacleClearance(double& obstacle_top) const;
+  bool ensureObstacleTopClearance(const Vector3d& pos, const Vector3d& vel,
+                                  const Vector3d& yaw, bool& ascent_needed);
+  double obstacle_clearance_height_{std::numeric_limits<double>::quiet_NaN()};
+  double latest_odom_height_{std::numeric_limits<double>::quiet_NaN()};
   bool occupiedNearHeight(const Vector3d& point, double height) const;
   bool hasCurrentHeightForwardObstacle(const Vector3d& pos,
                                        const Vector3d& forward) const;
