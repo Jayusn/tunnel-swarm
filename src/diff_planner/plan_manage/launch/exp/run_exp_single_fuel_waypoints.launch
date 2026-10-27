@@ -1,10 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <launch>
-  <!-- 通道内规划高度上限；出口、门外搜索及降落沿用各自原配置。 -->
-  <arg name="corridor_max_height" default="1.50"/>
-  <param name="/exploration_node/mission/task_search/corridor_max_height" value="$(arg corridor_max_height)" type="double"/>
-  <!-- 定位中心下方的机体净空：障碍顶部0.60m时中心至少0.80m。 -->
-  <arg name="footprint_bottom_clearance" default="0.20"/>
   <!-- 到出口后、搜索降落码前沿出口方向前进的距离，单位m。 -->
   <arg name="front_approach_distance" default="0.2"/>
   <!-- 入口/出口控制任务阶段；FAPP检测、动态避障和规划优先在下方单独开关。 -->
@@ -17,7 +12,7 @@
   <arg name="fapp_detection_max_z" default="1.2"/>
   <arg name="enable_fapp_dynamic_avoidance" default="true"/>
   <!-- true保留动态软代价，常规轨迹跳过动态硬拒绝；历史包络用于选路与样条生成；false启用动态碰撞硬检查。
-       航点复用探索的下穿、完整侧绕与普通规划回退；执行中仍重试可行的动态穿越。 -->
+       航点选路仍先检查摆球下方通路；可下穿则前进下降/低位通过/前进回升，否则左右侧绕。 -->
   <arg name="fapp_planner_priority" default="true"/>
   <!-- 保存历史最低点与摆动包络；持续空帧仍依历史范围规划，不仅因超时制动。 -->
   <arg name="fapp_memory_enabled" default="true"/>
@@ -105,9 +100,6 @@
        FAPP动态避障开启时摆球也参与下穿/侧绕选路；关闭时只处理静态地图障碍。 -->
   <param name="/exploration_node/mission/manual_path/max_segment_length" value="1.20" type="double"/>
   <param name="/exploration_node/mission/manual_path/exploration_style" value="true" type="bool"/>
-  <!-- 沿已选路线恢复高度，单段爬升量与探索一致；仍受当前航点高度限制。 -->
-  <param name="/exploration_node/mission/ground_ascent/enabled" value="true" type="bool"/>
-  <param name="/exploration_node/mission/task_search/max_goal_climb" value="0.30" type="double"/>
   <param name="/exploration_node/mission/manual_path/exit_enabled" value="$(arg enable_exit_recognition)" type="bool"/>
   <param name="/exploration_node/mission/workspace_lock_topic" value="/UAV0/corridor_search/workspace_lock"/>
   <param name="/exploration_node/fsm/use_diff_for_fuel_exploration" value="false" type="bool"/>
@@ -144,7 +136,6 @@
   <param name="/exploration_node/fapp/topic" value="/UAV0/fapp/states"/>
   <!-- 以定位雷达参考点为准：上方5cm、下方20cm；下穿目标Z最低0.10m。 -->
   <param name="/exploration_node/fapp/vehicle_top_height" value="0.05" type="double"/>
-  <param name="/exploration_node/manager/footprint_bottom_clearance" value="$(arg footprint_bottom_clearance)" type="double"/>
   <param name="/exploration_node/fapp/vehicle_bottom_height" value="0.20" type="double"/>
   <param name="/exploration_node/mission/vertical_detour/underpass/min_height" value="0.10" type="double"/>
   <param name="/exploration_node/fapp/frame_id" value="UAV0/camera_init"/>
@@ -267,7 +258,6 @@
   <node if="$(arg enable_rviz)" name="rviz" pkg="rviz" type="rviz" args="-d $(find diff_planner)/launch/exp/fuel_waypoints.rviz" required="true">
     <remap from="/move_base_simple/goal" to="$(arg rviz_goal_topic)"/>
   </node>
-  <!-- 默认不录地图和规划可视化；需要时通过 planner_rosbag_extra_topics 显式补录。 -->
   <node if="$(arg enable_planner_rosbag)" pkg="rosbag" type="record"
         name="fuel_planner_recorder" ns="$(arg vehicle_ns)" cwd="ROS_HOME" output="screen"
         args="--lz4 --split --size=$(arg planner_rosbag_split_size_mb)
@@ -282,5 +272,9 @@
               $(arg topic_prefix)/planning/emergency_brake
               /UAV0/fapp/states /exploration_node/fapp/memory /exploration_node/fapp/memory_status
               $(arg topic_prefix)/planning/safety_hold $(arg topic_prefix)/planning/endpoint_hold
-              /tf /tf_static /rosout_agg"/>
+              $(arg topic_prefix)/sdf_map/occupancy_local
+              $(arg topic_prefix)/sdf_map/occupancy_local_inflate
+              $(arg topic_prefix)/sdf_map/update_range
+              $(arg topic_prefix)/planning_vis/trajectory $(arg topic_prefix)/planning_vis/topo_path
+              $(arg topic_prefix)/planning_vis/yaw /tf /tf_static /rosout /rosout_agg"/>
 </launch>

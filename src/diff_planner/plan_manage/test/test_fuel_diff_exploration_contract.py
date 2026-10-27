@@ -97,7 +97,7 @@ def test_fuel_launch_records_lightweight_planner_diagnostics_on_start():
         "--lz4",
         "--split",
         "--size=$(arg planner_rosbag_split_size_mb)",
-        '-o "$(arg planner_rosbag_prefix)"',
+        "-o $(arg planner_rosbag_prefix)",
     ):
         assert option in record_args
     for topic in (
@@ -106,9 +106,12 @@ def test_fuel_launch_records_lightweight_planner_diagnostics_on_start():
         "/UAV0/planning/pos_cmd",
         "/UAV0/planning/emergency_brake",
         "/UAV0/planning/safety_hold",
+        "/UAV0/sdf_map/occupancy_local_inflate",
+        "/UAV0/planning_vis/frontier",
+        "/UAV0/planning_vis/trajectory",
         "/UAV0/mission/task_status",
         "/tf_static",
-        "/rosout_agg",
+        "/rosout",
     ):
         assert topic in record_args
 
@@ -116,9 +119,6 @@ def test_fuel_launch_records_lightweight_planner_diagnostics_on_start():
         "cloud_registered",
         "livox/lidar",
         "image_raw",
-        "/sdf_map/",
-        "/planning_vis/",
-        "/UAV0/mission/search_markers",
         "mpc/reference_trajectory",
     ):
         assert excluded not in record_args
