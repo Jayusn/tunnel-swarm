@@ -1,0 +1,5 @@
+# 后机目标上报过滤；由 uav1_detection_stack.launch 加载，参数只在此 YAML 修改。
+# 收到前机锁定出口后，出口朝外一侧的三类目标不再确认、保存图片/JSON或上报。
+# 原始检测与检测调试图继续运行；尚未收到出口时保持原行为。
+exit_plane_filter_enabled: true
+final_exit_pose_topic: /UAV0/mission/final_exit

@@ -45,6 +45,10 @@ class TargetReporterNode:
         self.use_detector_candidates = bool(
             rospy.get_param("~use_detector_candidates", True)
         )
+        self.exit_plane_filter_enabled = bool(
+            rospy.get_param("~exit_plane_filter_enabled", False)
+        )
+        self.exit_plane = None
         # A confirmed event may only use the detector debug image carrying the
         # same source timestamp.  The old broad 0.5 s lookup could select a
         # preceding raw-candidate frame while the stable frame was in flight.
@@ -274,6 +278,13 @@ class TargetReporterNode:
                 self._leader_odom_cb,
                 queue_size=1,
             )
+        if self.exit_plane_filter_enabled:
+            rospy.Subscriber(
+                rospy.get_param("~final_exit_pose_topic", "/UAV0/mission/final_exit"),
+                PoseStamped,
+                self._final_exit_pose_cb,
+                queue_size=1,
+            )
         # TF 可能在节点启动后的短时间内尚未建立。候选不能因为一次 TF
         # 查询失败就丢失，因此定时重试尚未处理的点/状态配对。
         self.retry_timer = rospy.Timer(rospy.Duration(0.10), self._retry_pending)
@@ -342,6 +353,52 @@ class TargetReporterNode:
             self.latest_status["thermal"] = status
             self.status_version["thermal"] = self.status_version.get("thermal", 0) + 1
         self._try_process("thermal")
+
+    def _final_exit_pose_cb(self, msg):
+        # final_exit publishes the portal centre and its outward yaw, latched.
+        # Keep it in the message frame; target points are transformed before
+        # comparison, so the UAV0/UAV1 initial-position offset is not lost.
+        p, q = msg.pose.position, msg.pose.orientation
+        values = (p.x, p.y, q.x, q.y, q.z, q.w)
+        norm_sq = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w
+        if not msg.header.frame_id or not all(map(math.isfinite, values)) or norm_sq <= 0:
+            rospy.logwarn_throttle(2.0, "Invalid final exit pose; exit plane not updated")
+            return
+        yaw = math.atan2(
+            2.0 * (q.w * q.z + q.x * q.y),
+            norm_sq - 2.0 * (q.y * q.y + q.z * q.z),
+        )
+        plane = (msg.header.frame_id, p.x, p.y, math.cos(yaw), math.sin(yaw))
+        with self.lock:
+            self.exit_plane = plane
+        rospy.loginfo(
+            "Exit plane filter ready: frame=%s center=(%.3f, %.3f) outward_yaw=%.1f deg",
+            plane[0], p.x, p.y, math.degrees(yaw),
+        )
+
+    def _is_beyond_exit_plane(self, point):
+        if not self.exit_plane_filter_enabled:
+            return False
+        with self.lock:
+            plane = self.exit_plane
+        if plane is None:
+            return False
+        frame, cx, cy, nx, ny = plane
+        try:
+            target = point if point.header.frame_id == frame else self.tf_buffer.transform(
+                point, frame, rospy.Duration(0.10)
+            )
+        except Exception as exc:
+            rospy.logwarn_throttle(2.0, "Cannot compare target with exit plane: %s", exc)
+            return False
+        distance = (target.point.x - cx) * nx + (target.point.y - cy) * ny
+        if distance <= 0.0:
+            return False
+        rospy.loginfo_throttle(
+            1.0, "Filtered target outside final exit plane: distance=%.3f m frame=%s",
+            distance, frame,
+        )
+        return True
 
     def _image_cb(self, source, msg):
         try:
@@ -563,6 +620,8 @@ class TargetReporterNode:
             self.last_processed_pair[source] = pair
         position = {"x": world.point.x, "y": world.point.y, "z": world.point.z}
         target_type = {"color": "color_tag", "qr": "qr_code", "thermal": "thermal_source"}[source]
+        if self._is_beyond_exit_plane(world):
+            return
         if source == "thermal" and self._is_leader_thermal_source(position, event_stamp, point):
             return
         if source == "thermal" and self._is_ground_thermal_source(position):

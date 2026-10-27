@@ -193,6 +193,8 @@
     <rosparam command="load"
               file="$(find target_reporting)/config/target_reporting.yaml" />
     <rosparam command="load" file="$(arg channel_transform_config)" />
+    <rosparam command="load"
+              file="$(find target_reporting)/config/uav1_reporting_filters.yaml" />
     <param name="drone_id" value="uav1" />
     <param name="localization_frame" value="$(arg world_frame)" />
     <param name="record_root" value="~/match_ws/target_reports/uav1" />
