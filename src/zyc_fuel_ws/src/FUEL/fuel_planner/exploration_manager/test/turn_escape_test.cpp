@@ -1618,6 +1618,108 @@ public:
     EXPECT_FALSE(manager.obstacleAscentPending());
   }
 
+  static void runStaticTurnCollision(int stage) {
+    ros::NodeHandle nh("~static_turn_safety");
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    auto& planner = *manager.planner_manager_;
+    auto& task = *manager.task_search_manager_;
+    const Vector3d start(0.025, 0.025, 1.025), zero = Vector3d::Zero();
+    task.setMap(manager.sdf_map_);
+    task.enabled_ = true;
+    task.setCorridorFrame(start - 2.0 * Vector3d::UnitX(), Vector3d::UnitX());
+    task.updateRobotPose(start, 0.0);
+    task.turn_yaw_follow_latch_.arm(Eigen::Vector2d::UnitY());
+    manager.turn_in_place_still_confirm_time_ = 0.0;
+    if (stage == 0) {
+      // 实测位置比正在执行的参考靠墙10cm；旧轨迹仍朝远离墙面的安全终点移动。
+      ASSERT_TRUE(planner.planStraightTraj(start - 0.1 * Vector3d::UnitX(),
+                                          start - 0.6 * Vector3d::UnitX()));
+      ASSERT_TRUE(planner.planYawTurnInPlace(zero, 0.0));
+    } else {
+      ASSERT_TRUE(manager.buildTurnInPlacePlan(start, zero, zero, zero, Vector3d::UnitY()));
+    }
+
+    FastExplorationFSM fsm;
+    fsm.expl_manager_ = std::shared_ptr<FastExplorationManager>(&manager, [](FastExplorationManager*){});
+    fsm.planner_manager_ = manager.planner_manager_;
+    fsm.fd_ = std::make_shared<FSMData>();
+    fsm.fp_ = std::make_shared<FSMParam>();
+    fsm.fd_->state_str_ = {"INIT", "WAIT", "PLAN", "PUB", "EXEC", "FINISH"};
+    fsm.fd_->odom_pos_ = start;
+    fsm.fd_->odom_vel_.setZero();
+    fsm.fd_->odom_yaw_ = 0.0;
+    fsm.fd_->start_acc_.setZero();
+    fsm.fp_->emergency_brake_horizon_ = 0.12;
+    fsm.fp_->max_tracking_error_xy_ = fsm.fp_->max_tracking_error_z_ = 1.0;
+    fsm.fp_->trajectory_release_max_start_error_ = 0.1;
+    fsm.fp_->trajectory_release_max_velocity_error_ = 0.1;
+    fsm.fp_->trajectory_release_max_acceleration_error_ = 1.0;
+    fsm.active_traj_ = planner.local_data_;
+    fsm.active_traj_.start_time_ = ros::Time::now();
+    fsm.active_traj_valid_ = true;
+    fsm.active_turn_in_place_ = stage == 2;
+    fsm.state_ = EXEC_TRAJ;
+    fsm.last_suspended_underpass_check_ = ros::Time::now() + ros::Duration(30.0);
+    fsm.emergency_brake_pub_ = nh.advertise<std_msgs::Int32>("static_turn_brake", 1);
+
+    if (stage < 2) {
+      // 有重复邻域支撑的细障碍落在旧12点圆环间隙内，中心与旧采样仍安全。
+      pcl::PointCloud<pcl::PointXYZ> obstacle;
+      for (double z : {0.975, 1.025, 1.075})
+        obstacle.push_back(pcl::PointXYZ(0.175, 0.025, z));
+      for (int i = 0; i < 8; ++i)
+        manager.sdf_map_->inputPointCloud(obstacle, obstacle.size(), start);
+      manager.sdf_map_->updateESDF3d();
+      ASSERT_TRUE(planner.isPositionSafe(start));
+      ASSERT_FALSE(planner.isTurnPositionSafe(start));
+      ASSERT_TRUE(planner.isTrajectorySafe());
+    }
+    if (stage == 0) {
+      fsm.safetyCallback(ros::TimerEvent());
+      EXPECT_EQ(fsm.state_, EXEC_TRAJ);
+      EXPECT_FALSE(fsm.active_traj_braked_);
+      EXPECT_FALSE(manager.turn_in_place_session_active_);
+      EXPECT_FALSE(manager.buildTurnInPlacePlan(start, zero, zero, zero, Vector3d::UnitY()));
+      EXPECT_FALSE(manager.currentPlanIsTurnInPlace());
+      // 旧安全轨迹的终点移出旋转碰撞范围后，原锁存转向仍然可执行。
+      const Vector3d end = start - 0.6 * Vector3d::UnitX();
+      task.updateRobotPose(end, 0.0);
+      ASSERT_TRUE(planner.isTurnPositionSafe(end));
+      EXPECT_TRUE(manager.buildTurnInPlacePlan(end, zero, zero, zero, Vector3d::UnitY()));
+      return;
+    }
+    if (stage == 1) {
+      // 候选已生成后才出现障碍，发布门控仍须拦截，而不是只相信规划时的地图。
+      fsm.state_ = PUB_TRAJ;
+      fsm.active_traj_braked_ = true;
+      fsm.pending_turn_in_place_ = true;
+      for (int i = 0; i < 5; ++i) {
+        OdomReviewSample sample;
+        sample.stamp = 1.0 + 0.01 * i;
+        sample.position = {{start.x(), start.y(), start.z()}};
+        sample.velocity = {{0.0, 0.0, 0.0}};
+        fsm.odom_review_window_.push_back(sample);
+      }
+      fsm.FSMCallback(ros::TimerEvent());
+      EXPECT_EQ(fsm.state_, PLAN_TRAJ);
+      EXPECT_TRUE(fsm.pending_traj_safe_since_.isZero());
+      return;
+    }
+    // 实际机体偏离参考点碰到静态障碍，参考轨迹本身仍安全，也必须停止转向。
+    fsm.fd_->odom_pos_ = start + Vector3d(0.30, 0.0, 0.0);
+    manager.sdf_map_->setOccupied(fsm.fd_->odom_pos_);
+    ASSERT_TRUE(planner.isTurnPositionSafe(start));
+    ASSERT_FALSE(planner.isTurnPositionSafe(fsm.fd_->odom_pos_));
+    double collision_distance;
+    ASSERT_TRUE(planner.checkTrajCollision(fsm.active_traj_, collision_distance));
+    fsm.safetyCallback(ros::TimerEvent());
+    EXPECT_EQ(fsm.state_, PLAN_TRAJ);
+    EXPECT_TRUE(fsm.active_traj_braked_);
+    EXPECT_FALSE(fsm.active_turn_in_place_);
+    EXPECT_TRUE(manager.turnInPlaceAlignmentPending());
+  }
+
   static void runTurnPreemptsSpecialMotion() {
     ros::NodeHandle nh("~");
     nh.setParam("manager/use_geometric_path", true);
@@ -3531,6 +3633,15 @@ TEST(UpperClearance, SafeHighReferenceStillWaitsForAircraftHeight) {
 }
 TEST(MappedTurn, InterruptsDynamicCrossingAndClimb) {
   fast_planner::TurnEscapeTest::runTurnPreemptsSpecialMotion();
+}
+TEST(TurnStaticSafety, BlockedRotationKeepsSafeTranslationUntilClearEndpoint) {
+  fast_planner::TurnEscapeTest::runStaticTurnCollision(0);
+}
+TEST(TurnStaticSafety, NewObstacleRejectsAlreadyGeneratedTurnBeforePublish) {
+  fast_planner::TurnEscapeTest::runStaticTurnCollision(1);
+}
+TEST(TurnStaticSafety, ActualFootprintCollisionStopsTurnDespiteSafeReference) {
+  fast_planner::TurnEscapeTest::runStaticTurnCollision(2);
 }
 
 TEST(CruiseHeightRecovery, OpenSpaceClimbsAlongCommittedRightRoute) {

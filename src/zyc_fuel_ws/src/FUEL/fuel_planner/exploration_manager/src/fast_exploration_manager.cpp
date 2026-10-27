@@ -3246,13 +3246,15 @@ bool FastExplorationManager::planInflationHistoryEscape(
   return false;
 }
 
-bool FastExplorationManager::requestMappedTurn(double yaw) {
+bool FastExplorationManager::requestMappedTurn(const Vector3d& position, double yaw) {
   if (!turn_in_place_enabled_ || external_selection_only_ || manual_path_enabled_ ||
       !task_search_manager_ || !task_search_manager_->enabled() ||
       task_search_manager_->stage3Active() ||
       task_search_manager_->exitVerificationActive() ||
       task_search_manager_->landingRequested())
     return false;
+  // 当前旋转圆盘有静态障碍时不抢占平移；旧轨迹仍由正常碰撞检查决定能否继续。
+  if (!planner_manager_->isTurnPositionSafe(position)) return false;
   // 通道位置已由里程计回调更新，不能用重规划的未来起点覆盖它。
   Vector3d direction;
   if (!task_search_manager_->mappedCorridorDirection(yaw, direction)) return false;
@@ -3335,6 +3337,13 @@ bool FastExplorationManager::buildTurnInPlacePlan(
       std::min(turn_in_place_max_duration_,
                std::fabs(turn_delta) /
                    (yaw_rate * (1.0 - kTurnRampFraction))));
+  if (!planner_manager_->isTurnPositionSafe(turn_in_place_anchor_)) {
+    turn_in_place_plan_ = false;
+    turn_in_place_still_since_ = ros::Time(0);
+    ROS_WARN_THROTTLE(0.5, "[turn_in_place] static obstacle in rotation footprint "
+                           "blocks turn; retain final yaw and recheck.");
+    return false;
+  }
   if (!planner_manager_->planStationaryTraj(turn_in_place_anchor_, duration)) return false;
 
   ed_->path_next_goal_ = {turn_in_place_anchor_};
@@ -4469,7 +4478,7 @@ int FastExplorationManager::planExploreMotion(
     return NO_FRONTIER;
   }
   planner_manager_->path_finder_->clearProgressConstraint();
-  requestMappedTurn(yaw[0]);
+  requestMappedTurn(pos, yaw[0]);
   // 执行期已经确认的转弯先完成刹停和原地对准，动态穿越不能抢回旧方向。
   if (turn_in_place_session_active_) {
     const Vector3d direction(std::cos(turn_in_place_final_yaw_),

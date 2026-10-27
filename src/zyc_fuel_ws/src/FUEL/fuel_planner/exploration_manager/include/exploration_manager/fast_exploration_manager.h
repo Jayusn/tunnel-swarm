@@ -87,7 +87,7 @@ public:
   bool shouldStartInflationHistoryEscape(const Vector3d& odom_pos) const;
   bool exitTransitActive() const;
   bool shouldReplanCurveHeading(const Vector3d& position, double reference_yaw) const;
-  bool requestMappedTurn(double yaw);
+  bool requestMappedTurn(const Vector3d& position, double yaw);
   bool prepareWiderRoute(const vector<Vector3d>& current_path, double yaw);
   bool widthReplacementImproves(const vector<Vector3d>& current_path,
                                 const vector<Vector3d>& replacement, double yaw) const;

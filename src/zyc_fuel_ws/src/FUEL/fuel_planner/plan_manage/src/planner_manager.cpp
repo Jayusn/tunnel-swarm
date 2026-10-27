@@ -773,6 +773,29 @@ int FastPlannerManager::lowerFootprintObstacleCount(
   return occupied_samples;
 }
 
+bool FastPlannerManager::isTurnPositionSafe(const Eigen::Vector3d& position) const {
+  if (!position.allFinite() || !isPositionSafe(position)) return false;
+  // 圆盘是现有机体半径在整个yaw转动中的包络；枚举相交体素，补齐稀疏圆环采样间隙。
+  const double radius = footprint_check_radius_;
+  constexpr double half_height = 0.06;
+  const double half_voxel = 0.5 * sdf_map_->getResolution();
+  Eigen::Vector3i lower, upper;
+  sdf_map_->posToIndex(position - Eigen::Vector3d(radius, radius, half_height), lower);
+  sdf_map_->posToIndex(position + Eigen::Vector3d(radius, radius, half_height), upper);
+  for (int x = lower.x(); x <= upper.x(); ++x)
+    for (int y = lower.y(); y <= upper.y(); ++y)
+      for (int z = lower.z(); z <= upper.z(); ++z) {
+        const Eigen::Vector3i index(x, y, z);
+        Eigen::Vector3d center;
+        sdf_map_->indexToPos(index, center);
+        const double dx = std::max(0.0, std::fabs(center.x() - position.x()) - half_voxel);
+        const double dy = std::max(0.0, std::fabs(center.y() - position.y()) - half_voxel);
+        if (dx * dx + dy * dy > radius * radius + 1e-9) continue;
+        if (!sdf_map_->isInMap(index) || isSupportedOccupied(center)) return false;
+      }
+  return true;
+}
+
 bool FastPlannerManager::isPositionSafe(const Eigen::Vector3d& position) const {
   if (!isRawFootprintSafe(position)) return false;
 

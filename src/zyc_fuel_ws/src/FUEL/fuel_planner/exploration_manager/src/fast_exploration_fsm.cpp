@@ -660,15 +660,18 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
                 0.80, 0.02, controlled_escape_start);
         const bool trajectory_safe = planner_manager_->isTrajectorySafe(
             0.03, controlled_escape_start);
+        const bool turn_space_safe = !pending_turn_in_place_ ||
+            (planner_manager_->isTurnPositionSafe(reviewed_position) &&
+             planner_manager_->isTurnPositionSafe(trajectory_start));
         const bool release_safe = raw_start_safe && clears_inflation &&
-                                  release_state_continuous && trajectory_safe;
+                                  release_state_continuous && trajectory_safe && turn_space_safe;
         if (!release_safe) {
           if (resumeAfterWidthAttempt("alternative failed release checks")) break;
           // 首条轨迹的速度只要尚未连续稳定就继续悬停审核，不销毁已经通过位置和地图
           // 检查的候选；这样单帧尖峰不会触发无休止的“规划-拒绝”循环。
           if (!active_traj_valid_ && position_continuous && acceleration_continuous &&
               !velocity_continuous && raw_start_safe && clears_inflation &&
-              trajectory_safe) {
+              trajectory_safe && turn_space_safe) {
             pending_traj_safe_since_ = ros::Time(0);
             ROS_WARN_THROTTLE(
                 1.0,
@@ -679,12 +682,13 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
           }
           ROS_ERROR("[trajectory_release] reject before publish: position_error=%.3fm "
                     "velocity_error=%.3fm/s acceleration_error=%.3fm/s^2 continuous=%d "
-                    "turn_policy=%d raw_safe=%d inflated=%d clears=%d.",
+                    "turn_policy=%d raw_safe=%d inflated=%d clears=%d turn_space=%d.",
                     start_error, velocity_error, acceleration_error,
                     static_cast<int>(release_state_continuous),
                     static_cast<int>(pending_turn_in_place_),
                     static_cast<int>(raw_start_safe),
-                    static_cast<int>(starts_in_inflation), static_cast<int>(clears_inflation));
+                    static_cast<int>(starts_in_inflation), static_cast<int>(clears_inflation),
+                    static_cast<int>(turn_space_safe));
           if (!release_state_continuous) {
             requestActiveTrajectoryBrake("stale trajectory start state before publish");
             if (!active_traj_valid_)
@@ -1179,7 +1183,7 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
       (last_mapped_turn_check_.isZero() ||
        (ros::Time::now()-last_mapped_turn_check_).toSec() >= 0.20);
   if (check_mapped_turn) last_mapped_turn_check_ = ros::Time::now();
-  if (check_mapped_turn && expl_manager_->requestMappedTurn(fd_->odom_yaw_)) {
+  if (check_mapped_turn && expl_manager_->requestMappedTurn(fd_->odom_pos_, fd_->odom_yaw_)) {
     requestActiveTrajectoryBrake("confirmed mapped turn");
     active_vertical_detour_ = false;
     active_ground_ascent_ = false;
@@ -1190,6 +1194,20 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
     fd_->static_state_ = true;
     transitState(PLAN_TRAJ, "safetyCallback-mapped-turn");
     return;
+  }
+
+  if (active_turn_in_place_) {
+    const double elapsed = std::max(0.0, std::min(
+        (ros::Time::now() - active_traj_.start_time_).toSec(), active_traj_.duration_));
+    const Eigen::Vector3d reference = active_traj_.position_traj_.evaluateDeBoorT(elapsed);
+    if (!planner_manager_->isTurnPositionSafe(fd_->odom_pos_) ||
+        !planner_manager_->isTurnPositionSafe(reference)) {
+      requestActiveTrajectoryBrake("static obstacle in rotation footprint");
+      active_turn_in_place_ = false;
+      fd_->static_state_ = true;
+      transitState(PLAN_TRAJ, "safetyCallback-turn-obstacle");
+      return;
+    }
   }
 
   if (expl_manager_->manualFappObservationMissing(fd_->odom_pos_, fd_->odom_yaw_, true)) {
