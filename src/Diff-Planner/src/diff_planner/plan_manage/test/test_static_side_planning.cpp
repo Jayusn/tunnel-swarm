@@ -112,6 +112,17 @@ protected:
     EXPECT_TRUE(crossed);
   }
 
+  void configureSegments(diff_planner::DiffPlannerManager &manager)
+  {
+    fillCorridor(0.10, -0.10);  // 只保留两侧墙，清除中央隔板。
+    manager.grid_map_ = map;
+    manager.ploy_traj_opt_.reset(new PolyTrajOptimizer);
+    configure(*manager.ploy_traj_opt_, false);
+    manager.pp_.max_vel_ = 0.3;
+    manager.route_segment_count_ = 3;
+    manager.route_endpoint_clearance_ = 0.18;
+  }
+
   poly_traj::Trajectory recoveryLine(const Vector3d &from, const Vector3d &to)
   {
     Eigen::Matrix3d head, tail;
@@ -425,6 +436,76 @@ TEST_F(StaticSidePlanning, DirectSegmentShortcutCannotBypassConfirmedPassage)
   EXPECT_LT(target.y(), -0.10);
   for (const auto &point : manager.route_segment_guide_)
     EXPECT_TRUE(manager.ploy_traj_opt_->allowsDirectRoute(point, point));
+}
+
+TEST_F(StaticSidePlanning, TemporaryEndpointAdvancesPastNearbyObstacleOnSameGuide)
+{
+  diff_planner::DiffPlannerManager manager;
+  configureSegments(manager);
+  // 原0.6m分段点在(-0.3,0,0.6)，离这个已膨胀体素表面仅0.10m。
+  const Eigen::Vector3i cell(-6, 2, 12);
+  map->md_.occupancy_buffer_inflate_[map->globalIdx2InfBufIdx(cell)] = 1;
+  Vector3d target, velocity;
+  bool final;
+  ASSERT_TRUE(manager.prepareLocalSegment(start, end, target, velocity, final));
+  EXPECT_FALSE(final);
+  EXPECT_GT(target.x(), -0.3);
+  EXPECT_LE(target.x(), 0.3 + 1e-6);  // 最多沿原导引前移0.6m。
+  EXPECT_NEAR(target.y(), 0.0, 1e-9);
+  EXPECT_NEAR(target.z(), start.z(), 1e-9);
+  const Vector3d box_min(-0.30, 0.10, 0.60), box_max(-0.25, 0.15, 0.65);
+  const Vector3d nearest = target.cwiseMax(box_min).cwiseMin(box_max);
+  EXPECT_GE((target - nearest).norm(), 0.18 - 1e-6);
+  EXPECT_LT((velocity - Vector3d(0.3, 0, 0)).norm(), 1e-9);
+  EXPECT_LT((manager.route_segment_guide_.back() - target).norm(), 1e-9);
+  EXPECT_LT((manager.route_segment_goal_ - end).norm(), 1e-9);
+}
+
+TEST_F(StaticSidePlanning, NarrowPassageKeepsOriginalEndpointAndRemainsPassable)
+{
+  diff_planner::DiffPlannerManager manager;
+  configureSegments(manager);
+  // 整条路径均只有0.10m余量，没有达到偏好间距的候选点。
+  for (int x = -25; x <= 25; ++x) {
+    const Eigen::Vector3i cell(x, 2, 12);
+    map->md_.occupancy_buffer_inflate_[map->globalIdx2InfBufIdx(cell)] = 1;
+  }
+  Vector3d target, velocity;
+  bool final;
+  ASSERT_TRUE(manager.prepareLocalSegment(start, end, target, velocity, final));
+  EXPECT_FALSE(final);
+  EXPECT_LT((target - Vector3d(-0.3, 0, 0.6)).norm(), 1e-9);
+  EXPECT_GT(velocity.norm(), 0.0);
+}
+
+TEST_F(StaticSidePlanning, FinalGoalNearObstacleIsNotMovedOrRejectedForPreferredClearance)
+{
+  diff_planner::DiffPlannerManager manager;
+  configureSegments(manager);
+  const Vector3d goal(-0.6, 0, 0.6);
+  const Eigen::Vector3i cell(-12, 2, 12);
+  map->md_.occupancy_buffer_inflate_[map->globalIdx2InfBufIdx(cell)] = 1;
+  Vector3d target, velocity;
+  bool final;
+  ASSERT_TRUE(manager.prepareLocalSegment(start, goal, target, velocity, final));
+  EXPECT_TRUE(final);
+  EXPECT_LT((target - goal).norm(), 1e-9);
+  EXPECT_LT(velocity.norm(), 1e-9);
+  // 原来的目标占据检查仍然有效。
+  map->md_.occupancy_buffer_inflate_[map->globalIdx2InfBufIdx(map->pos2GlobalIdx(goal))] = 1;
+  EXPECT_FALSE(manager.prepareLocalSegment(start, goal, target, velocity, final));
+}
+
+TEST_F(StaticSidePlanning, ClearTemporaryEndpointKeepsOriginalSegmentLength)
+{
+  diff_planner::DiffPlannerManager manager;
+  configureSegments(manager);
+  Vector3d target, velocity;
+  bool final;
+  ASSERT_TRUE(manager.prepareLocalSegment(start, end, target, velocity, final));
+  EXPECT_FALSE(final);
+  EXPECT_LT((target - Vector3d(-0.3, 0, 0.6)).norm(), 1e-9);
+  EXPECT_LT((velocity - Vector3d(0.3, 0, 0)).norm(), 1e-9);
 }
 
 TEST_F(StaticSidePlanning, WiderOppositeObservationDoesNotReplaceConfirmedPassage)

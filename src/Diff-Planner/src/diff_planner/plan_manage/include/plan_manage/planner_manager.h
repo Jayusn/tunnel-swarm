@@ -105,6 +105,7 @@ namespace diff_planner
     void refreshDynamicHistory();
     int route_segment_count_{1};
     double route_segment_min_length_{0.60};
+    double route_endpoint_clearance_{0.15};
     double route_segment_length_{0.0};
     Eigen::Vector3d route_segment_goal_{Eigen::Vector3d::Constant(
         std::numeric_limits<double>::quiet_NaN())};
@@ -122,6 +123,7 @@ namespace diff_planner
     ReplanTrajectoryMetrics evaluateTrajectoryQuality(
         const poly_traj::Trajectory &trajectory, double start_time);
     double estimateInflatedClearance(const Eigen::Vector3d &position);
+    bool endpointHasPreferredClearance(const Eigen::Vector3d &position);
 
     PlanningVisualization::Ptr visualization_;
 

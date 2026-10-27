@@ -28,6 +28,8 @@ namespace diff_planner
 
     nh.param("manager/route_segment_count", route_segment_count_, 1);
     nh.param("manager/route_segment_min_length", route_segment_min_length_, 0.60);
+    // 沿用优化器的间距，仅用于临时端点择优，不增加规划失败条件。
+    nh.param("optimization/obstacle_clearance", route_endpoint_clearance_, 0.15);
     if (route_segment_count_ < 1 || route_segment_count_ > 10 ||
         !std::isfinite(route_segment_min_length_) || route_segment_min_length_ <= 0.0)
       throw std::invalid_argument("invalid rolling route segment parameters");
@@ -912,6 +914,25 @@ namespace diff_planner
     return true;
   }
 
+  bool DiffPlannerManager::endpointHasPreferredClearance(const Eigen::Vector3d &position)
+  {
+    const double resolution = grid_map_->getResolution();
+    const int steps = static_cast<int>(std::ceil(route_endpoint_clearance_ / resolution)) + 1;
+    const Eigen::Vector3i center = (position / resolution).array().floor().cast<int>();
+    for (int x = -steps; x <= steps; ++x)
+      for (int y = -steps; y <= steps; ++y)
+        for (int z = -steps; z <= steps; ++z) {
+          const Eigen::Vector3d cell =
+              ((center + Eigen::Vector3i(x, y, z)).cast<double>().array() + 0.5) * resolution;
+          // 到膨胀体素表面的距离，避免把到体素中心的距离当成净空。
+          const Eigen::Vector3d offset =
+              ((position - cell).cwiseAbs().array() - 0.5 * resolution).max(0.0);
+          if (offset.norm() + 1e-6 < route_endpoint_clearance_ &&
+              grid_map_->getInflateOccupancy(cell) != 0) return false;
+        }
+    return true;
+  }
+
   bool DiffPlannerManager::prepareLocalSegment(const Eigen::Vector3d& start,
       const Eigen::Vector3d& goal, Eigen::Vector3d& target,
       Eigen::Vector3d& velocity, bool& final)
@@ -972,7 +993,48 @@ namespace diff_planner
     }
     const double horizon = crossing ? length : route_segment_length_;
     final = length <= horizon + 0.05;
-    const double limit = final ? length : horizon;
+    double limit = final ? length : horizon;
+    // 临时端点贴障时，沿导引当前直线段最多前移一个最小分段长度。
+    // 找不到更宽的位置就保留原端点；最终任务目标仍用原有碰撞检查。
+    if (!final && std::isfinite(route_endpoint_clearance_) && route_endpoint_clearance_ > 0.0) {
+      const double step = 0.5 * grid_map_->getResolution();
+      size_t edge = 1;
+      double edge_start = 0.0;
+      const auto point_at = [&](double distance) -> Eigen::Vector3d {
+        while (edge + 1 < path.size() &&
+               edge_start + (path[edge] - path[edge-1]).norm() < distance) {
+          edge_start += (path[edge] - path[edge-1]).norm();
+          ++edge;
+        }
+        const Eigen::Vector3d delta = path[edge] - path[edge-1];
+        const double span = delta.norm();
+        return span > 1e-6 ? (path[edge-1] + delta * ((distance - edge_start) / span)).eval()
+                           : path[edge];
+      };
+      point_at(limit);
+      const Eigen::Vector3d direction = (path[edge] - path[edge-1]).normalized();
+      double straight_end = edge_start + (path[edge] - path[edge-1]).norm();
+      for (size_t i = edge + 1; i < path.size(); ++i) {
+        const Eigen::Vector3d delta = path[i] - path[i-1];
+        const double span = delta.norm();
+        if (span < 1e-6) continue;
+        // 不跨过绕障折点，避免新的固定端点把优化曲线拉回障碍一侧。
+        if (delta.dot(direction) < span * (1.0 - 1e-6)) break;
+        straight_end += span;
+      }
+      const double search_end = std::min(straight_end, std::min(length, limit + route_segment_min_length_));
+      for (double distance = limit;; distance = std::min(search_end, distance + step)) {
+        if (endpointHasPreferredClearance(point_at(distance))) {
+          if (distance > limit + 1e-6)
+            ROS_INFO("[分段端点择优] 沿原导引前移 %.3f m，期望膨胀地图净空 %.3f m。",
+                     distance - limit, route_endpoint_clearance_);
+          limit = distance;
+          final = limit >= length - 1e-6;
+          break;
+        }
+        if (distance >= search_end) break;
+      }
+    }
     route_segment_guide_.push_back(start);
     double along = 0.0;
     Eigen::Vector3d tangent = Eigen::Vector3d::Zero();
