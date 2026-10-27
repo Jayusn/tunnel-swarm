@@ -438,7 +438,7 @@ TEST_F(StaticSidePlanning, DirectSegmentShortcutCannotBypassConfirmedPassage)
     EXPECT_TRUE(manager.ploy_traj_opt_->allowsDirectRoute(point, point));
 }
 
-TEST_F(StaticSidePlanning, TemporaryEndpointAdvancesPastNearbyObstacleOnSameGuide)
+TEST_F(StaticSidePlanning, TemporaryEndpointPrefersLateralClearanceBeforeAdvancing)
 {
   diff_planner::DiffPlannerManager manager;
   configureSegments(manager);
@@ -449,16 +449,49 @@ TEST_F(StaticSidePlanning, TemporaryEndpointAdvancesPastNearbyObstacleOnSameGuid
   bool final;
   ASSERT_TRUE(manager.prepareLocalSegment(start, end, target, velocity, final));
   EXPECT_FALSE(final);
-  EXPECT_GT(target.x(), -0.3);
-  EXPECT_LE(target.x(), 0.3 + 1e-6);  // 最多沿原导引前移0.6m。
-  EXPECT_NEAR(target.y(), 0.0, 1e-9);
+  EXPECT_NEAR(target.x(), -0.3, 1e-9);
+  EXPECT_LT(target.y(), 0.0);
+  EXPECT_GE(target.y(), -0.3 - 1e-6);
   EXPECT_NEAR(target.z(), start.z(), 1e-9);
   const Vector3d box_min(-0.30, 0.10, 0.60), box_max(-0.25, 0.15, 0.65);
   const Vector3d nearest = target.cwiseMax(box_min).cwiseMin(box_max);
   EXPECT_GE((target - nearest).norm(), 0.18 - 1e-6);
-  EXPECT_LT((velocity - Vector3d(0.3, 0, 0)).norm(), 1e-9);
+  EXPECT_NEAR(velocity.norm(), 0.3, 1e-9);
+  EXPECT_GT(velocity.x(), 0.0);
+  EXPECT_GT(velocity.y(), 0.0);  // 朝向后续原导引，不继续向侧边飞。
+  for (int i = 0; i <= 100; ++i) {
+    EXPECT_EQ(map->getInflateOccupancy(start + (target - start) * (i / 100.0)), 0);
+    EXPECT_EQ(map->getInflateOccupancy(target + (Vector3d(0.3, 0, 0.6) - target) * (i / 100.0)), 0);
+  }
   EXPECT_LT((manager.route_segment_guide_.back() - target).norm(), 1e-9);
   EXPECT_LT((manager.route_segment_goal_ - end).norm(), 1e-9);
+  // 侧移后的导引和回接方向必须能生成实际轨迹，不能只验证端点可达。
+  manager.pp_.polyTraj_piece_length = 0.30;
+  poly_traj::MinJerkOpt seed;
+  ASSERT_TRUE(manager.computeInitState(start, Vector3d::Zero(), Vector3d::Zero(),
+      target, velocity, true, false, 1.0, seed));
+  const auto initial = seed.getTraj();
+  Eigen::Matrix3d head, tail;
+  head << start, Vector3d::Zero(), Vector3d::Zero();
+  tail << target, velocity, Vector3d::Zero();
+  Eigen::MatrixXd inner(3, initial.getPieceNum() - 1);
+  double elapsed = 0.0;
+  const Eigen::VectorXd durations = initial.getDurations();
+  for (int i = 0; i < inner.cols(); ++i) {
+    elapsed += durations(i);
+    inner.col(i) = initial.getPos(elapsed);
+  }
+  auto &optimizer = *manager.ploy_traj_opt_;
+  optimizer.beginPlanningCycle();
+  std::vector<std::pair<int, int>> segments;
+  ASSERT_NE(optimizer.finelyCheckAndSetConstraintPoints(segments, seed, true), PolyTrajOptimizer::ERR);
+  double cost;
+  ASSERT_TRUE(optimizer.optimizeTrajectory(head, tail, inner, durations, cost));
+  const auto trajectory = optimizer.getMinJerkOpt().getTraj();
+  EXPECT_LT((trajectory.getPos(trajectory.getTotalDuration()) - target).norm(), 1e-6);
+  EXPECT_LT((trajectory.getVel(trajectory.getTotalDuration()) - velocity).norm(), 1e-6);
+  EXPECT_TRUE(optimizer.trajectoryCollisionFree(trajectory, ros::Time::now().toSec(), ros::Time::now().toSec()));
+  optimizer.endPlanningCycle();
 }
 
 TEST_F(StaticSidePlanning, NarrowPassageKeepsOriginalEndpointAndRemainsPassable)
@@ -469,6 +502,7 @@ TEST_F(StaticSidePlanning, NarrowPassageKeepsOriginalEndpointAndRemainsPassable)
   for (int x = -25; x <= 25; ++x) {
     const Eigen::Vector3i cell(x, 2, 12);
     map->md_.occupancy_buffer_inflate_[map->globalIdx2InfBufIdx(cell)] = 1;
+    map->md_.occupancy_buffer_inflate_[map->globalIdx2InfBufIdx(Eigen::Vector3i(x, -3, 12))] = 1;
   }
   Vector3d target, velocity;
   bool final;
@@ -476,6 +510,64 @@ TEST_F(StaticSidePlanning, NarrowPassageKeepsOriginalEndpointAndRemainsPassable)
   EXPECT_FALSE(final);
   EXPECT_LT((target - Vector3d(-0.3, 0, 0.6)).norm(), 1e-9);
   EXPECT_GT(velocity.norm(), 0.0);
+}
+
+TEST_F(StaticSidePlanning, BlockedSideConnectionsFallBackToForwardEndpoint)
+{
+  diff_planner::DiffPlannerManager manager;
+  configureSegments(manager);
+  for (int x = -25; x <= -5; ++x)
+    for (int y : {-3, 2})
+      map->md_.occupancy_buffer_inflate_[map->globalIdx2InfBufIdx(Eigen::Vector3i(x, y, 12))] = 1;
+  // 侧面端点本身自由，但连接必须穿过窄通道侧壁，不能选到墙后。
+  EXPECT_EQ(map->getInflateOccupancy(Vector3d(-0.3, -0.3, 0.6)), 0);
+  Vector3d target, velocity;
+  bool final;
+  ASSERT_TRUE(manager.prepareLocalSegment(start, end, target, velocity, final));
+  EXPECT_FALSE(final);
+  EXPECT_GT(target.x(), -0.3);
+  EXPECT_LE(target.x(), 0.3 + 1e-6);
+  EXPECT_NEAR(target.y(), 0.0, 1e-9);
+  EXPECT_NEAR(target.z(), 0.6, 1e-9);
+  EXPECT_LT((velocity - Vector3d(0.3, 0, 0)).norm(), 1e-9);
+}
+
+TEST_F(StaticSidePlanning, LateralEndpointRejectsBlockedReturnToFollowingRoute)
+{
+  diff_planner::DiffPlannerManager manager;
+  configureSegments(manager);
+  for (int x = -25; x <= 25; ++x)
+    map->md_.occupancy_buffer_inflate_[map->globalIdx2InfBufIdx(Eigen::Vector3i(x, 2, 12))] = 1;
+  for (int x = -5; x <= 10; ++x)
+    map->md_.occupancy_buffer_inflate_[map->globalIdx2InfBufIdx(Eigen::Vector3i(x, -3, 12))] = 1;
+  const Vector3d side(-0.3, -0.3, 0.6);
+  for (int i = 0; i <= 100; ++i)
+    ASSERT_EQ(map->getInflateOccupancy(start + (side - start) * (i / 100.0)), 0);
+  bool return_blocked = false;
+  for (int i = 0; i <= 100; ++i)
+    return_blocked |= map->getInflateOccupancy(side + (Vector3d(0.3, 0, 0.6) - side) * (i / 100.0)) != 0;
+  ASSERT_TRUE(return_blocked);
+  Vector3d target, velocity;
+  bool final;
+  ASSERT_TRUE(manager.prepareLocalSegment(start, end, target, velocity, final));
+  EXPECT_FALSE(final);
+  EXPECT_LT((target - Vector3d(-0.3, 0, 0.6)).norm(), 1e-9);
+}
+
+TEST_F(StaticSidePlanning, LateralEndpointChoosesWiderSideWithoutRequiringPreferredClearance)
+{
+  diff_planner::DiffPlannerManager manager;
+  configureSegments(manager);
+  for (int x = -25; x <= 25; ++x)
+    for (int y : {-6, 2})
+      map->md_.occupancy_buffer_inflate_[map->globalIdx2InfBufIdx(Eigen::Vector3i(x, y, 12))] = 1;
+  Vector3d target, velocity;
+  bool final;
+  ASSERT_TRUE(manager.prepareLocalSegment(start, end, target, velocity, final));
+  EXPECT_FALSE(final);
+  EXPECT_NEAR(target.x(), -0.3, 1e-9);
+  EXPECT_NEAR(target.y(), -0.075, 1e-9);  // 较宽侧的中间，净空0.175m仍可择优。
+  EXPECT_NEAR(target.z(), 0.6, 1e-9);
 }
 
 TEST_F(StaticSidePlanning, FinalGoalNearObstacleIsNotMovedOrRejectedForPreferredClearance)

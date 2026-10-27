@@ -914,9 +914,10 @@ namespace diff_planner
     return true;
   }
 
-  bool DiffPlannerManager::endpointHasPreferredClearance(const Eigen::Vector3d &position)
+  double DiffPlannerManager::endpointInflatedClearance(const Eigen::Vector3d &position)
   {
     const double resolution = grid_map_->getResolution();
+    double clearance = route_endpoint_clearance_;
     const int steps = static_cast<int>(std::ceil(route_endpoint_clearance_ / resolution)) + 1;
     const Eigen::Vector3i center = (position / resolution).array().floor().cast<int>();
     for (int x = -steps; x <= steps; ++x)
@@ -927,10 +928,11 @@ namespace diff_planner
           // 到膨胀体素表面的距离，避免把到体素中心的距离当成净空。
           const Eigen::Vector3d offset =
               ((position - cell).cwiseAbs().array() - 0.5 * resolution).max(0.0);
-          if (offset.norm() + 1e-6 < route_endpoint_clearance_ &&
-              grid_map_->getInflateOccupancy(cell) != 0) return false;
+          const double distance = offset.norm();
+          if (distance < clearance && grid_map_->getInflateOccupancy(cell) != 0)
+            clearance = distance;
         }
-    return true;
+    return clearance;
   }
 
   bool DiffPlannerManager::prepareLocalSegment(const Eigen::Vector3d& start,
@@ -994,7 +996,10 @@ namespace diff_planner
     const double horizon = crossing ? length : route_segment_length_;
     final = length <= horizon + 0.05;
     double limit = final ? length : horizon;
-    // 临时端点贴障时，沿导引当前直线段最多前移一个最小分段长度。
+    bool lateral_selected = false;
+    size_t lateral_anchor = 0;
+    Eigen::Vector3d lateral_target, lateral_tangent;
+    // 临时端点贴障时先左右择优，再沿导引当前直线段向前找。
     // 找不到更宽的位置就保留原端点；最终任务目标仍用原有碰撞检查。
     if (!final && std::isfinite(route_endpoint_clearance_) && route_endpoint_clearance_ > 0.0) {
       const double step = 0.5 * grid_map_->getResolution();
@@ -1011,7 +1016,8 @@ namespace diff_planner
         return span > 1e-6 ? (path[edge-1] + delta * ((distance - edge_start) / span)).eval()
                            : path[edge];
       };
-      point_at(limit);
+      const Eigen::Vector3d nominal = point_at(limit);
+      const size_t nominal_edge = edge;
       const Eigen::Vector3d direction = (path[edge] - path[edge-1]).normalized();
       double straight_end = edge_start + (path[edge] - path[edge-1]).norm();
       for (size_t i = edge + 1; i < path.size(); ++i) {
@@ -1023,8 +1029,52 @@ namespace diff_planner
         straight_end += span;
       }
       const double search_end = std::min(straight_end, std::min(length, limit + route_segment_min_length_));
-      for (double distance = limit;; distance = std::min(search_end, distance + step)) {
-        if (endpointHasPreferredClearance(point_at(distance))) {
+      double best_clearance = endpointInflatedClearance(nominal);
+      Eigen::Vector3d sideways(-direction.y(), direction.x(), 0.0);
+      if (best_clearance + 1e-6 < route_endpoint_clearance_ && sideways.norm() > 1e-6) {
+        sideways.normalize();
+        // 保留原路径折点，从当前直线段的起点连接候选端点。
+        lateral_anchor = nominal_edge - 1;
+        while (lateral_anchor > 0) {
+          const Eigen::Vector3d delta = path[lateral_anchor] - path[lateral_anchor-1];
+          if (delta.norm() > 1e-6 && delta.dot(direction) < delta.norm() * (1.0 - 1e-6)) break;
+          --lateral_anchor;
+        }
+        const Eigen::Vector3d reconnect = point_at(search_end);
+        const auto connection_free = [&](const Eigen::Vector3d &from, const Eigen::Vector3d &to) {
+          if (!ploy_traj_opt_->allowsDirectRoute(from, to)) return false;
+          const int samples = std::max(1, int(std::ceil((to - from).norm() / step)));
+          for (int i = 0; i <= samples; ++i)
+            if (ploy_traj_opt_->staticPositionOccupied(from + (to - from) * (double(i) / samples)))
+              return false;
+          return true;
+        };
+        // 左右各搜索半个最小分段长度（当前配置0.30m），保持原高度。
+        const double lateral_range = 0.5 * route_segment_min_length_;
+        for (double offset = std::min(step, lateral_range);;
+             offset = std::min(lateral_range, offset + step)) {
+          for (double sign : {-1.0, 1.0}) {
+            const Eigen::Vector3d candidate = nominal + sign * offset * sideways;
+            const double clearance = endpointInflatedClearance(candidate);
+            if (clearance <= best_clearance + 1e-6 ||
+                !connection_free(path[lateral_anchor], candidate) ||
+                !connection_free(candidate, reconnect)) continue;
+            best_clearance = clearance;
+            lateral_target = candidate;
+            lateral_tangent = (reconnect - candidate).normalized();
+            lateral_selected = true;
+          }
+          if (offset >= lateral_range || best_clearance + 1e-6 >= route_endpoint_clearance_) break;
+        }
+        // point_at按路径递增访问；向前候选搜索重新从原分段位置开始。
+        edge = 1;
+        edge_start = 0.0;
+      }
+      if (lateral_selected)
+        ROS_INFO("[分段端点择优] 侧移 %.3f m，膨胀地图净空 %.3f m，前后连接均无碰撞。",
+                 (lateral_target - nominal).norm(), best_clearance);
+      for (double distance = limit; !lateral_selected; distance = std::min(search_end, distance + step)) {
+        if (endpointInflatedClearance(point_at(distance)) + 1e-6 >= route_endpoint_clearance_) {
           if (distance > limit + 1e-6)
             ROS_INFO("[分段端点择优] 沿原导引前移 %.3f m，期望膨胀地图净空 %.3f m。",
                      distance - limit, route_endpoint_clearance_);
@@ -1057,6 +1107,14 @@ namespace diff_planner
       if (along >= limit - 1e-6) break;
     }
     if (route_segment_guide_.size() < 2) return false;
+    if (lateral_selected) {
+      route_segment_guide_.clear();
+      for (size_t i = 0; i <= lateral_anchor; ++i)
+        if (route_segment_guide_.empty() || (path[i] - route_segment_guide_.back()).norm() > 1e-6)
+          route_segment_guide_.push_back(path[i]);
+      route_segment_guide_.push_back(lateral_target);
+      tangent = lateral_tangent;
+    }
     target = final ? goal : route_segment_guide_.back();
     // Intermediate endpoints retain forward velocity; only the final goal stops.
     velocity = final ? Eigen::Vector3d::Zero().eval() : (pp_.max_vel_ * tangent).eval();

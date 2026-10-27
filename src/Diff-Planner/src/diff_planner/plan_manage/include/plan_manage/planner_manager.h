@@ -123,7 +123,7 @@ namespace diff_planner
     ReplanTrajectoryMetrics evaluateTrajectoryQuality(
         const poly_traj::Trajectory &trajectory, double start_time);
     double estimateInflatedClearance(const Eigen::Vector3d &position);
-    bool endpointHasPreferredClearance(const Eigen::Vector3d &position);
+    double endpointInflatedClearance(const Eigen::Vector3d &position);
 
     PlanningVisualization::Ptr visualization_;
 
