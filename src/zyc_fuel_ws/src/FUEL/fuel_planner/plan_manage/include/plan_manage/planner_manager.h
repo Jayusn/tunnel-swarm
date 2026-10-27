@@ -26,6 +26,7 @@ namespace fast_planner {
 class FastPlannerManager {
   // SECTION stable
 public:
+  bool isSupportedOccupied(const Eigen::Vector3d& position) const;
   FastPlannerManager();
   ~FastPlannerManager();
 
@@ -162,7 +163,6 @@ private:
   // 2026-07-23: 真实圆盘足迹检查供路径/轨迹最终复核；膨胀图仅用于A*引导，
   // 避免当前位置被膨胀层擦到后所有前向脱困路径因共享同一起点而全部失败。
   bool isRawFootprintSafe(const Eigen::Vector3d& position) const;
-  bool isSupportedOccupied(const Eigen::Vector3d& position) const;
 
   unique_ptr<KinodynamicAstar> kino_path_finder_;
   vector<BsplineOptimizer::Ptr> bspline_optimizers_;

@@ -645,10 +645,12 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
         const bool acceleration_continuous =
             acceleration_error <= fp_->trajectory_release_max_acceleration_error_;
         const bool controlled_escape_start =
-            planner_manager_->isControlledEscapePosition(reviewed_position);
+            planner_manager_->isControlledEscapePosition(reviewed_position) ||
+            (pending_escape_step_ && planner_manager_->isControlledEscapePosition(
+                planner_manager_->local_data_.position_traj_.evaluateDeBoorT(0.0)));
         const bool starts_in_inflation = planner_manager_->isPositionInflated(reviewed_position);
         const bool raw_start_safe = planner_manager_->isRawPositionSafe(reviewed_position) ||
-                                    controlled_escape_start;
+            planner_manager_->isControlledEscapePosition(reviewed_position);
         const bool clears_inflation =
             !controlled_escape_start || expl_manager_->incrementalEscapePlanSafe() ||
             planner_manager_->trajectoryClearsInflation(
@@ -748,7 +750,9 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
         }
         // 2026-07-13: 只有新轨迹已经发布后才解除安全悬停，避免规划成功与轨迹服务器接收之间的空窗。
         inflation_escape_active_ =
-            planner_manager_->isControlledEscapePosition(fd_->odom_pos_);
+            planner_manager_->isControlledEscapePosition(fd_->odom_pos_) ||
+            (active_escape_step_ && planner_manager_->isControlledEscapePosition(
+                active_traj_.position_traj_.evaluateDeBoorT(0.0)));
         inflation_escape_clear_since_ = ros::Time(0);
         setSafetyHold(false, inflation_escape_active_
                                  ? "validated inflation escape trajectory published"
@@ -1250,8 +1254,13 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
   if (inflation_escape_active_) {
     const bool still_inflated = planner_manager_->isPositionInflated(fd_->odom_pos_);
     const bool raw_safe = planner_manager_->isRawPositionSafe(fd_->odom_pos_);
-    const bool still_needs_escape = still_inflated || !raw_safe;
-    if (still_needs_escape &&
+    const bool odom_needs_escape = still_inflated || !raw_safe;
+    // 实测位置可能先跨出体素边界，参考起点仍在接触层；两者均离开后才
+    // 退出脱障检查，避免刚发布的直退轨迹又被当作普通碰撞轨迹刹停。
+    const bool reference_needs_escape = planner_manager_->isPositionInflated(desired) ||
+        !planner_manager_->isRawPositionSafe(desired);
+    const bool still_needs_escape = odom_needs_escape || reference_needs_escape;
+    if (odom_needs_escape &&
         !planner_manager_->isControlledEscapePosition(fd_->odom_pos_)) {
       requestActiveTrajectoryBrake("footprint contact worsened during inflation escape");
       fd_->static_state_ = true;

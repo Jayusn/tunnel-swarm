@@ -338,6 +338,7 @@ private:
   bool ground_ascent_optional_{false};
   bool ground_ascent_plan_{false};
   bool vertical_detour_plan_{false};
+  bool upper_detour_plan_{false};  // 本轮已验证的直接上升线段，不交给普通A*改道。
   double ground_ascent_cruise_height_{0.60};
   double ground_ascent_lower_probe_depth_{0.20};
   int ground_ascent_min_lower_obstacles_{2};
@@ -453,7 +454,7 @@ private:
                               const Vector3d& forward, Vector3d& next_pos,
                               double& next_yaw, bool& gate_detected);
   bool findForwardObstacleTop(const Vector3d& pos, const Vector3d& forward,
-                              double& obstacle_top) const;
+                              double& obstacle_top, std::vector<Vector3d>* local_tops = nullptr) const;
   bool occupiedNearHeight(const Vector3d& point, double height) const;
   bool hasCurrentHeightForwardObstacle(const Vector3d& pos,
                                        const Vector3d& forward) const;

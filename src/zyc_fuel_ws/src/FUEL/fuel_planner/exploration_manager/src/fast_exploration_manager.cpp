@@ -758,26 +758,20 @@ bool FastExplorationManager::buildPostTurnUpperRecovery(
   // 不再把旧前向宽扇区内的侧墙最高点当成此通道低障碍的高度。
   Vector3d elevated = pos;
   elevated.z() = height;
+  if (!isKnownSafeHorizontalCorridor(elevated,direction,
+      std::max(vertical_detour_upper_forward_max_distance_,wide_side_bypass_max_lookahead_)))
+    return false;
   for (double distance = vertical_detour_forward_check_distance_;
-       distance <= vertical_detour_upper_forward_max_distance_+1e-6;
-       distance += vertical_detour_forward_check_distance_) {
-    const Vector3d candidate = elevated + distance*direction;
-    if (!pointInsideWorkspaceLock(candidate)) continue;
-    planner_manager_->path_finder_->reset();
-    if (planner_manager_->path_finder_->search(pos,candidate) != Astar::REACH_END) continue;
-    const auto path = planner_manager_->path_finder_->getPath();
-    if (!planner_manager_->isPathSafe(path) ||
+       distance >= -1e-6; distance -= vertical_detour_forward_check_distance_) {
+    const Vector3d candidate = elevated + std::max(0.0,distance)*direction;
+    const vector<Vector3d> path{pos,candidate};
+    const bool known = distance>1e-6
+        ? isKnownSafeHorizontalCorridor(pos,candidate-pos,distance)
+        : isKnownSafeVerticalPath(pos,height);
+    if (!known || !pathInsideWorkspaceLock(path) ||
+        !planner_manager_->isPathSafe(path) ||
         !task_search_manager_->isRecoveryPathAllowed(path,false)) continue;
-    bool known_free = true;
-    for (size_t i=1; i<path.size() && known_free; ++i) {
-      const Vector3d delta = path[i]-path[i-1];
-      const int samples = std::max(1,static_cast<int>(std::ceil(delta.norm()/.025)));
-      for (int j=0; j<=samples; ++j)
-        if (!planner_manager_->isKnownFreePosition(path[i-1]+delta*(double(j)/samples))) {
-          known_free = false; break;
-        }
-    }
-    if (!known_free) continue;
+    upper_detour_plan_ = true;
     next_pos = candidate;
     next_yaw = cur_yaw;
     ROS_WARN("[upper_turn] yaw aligned; upper recovery along new corridor "
@@ -808,7 +802,7 @@ bool FastExplorationManager::buildForwardUpperDetour(
   recovery_side_latched_ = false;
   wide_side_bypass_active_ = false;
   recovery_side_continuation_pending_ = false;
-  ROS_WARN("[upper_priority] mapped obstacle top=%.2fm, z=%.2f -> %.2f; "
+  ROS_WARN("[upper_priority] field maximum=%.2fm, z=%.2f -> %.2f; "
            "choose verified upper route before center-gap/side steps.",
            obstacle_top, pos.z(), next_pos.z());
   return true;
@@ -877,70 +871,59 @@ bool FastExplorationManager::buildVerticalDetourFallback(
   const vector<double> side_angles{
       0.0, 0.5 * max_side_angle, -0.5 * max_side_angle,
       max_side_angle, -max_side_angle};
-  double obstacle_top = pos.z();
-  if (!findForwardObstacleTop(pos, direction, obstacle_top)) {
-    ROS_WARN_THROTTLE(
-        0.5,
-        "[vertical_detour] no occupied obstacle top found in the forward prism; "
-        "skip unbounded upper detour.");
-    return false;
-  }
-  const double minimum_upper_z =
-      obstacle_top + vertical_detour_upper_obstacle_clearance_;
-  // 按障碍顶部直接生成最低上绕高度；旧0.60m抬升搜索幅度不能否决更高但可飞的通路。
-  const double first_rise = std::max(vertical_detour_upper_step_, minimum_upper_z - pos.z());
-  const double maximum_rise = std::max(vertical_detour_upper_max_rise_,
-                                       first_rise + vertical_detour_upper_step_);
-  int rejected_height = 0, rejected_workspace = 0, rejected_corridor = 0;
-  int rejected_astar = 0, rejected_path = 0;
-  for (double rise = first_rise;
-       rise <= maximum_rise + 1e-6;
-       rise += vertical_detour_upper_step_) {
-    if (task_search_manager_ &&
-        pos.z() + rise > task_search_manager_->clampSearchHeight(1e3) + 1e-6) {
-      ++rejected_height; break;
-    }
-    for (double upper_distance = vertical_detour_forward_check_distance_;
-         upper_distance <= vertical_detour_upper_forward_max_distance_ + 1e-6;
-         upper_distance += vertical_detour_forward_check_distance_) {
+  double field_maximum;
+  vector<Vector3d> local_tops;
+  if (!findForwardObstacleTop(pos, direction, field_maximum, &local_tops)) return false;
+  const double height_limit = task_search_manager_
+      ? task_search_manager_->clampSearchHeight(1e3)
+      : pos.z() + vertical_detour_upper_max_rise_;
+  const double lookahead = std::max(vertical_detour_upper_forward_max_distance_,
+                                    wide_side_bypass_max_lookahead_);
+  int rejected_height = 0, rejected_corridor = 0, rejected_path = 0;
+  // 先尝试局部障碍的较高顶部；周围墙沿/高点超限只排除该高度，不否决
+  // 其他障碍上方、墙沿侧方的可飞通路。真实高障碍仍由完整机体走廊检查拒绝。
+  for (const Vector3d& top : local_tops) {
+    const double required_z = top.z() + vertical_detour_upper_obstacle_clearance_;
+    if (required_z <= pos.z() + 1e-6) continue;
+    const double first_z = std::max(pos.z() + vertical_detour_upper_step_, required_z);
+    if (first_z > height_limit + 1e-6) { ++rejected_height; continue; }
+    for (double z = first_z; z <= std::min(height_limit,
+             std::max(pos.z()+vertical_detour_upper_max_rise_, first_z+vertical_detour_upper_step_))+1e-6;
+         z += vertical_detour_upper_step_) {
+      Vector3d elevated = pos; elevated.z() = z;
       for (const double angle : side_angles) {
-        const double c = std::cos(angle);
-        const double s = std::sin(angle);
-        const Vector3d upper_direction(c * direction.x() - s * direction.y(),
-                                       s * direction.x() + c * direction.y(), 0.0);
-        Vector3d elevated_start = pos;
-        elevated_start.z() += rise;
-        const Vector3d candidate = elevated_start + upper_distance * upper_direction;
-        if (!pointInsideWorkspaceLock(candidate)) { ++rejected_workspace; continue; }
-        if (!isKnownSafeHorizontalCorridor(elevated_start, upper_direction,
-                                           upper_distance)) { ++rejected_corridor; continue; }
-        planner_manager_->path_finder_->reset();
-        if (planner_manager_->path_finder_->search(pos, candidate) != Astar::REACH_END) {
-          ++rejected_astar; continue;
+        const double c=std::cos(angle), sn=std::sin(angle);
+        const Vector3d upper_direction(c*direction.x()-sn*direction.y(),
+                                       sn*direction.x()+c*direction.y(), 0.0);
+        // 验证前方整段高层通路，不仅验证脚下0.20m空地。
+        if (!isKnownSafeHorizontalCorridor(elevated, upper_direction, lookahead)) {
+          ++rejected_corridor; continue;
         }
-        const auto path = planner_manager_->path_finder_->getPath();
-        if (!planner_manager_->isPathSafe(path) ||
-            (task_search_manager_ &&
-             !task_search_manager_->isRecoveryPathAllowed(path, false))) {
-          ++rejected_path; continue;
+        for (double distance=vertical_detour_forward_check_distance_;
+             distance>=-1e-6; distance-=vertical_detour_forward_check_distance_) {
+          const Vector3d candidate=elevated+std::max(0.0,distance)*upper_direction;
+          const vector<Vector3d> path{pos,candidate};
+          const bool known = distance>1e-6
+              ? isKnownSafeHorizontalCorridor(pos,candidate-pos,distance)
+              : isKnownSafeVerticalPath(pos,z);
+          if (!known || !pathInsideWorkspaceLock(path) ||
+              !planner_manager_->isPathSafe(path) ||
+              (task_search_manager_ && !task_search_manager_->isRecoveryPathAllowed(path,false))) {
+            ++rejected_path; continue;
+          }
+          next_pos=candidate; next_yaw=cur_yaw; upper_detour_plan_=true;
+          ROS_WARN("[vertical_detour] direct upper %s target=(%.2f,%.2f,%.2f) "
+              "local_top=(%.2f,%.2f,%.2f) field_max=%.2f clearance=%.2f lookahead=%.2f.",
+              distance>1e-6?"diagonal":"vertical",next_pos.x(),next_pos.y(),next_pos.z(),
+              top.x(),top.y(),top.z(),field_maximum,next_pos.z()-top.z(),lookahead);
+          return true;
         }
-        next_pos = candidate;
-        next_yaw = cur_yaw;
-        ROS_WARN("[vertical_detour] use upper diagonal corridor rise=%.2fm "
-                 "distance=%.2fm side=%.1fdeg target=(%.2f,%.2f,%.2f), "
-                 "obstacle_top=%.2fm clearance=%.2fm.",
-                 rise, upper_distance, angle * 180.0 / M_PI, next_pos.x(),
-                 next_pos.y(), next_pos.z(), obstacle_top,
-                 next_pos.z() - obstacle_top);
-        return true;
       }
     }
   }
-
-  ROS_WARN_THROTTLE(0.5, "[vertical_detour] upper unavailable: z=%.2f obstacle_top=%.2f "
-      "required_z=%.2f reject_height=%d workspace=%d corridor=%d astar=%d path=%d.",
-      pos.z(), obstacle_top, minimum_upper_z, rejected_height, rejected_workspace,
-      rejected_corridor, rejected_astar, rejected_path);
+  ROS_WARN_THROTTLE(0.5,"[vertical_detour] upper unavailable: field_max=%.2f "
+      "local_levels=%zu reject_height=%d corridor=%d direct_path=%d.",
+      field_maximum,local_tops.size(),rejected_height,rejected_corridor,rejected_path);
   // 低位优先上绕；上绕不可行时仍允许下降作为第二选择。
   if (allow_descend && !descend_first && startLowProbe()) return true;
   return false;
@@ -1527,7 +1510,8 @@ bool FastExplorationManager::hasLowVerticalSupport(
 }
 
 bool FastExplorationManager::findForwardObstacleTop(
-    const Vector3d& pos, const Vector3d& forward, double& obstacle_top) const {
+    const Vector3d& pos, const Vector3d& forward, double& obstacle_top,
+    std::vector<Vector3d>* local_tops) const {
   if (!sdf_map_ || forward.head<2>().norm() < 1e-3) return false;
   const Vector3d travel(forward.head<2>().normalized().x(),
                         forward.head<2>().normalized().y(), 0.0);
@@ -1550,25 +1534,51 @@ bool FastExplorationManager::findForwardObstacleTop(
 
   bool found = false;
   obstacle_top = -std::numeric_limits<double>::infinity();
-  // 观察距离与水平选路一致；0.20m 是动作步长，不能同时充当近距扫描盲区。
-  for (double ahead = step;
-       ahead <= lookahead + 1e-6;
-       ahead += step) {
-    for (double side = -lateral_range; side <= lateral_range + 1e-6;
-         side += step) {
-      for (double z = min_z; z <= max_z + 1e-6; z += step) {
-        const Vector3d probe = pos + ahead * travel + side * lateral +
-                               Vector3d(0.0, 0.0, z - pos.z());
-        if (!sdf_map_->isInMap(probe) ||
-            sdf_map_->getOccupancy(probe) != SDFMap::OCCUPIED) continue;
-        // 连续通道墙不应决定“障碍物最高点”；这里只统计局部物体/门框，
-        // 否则墙顶会把上绕高度推到地图上限。
-        if (z >= pos.z() - 0.30 && cameraWallSupported(probe, travel.head<2>()))
-          continue;
-        obstacle_top = std::max(obstacle_top, z + 0.5 * step);
+  if (local_tops) local_tops->clear();
+  Vector3d highest = pos;
+  // 每根占据柱分别提取顶部。墙柱按当前飞行高度识别，不能在稀疏墙沿处
+  // 重新分类成局部障碍；顶部上方分离的占据段也不能覆盖下面物体的顶部。
+  for (double ahead = step; ahead <= lookahead + 1e-6; ahead += step) {
+    for (double side = -lateral_range; side <= lateral_range + 1e-6; side += step) {
+      const Vector3d column = pos + ahead * travel + side * lateral;
+      if (sdf_map_->getOccupancy(column) == SDFMap::OCCUPIED &&
+          cameraWallSupported(column, travel.head<2>())) continue;
+      bool occupied_run = false;
+      Vector3d run_top = column;
+      auto save_top = [&]() {
+        if (!occupied_run) return;
+        if (local_tops) local_tops->push_back(run_top);
+        if (run_top.z() > obstacle_top) {
+          obstacle_top = run_top.z(); highest = run_top;
+        }
         found = true;
+        occupied_run = false;
+      };
+      for (double z = min_z; z <= max_z + 1e-6; z += step) {
+        Vector3d probe(column.x(), column.y(), z);
+        if (!sdf_map_->isInMap(probe) ||
+            !planner_manager_->isSupportedOccupied(probe)) {
+          save_top(); continue;
+        }
+        // 使用真实体素中心，避免采样坐标与体素坐标混用。
+        Eigen::Vector3i index; sdf_map_->posToIndex(probe, index);
+        sdf_map_->indexToPos(index, run_top);
+        run_top.z() += 0.5 * sdf_map_->getResolution();
+        occupied_run = true;
       }
+      save_top();
     }
+  }
+  if (found && local_tops) {
+    std::sort(local_tops->begin(), local_tops->end(),
+        [](const Vector3d& a, const Vector3d& b) { return a.z() > b.z(); });
+    // 一个高度只搜索一次，保留产生该高度的坐标以便回放定位。
+    local_tops->erase(std::unique(local_tops->begin(), local_tops->end(),
+        [](const Vector3d& a, const Vector3d& b) { return std::fabs(a.z()-b.z()) < 1e-6; }),
+        local_tops->end());
+    ROS_WARN_THROTTLE(1.0, "[upper_geometry] world highest=(%.2f,%.2f,%.2f), "
+        "local_top_levels=%zu; field maximum is not a route height constraint.",
+        highest.x(), highest.y(), highest.z(), local_tops->size());
   }
   return found;
 }
@@ -3236,8 +3246,15 @@ bool FastExplorationManager::planInflationHistoryEscape(
         (candidate.path[1] - candidate.path.front()).normalized();
     const double outward_speed = std::max(0.0, vel.dot(escape_direction));
     escape_vel = std::min(0.20, outward_speed) * escape_direction;
-    if (!planner_manager_->planExploreTraj(candidate.path, escape_vel, acc, 0.0) ||
-        !planner_manager_->isTrajectorySafe(0.03, true)) continue;
+    const Vector3d delta = candidate.path.back()-candidate.path.front();
+    const bool straight = delta.norm()>1e-6 && std::all_of(candidate.path.begin(),
+        candidate.path.end(), [&](const Vector3d& p) {
+          return (p-candidate.path.front()).cross(delta).norm()/delta.norm()<1e-6;
+        });
+    const bool generated = straight
+        ? planner_manager_->planStraightTraj(candidate.path.front(),candidate.path.back())
+        : planner_manager_->planExploreTraj(candidate.path, escape_vel, acc, 0.0);
+    if (!generated || !planner_manager_->isTrajectorySafe(0.03, true)) continue;
     incremental_escape_plan_ = candidate.incremental;
     if (candidate.incremental ? !incrementalEscapePlanSafe() :
         !planner_manager_->trajectoryClearsInflation(max_distance, 0.02, true)) {
@@ -4509,6 +4526,7 @@ int FastExplorationManager::planExploreMotion(
   turn_in_place_plan_ = false;
   ground_ascent_plan_ = false;
   vertical_detour_plan_ = false;
+  upper_detour_plan_ = false;
   pending_short_backtrack_ = false;
   ros::Time t1 = ros::Time::now();
   auto t2 = t1;
@@ -5201,14 +5219,15 @@ int FastExplorationManager::planExploreMotion(
   }
   if (!width_selected_path.empty()) {
     ed_->path_next_goal_ = width_selected_path;
-  } else if (use_center_gate_target) {
+  } else if (use_center_gate_target || upper_detour_plan_) {
+    // 上绕同样保留已验证斜升/竖升线段，禁止通用A*重新贴近中缝。
     // buildCenterGatePassage() 已按当前高度验证整段机体包络。直接保留这条线段，
     // 避免通用3D A*为了净空评分重新从门上方绕到同一个终点。
     ed_->path_next_goal_ = {pos, next_pos};
   } else {
     planner_manager_->path_finder_->reset();
   }
-  if (width_selected_path.empty() && !use_center_gate_target &&
+  if (width_selected_path.empty() && !use_center_gate_target && !upper_detour_plan_ &&
       planner_manager_->path_finder_->search(pos, next_pos, hold_fapp_height) != Astar::REACH_END) {
     // 2026-07-27: 远frontier跨越尚未建成的已知连通域时，先在当前前向扇区找安全短步；
     // 不再立即切换另一个远目标并触发长时间safety hold，让雷达随局部推进逐段补齐拐弯地图。
@@ -5227,8 +5246,10 @@ int FastExplorationManager::planExploreMotion(
       next_yaw = local_recovery_yaw;
       // 2026-07-27: 碰撞反馈必须冷却实际发布的局部目标，不能继续指向已被替换的远frontier。
       last_requested_goal_ = next_pos;
+      if (upper_detour_plan_) ed_->path_next_goal_ = {pos,next_pos};
       planner_manager_->path_finder_->reset();
-      if (planner_manager_->path_finder_->search(pos, next_pos, hold_fapp_height) != Astar::REACH_END) {
+      if (!upper_detour_plan_ &&
+          planner_manager_->path_finder_->search(pos, next_pos, hold_fapp_height) != Astar::REACH_END) {
         ROS_ERROR_THROTTLE(
             1.0, "Connected local recovery became unavailable before trajectory generation");
         if (task_search_manager_) task_search_manager_->reportGoalFailure(next_pos);
@@ -5241,7 +5262,7 @@ int FastExplorationManager::planExploreMotion(
       return FAIL;
     }
   }
-  if (width_selected_path.empty() && !use_center_gate_target)
+  if (width_selected_path.empty() && !use_center_gate_target && !upper_detour_plan_)
     ed_->path_next_goal_ = planner_manager_->path_finder_->getPath();
   // 2026-07-14: 起点和目标落在同一 A* 栅格时 getPath() 可能只返回一个点；去重并显式保留真实目标。
   vector<Vector3d> normalized_path;
@@ -5292,7 +5313,7 @@ int FastExplorationManager::planExploreMotion(
   // width comparison. Do this before the local cut, not only after execution
   // has already carried the vehicle toward a narrow passage.
   if (!use_forced_entry_target && !use_stage3_target && !exit_transit_active &&
-      !use_entry_forward_target && !use_vertical_detour_target &&
+      !use_entry_forward_target && !use_vertical_detour_target && !upper_detour_plan_ &&
       !pending_short_backtrack_ && width_selected_path.empty() &&
       !use_center_gate_target &&
       prepareWiderRoute(ed_->path_next_goal_, yaw[0])) {
@@ -5316,7 +5337,7 @@ int FastExplorationManager::planExploreMotion(
       !planned_split_route_.side &&
       !(manual_fapp_active_ && recovery_side_latched_) &&
       !use_forced_entry_target && !use_stage3_target && !exit_transit_active && !use_entry_forward_target &&
-      !use_vertical_detour_target &&
+      !use_vertical_detour_target && !upper_detour_plan_ &&
       (!use_center_gate_target || recovery_side_continuation_pending_);
   bool has_central_guides = false;
   // Simplify first, then retain central cross-section points as spline guides.
@@ -5331,7 +5352,7 @@ int FastExplorationManager::planExploreMotion(
   const bool far_frontier_goal =
       !use_forced_entry_target && !use_stage3_target &&
       (next_pos - pos).norm() > route_horizon + 1e-6;
-  if (far_frontier_goal && !planned_split_route_.side &&
+  if (far_frontier_goal && !upper_detour_plan_ && !planned_split_route_.side &&
       Astar::pathLength(ed_->path_next_goal_) > route_horizon) {
     vector<Vector3d> local_segment{ed_->path_next_goal_.front()};
     double accumulated = 0.0;
@@ -5418,7 +5439,7 @@ int FastExplorationManager::planExploreMotion(
   const double radius_far = 5.0;
   const double radius_close = 1.5;
   const double len = Astar::pathLength(ed_->path_next_goal_);
-  if (use_entry_forward_target) {
+  if (use_entry_forward_target || upper_detour_plan_) {
     if (!planner_manager_->planStraightTraj(pos, next_pos)) return FAIL;
     ed_->next_goal_ = next_pos;
   } else if (planned_split_route_.side || hold_fapp_height || len < radius_close || (has_central_guides && len <= radius_far)) {
@@ -5467,6 +5488,7 @@ int FastExplorationManager::planExploreMotion(
 
   // 2026-07-14: 优化后的 B-spline 可能切入柱体/墙面；发布前拒绝并切换任务目标，而不是交给控制器反复急停。
   if (!planner_manager_->isTrajectorySafe()) {
+    if (upper_detour_plan_) return FAIL; // 不把已选上升段改成普通前进前缀。
     // 2026-07-16: 远目标平滑轨迹切弯失败时，沿已经通过足迹检查的A*路径先走0.8m安全前缀。
     // 比赛中宁可分段推进并重规划，也不能在宽通道对同一远目标永久FAIL/悬停。
     constexpr double conservative_advance = 0.80;
@@ -5624,8 +5646,8 @@ int FastExplorationManager::planExploreMotion(
       return heading;
     };
   }
-  if (exit_transit_active && use_locked_exit_yaw) {
-    // 回门心保持任务指定的当前朝向，复用确定性插值，恒定零航向无需再次优化。
+  if (upper_detour_plan_ || (exit_transit_active && use_locked_exit_yaw)) {
+    // 上绕保持选定航向；回门心保持任务指定的当前朝向，复用确定性插值，恒定零航向无需再次优化。
     if (!planner_manager_->planYawTurnInPlace(yaw, next_yaw)) return FAIL;
   } else {
     planner_manager_->planYawExplore(

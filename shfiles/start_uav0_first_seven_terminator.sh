@@ -341,10 +341,11 @@ run_planner_pane() {
   fi
   if [[ -n "${UAV0_PLANNER_ROSBAG_PREFIX:-}" ]]; then
     mkdir -p -- "$(dirname -- "${UAV0_PLANNER_ROSBAG_PREFIX}")" || keep_pane_open
+    # 恢复规划器累计占据地图，供顶部取高/贴障回放；不恢复相机图像和双机原始点云。
     recording_args+=(
       "enable_planner_rosbag:=true"
       "planner_rosbag_prefix:=${UAV0_PLANNER_ROSBAG_PREFIX}"
-      "planner_rosbag_extra_topics:=${UAV0_PLANNER_ROSBAG_EXTRA_TOPICS:-}"
+      "planner_rosbag_extra_topics:=${UAV0_PLANNER_ROSBAG_EXTRA_TOPICS:-} /UAV0/sdf_map/occupancy_all"
     )
     printf '[录包] 通道回放包：%s_时间戳_分卷.bag；在本屏 Ctrl+C 正常结束录制。\n' \
       "${UAV0_PLANNER_ROSBAG_PREFIX}"

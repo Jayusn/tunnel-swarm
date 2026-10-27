@@ -32,7 +32,7 @@ export UAV0_FIRST_SEVEN_ENABLE_QR=false
 export UAV0_FIRST_SEVEN_THERMAL=false
 export UAV0_FIRST_SEVEN_ENABLE_TARGET_REPORTING=false
 
-# 默认只录轻量规划诊断；完整建图回放需显式设置 UAV0_PLANNER_ROSBAG_CLOUDS=true。
+# 默认录规划诊断和前机累计占据地图；额外双机雷达点云仍需 UAV0_PLANNER_ROSBAG_CLOUDS=true。
 export UAV0_PLANNER_ROSBAG_PREFIX="${UAV0_PLANNER_ROSBAG_PREFIX:-${HOME}/.ros/corridor_replay/uav0_corridor}"
 export UAV0_PLANNER_ROSBAG_EXTRA_TOPICS="${UAV0_PLANNER_ROSBAG_EXTRA_TOPICS:-/UAV1/fast_lio/Odom_high_freq /UAV0/move_base_simple/goal /UAV0/mavros/state /UAV0/mavros/rc/in /UAV0/mavros/local_position/odom /UAV1/mavros/state /UAV1/mavros/rc/in /mission/rc_land_active}"
 if [[ "${UAV0_PLANNER_ROSBAG_CLOUDS:-false}" == true ]]; then

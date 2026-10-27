@@ -122,15 +122,24 @@ public:
           // 两个锥桶的保守体素包络，中间低泡沫箱；当前高度中缝仍可通。
           // 整体距机体约0.75m，超出旧上绕0.60m扫描范围。
           const bool cone = p.x() >= .775 && p.x() <= .925 &&
-              std::fabs(std::fabs(p.y() - pos.y()) - .40) <= .075 && p.z() < .65;
+              std::fabs(std::fabs(p.y() - pos.y()) - .40) <= .075 && p.z() < (mode>=6 ? .70 : .65);
           const bool box = p.x() >= .875 && p.x() <= 1.125 &&
               std::fabs(p.y() - pos.y()) <= .20 && p.z() < .30;
           const bool roof = mode == 1 && p.z() >= .725;
           const bool unknown = mode == 2 && p.z() >= .725;
-          const bool high_barrier = mode >= 4 && p.x() >= .775 && p.x() <= .925 &&
+          const bool high_barrier = (mode == 4 || mode == 5) && p.x() >= .775 && p.x() <= .925 &&
               std::fabs(p.y() - pos.y()) <= .50 && p.z() < 1.05;
-          const bool side_wall = mode >= 4 && std::fabs(p.y() - pos.y()) >= .65;
-          const bool occupied = cone || box || roof || high_barrier || side_wall;
+          const bool side_wall = (mode == 4 || mode == 5) && std::fabs(p.y() - pos.y()) >= .65;
+          // 局部物体顶Z=.70，旁边有Z=1.40的受支持高点（不满足连续墙分类）。
+          const bool high_patch = (mode==6 || mode==7) && p.x()>=.775 && p.x()<=.925 &&
+              (mode==7 ? std::fabs(p.y()-pos.y())<=.65 : std::fabs(p.y()-pos.y()-.55)<=.025) &&
+              p.z()<1.40 && p.z()>=1.25;
+          const bool high_wall = mode==7 && p.x()>=.775 && p.x()<=.925 &&
+              std::fabs(p.y()-pos.y())<=.65 && p.z()<1.40;
+          const bool isolated = mode==8 && (p-Vector3d(.825,.575,1.375)).norm()<.01;
+          const bool ceiling = mode==9 && p.z()>=1.375 && p.z()<1.425;
+          const bool occupied = cone || box || roof || high_barrier || side_wall ||
+                                high_patch || high_wall || isolated || ceiling;
           const int address = map.toAddress(index);
           map.md_->occupancy_buffer_[address] = occupied ? map.mp_->clamp_max_log_
               : unknown ? map.mp_->clamp_min_log_ - map.mp_->unknown_flag_ : map.mp_->clamp_min_log_;
@@ -138,7 +147,9 @@ public:
         }
     double top;
     ASSERT_TRUE(manager.findForwardObstacleTop(pos, forward, top));
-    if (mode != 1) EXPECT_NEAR(mode >= 4 ? 1.05 : .65, top, .001);
+    if (mode<6 && mode != 1) EXPECT_NEAR(mode >= 4 ? 1.05 : .65, top, .001);
+    if (mode==6 || mode==7) EXPECT_NEAR(1.40,top,.001);
+    if (mode==8) EXPECT_NEAR(.70,top,.001);
     Vector3d next; double next_yaw=0;
     if (mode == 0) {
       bool gate = false;
@@ -150,18 +161,34 @@ public:
       EXPECT_GE(next.z(), top + .20 - 1e-6);
       EXPECT_GT(next.x(), pos.x());
       EXPECT_FALSE(manager.recovery_side_latched_);
-      EXPECT_TRUE(manager.planner_manager_->isPathSafe(manager.planner_manager_->path_finder_->getPath()));
-    } else if (mode == 4) {
-      ASSERT_GT(top + .20 - pos.z(), manager.vertical_detour_upper_max_rise_);
+      EXPECT_TRUE(manager.planner_manager_->isPathSafe({pos,next}));
+    } else if (mode == 4 || mode==6 || mode==8 || mode==9) {
+      if (mode==4) ASSERT_GT(top + .20 - pos.z(), manager.vertical_detour_upper_max_rise_);
       manager.edt_environment_ = manager.planner_manager_->edt_environment_;
       nh.setParam("frontier/cluster_min", 1000000);
       manager.frontier_finder_ = std::make_shared<FrontierFinder>(manager.edt_environment_, nh);
-      manager.external_selection_only_ = true;
+      manager.external_selection_only_ = mode==4;
       ASSERT_EQ(SUCCEED, manager.planExploreMotion(pos, Vector3d::Zero(),
                                                    Vector3d::Zero(), Vector3d::Zero()));
-      EXPECT_GE(manager.external_selected_viewpoint_.z(), top + .20 - 1e-6);
-      EXPECT_LE(manager.external_selected_viewpoint_.z(), 1.50);
-      EXPECT_GT(manager.external_selected_viewpoint_.x(), pos.x());
+      if (mode==4) {
+        EXPECT_GE(manager.external_selected_viewpoint_.z(), top + .20 - 1e-6);
+        EXPECT_LE(manager.external_selected_viewpoint_.z(), 1.50);
+        EXPECT_GT(manager.external_selected_viewpoint_.x(), pos.x());
+      } else {
+        auto& curve=manager.planner_manager_->local_data_.position_traj_;
+        const Vector3d end=curve.evaluateDeBoorT(curve.getTimeSum());
+        EXPECT_NEAR(.90,end.z(),1e-4);
+        EXPECT_GT(end.x(),pos.x());
+        EXPECT_LT(end.x(),.775); // 在物体前完成抬升，不能把上升弧线拖进中缝。
+        double previous=pos.z();
+        for(double t=0;t<curve.getTimeSum();t+=.02) {
+          const Vector3d point=curve.evaluateDeBoorT(t);
+          EXPECT_GE(point.z(),previous-1e-6);
+          EXPECT_NEAR(0.0,(point-pos).cross(end-pos).norm(),1e-6);
+          previous=point.z();
+        }
+        EXPECT_TRUE(manager.planner_manager_->isTrajectorySafe());
+      }
     } else {
       EXPECT_FALSE(manager.buildForwardUpperDetour(pos, 0, forward, next, next_yaw));
     }
@@ -226,7 +253,7 @@ public:
     if (found) {
       EXPECT_GT(next.z(), pos.z());
       EXPECT_GE(next.z() - top, manager.vertical_detour_upper_obstacle_clearance_ - 1e-6);
-      EXPECT_TRUE(manager.planner_manager_->isPathSafe(manager.planner_manager_->path_finder_->getPath()));
+      EXPECT_TRUE(manager.planner_manager_->isPathSafe({pos,next}));
     }
   }
   static void runRecordedLowCrossing(const char* fixture, bool manual_mission = false) {
@@ -725,10 +752,13 @@ public:
       return;
     }
     ASSERT_TRUE(manager.buildPostTurnUpperRecovery(pos,side*M_PI_2,target,target_yaw));
-    EXPECT_GT((target-pos).y()*side,.15);
+    // 障碍仅在0.30m前方：旧A*弧线可绕过，但直接斜升会擦进底部包络。
+    // 应保留当前位置先竖升，不能为满足水平位移断言而重新贴近障碍。
+    EXPECT_NEAR(0.0,(target-pos).head<2>().norm(),1e-6);
     EXPECT_GE(target.z(),.80);
+    EXPECT_TRUE(manager.isKnownSafeVerticalPath(pos,target.z()));
     EXPECT_TRUE(manager.planner_manager_->isPositionSafe(target));
-    EXPECT_TRUE(manager.planner_manager_->isPathSafe(manager.planner_manager_->path_finder_->getPath()));
+    EXPECT_TRUE(manager.planner_manager_->isPathSafe({pos,target}));
     EXPECT_NEAR(target_yaw,side*M_PI_2,1e-9);
     if (mode == 7) {
       // 复现实飞：Y 远小于旧框的 0.70m，但已确认上层通道并完成转向。
@@ -742,7 +772,7 @@ public:
       ASSERT_EQ(SUCCEED, manager.planExploreMotion(pos, zero, zero, Vector3d(side*M_PI_2,0,0)));
       EXPECT_FALSE(manager.mission_entered_search_region_);
       EXPECT_GE(manager.external_selected_viewpoint_.z(), .80);
-      EXPECT_GT((manager.external_selected_viewpoint_-pos).y()*side, .15);
+      EXPECT_NEAR(0.0,(manager.external_selected_viewpoint_-pos).head<2>().norm(),1e-6);
     }
     EXPECT_FALSE(manager.buildPostTurnUpperRecovery(target,side*M_PI_2,target,target_yaw));
   }
@@ -4063,6 +4093,29 @@ public:
     EXPECT_TRUE(manager.incrementalEscapePlanSafe() ||
         manager.planner_manager_->trajectoryClearsInflation(.45,.02,true));
     const Vector3d end=manager.ed_->next_goal_;
+    if (scenario==7) {
+      ASSERT_TRUE(manager.planner_manager_->isPositionSafe(end));
+      manager.manual_fapp_active_=false;
+      FastExplorationFSM fsm;
+      fsm.expl_manager_=std::shared_ptr<FastExplorationManager>(&manager,[](FastExplorationManager*){});
+      fsm.planner_manager_=manager.planner_manager_;
+      fsm.fd_=std::make_shared<FSMData>(); fsm.fp_=std::make_shared<FSMParam>();
+      fsm.fd_->state_str_={"INIT","WAIT","PLAN","PUB","EXEC","FINISH"};
+      fsm.fd_->odom_pos_=end; fsm.fd_->odom_yaw_=0;
+      fsm.fp_->max_tracking_error_xy_=1; fsm.fp_->max_tracking_error_z_=1;
+      fsm.fp_->hard_tracking_error_xy_=1; fsm.fp_->hard_tracking_error_z_=1;
+      fsm.fp_->tracking_error_grace_time_=1000;
+      fsm.fp_->emergency_brake_horizon_=.12;
+      fsm.active_traj_=manager.planner_manager_->local_data_;
+      fsm.active_traj_.start_time_=ros::Time::now();
+      fsm.active_traj_valid_=fsm.active_escape_step_=fsm.inflation_escape_active_=true;
+      fsm.inflation_escape_clear_since_=ros::Time::now()-ros::Duration(1.0);
+      fsm.state_=EXEC_TRAJ;
+      fsm.safetyCallback(ros::TimerEvent());
+      EXPECT_EQ(EXEC_TRAJ,fsm.state_);
+      EXPECT_TRUE(fsm.inflation_escape_active_);
+      EXPECT_FALSE(fsm.active_traj_braked_);
+    }
     if (manager.planner_manager_->isPositionSafe(end)) {
       EXPECT_FALSE(manager.planInflationHistoryEscape(end,zero,zero,zero));
     }
@@ -4735,6 +4788,9 @@ TEST(InflationEscape, ManualWaypointBacksStraightWhenHistoryDoesNotPointBackward
   fast_planner::TurnEscapeTest::runDirectionalEscape(5);
 }
 
+TEST(InflationEscape, ReferenceContactDoesNotBrakeWhenOdometryCrossesFreeBoundary) {
+  fast_planner::TurnEscapeTest::runDirectionalEscape(7);
+}
 TEST(InflationEscape, ManualWaypointBacksStraightWithoutOdometryHistory) {
   fast_planner::TurnEscapeTest::runDirectionalEscape(6);
 }
@@ -4826,6 +4882,18 @@ TEST(UpperDetour, TallObstacleUsesEarlyUpperRouteBeyondOldRiseLimit) {
 }
 TEST(UpperDetour, TallObstacleCannotExceedCorridorHeight) {
   fast_planner::TurnEscapeTest::runEarlyUpperCombination(5);
+}
+TEST(UpperDetour, SideHighPatchDoesNotVetoMeasuredObstacleUpperRoute) {
+  fast_planner::TurnEscapeTest::runEarlyUpperCombination(6);
+}
+TEST(UpperDetour, RealHighBarrierStillRejectsLowerCandidate) {
+  fast_planner::TurnEscapeTest::runEarlyUpperCombination(7);
+}
+TEST(UpperDetour, IsolatedHighNoiseDoesNotChangeObstacleTop) {
+  fast_planner::TurnEscapeTest::runEarlyUpperCombination(8);
+}
+TEST(UpperDetour, SeparateCeilingDoesNotReplaceLocalObstacleTop) {
+  fast_planner::TurnEscapeTest::runEarlyUpperCombination(9);
 }
 TEST(UpperDetour, LowObstacleDoesNotAuthorizeBlockedUpperSpace) {
   fast_planner::TurnEscapeTest::runLowObstacleUpperDetour(true);
