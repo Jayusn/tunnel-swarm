@@ -1528,6 +1528,101 @@ public:
     }
   }
 
+  static void runRaisedStaticSide(int mode) {
+    ros::NodeHandle nh("~raised_static_side");
+    nh.setParam("sdf_map/virtual_ceil_height", -10.0);
+    nh.setParam("manager/use_geometric_path", true);
+    nh.setParam("astar/resolution_astar", 0.05);
+    nh.setParam("astar/allocate_num", 100000);
+    nh.setParam("astar/lambda_heu", 10000.0);
+    nh.setParam("astar/max_search_time", 0.1);
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    auto& map = *manager.sdf_map_;
+    auto& planner = *manager.planner_manager_;
+    auto& task = *manager.task_search_manager_;
+    task.setMap(manager.sdf_map_);
+    task.min_search_height_ = 0.10;
+    task.max_search_height_ = mode == 5 ? 1.25 : 1.90;
+    const Vector3d start(0.025, 0.025, 0.525);
+    const double top = mode == 3 ? 1.15 : 1.10;
+    const double wall_side = mode == 1 ? 1.0 : -1.0;
+    // 确定性已知自由地图，障碍仍通过生产膨胀和ESDF更新处理。
+    std::fill(map.md_->occupancy_buffer_.begin(), map.md_->occupancy_buffer_.end(),
+              map.mp_->clamp_min_log_);
+    const auto occupy = [&](double x, double y, double z) {
+      Eigen::Vector3i index;
+      map.posToIndex(Vector3d(x, y, z), index);
+      map.md_->occupancy_buffer_[map.toAddress(index)] = map.mp_->clamp_max_log_;
+    };
+    for (double x : {0.425, 0.475, 0.525})
+      for (double y : {-0.075, -0.025, 0.025, 0.075, 0.125})
+        for (double z = 0.125; z < top; z += 0.05) occupy(x, y, z);
+    // 右/左侧连续墙让同距离的左右候选具有不同净空。
+    for (double x = -1.025; x <= 1.475; x += 0.05)
+      for (double z = 0.125; z <= 1.825; z += 0.05)
+        occupy(x, 0.025 + wall_side * 0.325, z);
+    if (mode == 2) {
+      // 起点上方的小横梁挡住最低+20cm层，侧方可以绕开横梁升到更高层。
+      for (double x : {-0.025, 0.025, 0.075})
+        for (double y : {-0.025, 0.025, 0.075}) occupy(x, y, 1.325);
+    }
+    if (mode == 4) {
+      for (int x = 0; x < map.mp_->map_voxel_num_.x(); ++x)
+        for (int y = 0; y < map.mp_->map_voxel_num_.y(); ++y)
+          for (int z = 24; z < map.mp_->map_voxel_num_.z(); ++z)
+            map.md_->occupancy_buffer_[map.toAddress(x,y,z)] =
+                map.mp_->clamp_min_log_ - map.mp_->unknown_flag_;
+    }
+    map.md_->local_bound_min_.setZero();
+    map.md_->local_bound_max_ = map.mp_->map_voxel_num_ - Eigen::Vector3i::Ones();
+    map.clearAndInflateLocalMap();
+    map.updateESDF3d();
+    Vector3d next;
+    double yaw = 0.0;
+    const bool selected = manager.buildRaisedSideBypass(
+        start, 0.0, Vector3d::UnitX(), top, next, yaw);
+    if (mode >= 3) {
+      EXPECT_FALSE(selected);
+      EXPECT_EQ(manager.low_probe_phase_, vertical_detour::LowProbePhase::IDLE);
+      return;
+    }
+    ASSERT_TRUE(selected);
+    EXPECT_GE(next.z(), top + 0.20 - 1e-6);
+    EXPECT_LE(next.z(), task.max_search_height_);
+    EXPECT_GT(next.x(), start.x());
+    EXPECT_GT((next.y() - start.y()) * -wall_side, 0.05);
+    EXPECT_LE((next - start).head<2>().norm(), 0.60 + 1e-6);
+    EXPECT_NEAR(yaw, 0.0, 1e-9);
+    if (mode == 2) EXPECT_GT(next.z(), top + 0.20 + 0.10);
+    else EXPECT_NEAR(next.z(), top + 0.20, 1e-6);
+    planner.path_finder_->reset();
+    ASSERT_EQ(planner.path_finder_->search(start, next), Astar::REACH_END);
+    EXPECT_TRUE(planner.isPathSafe(planner.path_finder_->getPath()));
+    if (mode < 2) {
+      ASSERT_TRUE(planner.planExploreTraj(planner.path_finder_->getPath(),
+                                          Vector3d::Zero(), Vector3d::Zero()));
+      EXPECT_TRUE(planner.isTrajectorySafe());
+      // 达到抬高侧向点后，原直行短段可以从顶面以上20cm接着通过障碍。
+      ASSERT_TRUE(planner.planStraightTraj(next, next + Vector3d(0.8, 0.0, 0.0)));
+      EXPECT_TRUE(planner.isTrajectorySafe());
+      double crossed_top;
+      EXPECT_FALSE(manager.trajectoryNeedsObstacleClearance(crossed_top));
+      EXPECT_NEAR(crossed_top, top, 1e-6);
+    }
+    if (mode <= 2) {
+      double detected_top;
+      ASSERT_TRUE(manager.findForwardObstacleTop(start, Vector3d::UnitX(), detected_top));
+      EXPECT_NEAR(detected_top, top, 1e-6);
+      // 从0.525m到1.30m超过旧0.60m升幅，正式垂直恢复入口仍能选到侧向候选。
+      ASSERT_TRUE(manager.buildVerticalDetourFallback(
+          start, 0.0, Vector3d::UnitX(), next, yaw, false, false));
+      EXPECT_GE(next.z(), top + 0.20 - 1e-6);
+      if (mode == 2) EXPECT_GT(next.z(), top + 0.20 + 0.10);
+      EXPECT_GT((next.y() - start.y()) * -wall_side, 0.05);
+    }
+  }
+
   static void runObstacleClearance(bool roof, bool high_reference = false) {
     ros::NodeHandle nh("~");
     FastExplorationManager manager;
@@ -3624,6 +3719,24 @@ public:
 }
 TEST(UpperClearance, HighestVoxelPlusTwentyBeforeForward) {
   fast_planner::TurnEscapeTest::runObstacleClearance(false);
+}
+TEST(RaisedStaticSide, LowObstacleUsesSaferLeftSideAboveTop) {
+  fast_planner::TurnEscapeTest::runRaisedStaticSide(0);
+}
+TEST(RaisedStaticSide, MirroredSceneUsesSaferRightSideAboveTop) {
+  fast_planner::TurnEscapeTest::runRaisedStaticSide(1);
+}
+TEST(RaisedStaticSide, TwentyCentimetersIsMinimumAndHigherRouteRemainsAvailable) {
+  fast_planner::TurnEscapeTest::runRaisedStaticSide(2);
+}
+TEST(RaisedStaticSide, TallerObstacleDoesNotUseLowObstacleCandidate) {
+  fast_planner::TurnEscapeTest::runRaisedStaticSide(3);
+}
+TEST(RaisedStaticSide, UnknownUpperSpaceDoesNotProduceRoute) {
+  fast_planner::TurnEscapeTest::runRaisedStaticSide(4);
+}
+TEST(RaisedStaticSide, InsufficientTaskHeightDoesNotLowerRequiredClearance) {
+  fast_planner::TurnEscapeTest::runRaisedStaticSide(5);
 }
 TEST(UpperClearance, BlockedAscentLeavesOtherRoutesAvailable) {
   fast_planner::TurnEscapeTest::runObstacleClearance(true);

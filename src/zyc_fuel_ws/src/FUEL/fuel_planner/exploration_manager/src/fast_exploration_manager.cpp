@@ -809,6 +809,8 @@ bool FastExplorationManager::buildVerticalDetourFallback(
   }
   const double minimum_upper_z =
       obstacle_top + vertical_detour_upper_obstacle_clearance_;
+  if (buildRaisedSideBypass(pos, cur_yaw, direction, obstacle_top, next_pos, next_yaw))
+    return true;
   for (double rise = vertical_detour_upper_step_;
        rise <= vertical_detour_upper_max_rise_ + 1e-6;
        rise += vertical_detour_upper_step_) {
@@ -1481,6 +1483,85 @@ bool FastExplorationManager::findForwardObstacleTop(
     }
   }
   return found;
+}
+
+bool FastExplorationManager::buildRaisedSideBypass(
+    const Vector3d& pos, double cur_yaw, const Vector3d& forward, double obstacle_top,
+    Vector3d& next_pos, double& next_yaw) {
+  // 只为低静态障碍增加候选；高度沿用地图/任务的Z基准，不改变点云滤波或下穿。
+  const double minimum_z = std::max(pos.z(), obstacle_top +
+      std::max(0.20, vertical_detour_upper_obstacle_clearance_));
+  if (manual_fapp_active_ || suspended_underpass_active_ ||
+      low_probe_phase_ != vertical_detour::LowProbePhase::IDLE ||
+      !std::isfinite(obstacle_top) || obstacle_top > raised_side_obstacle_max_height_ + 1e-6 ||
+      obstacle_top <= vertical_detour_low_height_ || forward.head<2>().norm() < 1e-3)
+    return false;
+
+  const Vector3d travel(forward.head<2>().normalized().x(),
+                        forward.head<2>().normalized().y(), 0.0);
+  const double angle = std::min(89.0, std::max(0.0,
+      vertical_detour_upper_max_side_angle_deg_)) * M_PI / 180.0;
+  if (angle < 1e-3) return false;
+  Vector3d map_origin, map_size;
+  sdf_map_->getRegion(map_origin, map_size);
+  double maximum_z = map_origin.z() + map_size.z() - 0.06;
+  if (task_search_manager_)
+    maximum_z = std::min(maximum_z, task_search_manager_->clampSearchHeight(maximum_z));
+  Vector3d elevated = pos;
+  // 20cm只是最低净空；该层不通就按现有上绕步长继续向上找，不限于一次固定升幅。
+  for (double target_z = minimum_z; target_z <= maximum_z + 1e-6;
+       target_z += vertical_detour_upper_step_) {
+    elevated.z() = target_z;
+    // 每层先找短段，同一距离比较左右整条路径的最小净空，不固定选择某一侧。
+    for (double distance = vertical_detour_forward_check_distance_;
+         distance <= vertical_detour_upper_forward_max_distance_ + 1e-6;
+         distance += vertical_detour_forward_check_distance_) {
+      bool found = false;
+      double best_clearance = -1.0, best_endpoint = -1.0;
+      Vector3d best;
+      for (const double side_angle : {angle, -angle, 0.5 * angle, -0.5 * angle}) {
+        const Vector3d direction(std::cos(side_angle) * travel.x() - std::sin(side_angle) * travel.y(),
+                                 std::sin(side_angle) * travel.x() + std::cos(side_angle) * travel.y(), 0.0);
+        const Vector3d candidate = elevated + distance * direction;
+        if (!pointInsideWorkspaceLock(candidate) ||
+            !isKnownSafeHorizontalCorridor(elevated, direction, distance)) continue;
+        planner_manager_->path_finder_->reset();
+        if (planner_manager_->path_finder_->search(pos, candidate) != Astar::REACH_END) continue;
+        const auto path = planner_manager_->path_finder_->getPath();
+        if (!pathInsideWorkspaceLock(path) || !planner_manager_->isPathSafe(path) ||
+            (task_search_manager_ && !task_search_manager_->isRecoveryPathAllowed(path, false)))
+          continue;
+        double clearance = std::numeric_limits<double>::infinity();
+        for (size_t i = 1; i < path.size(); ++i) {
+          const int samples = std::max(1, static_cast<int>(std::ceil(
+              (path[i] - path[i - 1]).norm() / 0.05)));
+          for (int j = 0; j <= samples; ++j) {
+            const Vector3d point = path[i - 1] +
+                (path[i] - path[i - 1]) * static_cast<double>(j) / samples;
+            clearance = std::min(clearance, sdf_map_->getDistance(point));
+          }
+        }
+        const double endpoint = sdf_map_->getDistance(candidate);
+        if (!found || clearance > best_clearance + 0.01 ||
+            (std::fabs(clearance - best_clearance) <= 0.01 && endpoint > best_endpoint + 0.01)) {
+          found = true;
+          best = candidate;
+          best_clearance = clearance;
+          best_endpoint = endpoint;
+        }
+      }
+      if (!found) continue;
+      next_pos = best;
+      next_yaw = cur_yaw;
+      ROS_WARN("[raised_side_bypass] static top=%.2fm target_z=%.2fm side=%s "
+               "horizontal_step=%.2fm path_clearance=%.2fm; use checked short upper-side route.",
+               obstacle_top, target_z,
+               (best - pos).dot(Vector3d(-travel.y(), travel.x(), 0.0)) > 0 ? "left" : "right",
+               distance, best_clearance);
+      return true;
+    }
+  }
+  return false;
 }
 
 bool FastExplorationManager::trajectoryNeedsObstacleClearance(double& obstacle_top) const {
@@ -3586,6 +3667,8 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
            vertical_detour_upper_max_side_angle_deg_, 45.0);
   nh.param("mission/vertical_detour/upper_obstacle_clearance",
            vertical_detour_upper_obstacle_clearance_, 0.20);
+  nh.param("mission/vertical_detour/raised_side_obstacle_max_height",
+           raised_side_obstacle_max_height_, 1.10);
   nh.param("mission/vertical_detour/down_first_height",
            vertical_detour_down_first_height_, 0.75);
   nh.param("mission/vertical_detour/height_tolerance",

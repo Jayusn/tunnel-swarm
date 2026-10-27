@@ -357,6 +357,7 @@ private:
   double vertical_detour_upper_forward_max_distance_{0.60};
   double vertical_detour_upper_max_side_angle_deg_{45.0};
   double vertical_detour_upper_obstacle_clearance_{0.20};
+  double raised_side_obstacle_max_height_{1.10};
   double vertical_detour_down_first_height_{0.75};
   double vertical_detour_height_tolerance_{0.06};
   double vertical_detour_xy_tolerance_{0.08};
@@ -453,6 +454,9 @@ private:
                               double& next_yaw, bool& gate_detected);
   bool findForwardObstacleTop(const Vector3d& pos, const Vector3d& forward,
                               double& obstacle_top) const;
+  bool buildRaisedSideBypass(const Vector3d& pos, double cur_yaw,
+                             const Vector3d& forward, double obstacle_top,
+                             Vector3d& next_pos, double& next_yaw);
   bool trajectoryNeedsObstacleClearance(double& obstacle_top) const;
   bool ensureObstacleTopClearance(const Vector3d& pos, const Vector3d& vel,
                                   const Vector3d& yaw, bool& ascent_needed);
