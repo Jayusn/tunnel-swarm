@@ -169,6 +169,7 @@ private:
   bool fapp_rush_active_{false}, fapp_rush_pending_{false};
   ros::Publisher fapp_rush_pub_;
   bool keepsDynamicSide(const std::vector<Vector3d>& path) const;
+  double fappApproachLength(const Vector3d& pos) const;
   bool planFappOpeningCrossing(const Vector3d& pos, const Vector3d& vel,
                                const Vector3d& acc, const Vector3d& yaw);
   bool fapp_exploration_crossing_enabled_{false};

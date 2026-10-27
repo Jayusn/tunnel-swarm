@@ -4294,6 +4294,23 @@ bool FastExplorationManager::keepsDynamicSide(const std::vector<Vector3d>& path)
   return true;
 }
 
+double FastExplorationManager::fappApproachLength(const Vector3d& pos) const {
+  Vector3d lower, upper; double age;
+  if (!manual_fapp_active_ || !planner_manager_->watchedFappBounds(lower, upper, age))
+    return std::numeric_limits<double>::infinity();
+  const double near = (0.5*(lower+upper)).dot(manual_fapp_forward_) -
+      (0.5*(upper-lower)).dot(manual_fapp_forward_.cwiseAbs()) - sdf_map_->getResolution();
+  const double approach = near-pos.dot(manual_fapp_forward_);
+  // 默认距包络前沿超过20cm时先走至多40cm；靠近后仍允许原来的完整穿越。
+  if (approach <= vertical_detour_forward_check_distance_)
+    return std::numeric_limits<double>::infinity();
+  double length = std::min(2.0*vertical_detour_forward_check_distance_,
+                           approach-0.5*vertical_detour_forward_check_distance_);
+  if (manual_path_enabled_ && manual_path_max_segment_length_ > 0.0)
+    length = std::min(length, manual_path_max_segment_length_);
+  return length;
+}
+
 bool FastExplorationManager::planFappOpeningCrossing(
     const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, const Vector3d& yaw) {
   fapp_rush_pending_ = false;
@@ -4313,6 +4330,11 @@ bool FastExplorationManager::planFappOpeningCrossing(
   Vector3d target = pos + (end - pos.dot(forward)) * forward;
   target.z() = horizontalGoalHeight(pos.z());
   vector<Vector3d> path{pos, 0.5 * (pos + target), target};
+  const double approach_length = fappApproachLength(pos);
+  const bool approaching = std::isfinite(approach_length);
+  path = manualPathPrefix(path, approach_length);
+  target = path.back();
+  if (path.size() == 2) path.insert(path.begin()+1, 0.5*(pos+target));
   if (!fapp_rush_active_ && !planner_manager_->fappSideOpening(pos, side) &&
       !planner_manager_->isFappPathSafe(path)) return false;
   if (!pathInsideWorkspaceLock(path) || !task_search_manager_->isRecoveryPathAllowed(path, false) ||
@@ -4320,7 +4342,8 @@ bool FastExplorationManager::planFappOpeningCrossing(
   // 同侧直穿到历史包络后方，保持高度；不用整段摆幅否决当前已让开的通路。
   for (int sample=0; sample<=40; ++sample)
     if (!planner_manager_->isKnownFreePosition(pos + (sample/40.0)*(target-pos))) return false;
-  if (!planner_manager_->planExploreTraj(path, vel, acc, 0.0, true, 1.0, 1.0) ||
+  if (!planner_manager_->planExploreTraj(path, vel, acc, 0.0, true,
+          approaching ? 0.0 : 1.0, approaching ? 0.0 : 1.0) ||
       !planner_manager_->isTrajectorySafe() || !planner_manager_->isFappCrossingTrajectorySafe() ||
       !planner_manager_->planYawTurnInPlace(yaw, yaw[0])) return false;
   manual_fapp_curve_active_ = false;
@@ -4332,9 +4355,10 @@ bool FastExplorationManager::planFappOpeningCrossing(
   has_last_requested_goal_ = true;
   pending_reference_height_ = target.z();
   recovery_side_continuation_pending_ = false;
-  fapp_rush_pending_ = true; // 仅发布成功后通知执行端，候选失败不改变限速。
-  ROS_WARN("[fapp_rush] keep selected side and cross opening: target=(%.2f,%.2f,%.2f) "
-           "max_vel=1.00m/s max_acc=1.00m/s^2; restore after actual passage.", target.x(), target.y(), target.z());
+  fapp_rush_pending_ = !approaching; // 远处接近段仍用普通限速，靠近再完整穿越。
+  ROS_WARN("[fapp_rush] %s target=(%.2f,%.2f,%.2f); restore after actual passage.",
+           approaching ? "short approach at nominal limits" : "cross opening at 1.00m/s and 1.00m/s^2",
+           target.x(), target.y(), target.z());
   return true;
 }
 
@@ -4360,6 +4384,7 @@ bool FastExplorationManager::planExplorationFappCrossing(
   double age;
   if (!planner_manager_->watchedFappBounds(lower, upper, age)) return false;
   const Vector3d forward = manual_fapp_forward_;
+  const double approach_length = fappApproachLength(pos);
   const double far = (0.5 * (lower + upper)).dot(forward) +
       (0.5 * (upper - lower)).dot(forward.cwiseAbs()) + sdf_map_->getResolution();
   // 自动探索先低位越过历史障碍；无需提前把后方回升空间纳入同一条曲线。
@@ -4373,13 +4398,27 @@ bool FastExplorationManager::planExplorationFappCrossing(
   if (!crossing) {
     manual_fapp_curve_active_ = false;
     suspended_underpass_active_ = false;
-    if (planFappVerticalDescent(pos, yaw)) {
+    // 远处整段尚不可验证时，也允许眼前已知可通的短段先靠近补充观测。
+    if (std::isfinite(approach_length)) {
+      const double distance = manual ? std::min(approach_length, (target-pos).dot(forward))
+                                     : approach_length;
+      target = pos+distance*forward;
+      target.z() = horizontalGoalHeight(pos.z());
+      path = {pos, 0.5*(pos+target), target};
+      crossing = distance > 0.02 && isKnownSafeHorizontalCorridor(pos,target-pos,distance) &&
+          planner_manager_->isFappPathSafe(path);
+    }
+    if (!crossing && planFappVerticalDescent(pos, yaw)) {
       fapp_crossing_retry_needed_ = false;
       return true;
     }
-    bool obstacle = false;
-    crossing = buildFappSideBypass(pos, yaw[0], forward, target, target_yaw, obstacle, &path);
+    if (!crossing) {
+      bool obstacle = false;
+      crossing = buildFappSideBypass(pos, yaw[0], forward, target, target_yaw, obstacle, &path);
+    }
   }
+  path = manualPathPrefix(path, approach_length);
+  if (path.size() == 2) path.insert(path.begin()+1, 0.5*(path.front()+path.back()));
   if (!crossing || !pathInsideWorkspaceLock(path) ||
       !task_search_manager_->isRecoveryPathAllowed(path, false) ||
       !planner_manager_->isPathSafe(path) ||
@@ -4401,8 +4440,9 @@ bool FastExplorationManager::planExplorationFappCrossing(
   pending_reference_height_ = path.back().z();
   recovery_side_continuation_pending_ = false;
   fapp_crossing_retry_needed_ = false;
-  ROS_WARN("[exploration_fapp] continuous crossing target=(%.2f,%.2f,%.2f) "
-           "curve=%d side=%d; complete crossing is exempt from route length limit.",
+  ROS_WARN("[exploration_fapp] %s target=(%.2f,%.2f,%.2f) "
+           "curve=%d side=%d; complete crossing remains allowed after approach.",
+           std::isfinite(approach_length) ? "short approach" : "continuous crossing",
            path.back().x(), path.back().y(), path.back().z(),
            static_cast<int>(manual_fapp_curve_active_), static_cast<int>(recovery_side_latched_));
   return true;
