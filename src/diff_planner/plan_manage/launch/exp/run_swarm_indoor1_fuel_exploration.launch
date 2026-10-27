@@ -28,6 +28,8 @@
     </include>
     <param name="/exploration_node/fapp/planner_priority" value="$(arg fapp_planner_priority)" type="bool"/>
     <param name="/exploration_node/fapp/enabled" value="$(arg enable_fapp_dynamic_avoidance)" type="bool"/>
+    <!-- 摆球仅沿通道横向运动：历史保留左右摆幅，不累计前后/上下抖动。 -->
+    <param name="/exploration_node/fapp/lateral_motion_only" value="true" type="bool"/>
     <param name="/exploration_node/fapp/topic" value="/UAV0/fapp/states"/>
     <param name="/exploration_node/fapp/frame_id" value="UAV0/camera_init"/>
     <param name="/exploration_node/fapp/memory_enabled" value="$(arg fapp_memory_enabled)" type="bool"/>
