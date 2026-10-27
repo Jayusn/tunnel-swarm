@@ -82,13 +82,14 @@ void FastExplorationManager::recordPublishedTrajectoryHeight() {
     width_route_plan_ = false;
     planned_split_route_ = {};
   }
-  if (manual_fapp_active_ && vertical_detour_plan_ &&
+  if (manual_fapp_active_ && (vertical_detour_plan_ || upper_detour_plan_) &&
       low_probe_phase_ == vertical_detour::LowProbePhase::IDLE &&
       std::isfinite(pending_reference_height_))
     manual_fapp_hold_height_ = pending_reference_height_;
   if (manual_fapp_active_ && manual_fapp_curve_active_ &&
       std::isfinite(pending_reference_height_)) {
-    manual_fapp_hold_height_ = low_probe_height_; // 仅已发布的下穿轨迹可更新低位参考。
+    // 短接近段尚未下降到球下方，不能提前提交远端穿越的低位高度。
+    manual_fapp_hold_height_ = pending_reference_height_;
     // 下穿回退为普通规划时仍保留已发布曲线的侧向，不能重新默认选左侧。
     if (!recovery_side_latched_) recovery_side_origin_ = manual_fapp_curve_origin_;
     recovery_side_latched_ = true;
@@ -4064,6 +4065,9 @@ bool FastExplorationManager::manualFappObservationMissing(
       return false;
     manual_fapp_hold_height_ = task_search_manager_->clampSearchHeight(
         std::min(pos.z(), horizontalGoalHeight(pos.z())));
+    // 静态上绕尚在执行时，发现远球不能把已发布的越障高度改回巡航层。
+    if (std::isfinite(published_upper_height_))
+      manual_fapp_hold_height_ = std::max(manual_fapp_hold_height_, published_upper_height_);
     manual_fapp_active_ = true;
     planner_manager_->watchFappObstacle(&observation);
     manual_fapp_forward_ = forward;
@@ -4376,15 +4380,26 @@ bool FastExplorationManager::planExplorationFappCrossing(
   if (!manual_fapp_active_) return false;
   // 临时失败不消费穿越机会；执行普通入口/前进段时，FSM 仍可重新尝试。
   fapp_crossing_retry_needed_ = true;
-  if (!manual_fapp_curve_active_ && planFappOpeningCrossing(pos, vel, acc, yaw)) {
-    fapp_crossing_retry_needed_ = false;
-    return true;
-  }
+  upper_detour_plan_ = false;
+  vertical_detour_plan_ = false;
   Vector3d lower, upper;
   double age;
   if (!planner_manager_->watchedFappBounds(lower, upper, age)) return false;
   const Vector3d forward = manual_fapp_forward_;
   const double approach_length = fappApproachLength(pos);
+  const double near = (0.5 * (lower + upper) - pos).dot(forward) -
+      (0.5 * (upper - lower)).dot(forward.cwiseAbs()) - sdf_map_->getResolution();
+  const double static_horizon = std::min(near-sdf_map_->getResolution(),
+      std::max(vertical_detour_upper_forward_max_distance_, wide_side_bypass_max_lookahead_));
+  const bool static_blocked = static_horizon > 0.02 && !planner_manager_->isPathSafe(
+      {pos, pos + static_horizon*forward});
+  const bool distant_dynamic = near > kUnderpassStartDistance + 0.02;
+  const bool static_approach = distant_dynamic || static_blocked;
+  if (!static_approach && !manual_fapp_curve_active_ &&
+      planFappOpeningCrossing(pos, vel, acc, yaw)) {
+    fapp_crossing_retry_needed_ = false;
+    return true;
+  }
   const double far = (0.5 * (lower + upper)).dot(forward) +
       (0.5 * (upper - lower)).dot(forward.cwiseAbs()) + sdf_map_->getResolution();
   // 自动探索先低位越过历史障碍；无需提前把后方回升空间纳入同一条曲线。
@@ -4393,9 +4408,49 @@ bool FastExplorationManager::planExplorationFappCrossing(
                           : Vector3d(pos + (end - pos.dot(forward)) * forward);
   std::vector<Vector3d> path;
   double target_yaw = yaw[0];
-  // 普通绕障的左右偏好不能封死下穿：每轮仍先检查侧下方通路。
-  bool crossing = buildManualFappUnderpassPath(pos, target, path);
-  if (!crossing) {
+  bool crossing = false;
+  if (static_approach) {
+    // 远处接近或球前仍有静态障碍时，先处理静态，不能先选球下方高度。
+    manual_fapp_curve_active_ = false;
+    suspended_underpass_active_ = false;
+    double distance = std::min(approach_length,
+        distant_dynamic ? near-kUnderpassStartDistance : static_horizon);
+    if (manual) distance = std::min(distance, (target-pos).dot(forward));
+    if (distance <= 0.02) return false;
+    target = pos + distance*forward;
+    target.z() = horizontalGoalHeight(pos.z());
+    if (static_blocked && buildVerticalDetourFallback(
+            pos, yaw[0], forward, target, target_yaw, false, false)) {
+      path = {pos, target};
+    } else {
+      // 近处静态横梁确认为悬空时仍可下穿；不能把静态优先变成禁止下降。
+      if (static_blocked && hasSuspendedForwardObstacle(pos, forward) &&
+          planFappVerticalDescent(pos, yaw)) {
+        fapp_crossing_retry_needed_ = false;
+        return true;
+      }
+      path = {pos, target};
+      if (!isKnownSafeHorizontalCorridor(pos, target-pos, distance)) {
+        auto& finder = planner_manager_->path_finder_;
+        if (!finder) return false;
+        finder->reset();
+        if (finder->search(pos, target, true) != Astar::REACH_END) return false;
+        path = finder->getPath();
+        path.insert(path.begin(), pos);
+        path.push_back(target);
+      }
+    }
+    path = manualPathPrefix(path, std::min(approach_length,
+                                          2.0*vertical_detour_forward_check_distance_));
+    crossing = path.size() >= 2;
+    for (size_t i=1; i<path.size() && crossing; ++i)
+      crossing = passage_centering::knownSegment(path[i-1], path[i], 0.05,
+          [&](const Vector3d& p) { return planner_manager_->isKnownFreePosition(p); });
+  } else {
+    // 接近后再选动态穿越；普通绕障的左右偏好不能封死下穿。
+    crossing = buildManualFappUnderpassPath(pos, target, path);
+  }
+  if (!crossing && !static_approach) {
     manual_fapp_curve_active_ = false;
     suspended_underpass_active_ = false;
     // 远处整段尚不可验证时，也允许眼前已知可通的短段先靠近补充观测。
@@ -4423,12 +4478,16 @@ bool FastExplorationManager::planExplorationFappCrossing(
       !task_search_manager_->isRecoveryPathAllowed(path, false) ||
       !planner_manager_->isPathSafe(path) ||
       !planner_manager_->isFappPathSafe(path) ||
-      !planner_manager_->planExploreTraj(path, vel, acc, 0.0, false, fapp_rush_active_ ? 1.0 : 0.0, fapp_rush_active_ ? 1.0 : 0.0) ||
+      !(upper_detour_plan_ ? planner_manager_->planStraightTraj(pos, path.back()) :
+        planner_manager_->planExploreTraj(path, vel, acc, 0.0, false,
+            !static_approach && fapp_rush_active_ ? 1.0 : 0.0,
+            !static_approach && fapp_rush_active_ ? 1.0 : 0.0)) ||
       !planner_manager_->isTrajectorySafe() ||
       !planner_manager_->planYawTurnInPlace(yaw, target_yaw)) {
     // 避让候选不可用时继续原探索选路，不能封死普通前进规划。
     manual_fapp_curve_active_ = false;
     suspended_underpass_active_ = false;
+    if (static_approach) upper_detour_plan_ = false;
     return false;
   }
   // 完整动态穿越沿用航点版长度豁免，不进入普通探索的1.2m截断。
@@ -4438,11 +4497,14 @@ bool FastExplorationManager::planExplorationFappCrossing(
   last_requested_goal_ = path.back();
   has_last_requested_goal_ = true;
   pending_reference_height_ = path.back().z();
+  vertical_detour_plan_ = upper_detour_plan_ &&
+      (path.back()-pos).head<2>().norm() <= vertical_detour_xy_tolerance_;
   recovery_side_continuation_pending_ = false;
   fapp_crossing_retry_needed_ = false;
   ROS_WARN("[exploration_fapp] %s target=(%.2f,%.2f,%.2f) "
            "curve=%d side=%d; complete crossing remains allowed after approach.",
-           std::isfinite(approach_length) ? "short approach" : "continuous crossing",
+           static_approach ? "static-map approach before dynamic crossing" :
+             std::isfinite(approach_length) ? "short approach" : "continuous crossing",
            path.back().x(), path.back().y(), path.back().z(),
            static_cast<int>(manual_fapp_curve_active_), static_cast<int>(recovery_side_latched_));
   return true;
@@ -4694,6 +4756,7 @@ int FastExplorationManager::planManualWaypointMotion(
   double budget = !dynamic_crossing_length_exempt && manual_path_max_segment_length_ > 0.0
       ? std::min(manual_path_max_segment_length_, Astar::pathLength(full_path))
       : Astar::pathLength(full_path);
+  if (!dynamic_crossing_length_exempt) budget = std::min(budget, fappApproachLength(pos));
   bool planned = false;
   for (int attempt = 0; attempt < 3; ++attempt) {
     ed_->path_next_goal_ = dynamic_crossing_length_exempt

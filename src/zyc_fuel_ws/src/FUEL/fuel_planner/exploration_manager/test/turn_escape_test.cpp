@@ -90,6 +90,9 @@ class TurnEscapeTest {
       EXPECT_LE(Astar::pathLength(manager.ed_->path_next_goal_), .40+1e-6);
       EXPECT_TRUE(manager.planner_manager_->isTrajectorySafe());
       manager.recordPublishedTrajectoryHeight();
+      if (manager.manual_fapp_curve_active_) {
+        EXPECT_NEAR(manager.manual_fapp_hold_height_, manager.ed_->next_goal_.z(), 1e-9);
+      }
       auto& trajectory = manager.planner_manager_->local_data_.position_traj_;
       const Vector3d reached = trajectory.evaluateDeBoorT(trajectory.getTimeSum());
       ASSERT_GT((reached-position).norm(), .02);
@@ -103,6 +106,118 @@ class TurnEscapeTest {
     EXPECT_FALSE(std::isfinite(manager.fappApproachLength(position)));
   }
 public:
+  static void runFappStaticApproach(int mode) {
+    ros::NodeHandle nh("~fapp_static_approach");
+    nh.setParam("manager/use_geometric_path", true);
+    nh.setParam("manager/footprint_bottom_clearance", .20);
+    nh.setParam("astar/resolution_astar", .05);
+    nh.setParam("astar/allocate_num", 100000);
+    nh.setParam("astar/lambda_heu", 1.0);
+    nh.setParam("astar/max_search_time", .10);
+    FastExplorationManager manager;
+    initialize(nh, manager, true);
+    auto& planner = *manager.planner_manager_;
+    auto& map = *manager.sdf_map_;
+    const Vector3d start(-1.,0.,mode==5 ? .90 : .60), zero=Vector3d::Zero();
+    auto& task = *manager.task_search_manager_;
+    task.setMap(manager.sdf_map_);
+    task.enabled_ = true;
+    task.global_no_return_ = task.exit_detection_enabled_ = false;
+    task.min_search_height_ = .10;
+    task.max_search_height_ = 1.50;
+    task.cruise_height_ = start.z();
+    task.updateRobotPose(start,0.);
+    manager.fapp_exploration_crossing_enabled_ = true;
+    planner.fapp_config_.enabled = planner.fapp_memory_enabled_ = true;
+    planner.fapp_planner_priority_ = true;
+    planner.fapp_watched_valid_ = true;
+    planner.fapp_watched_lower_ = Vector3d(.35,-.35,.35);
+    planner.fapp_watched_upper_ = Vector3d(.85,.35,1.0);
+    if (mode==6) {
+      planner.fapp_watched_lower_.x() = -.55;
+      planner.fapp_watched_upper_.x() = .05;
+    }
+    planner.fapp_watched_state_.stamp = ros::Time::now().toSec();
+    manager.manual_fapp_active_ = true;
+    manager.manual_fapp_forward_ = Vector3d::UnitX();
+    manager.manual_fapp_hold_height_ = start.z();
+    if (mode==5) {
+      manager.manual_fapp_active_ = false;
+      manager.horizontal_reference_height_ = task.cruise_height_ = .60;
+      manager.published_upper_height_ = .95;
+      planner.fapp_watched_state_.position = Vector3d(.60,0,.65);
+      planner.fapp_watched_state_.size = Vector3d::Constant(.20);
+    }
+    for (int x=0; x<map.mp_->map_voxel_num_.x(); ++x)
+      for (int y=0; y<map.mp_->map_voxel_num_.y(); ++y)
+        for (int z=0; z<map.mp_->map_voxel_num_.z(); ++z) {
+          const Eigen::Vector3i id(x,y,z); Vector3d p; map.indexToPos(id,p);
+          const bool box = mode != 0 && mode != 3 &&
+              p.x()>=(mode==6 ? -.775 : -.55) && p.x()<=(mode==6 ? -.675 : -.35) &&
+              std::fabs(p.y())<=.25 && p.z()<.60;
+          const bool roof = (mode==2 || mode==4) && p.z()>=.90;
+          const bool wall = mode==3 && p.x()>=-1.2 && p.x()<=-.30 &&
+              p.y()>=.25 && p.y()<=.50 && p.z()<1.60;
+          const bool occupied = box || wall || (roof && mode==2);
+          const int address=map.toAddress(id);
+          map.md_->occupancy_buffer_[address] = occupied ? map.mp_->clamp_max_log_ :
+              roof ? map.mp_->clamp_min_log_-map.mp_->unknown_flag_ : map.mp_->clamp_min_log_;
+          map.md_->occupancy_buffer_inflate_[address] = occupied;
+        }
+    map.md_->local_bound_min_.setZero();
+    map.md_->local_bound_max_=map.mp_->map_voxel_num_-Eigen::Vector3i::Ones();
+    map.updateESDF3d();
+    if (mode==3) {
+      manager.recovery_side_latched_ = true;
+      manager.recovery_side_dir_ = Vector3d::UnitY();
+    }
+    const bool planned=manager.planExplorationFappCrossing(start,zero,zero,zero);
+    if (mode==2 || mode==4) {
+      EXPECT_FALSE(planned); // 静态空间不可通时不能改为朝远球下降。
+      EXPECT_DOUBLE_EQ(start.z(),manager.manual_fapp_hold_height_);
+      EXPECT_FALSE(manager.manual_fapp_curve_active_);
+      // 上方也堵住时仍须交还原有静态侧绕，不能仅拒绝后停在原地。
+      manager.edt_environment_=planner.edt_environment_;
+      Vector3d map_origin, map_size;
+      map.getRegion(map_origin,map_size);
+      ViewNode::caster_=std::make_shared<RayCaster>();
+      ViewNode::caster_->setParams(map.getResolution(),map_origin);
+      nh.setParam("frontier/cluster_min",1000000);
+      manager.frontier_finder_=std::make_shared<FrontierFinder>(manager.edt_environment_,nh);
+      manager.ep_->mission_use_forward_fallback_=true;
+      manager.ep_->mission_use_workspace_lock_=true;
+      manager.mission_workspace_lock_received_=true;
+      manager.mission_workspace_origin_=start-Vector3d::UnitX();
+      manager.mission_workspace_dir_=Vector3d::UnitX();
+      manager.entry_forward_complete_=true;
+      manager.mission_entered_search_region_=true;
+      // 非零恒定航向避开旧 yaw 优化器全零控制点的归一化问题。
+      ASSERT_EQ(SUCCEED,manager.planExploreMotion(start,zero,zero,Vector3d(.05,0,0)));
+      EXPECT_NEAR(manager.ed_->next_goal_.z(),start.z(),1e-6);
+      EXPECT_GT(std::fabs(manager.ed_->next_goal_.y()-start.y()),.10);
+      EXPECT_TRUE(planner.isTrajectorySafe());
+      return;
+    }
+    ASSERT_TRUE(planned);
+    EXPECT_FALSE(manager.manual_fapp_curve_active_);
+    EXPECT_LE(Astar::pathLength(manager.ed_->path_next_goal_),.40+1e-6);
+    if (mode==6) EXPECT_GE(manager.ed_->next_goal_.x(),start.x()-1e-6);
+    else EXPECT_GT(manager.ed_->next_goal_.x(),start.x()+.05);
+    EXPECT_NEAR(manager.ed_->next_goal_.y(),start.y(),1e-6);
+    if (mode==1 || mode==6) {
+      EXPECT_TRUE(manager.upper_detour_plan_);
+      EXPECT_GT(manager.ed_->next_goal_.z(),start.z()+.20);
+    } else EXPECT_NEAR(manager.ed_->next_goal_.z(),mode==5 ? .95 : start.z(),.001);
+    EXPECT_TRUE(planner.isTrajectorySafe());
+    EXPECT_TRUE(planner.isFappPathSafe(manager.ed_->path_next_goal_));
+    const double published_height=manager.ed_->next_goal_.z();
+    manager.recordPublishedTrajectoryHeight();
+    EXPECT_NEAR(manager.manual_fapp_hold_height_,mode==5 ? .95 : published_height,1e-6);
+    auto& trajectory=planner.local_data_.position_traj_;
+    for (double t=0;t<=trajectory.getTimeSum();t+=.02)
+      EXPECT_TRUE(planner.isKnownFreePosition(trajectory.evaluateDeBoorT(t)));
+  }
+
   static void runFappApproachLength() {
     ros::NodeHandle nh("~fapp_approach_length");
     FastExplorationManager manager;
@@ -990,9 +1105,9 @@ public:
       planner.fapp_watched_lower_=Vector3d(-.30,-.40,.40);
       planner.fapp_watched_upper_=Vector3d(.30,.40,.90);
       ASSERT_EQ(SUCCEED,fsm.callExplorationPlanner());
-      EXPECT_TRUE(manager.manual_fapp_curve_active_);
+      EXPECT_FALSE(manager.manual_fapp_curve_active_); // 球尚远，重试仍先处理静态接近段。
       EXPECT_LE(Astar::pathLength(manager.ed_->path_next_goal_), .40+1e-6);
-      EXPECT_LE(manager.ed_->next_goal_.z(),start.z());
+      EXPECT_NEAR(manager.ed_->next_goal_.z(),start.z(),1e-6);
       EXPECT_GT(manager.ed_->next_goal_.x(),start.x()+.05);
       EXPECT_FALSE(manager.needsExplorationFappRetry(start));
     } else {
@@ -1926,7 +2041,7 @@ public:
       ASSERT_EQ(SUCCEED, fsm.callExplorationPlanner());
       manager.recordPublishedTrajectoryHeight();
       EXPECT_FALSE(manager.needsExplorationFappRetry(fsm.fd_->odom_pos_));
-      EXPECT_NEAR(manager.manual_fapp_hold_height_, manager.low_probe_height_, 0.01);
+      EXPECT_NEAR(manager.manual_fapp_hold_height_, manager.ed_->next_goal_.z(), 0.01);
       fsm.fapp_replan_pending_ = true;
       fsm.fd_->static_state_ = true; // 正常跟踪纠偏重规划抢占动态试探。
       ASSERT_EQ(SUCCEED, fsm.callExplorationPlanner());
@@ -1935,7 +2050,7 @@ public:
     }
     const int result = manager.planExploreMotion(start, zero, zero, zero);
     Vector3d execution_start = start;
-    if (result == SUCCEED && (exploration || asymmetric) && !approach)
+    if (result == SUCCEED && (exploration || asymmetric || recorded) && !approach)
       finishFappApproach(manager, execution_start);
     if (result == SUCCEED) manager.recordPublishedTrajectoryHeight();
     if (exploration) {
@@ -5183,6 +5298,27 @@ TEST(FappOpening, RightLaneUsesOpeningAndRestoresNominalLimitsAfterActualPassage
 }
 TEST(FappExploration, FarApproachRespectsShorterLimitAndReleasesItNearEnvelope) {
   fast_planner::TurnEscapeTest::runFappApproachLength();
+}
+TEST(FappExploration, FarBallKeepsStaticApproachHeight) {
+  fast_planner::TurnEscapeTest::runFappStaticApproach(0);
+}
+TEST(FappExploration, NearStaticBoxClimbsBeforeFarBallDescent) {
+  fast_planner::TurnEscapeTest::runFappStaticApproach(1);
+}
+TEST(FappExploration, NearStaticBoxKeepsPriorityInsideDynamicApproachRange) {
+  fast_planner::TurnEscapeTest::runFappStaticApproach(6);
+}
+TEST(FappExploration, DetectingFarBallPreservesPublishedStaticUpperHeight) {
+  fast_planner::TurnEscapeTest::runFappStaticApproach(5);
+}
+TEST(FappExploration, StaticBoxAndRoofCannotBeIgnoredForFarBall) {
+  fast_planner::TurnEscapeTest::runFappStaticApproach(2);
+}
+TEST(FappExploration, NearSideWallOverridesFarBallSidePreference) {
+  fast_planner::TurnEscapeTest::runFappStaticApproach(3);
+}
+TEST(FappExploration, UnknownStaticUpperSpaceCannotAuthorizeFarBallDescent) {
+  fast_planner::TurnEscapeTest::runFappStaticApproach(4);
 }
 TEST(ManualSuspended, ShortApproachStopsAtIntermediateWaypoint) {
   fast_planner::TurnEscapeTest::runManualSharedFappRetry(false, true);
