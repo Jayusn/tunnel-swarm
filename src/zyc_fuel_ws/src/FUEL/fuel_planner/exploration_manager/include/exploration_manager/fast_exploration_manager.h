@@ -387,6 +387,7 @@ private:
   double underpass_lidar_above_odom_{0.044};
   double underpass_clearance_{0.10};
   double underpass_height_tracking_margin_{0.06};
+  double underpass_descent_step_{0.0};
   double underpass_lookahead_{2.00};
   double underpass_min_height_{0.25};
 

@@ -39,6 +39,21 @@ namespace fast_planner {
 namespace {
 // 远处悬挂物只用于预见；进入半米接近段后才刹停并开始固定 XY 下穿。
 constexpr double kUnderpassStartDistance = 0.50;
+
+std::vector<double> underpassHeights(double start, double ceiling, double minimum,
+                                    double descent_step) {
+  std::vector<double> heights;
+  if (start < minimum || ceiling < minimum) return heights;
+  if (descent_step <= 0.0) return {std::min(start, ceiling)};
+  // 10cm是从当前高度向下的动作量，先试这一层，不通再继续向下；已低于障碍时不重复下降。
+  double height = start <= ceiling ? start : std::max(minimum, start - descent_step);
+  while (true) {
+    if (height <= ceiling + 1e-6) heights.push_back(height);
+    if (height <= minimum + 1e-6) break;
+    height = std::max(minimum, height - descent_step);
+  }
+  return heights;
+}
 }
 // SECTION interfaces for setup and query
 
@@ -1594,19 +1609,28 @@ bool FastExplorationManager::beginSuspendedUnderpass(const Vector3d& pos,
   }
   // 狭窄通道按雷达到悬挂障碍底部0.10m净空下穿，并额外留出高度跟踪余量。
   const double return_height = manual ? pos.z() : task_search_manager_->preferredSearchHeight();
-  const double target_z = std::min(dynamic_target_z, vertical_detour::underpassTargetHeight(
+  const double ceiling = std::min(dynamic_target_z, vertical_detour::underpassTargetHeight(
       bottom_z, underpass_lidar_above_odom_, underpass_clearance_,
       underpass_height_tracking_margin_, return_height));
   // 下穿最低参考点Z使用独立参数，不将定位原点当作地面。
   const double minimum_height =
       std::max(underpass_min_height_, task_search_manager_->clampSearchHeight(-1e3));
-  Vector3d low_start = pos;
-  low_start.z() = std::min(target_z, pos.z());
+  double target_z = ceiling;
+  bool passage_available = false;
   const double crossing_distance = std::max(step, exit_progress - pos.dot(direction));
-  if (target_z < minimum_height ||
-      (pos.z() > target_z + vertical_detour_height_tolerance_ &&
-       !isKnownSafeVerticalPath(pos, target_z, !manual)) ||
-      (manual && !isLowProbeCorridorSafe(low_start, direction, crossing_distance))) {
+  for (double height : underpassHeights(pos.z(), ceiling, minimum_height,
+                                        underpass_descent_step_)) {
+    Vector3d low_start = pos;
+    low_start.z() = height;
+    if ((pos.z() > height + vertical_detour_height_tolerance_ &&
+         !isKnownSafeVerticalPath(pos, height, !manual)) ||
+        (manual && !isLowProbeCorridorSafe(low_start, direction, crossing_distance)))
+      continue;
+    target_z = height;
+    passage_available = true;
+    break;
+  }
+  if (!passage_available) {
     suspended_underpass_blocked_ = true;
     ROS_ERROR_THROTTLE(1.0, "[suspended_underpass] confirmed obstacle (map=%d FAPP=%d) "
                        "but lower passage z=%.2f is unavailable; use side selection in waypoint mode.",
@@ -3442,7 +3466,7 @@ bool FastExplorationManager::planInflationHistoryEscape(
       const int samples=std::max(2,static_cast<int>(std::ceil(delta.norm()/sample_step)));
       for (int i=(samples+1)/2; i<=samples; ++i) {
         const Vector3d point=pos+delta*(static_cast<double>(i)/samples);
-        const Vector3d bottom=point-vertical_detour_upper_obstacle_clearance_*Vector3d::UnitZ();
+        const Vector3d bottom=point-planner_manager_->footprintBottomClearance()*Vector3d::UnitZ();
         candidate.route_clearance=std::min(candidate.route_clearance,
             std::min(sdf_map_->getDistance(point),sdf_map_->getDistance(bottom)));
       }
@@ -3883,6 +3907,8 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
            underpass_clearance_, 0.10);
   nh.param("mission/vertical_detour/underpass/height_tracking_margin",
            underpass_height_tracking_margin_, 0.06);
+  nh.param("mission/vertical_detour/underpass/descent_step", underpass_descent_step_, 0.0);
+  underpass_descent_step_ = std::max(0.0, underpass_descent_step_);
   nh.param("mission/vertical_detour/underpass/min_height", underpass_min_height_, 0.25);
   nh.param("mission/vertical_detour/underpass/lookahead",
            underpass_lookahead_, 2.00);
@@ -4198,14 +4224,15 @@ bool FastExplorationManager::planFappVerticalDescent(
   double age;
   if (!manual_fapp_active_ || !planner_manager_->watchedFappBounds(lower, upper, age))
     return false;
-  const double low = lower.z() - underpass_height_tracking_margin_;
+  const double ceiling = lower.z() - underpass_height_tracking_margin_;
   const double minimum = std::max(underpass_min_height_, task_search_manager_->clampSearchHeight(-1e3));
   // 斜下穿受阻时就检查固定XY下降，不能等进入包络后才尝试。
   // 整根下降柱仍须通过原有机体和动态检查。
-  if (low < minimum || pos.z() <= low + 0.02)
+  const auto heights = underpassHeights(pos.z(), ceiling, minimum, underpass_descent_step_);
+  if (heights.empty() || pos.z() <= heights.front() + 0.02)
     return false;
   Vector3d target = pos;
-  target.z() = low;
+  target.z() = heights.front();
   if (manual_path_enabled_ && manual_path_max_segment_length_ > 0.0)
     target.z() = std::max(target.z(), pos.z() - manual_path_max_segment_length_);
   const int count = std::max(1, static_cast<int>(std::ceil((pos.z()-target.z()) / 0.025)));
@@ -4255,12 +4282,13 @@ bool FastExplorationManager::buildManualFappUnderpassPath(
   const double extent = (0.5 * (upper - lower)).dot(forward.cwiseAbs());
   const double near = center - extent - sdf_map_->getResolution();
   const double far = center + extent + sdf_map_->getResolution();
-  const double low = std::min(origin.z(), lower.z() - underpass_height_tracking_margin_);
+  const double ceiling = std::min(origin.z(), lower.z() - underpass_height_tracking_margin_);
   const double minimum = std::max(underpass_min_height_, task_search_manager_->clampSearchHeight(-1e3));
-  if (low < minimum || (near - begin < 0.10 && origin.z() > low + 0.02)) {
+  const auto heights = underpassHeights(origin.z(), ceiling, minimum, underpass_descent_step_);
+  if (heights.empty() || (near - begin < 0.10 && origin.z() > ceiling + 0.02)) {
     ROS_WARN_THROTTLE(1.0, "[fapp_underpass_check] reject geometry low=%.3f min=%.3f "
         "start_z=%.3f approach=%.3f lower_z=%.3f age=%.2f",
-        low, minimum, origin.z(), near-begin, lower.z(), age);
+        ceiling, minimum, origin.z(), near-begin, lower.z(), age);
     return false;
   }
   // 只生成前进下降和低位穿越，末端仍低位；航点位于包络内时先到该点再续接。
@@ -4279,6 +4307,7 @@ bool FastExplorationManager::buildManualFappUnderpassPath(
   const double descent_begin = std::max(begin, near - 0.50);
   const Vector3d lateral(-forward.y(), forward.x(), 0.0);
   const int count = std::max(2, static_cast<int>(std::ceil((end-current)/0.10)));
+  double low = heights.front();
   const auto side_path = [&](double side, std::vector<Vector3d>& candidate) {
     candidate = {pos};
     for (int i = 1; i <= count; ++i) {
@@ -4312,26 +4341,29 @@ bool FastExplorationManager::buildManualFappUnderpassPath(
     return true;
   };
   double side = manual_fapp_curve_side_;
-  if (manual_fapp_curve_active_) {
-    if (!side_path(side, path)) return false;
-  } else {
-    // 固定20cm可能仍扫到侧障碍；在已有横移范围内寻找最近的可通行低位通路。
-    // 普通侧绕偏好只决定尝试顺序，不能否决另一侧；已选中的下穿曲线仍保持原侧。
-    const double first_sign = recovery_side_latched_ && recovery_side_dir_.dot(lateral) < 0.0
-        ? -1.0 : 1.0;
-    bool found = false;
-    const double step = std::max(0.10, sdf_map_->getResolution());
-    for (double sign : {first_sign, -first_sign}) {
-      for (double offset = 0.20; offset <= wide_side_bypass_lateral_range_ + 1e-6;
-           offset += step) {
-        side = sign * offset;
-        if (side_path(side, path)) { found = true; break; }
+  bool found = false;
+  for (double height : heights) {
+    low = height;
+    if (manual_fapp_curve_active_) {
+      found = side_path(side, path);
+    } else {
+      // 当前下降层不可通时才继续检查更低层；已有侧向仅决定左右尝试顺序。
+      const double first_sign = recovery_side_latched_ && recovery_side_dir_.dot(lateral) < 0.0
+          ? -1.0 : 1.0;
+      const double step = std::max(0.10, sdf_map_->getResolution());
+      for (double sign : {first_sign, -first_sign}) {
+        for (double offset = 0.20; offset <= wide_side_bypass_lateral_range_ + 1e-6;
+             offset += step) {
+          side = sign * offset;
+          if (side_path(side, path)) { found = true; break; }
+        }
+        if (found) break;
       }
-      if (found) break;
     }
-    if (!found) return false;
-    if (recovery_side_latched_) recovery_side_dir_ = (side > 0.0 ? 1.0 : -1.0) * lateral;
+    if (found) break;
   }
+  if (!found) return false;
+  if (recovery_side_latched_) recovery_side_dir_ = (side > 0.0 ? 1.0 : -1.0) * lateral;
   if (!manual_fapp_curve_active_)
     ROS_WARN("[manual_fapp] continuous underpass from=(%.2f,%.2f,%.2f) "
              "clearance_z=%.2f low=%.2f near=%.2f far=%.2f side=%.2f age=%.2f descent_begin=%.2f",

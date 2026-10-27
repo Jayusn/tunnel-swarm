@@ -106,6 +106,101 @@ class TurnEscapeTest {
     EXPECT_FALSE(std::isfinite(manager.fappApproachLength(position)));
   }
 public:
+  static void runSixCentimetreFootprint() {
+    ros::NodeHandle nh("~six_centimetre_footprint");
+    nh.setParam("manager/footprint_bottom_clearance", .06);
+    nh.setParam("mission/vertical_detour/upper_obstacle_clearance", .20);
+    nh.setParam("mission/task_search/exit/footprint_half_height", .15);
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    auto& planner = *manager.planner_manager_;
+    auto& map = *manager.sdf_map_;
+    auto& task = *manager.task_search_manager_;
+    task.setMap(manager.sdf_map_);
+    for (int x=0; x<map.mp_->map_voxel_num_.x(); ++x)
+      for (int y=0; y<map.mp_->map_voxel_num_.y(); ++y)
+        for (int z=0; z<map.mp_->map_voxel_num_.z(); ++z) {
+          const Eigen::Vector3i id(x,y,z); Vector3d p; map.indexToPos(id,p);
+          const bool occupied = p.z() > .45 && p.z() < .55;
+          map.md_->occupancy_buffer_[map.toAddress(id)] = occupied
+              ? map.mp_->clamp_max_log_ : map.mp_->clamp_min_log_;
+          map.md_->occupancy_buffer_inflate_[map.toAddress(id)] = occupied;
+        }
+    const Vector3d center(0.,0.,.65);
+    EXPECT_NEAR(planner.footprintBottomClearance(), .06, 1e-9);
+    EXPECT_NEAR(task.turn_bottom_clearance_, .06, 1e-9);
+    EXPECT_TRUE(planner.isKnownFreePosition(center));
+    EXPECT_TRUE(task.mapExitFootprintFree(center, task.turn_bottom_clearance_));
+    EXPECT_FALSE(task.mapExitFootprintFree(center)); // 出口原有15cm包络仍独立。
+    EXPECT_FALSE(planner.isRawPositionSafe(Vector3d(0.,0.,.575)));
+  }
+
+  static void runTenCentimetreDescent(int scenario) {
+    ros::NodeHandle nh("~ten_centimetre_descent");
+    nh.setParam("manager/footprint_bottom_clearance", .06);
+    nh.setParam("mission/task_search/min_height", .10);
+    nh.setParam("fapp/enabled", true);
+    nh.setParam("fapp/memory_enabled", true);
+    FastExplorationManager manager;
+    initialize(nh, manager, true);
+    manager.underpass_descent_step_ = .10;
+    manager.underpass_min_height_ = .10;
+    auto& planner = *manager.planner_manager_;
+    auto& map = *manager.sdf_map_;
+    for (int x=0; x<map.mp_->map_voxel_num_.x(); ++x)
+      for (int y=0; y<map.mp_->map_voxel_num_.y(); ++y)
+        for (int z=0; z<map.mp_->map_voxel_num_.z(); ++z) {
+          const Eigen::Vector3i id(x,y,z); Vector3d p; map.indexToPos(id,p);
+          // 首个下降层有横梁时，更低层仍可通过，不能把10cm当总下降上限。
+          const bool occupied = scenario == 1 && p.x() > -.20 && p.x() < .85 &&
+                                p.z() > .45 && p.z() < .60;
+          map.md_->occupancy_buffer_[map.toAddress(id)] = occupied
+              ? map.mp_->clamp_max_log_ : map.mp_->clamp_min_log_;
+          map.md_->occupancy_buffer_inflate_[map.toAddress(id)] = occupied;
+        }
+    map.md_->local_bound_min_.setZero();
+    map.md_->local_bound_max_=map.mp_->map_voxel_num_-Eigen::Vector3i::Ones();
+    map.updateESDF3d();
+    planner.fapp_watched_valid_ = true;
+    planner.fapp_watched_lower_ = Vector3d(-.30,-.40,scenario == 2 ? .50 : .65);
+    planner.fapp_watched_upper_ = Vector3d(.30,.40,1.0);
+    planner.fapp_watched_state_.stamp = ros::Time::now().toSec();
+    manager.manual_fapp_active_ = true;
+    manager.manual_fapp_forward_ = Vector3d::UnitX();
+    const Vector3d start(-1.,0.,.65), goal(.60,0.,.65), zero=Vector3d::Zero();
+    ASSERT_FALSE(manager.manual_path_enabled_);
+    if (scenario == 1) {
+      ASSERT_FALSE(planner.isKnownFreePosition(Vector3d(.4,.2,.55)));
+      ASSERT_TRUE(planner.isKnownFreePosition(Vector3d(.4,.2,.35)));
+    }
+    if (scenario == 0) {
+      ASSERT_TRUE(manager.planFappVerticalDescent(start, zero));
+      EXPECT_NEAR(manager.ed_->next_goal_.z(), .55, 1e-6);
+      EXPECT_NEAR((manager.ed_->next_goal_-start).head<2>().norm(), 0., 1e-9);
+      EXPECT_TRUE(planner.isTrajectorySafe());
+    }
+    std::vector<Vector3d> path;
+    ASSERT_TRUE(manager.buildManualFappUnderpassPath(start, goal, path));
+    EXPECT_NEAR(path.back().z(), scenario == 0 ? .55 : .35, 1e-6);
+    EXPECT_TRUE(planner.isPathSafe(path));
+    EXPECT_TRUE(planner.isFappPathSafe(path));
+  }
+
+  static void runEntryNetProgress() {
+    ros::NodeHandle nh("~entry_net_progress");
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    manager.mission_workspace_lock_received_ = true;
+    manager.mission_workspace_origin_ = Vector3d::Zero();
+    manager.mission_workspace_dir_ = Vector3d::UnitX();
+    manager.updateMissionOdometry(Vector3d(0.,1.2,.6),0.,ros::Time::now());
+    EXPECT_FALSE(manager.entry_forward_complete_);
+    manager.updateMissionOdometry(Vector3d(.9,1.2,.6),0.,ros::Time::now());
+    EXPECT_FALSE(manager.entry_forward_complete_);
+    manager.updateMissionOdometry(Vector3d(1.,1.2,.6),0.,ros::Time::now());
+    EXPECT_TRUE(manager.entry_forward_complete_);
+  }
+
   static void runFappStaticApproach(int mode) {
     ros::NodeHandle nh("~fapp_static_approach");
     nh.setParam("manager/use_geometric_path", true);
@@ -5331,6 +5426,22 @@ TEST(ManualLocalGoal, AutonomousExplorationIsUnaffected) {
 TEST(ManualLocalGoal, UnreachableBetterPocketRetainsOriginalWaypoint) {
   fast_planner::TurnEscapeTest::runManualLocalGoal(5);
 }
+TEST(FootprintSafety, SixCentimetresDoesNotInheritUpperOrExitClearance) {
+  fast_planner::TurnEscapeTest::runSixCentimetreFootprint();
+}
+TEST(UnderpassDescent, FirstActionDropsTenCentimetres) {
+  fast_planner::TurnEscapeTest::runTenCentimetreDescent(0);
+}
+TEST(UnderpassDescent, BlockedFirstLayerSearchesLowerPassage) {
+  fast_planner::TurnEscapeTest::runTenCentimetreDescent(1);
+}
+TEST(UnderpassDescent, LowDynamicEnvelopeAllowsMoreThanTenCentimetres) {
+  fast_planner::TurnEscapeTest::runTenCentimetreDescent(2);
+}
+TEST(EntryPassage, LateralDistanceDoesNotCompleteForwardMetre) {
+  fast_planner::TurnEscapeTest::runEntryNetProgress();
+}
+
 int main(int argc,char** argv) {
   ros::init(argc,argv,"turn_escape_test");
   testing::InitGoogleTest(&argc, argv);
