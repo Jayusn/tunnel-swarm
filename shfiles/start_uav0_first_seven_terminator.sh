@@ -302,7 +302,6 @@ run_detection_pane() {
     target_reporting_mission_id:="${mission_id}" \
     enable_down_camera:=true \
     enable_precision_landing:=true \
-    enable_aruco_rosbag:="${UAV0_ARUCO_ROSBAG_ENABLED:-false}" \
     landing_via_mpc:="${UAV0_LANDING_VIA_MPC:-false}" \
     landing_vehicle_ns:=UAV0 \
     down_camera_device:="${down_camera}"
@@ -341,11 +340,10 @@ run_planner_pane() {
   fi
   if [[ -n "${UAV0_PLANNER_ROSBAG_PREFIX:-}" ]]; then
     mkdir -p -- "$(dirname -- "${UAV0_PLANNER_ROSBAG_PREFIX}")" || keep_pane_open
-    # 恢复规划器累计占据地图，供顶部取高/贴障回放；不恢复相机图像和双机原始点云。
     recording_args+=(
       "enable_planner_rosbag:=true"
       "planner_rosbag_prefix:=${UAV0_PLANNER_ROSBAG_PREFIX}"
-      "planner_rosbag_extra_topics:=${UAV0_PLANNER_ROSBAG_EXTRA_TOPICS:-} /UAV0/sdf_map/occupancy_all"
+      "planner_rosbag_extra_topics:=${UAV0_PLANNER_ROSBAG_EXTRA_TOPICS:-}"
     )
     printf '[录包] 通道回放包：%s_时间戳_分卷.bag；在本屏 Ctrl+C 正常结束录制。\n' \
       "${UAV0_PLANNER_ROSBAG_PREFIX}"

@@ -26,7 +26,6 @@ namespace fast_planner {
 class FastPlannerManager {
   // SECTION stable
 public:
-  bool isSupportedOccupied(const Eigen::Vector3d& position) const;
   FastPlannerManager();
   ~FastPlannerManager();
 
@@ -66,10 +65,8 @@ public:
   // 2026-07-28: 膨胀层脱困轨迹在执行期沿用“原始足迹安全且净空单调增加”的判据，
   // 避免发布前允许逃逸、发布后20ms又被普通膨胀层检查立即否决。
   bool checkTrajCollision(double& distance, bool allow_inflation_escape = false);
-  // 传入实测位置时，参考轨迹与叠加当前跟踪偏差的轨迹都必须通过。
   bool checkTrajCollision(LocalTrajData& trajectory, double& distance,
-                          bool allow_inflation_escape = false,
-                          const Eigen::Vector3d* actual_position = nullptr);
+                          bool allow_inflation_escape = false);
   // 2026-07-13: 使用独立机体足迹检查轨迹/路径，避免 0.15m 建图膨胀小于 Iris 实际旋翼半径。
   bool isPositionSafe(const Eigen::Vector3d& position) const;
   // 2026-07-28: FSM发布门控需要区分原始占据碰撞与仅接触膨胀层，决定能否执行受控逃逸。
@@ -86,7 +83,6 @@ public:
                           fuel_fapp::DynamicObstacleState* observation = nullptr) const;
   bool fappSideOpening(const Eigen::Vector3d& position, const Eigen::Vector3d& side) const;
   bool isFappCrossingTrajectorySafe() const;
-  bool isFappCrossingTrajectorySafe(const LocalTrajData& data, double elapsed) const;
   bool isFappPathSafe(const vector<Eigen::Vector3d>& path) const;
   bool fappPlannerPriority() const { return fapp_planner_priority_; }
   bool fappMemoryEnabled() const { return fapp_config_.enabled && fapp_memory_enabled_; }
@@ -155,7 +151,6 @@ private:
   // 避免把膨胀层与机体半径重复作为两个硬约束。
   double footprint_check_radius_{0.18};
   int footprint_check_samples_{12};
-  std::vector<double> footprint_z_offsets_{-0.06, 0.0, 0.06};
   int footprint_min_occupied_support_{2};
   double footprint_support_radius_{0.10};
   bool supported_occupancy_hard_reject_enabled_{true};
@@ -165,6 +160,7 @@ private:
   // 2026-07-23: 真实圆盘足迹检查供路径/轨迹最终复核；膨胀图仅用于A*引导，
   // 避免当前位置被膨胀层擦到后所有前向脱困路径因共享同一起点而全部失败。
   bool isRawFootprintSafe(const Eigen::Vector3d& position) const;
+  bool isSupportedOccupied(const Eigen::Vector3d& position) const;
 
   unique_ptr<KinodynamicAstar> kino_path_finder_;
   vector<BsplineOptimizer::Ptr> bspline_optimizers_;

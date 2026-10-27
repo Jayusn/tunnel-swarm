@@ -55,15 +55,6 @@ void FastPlannerManager::initPlanModules(ros::NodeHandle& nh) {
            escape_max_initial_occupied_samples_, 6);
   nh.param("manager/turn_slowdown_angle_deg", turn_slowdown_angle_deg_, 30.0);
   nh.param("manager/turn_time_scale", turn_time_scale_, 1.5);
-  double bottom_clearance;
-  nh.param("manager/footprint_bottom_clearance", bottom_clearance, 0.06);
-  if (!std::isfinite(bottom_clearance) || bottom_clearance < 0.06)
-    throw std::runtime_error("footprint bottom clearance must be finite and >= 0.06m");
-  // 保留原有三层，在机体下方补齐体积采样；不能只查最低平面而漏掉中间横杆。
-  footprint_z_offsets_ = {-0.06, 0.0, 0.06};
-  for (double depth = 0.11; depth < bottom_clearance - 1e-6; depth += 0.05)
-    footprint_z_offsets_.push_back(-depth);
-  if (bottom_clearance > 0.06) footprint_z_offsets_.push_back(-bottom_clearance);
   footprint_check_radius_ = std::max(0.0, footprint_check_radius_);
   footprint_check_samples_ = std::max(4, footprint_check_samples_);
   footprint_min_occupied_support_ = std::max(1, footprint_min_occupied_support_);
@@ -123,12 +114,6 @@ void FastPlannerManager::initPlanModules(ros::NodeHandle& nh) {
     // path_finder_->setEnvironment(edt_environment_);
     // path_finder_->init();
     path_finder_->init(nh, edt_environment_);
-    if (bottom_clearance > 0.06) {
-      // 搜索阶段就考虑同一机体足迹，避免先搜出贴底路线、最后反复拒绝。
-      path_finder_->setFootprintChecker(
-          [this](const Eigen::Vector3d& point) { return rawFootprintCollisionCount(point); },
-          escape_max_initial_occupied_samples_);
-    }
   }
 
   if (use_kinodynamic_path) {
@@ -545,25 +530,19 @@ bool FastPlannerManager::fappSideOpening(
 }
 
 bool FastPlannerManager::isFappCrossingTrajectorySafe() const {
-  return isFappCrossingTrajectorySafe(local_data_, 0.0);
-}
-
-bool FastPlannerManager::isFappCrossingTrajectorySafe(
-    const LocalTrajData& data, double elapsed) const {
-  auto trajectory = data.position_traj_;
+  auto trajectory = local_data_.position_traj_;
   const double duration = trajectory.getTimeSum();
   if (!(duration > 0.0)) return false;
-  const double begin = std::min(duration, std::max(0.0, elapsed));
   const double now = ros::Time::now().toSec();
-  const int samples = std::max(1, static_cast<int>(std::ceil((duration - begin) / 0.02)));
+  const int samples = std::max(1, static_cast<int>(std::ceil(duration / 0.02)));
   for (int i = 0; i <= samples; ++i) {
-    const double t = begin + (duration - begin) * i / samples;
+    const double t = duration * i / samples;
     const auto point = trajectory.evaluateDeBoorT(t);
     // 此分支按新鲜观测和实际样条到达时间验球，不能用整段历史摆幅封死空隙。
-    if (!fappPositionSafe(point, now + t - begin, now)) return false;
+    if (!fappPositionSafe(point, now + t, now)) return false;
     double clearance;
     if (fapp_watched_valid_ && fuel_fapp::evaluateDynamicObstacle(
-        point, fapp_watched_state_, now + t - begin, now, fapp_config_, &clearance) &&
+        point, fapp_watched_state_, now + t, now, fapp_config_, &clearance) &&
         clearance < 0.0) return false;
   }
   return true;
@@ -638,24 +617,12 @@ bool FastPlannerManager::checkTrajCollision(double& distance, bool allow_inflati
 }
 
 bool FastPlannerManager::checkTrajCollision(LocalTrajData& trajectory, double& distance,
-                                            bool allow_inflation_escape,
-                                            const Eigen::Vector3d* actual_position) {
-  // 同时检查参考轨迹和当前跟踪偏差下的机体包络。小于通用跟踪阈值的
-  // 8~10cm掉高也能吃掉越障净空，不能等误差达到28cm才处理。
-  if (actual_position &&
-      !checkTrajCollision(trajectory, distance, allow_inflation_escape)) return false;
-  if (actual_position && !actual_position->allFinite()) {
-    distance = 0.0;
-    return false;
-  }
+                                            bool allow_inflation_escape) {
   const double t_now = std::max(
       0.0, std::min((ros::Time::now() - trajectory.start_time_).toSec(), trajectory.duration_));
 
   const double reference = ros::Time::now().toSec();
   Eigen::Vector3d cur_pt = trajectory.position_traj_.evaluateDeBoorT(t_now);
-  const Eigen::Vector3d tracking_offset = actual_position
-      ? Eigen::Vector3d(*actual_position - cur_pt) : Eigen::Vector3d::Zero();
-  cur_pt += tracking_offset;
   if (!fapp_planner_priority_ && !fappPositionSafe(cur_pt, trajectory.start_time_.toSec()+t_now, reference)) {
     distance=0.0; return false;
   }
@@ -678,14 +645,13 @@ bool FastPlannerManager::checkTrajCollision(LocalTrajData& trajectory, double& d
     distance = 0.0;
     ROS_WARN_THROTTLE(0.5,
                       "[footprint_safety] active trajectory point is occupied at %.2f %.2f %.2f, "
-                      "radius=%.2f source=%s offset_z=%.3f.",
-                      cur_pt.x(), cur_pt.y(), cur_pt.z(), footprint_check_radius_,
-                      actual_position ? "odometry-offset" : "reference", tracking_offset.z());
+                      "radius=%.2f.",
+                      cur_pt.x(), cur_pt.y(), cur_pt.z(), footprint_check_radius_);
     return false;
   }
 
   while (radius < 6.0 && t_now + fut_t < trajectory.duration_) {
-    fut_pt = trajectory.position_traj_.evaluateDeBoorT(t_now + fut_t) + tracking_offset;
+    fut_pt = trajectory.position_traj_.evaluateDeBoorT(t_now + fut_t);
     if (!fapp_planner_priority_ && !fappPositionSafe(fut_pt, trajectory.start_time_.toSec()+t_now+fut_t, reference)) {
       distance=radius; return false;
     }
@@ -708,9 +674,8 @@ bool FastPlannerManager::checkTrajCollision(LocalTrajData& trajectory, double& d
     if (!safe) {
       distance = radius;
       ROS_WARN_THROTTLE(0.5, "[footprint_safety] future footprint collision at %.2f %.2f %.2f, "
-                             "path_dist=%.2f radius=%.2f source=%s offset_z=%.3f.",
-                        fut_pt.x(), fut_pt.y(), fut_pt.z(), radius, footprint_check_radius_,
-                        actual_position ? "odometry-offset" : "reference", tracking_offset.z());
+                             "path_dist=%.2f radius=%.2f.",
+                        fut_pt.x(), fut_pt.y(), fut_pt.z(), radius, footprint_check_radius_);
       return false;
     }
     radius = (fut_pt - cur_pt).norm();
@@ -762,7 +727,8 @@ int FastPlannerManager::rawFootprintCollisionCount(
   // 2026-07-23: 不再只采最外圆周；按中心、半径一半和最外沿组成真实圆盘，
   // 防止放宽膨胀层硬拒绝后漏掉位于旋翼圆盘内部、但恰好不在圆周采样点上的体素。
   int occupied_samples = 0;
-  for (double z_offset : footprint_z_offsets_) {
+  const double z_offsets[] = {-0.06, 0.0, 0.06};
+  for (double z_offset : z_offsets) {
     for (int ring = 0; ring <= 2; ++ring) {
       const double radius = 0.5 * static_cast<double>(ring) * footprint_check_radius_;
       const int samples = ring == 0 ? 1 : footprint_check_samples_;
@@ -828,7 +794,7 @@ bool FastPlannerManager::isRawPositionSafe(const Eigen::Vector3d& position) cons
 
 bool FastPlannerManager::isKnownFreePosition(const Eigen::Vector3d& position) const {
   if (!position.allFinite() || !isPositionSafe(position)) return false;
-  for (double z_offset : footprint_z_offsets_) {
+  for (double z_offset : {-0.06, 0.0, 0.06}) {
     for (int ring = 0; ring <= 2; ++ring) {
       const double radius = 0.5 * ring * footprint_check_radius_;
       const int samples = ring == 0 ? 1 : footprint_check_samples_;

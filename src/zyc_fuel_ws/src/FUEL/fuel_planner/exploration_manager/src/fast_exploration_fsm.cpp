@@ -442,10 +442,9 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
             planner_manager_->isControlledEscapePosition(fd_->odom_pos_);
         const bool active_safe = raw_escape_safe && planner_manager_->checkTrajCollision(
                                                         active_traj_, active_collision_distance,
-                                                        inflation_escape_active_, &fd_->odom_pos_);
+                                                        inflation_escape_active_);
         if (!active_safe) {
           requestActiveTrajectoryBrake("unsafe old trajectory before replanning");
-          fd_->static_state_ = true;
           expl_manager_->reportTrajectoryCollision();
           ROS_WARN("[trajectory_brake] old trajectory rejected before planner call, "
                    "path_dist=%.2fm.",
@@ -646,12 +645,10 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
         const bool acceleration_continuous =
             acceleration_error <= fp_->trajectory_release_max_acceleration_error_;
         const bool controlled_escape_start =
-            planner_manager_->isControlledEscapePosition(reviewed_position) ||
-            (pending_escape_step_ && planner_manager_->isControlledEscapePosition(
-                planner_manager_->local_data_.position_traj_.evaluateDeBoorT(0.0)));
+            planner_manager_->isControlledEscapePosition(reviewed_position);
         const bool starts_in_inflation = planner_manager_->isPositionInflated(reviewed_position);
         const bool raw_start_safe = planner_manager_->isRawPositionSafe(reviewed_position) ||
-            planner_manager_->isControlledEscapePosition(reviewed_position);
+                                    controlled_escape_start;
         const bool clears_inflation =
             !controlled_escape_start || expl_manager_->incrementalEscapePlanSafe() ||
             planner_manager_->trajectoryClearsInflation(
@@ -751,9 +748,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
         }
         // 2026-07-13: 只有新轨迹已经发布后才解除安全悬停，避免规划成功与轨迹服务器接收之间的空窗。
         inflation_escape_active_ =
-            planner_manager_->isControlledEscapePosition(fd_->odom_pos_) ||
-            (active_escape_step_ && planner_manager_->isControlledEscapePosition(
-                active_traj_.position_traj_.evaluateDeBoorT(0.0)));
+            planner_manager_->isControlledEscapePosition(fd_->odom_pos_);
         inflation_escape_clear_since_ = ros::Time(0);
         setSafetyHold(false, inflation_escape_active_
                                  ? "validated inflation escape trajectory published"
@@ -941,7 +936,7 @@ bool FastExplorationFSM::checkWiderExecutionRoute() {
 
 bool FastExplorationFSM::checkFappExecutionRetry() {
   const ros::Time now = ros::Time::now();
-  if (!keepExecutingCorridorTrajectory(true) ||
+  if (!keepExecutingCorridorTrajectory() ||
       !expl_manager_->needsExplorationFappRetry(fd_->odom_pos_) ||
       (!next_fapp_retry_.isZero() && now < next_fapp_retry_)) return false;
   next_fapp_retry_ = now + ros::Duration(0.5);
@@ -956,13 +951,12 @@ bool FastExplorationFSM::resumeAfterWidthAttempt(const string& reason) {
   width_replan_pending_ = false;
   width_candidate_seen_ = false;
   expl_manager_->clearWiderRoute();
-  if (!keepExecutingCorridorTrajectory(fapp_retry) ||
+  if (!keepExecutingCorridorTrajectory() ||
       expl_manager_->turnInPlaceAlignmentPending() ||
       expl_manager_->currentPlanIsVerticalDetour() ||
       expl_manager_->currentPlanIsGroundAscent()) return false;
   double collision_distance = 0.0;
-  if (!planner_manager_->checkTrajCollision(active_traj_, collision_distance, false,
-                                           &fd_->odom_pos_))
+  if (!planner_manager_->checkTrajCollision(active_traj_, collision_distance, false))
     return false;
   fd_->static_state_ = false;
   next_plan_retry_time_ = ros::Time(0);
@@ -975,12 +969,10 @@ bool FastExplorationFSM::resumeAfterWidthAttempt(const string& reason) {
   return true;
 }
 
-bool FastExplorationFSM::keepExecutingCorridorTrajectory(bool allow_manual) const {
-  const bool manual = expl_manager_->manualWaypointsEnabled();
-  if ((!narrow_corridor_stage_ && !(allow_manual && manual)) ||
-      !active_traj_valid_ || active_traj_braked_ ||
+bool FastExplorationFSM::keepExecutingCorridorTrajectory() const {
+  if (!narrow_corridor_stage_ || !active_traj_valid_ || active_traj_braked_ ||
       active_turn_in_place_ || active_vertical_detour_ || active_ground_ascent_ ||
-      inflation_escape_active_ || (manual && !allow_manual))
+      inflation_escape_active_ || expl_manager_->manualWaypointsEnabled())
     return false;
   const double elapsed = std::max(0.0,
       (ros::Time::now() - active_traj_.start_time_).toSec());
@@ -991,7 +983,7 @@ int FastExplorationFSM::callExplorationPlanner() {
   ros::Time time_r = ros::Time::now() + ros::Duration(fp_->replan_time_);
 
   // 跟踪纠偏、碰撞或旧轨迹结束要求正常重规划时，动态试探必须让出执行权。
-  if (fapp_replan_pending_ && (fd_->static_state_ || !keepExecutingCorridorTrajectory(true))) {
+  if (fapp_replan_pending_ && (fd_->static_state_ || !keepExecutingCorridorTrajectory())) {
     expl_manager_->discardExplorationFappRetry();
     fapp_replan_pending_ = false;
   }
@@ -1256,13 +1248,8 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
   if (inflation_escape_active_) {
     const bool still_inflated = planner_manager_->isPositionInflated(fd_->odom_pos_);
     const bool raw_safe = planner_manager_->isRawPositionSafe(fd_->odom_pos_);
-    const bool odom_needs_escape = still_inflated || !raw_safe;
-    // 实测位置可能先跨出体素边界，参考起点仍在接触层；两者均离开后才
-    // 退出脱障检查，避免刚发布的直退轨迹又被当作普通碰撞轨迹刹停。
-    const bool reference_needs_escape = planner_manager_->isPositionInflated(desired) ||
-        !planner_manager_->isRawPositionSafe(desired);
-    const bool still_needs_escape = odom_needs_escape || reference_needs_escape;
-    if (odom_needs_escape &&
+    const bool still_needs_escape = still_inflated || !raw_safe;
+    if (still_needs_escape &&
         !planner_manager_->isControlledEscapePosition(fd_->odom_pos_)) {
       requestActiveTrajectoryBrake("footprint contact worsened during inflation escape");
       fd_->static_state_ = true;
@@ -1285,12 +1272,10 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
 
   double dist;
   const bool safe =
-      planner_manager_->checkTrajCollision(active_traj_, dist, inflation_escape_active_,
-                                          &fd_->odom_pos_);
+      planner_manager_->checkTrajCollision(active_traj_, dist, inflation_escape_active_);
   if (exploration_policy::shouldBrakePublishedTrajectory(active_traj_valid_, !safe,
                                                           active_traj_braked_)) {
     requestActiveTrajectoryBrake("future footprint collision");
-    fd_->static_state_ = true; // 从实际高度重新选路，不能沿已偏高的参考继续预测。
     expl_manager_->reportTrajectoryCollision();
     ROS_WARN("Replan: collision detected, old trajectory short-braked at path_dist=%.2fm", dist);
     if (state_ != EXPL_STATE::PLAN_TRAJ)

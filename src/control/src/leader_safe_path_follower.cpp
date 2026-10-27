@@ -26,7 +26,6 @@
 #include <std_msgs/Bool.h>
 #include <std_msgs/Empty.h>
 #include <std_msgs/String.h>
-#include <std_msgs/UInt32MultiArray.h>
 #include <visualization_msgs/Marker.h>
 
 namespace {
@@ -330,8 +329,6 @@ class LeaderSafePathFollower {
     route_pub_ = pnh_.advertise<nav_msgs::Path>("leader_safe_route", 1, true);
     // The leader is the sole publisher of qualified points; this is only our execution queue.
     relay_path_pub_ = nh_.advertise<nav_msgs::Path>("/UAV1/mission/relay_execution_queue", 1, true);
-    relay_progress_pub_ = nh_.advertise<std_msgs::UInt32MultiArray>(
-        "/UAV1/mission/relay_execution_progress", 1, true);
     safe_relay_sub_ = nh_.subscribe(relay_path_topic_, 1,
                                     &LeaderSafePathFollower::safeRelayCallback, this);
     target_pub_ = pnh_.advertise<visualization_msgs::Marker>("target_marker", 1);
@@ -583,21 +580,6 @@ class LeaderSafePathFollower {
       path.poses.push_back(pose);
     }
     relay_path_pub_.publish(path);
-  }
-
-  void publishRelayProgress() {
-    if (safe_relay_session_.isZero()) return;
-    const auto now = ros::Time::now();
-    std_msgs::UInt32MultiArray message;
-    // [前机会话sec,nsec,回报sec,nsec,已完成最大ID,尚未开始的ID...]
-    message.data = {safe_relay_session_.sec, safe_relay_session_.nsec, now.sec, now.nsec, 0U};
-    for (std::size_t i = 0; i < relay_waypoints_.size(); ++i) {
-      const auto id = relay_waypoints_[i].safe_relay_id;
-      if (id == 0U) continue;
-      if (i < active_relay_index_) message.data[4] = std::max(message.data[4], id);
-      else if (i > active_relay_index_) message.data.push_back(id);
-    }
-    relay_progress_pub_.publish(message);
   }
 
   void appendRelayWaypoint(const RoutePoint& point, const char* label) {
@@ -995,13 +977,14 @@ class LeaderSafePathFollower {
       previous = id;
       auto existing = safe_relay_points_.find(id);
       if (existing != safe_relay_points_.end() &&
-          pose.header.stamp <= existing->second.header.stamp) {
-        valid.insert(id);  // 迟到/重复版本不能回退坐标或版本时刻。
-        continue;
-      }
-      if (existing != safe_relay_points_.end() &&
           distance3d(existing->second.pose.position, p) > 1e-6) {
-        // 同一编号的新版本替换旧版本：不限制修改次数和位移，选点由前机负责。
+        // 每个内部点独立允许一次60cm内、带更新发布时刻的优化；保留原编号。
+        if (safe_relay_revised_ids_.count(id) != 0U ||
+            pose.header.stamp <= existing->second.header.stamp ||
+            distance3d(existing->second.pose.position, p) > 0.60 + 1e-6) {
+          safe_relay_fault_ = true;
+          return;
+        }
         safe_relay_revised_ids_.insert(id);
         for (std::size_t i = active_relay_index_; i < relay_waypoints_.size(); ++i) {
           auto& point = relay_waypoints_[i];
@@ -1019,7 +1002,7 @@ class LeaderSafePathFollower {
             diff_failure_count_ = 0;
           }
         }
-        ROS_WARN("[safe_follower] REPLACE SAFE_RELAY id=%u target=(%.2f,%.2f,%.2f); "
+        ROS_WARN("[safe_follower] REPLACE SAFE_RELAY %u.1 target=(%.2f,%.2f,%.2f); "
                  "keep queue index, completed goals are not revisited.", id, p.x, p.y, p.z);
       }
       safe_relay_points_[id] = pose;
@@ -1027,8 +1010,6 @@ class LeaderSafePathFollower {
     }
     safe_relay_valid_ids_ = std::move(valid);  // Missing IDs are invalid, including an empty snapshot.
     enqueueSafeRelay();
-    publishRelayPath();
-    publishRelayProgress();
   }
 
   void enqueueSafeRelay() {
@@ -2292,7 +2273,6 @@ class LeaderSafePathFollower {
   }
 
   void timerCallback(const ros::TimerEvent&) {
-    publishRelayProgress();
     if (follower_precision_landing_active_) {
       publishState("UAV1_PRECISION_LANDING_OWNS_CONTROL", 0.2, 1.0, 0.2);
       return;
@@ -2622,7 +2602,6 @@ class LeaderSafePathFollower {
       front_scan_anchor_sub_;
   ros::Subscriber diff_status_sub_;  // 2026-07-28: UAV1 Diff轨迹成功/失败反馈。
   ros::Publisher command_pub_, traj_started_pub_, diff_goal_pub_, route_pub_, relay_path_pub_, target_pub_, state_pub_;
-  ros::Publisher relay_progress_pub_;
   ros::Publisher diff_yaw_pub_;
   ros::Publisher follower_landing_target_pub_, follower_landing_request_pub_;
   ros::Publisher follower_detection_enable_pub_;  // UAV1独立LDOP阶段状态。

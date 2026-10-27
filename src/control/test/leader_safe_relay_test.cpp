@@ -112,9 +112,8 @@ class LeaderSafeRelayTest {
     path->header.seq = 8;
     path->poses[0].pose.position.x += 0.2;
     follower.safeRelayCallback(path);
-    EXPECT_FALSE(follower.safe_relay_fault_); // 旧版本忽略，保留已接收的新版本。
-    EXPECT_TRUE(follower.activeSafeRelayValid());
-    EXPECT_DOUBLE_EQ(4, follower.safe_relay_points_.at(1).pose.position.x);
+    EXPECT_TRUE(follower.safe_relay_fault_); // A coordinate change requires a newer timestamp.
+    EXPECT_FALSE(follower.activeSafeRelayValid());
   }
   static void independentRevisions() {
     ros::NodeHandle pnh("~");
@@ -168,17 +167,8 @@ class LeaderSafeRelayTest {
       EXPECT_DOUBLE_EQ(.4, follower.relay_waypoints_[i].position.y);
     EXPECT_DOUBLE_EQ(10, follower.relay_waypoints_.back().position.x);
     EXPECT_DOUBLE_EQ(0, follower.relay_waypoints_.back().position.y);
-    std_msgs::UInt32MultiArray progress;
-    auto sub = pnh.subscribe<std_msgs::UInt32MultiArray>(
-        "/UAV1/mission/relay_execution_progress", 1,
-        [&](const std_msgs::UInt32MultiArray::ConstPtr& msg) { progress = *msg; });
-    for (int i = 0; i < 30 && progress.data.empty(); ++i) {
-      ros::spinOnce(); ros::WallDuration(.01).sleep();
-    }
-    // 入口/出口不冒充内部编号；完成1，正在执行7，尚未开始8、9。
-    EXPECT_EQ((std::vector<uint32_t>{250, 0, 300, 0, 1, 8, 9}), progress.data);
   }
-  static void replacement(bool completed = false, bool large_update = false, uint32_t id = 8) {
+  static void replacement(bool completed = false, bool too_far = false, uint32_t id = 8) {
     ros::NodeHandle pnh("~");
     pnh.setParam("obstacle_check_enabled", false);
     LeaderSafePathFollower follower;
@@ -210,14 +200,15 @@ class LeaderSafeRelayTest {
     follower.relay_arrival_stamp_ = ros::Time(199);
     path->header.seq = 2;
     path->poses.front().header.stamp = ros::Time(200);
-    path->poses.front().pose.position.x -= large_update ? 1.2 : .4;
+    path->poses.front().pose.position.x -= too_far ? .61 : .4;
     follower.safeRelayCallback(path);
-    EXPECT_FALSE(follower.safe_relay_fault_);
+    EXPECT_EQ(too_far, follower.safe_relay_fault_);
+    if (too_far) return;
     EXPECT_EQ(1U, follower.safe_relay_revised_ids_.count(id));
     EXPECT_EQ(2U, follower.relay_waypoints_.size());
     EXPECT_EQ(id + 2, follower.safe_relay_next_id_);
     EXPECT_EQ(completed ? 1U : 0U, follower.active_relay_index_);
-    EXPECT_NEAR(completed ? 3.0 : (large_update ? 1.8 : 2.6), follower.relay_waypoints_[0].position.x, 1e-9);
+    EXPECT_DOUBLE_EQ(completed ? 3.0 : 2.6, follower.relay_waypoints_[0].position.x);
     EXPECT_EQ(completed, follower.diff_goal_published_);
     if (!completed) EXPECT_TRUE(follower.relay_arrival_stamp_.isZero());
     path->header.seq = 3;
@@ -227,23 +218,7 @@ class LeaderSafeRelayTest {
     path->poses.front().header.stamp = ros::Time(201);
     path->poses.front().pose.position.x -= .1;
     follower.safeRelayCallback(path);
-    EXPECT_FALSE(follower.safe_relay_fault_); // 8.2 替换 8.1，仍是原队列项。
-    EXPECT_EQ(2U, follower.relay_waypoints_.size());
-    EXPECT_NEAR(completed ? 3.0 : (large_update ? 1.7 : 2.5),
-                follower.relay_waypoints_[0].position.x, 1e-9);
-    EXPECT_EQ(ros::Time(201), follower.safe_relay_points_.at(id).header.stamp);
-    path->header.seq = 5;
-    path->poses.front().header.stamp = ros::Time(200);
-    path->poses.front().pose.position = follower.safe_relay_points_.at(id).pose.position;
-    follower.safeRelayCallback(path); // 旧时刻即使坐标相同也不能倒退版本。
-    EXPECT_EQ(ros::Time(201), follower.safe_relay_points_.at(id).header.stamp);
-    path->header.seq = 6;
-    path->poses.front().header.stamp = ros::Time(200);
-    path->poses.front().pose.position.x = 3;
-    follower.safeRelayCallback(path);
-    EXPECT_FALSE(follower.safe_relay_fault_);
-    EXPECT_NEAR(completed ? 3.0 : (large_update ? 1.7 : 2.5),
-                follower.relay_waypoints_[0].position.x, 1e-9);
+    EXPECT_TRUE(follower.safe_relay_fault_); // 每个点仍只允许一次优化。
   }
 
 };
@@ -259,7 +234,7 @@ TEST(LeaderSafeRelay, CompletedInternalGoalsAreNotRevisited) {
   for (uint32_t id : {1U, 7U, 8U, 9U})
     LeaderSafeRelayTest::replacement(true, false, id);
 }
-TEST(LeaderSafeRelay, NewerRevisionHasNoReceiverDistanceLimit) {
+TEST(LeaderSafeRelay, InternalRevisionCannotExceedSixtyCentimetres) {
   LeaderSafeRelayTest::replacement(false, true);
 }
 int main(int argc, char** argv) {

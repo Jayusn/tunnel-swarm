@@ -59,8 +59,6 @@ void SafeRelayPublisher::initialize(ros::NodeHandle& nh, std::shared_ptr<SDFMap>
                               &SafeRelayPublisher::missionCallback, this);
   exit_sub_ = nh.subscribe(prefix + "/final_exit", 1,
                            &SafeRelayPublisher::exitCallback, this);
-  execution_sub_ = nh.subscribe("/UAV1/mission/relay_execution_progress", 1,
-                                &SafeRelayPublisher::executionCallback, this);
   timer_ = nh.createTimer(ros::Duration(0.25), &SafeRelayPublisher::timerCallback, this);
   publish("WAIT_ENTRANCE");
 }
@@ -75,8 +73,7 @@ void SafeRelayPublisher::setEntrance(const Eigen::Vector3d& origin,
 }
 
 void SafeRelayPublisher::observe(const Eigen::Vector3d& position, double yaw,
-                                  const ros::Time& stamp,
-                                  const Eigen::Vector3d& corridor_forward) {
+                                  const ros::Time& stamp) {
   if (!enabled_ || !position.allFinite() || !std::isfinite(yaw)) return;
   const ros::Time measured_at = stamp.isZero() ? ros::Time::now() : stamp;
   if (!odom_stamp_.isZero() && measured_at <= odom_stamp_) return;
@@ -97,10 +94,6 @@ void SafeRelayPublisher::observe(const Eigen::Vector3d& position, double yaw,
   point.candidate = point.sample;
   point.stamp = measured_at;
   point.yaw = yaw;
-  // 保存采样时探索已确认的通道方向；短退、机头转动及后续转弯不改写旧段。
-  point.forward = corridor_forward.allFinite() && corridor_forward.head<2>().norm() > 1e-6
-      ? corridor_forward.head<2>().normalized().eval()
-      : entrance_direction_.head<2>().normalized().eval();
   history_.push_back(point);
 }
 
@@ -272,50 +265,8 @@ double SafeRelayPublisher::routeHeight(const Record& reference,
   return height;
 }
 
-void SafeRelayPublisher::executionCallback(const std_msgs::UInt32MultiArray::ConstPtr& message) {
-  // 后机队列回报：[会话sec,nsec,回报sec,nsec,已完成最大ID,尚未开始的ID...]
-  // 状态只用于前机合并队尾；缺失回报不阻止普通新点发布。
-  const auto& data = message->data;
-  if (data.size() < 5 || data[0] != session_.sec || data[1] != session_.nsec) return;
-  const ros::Time stamp(data[2], data[3]);
-  if (stamp <= execution_stamp_) return;
-  for (const auto& goal : goals_)
-    if (goal.id <= data[4]) completed_ids_.insert(goal.id);
-  queued_ids_ = std::set<uint32_t>(data.begin() + 5, data.end());
-  execution_stamp_ = stamp;
-}
-
-Eigen::Vector2d SafeRelayPublisher::routeForward(std::size_t index) const {
-  return history_[index].forward;
-}
-
-bool SafeRelayPublisher::newPointFits(
-    const Eigen::Vector3d& point, const Eigen::Vector2d& forward) const {
-  if (goals_.empty()) return true;
-  // .1/.2 已替换原点：新编号必须接在最新版本前方，不能用原始实飞样本作基准。
-  const auto& last = goals_.back().pose.pose.position;
-  return (point.head<2>() - Eigen::Vector2d(last.x, last.y)).dot(forward) > 1e-6;
-}
-
-bool SafeRelayPublisher::revisionFits(std::size_t index, const Eigen::Vector3d& point) const {
-  const auto& goal = goals_[index];
-  const auto& old = goal.pose.pose.position;
-  const Eigen::Vector2d delta = point.head<2>() - Eigen::Vector2d(old.x, old.y);
-  if (delta.dot(routeForward(goal.route_index)) < -1e-6) return false;
-  for (std::size_t neighbour : {index == 0 ? goals_.size() : index - 1, index + 1}) {
-    if (neighbour >= goals_.size()) continue;
-    const auto& p = goals_[neighbour].pose.pose.position;
-    const Eigen::Vector2d old_segment(old.x - p.x, old.y - p.y);
-    const Eigen::Vector2d segment = point.head<2>() - Eigen::Vector2d(p.x, p.y);
-    if (segment.norm() + 1e-6 < config_.minimum_xy_spacing ||
-        segment.dot(old_segment) < -1e-6) return false;
-  }
-  return true;
-}
-
 void SafeRelayPublisher::qualifyCandidate(
-    Record& record, bool new_map, const Eigen::Vector2d& forward, double search_radius,
-    std::size_t goal_index) {
+    Record& record, bool new_map, const Eigen::Vector2d& forward, double search_radius) {
   if (search_radius < 0.0) search_radius = candidate_search_radius_;
   const auto& reference = record.sample.position;
   const auto boundaries = horizontalBoundaries(
@@ -338,9 +289,7 @@ void SafeRelayPublisher::qualifyCandidate(
     return a.offset < b.offset;
   });
   const auto safe = [&](const Eigen::Vector3d& p) {
-    return (goal_index < goals_.size() ? revisionFits(goal_index, p)
-                                      : newPointFits(p, forward)) &&
-        insideCorridor(reference, p) && volumeFree(p, hold_radius_, hold_half_height_) &&
+    return insideCorridor(reference, p) && volumeFree(p, hold_radius_, hold_half_height_) &&
         planner_->isRelayHoldDynamicallySafe(p, hold_radius_, hold_half_height_, dynamic_wait_horizon_);
   };
   const auto paired = [&](Eigen::Vector3d p) {
@@ -366,34 +315,26 @@ void SafeRelayPublisher::qualifyCandidate(
       selected = previous;
       gap = previous_gap;
     }
-    // 同等净空和上下余量时也优先向前，不再要求前方必须额外增加Z余量。
-    // 搜索仍固定在实飞样本附近，避免每帧从上次候选继续漂移。
+    // 同等水平净空下，前方已知空地若能容忍更大的Z误差，优先把悬停点
+    // 放过去。以原始实飞样本为搜索基准，避免每帧从上次候选继续前移。
     if (forward.norm() > 0.5 && search_radius >= 0.30) {
       double best_height = verticalClearance(selected);
       const double original_gap = gap;
-      double best_progress = (selected.head<2>() - reference.head<2>()).dot(forward);
-      const auto consider_forward = [&](Eigen::Vector3d p) {
-        const double distance = (p - reference).head<2>().dot(forward);
-        if (distance <= best_progress + 1e-6) return;
-        p = paired(p);
-        const double forward_gap = clearance(p);
-        if (forward_gap + 1e-9 < hold_radius_ || forward_gap + 0.02 + 1e-9 < original_gap ||
-            !safe(p)) return;
-        const double height = verticalClearance(p);
-        if (height + 1e-9 < best_height) return;
-        selected = p;
-        gap = forward_gap;
-        best_height = height;
-        best_progress = distance;
-      };
+      const double minimum_gain = std::max(0.05, map_->getResolution());
       for (double distance = 0.30; distance <= search_radius + 1e-6;
            distance += step) {
         Eigen::Vector3d p = reference;
         p.head<2>() += distance * forward;
-        consider_forward(p);
+        p = paired(p);
+        const double forward_gap = clearance(p);
+        if (forward_gap + 1e-9 < hold_radius_ || forward_gap + 0.02 + 1e-9 < original_gap ||
+            !safe(p)) continue;
+        const double height = verticalClearance(p);
+        if (height + 1e-9 < best_height + minimum_gain) continue;
+        selected = p;
+        gap = forward_gap;
+        best_height = height;
       }
-      // 正前方贴障时也比较侧前方空地；推进不能牺牲横向净空或上下余量。
-      for (const auto& option : options) consider_forward(option.position);
     }
     // 定位原点到机体底部约0.15m，悬停优选再留0.05m余量。
     // 只在下方余量不足时尝试最小幅度抬高；受限位置保留原合格点，
@@ -433,15 +374,13 @@ void SafeRelayPublisher::qualifyCandidate(
 
 void SafeRelayPublisher::improveInternalGoals(bool new_map) {
   if (!new_map) return;
-  // 每个编号最多优化一次；已完成点由后机回报后保留原位置。
-  for (std::size_t i = 0; i < goals_.size(); ++i) {
-    auto& goal = goals_[i];
-    if (goal.revisions != 0 || completed_ids_.count(goal.id) ||
-        odom_stamp_ <= goal.pose.header.stamp) continue;
+  // 出口交接后仍可优化内部点；接收端只更新尚未执行完的队列项。
+  for (auto& goal : goals_) {
+    if (goal.revised || odom_stamp_ <= goal.pose.header.stamp) continue;
     const auto& old = goal.pose.pose.position;
     const Eigen::Vector3d original(old.x, old.y, old.z);
     auto& record = goal.revision;
-    // 局部搜索固定在本段发布位置附近；向后续路段推进由队尾替换处理。
+    // 固定在该点首次下发位置60cm以内，不能随着候选逐帧漂移。
     if (record.stamp.isZero()) {
       record = history_[goal.route_index];
       record.sample.position = original;
@@ -449,64 +388,29 @@ void SafeRelayPublisher::improveInternalGoals(bool new_map) {
       record.confirmations = 0;
       record.stamp = goal.pose.header.stamp;
     }
-    const Eigen::Vector2d forward = routeForward(goal.route_index);
-    qualifyCandidate(record, true, forward, candidate_search_radius_, i);
+    Eigen::Vector2d forward = leader_.head<2>() - original.head<2>();
+    if (forward.norm() > 0.1) forward.normalize();
+    else forward.setZero();
+    qualifyCandidate(record, true, forward, std::min(0.60, candidate_search_radius_));
     const auto& candidate = record.candidate;
     const double offset = (candidate.position - original).norm();
-    if (!candidate.confirmed || offset + 1e-6 < 0.05) continue;
+    if (!candidate.confirmed || offset < 0.05 || offset > 0.60 + 1e-6) continue;
     const double old_gap = horizontalClearance(original);
-    if (candidate.clearance + 0.02 < old_gap ||
-        verticalClearance(candidate.position) + 1e-6 < verticalClearance(original)) continue;
     const double gain = std::max(0.05, map_->getResolution());
-    const bool forward_gain = (candidate.position - original).head<2>().dot(forward) >=
-                                  sample_spacing_ - 1e-6 &&
-        candidate.clearance + 0.02 >= old_gap &&
-        verticalClearance(candidate.position) + 1e-6 >= verticalClearance(original);
-    const bool better = forward_gain || candidate.clearance >= old_gap + gain - 1e-6 ||
+    const bool better = candidate.clearance >= old_gap + gain - 1e-6 ||
         (candidate.clearance + 0.02 >= old_gap &&
          verticalClearance(candidate.position) >= verticalClearance(original) + gain - 1e-6);
     if (!better) continue;
-    updateGoal(i, candidate);
+    goal.pose.pose.position.x = candidate.position.x();
+    goal.pose.pose.position.y = candidate.position.y();
+    goal.pose.pose.position.z = candidate.position.z();
+    goal.pose.header.stamp = ros::Time::now();
+    goal.revised = true;
+    ROS_WARN("[safe_relay] REPLACE id=%u label=%u.1 target=(%.2f,%.2f,%.2f) "
+             "offset=%.3fm clearance=%.3f->%.3fm; replacement consumed, next ID unchanged.",
+             goal.id, goal.id, candidate.position.x(), candidate.position.y(), candidate.position.z(),
+             offset, old_gap, candidate.clearance);
   }
-}
-
-void SafeRelayPublisher::updateGoal(std::size_t index, const safe_relay::Sample& candidate) {
-  auto& goal = goals_[index];
-  const auto& p = candidate.position;
-  goal.pose.pose.position.x = p.x();
-  goal.pose.pose.position.y = p.y();
-  goal.pose.pose.position.z = p.z();
-  // 替换版本时刻严格晚于原点，供后机识别更新。
-  goal.pose.header.stamp = std::max(ros::Time::now(), goal.pose.header.stamp + ros::Duration(0, 1));
-  ++goal.revisions;
-  ROS_WARN("[safe_relay] REPLACE id=%u label=%u.%u target=(%.2f,%.2f,%.2f); same queue slot, next ID unchanged.",
-           goal.id, goal.id, goal.revisions, p.x(), p.y(), p.z());
-}
-
-bool SafeRelayPublisher::replaceQueuedTail(std::size_t route_index) {
-  if (goals_.empty() || execution_stamp_.isZero() ||
-      (ros::Time::now() - execution_stamp_).toSec() > odom_timeout_ ||
-      execution_stamp_ > ros::Time::now()) return false;
-  auto& tail = goals_.back();
-  if (tail.revisions != 0 || !queued_ids_.count(tail.id) ||
-      completed_ids_.count(tail.id)) return false;
-  const auto& candidate = history_[route_index].candidate;
-  const auto& old = tail.pose.pose.position;
-  const Eigen::Vector3d original(old.x, old.y, old.z);
-  const Eigen::Vector2d delta = (candidate.position - original).head<2>();
-  // 间隔不足一个常规接力段时，前方合格点优先替换排队中的末点。
-  // 入口/出口不在此列表；已执行或正在执行的点不会被当作冗余队尾吞掉。
-  if (!candidate.hold_free || !candidate.confirmed ||
-      candidate.clearance + 0.02 < horizontalClearance(original) ||
-      verticalClearance(candidate.position) + 1e-6 < verticalClearance(original) ||
-      delta.norm() >= config_.normal_spacing ||
-      delta.dot(routeForward(tail.route_index)) < sample_spacing_ ||
-      !revisionFits(goals_.size() - 1, candidate.position) ||
-      !insideCorridor(original, candidate.position)) return false;
-  updateGoal(goals_.size() - 1, candidate);
-  tail.route_index = route_index;
-  tail.revision = Record();
-  return true;
 }
 
 void SafeRelayPublisher::timerCallback(const ros::TimerEvent&) {
@@ -551,8 +455,15 @@ void SafeRelayPublisher::timerCallback(const ros::TimerEvent&) {
       samples.push_back(sample);
       continue;  // Neither the entrance nor issued points need requalification.
     }
-    // 新点和版本更新均沿该样本所属的已确认通道方向选点，回退不翻转前方。
-    qualifyCandidate(record, new_map, routeForward(i));
+    // 沿实飞路线前进方向寻找空地，不用可能仍保持旧通道朝向的机头yaw。
+    std::size_t previous = i - 1;
+    while (previous > 0 &&
+           sample.progress - history_[previous].sample.progress < 0.30) --previous;
+    Eigen::Vector2d forward = sample.position.head<2>() -
+        history_[previous].sample.position.head<2>();
+    if (forward.norm() >= 0.10) forward.normalize();
+    else forward.setZero();
+    qualifyCandidate(record, new_map, forward);
     samples.push_back(record.candidate);
   }
   if (!goals_.empty()) {
@@ -573,10 +484,6 @@ void SafeRelayPublisher::timerCallback(const ros::TimerEvent&) {
   }
   const auto selected = safe_relay::select(samples, anchor_, leader_, selection_config);
   if (selected.kind != safe_relay::Kind::WAIT) {
-    if (replaceQueuedTail(selected.index)) {
-      publish("REPLACE_QUEUED_TAIL");
-      return;
-    }
     anchor_ = selected.index;
     const auto& record = history_[anchor_];
     const auto& p = record.candidate.position;
@@ -636,7 +543,7 @@ void SafeRelayPublisher::publish(const std::string& status) {
     label.pose.position.z += 0.20;
     label.scale.z = 0.16;
     label.color.r = 1.0; label.color.g = 0.6; label.color.a = 1.0;
-    label.text = std::to_string(goal.id) + (goal.revisions ? "." + std::to_string(goal.revisions) : "");
+    label.text = std::to_string(goal.id) + (goal.revised ? ".1" : "");
     labels.markers.push_back(label);
   }
   goals_pub_.publish(goals);
@@ -645,8 +552,7 @@ void SafeRelayPublisher::publish(const std::string& status) {
   message.data = status + " released=" + std::to_string(goals_.size()) +
                  " published=" + std::to_string(goals.poses.size());
   for (const auto& goal : goals_)
-    if (goal.revisions) message.data += " revised=" + std::to_string(goal.id) + "." +
-                                       std::to_string(goal.revisions);
+    if (goal.revised) message.data += " revised=" + std::to_string(goal.id) + ".1";
   status_pub_.publish(message);
   if (status != last_status_) {
     ROS_INFO("[safe_relay] %s", message.data.c_str());

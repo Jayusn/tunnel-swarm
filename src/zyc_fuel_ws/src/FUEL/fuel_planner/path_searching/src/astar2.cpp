@@ -67,29 +67,8 @@ void Astar::clearProgressConstraint() {
   maximum_progress_regression_ = 0.0;
 }
 
-bool Astar::footprintEdgeSafe(const Eigen::Vector3d& from,
-                              const Eigen::Vector3d& to) const {
-  if (!footprint_checker_) return true;
-  int previous = footprint_checker_(from);
-  if (previous > maximum_escape_contacts_) return false;
-  const int samples = std::max(1, static_cast<int>(std::ceil((to - from).norm() / 0.05)));
-  for (int i = 1; i <= samples; ++i) {
-    const int contacts = footprint_checker_(from + (to - from) * (double(i) / samples));
-    // 沿用初始接触只能减少、离开后不能重新接触的规则。
-    if (contacts > previous) return false;
-    previous = contacts;
-  }
-  return true;
-}
-
 int Astar::search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt,
                   bool hold_goal_height) {
-  const double phase_max_height = height_limit_provider_
-      ? height_limit_provider_() : std::numeric_limits<double>::infinity();
-  const double max_height = std::min(max_search_height_, phase_max_height);
-  // 终点直连也必须遵守通道上限；起点已偏高时仍允许下降回到高度带。
-  if (std::isfinite(phase_max_height) && end_pt.z() > max_height + 1e-3 &&
-      end_pt.z() >= start_pt.z()) return NO_PATH;
   if (progress_constraint_enabled_ &&
       !directional_progress::isAllowed(start_pt, end_pt, progress_direction_,
                                        maximum_progress_regression_)) {
@@ -133,7 +112,7 @@ int Astar::search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt
     cur_node = open_set_.top();
     bool reach_end = abs(cur_node->index(0) - end_index(0)) <= 1 &&
         abs(cur_node->index(1) - end_index(1)) <= 1 && abs(cur_node->index(2) - end_index(2)) <= 1;
-    if (reach_end && footprintEdgeSafe(cur_node->position, end_pt)) {
+    if (reach_end) {
       backtrack(cur_node, end_pt);
       return REACH_END;
     }
@@ -181,9 +160,9 @@ int Astar::search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt
             continue;
           }
           // 2026-07-28: 起点偶发高于上限时对称地只允许下降，正常任务路径严禁越过上限。
-          if (start_pt.z() > max_height && cur_pos.z() > max_height) {
+          if (start_pt.z() > max_search_height_ && cur_pos.z() > max_search_height_) {
             if (nbr_pos.z() - 1e-3 > cur_pos.z()) continue;
-          } else if (nbr_pos.z() > max_height + 1e-3) {
+          } else if (nbr_pos.z() > max_search_height_ + 1e-3) {
             continue;
           }
           // Check safety
@@ -213,7 +192,7 @@ int Astar::search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt
             }
             // 2026-07-28: 对角边内部采样同样遵守高度带，不能只检查端点后从地面穿过。
             if ((start_pt.z() >= min_search_height_ && ckpt.z() < min_search_height_ - 1e-3) ||
-                (start_pt.z() <= max_height && ckpt.z() > max_height + 1e-3)) {
+                (start_pt.z() <= max_search_height_ && ckpt.z() > max_search_height_ + 1e-3)) {
               safe = false;
               break;
             }
@@ -233,7 +212,6 @@ int Astar::search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt
           Eigen::Vector3i nbr_idx;
           posToIndex(nbr_pos, nbr_idx);
           if (close_set_map_.find(nbr_idx) != close_set_map_.end()) continue;
-          if (!footprintEdgeSafe(cur_pos, nbr_pos)) continue;
 
           NodePtr neighbor;
           // Horizontal detours toward open space are safer than short vertical or wall-hugging

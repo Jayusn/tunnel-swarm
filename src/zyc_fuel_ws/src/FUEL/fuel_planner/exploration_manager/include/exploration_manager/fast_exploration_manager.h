@@ -27,7 +27,6 @@ class FastPlannerManager;
 class FrontierFinder;
 class TaskSearchManager;
 class SafeRelayPublisher;
-struct LocalTrajData;
 struct ExplorationParam;
 struct ExplorationData;
 
@@ -47,14 +46,11 @@ public:
     return manual_path_enabled_ || fapp_exploration_crossing_enabled_;
   }
   bool explorationFappCrossingActive() const {
-    return (fapp_exploration_crossing_enabled_ ||
-            (manual_path_enabled_ && manual_path_exploration_style_)) && manual_fapp_active_;
+    return fapp_exploration_crossing_enabled_ && manual_fapp_active_;
   }
   bool needsExplorationFappRetry(const Vector3d& actual_pos) const {
-    return explorationFappCrossingActive() && fapp_crossing_retry_needed_ &&
-        (!manual_path_enabled_ || (!manual_path_.finished() &&
-          (!manual_path_wait_for_trigger_ || manual_path_started_))) &&
-        pointInsideWorkspaceLock(actual_pos);
+    return explorationFappCrossingActive() && !manual_path_enabled_ &&
+        fapp_crossing_retry_needed_ && pointInsideWorkspaceLock(actual_pos);
   }
   bool planExplorationFappCrossing(const Vector3d& pos, const Vector3d& vel,
                                    const Vector3d& acc, const Vector3d& yaw);
@@ -184,7 +180,6 @@ private:
   double manual_fapp_curve_side_{0.0};
   bool buildManualFappUnderpassPath(const Vector3d& pos, const Vector3d& waypoint,
                                    std::vector<Vector3d>& path);
-  bool planFappVerticalDescent(const Vector3d& pos, const Vector3d& yaw);
   ManualWaypointPath manual_path_;
   bool manual_local_goal_enabled_{false}, manual_local_goal_selected_{false};
   double manual_local_goal_radius_{0.60};
@@ -338,7 +333,6 @@ private:
   bool ground_ascent_optional_{false};
   bool ground_ascent_plan_{false};
   bool vertical_detour_plan_{false};
-  bool upper_detour_plan_{false};  // 本轮已验证的上绕/越障后前进线段，不交给普通A*改道。
   double ground_ascent_cruise_height_{0.60};
   double ground_ascent_lower_probe_depth_{0.20};
   int ground_ascent_min_lower_obstacles_{2};
@@ -359,8 +353,6 @@ private:
   double vertical_detour_upper_forward_max_distance_{0.60};
   double vertical_detour_upper_max_side_angle_deg_{45.0};
   double vertical_detour_upper_obstacle_clearance_{0.20};
-  double vertical_detour_upper_tracking_margin_{0.10};
-  double published_upper_height_{std::numeric_limits<double>::quiet_NaN()};
   double vertical_detour_down_first_height_{0.75};
   double vertical_detour_height_tolerance_{0.06};
   double vertical_detour_xy_tolerance_{0.08};
@@ -456,7 +448,7 @@ private:
                               const Vector3d& forward, Vector3d& next_pos,
                               double& next_yaw, bool& gate_detected);
   bool findForwardObstacleTop(const Vector3d& pos, const Vector3d& forward,
-                              double& obstacle_top, std::vector<Vector3d>* local_tops = nullptr) const;
+                              double& obstacle_top) const;
   bool occupiedNearHeight(const Vector3d& point, double height) const;
   bool hasCurrentHeightForwardObstacle(const Vector3d& pos,
                                        const Vector3d& forward) const;
@@ -486,11 +478,6 @@ private:
                                    const Vector3d& forward, Vector3d& next_pos,
                                    double& next_yaw, bool force_descend = false,
                                    bool allow_descend = true);
-  bool buildForwardUpperDetour(const Vector3d& pos, double cur_yaw,
-                               const Vector3d& forward, Vector3d& next_pos, double& next_yaw);
-  bool hasForwardBodyObstacle(const Vector3d& pos, const Vector3d& forward) const;
-  bool buildPostTurnUpperRecovery(const Vector3d& pos, double cur_yaw,
-                                   Vector3d& next_pos, double& next_yaw);
   bool buildStationaryVerticalDetourPlan(const Vector3d& pos,
                                          const Vector3d& yaw);
   bool handleActiveLowProbe(const Vector3d& pos, Vector3d& next_pos, double& next_yaw,
@@ -498,8 +485,6 @@ private:
   void cancelActiveLowProbe(const char* reason);
   bool isKnownSafeHorizontalCorridor(const Vector3d& start, const Vector3d& direction,
                                      double distance) const;
-  bool isKnownSafeUpperCorridor(const Vector3d& start, const Vector3d& direction,
-                                double distance) const;
   bool isLowProbeCorridorSafe(const Vector3d& start, const Vector3d& direction,
                               double distance) const;
   bool isKnownSafeVerticalPath(const Vector3d& start, double target_z,
