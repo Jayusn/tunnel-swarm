@@ -2310,12 +2310,15 @@ public:
       manager.turn_in_place_session_active_ = false;
       manager.turn_in_place_plan_ = false;
       ASSERT_TRUE(planner.isPositionSafe(position));
-      EXPECT_EQ(planner.isTurnPositionSafe(position), z >= 0.20);
+      ASSERT_TRUE(planner.isTurnPositionSafe(position));
+      EXPECT_EQ(manager.turnInPlaceHeightAllowed(z), z >= 0.20);
       // 低位不得抢占当前平移，也不得从规划入口发布转弯；20cm边界允许。
       EXPECT_EQ(manager.requestMappedTurn(position, 0.0), z >= 0.20);
       EXPECT_EQ(manager.buildTurnInPlacePlan(position, Vector3d(0.1, 0.0, -0.1),
                                             zero, zero, Vector3d::UnitY()), z >= 0.20);
       EXPECT_EQ(manager.currentPlanIsTurnInPlace(), z >= 0.20);
+      EXPECT_EQ(manager.turnInPlaceAlignmentPending(), z >= 0.20);
+      EXPECT_FALSE(manager.currentPlanIsEscapeStep());
       ASSERT_TRUE(planner.planStraightTraj(position, position + 0.4 * Vector3d::UnitX()));
       EXPECT_TRUE(planner.isTrajectorySafe());
     }
@@ -2419,7 +2422,8 @@ public:
       manager.sdf_map_->setOccupied(fsm.fd_->odom_pos_);
     }
     ASSERT_TRUE(planner.isTurnPositionSafe(start));
-    ASSERT_FALSE(planner.isTurnPositionSafe(fsm.fd_->odom_pos_));
+    ASSERT_EQ(planner.isTurnPositionSafe(fsm.fd_->odom_pos_), low_height);
+    if (low_height) EXPECT_FALSE(manager.turnInPlaceHeightAllowed(fsm.fd_->odom_pos_.z()));
     double collision_distance;
     ASSERT_TRUE(planner.checkTrajCollision(fsm.active_traj_, collision_distance));
     fsm.safetyCallback(ros::TimerEvent());

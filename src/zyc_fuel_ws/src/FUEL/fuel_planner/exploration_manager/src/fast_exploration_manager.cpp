@@ -3486,7 +3486,8 @@ bool FastExplorationManager::requestMappedTurn(const Vector3d& position, double 
       task_search_manager_->landingRequested())
     return false;
   // 高度不足或旋转圆盘有静态障碍时不抢占平移；旧轨迹仍由正常碰撞检查决定能否继续。
-  if (!planner_manager_->isTurnPositionSafe(position)) return false;
+  if (!turnInPlaceHeightAllowed(position.z()) ||
+      !planner_manager_->isTurnPositionSafe(position)) return false;
   // 通道位置已由里程计回调更新，不能用重规划的未来起点覆盖它。
   Vector3d direction;
   if (!task_search_manager_->mappedCorridorDirection(yaw, direction)) return false;
@@ -3512,6 +3513,15 @@ bool FastExplorationManager::buildTurnInPlacePlan(
       !task_search_manager_->turnYawAlignmentPending() ||
       turn_direction.head<2>().norm() < 1e-3)
     return false;
+
+  // 高度不足只拒绝本次转向，不把它当成障碍碰撞去触发脱困平移。
+  if (!turnInPlaceHeightAllowed(pos.z())) {
+    turn_in_place_plan_ = false;
+    ROS_WARN_THROTTLE(0.5,
+                      "[turn_in_place] reject turn below minimum Z: %.3fm < 0.200m.",
+                      pos.z());
+    return false;
+  }
 
   const double detected_target_yaw =
       std::atan2(turn_direction.y(), turn_direction.x());
@@ -3548,7 +3558,7 @@ bool FastExplorationManager::buildTurnInPlacePlan(
                    (yaw_rate * (1.0 - kTurnRampFraction))));
   if (!planner_manager_->isTurnPositionSafe(turn_in_place_anchor_)) {
     turn_in_place_plan_ = false;
-    ROS_WARN_THROTTLE(0.5, "[turn_in_place] minimum Z or rotation footprint check "
+    ROS_WARN_THROTTLE(0.5, "[turn_in_place] static obstacle in rotation footprint "
                            "blocks turn; keep final yaw and try validated history retreat.");
     return !external_selection_only_ && planInflationHistoryEscape(pos, vel, acc, yaw, true);
   }
@@ -5856,6 +5866,7 @@ int FastExplorationManager::planExploreMotion(
   Eigen::Vector3d mapped_direction;
   const bool mapped_turn_detected =
       !cruise_recovery_selected && mapped_turn_yaw_eligible && task_search_manager_ &&
+      turnInPlaceHeightAllowed(pos.z()) &&
       planner_manager_->isTurnPositionSafe(pos) &&
       task_search_manager_->mappedCorridorDirection(yaw[0], mapped_direction);
   const bool corridor_yaw_correction =

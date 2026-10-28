@@ -7,6 +7,7 @@
 #include <deque>
 #include <vector>
 #include <limits>
+#include <cmath>
 #include <geometry_msgs/Point.h>
 #include <geometry_msgs/PointStamped.h>
 #include <geometry_msgs/PoseStamped.h>
@@ -98,6 +99,10 @@ public:
   void clearWiderRoute() { pending_wider_route_.clear(); pending_split_route_ = {}; planned_split_route_ = {}; }
   bool beginSuspendedUnderpass(const Vector3d& pos, double yaw);
   bool currentPlanIsTurnInPlace() const { return turn_in_place_plan_; }
+  // 仅原地转弯动作使用，不能改变平移/下穿/脱困的地图安全查询。
+  static bool turnInPlaceHeightAllowed(double z) {
+    return std::isfinite(z) && z >= 0.20;
+  }
   bool incrementalEscapePlanSafe() const;
   bool currentPlanIsEscapeStep() const { return escape_step_plan_; }
   bool planFailedMotionEscape(const Vector3d& pos, const Vector3d& vel,

@@ -863,16 +863,7 @@ int FastPlannerManager::lowerFootprintObstacleCount(
 }
 
 bool FastPlannerManager::isTurnPositionSafe(const Eigen::Vector3d& position) const {
-  if (!position.allFinite()) return false;
-  // 以里程计/地图Z坐标为准：低于20cm禁止转向，边界不向下放宽。
-  // 规划抢占、候选发布和执行期均复用此检查；普通平移不受影响。
-  if (position.z() < 0.20) {
-    ROS_WARN_THROTTLE(0.5,
-                      "[turn_in_place] reject turn below minimum Z: %.3fm < 0.200m.",
-                      position.z());
-    return false;
-  }
-  if (!isPositionSafe(position)) return false;
+  if (!position.allFinite() || !isPositionSafe(position)) return false;
   // 转弯使用独立检测半径，不改变平移足迹；枚举整个yaw包络相交的体素。
   const double radius = turn_check_radius_;
   constexpr double half_height = 0.06;

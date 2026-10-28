@@ -669,7 +669,9 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
         const bool trajectory_safe = planner_manager_->isTrajectorySafe(
             0.03, controlled_escape_start);
         const bool turn_space_safe = !pending_turn_in_place_ ||
-            (planner_manager_->isTurnPositionSafe(reviewed_position) &&
+            (expl_manager_->turnInPlaceHeightAllowed(reviewed_position.z()) &&
+             expl_manager_->turnInPlaceHeightAllowed(trajectory_start.z()) &&
+             planner_manager_->isTurnPositionSafe(reviewed_position) &&
              planner_manager_->isTurnPositionSafe(trajectory_start));
         const bool release_safe = raw_start_safe && clears_inflation &&
                                   release_state_continuous && trajectory_safe && turn_space_safe;
@@ -1219,7 +1221,9 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
     const double elapsed = std::max(0.0, std::min(
         (ros::Time::now() - active_traj_.start_time_).toSec(), active_traj_.duration_));
     const Eigen::Vector3d reference = active_traj_.position_traj_.evaluateDeBoorT(elapsed);
-    if (!planner_manager_->isTurnPositionSafe(fd_->odom_pos_) ||
+    if (!expl_manager_->turnInPlaceHeightAllowed(fd_->odom_pos_.z()) ||
+        !expl_manager_->turnInPlaceHeightAllowed(reference.z()) ||
+        !planner_manager_->isTurnPositionSafe(fd_->odom_pos_) ||
         !planner_manager_->isTurnPositionSafe(reference)) {
       requestActiveTrajectoryBrake("turn below minimum Z or unsafe rotation footprint");
       active_turn_in_place_ = false;
