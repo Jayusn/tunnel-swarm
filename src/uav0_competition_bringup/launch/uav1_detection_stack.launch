@@ -55,6 +55,8 @@
         output="screen">
     <rosparam command="load"
               file="$(find color_tag_detector)/config/color_thresholds.yaml" />
+    <rosparam command="load"
+              file="$(find target_reporting)/config/uav1_detection_activation.yaml" />
     <param name="color_topic" value="/UAV1/camera/aux/color/image_raw" />
     <param name="depth_topic"
            value="/UAV1/camera/aux/aligned_depth_to_color/image_raw" />
@@ -76,6 +78,8 @@
   <node if="$(arg enable_qr)" pkg="qr_detector"
         type="qr_detector_node.py" name="uav1_qr_detector" output="screen">
     <rosparam command="load" file="$(find qr_detector)/config/qr_detector.yaml" />
+    <rosparam command="load"
+              file="$(find target_reporting)/config/uav1_detection_activation.yaml" />
     <param name="image_topic" value="/UAV1/camera/color/image_raw" />
     <param name="depth_topic"
            value="/UAV1/camera/aligned_depth_to_color/image_raw" />
@@ -128,6 +132,8 @@
   <node if="$(arg enable_thermal)" pkg="uvc_ubuntu"
         type="thermal_ros_node.py" name="uav1_thermal_detector" output="screen">
     <rosparam command="load" file="$(find uvc_ubuntu)/config/thermal_detector.yaml" />
+    <rosparam command="load"
+              file="$(find target_reporting)/config/uav1_detection_activation.yaml" />
     <param name="candidate_detected_topic"
            value="/UAV1/thermal/target_candidate_detected" />
     <param name="candidate_status_topic"
@@ -196,6 +202,8 @@
     <rosparam command="load" file="$(arg channel_transform_config)" />
     <rosparam command="load"
               file="$(find target_reporting)/config/uav1_reporting_filters.yaml" />
+    <rosparam command="load"
+              file="$(find target_reporting)/config/uav1_detection_activation.yaml" />
     <param name="drone_id" value="uav1" />
     <param name="localization_frame" value="$(arg world_frame)" />
     <param name="record_root" value="~/match_ws/target_reports/uav1" />

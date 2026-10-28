@@ -12,6 +12,14 @@ D435 映射图都保留证据信息栏；D435 映射图本身已有的状态、�
 
 ## 数据流
 
+UAV1 通过 `config/uav1_detection_activation.yaml` 统一控制二维码、颜色、热源与上报：
+`wait_for_entry_goal: true` 时，程序和相机提前启动并保持预览，首次收到
+`entry_goal_topic: /UAV1/planning/goal/entry` 的入口规划目标后才开始识别和保存。
+这不是前机的 `workspace_lock` 门位置话题，也不需要等待到达入口；开启后持续运行。
+入口目标到来前的事件不会补存，未定位图片也遵守同一条件。设为 `false` 可进行地面检测与保存测试。
+该配置由 UAV1 launch 同时加载到三个检测节点及上报节点；独立启动检测包默认立即检测。
+原先颜色检测的固定 5 秒等待已移除。
+
 ```text
 三个检测包的原始候选/相机坐标/检测图
   -> target_reporter_node.py

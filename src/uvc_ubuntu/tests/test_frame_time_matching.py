@@ -288,6 +288,7 @@ def test_delayed_fusion_keeps_existing_nearest_frame_behavior_when_input_is_late
 
 def test_detector_records_time_before_detection_and_reuses_it(monkeypatch):
     node = detector.ThermalDetectorNode.__new__(detector.ThermalDetectorNode)
+    node.entry_goal_received = True
     for name, value in dict(publish_rate=0, process=None, frame_size=8, width=2, height=2,
                             shift_x=0, shift_y=0, roi_margin_x=0, roi_margin_y=0,
                             threshold_k=2, min_area=1, max_area=4, max_candidates=1,

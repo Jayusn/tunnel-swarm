@@ -18,7 +18,6 @@ This node intentionally does not use PnP, YOLO, or any known physical tag size.
 
 import json
 import math
-import time
 from collections import deque
 
 import cv2
@@ -26,7 +25,7 @@ import message_filters
 import numpy as np
 import rospy
 from cv_bridge import CvBridge, CvBridgeError
-from geometry_msgs.msg import PointStamped
+from geometry_msgs.msg import PointStamped, PoseStamped
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
 
@@ -89,10 +88,12 @@ DEFAULT_COLORS = {
 class ColorTagDetector(object):
     def __init__(self):
         self.bridge = CvBridge()
-        self.exposure_warmup_seconds = max(
-            0.0, float(rospy.get_param("~exposure_warmup_seconds", 5.0))
-        )
-        self.first_image_wall_time = None
+        self.entry_goal_received = not bool(rospy.get_param("~wait_for_entry_goal", False))
+        if not self.entry_goal_received:
+            self.entry_goal_sub = rospy.Subscriber(
+                rospy.get_param("~entry_goal_topic", "/UAV1/planning/goal/entry"),
+                PoseStamped, self.entry_goal_callback, queue_size=1,
+            )
 
         # Input topics. Defaults match realsense2_camera with aligned depth.
         self.color_topic = rospy.get_param("~color_topic", "/camera/color/image_raw")
@@ -315,6 +316,9 @@ class ColorTagDetector(object):
         self.cy = float(msg.K[5])
         self.camera_frame_id = msg.header.frame_id
 
+    def entry_goal_callback(self, _msg):
+        self.entry_goal_received = True
+
     def image_callback(self, color_msg, depth_msg):
         try:
             color_bgr = self.bridge.imgmsg_to_cv2(color_msg, desired_encoding="bgr8")
@@ -328,23 +332,14 @@ class ColorTagDetector(object):
             self.publish_no_detection(color_msg.header, "empty_image")
             return
 
-        # Start at the first usable image pair, not process launch: the camera
-        # may start later. Warm-up frames must not enter either evidence path
-        # or the stability history, including visually credible invalid-depth tags.
-        if self.exposure_warmup_seconds > 0.0:
-            now = time.monotonic()
-            if self.first_image_wall_time is None:
-                self.first_image_wall_time = now
-                rospy.loginfo("Color detection exposure warm-up: %.1f s", self.exposure_warmup_seconds)
-            remaining = self.exposure_warmup_seconds - (now - self.first_image_wall_time)
-            if remaining > 0.0:
-                preview = color_bgr.copy()
-                cv2.putText(preview, "Exposure warm-up: %.1f s" % remaining,
-                            (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
-                self.publish_debug(preview, color_msg.header)
-                self.publish_mask(np.zeros(color_bgr.shape[:2], dtype=np.uint8), color_msg.header)
-                self.publish_no_detection(color_msg.header, "exposure_warmup")
-                return
+        if not self.entry_goal_received:
+            preview = color_bgr.copy()
+            cv2.putText(preview, "Waiting for entry goal", (20, 40),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            self.publish_debug(preview, color_msg.header)
+            self.publish_mask(np.zeros(color_bgr.shape[:2], dtype=np.uint8), color_msg.header)
+            self.publish_no_detection(color_msg.header, "waiting_for_entry_goal")
+            return
 
         hsv = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2HSV)
         image_h, image_w = color_bgr.shape[:2]

@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 import rospkg
 import rospy
-from geometry_msgs.msg import PointStamped
+from geometry_msgs.msg import PointStamped, PoseStamped
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, String
 
@@ -145,6 +145,12 @@ def numpy_to_image_msg(image, encoding, stamp, frame_id):
 
 class ThermalDetectorNode:
     def __init__(self):
+        self.entry_goal_received = not bool(rospy.get_param("~wait_for_entry_goal", False))
+        if not self.entry_goal_received:
+            self.entry_goal_sub = rospy.Subscriber(
+                rospy.get_param("~entry_goal_topic", "/UAV1/planning/goal/entry"),
+                PoseStamped, self.entry_goal_callback, queue_size=1,
+            )
         self.width = int(rospy.get_param("~width", 384))
         self.height = int(rospy.get_param("~height", 288))
         self.shift_x = int(rospy.get_param("~shift_x", 0))
@@ -337,6 +343,9 @@ class ThermalDetectorNode:
             candidate_msg.point.z = 1.0
             self.candidate_pixel_pub.publish(candidate_msg)
 
+    def entry_goal_callback(self, _msg):
+        self.entry_goal_received = True
+
     def spin(self):
         self.start()
         rate = rospy.Rate(self.publish_rate) if self.publish_rate > 0 else None
@@ -359,6 +368,21 @@ class ThermalDetectorNode:
                 continue
 
             gray = shift_image_no_wrap(gray, self.shift_x, self.shift_y, fill_value=0)
+            if not self.entry_goal_received:
+                # Keep draining the camera pipe and publishing live previews;
+                # do not queue pre-entry frames for recognition later.
+                debug = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+                cv2.putText(debug, "Waiting for entry goal", (10, 25),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+                self.image_pub.publish(numpy_to_image_msg(gray, "mono8", frame_stamp, "thermal_camera"))
+                self.debug_pub.publish(numpy_to_image_msg(debug, "bgr8", frame_stamp, "thermal_camera"))
+                if self.display:
+                    cv2.imshow("Thermal ROS Debug", debug)
+                    if cv2.waitKey(1) & 0xFF in (27, ord("q")):
+                        rospy.signal_shutdown("user requested exit")
+                if rate is not None:
+                    rate.sleep()
+                continue
             detection = detect_hotspot(
                 gray,
                 roi_margin_x=self.roi_margin_x,

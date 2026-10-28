@@ -1,0 +1,5 @@
+# 三类检测程序、相机提前启动并保持预览；首次收到后机入口规划目标后开始识别和保存。
+# 开启后持续运行，不需要重新启动节点；每次节点重启重新等待（可接收锁存入口目标）。
+# false 可用于地面检测/保存测试。此文件由 UAV1 launch 同时加载到三类检测器和上报节点。
+wait_for_entry_goal: true
+entry_goal_topic: /UAV1/planning/goal/entry

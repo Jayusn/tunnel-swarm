@@ -49,6 +49,8 @@ class TargetReporterNode:
         self.save_unlocalized_evidence = bool(
             rospy.get_param("~save_unlocalized_evidence", False)
         )
+        self.wait_for_entry_goal = bool(rospy.get_param("~wait_for_entry_goal", False))
+        self.recording_start_stamp = None
         self.pending_unlocalized = defaultdict(lambda: deque(maxlen=40))
         self.unlocalized_save_interval = max(0.0, float(rospy.get_param("~unlocalized_save_interval_s", 5.0)))
         self.unlocalized_center_shift = max(0.0, float(rospy.get_param("~unlocalized_center_shift_px", 80.0)))
@@ -189,6 +191,11 @@ class TargetReporterNode:
         self.tf_buffer = tf2_ros.Buffer(cache_time=rospy.Duration(15.0))
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
         self.observation_pub = rospy.Publisher("/UAV0/target_reporting/observation", String, queue_size=10)
+        if self.wait_for_entry_goal:
+            self.entry_goal_sub = rospy.Subscriber(
+                rospy.get_param("~entry_goal_topic", "/UAV1/planning/goal/entry"),
+                PoseStamped, self._entry_goal_cb, queue_size=1,
+            )
         self.retry_timer = None
         self.latest_point = {}
         self.point_history = defaultdict(lambda: deque(maxlen=30))
@@ -310,6 +317,19 @@ class TargetReporterNode:
         # 查询失败就丢失，因此定时重试尚未处理的点/状态配对。
         self.retry_timer = rospy.Timer(rospy.Duration(0.10), self._retry_pending)
         rospy.on_shutdown(self.shutdown)
+
+    def _entry_goal_cb(self, _msg):
+        with self.lock:
+            if self.recording_start_stamp is not None:
+                return
+            self.recording_start_stamp = rospy.Time.now().to_sec()
+        rospy.loginfo("Target recording enabled by entry goal; earlier events will not be saved")
+
+    def _recording_allowed(self, event_stamp):
+        if not self.wait_for_entry_goal:
+            return True
+        return (self.recording_start_stamp is not None
+                and event_stamp >= self.recording_start_stamp)
 
     def _subscribe(self, source, point_topic, point_type, status_topic, status_type, image_topic):
         rospy.Subscriber(point_topic, point_type, lambda msg: self._point_cb(source, msg), queue_size=5)
@@ -445,6 +465,8 @@ class TargetReporterNode:
         stamp = data.get("stamp")
         if not isinstance(stamp, (int, float)) or not math.isfinite(stamp):
             return
+        if not self._recording_allowed(stamp):
+            return
         # A camera ray carries direction, not a made-up target distance. Only
         # the existing leader projection test can be evaluated without depth.
         projection = {"status": "incomplete"}
@@ -503,6 +525,8 @@ class TargetReporterNode:
             image = None
             for data in pending:
                 stamp = float(data["stamp"])
+                if not self._recording_allowed(stamp):
+                    continue
                 result = self._evidence_result(data)
                 if not self._unlocalized_due(target_type, stamp, result):
                     continue
@@ -786,7 +810,8 @@ class TargetReporterNode:
                 target_type,
                 result,
                 position,
-                allow_confirmation=detector_confirmable and evidence_ready,
+                allow_confirmation=(detector_confirmable and evidence_ready
+                                    and self._recording_allowed(event_stamp)),
                 timestamp=event_stamp,
             )
             candidate_number = candidate["local_number"]

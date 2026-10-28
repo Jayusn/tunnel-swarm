@@ -184,6 +184,12 @@ class ZBarQRDecoder(object):
 class QRDetectorNode(object):
     def __init__(self):
         self.bridge = CvBridge()
+        self.entry_goal_received = not bool(rospy.get_param("~wait_for_entry_goal", False))
+        if not self.entry_goal_received:
+            self.entry_goal_sub = rospy.Subscriber(
+                rospy.get_param("~entry_goal_topic", "/UAV1/planning/goal/entry"),
+                PoseStamped, self.entry_goal_callback, queue_size=1,
+            )
         self.qr_detector = cv2.QRCodeDetector()
         self.zbar_decoder = ZBarQRDecoder()
 
@@ -401,6 +407,9 @@ class QRDetectorNode(object):
     def depth_callback(self, msg):
         self.latest_depth_msg = msg
 
+    def entry_goal_callback(self, _msg):
+        self.entry_goal_received = True
+
     def image_callback(self, image_msg):
         processing_start = time.time()
         startup_warmup = self.startup_warmup_active()
@@ -409,6 +418,10 @@ class QRDetectorNode(object):
         except CvBridgeError as exc:
             rospy.logwarn_throttle(1.0, "Color image conversion failed: %s", exc)
             self.publish_failure(image_msg.header, None, "cv_bridge_color_error")
+            return
+
+        if not self.entry_goal_received:
+            self.publish_failure(image_msg.header, color_bgr, "waiting_for_entry_goal")
             return
 
         raw_detection = self.detect_qr(color_bgr)

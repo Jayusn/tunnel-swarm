@@ -26,6 +26,7 @@ except ModuleNotFoundError:
 class QRDetectorValidationTests(unittest.TestCase):
     def make_detector(self):
         detector = QRDetectorNode.__new__(QRDetectorNode)
+        detector.entry_goal_received = True
         detector.qr_detector = cv2.QRCodeDetector()
         detector.zbar_decoder = ZBarQRDecoder()
         detector.preprocess_mode = "gray"
