@@ -731,6 +731,9 @@ class TargetReporterNode:
         if latest_point is None or status is None:
             return
         result, confidence = status
+        # Callback and timer retries share the cached status. Keep its stamp
+        # and detector gate intact until this exact pair has been processed.
+        result = dict(result)
         source_stamp = result.get("_source_stamp")
         point = latest_point
         event_stamp = point.header.stamp.to_sec()
@@ -767,8 +770,24 @@ class TargetReporterNode:
             rospy.logwarn_throttle(2.0, "TF %s -> %s failed: %s", point.header.frame_id,
                                    self.localization_frame, exc)
             return
-        # Only mark a pair processed after TF succeeds. The second check keeps
-        # the callback and retry timer from processing the same pair twice.
+        d435_evidence = None
+        if source == "thermal" and self.require_thermal_d435_evidence:
+            # Image and candidate use independent ROS connections. Publishing
+            # the image first does not guarantee that its callback runs first.
+            d435_evidence = self._wait_for_matching_image(
+                "thermal_d435", event_stamp,
+                1e-7 if self.thermal_fused_topic else self.thermal_d435_ready_tolerance,
+            )
+            if d435_evidence is None:
+                rospy.logwarn_throttle(
+                    2.0, "Thermal candidate waiting for matching D435 evidence: stamp=%.6f",
+                    event_stamp,
+                )
+                # Leave the pair pending for the existing retry timer. Missing
+                # evidence must not reset accumulated thermal confirmation hits.
+                return
+        # Mark processed only after TF and required evidence succeed. Recheck
+        # so callback and timer cannot process the same pair twice.
         with self.lock:
             previous = self.last_processed_pair.get(source, (0, 0))
             if pair[0] <= previous[0] or pair[1] <= previous[1]:
@@ -794,23 +813,12 @@ class TargetReporterNode:
         )
         result["detector_stable"] = detector_stable
         result["detector_confirmable"] = detector_confirmable
-        evidence_ready = True
-        if source == "thermal" and self.require_thermal_d435_evidence:
-            # Thermal detection becomes stable before the D435 mapping stream
-            # finishes its exposure warm-up.  Do not consume confirmation hits
-            # until a same-time mapping frame exists, otherwise the one-shot
-            # confirmed event can never attach/upload its D435 evidence.
-            evidence_ready = self.images.has_match(
-                "thermal_d435",
-                event_stamp,
-                1e-7 if self.thermal_fused_topic else self.thermal_d435_ready_tolerance,
-            )
         with self.candidate_lock:
             candidate, confirmed = self.tracker.update(
                 target_type,
                 result,
                 position,
-                allow_confirmation=(detector_confirmable and evidence_ready
+                allow_confirmation=(detector_confirmable
                                     and self._recording_allowed(event_stamp)),
                 timestamp=event_stamp,
             )
@@ -874,10 +882,12 @@ class TargetReporterNode:
                 target_id,
             )
         if source == "thermal":
-            d435_image = self._wait_for_matching_image(
-                "thermal_d435", event_stamp,
-                1e-7 if self.thermal_fused_topic else self.d435_image_tolerance
-            )
+            d435_image = d435_evidence
+            if d435_image is None:
+                d435_image = self._wait_for_matching_image(
+                    "thermal_d435", event_stamp,
+                    1e-7 if self.thermal_fused_topic else self.d435_image_tolerance
+                )
             if d435_image is not None:
                 d435_image_id = "{}_seq{:06d}_thermal_source_d435.jpg".format(
                     self.drone_id, event_seq

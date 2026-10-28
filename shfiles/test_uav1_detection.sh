@@ -14,10 +14,12 @@ if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   RViz 显示配准点云、移动轨迹、机体模型、检测图像和目标位置。
   open_rviz:=false       不打开 RViz
   enable_thermal:=false  本次不接热成像相机时使用
+  record_bag:=false      本次不录包（默认录制）
   --dump-params          只解析配置，不启动设备
 
 图片：match_ws/target_reports/uav1_detection_test/日期/test_时间/images/annotated/
 按 qr_code、color_tag、thermal_source 分类，JSON 位于该次测试目录的 reports.jsonl。
+录包：同次测试目录的 bags/detection_*.bag，按 1 GiB 分包。
 使用独立本机 ROS master http://127.0.0.1:11321；Ctrl+C 结束本次启动的节点。
 启动前关闭占用同一相机/雷达的多机程序，FAST-LIO 初始化时先保持机体静止。
 EOF

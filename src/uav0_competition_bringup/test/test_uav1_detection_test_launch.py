@@ -1,4 +1,5 @@
 from pathlib import Path
+import shlex
 
 import roslaunch
 
@@ -75,3 +76,20 @@ def test_headless_and_no_thermal_options():
     assert not any(node.package in {"rviz", "uvc_ubuntu"} for node in config.nodes)
     assert any(node.package == "qr_detector" for node in config.nodes)
     assert any(node.package == "color_tag_detector" for node in config.nodes)
+
+
+def test_recording_uses_session_directory_and_can_be_disabled():
+    config = load("uav1_detection_test.launch", [
+        "record_root:=/tmp/detection test", "mission_id:=20261028/test_run"])
+    recorder = next(n for n in config.nodes if n.name == "uav1_detection_test_recorder")
+    args = shlex.split(recorder.args)
+    assert args[0] == "/tmp/detection test/20261028/test_run/bags/detection"
+    assert {
+        "/UAV1/camera/color/image_raw/compressed",
+        "/UAV1/camera/aligned_depth_to_color/image_raw/compressedDepth",
+        "/UAV1/vision/qr_candidate_detected", "/UAV1/vision/qr_detected",
+        "/UAV1/thermal/report_candidate", "/UAV1/thermal/d435_evidence_image",
+        "/UAV1/target_reporting/observation", "/tf", "/tf_static",
+    }.issubset(args[1:])
+    disabled = load("uav1_detection_test.launch", ["record_bag:=false"])
+    assert not any(n.name == recorder.name for n in disabled.nodes)

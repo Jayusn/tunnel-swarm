@@ -1,8 +1,34 @@
 <launch>
   <arg name="open_rviz" default="true" />
   <arg name="enable_thermal" default="true" />
+  <arg name="record_bag" default="true" />
   <arg name="record_root" default="$(env HOME)/match_ws/target_reports/uav1_detection_test" />
   <arg name="mission_id" default="" />
+
+  <!-- D435 使用已有压缩话题；保留原时间戳，深度为无损 compressedDepth。
+       原始热图、候选状态、同帧映射证据及 TF 用于区分识别、定位和上报问题。 -->
+  <node if="$(arg record_bag)" pkg="uav0_competition_bringup"
+        type="record_detection_test.sh" name="uav1_detection_test_recorder" output="screen"
+        args="'$(arg record_root)/$(arg mission_id)/bags/detection'
+          /UAV1/camera/color/image_raw/compressed
+          /UAV1/camera/aligned_depth_to_color/image_raw/compressedDepth
+          /UAV1/camera/color/camera_info
+          /UAV1/camera/aligned_depth_to_color/camera_info
+          /UAV1/vision/qr_candidate_detected
+          /UAV1/vision/qr_candidate_pose_camera
+          /UAV1/vision/qr_detected
+          /UAV1/color_tag_detector/candidate_text
+          /UAV1/color_tag_detector/candidate_point_camera
+          /UAV1/color_tag_detector/result_text
+          /UAV1/thermal/image_raw
+          /UAV1/thermal/debug_image
+          /UAV1/thermal/target_candidate_status
+          /UAV1/thermal/report_candidate
+          /UAV1/thermal/d435_evidence_image
+          /UAV1/target_reporting/observation
+          /UAV1/fast_lio/Odometry
+          /UAV1/fast_lio/Odom_high_freq
+          /tf /tf_static /rosout /rosout_agg" />
 
   <!-- 使用实机同一套雷达与定位配置，FAST-LIO 自行发布 world -> body TF。 -->
   <include file="$(find livox_ros_driver2)/launch_ROS1/msg_MID360.launch">
