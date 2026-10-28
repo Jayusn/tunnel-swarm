@@ -99,6 +99,11 @@ UAV1 检测入口直接加载该文件中的检测参数，不在 launch 中覆�
 - `preprocess_mode`：预处理方式，当前为 `gray`。
 - `upscale_factor`：检测前图像放大倍数，当前为 `1.5`。
 - `enable_preprocess_fallbacks`：局部搜索中尝试其他预处理方式，当前为 `true`。
+- `enable_zbar_full_frame_fallback`：OpenCV 局部和整图搜索均未返回有效候选时，
+  使用 ZBar 在原始尺寸灰度整图上补充搜索，当前为 `true`。成功结果标记为
+  `method=zbar_full_frame`，仍经过原有几何、深度、曝光预热和确认检查。
+- `zbar_full_frame_interval`：补充搜索最小间隔，当前 `0.5` 秒（最多约每秒两次）；
+  失败也计入间隔，避免持续漏检时每帧重复搜索。设开关为 `false` 可关闭补充搜索。
 - `enable_local_search`：优先搜索最近二维码附近区域，当前为 `true`；
   `local_search_hold_seconds` 为 `2.0` 秒，`local_search_margin_ratio` 为 `2.0`。
 - `confirm_frames`：连续通过真实性和深度校验多少帧后确认 `detected=true`，当前为 `1`；

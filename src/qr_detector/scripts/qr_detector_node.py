@@ -220,6 +220,13 @@ class QRDetectorNode(object):
         self.enable_preprocess_fallbacks = bool(
             rospy.get_param("~enable_preprocess_fallbacks", False)
         )
+        self.enable_zbar_full_frame_fallback = bool(
+            rospy.get_param("~enable_zbar_full_frame_fallback", False)
+        )
+        self.zbar_full_frame_interval = max(
+            0.0, float(rospy.get_param("~zbar_full_frame_interval", 0.5))
+        )
+        self.last_zbar_full_frame_time = None
         self.decode_qr_data = bool(rospy.get_param("~decode_qr_data", True))
         # The QR payload is not part of the competition result, but decoding
         # is used internally as a strong authenticity gate.  Raw corner
@@ -499,6 +506,8 @@ class QRDetectorNode(object):
             detection = self.detect_qr_in_image(
                 gray, image_shape=color_bgr.shape[:2], allow_fallbacks=False
             )
+        if detection is None:
+            detection = self.detect_zbar_full_frame(gray)
         if detection is not None:
             self.last_qr_points = np.asarray(detection["points"], dtype=np.float32)
             self.last_qr_track_time = time.monotonic()
@@ -542,11 +551,46 @@ class QRDetectorNode(object):
         if decoded_points is not None:
             decoded_points = decoded_points + np.asarray(offset, dtype=np.float32)
 
+        return self.validate_qr_detection(
+            detection, points, decoded_points,
+            image_shape if image_shape is not None else gray.shape[:2],
+            used_mode,
+        )
+
+    def detect_zbar_full_frame(self, gray):
+        """Occasionally search original-size gray pixels when OpenCV misses."""
+        if not getattr(self, "enable_zbar_full_frame_fallback", False):
+            return None
+        now = time.monotonic()
+        last = self.last_zbar_full_frame_time
+        if last is not None and now - last < self.zbar_full_frame_interval:
+            return None
+        self.last_zbar_full_frame_time = now
+        try:
+            data, raw_points = self.zbar_decoder.decode(gray)
+        except (AttributeError, ValueError, ctypes.Error) as exc:
+            rospy.logwarn_throttle(1.0, "libzbar full-frame search failed: %s", exc)
+            return None
+        points = self.normalize_points(raw_points)
+        if not data or points is None:
+            return None
+        return self.validate_qr_detection(
+            {"decoded_valid": True, "decoded_data": data},
+            points, points, gray.shape[:2], "gray",
+            method="zbar_full_frame",
+        )
+
+    def validate_qr_detection(
+        self, detection, points, decoded_points, image_shape, used_mode,
+        method="opencv_qrcode_detector",
+    ):
+        """Use the same geometry and authentication checks for both searches."""
+
         area = abs(float(cv2.contourArea(points.astype(np.float32))))
         if area < self.min_area:
             return None
 
-        image_h, image_w = image_shape if image_shape is not None else gray.shape[:2]
+        image_h, image_w = image_shape
         ok, side_px = self.is_reasonable_quad(
             points, image_w=image_w, image_h=image_h
         )
@@ -586,7 +630,7 @@ class QRDetectorNode(object):
             "center_v": center_v,
             "area": area,
             "side_px": side_px,
-            "method": "opencv_qrcode_detector",
+            "method": method,
             "preprocess": used_mode,
             "validated": validated,
             "validation_reason": validation_reason,

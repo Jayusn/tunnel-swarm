@@ -34,6 +34,10 @@ depth_max: 8.0
 preprocess_mode: gray
 upscale_factor: 1.5
 enable_preprocess_fallbacks: true
+# OpenCV 找不到有效候选时，在原始尺寸灰度整图上补充 ZBar 搜索。
+# 最多每 0.5 秒一次；仍需通过相同的几何、深度和确认检查。
+enable_zbar_full_frame_fallback: true
+zbar_full_frame_interval: 0.5
 decode_qr_data: true
 # One successful non-empty decode authenticates the same nearby QR track. The
 # following frames still require valid corners and depth, but may finish the

@@ -30,6 +30,9 @@ class QRDetectorValidationTests(unittest.TestCase):
         detector.preprocess_mode = "gray"
         detector.upscale_factor = 1.5
         detector.enable_preprocess_fallbacks = False
+        detector.enable_zbar_full_frame_fallback = False
+        detector.zbar_full_frame_interval = 0.5
+        detector.last_zbar_full_frame_time = None
         detector.min_area = 150.0
         detector.min_side_length = 16.0
         detector.max_side_ratio = 4.0
@@ -55,6 +58,63 @@ class QRDetectorValidationTests(unittest.TestCase):
     def test_libzbar_decoder_is_available_on_aircraft(self):
         detector = self.make_detector()
         self.assertTrue(detector.zbar_decoder.available)
+
+    def test_full_frame_fallback_recovers_opencv_miss_without_rescaling(self):
+        detector = self.make_detector()
+        detector.enable_zbar_full_frame_fallback = True
+        detector.qr_detector = Mock()
+        detector.qr_detector.detect.return_value = (False, None)
+        detector.zbar_decoder = Mock()
+        corners = np.array([[[60, 30], [60, 110], [100, 110], [100, 30]]], dtype=np.float32)
+        detector.zbar_decoder.decode.return_value = ("AR14", corners)
+        result = detector.detect_qr(np.zeros((150, 200, 3), dtype=np.uint8))
+        self.assertEqual(result["data"], "AR14")
+        self.assertEqual(result["method"], "zbar_full_frame")
+        self.assertTrue(result["validated"])
+        self.assertEqual((result["center_u"], result["center_v"]), (80, 70))
+        self.assertEqual(detector.zbar_decoder.decode.call_args.args[0].shape, (150, 200))
+        self.assertEqual(result["area"], 3200)
+        detector.latest_depth_msg = None
+        status = detector.build_result(result, Mock(stamp=None))
+        self.assertTrue(status["validated"])
+        self.assertFalse(status["depth_validated"])
+        self.assertFalse(status["confirmable"])
+
+    def test_full_frame_fallback_throttles_failures_and_can_be_disabled(self):
+        detector = self.make_detector()
+        detector.enable_zbar_full_frame_fallback = True
+        detector.zbar_decoder = Mock()
+        detector.zbar_decoder.decode.return_value = ("", None)
+        gray = np.zeros((150, 200), dtype=np.uint8)
+        for now, expected_calls in ((10.0, 1), (10.1, 1), (10.49, 1), (10.5, 2)):
+            with patch("qr_detector_node.time.monotonic", return_value=now):
+                self.assertIsNone(detector.detect_zbar_full_frame(gray))
+            self.assertEqual(detector.zbar_decoder.decode.call_count, expected_calls)
+        detector.enable_zbar_full_frame_fallback = False
+        with patch("qr_detector_node.time.monotonic", return_value=20.0):
+            self.assertIsNone(detector.detect_zbar_full_frame(gray))
+        self.assertEqual(detector.zbar_decoder.decode.call_count, 2)
+
+    def test_full_frame_fallback_preserves_geometry_validation(self):
+        detector = self.make_detector()
+        detector.enable_zbar_full_frame_fallback = True
+        detector.zbar_decoder = Mock()
+        corners = np.array([[[60, 30], [60, 35], [65, 35], [65, 30]]], dtype=np.float32)
+        detector.zbar_decoder.decode.return_value = ("AR14", corners)
+        self.assertIsNone(detector.detect_zbar_full_frame(np.zeros((150, 200), dtype=np.uint8)))
+        self.assertIsNone(detector.last_decode_verification_time)
+
+    def test_full_frame_fallback_does_not_run_when_opencv_returns_candidate(self):
+        detector = self.make_detector()
+        detector.enable_zbar_full_frame_fallback = True
+        detector.detect_qr_in_image = Mock(return_value={
+            "points": np.array([[60, 30], [100, 30], [100, 110], [60, 110]]),
+            "validated": False,
+        })
+        detector.zbar_decoder = Mock()
+        result = detector.detect_qr(np.zeros((150, 200, 3), dtype=np.uint8))
+        self.assertFalse(result["validated"])
+        detector.zbar_decoder.decode.assert_not_called()
 
     def test_libzbar_fallback_supplies_payload_and_corners(self):
         detector = self.make_detector()
