@@ -265,8 +265,46 @@ double SafeRelayPublisher::routeHeight(const Record& reference,
   return height;
 }
 
+bool SafeRelayPublisher::preservesGoalOrder(
+    const Eigen::Vector3d& point, std::size_t goal_index) const {
+  goal_index = std::min(goal_index, goals_.size());
+  const auto position = [&](std::size_t i) {
+    const auto& p = goals_[i].pose.pose.position;
+    return Eigen::Vector2d(p.x, p.y);
+  };
+  const auto direction = [&](std::size_t i) -> Eigen::Vector2d {
+    // 以该已发点所在的实飞路段为准，不随最新机位回退、爬升或机头yaw反转。
+    // 用水平位移取局部方向，纯升降积累的路程不能替代向前推进。
+    const std::size_t index = goals_[i].route_index;
+    if (index < history_.size()) {
+      std::size_t previous = index;
+      while (previous > 0 &&
+             (history_[index].sample.position - history_[previous].sample.position)
+                 .head<2>().norm() < 0.30)
+        --previous;
+      const Eigen::Vector2d travel = history_[index].sample.position.head<2>() -
+                                     history_[previous].sample.position.head<2>();
+      if (travel.norm() >= 0.10) return travel.normalized();
+    }
+    const Eigen::Vector2d travel = position(i) -
+        (i > 0 ? position(i - 1) : Eigen::Vector2d(entrance_.head<2>()));
+    if (travel.norm() >= 0.10) return travel.normalized();
+    return entrance_direction_.head<2>().normalized();
+  };
+  // 新点不能退到上一已发点后面；90度侧向出弯仍可进入后续净空比较。
+  if (goal_index > 0 &&
+      (point.head<2>() - position(goal_index - 1)).dot(direction(goal_index - 1)) < -1e-6)
+    return false;
+  // 已发内部点的一次替换也不能越过其下一点，避免后机队列空间顺序倒置。
+  if (goal_index + 1 < goals_.size() &&
+      (position(goal_index + 1) - point.head<2>()).dot(direction(goal_index + 1)) < -1e-6)
+    return false;
+  return true;
+}
+
 void SafeRelayPublisher::qualifyCandidate(
-    Record& record, bool new_map, const Eigen::Vector2d& forward, double search_radius) {
+    Record& record, bool new_map, const Eigen::Vector2d& forward, double search_radius,
+    std::size_t goal_index) {
   if (search_radius < 0.0) search_radius = candidate_search_radius_;
   const auto& reference = record.sample.position;
   const auto boundaries = horizontalBoundaries(
@@ -289,7 +327,8 @@ void SafeRelayPublisher::qualifyCandidate(
     return a.offset < b.offset;
   });
   const auto safe = [&](const Eigen::Vector3d& p) {
-    return insideCorridor(reference, p) && volumeFree(p, hold_radius_, hold_half_height_) &&
+    return preservesGoalOrder(p, goal_index) && insideCorridor(reference, p) &&
+        volumeFree(p, hold_radius_, hold_half_height_) &&
         planner_->isRelayHoldDynamicallySafe(p, hold_radius_, hold_half_height_, dynamic_wait_horizon_);
   };
   const auto paired = [&](Eigen::Vector3d p) {
@@ -375,7 +414,8 @@ void SafeRelayPublisher::qualifyCandidate(
 void SafeRelayPublisher::improveInternalGoals(bool new_map) {
   if (!new_map) return;
   // 出口交接后仍可优化内部点；接收端只更新尚未执行完的队列项。
-  for (auto& goal : goals_) {
+  for (std::size_t goal_index = 0; goal_index < goals_.size(); ++goal_index) {
+    auto& goal = goals_[goal_index];
     if (goal.revised || odom_stamp_ <= goal.pose.header.stamp) continue;
     const auto& old = goal.pose.pose.position;
     const Eigen::Vector3d original(old.x, old.y, old.z);
@@ -391,7 +431,7 @@ void SafeRelayPublisher::improveInternalGoals(bool new_map) {
     Eigen::Vector2d forward = leader_.head<2>() - original.head<2>();
     if (forward.norm() > 0.1) forward.normalize();
     else forward.setZero();
-    qualifyCandidate(record, true, forward, std::min(0.60, candidate_search_radius_));
+    qualifyCandidate(record, true, forward, std::min(0.60, candidate_search_radius_), goal_index);
     const auto& candidate = record.candidate;
     const double offset = (candidate.position - original).norm();
     if (!candidate.confirmed || offset < 0.05 || offset > 0.60 + 1e-6) continue;

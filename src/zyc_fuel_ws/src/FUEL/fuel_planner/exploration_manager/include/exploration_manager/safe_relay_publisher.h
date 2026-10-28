@@ -50,8 +50,10 @@ class SafeRelayPublisher {
                                                   double radius) const;
   double verticalClearance(const Eigen::Vector3d& point) const;
   double routeHeight(const Record& reference, const Eigen::Vector3d& point) const;
+  bool preservesGoalOrder(const Eigen::Vector3d& point, std::size_t goal_index) const;
   void qualifyCandidate(Record& record, bool new_map, const Eigen::Vector2d& forward,
-                         double search_radius = -1.0);
+                         double search_radius = -1.0,
+                         std::size_t goal_index = std::numeric_limits<std::size_t>::max());
   void improveInternalGoals(bool new_map);
   void publish(const std::string& status);
 

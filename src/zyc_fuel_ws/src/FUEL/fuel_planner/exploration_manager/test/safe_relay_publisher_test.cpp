@@ -613,6 +613,122 @@ class SafeRelayPublisherTest {
     EXPECT_TRUE(reference.isApprox(record.sample.position));
   }
 
+  static void recordedForwardOrder() {
+    using Record=SafeRelayPublisher::Record;
+    // 10月28日：6在y=-2.48，后发的7/7.1却回到-1.59/-1.39。
+    // 同时旋转整段几何，避免用世界X/Y或最新机头方向碰巧通过测试。
+    for (double angle : {0.0, .7, M_PI}) {
+      SafeRelayPublisher publisher;
+      const auto rotate = [&](const Eigen::Vector3d& p) {
+        return Eigen::Vector3d(std::cos(angle)*p.x()-std::sin(angle)*p.y(),
+                               std::sin(angle)*p.x()+std::cos(angle)*p.y(),p.z());
+      };
+      const auto sample = [&](const Eigen::Vector3d& p) {
+        Record record;
+        record.sample.position = rotate(p);
+        if (!publisher.history_.empty())
+          record.sample.progress = publisher.history_.back().sample.progress +
+              (record.sample.position-publisher.history_.back().sample.position).norm();
+        publisher.history_.push_back(record);
+      };
+      const auto goal = [&](std::size_t index, uint32_t id, const Eigen::Vector3d& p) {
+        geometry_msgs::PoseStamped pose;
+        const auto position = rotate(p);
+        pose.pose.position.x=position.x(); pose.pose.position.y=position.y();
+        pose.pose.position.z=position.z();
+        publisher.goals_.push_back({index,id,pose});
+      };
+      sample({5.70,-.50,.57}); sample({5.70,-.91,.57});
+      goal(1,5,{6.097928565,-1.214379588,.627151834});
+      sample({6.40,-1.57,.63}); sample({6.40,-1.98,.67});
+      goal(3,6,{6.199207453,-2.477318915,.666167367});
+      const Eigen::Vector3d old7(6.248647284,-1.593246642,.838322489);
+      const Eigen::Vector3d old71(6.148647284,-1.393246642,.838322489);
+      // 真实回退和抬升仍可使累计路程增加，不能因此给后机发反向点。
+      sample({6.55,-2.09,.80}); sample({6.60,-1.70,1.10});
+      publisher.leader_=rotate(old71);
+      EXPECT_FALSE(publisher.preservesGoalOrder(rotate(old7),publisher.goals_.size()));
+      EXPECT_FALSE(publisher.preservesGoalOrder(rotate(old71),publisher.goals_.size()));
+      EXPECT_TRUE(publisher.preservesGoalOrder(rotate({5.16,-3.08,.88}),publisher.goals_.size()));
+      // 90度侧向出弯不要求再沿旧方向直飞。
+      EXPECT_TRUE(publisher.preservesGoalOrder(rotate({5.20,-2.477318915,.67}),publisher.goals_.size()));
+      goal(4,7,old7);
+      EXPECT_FALSE(publisher.preservesGoalOrder(rotate(old71),2));
+      publisher.goals_.pop_back();
+      sample({5.60,-3.08,.88}); sample({5.16,-3.08,.88});
+      goal(7,8,{5.16,-3.08,.88});
+      // 倒U返回段沿-X前进；不能固定使用入口方向或前一个转角方向。
+      EXPECT_TRUE(publisher.preservesGoalOrder(rotate({4.48,-3.29,.75}),publisher.goals_.size()));
+      sample({4.80,-3.29,.75}); sample({4.48,-3.29,.75});
+      goal(9,9,{4.48,-3.29,.75});
+      EXPECT_FALSE(publisher.preservesGoalOrder(rotate({4.0,-3.10,.88}),2));
+      EXPECT_FALSE(publisher.preservesGoalOrder(rotate({6.1,-2.0,.88}),2));
+      EXPECT_TRUE(publisher.preservesGoalOrder(rotate({5.05,-3.15,.88}),2));
+    }
+  }
+
+  static void orderedPocket(bool revision, bool forward_space) {
+    ros::NodeHandle nh("~ordered_relay_pocket");
+    nh.setParam("sdf_map/resolution",.1);
+    nh.setParam("sdf_map/map_size_x",4.0);
+    nh.setParam("sdf_map/map_size_y",4.0);
+    nh.setParam("sdf_map/map_size_z",2.0);
+    nh.setParam("sdf_map/ground_height",0.0);
+    nh.setParam("sdf_map/max_ray_length",20.0);
+    auto map=std::make_shared<SDFMap>(); map->initMap(nh);
+    SafeRelayPublisher publisher;
+    publisher.map_=map; publisher.planner_=std::make_shared<FastPlannerManager>();
+    publisher.hold_radius_=.10; publisher.hold_half_height_=.10;
+    // 已知空地越往后越宽；前方仍有合格小空间时应选前方，而不是选后方后再整轮拒绝。
+    for (int x=-15;x<=(forward_space?5:0);++x)
+      for (int z=0;z<=12;++z) {
+        pcl::PointCloud<pcl::PointXYZ> cloud;
+        cloud.push_back(pcl::PointXYZ(.1*x+.05,20.0,.1*z+.05));
+        for (int repeat=0;repeat<2;++repeat)
+          map->inputPointCloud(cloud,1,Eigen::Vector3d(cloud[0].x,-1.9,cloud[0].z));
+      }
+    using Record=SafeRelayPublisher::Record;
+    for (double x : {-.45,-.05}) {
+      Record record; record.sample.position=Eigen::Vector3d(x,.05,.45);
+      record.sample.progress=publisher.history_.size()*.40;
+      publisher.history_.push_back(record);
+    }
+    geometry_msgs::PoseStamped first;
+    first.pose.position.x=.15; first.pose.position.y=.05; first.pose.position.z=.45;
+    first.header.stamp=ros::Time::now()-ros::Duration(1.0);
+    publisher.goals_.push_back({1,1,first});
+    publisher.goals_.front().revised=true;
+    Record record;
+    record.sample.position=Eigen::Vector3d(revision?.25:.05,.05,.45);
+    record.sample.progress=1.8; record.candidate=record.sample;
+    if (revision) {
+      publisher.history_.push_back(record);
+      geometry_msgs::PoseStamped second=first; second.pose.position.x=.25;
+      publisher.goals_.push_back({2,2,second});
+      publisher.leader_=Eigen::Vector3d(1.0,.05,.45);
+      publisher.odom_stamp_=ros::Time::now();
+      publisher.improveInternalGoals(true);
+      publisher.improveInternalGoals(true);
+      const auto& goal=publisher.goals_.back();
+      EXPECT_EQ(forward_space,goal.revised);
+      EXPECT_GE(goal.pose.pose.position.x,.15-1e-6);
+      if (forward_space) {
+        EXPECT_LT(goal.pose.pose.position.x,.25-1e-6);
+      }
+      return;
+    }
+    publisher.qualifyCandidate(record,true,-Eigen::Vector2d::UnitX());
+    publisher.qualifyCandidate(record,true,-Eigen::Vector2d::UnitX());
+    EXPECT_EQ(forward_space,record.candidate.confirmed);
+    if (forward_space) {
+      EXPECT_GE(record.candidate.position.x(),.15-1e-6);
+      EXPECT_GT(publisher.horizontalClearance(Eigen::Vector3d(-.15,.05,.45)),
+                record.candidate.clearance+.05);
+    } else {
+      EXPECT_FALSE(record.candidate.hold_free);
+    }
+  }
+
   static void unflownPocketAndGap(bool revision = false, bool no_gain = false,
                                   uint32_t id = 8, bool exited = false, bool bound_exit = false) {
     ros::NodeHandle nh("~unflown_pocket");
@@ -739,6 +855,21 @@ class SafeRelayPublisherTest {
 };
 TEST(SafeRelayPublisher, ManualModeReleasesOnlyCompletedWaypointsAtFlownHeight) {
   SafeRelayPublisherTest::runManualWaypoints();
+}
+TEST(SafeRelayPublisher, RecordedSixSevenOrderAllowsCornersAndUReturn) {
+  SafeRelayPublisherTest::recordedForwardOrder();
+}
+TEST(SafeRelayPublisher, NewGoalChoosesForwardPocketOverWiderBackwardPocket) {
+  SafeRelayPublisherTest::orderedPocket(false,true);
+}
+TEST(SafeRelayPublisher, NoForwardPocketCannotReleaseBackwardGoal) {
+  SafeRelayPublisherTest::orderedPocket(false,false);
+}
+TEST(SafeRelayPublisher, RevisionKeepsOrderWhileImprovingForwardPocket) {
+  SafeRelayPublisherTest::orderedPocket(true,true);
+}
+TEST(SafeRelayPublisher, RevisionWithoutForwardSpaceKeepsIssuedPoint) {
+  SafeRelayPublisherTest::orderedPocket(true,false);
 }
 
 TEST(SafeRelayPublisher, NewEndpointsAndRetainedIssuedPoints) { SafeRelayPublisherTest::run(); }
