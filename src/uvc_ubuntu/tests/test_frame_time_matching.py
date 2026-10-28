@@ -42,6 +42,7 @@ def make_node(monkeypatch):
     node.depth_frames = deque(maxlen=10)
     node.color_frames = deque(maxlen=10)
     node.fusion_delay_s = 0
+    node.depth_match_tolerance_s = .5
     node.pending_candidate_statuses = deque(maxlen=100)
     node.fusion_candidate_status = None
     node.fusion_candidate_status_version = 0
@@ -124,7 +125,7 @@ def test_delayed_candidate_uses_nearest_received_frames_and_preserves_headers(mo
     assert node.d435_debug_image_pub.messages[0].header.stamp == stamp(10.012)
 
 
-def test_cache_selects_each_stream_independently_without_new_age_gate(monkeypatch):
+def test_cache_selects_each_stream_independently_and_rejects_outdated_depth(monkeypatch):
     node = make_node(monkeypatch)
     assert node.matched_d435_frames(stamp(10)) == (None, None, None, None, None)
     add_frame(node, 9, 1000, 10)
@@ -132,8 +133,8 @@ def test_cache_selects_each_stream_independently_without_new_age_gate(monkeypatc
     color_msg.header.stamp = stamp(10.03)
     node.color_callback(color_msg)
     depth, encoding, depth_time, color, header = node.matched_d435_frames(stamp(10))
-    assert depth_time == stamp(9)  # Existing behavior retained even for large gaps.
-    assert depth[0, 0] == 1000 and encoding == "16UC1"
+    assert depth_time == stamp(9)  # Keep actual timestamp for timing diagnostics.
+    assert depth is None and encoding == "16UC1"
     assert header.stamp == stamp(10.03)
     for i in range(20):
         add_frame(node, 20 + i, 1000, i)
@@ -152,6 +153,21 @@ def test_receive_callbacks_defer_conversion_until_selection(monkeypatch):
     assert convert.call_count == 2
     assert convert.call_args_list[0].args[0] is depth_msg
     assert convert.call_args_list[1].args[0] is color_msg
+
+
+@pytest.mark.parametrize("offset,accepted", [(-.5, True), (.5, True), (-.501, False), (.501, False)])
+def test_depth_time_tolerance_preserves_visual_evidence_but_requires_timely_depth(monkeypatch, offset, accepted):
+    node = make_node(monkeypatch)
+    add_frame(node, 10 + offset, 1000, 11)
+    send_candidate(node, 10)
+    node.timer_callback(None)
+    result = json.loads(node.report_candidate_pub.messages[0].data)
+    assert (result["camera_point"] is not None) == accepted
+    assert result["source_timing"]["depth_dt_s"] == pytest.approx(offset)
+    if not accepted:
+        assert not result["confirmable"]
+        assert result["localization_valid"] is False
+        assert result["evidence_credible"]  # Saving this remains disabled by reporter YAML.
 
 
 def test_receive_burst_retains_frame_closest_to_thermal_time(monkeypatch):

@@ -174,4 +174,5 @@ morph_open_kernel: 3
 morph_close_kernel: 7
 
 sync_queue_size: 10
-sync_slop: 0.08
+# 彩色图与对齐深度图的同步容差（秒）。
+sync_slop: 0.50

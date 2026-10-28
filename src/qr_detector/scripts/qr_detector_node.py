@@ -197,6 +197,9 @@ class QRDetectorNode(object):
         self.depth_topic = rospy.get_param(
             "~depth_topic", "/camera/aligned_depth_to_color/image_raw"
         )
+        self.depth_match_tolerance_s = max(
+            0.0, float(rospy.get_param("~depth_match_tolerance_s", 0.50))
+        )
         self.camera_info_topic = rospy.get_param(
             "~camera_info_topic", "/camera/color/camera_info"
         )
@@ -937,6 +940,9 @@ class QRDetectorNode(object):
             "range": None,
         }
         depth_msg = self.latest_depth_msg
+        if (depth_msg is not None
+                and abs((depth_msg.header.stamp - header.stamp).to_sec()) > self.depth_match_tolerance_s):
+            depth_msg = None
         if depth_msg is not None:
             try:
                 depth_raw = self.bridge.imgmsg_to_cv2(

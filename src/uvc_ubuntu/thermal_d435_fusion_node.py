@@ -103,6 +103,9 @@ class ThermalD435FusionNode:
         self.depth_frames = deque(maxlen=cache_size)
         self.color_frames = deque(maxlen=cache_size)
         self.fusion_delay_s = max(0.0, float(self.get_param("fusion_delay_s", 0.0)))
+        self.depth_match_tolerance_s = max(
+            0.0, float(self.get_param("depth_match_tolerance_s", 0.50))
+        )
         image_queue_size = max(1, int(self.get_param("d435_image_queue_size", 5)))
         image_buff_size = int(self.get_param("d435_image_buff_size", 16777216))
         # Retain thermal events while the corresponding RealSense frames arrive.
@@ -345,8 +348,12 @@ class ThermalD435FusionNode:
                 rospy.logwarn_throttle(2.0, "Failed to convert matched %s image: %s", encoding, exc)
                 return None
 
+        depth_in_time = (depth is not None and (
+            stamp is None or stamp == rospy.Time(0)
+            or abs((depth[0] - stamp).to_sec()) <= self.depth_match_tolerance_s
+        ))
         return (
-            convert(depth, "passthrough"),
+            convert(depth, "passthrough") if depth_in_time else None,
             depth[2] if depth else None,
             depth[0] if depth else None,
             convert(color, "bgr8"),

@@ -1,6 +1,8 @@
 # Input topics. Defaults match realsense2_camera aligned depth output.
 image_topic: /camera/color/image_raw
 depth_topic: /camera/aligned_depth_to_color/image_raw
+# 彩色检测帧与深度帧允许的最大时间差（秒）；超过时仍识别，但不使用该深度定位。
+depth_match_tolerance_s: 0.50
 camera_info_topic: /camera/color/camera_info
 candidate_pose_topic: /UAV0/vision/qr_candidate_pose_camera
 candidate_detected_topic: /UAV0/vision/qr_candidate_detected

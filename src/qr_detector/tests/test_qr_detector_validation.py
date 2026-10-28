@@ -27,6 +27,7 @@ class QRDetectorValidationTests(unittest.TestCase):
     def make_detector(self):
         detector = QRDetectorNode.__new__(QRDetectorNode)
         detector.entry_goal_received = True
+        detector.depth_match_tolerance_s = .5
         detector.qr_detector = cv2.QRCodeDetector()
         detector.zbar_decoder = ZBarQRDecoder()
         detector.preprocess_mode = "gray"
@@ -60,6 +61,32 @@ class QRDetectorValidationTests(unittest.TestCase):
     def test_libzbar_decoder_is_available_on_aircraft(self):
         detector = self.make_detector()
         self.assertTrue(detector.zbar_decoder.available)
+
+    def test_depth_time_tolerance_accepts_500ms_but_not_older_or_newer_frames(self):
+        import rospy
+        from sensor_msgs.msg import Image
+        from std_msgs.msg import Header
+        detector = self.make_detector()
+        detector.bridge = Mock()
+        detector.depth_from_window = Mock(return_value=1.0)
+        detector.depth_quality_from_quad = Mock(return_value={
+            "validated": True, "valid_corners": 4, "valid_ratio": 1.0,
+            "std": 0.0, "range": 0.0,
+        })
+        detector.has_camera_info = Mock(return_value=True)
+        detector.back_project = Mock(return_value=(0.0, 0.0, 1.0))
+        detector.filter_xyz = lambda x, y, z: (x, y, z)
+        detection = {"data": "AR14", "points": np.array([[0, 0], [10, 0], [10, 10], [0, 10]]),
+                     "center_u": 5, "center_v": 5, "method": "test", "area": 100,
+                     "validated": True}
+        for offset, accepted in [(-.5, True), (.5, True), (-.501, False), (.501, False)]:
+            with self.subTest(offset=offset):
+                detector.latest_depth_msg = Image(header=Header(stamp=rospy.Time.from_sec(10 + offset)))
+                result = detector.build_result(detection, Header(stamp=rospy.Time.from_sec(10)))
+                self.assertEqual(result["confirmable"], accepted)
+                self.assertEqual(result["depth_validated"], accepted)
+                self.assertEqual(result["z"], 1.0 if accepted else None)
+                self.assertTrue(result["validated"])  # Visual recognition survives.
 
     def test_decoded_qr_without_depth_publishes_evidence_status_without_pose(self):
         import rospy
