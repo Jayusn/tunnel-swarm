@@ -1,7 +1,7 @@
 
 mission:
   manual_path:
-    arrive_distance: 0.25
+    arrive_distance: 0.30
     waypoints:
       - [2.5, 0.3, 0.6]
       - [3.8, 0.0, 0.6]
