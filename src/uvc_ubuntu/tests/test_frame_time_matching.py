@@ -1,4 +1,6 @@
+import io
 import json
+import struct
 import sys
 import threading
 from collections import deque
@@ -10,7 +12,8 @@ import pytest
 import rospy
 from cv_bridge import CvBridge
 from geometry_msgs.msg import PointStamped
-from sensor_msgs.msg import CameraInfo
+from sensor_msgs.msg import CameraInfo, Image
+from rospy.msg import deserialize_messages
 from std_msgs.msg import String
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -125,8 +128,9 @@ def test_cache_selects_each_stream_independently_without_new_age_gate(monkeypatc
     node = make_node(monkeypatch)
     assert node.matched_d435_frames(stamp(10)) == (None, None, None, None, None)
     add_frame(node, 9, 1000, 10)
-    node.color_frames.append((stamp(10.03), np.zeros((20, 20, 3), np.uint8),
-                             type(node.color_header)(stamp=stamp(10.03))))
+    color_msg = node.bridge.cv2_to_imgmsg(np.zeros((20, 20, 3), np.uint8), "bgr8")
+    color_msg.header.stamp = stamp(10.03)
+    node.color_callback(color_msg)
     depth, encoding, depth_time, color, header = node.matched_d435_frames(stamp(10))
     assert depth_time == stamp(9)  # Existing behavior retained even for large gaps.
     assert depth[0, 0] == 1000 and encoding == "16UC1"
@@ -134,6 +138,57 @@ def test_cache_selects_each_stream_independently_without_new_age_gate(monkeypatc
     for i in range(20):
         add_frame(node, 20 + i, 1000, i)
     assert len(node.depth_frames) == len(node.color_frames) == 10
+
+
+def test_receive_callbacks_defer_conversion_until_selection(monkeypatch):
+    node = make_node(monkeypatch)
+    convert = Mock(wraps=node.bridge.imgmsg_to_cv2)
+    monkeypatch.setattr(node.bridge, "imgmsg_to_cv2", convert)
+    add_frame(node, 9.8, 2000, 22)
+    depth_msg, color_msg = add_frame(node, 10.01, 1000, 11)
+    add_frame(node, 10.2, 3000, 33)
+    assert convert.call_count == 0
+    node.matched_d435_frames(stamp(10))
+    assert convert.call_count == 2
+    assert convert.call_args_list[0].args[0] is depth_msg
+    assert convert.call_args_list[1].args[0] is color_msg
+
+
+def test_receive_burst_retains_frame_closest_to_thermal_time(monkeypatch):
+    # Exercise rospy's actual transport deserializer: queue_size=1 drops the
+    # useful earlier frames before the fusion cache can ever receive them.
+    errors = []
+    for queue_size in (1, 5):
+        node = make_node(monkeypatch)
+        wire = io.BytesIO()
+        for seconds in (10.0, 10.033, 10.067, 10.1, 10.133):
+            msg = node.bridge.cv2_to_imgmsg(np.full((20, 20), 1000, np.uint16), "16UC1")
+            msg.header.stamp = stamp(seconds)
+            payload = io.BytesIO()
+            msg.serialize(payload)
+            wire.write(struct.pack("<I", len(payload.getvalue())))
+            wire.write(payload.getvalue())
+        messages = []
+        deserialize_messages(wire, messages, Image, queue_size=queue_size)
+        for msg in messages:
+            node.depth_callback(msg)
+        _, _, depth_time, _, _ = node.matched_d435_frames(stamp(10.01))
+        errors.append(abs((depth_time - stamp(10.01)).to_sec()))
+    assert errors == pytest.approx([.123, .010])
+
+
+def test_candidate_and_report_keep_same_depth_when_frame_arrives_during_drawing(monkeypatch):
+    node = make_node(monkeypatch)
+    node.fusion_delay_s = .4
+    add_frame(node, 9.98, 1000, 11)
+    send_candidate(node, 10)
+    # A closer frame appears after the report's snapshot was selected.
+    monkeypatch.setattr(node, "publish_d435_debug_image",
+                        lambda *args, **kwargs: add_frame(node, 10, 2000, 22))
+    node.timer_callback(None)
+    report = json.loads(node.report_candidate_pub.messages[0].data)
+    assert report["camera_point"]["z"] == pytest.approx(1)
+    assert node.candidate_camera_point_pub.messages[0].point.z == pytest.approx(1)
 
 
 def send_candidate(node, seconds, cx=2):

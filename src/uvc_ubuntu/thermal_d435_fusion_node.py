@@ -103,6 +103,7 @@ class ThermalD435FusionNode:
         self.depth_frames = deque(maxlen=cache_size)
         self.color_frames = deque(maxlen=cache_size)
         self.fusion_delay_s = max(0.0, float(self.get_param("fusion_delay_s", 0.0)))
+        image_queue_size = max(1, int(self.get_param("d435_image_queue_size", 5)))
         image_buff_size = int(self.get_param("d435_image_buff_size", 16777216))
         # Retain thermal events while the corresponding RealSense frames arrive.
         # Only metadata is queued; image buffers remain in the two frame caches.
@@ -121,11 +122,7 @@ class ThermalD435FusionNode:
         self.candidate_status_version = 0
         self.published_candidate_status_version = 0
         self.camera_info = None
-        self.depth_image = None
         self.depth_encoding = None
-        self.depth_stamp = rospy.Time(0)
-        self.color_image = None
-        self.color_header = None
         self.first_color_wall_time = None
         self.d435_exposure_warmup_finished = (
             self.d435_exposure_warmup_seconds <= 0.0
@@ -179,11 +176,11 @@ class ThermalD435FusionNode:
         rospy.Subscriber(self.d435_camera_info_topic, CameraInfo, self.camera_info_callback)
         rospy.Subscriber(
             self.d435_depth_topic, Image, self.depth_callback,
-            queue_size=1, buff_size=image_buff_size,
+            queue_size=image_queue_size, buff_size=image_buff_size,
         )
         rospy.Subscriber(
             self.d435_color_topic, Image, self.color_callback,
-            queue_size=1, buff_size=image_buff_size,
+            queue_size=image_queue_size, buff_size=image_buff_size,
         )
 
         period = 1.0 / self.publish_rate if self.publish_rate > 0 else 0.05
@@ -298,32 +295,18 @@ class ThermalD435FusionNode:
             self.camera_info = msg
 
     def depth_callback(self, msg):
-        try:
-            depth = self.bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")
-        except Exception as exc:
-            rospy.logwarn_throttle(2.0, "Failed to convert depth image: %s", exc)
-            return
-
+        # Cache message references promptly: conversion/copying here can delay
+        # receiving the next frame and discard useful timestamps under load.
         with self.lock:
-            self.depth_image = np.array(depth, copy=True)
             self.depth_encoding = msg.encoding
-            self.depth_stamp = msg.header.stamp
             self.depth_frames.append(
-                (msg.header.stamp, self.depth_image, msg.encoding)
+                (msg.header.stamp, msg, msg.encoding)
             )
 
     def color_callback(self, msg):
-        try:
-            color = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
-        except Exception as exc:
-            rospy.logwarn_throttle(2.0, "Failed to convert D435 color image: %s", exc)
-            return
-
         with self.lock:
-            self.color_image = np.array(color, copy=True)
-            self.color_header = msg.header
             self.color_frames.append(
-                (msg.header.stamp, self.color_image, msg.header)
+                (msg.header.stamp, msg, msg.header)
             )
             if self.first_color_wall_time is None:
                 self.first_color_wall_time = time.monotonic()
@@ -336,8 +319,8 @@ class ThermalD435FusionNode:
     def matched_d435_frames(self, stamp):
         """Select nearest received frames for the chosen thermal event.
 
-        Callback arrays are replaced, never edited, so retaining references
-        here gives the entire fusion operation a consistent input snapshot.
+        Retain immutable message references, then convert only selected frames
+        outside the receive lock. Drawing uses a separate copy of the image.
         """
         with self.lock:
             depth_frames = list(self.depth_frames)
@@ -352,11 +335,21 @@ class ThermalD435FusionNode:
 
         depth = nearest(depth_frames)
         color = nearest(color_frames)
+
+        def convert(frame, encoding):
+            if frame is None:
+                return None
+            try:
+                return self.bridge.imgmsg_to_cv2(frame[1], desired_encoding=encoding)
+            except Exception as exc:
+                rospy.logwarn_throttle(2.0, "Failed to convert matched %s image: %s", encoding, exc)
+                return None
+
         return (
-            depth[1] if depth else None,
+            convert(depth, "passthrough"),
             depth[2] if depth else None,
             depth[0] if depth else None,
-            color[1] if color else None,
+            convert(color, "bgr8"),
             color[2] if color else None,
         )
 
@@ -970,9 +963,14 @@ class ThermalD435FusionNode:
         # target_reporting performs the later world-frame tracking/confirmation.
         if candidate_detected:
             candidate_stamp = candidate_pixel_msg.header.stamp if candidate_pixel_msg else None
-            candidate_depth, candidate_encoding, _, _, _ = self.matched_d435_frames(
-                candidate_stamp
-            )
+            if candidate_stamp == status_stamp:
+                # Use the same snapshot as the report even if a closer frame
+                # arrives while this timer callback is drawing evidence.
+                candidate_depth, candidate_encoding = report_depth, report_encoding
+            else:
+                candidate_depth, candidate_encoding, _, _, _ = self.matched_d435_frames(
+                    candidate_stamp
+                )
             candidate_camera_point = self.build_camera_point(
                 candidate_pixel_msg,
                 camera_info,

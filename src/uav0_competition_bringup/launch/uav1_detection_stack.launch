@@ -42,7 +42,7 @@
     <arg name="enable_pointcloud" value="true" />
   </include>
 
-  <!-- QR使用原始30Hz；其余前视检测每两帧取一帧，降低重复图像处理开销。 -->
+  <!-- QR和热源融合使用原始30Hz；颜色/前视ArUco每两帧取一帧。 -->
   <node if="$(arg enable_realsense)" pkg="topic_tools" type="drop"
         name="uav1_aux_color_drop"
         args="/UAV1/camera/color/image_raw 1 2 /UAV1/camera/aux/color/image_raw" />
@@ -166,9 +166,10 @@
     <param name="report_candidate_topic"
            value="/UAV1/thermal/report_candidate" />
     <param name="d435_camera_info_topic" value="/UAV1/camera/color/camera_info" />
-    <param name="d435_depth_topic"
-           value="/UAV1/camera/aux/aligned_depth_to_color/image_raw" />
-    <param name="d435_color_topic" value="/UAV1/camera/aux/color/image_raw" />
+    <!-- 输入话题由融合 YAML 选择；这里只做 UAV1 命名空间映射。 -->
+    <remap from="/camera/aligned_depth_to_color/image_raw"
+           to="/UAV1/camera/aligned_depth_to_color/image_raw" />
+    <remap from="/camera/color/image_raw" to="/UAV1/camera/color/image_raw" />
     <param name="d435_debug_image_topic" value="/UAV1/thermal/d435_debug_image" />
     <param name="d435_evidence_image_topic"
            value="/UAV1/thermal/d435_evidence_image" />
