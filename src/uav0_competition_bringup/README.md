@@ -8,6 +8,34 @@ RViz 同时显示由过滤点云计算出的检测目标三维线框包围盒。
 
 ## 仿真/检测显示
 
+### 后机独立移动检测测试
+
+```bash
+bash /home/oem/match_ws/shfiles/test_uav1_detection.sh
+```
+
+启动 MID360、FAST-LIO、D435、热成像、三类检测/上报与现有多画面 RViz。
+脚本使用独立本机 master `http://127.0.0.1:11321`，不需要前机或 MAVROS，
+不启动规划/飞行控制。启动前关闭占用同一硬件的其他程序；开始时保持机体静止，
+待 FAST-LIO 初始化、相机自动曝光稳定后，再移动后机或展示目标。Ctrl+C 结束所有本次启动节点。
+查看话题时需使用 `ROS_MASTER_URI=http://127.0.0.1:11321`。
+
+测试 launch 直接包含正式 `uav1_detection_stack.launch`，复用所有检测源码和算法 YAML。
+仅使用 `target_reporting/config/uav1_detection_test_activation.yaml` 关闭入口等待，
+并分开保存路径；正常多机启动仍等待入口目标。深度容差仍是 500 ms、未定位不保存，
+二维码仍按三维距离 0.30 m 去重。检测到不等于每帧保存，仍须通过正式确认条件。
+
+默认保存到 `match_ws/target_reports/uav1_detection_test/YYYYMMDD/test_HHMMSS_纳秒/`：
+`reports.jsonl` 记录已确认目标，图片位于 `images/annotated/qr_code`、`color_tag`、
+`thermal_source`（含热图和 D435 配图）。坐标沿用 FAST-LIO 世界坐标到 channel 的现有配置，
+没有使用固定或伪造定位。程序实际运行前不会预创建测试目录。
+
+前机与出口过滤参数也沿用多机配置，但独立 master 没有前机里程计/出口输入，
+因此不能用本测试验证这两项过滤；热源地面高度过滤继续生效。
+多画面中的降落搜索格会空白，因为本测试不启动降落检测。
+可加 `open_rviz:=false` 关闭窗口，或加 `enable_thermal:=false` 只测颜色和二维码。
+`--dump-params` 只解析配置，不启动设备。
+
 根据热成像相机是否接入，选择下面一种启动方式。方案 A 适用于当前未接热成像
 相机的电脑；方案 B 适用于 D435 和热成像相机都已接入的电脑。
 

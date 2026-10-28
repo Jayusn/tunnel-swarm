@@ -12,6 +12,9 @@
   <arg name="enable_thermal_d435_fusion" default="true" />
   <arg name="enable_target_reporting" default="true" />
   <arg name="target_reporting_mission_id" default="" />
+  <arg name="target_reporting_record_root" default="$(env HOME)/match_ws/target_reports/uav1" />
+  <arg name="detection_activation_config"
+       default="$(find target_reporting)/config/uav1_detection_activation.yaml" />
   <arg name="channel_transform_config"
        default="$(find target_reporting)/config/uav1_channel_transform.yaml" />
 
@@ -56,7 +59,7 @@
     <rosparam command="load"
               file="$(find color_tag_detector)/config/color_thresholds.yaml" />
     <rosparam command="load"
-              file="$(find target_reporting)/config/uav1_detection_activation.yaml" />
+              file="$(arg detection_activation_config)" />
     <param name="color_topic" value="/UAV1/camera/aux/color/image_raw" />
     <param name="depth_topic"
            value="/UAV1/camera/aux/aligned_depth_to_color/image_raw" />
@@ -79,7 +82,7 @@
         type="qr_detector_node.py" name="uav1_qr_detector" output="screen">
     <rosparam command="load" file="$(find qr_detector)/config/qr_detector.yaml" />
     <rosparam command="load"
-              file="$(find target_reporting)/config/uav1_detection_activation.yaml" />
+              file="$(arg detection_activation_config)" />
     <param name="image_topic" value="/UAV1/camera/color/image_raw" />
     <param name="depth_topic"
            value="/UAV1/camera/aligned_depth_to_color/image_raw" />
@@ -133,7 +136,7 @@
         type="thermal_ros_node.py" name="uav1_thermal_detector" output="screen">
     <rosparam command="load" file="$(find uvc_ubuntu)/config/thermal_detector.yaml" />
     <rosparam command="load"
-              file="$(find target_reporting)/config/uav1_detection_activation.yaml" />
+              file="$(arg detection_activation_config)" />
     <param name="candidate_detected_topic"
            value="/UAV1/thermal/target_candidate_detected" />
     <param name="candidate_status_topic"
@@ -203,10 +206,10 @@
     <rosparam command="load"
               file="$(find target_reporting)/config/uav1_reporting_filters.yaml" />
     <rosparam command="load"
-              file="$(find target_reporting)/config/uav1_detection_activation.yaml" />
+              file="$(arg detection_activation_config)" />
     <param name="drone_id" value="uav1" />
     <param name="localization_frame" value="$(arg world_frame)" />
-    <param name="record_root" value="~/match_ws/target_reports/uav1" />
+    <param name="record_root" value="$(arg target_reporting_record_root)" />
     <!-- 本机查看模式：保留确认结果和证据图落盘，暂不连接远端。 -->
     <param name="enable_remote_upload" value="false" />
     <param if="$(eval arg('target_reporting_mission_id') != '')"

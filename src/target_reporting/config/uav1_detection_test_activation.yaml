@@ -1,0 +1,4 @@
+# 仅供后机独立移动测试；算法、确认、深度及去重阈值继续加载正式配置。
+# 不等待入口目标，不发布虚拟入口/起飞消息。
+wait_for_entry_goal: false
+entry_goal_topic: /UAV1/planning/goal/entry

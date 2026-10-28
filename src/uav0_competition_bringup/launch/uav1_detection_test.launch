@@ -1,0 +1,29 @@
+<launch>
+  <arg name="open_rviz" default="true" />
+  <arg name="enable_thermal" default="true" />
+  <arg name="record_root" default="$(env HOME)/match_ws/target_reports/uav1_detection_test" />
+  <arg name="mission_id" default="" />
+
+  <!-- 使用实机同一套雷达与定位配置，FAST-LIO 自行发布 world -> body TF。 -->
+  <include file="$(find livox_ros_driver2)/launch_ROS1/msg_MID360.launch">
+    <arg name="vehicle_ns" value="UAV1" />
+  </include>
+  <include file="$(find fast_lio)/launch/mapping_mid360.launch">
+    <arg name="vehicle_ns" value="UAV1" />
+    <arg name="rviz" value="false" />
+    <arg name="performance_logging" value="false" />
+    <arg name="publish_odometry" value="true" />
+  </include>
+
+  <!-- 复用多机检测入口：唯一检测行为差异是立即开始识别，无入口等待。 -->
+  <include file="$(find uav0_competition_bringup)/launch/uav1_detection_stack.launch">
+    <arg name="detection_activation_config"
+         value="$(find target_reporting)/config/uav1_detection_test_activation.yaml" />
+    <arg name="target_reporting_record_root" value="$(arg record_root)" />
+    <arg name="target_reporting_mission_id" value="$(arg mission_id)" />
+    <arg name="enable_thermal" value="$(arg enable_thermal)" />
+  </include>
+  <include file="$(find target_reporting)/launch/uav1_four_view.launch">
+    <arg name="open_rviz" value="$(arg open_rviz)" />
+  </include>
+</launch>
