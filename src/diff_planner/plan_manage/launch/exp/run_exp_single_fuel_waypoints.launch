@@ -121,7 +121,8 @@
   <param name="/exploration_node/mission/global_no_return" value="false" type="bool"/>
   <param name="/exploration_node/mission/use_camera_viewpoint_yaw" value="false" type="bool"/>
   <param name="/exploration_node/mission/camera_head_sweep/enabled" value="false" type="bool"/>
-  <param name="/exploration_node/mission/camera_obstacle_scan/enabled" value="false" type="bool"/>
+  <!-- 对齐探索入口：开启障碍物扫描，其余扫描参数沿用与探索一致的源码默认值。 -->
+  <param name="/exploration_node/mission/camera_obstacle_scan/enabled" value="true" type="bool"/>
   <include if="$(arg enable_fapp_detection)" file="$(find mot_mapping)/launch/uav0_frame_event_verified.launch">
     <arg name="detection_min_z" value="$(arg fapp_detection_min_z)"/>
     <arg name="detection_max_z" value="$(arg fapp_detection_max_z)"/>
@@ -133,11 +134,19 @@
   </include>
   <param name="/exploration_node/fapp/enabled" value="$(arg enable_fapp_dynamic_avoidance)" type="bool"/>
   <param name="/exploration_node/fapp/planner_priority" value="$(arg fapp_planner_priority)" type="bool"/>
+  <!-- 对齐探索入口：历史保留横向摆幅，不累计前后和上下抖动。 -->
+  <param name="/exploration_node/fapp/lateral_motion_only" value="true" type="bool"/>
   <param name="/exploration_node/fapp/topic" value="/UAV0/fapp/states"/>
   <!-- 以定位雷达参考点为准：上方5cm、下方20cm；下穿目标Z最低0.10m。 -->
   <param name="/exploration_node/fapp/vehicle_top_height" value="0.05" type="double"/>
   <param name="/exploration_node/fapp/vehicle_bottom_height" value="0.20" type="double"/>
   <param name="/exploration_node/mission/vertical_detour/underpass/min_height" value="0.10" type="double"/>
+  <!-- 对齐探索入口：普通下探到0.40m；动态下穿最低0.10m，原始目标底部留0.10m总间距。 -->
+  <param name="/exploration_node/mission/vertical_detour/low_height" value="0.40" type="double"/>
+  <param name="/exploration_node/mission/vertical_detour/underpass/clearance" value="0.10" type="double"/>
+  <!-- 航点间A*搜索与探索入口使用同一高度范围。 -->
+  <param name="/exploration_node/astar/min_search_height" value="0.10" type="double"/>
+  <param name="/exploration_node/astar/max_search_height" value="1.90" type="double"/>
   <param name="/exploration_node/fapp/frame_id" value="UAV0/camera_init"/>
   <param name="/exploration_node/fapp/memory_enabled" value="$(arg fapp_memory_enabled)" type="bool"/>
   <param name="/exploration_node/fapp/observation_retention" value="$(arg fapp_observation_retention)"/>

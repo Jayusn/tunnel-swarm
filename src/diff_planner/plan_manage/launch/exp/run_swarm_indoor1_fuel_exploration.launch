@@ -1,6 +1,4 @@
 <launch>
-    <!-- 与定点入口一致，清除上一轮任务残留参数后重新加载当前探索配置。 -->
-    <group ns="exploration_node" clear_params="true"/>
     <!-- 到出口后、搜索降落码前沿出口方向前进的距离，单位m。 -->
     <arg name="front_approach_distance" default="0.2"/>
     <!-- 与单机航点入口共用已验证的检测、历史包络及连续穿越策略。 -->
@@ -30,8 +28,8 @@
     </include>
     <param name="/exploration_node/fapp/planner_priority" value="$(arg fapp_planner_priority)" type="bool"/>
     <param name="/exploration_node/fapp/enabled" value="$(arg enable_fapp_dynamic_avoidance)" type="bool"/>
-    <!-- 与定点入口的默认行为一致，保留完整三维历史运动包络。 -->
-    <param name="/exploration_node/fapp/lateral_motion_only" value="false" type="bool"/>
+    <!-- 摆球仅沿通道横向运动：历史保留左右摆幅，不累计前后/上下抖动。 -->
+    <param name="/exploration_node/fapp/lateral_motion_only" value="true" type="bool"/>
     <param name="/exploration_node/fapp/topic" value="/UAV0/fapp/states"/>
     <param name="/exploration_node/fapp/frame_id" value="UAV0/camera_init"/>
     <param name="/exploration_node/fapp/memory_enabled" value="$(arg fapp_memory_enabled)" type="bool"/>
@@ -172,9 +170,6 @@
         <arg name="perception_max_dist" value="$(arg perception_max_dist)"/>
     </include>
 
-    <!-- 与定点入口一致，默认发布后机接力点；环境变量仍可显式关闭。 -->
-    <param name="/exploration_node/mission/safe_relay/enabled" value="$(optenv UAV0_SAFE_RELAY_ENABLED true)" type="bool"/>
-
     <!-- Diff从启动时即建立独立雷达占据图，但在出口切换信号到来前不接收搜索目标、不输出控制。 -->
     <include if="$(arg enable_search_landing)"
              file="$(find diff_planner)/launch/include/advanced_param_exp.xml">
@@ -227,14 +222,15 @@
     <rosparam param="/exploration_node/mission/global_no_return">true</rosparam>
     <!-- 2026-07-16: 当前Mid360模式先保证向目标平移；未来接入相机后改为true即可恢复viewpoint观测航向。 -->
     <rosparam param="/exploration_node/mission/use_camera_viewpoint_yaw">false</rosparam>
-    <!-- 与定点入口一致，关闭附加相机扫头和障碍物环扫，保留规划停转航向。 -->
+    <!-- 2026-07-24: 取消整条通道持续360度环扫；直段只做小幅快扫，弯道关闭附加扫描，
+         累计占据图剔除连续墙后发现新障碍物，才以6秒一圈重点扫描并按位置去重。 -->
     <rosparam param="/exploration_node/mission/camera_head_sweep/enabled">false</rosparam>
     <rosparam param="/exploration_node/mission/camera_head_sweep/full_rotation">false</rosparam>
     <rosparam param="/exploration_node/mission/camera_head_sweep/amplitude_deg">30.0</rosparam>
     <rosparam param="/exploration_node/mission/camera_head_sweep/period">10.0</rosparam>
     <rosparam param="/exploration_node/mission/camera_head_sweep/direction">1.0</rosparam>
-    <!-- 下列扫描参数仅在显式重新开启障碍物扫描时生效。 -->
-    <rosparam param="/exploration_node/mission/camera_obstacle_scan/enabled">false</rosparam>
+    <!-- 2026-07-24: 前置相机障碍物扫描第一版参数；XY检测使用当前z附近占据柱，隔离绝对高度漂移。 -->
+    <rosparam param="/exploration_node/mission/camera_obstacle_scan/enabled">true</rosparam>
     <rosparam param="/exploration_node/mission/camera_obstacle_scan/clear_sweep_amplitude_deg">35.0</rosparam>
     <rosparam param="/exploration_node/mission/camera_obstacle_scan/clear_sweep_period">3.5</rosparam>
     <rosparam param="/exploration_node/mission/camera_obstacle_scan/full_rotation_period">6.0</rosparam>
@@ -328,13 +324,15 @@
     <!-- 任务目标、A*中间节点和下穿动作共用最低里程计Z=0.10m。 -->
     <rosparam param="/exploration_node/astar/min_search_height">0.10</rosparam>
     <rosparam param="/exploration_node/astar/max_search_height">1.90</rosparam>
-    <!-- 与定点入口的默认下探高度一致：固定XY/Yaw降到0.10m，确认前方0.20m后推进。 -->
+    <!-- 水平恢复全部失败后才启用上下绕行；普通下探固定XY/Yaw降到0.40m，确认前方0.20m后推进。 -->
     <rosparam param="/exploration_node/mission/vertical_detour/enabled">true</rosparam>
-    <rosparam param="/exploration_node/mission/vertical_detour/low_height">0.10</rosparam>
+    <rosparam param="/exploration_node/mission/vertical_detour/low_height">0.40</rosparam>
     <!-- 雷达是机体最高点；UAV0 FAST-LIO 外参中雷达高于里程计原点约4.4cm。 -->
     <rosparam param="/exploration_node/mission/vertical_detour/underpass/lidar_above_odom">0.044</rosparam>
-    <!-- 与定点入口一致，不覆盖 underpass/clearance：静态下穿使用默认0.10m净空，
-         动态包络使用规划器默认的机体尺寸和避障余量计算。 -->
+    <!-- 动态下穿高度上限=原始检测底部Z-0.10m；实际Z在0.10m至该上限之间即可接续。
+         总间距不再叠加机体顶部或跟踪余量。
+         静态悬挂物仍单独使用雷达偏移和高度跟踪余量。 -->
+    <rosparam param="/exploration_node/mission/vertical_detour/underpass/clearance">0.10</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/underpass/height_tracking_margin">0.06</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/underpass/lookahead">2.00</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/forward_check_distance">0.20</rosparam>
