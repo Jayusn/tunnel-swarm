@@ -1188,6 +1188,59 @@ bool TaskSearchManager::inferOccupancyTurnDirection(
     return true;
   };
 
+  // 先看累计地图中的通道墙，不让当前高度的一块局部障碍改写通道轴线。
+  // 沿用曲线通道的竖向墙体证据：至少30cm高；这里要求两侧长墙均越过
+  // 前方占据继续延伸。搜索整侧墙面，不在遇到最近的箱体/泡沫后停止。
+  auto straightWallContinues = [&](double sign) {
+    constexpr double section_step = 0.15;
+    const double required_span = recovery_turn_probe_length_;
+    for (double across = 0.5 * kBypassWindowSize; across <= 2.10 + 1e-6;
+         across += map_resolution) {
+      int sections = 0;
+      double first = 0.0, last = 0.0;
+      for (double along = -0.60; along <= required_span + 1e-6;
+           along += section_step) {
+        Eigen::Vector3d center = origin;
+        center.head<2>() += along * travel + sign * across * lateral;
+        int layers = 0;
+        double lowest = 1e9, highest = -1e9;
+        for (double dz = -0.45; dz <= 0.30 + 1e-6;
+             dz += std::max(0.05, map_resolution)) {
+          // 必须是朝向通道自由空间的墙面，不能把实心前墙内部当成长侧墙。
+          Eigen::Vector3d inside = center;
+          inside.head<2>() -= sign * 2.0 * map_resolution * lateral;
+          inside.z() += dz;
+          if (!sdf_map_->isInMap(inside) ||
+              sdf_map_->getOccupancy(inside) != SDFMap::FREE) continue;
+          bool occupied = false;
+          for (int dx = -1; dx <= 1 && !occupied; ++dx)
+            for (int dy = -1; dy <= 1 && !occupied; ++dy) {
+              const Eigen::Vector3d probe = center +
+                  Eigen::Vector3d(dx * map_resolution, dy * map_resolution, dz);
+              occupied = sdf_map_->isInMap(probe) &&
+                  sdf_map_->getOccupancy(probe) == SDFMap::OCCUPIED;
+            }
+          if (occupied) { ++layers; lowest = std::min(lowest, dz); highest = dz; }
+        }
+        if (layers < 3 || highest - lowest < 0.30 - 1e-6) continue;
+        if (sections++ == 0) first = along;
+        last = along;
+      }
+      if (last - first >= required_span - 1e-6 &&
+          sections * section_step >= 0.70 * (last - first) &&
+          last >= forward_free_length + 0.5 * kBypassWindowSize)
+        return true;
+    }
+    return false;
+  };
+  if (straightWallContinues(-1.0) && straightWallContinues(1.0)) {
+    ROS_INFO_THROTTLE(0.5,
+        "[task_search] LOCAL_BYPASS: accumulated bilateral walls continue old "
+        "yaw=%.1fdeg beyond the obstacle; keep corridor direction.",
+        std::atan2(travel.y(), travel.x()) * 180.0 / M_PI);
+    return false;
+  }
+
   Eigen::Vector3d grid_center = forward_end;
   const Eigen::Vector2d corridor_axis_origin =
       segment_direction_.norm() > 1e-3 ? segment_origin_ : origin.head<2>();
@@ -1359,6 +1412,28 @@ bool TaskSearchManager::inferOccupancyTurnDirection(
             branch, forward, horizon, 0.75, body_step,
             [this](const Eigen::Vector3d& p) { return mapExitFootprintFree(p); });
         if (!width.complete) continue;
+        // 局部窗口未找到绕行，不等于旧通道终止。沿已连通的侧方空地
+        // 越过障碍后，累计地图若仍确认原方向可延续，就只能算局部绕障。
+        // 这里只识别通道，不发布这条折线路径，也不要求实际直飞一米。
+        const Eigen::Vector3d continuation_start = branch.back();
+        bool old_corridor_continues = true;
+        for (double distance = body_step; distance <= horizon + 1e-6;
+             distance += body_step) {
+          const Eigen::Vector3d point = continuation_start +
+              distance * Eigen::Vector3d(travel.x(), travel.y(), 0.0);
+          if (!mapExitFootprintFree(point)) {
+            old_corridor_continues = false;
+            break;
+          }
+        }
+        if (old_corridor_continues) {
+          ROS_INFO_THROTTLE(0.5,
+              "[task_search] LOCAL_BYPASS: accumulated map continues old yaw=%.1fdeg "
+              "beyond side passage at (%.2f,%.2f,%.2f); keep corridor direction.",
+              std::atan2(travel.y(), travel.x()) * 180.0 / M_PI,
+              continuation_start.x(), continuation_start.y(), continuation_start.z());
+          return false;
+        }
         // 宽度为可容纳机体的中心移动范围；包络本身已在上面逐点验证。
         const double shape_bonus = 0.05 * u_shape_confidence *
                                    direction.dot(return_direction);

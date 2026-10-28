@@ -630,6 +630,44 @@ public:
     EXPECT_LT(direction.x(), -0.5);
   }
 
+  static void runLocalObstacleKeepsCorridor(double heading) {
+    ros::NodeHandle nh("~local_obstacle_keeps_corridor");
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    auto& map = *manager.sdf_map_;
+    auto& task = *manager.task_search_manager_;
+    const Vector3d forward(std::cos(heading), std::sin(heading), 0.0);
+    const Vector3d lateral(-forward.y(), forward.x(), 0.0);
+    const Vector3d start = -0.60 * forward + Vector3d(0, 0, 1.0);
+    task.setMap(manager.sdf_map_);
+    task.setCorridorFrame(start - 3.0 * forward, forward);
+    task.updateRobotPose(start, heading);
+    task.visited_positions_ = {start};
+    task.recovery_turn_min_angle_deg_ = 45.0;
+    task.recovery_turn_probe_length_ = 1.50;
+    task.curve_heading_enabled_ = false;
+    for (int x = 0; x < map.mp_->map_voxel_num_.x(); ++x)
+      for (int y = 0; y < map.mp_->map_voxel_num_.y(); ++y)
+        for (int z = 0; z < map.mp_->map_voxel_num_.z(); ++z) {
+          const Eigen::Vector3i id(x, y, z);
+          Vector3d p; map.indexToPos(id, p);
+          const double along = p.dot(forward), across = p.dot(lateral);
+          // 两侧通道墙未转向，中间障碍的绕行空间超出旧1.5m审查窗口。
+          const bool occupied = std::fabs(across) >= 1.65 ||
+              (along >= 0.20 && along <= 0.55 && std::fabs(across) <= 0.55);
+          const int address = map.toAddress(id);
+          map.md_->occupancy_buffer_[address] = occupied
+              ? map.mp_->clamp_max_log_ : map.mp_->clamp_min_log_;
+          map.md_->occupancy_buffer_inflate_[address] = occupied;
+        }
+    Vector3d direction;
+    double old_free, branch_free;
+    EXPECT_FALSE(task.inferOccupancyTurnDirection(forward, direction, old_free, branch_free));
+    EXPECT_FALSE(task.mappedCorridorDirection(heading, direction, false));
+    EXPECT_FALSE(task.turnYawAlignmentPending());
+    EXPECT_GT(task.turnDetectionDirection().dot(forward.head<2>()), 0.999);
+  }
+
   static void runPassableTurn(int mode) {
     ros::NodeHandle nh("~");
     FastExplorationManager manager;
@@ -5412,6 +5450,12 @@ TEST(PassableTurn, WideButDisconnectedBranchIsRejected) { fast_planner::TurnEsca
 TEST(PassableTurn, UnknownBranchIsRejected) { fast_planner::TurnEscapeTest::runPassableTurn(7); }
 TEST(PassableTurn, LowRoofBranchIsRejected) { fast_planner::TurnEscapeTest::runPassableTurn(8); }
 TEST(PassableTurn, FirstTurnUsesMapWithoutShapePrior) { fast_planner::TurnEscapeTest::runPassableTurn(9); }
+TEST(PassableTurn, LocalObstacleKeepsStraightCorridorDirection) {
+  fast_planner::TurnEscapeTest::runLocalObstacleKeepsCorridor(0.0);
+}
+TEST(PassableTurn, RotatedLocalObstacleKeepsStraightCorridorDirection) {
+  fast_planner::TurnEscapeTest::runLocalObstacleKeepsCorridor(M_PI / 2.0);
+}
 TEST(PassableTurn, RecordedOctober25CornerSelectsRight) {
   const char* fixture = std::getenv("TURN_PASSABILITY_FIXTURE");
   if (!fixture) GTEST_SKIP() << "requires October 25 pre-turn point clouds";
