@@ -46,11 +46,28 @@ def test_standalone_starts_real_localization_without_flight_control():
     assert ("fast_lio", "fastlio_mapping") in executables
     assert ("livox_ros_driver2", "livox_ros_driver2_node") in executables
     assert ("target_reporting", "publish_camera_extrinsic_tf.py") in executables
-    assert ("target_reporting", "uav1_four_view_node.py") in executables
+    assert ("odom_visualization", "odom_visualization") in executables
     assert not any(node.package in {"mavros", "control", "payload_mpc_controller", "diff_planner"}
                    for node in config.nodes)
     assert config.params["/UAV1/publish/world_frame"].value == "UAV1/camera_init"
     assert config.params["/uav1_target_reporter/localization_frame"].value == "UAV1/camera_init"
+
+
+def test_standalone_reuses_multivehicle_visualization():
+    import rospkg
+
+    production = roslaunch.ROSLaunchConfig()
+    launch = Path(rospkg.RosPack().get_path("exploration_control")) / "launch/uav1_relay_visualization.launch"
+    roslaunch.xmlloader.XmlLoader().load(str(launch), production, verbose=False)
+    standalone = load("uav1_detection_test.launch")
+    nodes = {node.name: node for node in standalone.nodes}
+    for node in production.nodes:
+        actual = nodes[node.name]
+        assert (actual.package, actual.type, actual.args, actual.remap_args) == (
+            node.package, node.type, node.args, node.remap_args)
+    for key, param in production.params.items():
+        assert standalone.params[key].value == param.value
+    assert sum(node.package == "rviz" for node in standalone.nodes) == 1
 
 
 def test_headless_and_no_thermal_options():

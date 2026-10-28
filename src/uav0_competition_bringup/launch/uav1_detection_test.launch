@@ -23,7 +23,7 @@
     <arg name="target_reporting_mission_id" value="$(arg mission_id)" />
     <arg name="enable_thermal" value="$(arg enable_thermal)" />
   </include>
-  <include file="$(find target_reporting)/launch/uav1_four_view.launch">
-    <arg name="open_rviz" value="$(arg open_rviz)" />
-  </include>
+  <!-- 直接复用多机后机的 RViz、里程计限频和轨迹/模型显示，不启动跟随控制。 -->
+  <include if="$(arg open_rviz)"
+           file="$(find exploration_control)/launch/uav1_relay_visualization.launch" />
 </launch>

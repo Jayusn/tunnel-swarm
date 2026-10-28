@@ -10,7 +10,8 @@ test_workspace=$(dirname -- "$test_script_dir")
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
     cat <<'EOF'
 用法：bash shfiles/test_uav1_detection.sh [roslaunch 参数]
-  默认启动 MID360、FAST-LIO、D435、热成像、三类检测和 RViz 预览。
+  默认启动 MID360、FAST-LIO、D435、热成像、三类检测和多机同款 RViz。
+  RViz 显示配准点云、移动轨迹、机体模型、检测图像和目标位置。
   open_rviz:=false       不打开 RViz
   enable_thermal:=false  本次不接热成像相机时使用
   --dump-params          只解析配置，不启动设备

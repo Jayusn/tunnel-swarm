@@ -14,7 +14,10 @@ RViz 同时显示由过滤点云计算出的检测目标三维线框包围盒。
 bash /home/oem/match_ws/shfiles/test_uav1_detection.sh
 ```
 
-启动 MID360、FAST-LIO、D435、热成像、三类检测/上报与现有多画面 RViz。
+启动 MID360、FAST-LIO、D435、热成像、三类检测/上报与多机后机同一套 RViz。
+直接复用 `exploration_control/launch/uav1_relay_visualization.launch` 和 `uav1_lite.rviz`，
+显示雷达配准点云、手持移动轨迹、机体模型、三类检测画面与目标位置标记。
+配准点云是当前扫描；本测试不启动规划器，因此不会生成规划器的膨胀栅格地图或规划轨迹。
 脚本使用独立本机 master `http://127.0.0.1:11321`，不需要前机或 MAVROS，
 不启动规划/飞行控制。启动前关闭占用同一硬件的其他程序；开始时保持机体静止，
 待 FAST-LIO 初始化、相机自动曝光稳定后，再移动后机或展示目标。Ctrl+C 结束所有本次启动节点。
@@ -32,7 +35,7 @@ bash /home/oem/match_ws/shfiles/test_uav1_detection.sh
 
 前机与出口过滤参数也沿用多机配置，但独立 master 没有前机里程计/出口输入，
 因此不能用本测试验证这两项过滤；热源地面高度过滤继续生效。
-多画面中的降落搜索格会空白，因为本测试不启动降落检测。
+RViz 中的前机、动态障碍、规划和降落显示项没有相应输入时会空白，保持多机原有显示配置。
 可加 `open_rviz:=false` 关闭窗口，或加 `enable_thermal:=false` 只测颜色和二维码。
 `--dump-params` 只解析配置，不启动设备。
 
