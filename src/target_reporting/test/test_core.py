@@ -113,6 +113,36 @@ class CoreTests(unittest.TestCase):
             reopened.mark_image_acked("second_d435.jpg")
             self.assertEqual([], reopened.pending_images())
 
+    def test_type_folders_reopen_and_recover_mixed_old_and_new_images(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = MissionStore(tmp, "uav1", mission_id="20261028/flight_100000")
+            expected = []
+            for seq, kind in enumerate(store.IMAGE_TARGET_TYPES, 1):
+                event = self.make_event(seq).to_dict()
+                event["target_type"] = kind
+                name = "uav1_seq{:06d}_{}.jpg".format(seq, kind)
+                data = kind.encode()
+                saved = store.save_image(name, data, target_type=kind)
+                self.assertEqual(os.path.join(store.image_dir, kind, name), saved)
+                event["image"] = {"id": name, "encoding": "jpeg", "size": len(data)}
+                expected.append((name, data))
+                if kind == "thermal_source":
+                    mapped_name = "uav1_seq000003_thermal_source_d435.jpg"
+                    mapped = store.save_image(mapped_name, b"mapped", target_type=kind)
+                    self.assertEqual(os.path.dirname(saved), os.path.dirname(mapped))
+                    event["d435_image"] = {"id": mapped_name, "encoding": "jpeg", "size": 6}
+                    expected.append((mapped_name, b"mapped"))
+                store.append_event(event)
+            old = self.make_event(4).to_dict()
+            old["image"] = {"id": "legacy.jpg", "encoding": "jpeg", "size": 3}
+            store.save_image("legacy.jpg", b"old")
+            store.append_event(old)
+            expected.append(("legacy.jpg", b"old"))
+            reopened = MissionStore(tmp, "uav1", mission_id="20261028/flight_100000")
+            self.assertEqual(expected, reopened.pending_images())
+            reopened.mark_image_acked(expected[0][0])
+            self.assertEqual(expected[1:], reopened.pending_images())
+
     def test_stable_false_target_does_not_block_real_target_elsewhere(self):
         tracker = CandidateTracker(distance_m=0.3, confirm_hits=2)
         first = {"x": 1.0, "y": 0.0, "z": 0.5}

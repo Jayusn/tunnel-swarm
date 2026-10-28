@@ -239,10 +239,18 @@ UAV1 保存到 `~/match_ws/target_reports/uav1/<任务编号>/`。
 ```text
 ~/target_reports/mission_YYYYMMDD_HHMMSS/
   reports.jsonl
-  images/annotated/*.jpg
+  images/annotated/qr_code/*.jpg
+  images/annotated/color_tag/*.jpg
+  images/annotated/thermal_source/*.jpg
 ```
 
-远程端默认写入指定的 `--output` 目录，结构相同。候选观测和确认观测都会发布到机载端的
+机载图片按目标类型分目录：`qr_code` 为二维码，`color_tag` 为颜色标签，
+`thermal_source` 为热源（热成像图和对应 D435/D455 映射图都在这里）。
+启动上报节点时创建三个文件夹；未检出的类型文件夹为空。每次飞行仍共用一份 `reports.jsonl`，
+图片 ID 保持原文件名，可根据记录的 `target_type` 在对应文件夹中找到图片。
+旧的平铺图片不自动搬迁，重启补发同时支持新分类目录和旧目录。
+远程端仍写入指定的 `--output` 下的任务目录，接收图片沿用 `images/annotated/*.jpg` 平铺结构。
+候选观测和确认观测都会发布到机载端的
 `/UAV0/target_reporting/observation`，因此规划器 RViz 仍能看到候选；默认只有确认观测
 通过 TCP 5000 发往远程端，候选不会传到 Windows，也不会生成远程记录或图片。只有确认目标
 生成最终 JSON 和保留检测器原始框选的证据图片；颜色标签、二维码和热源检测器各自负责绘制
@@ -263,10 +271,14 @@ UAV1 保存到 `~/match_ws/target_reports/uav1/<任务编号>/`。
 ```text
 ~/match_ws/target_reports/uav1/20261027/flight_143000/
   reports.jsonl
-  images/annotated/*.jpg
+  images/annotated/qr_code/*.jpg
+  images/annotated/color_tag/*.jpg
+  images/annotated/thermal_source/*.jpg
 ~/match_ws/target_reports/uav1/20261027/flight_150500/
   reports.jsonl
-  images/annotated/*.jpg
+  images/annotated/qr_code/*.jpg
+  images/annotated/color_tag/*.jpg
+  images/annotated/thermal_source/*.jpg
 ```
 
 各目录独立编号，不再把同一天后续飞行追加进前一次目录；旧的按日期目录保留。

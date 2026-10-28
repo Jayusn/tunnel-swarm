@@ -121,6 +121,8 @@ class TargetReporterNode:
             rospy.get_param("~record_root", "~/target_reports"), self.drone_id,
             mission_id=self.mission_id,
         )
+        for target_type in self.store.IMAGE_TARGET_TYPES:
+            os.makedirs(os.path.join(self.store.image_dir, target_type), exist_ok=True)
         self.tracker = CandidateTracker(
             rospy.get_param("~dedup_distance_m", 0.30),
             rospy.get_param("~confirm_hits", 1),
@@ -703,7 +705,7 @@ class TargetReporterNode:
             jpeg = build_evidence_jpeg(image, event,
                                        (point.point.x, point.point.y, point.point.z))
             event["image"] = image_metadata(image_id, jpeg)
-            self.store.save_image(image_id, jpeg)
+            self.store.save_image(image_id, jpeg, target_type=target_type)
         else:
             rospy.logwarn(
                 "Confirmed %s %s has no same-frame debug image; "
@@ -725,7 +727,7 @@ class TargetReporterNode:
                     (point.point.x, point.point.y, point.point.z),
                 )
                 event["d435_image"] = image_metadata(d435_image_id, d435_jpeg)
-                self.store.save_image(d435_image_id, d435_jpeg)
+                self.store.save_image(d435_image_id, d435_jpeg, target_type=target_type)
             else:
                 rospy.logwarn(
                     "Confirmed thermal target %s has no matching D435 debug image",

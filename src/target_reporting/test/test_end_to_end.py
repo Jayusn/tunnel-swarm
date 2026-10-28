@@ -18,14 +18,14 @@ class EndToEndTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as local_root, tempfile.TemporaryDirectory() as remote_root:
             local = MissionStore(local_root, "uav1", mission_id="mission")
             remote = MissionStore(remote_root, "receiver", mission_id="mission")
-            image_id = "uav1_seq000001_color_tag.jpg"
+            image_id = "uav1_seq000001_thermal_source.jpg"
             jpeg = b"synthetic-jpeg-payload"
             d435_image_id = "uav1_seq000001_thermal_source_d435.jpg"
             d435_jpeg = b"synthetic-d435-jpeg-payload"
             event = TargetEvent(
                 seq=1, timestamp=1.5, drone_id="uav1", message_type="confirmed_target",
-                target_id="uav1-color_tag-001", target_type="color_tag",
-                result={"color": "red"}, position=Position("channel", 1.0, 2.0, 3.0),
+                target_id="uav1-thermal_source-001", target_type="thermal_source",
+                result={"detected": True}, position=Position("channel", 1.0, 2.0, 3.0),
                 image={"id": image_id, "encoding": "jpeg", "size": len(jpeg)},
             ).to_dict()
             event["d435_image"] = {
@@ -33,8 +33,8 @@ class EndToEndTests(unittest.TestCase):
                 "encoding": "jpeg",
                 "size": len(d435_jpeg),
             }
-            local.save_image(image_id, jpeg)
-            local.save_image(d435_image_id, d435_jpeg)
+            local.save_image(image_id, jpeg, target_type="thermal_source")
+            local.save_image(d435_image_id, d435_jpeg, target_type="thermal_source")
             local.append_event(event)
 
             json_server = JsonReportServer("127.0.0.1", 0, remote.append_event)
@@ -53,8 +53,8 @@ class EndToEndTests(unittest.TestCase):
             image_client.start()
             try:
                 json_client.enqueue(event)
-                image_client.enqueue((image_id, jpeg))
-                image_client.enqueue((d435_image_id, d435_jpeg))
+                for item in local.pending_images():
+                    image_client.enqueue(item)
                 deadline = time.time() + 3.0
                 remote_image = os.path.join(remote.image_dir, image_id)
                 remote_d435_image = os.path.join(remote.image_dir, d435_image_id)

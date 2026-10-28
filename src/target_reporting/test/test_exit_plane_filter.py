@@ -144,7 +144,7 @@ def test_outside_targets_do_not_confirm_publish_or_save_any_evidence(reporter, s
     reporter.observation_pub.publish.assert_not_called()
     assert reporter.seq == 0
     assert reporter.store.all_events() == []
-    assert list(Path(reporter.store.image_dir).glob("*.jpg")) == []
+    assert list(Path(reporter.store.image_dir).rglob("*.jpg")) == []
     # The raw detector/fusion evidence still exists in memory for display.
     assert reporter.images.has_match(source, 10, .03)
 
@@ -163,15 +163,15 @@ def test_allowed_targets_still_save_normally(reporter, source, mode):
         x = 1
     feed_target(reporter, source, x)
     assert len(reporter.store.all_events()) == 1
-    assert len(list(Path(reporter.store.image_dir).glob("*.jpg"))) == (2 if source == "thermal" else 1)
+    assert len(list(Path(reporter.store.image_dir).rglob("*.jpg"))) == (2 if source == "thermal" else 1)
     reporter.observation_pub.publish.assert_called_once()
 
 
 def test_receiving_exit_stops_future_records_without_deleting_old_ones(reporter):
     feed_target(reporter, "thermal", 2)
-    old_files = list(Path(reporter.store.image_dir).glob("*.jpg"))
+    old_files = list(Path(reporter.store.image_dir).rglob("*.jpg"))
     reporter._final_exit_pose_cb(exit_pose())
     feed_target(reporter, "thermal", 3, seconds=11)
     assert len(reporter.store.all_events()) == 1
     assert len(old_files) == 2 and all(p.exists() for p in old_files)
-    assert len(list(Path(reporter.store.image_dir).glob("*.jpg"))) == 2
+    assert len(list(Path(reporter.store.image_dir).rglob("*.jpg"))) == 2

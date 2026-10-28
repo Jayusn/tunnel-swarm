@@ -9,6 +9,8 @@ from .protocol import validate_event
 
 
 class MissionStore:
+    IMAGE_TARGET_TYPES = ("qr_code", "color_tag", "thermal_source")
+
     def __init__(self, root: str, drone_id: str, mission_id: Optional[str] = None):
         if mission_id is None:
             mission_id = datetime.now().strftime("mission_%Y%m%d_%H%M%S")
@@ -112,18 +114,33 @@ class MissionStore:
                 image_id = image.get("id")
                 if not image_id or image_id in acked:
                     continue
-                path = os.path.join(self.image_dir, os.path.basename(image_id))
+                target_type = event.get("target_type")
+                path = self._image_path(image_id, target_type)
+                if not os.path.exists(path):
+                    # Records saved before type folders still use the flat layout.
+                    path = self._image_path(image_id)
                 if os.path.exists(path):
                     with open(path, "rb") as stream:
                         pending.append((image_id, stream.read()))
         return pending
 
-    def save_image(self, image_id: str, jpeg_bytes: bytes) -> str:
+    def _image_path(self, image_id: str, target_type: Optional[str] = None) -> str:
         safe_name = os.path.basename(image_id)
         if not safe_name or safe_name != image_id or not safe_name.lower().endswith(".jpg"):
             raise ValueError("invalid image id")
-        final_path = os.path.join(self.image_dir, safe_name)
-        fd, temp_path = tempfile.mkstemp(prefix=safe_name + ".", suffix=".tmp", dir=self.image_dir)
+        if target_type is None:
+            return os.path.join(self.image_dir, safe_name)
+        if target_type not in self.IMAGE_TARGET_TYPES:
+            raise ValueError("invalid image target type")
+        return os.path.join(self.image_dir, target_type, safe_name)
+
+    def save_image(
+        self, image_id: str, jpeg_bytes: bytes, target_type: Optional[str] = None
+    ) -> str:
+        final_path = self._image_path(image_id, target_type)
+        directory = os.path.dirname(final_path)
+        os.makedirs(directory, exist_ok=True)
+        fd, temp_path = tempfile.mkstemp(prefix=image_id + ".", suffix=".tmp", dir=directory)
         try:
             with os.fdopen(fd, "wb") as stream:
                 stream.write(jpeg_bytes)

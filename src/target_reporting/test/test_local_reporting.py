@@ -39,7 +39,7 @@ def test_uav1_restarts_create_separate_mission_directories(monkeypatch, tmp_path
     assert Path(second.store.mission_dir) == tmp_path / "20261027" / "flight_150500"
     assert first.store.mission_dir != second.store.mission_dir
     assert evidence_path.read_bytes() == b"existing evidence"
-    assert list(Path(second.store.image_dir).glob("*.jpg")) == []
+    assert list(Path(second.store.image_dir).rglob("*.jpg")) == []
     assert second.store.all_events() == [] and second.seq == 0
     second.shutdown()
 
@@ -110,8 +110,13 @@ def test_local_evidence_without_network_and_upload_after_reenable(
         reporter._is_leader_thermal_source.assert_called_once_with(world_position, 10.0, point)
         reporter._is_ground_thermal_source.assert_called_once_with(world_position)
     expected_images = 2 if source == "thermal" else 1
-    images = list(Path(reporter.store.image_dir).glob("*.jpg"))
+    images = list(Path(reporter.store.image_dir).rglob("*.jpg"))
     assert len(images) == expected_images
+    target_type = {"color": "color_tag", "qr": "qr_code", "thermal": "thermal_source"}[source]
+    assert all(path.parent == Path(reporter.store.image_dir) / target_type for path in images)
+    assert {p.name for p in Path(reporter.store.image_dir).iterdir()} == {
+        "qr_code", "color_tag", "thermal_source"
+    }
     assert all(cv2.imread(str(path)) is not None for path in images)
     reporter.observation_pub.publish.assert_called_once()
     local_observation = json.loads(reporter.observation_pub.publish.call_args.args[0].data)
