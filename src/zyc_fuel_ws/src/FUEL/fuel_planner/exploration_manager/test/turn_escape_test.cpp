@@ -293,6 +293,86 @@ public:
     EXPECT_FALSE(manager.currentPlanIsGroundAscent());
   }
 
+  static void runGroundAscentXY(int mode) {
+    ros::NodeHandle nh("~ground_ascent_xy_" + std::to_string(mode));
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    auto& map = *manager.sdf_map_;
+    auto& planner = *manager.planner_manager_;
+    std::fill(map.md_->occupancy_buffer_.begin(), map.md_->occupancy_buffer_.end(),
+              map.mp_->clamp_min_log_);
+    const Vector3d anchor(.025, .025, .525), target(.025, .025, .925);
+    const Vector3d zero = Vector3d::Zero();
+    manager.ground_ascent_active_ = true;
+    manager.ground_ascent_anchor_valid_ = true;
+    manager.ground_ascent_anchor_ = anchor;
+    manager.ground_ascent_target_ = target;
+    manager.ground_ascent_still_confirm_time_ = 0.0;
+    manager.horizontal_reference_height_ = target.z();
+    if (mode == 0) {
+      // 连续漂移重试不能重置XY；较大偏差先同高度回正，小偏差随升高收回。
+      for (const Vector3d& offset : {Vector3d(.12, 0, 0), Vector3d(.16, .08, .03),
+                                     Vector3d(.04, 0, .04)}) {
+        const Vector3d actual = anchor + offset;
+        ASSERT_TRUE(manager.buildGroundAscentPlan(actual, zero, zero));
+        auto& trajectory = planner.local_data_.position_traj_;
+        const Vector3d end = trajectory.evaluateDeBoorT(trajectory.getTimeSum());
+        EXPECT_LT((end-target).head<2>().norm(), 1e-5);
+        EXPECT_TRUE(manager.ground_ascent_target_.isApprox(target));
+        EXPECT_TRUE(manager.ground_ascent_anchor_.isApprox(anchor));
+        EXPECT_LT((trajectory.evaluateDeBoorT(0.0)-actual).norm(), 1e-5);
+        if (offset.head<2>().norm() > manager.vertical_detour_xy_tolerance_) {
+          for (double t=0; t<=trajectory.getTimeSum(); t+=.02)
+            EXPECT_NEAR(trajectory.evaluateDeBoorT(t).z(), actual.z(), 1e-6);
+        } else EXPECT_NEAR(end.z(), target.z(), 1e-5);
+        manager.recordPublishedTrajectoryHeight();
+        EXPECT_DOUBLE_EQ(manager.horizontal_reference_height_, target.z());
+        EXPECT_TRUE(planner.isTrajectorySafe());
+      }
+      return;
+    }
+    if (mode == 1) {
+      // 即使是可选恢复，回正路径有障碍也不能改锚点后在偏移处硬升。
+      manager.ground_ascent_optional_ = true;
+      const Vector3d actual = anchor + Vector3d(0, .30, 0);
+      Eigen::Vector3i id; map.posToIndex(anchor + Vector3d(0, .15, 0), id);
+      map.md_->occupancy_buffer_[map.toAddress(id)] = map.mp_->clamp_max_log_;
+      EXPECT_FALSE(manager.buildGroundAscentPlan(actual, zero, zero));
+      EXPECT_TRUE(manager.ground_ascent_active_);
+      EXPECT_TRUE(manager.ground_ascent_target_.isApprox(target));
+      EXPECT_TRUE(manager.ground_ascent_anchor_.isApprox(anchor));
+      return;
+    }
+    const Vector3d actual = anchor + Vector3d(.12, 0, 0);
+    if (mode == 3) ASSERT_TRUE(planner.planStraightTraj(actual, anchor));
+    else ASSERT_TRUE(planner.planVerticalTraj(anchor, target));
+    ASSERT_TRUE(planner.planYawTurnInPlace(zero, 0.0));
+    FastExplorationFSM fsm;
+    fsm.expl_manager_ = std::shared_ptr<FastExplorationManager>(&manager,
+        [](FastExplorationManager*){});
+    fsm.planner_manager_ = manager.planner_manager_;
+    fsm.fd_ = std::make_shared<FSMData>();
+    fsm.fp_ = std::make_shared<FSMParam>();
+    fsm.fd_->state_str_ = {"INIT", "WAIT", "PLAN", "PUB", "EXEC", "FINISH"};
+    fsm.fd_->odom_pos_ = actual;
+    fsm.fd_->odom_vel_.setZero();
+    fsm.fd_->odom_yaw_ = 0.0;
+    fsm.fp_->emergency_brake_horizon_ = .12;
+    fsm.fp_->max_tracking_error_xy_ = fsm.fp_->max_tracking_error_z_ = 1.0;
+    fsm.active_traj_ = planner.local_data_;
+    fsm.active_traj_.start_time_ = ros::Time::now();
+    fsm.active_traj_valid_ = true;
+    fsm.active_ground_ascent_ = mode != 4;
+    fsm.state_ = EXEC_TRAJ;
+    fsm.last_mapped_turn_check_ = ros::Time::now() + ros::Duration(30.0);
+    fsm.last_suspended_underpass_check_ = ros::Time::now() + ros::Duration(30.0);
+    fsm.emergency_brake_pub_ = nh.advertise<std_msgs::Int32>("ascent_xy_brake", 1);
+    fsm.safetyCallback(ros::TimerEvent());
+    EXPECT_EQ(fsm.active_traj_braked_, mode == 2);
+    EXPECT_EQ(fsm.state_, mode == 2 ? PLAN_TRAJ : EXEC_TRAJ);
+    EXPECT_TRUE(manager.ground_ascent_target_.isApprox(target));
+  }
+
   static void runCruiseRecoveryTolerance() {
     ros::NodeHandle nh("~cruise_recovery_tolerance");
     FastExplorationManager manager;
@@ -2753,7 +2833,7 @@ public:
   static void runMovingClimb(int mode, bool height_correction = false) {
     ros::NodeHandle nh("~");
     nh.setParam("mission/task_search/min_height", 0.10);
-    nh.setParam("mission/task_search/cruise_height", 0.60);
+    nh.setParam("mission/task_search/cruise_height", mode == 8 ? 0.625 : 0.60);
     nh.setParam("mission/task_search/max_goal_climb", mode == 5 ? 0.06 : 0.30);
     FastExplorationManager manager;
     initialize(nh, manager);
@@ -2768,7 +2848,8 @@ public:
     auto& planner = *manager.planner_manager_;
     auto& map = *manager.sdf_map_;
     const Vector3d start(0.025, 0.025, 0.325);
-    const Vector3d end = start + Vector3d(0.6, -0.3, mode == 7 ? .10 : 0.0);
+    const Vector3d end = start + (mode == 8 ? Vector3d(.4, 0, 0) :
+        Vector3d(0.6, -0.3, mode == 7 ? .10 : 0.0));
     // 每层双向真实射线建图；未知上方用例只观测当前低高度的三层。
     for (int layer = 5; layer <= (mode == 2 ? 7 : 14); ++layer) {
       const double z = (layer + 0.5) * 0.05;
@@ -2824,7 +2905,7 @@ public:
     Vector3d velocity = Vector3d::Zero();
     if (mode == 4) velocity.x() = std::numeric_limits<double>::quiet_NaN();
     const bool raised = manager.tryCruiseHeightRecovery(start, velocity, Vector3d::Zero(), 0.0);
-    check(raised == (mode == 0 || mode == 1 || mode == 5 || mode == 7),
+    check(raised == (mode == 0 || mode == 1 || mode == 5 || mode == 7 || mode == 8),
           "moving climb did not match overhead visibility, occupancy or active underpass");
     check(manager.recovery_side_latched_ && manager.recovery_side_dir_.y() < -0.9,
           "height recovery replaced the committed right-hand side");
@@ -2841,7 +2922,8 @@ public:
       }
       return;
     }
-    const double rise = mode == 1 ? 0.075 : (mode == 5 ? 0.06 : 0.275);
+    const double rise = mode == 1 ? 0.075 : (mode == 5 ? 0.06 :
+        (mode == 8 ? 0.30 : 0.275));
     check((manager.ed_->next_goal_.head<2>() - end.head<2>()).norm() < 1e-9 &&
           std::fabs(manager.ed_->next_goal_.z() - start.z() - rise) < 1e-6,
           "moving climb changed XY or ignored cruise/per-segment climb limits");
@@ -2854,7 +2936,8 @@ public:
     }
     const Vector3d actual_end = planner.local_data_.position_traj_.evaluateDeBoorT(
         planner.local_data_.duration_);
-    check(actual_end.x() > start.x()+0.5 && actual_end.z() > start.z()+rise-0.02,
+    check(actual_end.x() > start.x()+(mode == 8 ? 0.3 : 0.5) &&
+          actual_end.z() > start.z()+rise-0.02,
           "generated trajectory did not both advance and regain height");
   }
 
@@ -4725,6 +4808,22 @@ public:
 TEST(UpperClearance, HighestVoxelPlusTwentyBeforeForward) {
   fast_planner::TurnEscapeTest::runObstacleClearance(false);
 }
+
+TEST(GroundAscentXY, RepeatedDriftReturnsToOriginalXYBeforeClimbing) {
+  fast_planner::TurnEscapeTest::runGroundAscentXY(0);
+}
+TEST(GroundAscentXY, BlockedCorrectionDoesNotMoveAnchorOrClimb) {
+  fast_planner::TurnEscapeTest::runGroundAscentXY(1);
+}
+TEST(GroundAscentXY, DriftStopsActiveAscentBeforeGeneralTrackingLimit) {
+  fast_planner::TurnEscapeTest::runGroundAscentXY(2);
+}
+TEST(GroundAscentXY, HorizontalCorrectionIsNotInterruptedByAscentCheck) {
+  fast_planner::TurnEscapeTest::runGroundAscentXY(3);
+}
+TEST(GroundAscentXY, OrdinaryTrajectoryKeepsExistingTrackingRules) {
+  fast_planner::TurnEscapeTest::runGroundAscentXY(4);
+}
 TEST(FappLocalStep, RemoteStaticObstacleAllowsStationaryDescentThenPartialCrossing) {
   fast_planner::TurnEscapeTest::runLocalFappStep(0);
 }
@@ -4919,6 +5018,9 @@ TEST(CruiseHeightRecovery, RejectedGenerationRestoresOriginalTrajectory) {
 }
 TEST(CruiseHeightRecovery, SmallClimbStepStillRecoversHeight) {
   fast_planner::TurnEscapeTest::runMovingClimb(5);
+}
+TEST(CruiseHeightRecovery, ShortClearRouteClimbsThirtyCentimetersInOneTrajectory) {
+  fast_planner::TurnEscapeTest::runMovingClimb(8);
 }
 TEST(PostFappRecovery, ActualPassageSelectsRaisedPointAfterDynamicEntrance) {
   fast_planner::TurnEscapeTest::runPostFappClearanceRecovery(0);

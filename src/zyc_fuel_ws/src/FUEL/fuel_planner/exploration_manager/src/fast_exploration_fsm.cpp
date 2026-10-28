@@ -578,7 +578,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
                   "(%.2f,%.2f,%.2f).",
                   reviewed_position.x(), reviewed_position.y(), reviewed_position.z());
       }
-      if (!active_traj_valid_ && !pending_vertical_detour_ &&
+      if (!active_traj_valid_ && !pending_vertical_detour_ && !pending_ground_ascent_ &&
           !pending_initial_traj_reanchored_) {
         auto& local_data = planner_manager_->local_data_;
         const Eigen::Vector3d trajectory_start =
@@ -1197,6 +1197,21 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
                               active_traj_valid_, replacement_pending,
                               active_traj_braked_))
     return;
+
+  if (active_ground_ascent_ &&
+      expl_manager_->groundAscentXYCorrectionNeeded(fd_->odom_pos_)) {
+    auto& ascent = active_traj_.position_traj_;
+    const double rise = ascent.evaluateDeBoorT(active_traj_.duration_).z() -
+                        ascent.evaluateDeBoorT(0.0).z();
+    // 同高度回正段继续执行；只有仍在抬高的段才因XY偏离停止上升。
+    if (rise > 0.02) {
+      requestActiveTrajectoryBrake("ascent XY drift; correct locked XY before climbing");
+      active_ground_ascent_ = false;
+      fd_->static_state_ = true;
+      transitState(PLAN_TRAJ, "ground-ascent-xy-correction");
+      return;
+    }
+  }
 
   // 新通道可提前发现，但已发布的升高段须先执行完，不能在原低位点抢转。
   // 只看当前已发布轨迹及其终点，不要求达到固定巡航高度，也不增加速度门槛。

@@ -108,6 +108,11 @@ public:
   bool planFailedMotionEscape(const Vector3d& pos, const Vector3d& vel,
                              const Vector3d& acc, const Vector3d& yaw);
   bool currentPlanIsGroundAscent() const { return ground_ascent_plan_; }
+  bool groundAscentXYCorrectionNeeded(const Vector3d& position) const {
+    return ground_ascent_active_ && ground_ascent_anchor_valid_ &&
+        (position - ground_ascent_target_).head<2>().norm() >
+            vertical_detour_xy_tolerance_;
+  }
   bool obstacleAscentPending() const {
     return ground_ascent_active_ && std::isfinite(obstacle_clearance_height_);
   }
