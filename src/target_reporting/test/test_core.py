@@ -247,7 +247,7 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(second_confirmed)
         self.assertNotEqual(first["local_number"], second["local_number"])
 
-    def test_decoded_qr_content_prevents_duplicate_after_position_drift(self):
+    def test_same_qr_content_at_distant_positions_confirms_separately(self):
         tracker = CandidateTracker(distance_m=0.3, confirm_hits=1)
         first, first_confirmed = tracker.update(
             "qr_code", {"content": "AR03"},
@@ -258,10 +258,10 @@ class CoreTests(unittest.TestCase):
             {"x": 2.0, "y": 0.0, "z": 1.0},
         )
         self.assertTrue(first_confirmed)
-        self.assertFalse(repeated_confirmed)
-        self.assertEqual(first["local_number"], repeated["local_number"])
+        self.assertTrue(repeated_confirmed)
+        self.assertNotEqual(first["local_number"], repeated["local_number"])
 
-    def test_different_qr_content_remains_a_separate_target(self):
+    def test_different_qr_content_at_nearby_position_is_spatially_deduplicated(self):
         tracker = CandidateTracker(distance_m=0.3, confirm_hits=1)
         first, first_confirmed = tracker.update(
             "qr_code", {"content": "AR03"},
@@ -272,8 +272,21 @@ class CoreTests(unittest.TestCase):
             {"x": 1.1, "y": 0.0, "z": 1.0},
         )
         self.assertTrue(first_confirmed)
-        self.assertTrue(second_confirmed)
-        self.assertNotEqual(first["local_number"], second["local_number"])
+        self.assertFalse(second_confirmed)
+        self.assertEqual(first["local_number"], second["local_number"])
+
+    def test_qr_spatial_dedup_uses_3d_distance_and_keeps_near_repeats(self):
+        tracker = CandidateTracker(distance_m=0.3, confirm_hits=1)
+        first, _ = tracker.update("qr_code", {"content": "AR14"},
+                                  {"x": 0.0, "y": 0.0, "z": 1.0})
+        near, confirmed = tracker.update("qr_code", {"content": "AR14", "validated": True},
+                                         {"x": 0.1, "y": 0.1, "z": 1.1})
+        self.assertFalse(confirmed)
+        self.assertEqual(first["local_number"], near["local_number"])
+        far, confirmed = tracker.update("qr_code", {"content": "AR14"},
+                                        {"x": 0.1, "y": 0.1, "z": 1.5})
+        self.assertTrue(confirmed)
+        self.assertNotEqual(first["local_number"], far["local_number"])
 
     def test_qr_held_result_is_not_reportable(self):
         self.assertIsNone(parse_qr_status(

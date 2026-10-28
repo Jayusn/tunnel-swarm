@@ -74,19 +74,15 @@ class CandidateTracker:
         key = self._result_key(result)
         current_stamp = None if timestamp is None else float(timestamp)
         image_center = self._image_center(result)
-        qr_content = ""
-        if target_type == "qr_code":
-            qr_content = str(result.get("content", "") or "").strip()
         best = None
         best_match = None
         for item in self._items:
             if item["target_type"] != target_type:
                 continue
-            same_decoded_qr = bool(
-                qr_content
-                and item.get("qr_content", "") == qr_content
-            )
-            if item["result_key"] != key and not same_decoded_qr:
+            # QR identity uses only world-space distance. Decoded text and
+            # validation metadata must neither merge distant codes nor split
+            # repeated observations at the same position.
+            if target_type != "qr_code" and item["result_key"] != key:
                 continue
             distance = math.sqrt(sum((float(position[a]) - item["position"][a]) ** 2 for a in ("x", "y", "z")))
             image_distance = None
@@ -108,12 +104,7 @@ class CandidateTracker:
                 and 0.0 <= image_gap <= self.color_image_max_gap_s
                 and image_distance <= self.color_image_distance_px
             )
-            # A non-empty decoded QR payload is a stronger identity than its
-            # drifting world coordinate.  Once registered, the same payload
-            # must not be uploaded again after a FAST-LIO/TF position jump.
-            if same_decoded_qr:
-                match = (0, distance)
-            elif distance <= self.distance_m:
+            if distance <= self.distance_m:
                 match = (1, distance)
             elif same_color_image_track:
                 match = (2, image_distance)
@@ -127,7 +118,6 @@ class CandidateTracker:
             best = {
                 "target_type": target_type,
                 "result_key": key,
-                "qr_content": qr_content,
                 "position": dict(position),
                 "image_center": image_center,
                 "last_seen_stamp": current_stamp,
