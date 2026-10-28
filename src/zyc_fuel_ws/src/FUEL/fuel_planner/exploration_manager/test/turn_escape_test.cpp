@@ -293,7 +293,7 @@ public:
     EXPECT_FALSE(manager.currentPlanIsGroundAscent());
   }
 
-  static void runGroundAscentXY(int mode) {
+  static void runGroundAscentXY(int mode, bool manual = false) {
     ros::NodeHandle nh("~ground_ascent_xy_" + std::to_string(mode));
     FastExplorationManager manager;
     initialize(nh, manager);
@@ -309,13 +309,22 @@ public:
     manager.ground_ascent_target_ = target;
     manager.ground_ascent_still_confirm_time_ = 0.0;
     manager.horizontal_reference_height_ = target.z();
+    if (manual) {
+      manager.manual_path_enabled_ = manager.manual_path_exploration_style_ = true;
+      manager.manual_path_started_ = true;
+      manager.manual_path_.points = {Vector3d(1.425,.025,.625)};
+    }
     if (mode == 2 || mode == 5) manager.obstacle_clearance_height_ = .85;
     if (mode == 0) {
       // 连续漂移重试不能重置XY；较大偏差先同高度回正，小偏差随升高收回。
       for (const Vector3d& offset : {Vector3d(.12, 0, 0), Vector3d(.16, .08, .03),
                                      Vector3d(.04, 0, .04)}) {
         const Vector3d actual = anchor + offset;
-        ASSERT_TRUE(manager.buildGroundAscentPlan(actual, zero, zero));
+        if (manual) {
+          ASSERT_EQ(manager.planExploreMotion(actual, zero, zero, zero), SUCCEED);
+        } else {
+          ASSERT_TRUE(manager.buildGroundAscentPlan(actual, zero, zero));
+        }
         auto& trajectory = planner.local_data_.position_traj_;
         const Vector3d end = trajectory.evaluateDeBoorT(trajectory.getTimeSum());
         EXPECT_LT((end-target).head<2>().norm(), 1e-5);
@@ -375,7 +384,7 @@ public:
     EXPECT_TRUE(manager.ground_ascent_target_.isApprox(target));
   }
 
-  static void runBlockedAscentRetreat(bool rear_blocked) {
+  static void runBlockedAscentRetreat(bool rear_blocked, bool manual = false) {
     ros::NodeHandle nh("~blocked_ascent_retreat");
     nh.setParam("manager/use_geometric_path",true);
     nh.setParam("astar/resolution_astar",.05);
@@ -387,6 +396,11 @@ public:
     auto& map=*manager.sdf_map_;
     auto& planner=*manager.planner_manager_;
     const Vector3d pos(.025,.025,.525), target(.025,.025,.95), zero=Vector3d::Zero();
+    if (manual) {
+      manager.manual_path_enabled_ = manager.manual_path_exploration_style_ = true;
+      manager.manual_path_started_ = true;
+      manager.manual_path_.points = {Vector3d(1.425,.025,.625)};
+    }
     manager.ground_ascent_active_=true;
     manager.ground_ascent_anchor_valid_=true;
     manager.ground_ascent_target_=target;
@@ -581,7 +595,7 @@ public:
     }
   }
 
-  static void runLocalFappStep(int mode) {
+  static void runLocalFappStep(int mode, bool manual = false) {
     ros::NodeHandle nh("~local_fapp_step_" + std::to_string(mode));
     nh.setParam("astar/allocate_num", 100000);
     nh.setParam("astar/resolution_astar", 0.05);
@@ -607,6 +621,15 @@ public:
     manager.manual_fapp_forward_ = Vector3d::UnitX();
     manager.manual_fapp_hold_height_ = 0.60;
     manager.manual_fapp_exit_progress_ = 0.95;
+    if (manual) {
+      manager.manual_path_enabled_ = manager.manual_path_exploration_style_ = true;
+      manager.manual_path_started_ = true;
+      manager.manual_path_use_astar_ = true;
+      manager.manual_path_.points = {Vector3d(mode == 7 ? .725 : 1.425,.025,.60)};
+      manager.task_search_manager_->enabled_ = true;
+      manager.task_search_manager_->exit_detection_enabled_ = false;
+      manager.turn_in_place_enabled_ = false;
+    }
     planner.fapp_watched_valid_ = true;
     planner.fapp_watched_state_.position = Vector3d(0.45, 0.0, 0.80);
     planner.fapp_watched_state_.size = Vector3d(0.2,0.2,0.2);
@@ -655,9 +678,23 @@ public:
         }
       map.clearAndInflateLocalMap(); map.updateESDF3d();
     }
-    const bool planned = mode == 0 || mode == 6 || mode == 8 || mode == 9
-        ? manager.planExplorationFappCrossing(start,zero,zero,zero)
-        : manager.planLocalFappUnderpass(start,zero,zero,zero);
+    if (manual) {
+      manager.manual_path_wait_for_trigger_ = true;
+      manager.manual_path_started_ = false;
+      ASSERT_EQ(manager.planExploreMotion(start,zero,zero,zero), FAIL);
+      EXPECT_EQ(manager.low_probe_phase_, vertical_detour::LowProbePhase::IDLE);
+      manager.manual_path_started_ = true;
+    }
+    const bool planned = manual
+        ? manager.planExploreMotion(start,zero,zero,zero) == SUCCEED
+        : (mode == 0 || mode == 6 || mode == 8 || mode == 9
+          ? manager.planExplorationFappCrossing(start,zero,zero,zero)
+          : manager.planLocalFappUnderpass(start,zero,zero,zero));
+    if (manual) {
+      EXPECT_EQ(manager.manual_path_.next, 0u);
+      EXPECT_EQ(manager.manual_path_.points.front(), Vector3d(mode == 7 ? .725 : 1.425,.025,.60));
+      if (planned) EXPECT_LE(manager.ed_->next_goal_.x(), manager.manual_path_.points.front().x()+1e-6);
+    }
     if (mode == 2 || mode == 3) {
       EXPECT_FALSE(planned);
       EXPECT_EQ(manager.low_probe_phase_, vertical_detour::LowProbePhase::IDLE);
@@ -690,6 +727,7 @@ public:
       EXPECT_FALSE(manager.currentPlanIsVerticalDetour());
       const double advance = manager.ed_->next_goal_.x()-start.x();
       if (mode == 5) { EXPECT_GT(advance,0.03); EXPECT_LT(advance,0.20); }
+      else if (manual) EXPECT_NEAR(manager.ed_->next_goal_.x(), .725, 1e-6);
       else EXPECT_GT(manager.ed_->next_goal_.x(),manager.manual_fapp_exit_progress_+0.20);
       manager.recordPublishedTrajectoryHeight();
       EXPECT_FALSE(manager.manualFappObservationMissing(start,0.0,true));
@@ -1201,7 +1239,8 @@ public:
     const bool prior_side = scenario == "exploration_prior_side";
     const bool prior_right_side = scenario == "exploration_prior_right_side";
     const bool low_minimum = scenario == "exploration_low_minimum";
-    const bool entry_retry = scenario == "exploration_entry_retry";
+    const bool manual_retry = scenario == "manual_entry_retry";
+    const bool entry_retry = scenario == "exploration_entry_retry" || manual_retry;
     const bool exploration = scenario == "exploration_low" || scenario == "exploration_side" ||
         recovery_roof || prior_side || prior_right_side || low_minimum || entry_retry;
     const bool asymmetric_side = scenario == "asymmetric_side" || scenario == "exploration_side" || prior_right_side;
@@ -1381,7 +1420,8 @@ public:
       message.states.clear();
       send();
     }
-    if (exploration) {
+    if (manual_retry) manager.fapp_exploration_crossing_enabled_ = true;
+    if (exploration && !manual_retry) {
       manager.manual_path_enabled_ = false;
       manager.fapp_exploration_crossing_enabled_ = true;
       manager.manual_path_.points.clear(); // 自主探索不能依赖人工航点列表。
@@ -2239,7 +2279,7 @@ public:
     }
   }
 
-  static void runRaisedStaticSide(int mode) {
+  static void runRaisedStaticSide(int mode, bool manual = false) {
     ros::NodeHandle nh("~raised_static_side");
     nh.setParam("sdf_map/virtual_ceil_height", -10.0);
     nh.setParam("manager/use_geometric_path", true);
@@ -2320,12 +2360,26 @@ public:
       task.stable_progress_direction_ = Eigen::Vector2d::UnitX();
       task.stable_progress_direction_valid_ = true;
       task.updateRobotPose(start,0.0);
+      if (manual) {
+        manager.manual_path_enabled_ = manager.manual_path_exploration_style_ = true;
+        manager.manual_path_started_ = manager.manual_path_use_astar_ = true;
+        manager.manual_path_.points = {Vector3d(1.425,.025,.60)};
+      }
       ASSERT_EQ(manager.planExploreMotion(start,Vector3d::Zero(),Vector3d::Zero(),Vector3d(.1,0,0)), SUCCEED);
       EXPECT_GE(manager.ed_->next_goal_.z(), top+.20-1e-6);
       EXPECT_TRUE(manager.currentPlanIsGroundAscent());
       EXPECT_GE(manager.obstacle_clearance_height_, top+.20-1e-6);
       EXPECT_NEAR((manager.ed_->next_goal_-start).head<2>().norm(), 0.0, 1e-9);
       EXPECT_TRUE(planner.isTrajectorySafe());
+      if (manual) {
+        const Vector3d elevated = manager.ed_->next_goal_;
+        manager.recordPublishedTrajectoryHeight();
+        manager.updateMissionOdometry(elevated, 0.0, ros::Time::now());
+        ASSERT_EQ(manager.planExploreMotion(elevated,Vector3d::Zero(),Vector3d::Zero(),Vector3d::Zero()), SUCCEED);
+        EXPECT_GT(manager.ed_->next_goal_.x(), elevated.x());
+        EXPECT_GE(manager.ed_->next_goal_.z(), top+.20-1e-6);
+        EXPECT_EQ(manager.manual_path_.points.front(), Vector3d(1.425,.025,.60));
+      }
       return;
     }
     if (mode >= 3) {
@@ -2900,7 +2954,7 @@ public:
     EXPECT_DOUBLE_EQ(manager.manual_fapp_hold_height_, .65);
   }
 
-  static void runMovingClimb(int mode, bool height_correction = false) {
+  static void runMovingClimb(int mode, bool height_correction = false, bool manual = false) {
     ros::NodeHandle nh("~");
     nh.setParam("mission/task_search/min_height", 0.10);
     nh.setParam("mission/task_search/cruise_height", mode == 8 ? 0.625 : 0.60);
@@ -2974,7 +3028,20 @@ public:
     if (mode == 3) manager.low_probe_phase_ = vertical_detour::LowProbePhase::ADVANCING;
     Vector3d velocity = Vector3d::Zero();
     if (mode == 4) velocity.x() = std::numeric_limits<double>::quiet_NaN();
-    const bool raised = manager.tryCruiseHeightRecovery(start, velocity, Vector3d::Zero(), 0.0);
+    bool raised;
+    if (manual) {
+      manager.manual_path_enabled_ = manager.manual_path_exploration_style_ = true;
+      manager.manual_path_started_ = true;
+      manager.manual_path_use_astar_ = false;
+      manager.manual_path_.points = {end};
+      manager.turn_in_place_enabled_ = false;
+      task.exit_detection_enabled_ = false;
+      raised = manager.planExploreMotion(start, velocity, Vector3d::Zero(), Vector3d::Zero()) == SUCCEED;
+      EXPECT_EQ(manager.manual_path_.points.front(), end);
+      EXPECT_EQ(manager.manual_path_.next, 0u);
+    } else {
+      raised = manager.tryCruiseHeightRecovery(start, velocity, Vector3d::Zero(), 0.0);
+    }
     check(raised == (mode == 0 || mode == 1 || mode == 5 || mode == 7 || mode == 8),
           "moving climb did not match overhead visibility, occupancy or active underpass");
     check(manager.recovery_side_latched_ && manager.recovery_side_dir_.y() < -0.9,
@@ -4877,6 +4944,34 @@ public:
 }
 TEST(UpperClearance, HighestVoxelPlusTwentyBeforeForward) {
   fast_planner::TurnEscapeTest::runObstacleClearance(false);
+}
+
+TEST(ManualStrategyAlignment, ShortClearWaypointRouteRecoversThirtyCentimetresInOneSegment) {
+  fast_planner::TurnEscapeTest::runMovingClimb(8, false, true);
+}
+TEST(ManualStrategyAlignment, TemporaryDynamicFailureRetriesWithoutReplacingValidTrajectory) {
+  fast_planner::TurnEscapeTest::runManualSuspended("manual_entry_retry");
+}
+TEST(ManualStrategyAlignment, LowDynamicPrefixStopsAtCurrentWaypoint) {
+  fast_planner::TurnEscapeTest::runLocalFappStep(7, true);
+}
+TEST(ManualStrategyAlignment, DynamicDescentAndLowPrefixUseSharedPlanner) {
+  fast_planner::TurnEscapeTest::runLocalFappStep(0, true);
+}
+TEST(ManualStrategyAlignment, StaticBypassRetriesDynamicDescentAfterMapClears) {
+  fast_planner::TurnEscapeTest::runLocalFappStep(9, true);
+}
+TEST(ManualStrategyAlignment, LowObstacleStartsStationaryAscentBeforeWaypoint) {
+  fast_planner::TurnEscapeTest::runRaisedStaticSide(6, true);
+}
+TEST(ManualStrategyAlignment, AscentDriftCorrectsOriginalXYThroughManualEntry) {
+  fast_planner::TurnEscapeTest::runGroundAscentXY(0, true);
+}
+TEST(ManualStrategyAlignment, BlockedAscentRetreatsThenClimbs) {
+  fast_planner::TurnEscapeTest::runBlockedAscentRetreat(false, true);
+}
+TEST(ManualStrategyAlignment, RearObstacleStillRejectsAscentRetreat) {
+  fast_planner::TurnEscapeTest::runBlockedAscentRetreat(true, true);
 }
 
 TEST(GroundAscentXY, RepeatedDriftReturnsToOriginalXYBeforeClimbing) {

@@ -119,7 +119,7 @@ double FastExplorationManager::horizontalGoalHeight(double current_height) const
   // 下穿会话拥有专用低位目标，不能被旧巡航参考抬回障碍物内。
   if (low_probe_phase_ != vertical_detour::LowProbePhase::IDLE)
     return low_probe_height_;
-  if (!manual_path_enabled_ && manual_fapp_active_ && std::isfinite(manual_fapp_hold_height_))
+  if (manual_fapp_active_ && std::isfinite(manual_fapp_hold_height_))
     return manual_fapp_hold_height_;
   const double height = std::isfinite(horizontal_reference_height_)
       ? horizontal_reference_height_ : current_height;
@@ -489,7 +489,8 @@ bool FastExplorationManager::hasSafeCruiseContinuation(
 bool FastExplorationManager::tryCruiseHeightRecovery(
     const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, double time_lb) {
   if (manual_fapp_active_ || !ground_ascent_enabled_ ||
-      (!mission_entered_search_region_ && !entry_forward_complete_) ||
+      (!mission_entered_search_region_ && !entry_forward_complete_ &&
+       !(manual_path_enabled_ && manual_path_exploration_style_ && manual_path_started_)) ||
       !task_search_manager_ || !planner_manager_ || ground_ascent_active_ ||
       low_probe_phase_ != vertical_detour::LowProbePhase::IDLE ||
       suspended_underpass_active_ || ed_->path_next_goal_.size() < 2)
@@ -624,7 +625,9 @@ bool FastExplorationManager::tryCruiseHeightRecovery(
 
 bool FastExplorationManager::shouldStartGroundAscent(
     const Vector3d& pos) const {
-  if (!ground_ascent_enabled_ || !mission_entered_search_region_ ||
+  if (!ground_ascent_enabled_ ||
+      (!mission_entered_search_region_ &&
+       !(manual_path_enabled_ && manual_path_exploration_style_ && manual_path_started_)) ||
       low_probe_phase_ != vertical_detour::LowProbePhase::IDLE)
     return false;
   const double cruise_height = task_search_manager_
@@ -958,7 +961,7 @@ bool FastExplorationManager::handleActiveLowProbe(
   const auto previous_phase = low_probe_phase_;
   // 动态分段下穿只借用现有原地下降步骤。到达真实低位后重新选路，
   // 不把前方另一个落地静态物当成取消当前安全下降柱的依据。
-  const bool fapp_descent = explorationFappCrossingActive() && !manual_path_enabled_ &&
+  const bool fapp_descent = explorationFappCrossingActive() &&
       previous_phase == vertical_detour::LowProbePhase::DESCENDING;
   if (sdf_map_ && !fapp_descent &&
       (previous_phase == vertical_detour::LowProbePhase::DESCENDING ||
@@ -3266,7 +3269,10 @@ bool FastExplorationManager::buildMissionForwardFallback(const Vector3d& pos, do
 
 bool FastExplorationManager::planFailedMotionEscape(
     const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, const Vector3d& yaw) {
-  if (external_selection_only_ || manual_path_enabled_ || turn_in_place_session_active_ ||
+  if (external_selection_only_ ||
+      (manual_path_enabled_ && (!manual_path_exploration_style_ ||
+       (manual_path_wait_for_trigger_ && !manual_path_started_) || manual_path_.finished())) ||
+      turn_in_place_session_active_ ||
       (ground_ascent_active_ && !obstacleAscentPending()) || suspended_underpass_active_ ||
       low_probe_phase_ != vertical_detour::LowProbePhase::IDLE) return false;
   // 等待刹停或普通漂移仍交给原地升高/回正。只有升高或回正连接被障碍
@@ -4205,11 +4211,12 @@ bool FastExplorationManager::buildManualFappUnderpassPath(
     return false;
   }
   // 末端保持低位。自主探索无需再强制越过已膨胀远端20cm，
-  // 后方静态物阻挡时另选安全局部终点；航点模式保持原有终点语义。
+  // 后方静态物阻挡时另选安全局部终点；未启用共用穿越的旧航点模式保留原终点语义。
   // 回升交给实际越过后的下一次规划，后方回升受阻不能否决眼前可行的下穿。
-  const double end = std::min(far + (manual_path_enabled_ ? 0.20 : 0.0),
+  const bool legacy_manual = manual_path_enabled_ && !fapp_exploration_crossing_enabled_;
+  const double end = std::min(far + (legacy_manual ? 0.20 : 0.0),
                               waypoint.dot(forward));
-  if ((manual_path_enabled_ && end <= far + 0.10) || end <= current + 0.03) {
+  if ((legacy_manual && end <= far + 0.10) || end <= current + 0.03) {
     ROS_WARN_THROTTLE(1.0, "[fapp_underpass_check] reject endpoint current=%.3f far=%.3f end=%.3f",
         current, far, end);
     return false;
@@ -4381,9 +4388,15 @@ bool FastExplorationManager::planLocalFappUnderpass(
 
   // 终点由本段已知可行空间决定，不要求一次到达动态包络远端+20cm。
   // 高位先接近一个下降柱可用的停留点；低位沿自由前缀逐段穿越。
-  const double horizon = need_descent
+  double horizon = need_descent
       ? std::min(route_width_horizon_, std::max(0.0, approach - kUnderpassStartDistance))
       : route_width_horizon_;
+  // 定点任务的短段仍以当前航点为界，不能为了穿越越过尚未到达的航点。
+  if (manual_path_enabled_) {
+    if (manual_path_.finished()) return false;
+    horizon = std::min(horizon, std::max(0.0,
+        (manual_path_.points[manual_path_.next] - pos).dot(forward)));
+  }
   const double step = std::max(0.025, sdf_map_->getResolution());
   vector<Vector3d> best;
   double best_progress = -1.0, best_clearance = -1.0;
@@ -4437,14 +4450,16 @@ bool FastExplorationManager::planLocalFappUnderpass(
 
 bool FastExplorationManager::planExplorationFappCrossing(
     const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, const Vector3d& yaw) {
-  if (!fapp_exploration_crossing_enabled_ || manual_path_enabled_ || external_selection_only_ ||
+  if (!fapp_exploration_crossing_enabled_ || external_selection_only_ ||
+      (manual_path_enabled_ && (!manual_path_exploration_style_ ||
+       (manual_path_wait_for_trigger_ && !manual_path_started_) || manual_path_.finished())) ||
       !task_search_manager_ || !task_search_manager_->enabled() ||
       task_search_manager_->stage3Active() || task_search_manager_->landingRequested() ||
       turn_in_place_session_active_ ||
       (low_probe_phase_ != vertical_detour::LowProbePhase::IDLE &&
        !(manual_fapp_active_ && low_probe_phase_ == vertical_detour::LowProbePhase::DESCENDING)))
     return false;
-  manualFappObservationMissing(pos, yaw[0]);
+  if (manualFappObservationMissing(pos, yaw[0])) return false;
   if (!manual_fapp_active_) return false;
   fapp_local_step_pending_ = false;
   if (low_probe_phase_ == vertical_detour::LowProbePhase::DESCENDING) {
@@ -4496,7 +4511,8 @@ bool FastExplorationManager::planExplorationFappCrossing(
   const double far = (0.5 * (lower + upper)).dot(forward) +
       (0.5 * (upper - lower)).dot(forward.cwiseAbs()) + sdf_map_->getResolution();
   // 自动探索先低位越过历史障碍；无需提前把后方回升空间纳入同一条曲线。
-  const double end = far;
+  const double end = manual_path_enabled_
+      ? std::min(far, manual_path_.points[manual_path_.next].dot(forward)) : far;
   Vector3d target = pos + (end - pos.dot(forward)) * forward;
   std::vector<Vector3d> path;
   double target_yaw = yaw[0];
@@ -4621,8 +4637,17 @@ int FastExplorationManager::planManualWaypointMotion(
     const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, const Vector3d& yaw) {
   if (manual_path_wait_for_trigger_ && !manual_path_started_) return FAIL;
   if (task_search_manager_ && task_search_manager_->landingRequested()) return NO_FRONTIER;
+  // 已开始的上升/回正先执行完；共用动态穿越可触发同一套越障补高。
+  if (manual_path_exploration_style_ && ground_ascent_active_) {
+    if (buildGroundAscentPlan(pos, vel, yaw)) return SUCCEED;
+    if (ground_ascent_active_) return FAIL;
+  }
   if (manualFappObservationMissing(pos, yaw[0])) return FAIL;
-  if (planFappOpeningCrossing(pos, vel, acc, yaw)) return SUCCEED;
+  if (fapp_exploration_crossing_enabled_) {
+    if (planExplorationFappCrossing(pos, vel, acc, yaw)) return SUCCEED;
+    if (obstacleAscentPending() || (manual_fapp_active_ &&
+        low_probe_phase_ == vertical_detour::LowProbePhase::DESCENDING)) return FAIL;
+  } else if (planFappOpeningCrossing(pos, vel, acc, yaw)) return SUCCEED;
   improveManualWaypoint(pos);
   Vector3d target;
   double target_yaw = yaw[0];
@@ -4644,7 +4669,11 @@ int FastExplorationManager::planManualWaypointMotion(
     return NO_FRONTIER;
   } else {
     target = manual_path_.points[manual_path_.next];
+    // 已发布的越障升高不能被下一轮原航点Z拉回障碍内；列表仍保留用户填写值。
+    if (manual_path_exploration_style_ && !manual_fapp_active_)
+      target.z() = std::max(target.z(), horizontalGoalHeight(pos.z()));
     ed_->path_next_goal_ = manual_path_.path(pos);
+    ed_->path_next_goal_.back() = target;
     ed_->global_tour_ = {pos};
     ed_->global_tour_.insert(ed_->global_tour_.end(),
         manual_path_.points.begin() + manual_path_.next, manual_path_.points.end());
@@ -4679,7 +4708,7 @@ int FastExplorationManager::planManualWaypointMotion(
   const Vector3d waypoint = target;
   bool underpass_motion = false;
   if (manual_path_exploration_style_ && !exit_motion && task_search_manager_) {
-    if (manual_fapp_active_) {
+    if (manual_fapp_active_ && !fapp_exploration_crossing_enabled_) {
       underpass_motion = buildManualFappUnderpassPath(pos, waypoint, ed_->path_next_goal_);
       if (!underpass_motion) {
         // 动态下穿不再退回原地竖直下探；沿用已有的侧绕选择。
@@ -4716,11 +4745,44 @@ int FastExplorationManager::planManualWaypointMotion(
   if (ed_->path_next_goal_.size() < 2 || (target - pos).norm() < 0.03)
     return FAIL;  // 等待实际里程计到点，预测规划起点不能推进列表。
   bool bypass_motion = false;
+  if (manual_path_exploration_style_ && !exit_motion && !underpass_motion &&
+      !manual_fapp_active_ && task_search_manager_ &&
+      low_probe_phase_ == vertical_detour::LowProbePhase::IDLE) {
+    if (shouldStartGroundAscent(pos) && !hasSafeCruiseContinuation(pos, yaw[0])) {
+      if (buildGroundAscentPlan(pos, vel, yaw)) return SUCCEED;
+      if (ground_ascent_active_) return FAIL;
+    }
+    // 同探索：低静态物优先抬高直过，再选抬高侧绕。局部避障不改写航点列表。
+    const Vector3d forward = task_search_manager_->recoveryForwardDirection(yaw[0]);
+    double obstacle_top;
+    if (vertical_detour_enabled_ && (target-pos).dot(forward) > 0.15 &&
+        hasCurrentHeightForwardObstacle(pos, forward) &&
+        findForwardObstacleTop(pos, forward, obstacle_top) &&
+        buildRaisedSideBypass(pos, yaw[0], forward, obstacle_top, target, target_yaw, true)) {
+      bypass_motion = true;
+      const Vector3d lateral(-forward.y(), forward.x(), 0.0);
+      Vector3d ascent_target = pos;
+      ascent_target.z() = task_search_manager_->clampSearchHeight(
+          target.z() + kObstacleAscentTrackingMargin);
+      if (std::fabs((target-pos).dot(lateral)) < 1e-6 && target.z() > pos.z()+0.02 &&
+          isKnownSafeGroundAscentPath(pos, ascent_target) &&
+          planner_manager_->isFappPathSafe({pos, ascent_target})) {
+        obstacle_clearance_height_ = target.z();
+        ground_ascent_active_ = true;
+        ground_ascent_optional_ = false;
+        ground_ascent_anchor_valid_ = false;
+        ground_ascent_still_since_ = ros::Time(0);
+        ground_ascent_target_ = ascent_target;
+        ground_ascent_yaw_ = yaw[0];
+        return buildGroundAscentPlan(pos, vel, yaw) ? SUCCEED : FAIL;
+      }
+    }
+  }
   if (manual_path_use_astar_ && !underpass_motion) {
     auto& finder = planner_manager_->path_finder_;
     if (!finder) return FAIL;
     finder->clearProgressConstraint();
-    if (manual_path_exploration_style_ && !exit_motion && task_search_manager_) {
+    if (manual_path_exploration_style_ && !exit_motion && !bypass_motion && task_search_manager_) {
       const Vector3d forward = task_search_manager_->recoveryForwardDirection(yaw[0]);
       // 复用探索原有“选侧横移 -> 同侧短步通过 -> 释放后回正”。
       // 绕障只改变局部端点，不记录为用户航点，也不绕到远目标后面。
@@ -4828,6 +4890,22 @@ int FastExplorationManager::planManualWaypointMotion(
     return FAIL;
   }
   ed_->next_goal_ = target;
+  if (manual_path_exploration_style_ && !exit_motion && !underpass_motion) {
+    // 沿已选通路恢复高度，不更换本段左右选择；动态会话仍拥有低位高度。
+    const auto original_data = planner_manager_->local_data_;
+    const auto original_path = ed_->path_next_goal_;
+    if (tryCruiseHeightRecovery(pos, vel, acc, 0.0)) {
+      if (trajectory_within_limit()) target = ed_->next_goal_;
+      else {
+        planner_manager_->local_data_ = original_data;
+        ed_->path_next_goal_ = original_path;
+        ed_->next_goal_ = target;
+      }
+    }
+    bool ascent_needed = false;
+    if (ensureObstacleTopClearance(pos, vel, yaw, ascent_needed)) return SUCCEED;
+    if (ascent_needed) return FAIL;
+  }
   pending_reference_height_ = target.z();
   // 恒定航向复用插值器，避免全零控制点进入旧航向优化器的归一化计算。
   if (std::fabs(target_yaw - yaw[0]) < 1e-6 && yaw.tail<2>().norm() < 1e-6) {

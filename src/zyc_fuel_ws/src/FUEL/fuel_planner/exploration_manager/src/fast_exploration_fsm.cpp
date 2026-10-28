@@ -1002,7 +1002,8 @@ bool FastExplorationFSM::resumeAfterWidthAttempt(const string& reason) {
 bool FastExplorationFSM::keepExecutingCorridorTrajectory() const {
   if (!narrow_corridor_stage_ || !active_traj_valid_ || active_traj_braked_ ||
       active_turn_in_place_ || active_vertical_detour_ || active_ground_ascent_ ||
-      inflation_escape_active_ || expl_manager_->manualWaypointsEnabled())
+      inflation_escape_active_ ||
+      (expl_manager_->manualWaypointsEnabled() && !expl_manager_->explorationFappCrossingActive()))
     return false;
   const double elapsed = std::max(0.0,
       (ros::Time::now() - active_traj_.start_time_).toSec());

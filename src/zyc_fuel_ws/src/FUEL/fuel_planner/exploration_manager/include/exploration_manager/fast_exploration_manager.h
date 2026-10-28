@@ -50,7 +50,9 @@ public:
     return fapp_exploration_crossing_enabled_ && manual_fapp_active_;
   }
   bool needsExplorationFappRetry(const Vector3d& actual_pos) const {
-    return explorationFappCrossingActive() && !manual_path_enabled_ &&
+    return explorationFappCrossingActive() &&
+        (!manual_path_enabled_ || (manual_path_exploration_style_ &&
+         (!manual_path_wait_for_trigger_ || manual_path_started_) && !manual_path_.finished())) &&
         fapp_crossing_retry_needed_ && pointInsideWorkspaceLock(actual_pos);
   }
   bool planExplorationFappCrossing(const Vector3d& pos, const Vector3d& vel,
