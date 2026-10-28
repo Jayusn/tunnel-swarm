@@ -17,6 +17,13 @@ bool clearsOnFalseTrigger(LandingState state) {
          state == LandingState::DONE;
 }
 
+bool canUseTimeoutAutoLand(LandingState state) {
+  return state == LandingState::ACQUIRE || state == LandingState::ALIGN ||
+         state == LandingState::DESCEND_HIGH ||
+         state == LandingState::REACQUIRE ||
+         state == LandingState::FIXED_XY_DESCENT;
+}
+
 }  // namespace
 
 LandingStateMachine::LandingStateMachine(const StateMachineConfig& config) : config_(config) {}
@@ -150,6 +157,15 @@ StateOutput LandingStateMachine::update(const StateInput& input) {
       descent_gate_state_ = LandingState::IDLE;
       reset_controller = true;
     }
+  }
+
+  // 视觉精降长时间无法完成时，交给 PX4 在当前位置执行最终降落。
+  // 只在输入仍健康且仍处于精降工作阶段时触发，避免覆盖失联/失去 OFFBOARD 的原有处置。
+  if (!entered_precheck && canUseTimeoutAutoLand(state_) &&
+      mission_started_sec_ >= 0.0 && input.critical_inputs_fresh &&
+      input.offboard &&
+      input.now_sec - mission_started_sec_ >= config_.total_timeout_sec) {
+    state_ = LandingState::REQUEST_AUTO_LAND;
   }
 
   StateOutput output;

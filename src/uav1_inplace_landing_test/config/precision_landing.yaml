@@ -37,10 +37,10 @@ safety:
   max_header_future_sec: 0.05
   target_loss_timeout_sec: 0.50
   # Target search and reacquisition continue while positioning, camera,
-  # MAVROS and OFFBOARD remain healthy. total_timeout_sec only controls the
-  # long-search warning; reacquire_timeout_sec is retained for compatibility.
+  # MAVROS and OFFBOARD remain healthy. If precision landing still has not
+  # completed after total_timeout_sec, request PX4 AUTO.LAND at the current position.
   reacquire_timeout_sec: 5.0
-  total_timeout_sec: 30.0
+  total_timeout_sec: 20.0
 state_machine:
   align_error_m: 0.15
 

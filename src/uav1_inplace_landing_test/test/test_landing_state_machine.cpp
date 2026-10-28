@@ -92,6 +92,31 @@ TEST(LandingStateMachine, ReacquisitionContinuesWhileInputsRemainHealthy) {
             LandingState::REACQUIRE);
 }
 
+TEST(LandingStateMachine, TimeoutRequestsAutoLandAtCurrentPosition) {
+  precision_landing::StateMachineConfig config;
+  config.total_timeout_sec = 2.0;
+  LandingStateMachine machine(config);
+  machine.update(ActiveInput(0.0));
+  ASSERT_EQ(machine.update(ActiveInput(0.0)).state, LandingState::ACQUIRE);
+  const auto output = machine.update(ActiveInput(2.0, 2.0, 0.25, false));
+  EXPECT_EQ(output.state, LandingState::REQUEST_AUTO_LAND);
+  EXPECT_TRUE(output.request_auto_land);
+  EXPECT_DOUBLE_EQ(output.descent_speed_mps, 0.0);
+}
+
+TEST(LandingStateMachine, TimeoutDoesNotOverrideStaleInputAbort) {
+  precision_landing::StateMachineConfig config;
+  config.total_timeout_sec = 2.0;
+  LandingStateMachine machine(config);
+  machine.update(ActiveInput(0.0));
+  ASSERT_EQ(machine.update(ActiveInput(0.0)).state, LandingState::ACQUIRE);
+  auto stale = ActiveInput(2.0, 2.0, 0.25, false);
+  stale.critical_inputs_fresh = false;
+  const auto output = machine.update(stale);
+  EXPECT_EQ(output.state, LandingState::ABORT_HOLD);
+  EXPECT_FALSE(output.request_auto_land);
+}
+
 TEST(LandingStateMachine, ReacquiredTargetReturnsToAlignment) {
   LandingStateMachine machine;
   ReachHighDescent(machine);
