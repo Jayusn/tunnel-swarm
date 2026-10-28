@@ -5,9 +5,9 @@ mission_id: "auto"
 localization_frame: "UAV0/camera_init"
 report_frame: "channel"
 use_detector_candidates: true
-# 识别可信但深度/定位无效时保留本地图片，坐标为空，不作为确认目标上报。
-# 同类距上次保存满此间隔，或中心移动超过阈值时再保存；不覆盖旧图片。
-save_unlocalized_evidence: true
+# 关闭未定位留图：三类目标必须通过原有深度定位和确认流程才保存图片/JSON。
+save_unlocalized_evidence: false
+# 以下间隔和位移参数仅在开启未定位留图时生效。
 unlocalized_save_interval_s: 5.0
 unlocalized_center_shift_px: 80.0
 # 必须订阅无框原图，保存时用本条记录的 bbox 绘制当前候选。

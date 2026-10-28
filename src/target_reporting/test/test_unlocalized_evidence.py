@@ -97,6 +97,24 @@ def test_disabled_and_mismatched_frame_do_not_save(reporter):
     assert reporter.store.unlocalized_events()[0]["timestamp"] == 10
 
 
+@pytest.mark.parametrize("source", ["qr", "color", "thermal"])
+def test_disabled_unlocalized_saving_requires_depth_before_any_file_is_saved(reporter, source):
+    reporter.save_unlocalized_evidence = False
+    send_image(reporter, source, 10)
+    send_status(reporter, source, status(source, stamp=10))
+    reporter._try_save_unlocalized(source)
+    assert reporter.store.unlocalized_events() == []
+    assert reporter.store.all_events() == []
+    assert list(Path(reporter.store.image_dir).rglob("*.jpg")) == []
+    assert not reporter.pending_unlocalized[source]
+    # The same source can still save a confirmed, localized event afterwards.
+    feed_target(reporter, source, 0.5, seconds=12)
+    events = reporter.store.all_events()
+    assert len(events) == 1
+    assert events[0]["position"]["x"] == 0.5
+    assert list(Path(reporter.store.image_dir).rglob("*.jpg"))
+
+
 def test_unlocalized_thermal_still_uses_leader_projection(reporter):
     reporter.save_unlocalized_evidence = True
     reporter._is_leader_thermal_source = Mock(return_value=True)

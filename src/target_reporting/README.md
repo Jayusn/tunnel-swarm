@@ -258,7 +258,12 @@ UAV1 保存到 `~/match_ws/target_reports/uav1/<任务编号>/`。
 图片 ID 保持原文件名，可根据记录的 `target_type` 在对应文件夹中找到图片。
 旧的平铺图片不自动搬迁，重启补发同时支持新分类目录和旧目录。
 
-`target_reporting.yaml` 的 `save_unlocalized_evidence: true` 将本地图片留存与
+当前 `target_reporting.yaml` 设置 `save_unlocalized_evidence: false`：三类目标必须
+通过原有深度定位与确认流程才保存图片和 JSON，不再新增未定位记录；已有历史图片保留。
+入口目标触发与正常定位记录的保存流程继续生效。
+
+以下为可选未定位留图功能的说明，仅将 `save_unlocalized_evidence` 改为 `true` 时启用。
+`save_unlocalized_evidence: true` 将本地图片留存与
 三维定位分开。二维码已解码验证、颜色标签通过现有颜色/轮廓/形状检查、热源通过
 检测器的稳定检查后，即使深度缺失或定位质量不合格，也可保存同帧图片。
 颜色标签仍使用彩色/深度同步回调：这里支持深度图中无效值或质量不足，
