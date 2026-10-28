@@ -689,9 +689,7 @@ class ThermalD435FusionNode:
         self, status, camera_info, depth_image, depth_encoding,
         color_image=None, color_header=None, depth_stamp=None
     ):
-        if status is None or camera_info is None or depth_image is None:
-            return False
-        if depth_encoding is None:
+        if status is None:
             return False
         try:
             base_stamp = float(status.get("stamp"))
@@ -742,6 +740,26 @@ class ThermalD435FusionNode:
                 candidate.get("bbox"),
             )
             if camera_point is None:
+                stable = bool(candidate.get("stable", status.get("stable", False)))
+                ray = None
+                if camera_info is not None:
+                    u_d, v_d = self.map_thermal_to_d435(cx, cy)
+                    ray = self.pixel_to_camera_point(
+                        u_d, v_d, 1.0, camera_info, thermal_point.header.stamp
+                    )
+                self.report_candidate_pub.publish(String(data=json.dumps({
+                    "detected": True, "candidate": True, "stable": stable,
+                    "confirmable": False,
+                    "evidence_credible": bool(stable and candidate.get("confirmable", stable)),
+                    "localization_valid": False, "camera_point": None,
+                    "camera_ray": None if ray is None else {
+                        "frame_id": ray.header.frame_id, "x": ray.point.x,
+                        "y": ray.point.y, "z": ray.point.z,
+                    },
+                    "stamp": stamp, "source_timing": source_timing,
+                    "cx": cx, "cy": cy, "bbox": candidate.get("bbox"),
+                    "reason": "depth_or_localization_unavailable",
+                }, ensure_ascii=False)))
                 continue
             camera_point.header.stamp = thermal_point.header.stamp
 

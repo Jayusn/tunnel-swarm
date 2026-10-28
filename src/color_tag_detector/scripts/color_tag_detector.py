@@ -381,6 +381,7 @@ class ColorTagDetector(object):
         self.publish_mask(combined_mask, color_msg.header)
         self.publish_debug(debug_image, color_msg.header)
         self.publish_result(best, stable_info, color_msg.header)
+        self.publish_unlocalized_evidence(raw_candidates, color_msg.header)
 
     def build_color_mask(self, hsv, color_cfg):
         mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
@@ -1291,6 +1292,44 @@ class ColorTagDetector(object):
             self.debug_pub.publish(msg)
         except CvBridgeError as exc:
             rospy.logwarn_throttle(1.0, "failed to publish debug image: %s", exc)
+
+    @staticmethod
+    def unlocalized_evidence_candidate(candidate):
+        # Keep the existing colour/contour tests; only separate depth quality
+        # from image recognition. Do not promote held or arbitrary colour blobs.
+        depth_reasons = {
+            "invalid_depth", "valid_depth_ratio", "depth_range", "depth_std",
+            "missing_camera_info", "missing_real_size",
+            "confirmation_distance", "surface_depth_ratio", "surface_not_planar",
+        }
+        reasons = set(candidate.get("reject_reasons", []))
+        confirmation = set(candidate.get("confirmation_reasons", []))
+        # Physical dimensions derived from unusable depth cannot disprove
+        # an otherwise recognizable tag. With good depth these checks remain.
+        derived_size_reasons = {
+            "confirmation_real_size", "confirmation_short_side",
+            "confirmation_real_aspect_ratio",
+        }
+        return bool(
+            (reasons | confirmation) & depth_reasons
+            and not ((reasons | confirmation) - depth_reasons - derived_size_reasons)
+            and not candidate.get("held", False)
+        )
+
+    def publish_unlocalized_evidence(self, candidates, header):
+        eligible = [c for c in candidates if self.unlocalized_evidence_candidate(c)]
+        if not eligible:
+            return
+        best = max(eligible, key=lambda c: c["base_score"])
+        self.candidate_text_pub.publish(String(data=json.dumps({
+            "detected": True, "candidate": True, "stable": False,
+            "confirmable": False, "evidence_credible": True,
+            "localization_valid": False, "held": False,
+            "stamp": header.stamp.to_sec(), "color": best["color"],
+            "bbox": [int(v) for v in best["bbox"]],
+            "u": int(best["u"]), "v": int(best["v"]),
+            "reason": "depth_or_localization_unavailable",
+        }, ensure_ascii=False)))
 
     def publish_candidate(self, best, stable_info, header):
         """Publish a fresh valid target before the temporal filter confirms it."""

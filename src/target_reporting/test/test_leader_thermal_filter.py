@@ -57,6 +57,17 @@ def test_filters_thermal_candidate_inside_leader_radius(monkeypatch):
     reporter = make_reporter(monkeypatch)
     assert reporter._is_leader_thermal_source({"x": 1.2, "y": 2.2, "z": 0.6}, 10.0)
 
+def test_unlocalized_ray_checks_projection_without_inventing_target_distance(monkeypatch):
+    reporter = make_reporter(monkeypatch)
+    point = PointStamped()
+    point.header.frame_id = "camera_optical"
+    # Leader at (1, 2, 2), and a direction pointing at it.
+    reporter.leader_odom_history[0].pose.pose.position.z = 2.0
+    point.point.x, point.point.y, point.point.z = 0.5, 1.0, 1.0
+    assert reporter._is_leader_thermal_source(None, 10.0, point)
+    point.point.x = -0.5
+    assert not reporter._is_leader_thermal_source(None, 10.0, point)
+
 
 def test_keeps_thermal_candidate_outside_leader_radius(monkeypatch):
     reporter = make_reporter(monkeypatch)

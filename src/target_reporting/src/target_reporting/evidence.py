@@ -137,10 +137,8 @@ def _image_bbox(value):
 def draw_detection_overlay(image, event):
     """Legacy helper for explicit geometry overlays.
 
-    The normal evidence path deliberately does not call this function.  Each
-    detector already draws its own color/shape-specific box, which is more
-    informative than a second generic confirmation box.  Keep the helper for
-    compatibility with existing callers and unit tests.
+    Confirmed evidence retains the detector's own box. Unlocalized evidence
+    may have no detector box, so it uses this helper for an outline only.
     """
     import cv2
     import numpy as np
@@ -176,7 +174,7 @@ def draw_detection_overlay(image, event):
         if center_u is not None and center_v is not None:
             center = (int(round(center_u)), int(round(center_v)))
 
-    if center is None:
+    if center is None or event.get("localization_status") == "unlocalized":
         return image
 
     cv2.drawMarker(
@@ -210,6 +208,7 @@ def build_evidence_jpeg(image, event, camera_xyz=None, quality=85):
     )
     lines = [
         "{}  {}".format(event["target_type"], result_text),
+        "Location: UNLOCALIZED (no valid 3-D position)" if position is None else
         "Channel: X={:.3f} Y={:.3f} Z={:.3f} m".format(
             position["x"], position["y"], position["z"]
         ),

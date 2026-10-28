@@ -437,8 +437,8 @@ class QRDetectorNode(object):
         # 原始角点和深度一出现就发布本机候选，供 target_reporting 在 RViz
         # 显示观察位姿；候选是否可确认由 validated/confirmable 门控，稳定
         # 结果仍由下面的 confirmed 分支负责正式上报。
-        if raw_valid and result.get("z") is not None:
-            self.publish_candidate(result, image_msg.header, confirmed)
+        if raw_valid:
+            self.publish_candidate(result, image_msg.header, confirmed, startup_warmup)
 
         if startup_warmup:
             # Keep candidate geometry local for RViz, but do not publish a
@@ -1170,16 +1170,18 @@ class QRDetectorNode(object):
         pose_msg.pose.orientation.w = 1.0
         self.pose_pub.publish(pose_msg)
 
-    def publish_candidate(self, result, header, source_confirmed):
+    def publish_candidate(self, result, header, source_confirmed, startup_warmup=False):
         confirmable = bool(source_confirmed and result.get("confirmable", False))
-        pose_msg = PoseStamped()
-        pose_msg.header.stamp = header.stamp
-        pose_msg.header.frame_id = self.camera_frame_id or header.frame_id
-        pose_msg.pose.position.x = float(result["x"])
-        pose_msg.pose.position.y = float(result["y"])
-        pose_msg.pose.position.z = float(result["z"])
-        pose_msg.pose.orientation.w = 1.0
-        self.candidate_pose_pub.publish(pose_msg)
+        has_point = all(result.get(axis) is not None for axis in ("x", "y", "z"))
+        if has_point:
+            pose_msg = PoseStamped()
+            pose_msg.header.stamp = header.stamp
+            pose_msg.header.frame_id = self.camera_frame_id or header.frame_id
+            pose_msg.pose.position.x = float(result["x"])
+            pose_msg.pose.position.y = float(result["y"])
+            pose_msg.pose.position.z = float(result["z"])
+            pose_msg.pose.orientation.w = 1.0
+            self.candidate_pose_pub.publish(pose_msg)
 
         status = {
             "detected": True,
@@ -1204,6 +1206,8 @@ class QRDetectorNode(object):
             "preprocess": result.get("preprocess"),
             "validation_reason": result.get("validation_reason", ""),
             "depth_validated": bool(result.get("depth_validated", False)),
+            "evidence_credible": bool(result.get("validated", False) and not startup_warmup),
+            "localization_valid": bool(has_point and result.get("depth_validated", False)),
             "reason": (
                 "stable_candidate"
                 if source_confirmed

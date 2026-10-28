@@ -18,6 +18,7 @@ class MissionStore:
         self.mission_dir = os.path.join(self.root, mission_id)
         self.image_dir = os.path.join(self.mission_dir, "images", "annotated")
         self.events_path = os.path.join(self.mission_dir, "reports.jsonl")
+        self.unlocalized_path = os.path.join(self.mission_dir, "unlocalized.jsonl")
         self.event_acks_path = os.path.join(self.mission_dir, "event_acks.jsonl")
         self.image_acks_path = os.path.join(self.mission_dir, "image_acks.jsonl")
         self.drone_id = drone_id
@@ -70,6 +71,23 @@ class MissionStore:
     def has_event(self, drone_id: str, seq: int) -> bool:
         with self._lock:
             return (str(drone_id), int(seq)) in self._keys
+
+    def unlocalized_events(self):
+        with self._lock:
+            if not os.path.exists(self.unlocalized_path):
+                return []
+            with open(self.unlocalized_path, encoding="utf-8") as stream:
+                return [json.loads(line) for line in stream if line.strip()]
+
+    def append_unlocalized(self, event):
+        """Local image evidence only; never enters coordinate-report replay."""
+        if event.get("position") is not None or event.get("localization_status") != "unlocalized":
+            raise ValueError("unlocalized evidence must have null position")
+        with self._lock:
+            with open(self.unlocalized_path, "a", encoding="utf-8") as stream:
+                stream.write(json.dumps(event, ensure_ascii=False, allow_nan=False) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
 
     def mark_event_acked(self, seq: int) -> None:
         seq = int(seq)

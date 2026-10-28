@@ -120,6 +120,34 @@ class MultiCandidateFusionTests(unittest.TestCase):
         status = {"detected": True, "cx": 100, "cy": 80}
         self.assertEqual([status], ThermalD435FusionNode.status_candidates(status))
 
+    def test_missing_depth_retains_stable_thermal_evidence_and_camera_ray(self):
+        node = self.make_node()
+        node.build_camera_point = lambda *args: None
+        node.d435_optical_frame = "camera_optical"
+        node.map_thermal_to_d435 = lambda x, y: (x, y)
+        info = CameraInfo()
+        info.K = [200, 0, 100, 0, 200, 80, 0, 0, 1]
+        status = {"stamp": 12.5, "candidates": [
+            {"cx": 120, "cy": 80, "stable": True},
+            {"cx": 220, "cy": 120, "stable": False},
+        ]}
+        self.assertTrue(node.publish_report_candidates(status, info, None, None))
+        decoded = [json.loads(m.data) for m in node.report_candidate_pub.messages]
+        self.assertEqual([True, False], [d["evidence_credible"] for d in decoded])
+        self.assertTrue(all(d["camera_point"] is None for d in decoded))
+        self.assertTrue(all(not d["confirmable"] for d in decoded))
+        self.assertAlmostEqual(decoded[0]["camera_ray"]["x"], 0.1)
+        self.assertEqual(decoded[0]["camera_ray"]["z"], 1.0)
+
+    def test_missing_camera_info_still_retains_thermal_image_evidence(self):
+        node = self.make_node()
+        node.build_camera_point = lambda *args: None
+        status = {"stamp": 12.5, "detected": True, "cx": 100, "cy": 80, "stable": True}
+        node.publish_report_candidates(status, None, None, None)
+        data = json.loads(node.report_candidate_pub.messages[0].data)
+        self.assertTrue(data["evidence_credible"])
+        self.assertIsNone(data["camera_ray"])
+
 
 if __name__ == "__main__":
     unittest.main()

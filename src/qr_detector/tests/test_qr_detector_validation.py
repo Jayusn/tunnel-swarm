@@ -3,6 +3,7 @@ import glob
 import os
 import sys
 import unittest
+import json
 from unittest.mock import Mock, patch
 
 import cv2
@@ -58,6 +59,28 @@ class QRDetectorValidationTests(unittest.TestCase):
     def test_libzbar_decoder_is_available_on_aircraft(self):
         detector = self.make_detector()
         self.assertTrue(detector.zbar_decoder.available)
+
+    def test_decoded_qr_without_depth_publishes_evidence_status_without_pose(self):
+        import rospy
+        from std_msgs.msg import Header
+        detector = self.make_detector()
+        detector.camera_frame_id = "camera_optical"
+        detector.candidate_pose_pub = Mock()
+        detector.candidate_detected_pub = Mock()
+        detector.consecutive_valid_count = 0
+        detector.confirm_frames = 1
+        result = {"data": "AR14", "validated": True, "confirmable": False,
+                  "depth_validated": False, "points": [], "x": None, "y": None, "z": None}
+        header = Header(stamp=rospy.Time.from_sec(12))
+        detector.publish_candidate(result, header, False)
+        status = json.loads(detector.candidate_detected_pub.publish.call_args.args[0].data)
+        self.assertTrue(status["evidence_credible"])
+        self.assertFalse(status["localization_valid"])
+        self.assertFalse(status["confirmable"])
+        detector.candidate_pose_pub.publish.assert_not_called()
+        detector.publish_candidate(result, header, False, startup_warmup=True)
+        status = json.loads(detector.candidate_detected_pub.publish.call_args.args[0].data)
+        self.assertFalse(status["evidence_credible"])
 
     def test_full_frame_fallback_recovers_opencv_miss_without_rescaling(self):
         detector = self.make_detector()

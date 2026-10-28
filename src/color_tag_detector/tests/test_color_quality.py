@@ -2,6 +2,8 @@
 import os
 import sys
 import unittest
+import json
+from unittest.mock import Mock
 from collections import deque
 
 import cv2
@@ -20,6 +22,35 @@ except ModuleNotFoundError:
 
 @unittest.skipIf(ColorTagDetector is None, "ROS Python modules are unavailable")
 class ColorQualityTests(unittest.TestCase):
+    def test_missing_depth_retains_visual_tag_without_accepting_bad_shapes(self):
+        import rospy
+        from std_msgs.msg import Header
+        detector = ColorTagDetector.__new__(ColorTagDetector)
+        detector.candidate_text_pub = Mock()
+        candidate = {
+            "color": "red", "point_camera": None, "held": False,
+            "reject_reasons": ["invalid_depth", "missing_real_size"],
+            "confirmation_reasons": ["confirmation_distance", "confirmation_real_size",
+                                     "surface_depth_ratio", "surface_not_planar"],
+            "bbox": (30, 40, 50, 60), "u": 55, "v": 70, "base_score": 0.3,
+        }
+        self.assertTrue(detector.unlocalized_evidence_candidate(candidate))
+        detector.publish_unlocalized_evidence([candidate], Header(stamp=rospy.Time.from_sec(10)))
+        data = json.loads(detector.candidate_text_pub.publish.call_args.args[0].data)
+        self.assertTrue(data["evidence_credible"])
+        self.assertFalse(data["localization_valid"])
+        self.assertFalse(data["confirmable"])
+        for reason in ["color_purity", "rectangularity", "tapered_shape"]:
+            rejected = dict(candidate, reject_reasons=candidate["reject_reasons"] + [reason])
+            self.assertFalse(detector.unlocalized_evidence_candidate(rejected))
+        self.assertFalse(detector.unlocalized_evidence_candidate(dict(candidate, held=True)))
+        bad_depth_size = dict(candidate, point_camera=(0, 0, 0.3),
+                              confirmation_reasons=["confirmation_short_side", "surface_depth_ratio"])
+        self.assertTrue(detector.unlocalized_evidence_candidate(bad_depth_size))
+        good_depth_small_tag = dict(candidate, reject_reasons=[],
+                                   confirmation_reasons=["confirmation_short_side"])
+        self.assertFalse(detector.unlocalized_evidence_candidate(good_depth_small_tag))
+
     def test_configured_hue_ranges_cover_full_opencv_circle(self):
         config_path = os.path.join(ROOT, "config", "color_thresholds.yaml")
         with open(config_path, encoding="utf-8") as stream:

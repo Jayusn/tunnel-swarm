@@ -20,6 +20,7 @@ from target_reporting.candidates import CandidateTracker
 from target_reporting.evidence import (
     TimestampedImageCache,
     build_evidence_jpeg,
+    draw_detection_overlay,
     image_metadata,
 )
 from target_reporting.model import Position, TargetEvent
@@ -45,6 +46,10 @@ class TargetReporterNode:
         self.use_detector_candidates = bool(
             rospy.get_param("~use_detector_candidates", True)
         )
+        self.save_unlocalized_evidence = bool(
+            rospy.get_param("~save_unlocalized_evidence", False)
+        )
+        self.pending_unlocalized = defaultdict(lambda: deque(maxlen=40))
         self.exit_plane_filter_enabled = bool(
             rospy.get_param("~exit_plane_filter_enabled", False)
         )
@@ -123,6 +128,9 @@ class TargetReporterNode:
         )
         for target_type in self.store.IMAGE_TARGET_TYPES:
             os.makedirs(os.path.join(self.store.image_dir, target_type), exist_ok=True)
+        self.saved_unlocalized_types = {
+            event["target_type"] for event in self.store.unlocalized_events()
+        }
         self.tracker = CandidateTracker(
             rospy.get_param("~dedup_distance_m", 0.30),
             rospy.get_param("~confirm_hits", 1),
@@ -313,6 +321,12 @@ class TargetReporterNode:
 
     def _status_cb(self, source, msg):
         try:
+            if isinstance(msg.data, str):
+                data = json.loads(msg.data)
+                if data.get("localization_valid") is False:
+                    self._queue_unlocalized(source, data)
+                    if source != "qr" or not all(data.get(axis) is not None for axis in ("x", "y", "z")):
+                        return
             if source == "color":
                 status = parse_color_status(msg.data)
             elif source == "qr":
@@ -330,6 +344,9 @@ class TargetReporterNode:
     def _thermal_fused_candidate_cb(self, msg):
         try:
             data = json.loads(msg.data)
+            if data.get("localization_valid") is False:
+                self._queue_unlocalized("thermal", data)
+                return
             camera_point = data["camera_point"]
             frame_id = str(camera_point["frame_id"]).strip()
             stamp = float(data["stamp"])
@@ -409,8 +426,77 @@ class TargetReporterNode:
         try:
             image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
             self.images.add(source, msg.header.stamp.to_sec(), image)
+            self._try_save_unlocalized(source)
         except Exception as exc:
             rospy.logwarn_throttle(2.0, "Cannot cache %s image: %s", source, exc)
+
+    def _queue_unlocalized(self, source, data):
+        if (not self.save_unlocalized_evidence or not data.get("detected")
+                or not data.get("evidence_credible") or data.get("held")):
+            return
+        stamp = data.get("stamp")
+        if not isinstance(stamp, (int, float)) or not math.isfinite(stamp):
+            return
+        # A camera ray carries direction, not a made-up target distance. Only
+        # the existing leader projection test can be evaluated without depth.
+        projection_checked = False
+        if source == "thermal" and data.get("camera_ray"):
+            ray = data["camera_ray"]
+            point = PointStamped()
+            point.header.frame_id = ray["frame_id"]
+            point.header.stamp = rospy.Time.from_sec(stamp)
+            point.point.x, point.point.y, point.point.z = (ray[k] for k in ("x", "y", "z"))
+            if self._is_leader_thermal_source(None, stamp, point):
+                return
+            projection_checked = self.leader_thermal_filter_enabled and self.leader_thermal_projection_filter_enabled
+        data = dict(data)
+        data["leader_projection_requested"] = bool(projection_checked)
+        with self.lock:
+            self.pending_unlocalized[source].append(data)
+        self._try_save_unlocalized(source)
+
+    def _try_save_unlocalized(self, source):
+        if not self.save_unlocalized_evidence or source not in ("qr", "color", "thermal"):
+            return
+        target_type = {"qr": "qr_code", "color": "color_tag", "thermal": "thermal_source"}[source]
+        with self.candidate_lock:
+            if target_type in self.saved_unlocalized_types:
+                return
+            with self.lock:
+                pending = list(self.pending_unlocalized.get(source, ()))
+            image = None
+            for data in pending:
+                stamp = float(data["stamp"])
+                image = self.images.nearest(source, stamp, self.image_tolerance)
+                if image is not None:
+                    break
+            if image is None:
+                return
+            result = {
+                "content": data.get("data", ""), "color": data.get("color", ""),
+                "points": data.get("points"), "bbox": data.get("bbox"),
+                "center_u": data.get("center_u", data.get("u", data.get("cx"))),
+                "center_v": data.get("center_v", data.get("v", data.get("cy"))),
+            }
+            event = {
+                "version": 1, "timestamp": stamp, "drone_id": self.drone_id,
+                "target_type": target_type,
+                "target_id": self.drone_id + "-unlocalized-" + target_type,
+                "message_type": "unlocalized_evidence", "position": None,
+                "localization_status": "unlocalized", "localization_label": "未定位",
+                "result": result,
+                "spatial_filters": "not_evaluable_without_valid_position",
+                "leader_projection_requested": data.get("leader_projection_requested", False),
+            }
+            name = "{}_unlocalized_{}.jpg".format(self.drone_id, target_type)
+            jpeg = build_evidence_jpeg(draw_detection_overlay(image, event), event)
+            self.store.save_image(name, jpeg, target_type=target_type)
+            event["image"] = image_metadata(name, jpeg)
+            self.store.append_unlocalized(event)
+            self.saved_unlocalized_types.add(target_type)
+            with self.lock:
+                self.pending_unlocalized.pop(source, None)
+            rospy.loginfo("Saved local unlocalized evidence: %s", name)
 
     def _leader_odom_cb(self, msg):
         with self.lock:
@@ -464,11 +550,11 @@ class TargetReporterNode:
             )
             return False
 
-        distance = math.hypot(
+        distance = None if position is None else math.hypot(
             position["x"] - leader.point.x,
             position["y"] - leader.point.y,
         )
-        if distance <= self.leader_thermal_exclusion_radius:
+        if distance is not None and distance <= self.leader_thermal_exclusion_radius:
             rospy.logwarn_throttle(
                 1.0,
                 "Filtered UAV1 thermal candidate near UAV0: distance=%.3fm radius=%.3fm",
