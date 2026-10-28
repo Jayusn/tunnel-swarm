@@ -2206,6 +2206,8 @@ class LeaderSafePathFollower {
 
   void consumeSimpleRelayFront() {
     if (active_relay_index_ >= relay_waypoints_.size()) return;
+    previous_fifo_position_ = relay_waypoints_[active_relay_index_].position;
+    have_previous_fifo_position_ = true;
     resetOrdinaryScan();
     if (useLockedExitYaw()) exit_yaw_locked_ = true;
     const std::size_t consumed = active_relay_index_;
@@ -2228,6 +2230,23 @@ class LeaderSafePathFollower {
     return i < relay_waypoints_.size() && !relay_waypoints_[i].is_door &&
         i != exit_waypoint_index_ && i != outside_wait_waypoint_index_ &&
         i != terminal_waypoint_index_;
+  }
+
+  bool ordinaryRelayPassed(const geometry_msgs::Point& current_world,
+                           double vertical_error) const {
+    if (!isOrdinaryRelayPoint(active_relay_index_) || !have_previous_fifo_position_ ||
+        vertical_error > ordinary_waypoint_z_tolerance_) return false;
+    const auto& target = relay_waypoints_[active_relay_index_].position;
+    const double dx = target.x - previous_fifo_position_.x;
+    const double dy = target.y - previous_fifo_position_.y;
+    const double length = std::hypot(dx, dy);
+    if (length < 1e-6) return false;
+    const double px = current_world.x - target.x;
+    const double py = current_world.y - target.y;
+    // 按相邻航点的行进方向判断，不使用扫描时不断变化的机头朝向。
+    // 超出到达范围且仍贴近该航段才算越过，避免将拐弯外侧误当成通过。
+    return (px * dx + py * dy) / length > relay_arrive_radius_ &&
+           std::abs(px * dy - py * dx) / length <= relay_arrive_radius_;
   }
 
   void dynamicPassageCallback(const std_msgs::Bool::ConstPtr& msg) {
@@ -2435,6 +2454,8 @@ class LeaderSafePathFollower {
           follower_vertical_speed_ <= relay_arrive_max_vertical_speed_));
     const bool ordinary_dwell_started = ordinary_relay && ordinary_waypoint_dwell_ > 0.0 &&
         !relay_arrival_stamp_.isZero();
+    const bool skip_passed_point = ordinary_scan_stage_ == 0 && !ordinary_scan_done_ &&
+        !ordinary_dwell_started && ordinaryRelayPassed(current_world, vertical_error);
 
     // 使用Diff对当前目标的地图占据回执；普通规划失败或快照超时不等于占据。
     // 前机未离开当前点时不能跳点；下一普通点仍由原放行门槛和Diff检查。
@@ -2469,7 +2490,8 @@ class LeaderSafePathFollower {
     if (ordinary_scan_stage_ != 0 && !stepOrdinaryScan(now)) return true;
 
     // 已到达当前普通点时直接消费，不能再被旧点的间距保护拉回。
-    if (!terminal_relay && !waypoint_arrival && !ordinary_dwell_started && !ordinary_scan_done_ &&
+    if (!terminal_relay && !waypoint_arrival && !skip_passed_point &&
+        !ordinary_dwell_started && !ordinary_scan_done_ &&
         enable_diff_separation_safety_) {
       if (!leaderOdomFresh(now)) {
         simple_waypoint_clearance_hold_active_ = true;
@@ -2519,8 +2541,7 @@ class LeaderSafePathFollower {
       }
     }
 
-    // 普通FIFO航点只有进入水平和高度到达范围才消费，避免转弯时远处航点
-    // 被航向投影误判为已越过；最终降落点仍保留严格停稳判定。
+    // 普通点允许沿入段方向越过后出队；最终降落点仍保留严格停稳判定。
     const bool terminal_arrival = terminal_relay &&
         horizontal_error <= terminal_arrive_radius_ &&
         vertical_error <= relay_arrive_z_tolerance_ &&
@@ -2528,6 +2549,7 @@ class LeaderSafePathFollower {
         follower_horizontal_speed_ <= relay_arrive_max_horizontal_speed_ &&
         follower_vertical_speed_ <= relay_arrive_max_vertical_speed_;
     if (waypoint_arrival || ordinary_dwell_started || terminal_arrival || skip_occupied_point ||
+        skip_passed_point ||
         ordinary_scan_done_) {
       if (ordinary_relay && waypoint_arrival && !skip_occupied_point &&
           dynamicSpacingActive() && !in_dynamic_passage_) {
@@ -2539,7 +2561,7 @@ class LeaderSafePathFollower {
         if (handleDiffSeparationSafety(now)) return true;
       }
       if (ordinary_relay && ordinaryScanAllowed() && !skip_occupied_point &&
-          !in_dynamic_passage_ && !ordinary_scan_done_) {
+          !skip_passed_point && !in_dynamic_passage_ && !ordinary_scan_done_) {
         startOrdinaryScan(worldYawToFollower(desired_world.yaw), now);
         stepOrdinaryScan(now);
         return true;
@@ -2547,7 +2569,8 @@ class LeaderSafePathFollower {
       // 显式配置驻留时，从普通点首次达到容差开始计时；偏出容差不重计时。
       // 期间保留完整终点和航向参考继续收敛。
       // 入口、出口、门外等待及最终降落保留各自原有到达规则。
-      if (ordinary_relay && !skip_occupied_point && ordinary_waypoint_dwell_ > 0.0) {
+      if (ordinary_relay && !skip_occupied_point && !skip_passed_point &&
+          ordinary_waypoint_dwell_ > 0.0) {
         if (relay_arrival_stamp_.isZero()) relay_arrival_stamp_ = now;
         const double elapsed = (now - relay_arrival_stamp_).toSec();
         if (elapsed < ordinary_waypoint_dwell_) {
@@ -2574,7 +2597,20 @@ class LeaderSafePathFollower {
         return true;
       }
 
-      if (skip_occupied_point)
+      if (skip_passed_point) {
+        ROS_WARN("[safe_follower] FIFO SKIP PASSED id=%u endpoint (%.2f,%.2f,%.2f); "
+                 "already beyond incoming segment, continue to next point without scan.",
+                 desired_world.safe_relay_id, desired_local.x, desired_local.y, desired_local.z);
+        // 取消已越过点的执行归属，迟到的重试/脱障回执不能再把飞机拉回。
+        for (auto it = simple_diff_goal_owners_.begin(); it != simple_diff_goal_owners_.end();) {
+          if (desired_world.diff_goal_owner_stamp_ns != 0ULL &&
+              it->second == desired_world.diff_goal_owner_stamp_ns)
+            it = simple_diff_goal_owners_.erase(it);
+          else
+            ++it;
+        }
+        setDiffWaitPositionHold(true, "FIFO endpoint passed; switch to next");
+      } else if (skip_occupied_point)
         ROS_WARN("[safe_follower] FIFO SKIP OCCUPIED endpoint (%.2f,%.2f,%.2f), "
                  "Diff map occupied; leader cleared current point, plan next queued point.",
                  desired_local.x, desired_local.y, desired_local.z);
@@ -4695,6 +4731,8 @@ class LeaderSafePathFollower {
   std::deque<RoutePoint> turn_candidate_route_;
   // 2026-07-16: relay_waypoints_ 是实际下发给后机的门点、滚动内部点和真实终点。
   std::vector<RoutePoint> relay_waypoints_;
+  geometry_msgs::Point previous_fifo_position_;
+  bool have_previous_fifo_position_{false};
   // 普通点出队后仍保留过滤基准；被过滤的点不会替换它。
   geometry_msgs::Point last_ordinary_relay_position_;
   bool have_last_ordinary_relay_point_{false};

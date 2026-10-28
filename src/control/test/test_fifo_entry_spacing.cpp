@@ -1929,6 +1929,115 @@ TEST_F(FifoEntrySpacing, UpdatedHeadingReplacesCurrentScanReference) {
   EXPECT_FALSE(follower->diff_goal_published_);
 }
 
+TEST_F(FifoEntrySpacing, PassedQueuedPointSkipsScanAndPlansNextPoint) {
+  follower->door_waypoint_released_ = true;
+  queuePoint(0.0, true);
+  follower->consumeSimpleRelayFront();
+  queuePoint(1.0);
+  queuePoint(2.0);
+  follower->ordinary_scan_enabled_ = true;
+  follower->ordinary_waypoint_dwell_ = 2.0;
+  follower->require_waypoint_yaw_ = true;
+  follower->follower_odom_.pose.pose.position.x = 1.3;
+  follower->follower_odom_.pose.pose.orientation.z = 1.0; // 面向后方不改变越过判断。
+  setLeader(5.0);
+
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(1U, follower->relay_waypoints_.size());
+  EXPECT_DOUBLE_EQ(2.0, follower->relay_waypoints_[0].position.x);
+  EXPECT_EQ(0, follower->ordinary_scan_stage_);
+  EXPECT_FALSE(follower->diff_goal_published_);
+  EXPECT_TRUE(follower->diff_wait_hold_active_);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->diff_goal_published_);
+}
+
+TEST_F(FifoEntrySpacing, PassedActivePointCancelsOldGoalAndCannotBeRevisitedByRevision) {
+  prepareQualifiedPoints();
+  // 通过实际消费入口点建立入段方向。
+  RoutePoint door;
+  door.is_door = true;
+  door.position.z = 0.6;
+  follower->relay_waypoints_.insert(follower->relay_waypoints_.begin(), door);
+  follower->consumeSimpleRelayFront();
+  auto path = relaySnapshot();
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  const auto stamp = follower->diff_active_goal_stamp_ns_;
+  reportDiffStatus("TRAJECTORY_PUBLISHED", stamp, " 1 0 0.6");
+  follower->follower_odom_.pose.pose.position.x = 1.5;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(1U, follower->relay_waypoints_.size());
+  EXPECT_EQ(2U, follower->relay_waypoints_[0].safe_relay_id);
+  EXPECT_TRUE(follower->diff_wait_hold_active_);
+  EXPECT_EQ(0U, follower->simple_diff_goal_owners_.count(stamp));
+  reportDiffStatus("OCCUPIED_RECOVERY_VERTICAL", stamp,
+                   " recovery_stamp_ns=" + std::to_string(stamp + 1));
+  EXPECT_FALSE(follower->simple_occupied_recovery_active_);
+  ++path->header.seq;
+  path->poses[0].pose.position.x = 0.8;
+  follower->safeRelayCallback(path);
+  ASSERT_EQ(1U, follower->relay_waypoints_.size());
+  EXPECT_EQ(2U, follower->relay_waypoints_[0].safe_relay_id);
+}
+
+TEST_F(FifoEntrySpacing, PassedCheckKeepsLateralHeightAndUnreachedTurnTargets) {
+  follower->door_waypoint_released_ = true;
+  queuePoint(0.0, true);
+  follower->consumeSimpleRelayFront();
+  queuePoint(1.0);
+  setLeader(5.0);
+  auto& current = follower->follower_odom_.pose.pose.position;
+  current.x = 1.3;
+  current.y = 0.8; // 在拐弯外侧，不能只用前向投影消费目标。
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(1U, follower->relay_waypoints_.size());
+  current.y = 0.0;
+  current.z = 1.0;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(1U, follower->relay_waypoints_.size());
+  current.z = 0.6;
+  current.x = 0.8;
+  follower->follower_odom_.pose.pose.orientation.z = 1.0;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_EQ(1U, follower->relay_waypoints_.size());
+}
+
+TEST_F(FifoEntrySpacing, PassedCheckUsesReturnSegmentAndFollowerFrameTransform) {
+  follower->door_waypoint_released_ = true;
+  follower->follower_alignment_x_ = -1.2;
+  queuePoint(3.0);
+  follower->consumeSimpleRelayFront();
+  queuePoint(2.0); // 回程沿负 X，不能把“X 变小”一律当成回退。
+  setLeader(6.0);
+  follower->follower_odom_.pose.pose.position.x = 3.5; // 世界 X=2.3，尚未到达。
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(1U, follower->relay_waypoints_.size());
+  follower->follower_odom_.pose.pose.position.x = 2.9; // 世界 X=1.7，确实越过。
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->relay_waypoints_.empty());
+  EXPECT_TRUE(follower->diff_wait_hold_active_); // 无后续点时也撤销旧点的回拉参考。
+}
+
+TEST_F(FifoEntrySpacing, PassedCheckPreservesDoorExitOutsideAndTerminalTargets) {
+  follower->door_waypoint_released_ = true;
+  queuePoint(0.0, true);
+  follower->consumeSimpleRelayFront();
+  queuePoint(1.0, true);
+  queuePoint(2.0);
+  queuePoint(3.0);
+  queuePoint(4.0);
+  follower->exit_waypoint_index_ = 1;
+  follower->outside_wait_waypoint_index_ = 2;
+  follower->terminal_waypoint_index_ = 3;
+  geometry_msgs::Point current;
+  current.x = 5;
+  current.z = 0.6;
+  for (std::size_t i = 0; i < 4; ++i) {
+    follower->active_relay_index_ = i;
+    EXPECT_FALSE(follower->ordinaryRelayPassed(current, 0.0));
+  }
+}
+
 int main(int argc, char** argv) {
   ros::init(argc, argv, "test_fifo_entry_spacing",
             ros::init_options::AnonymousName | ros::init_options::NoSigintHandler);
