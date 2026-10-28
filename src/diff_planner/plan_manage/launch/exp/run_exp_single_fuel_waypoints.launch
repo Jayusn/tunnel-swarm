@@ -12,7 +12,7 @@
   <arg name="fapp_detection_max_z" default="1.2"/>
   <arg name="enable_fapp_dynamic_avoidance" default="true"/>
   <!-- true保留动态软代价，常规轨迹跳过动态硬拒绝；历史包络用于选路与样条生成；false启用动态碰撞硬检查。
-       航点选路仍先检查摆球下方通路；可下穿则前进下降/低位通过/前进回升，否则左右侧绕。 -->
+       航点选路先检查侧下穿和分段接近/原地下降/低位通过，否则左右侧绕；实际通过后按地图恢复高度。 -->
   <arg name="fapp_planner_priority" default="true"/>
   <!-- 保存历史最低点与摆动包络；持续空帧仍依历史范围规划，不仅因超时制动。 -->
   <arg name="fapp_memory_enabled" default="true"/>
@@ -105,7 +105,13 @@
   <param name="/exploration_node/fsm/use_diff_for_fuel_exploration" value="false" type="bool"/>
   <!-- 通道转弯也需要地图检测；出口开关只控制出口识别和降落。 -->
   <param name="/exploration_node/mission/task_search/enabled" value="true" type="bool"/>
+  <!-- 绕障高度不依赖出口开关，与探索入口保持一致。 -->
+  <param name="/exploration_node/mission/task_search/cruise_height" value="0.60" type="double"/>
+  <param name="/exploration_node/mission/task_search/min_height" value="0.10" type="double"/>
+  <param name="/exploration_node/mission/task_search/max_height" value="1.90" type="double"/>
   <param name="/exploration_node/mission/task_search/curve_heading/enabled" value="true" type="bool"/>
+  <!-- 与探索一致：沿已选通路恢复高度时每轮最多升高0.30m。 -->
+  <param name="/exploration_node/mission/task_search/max_goal_climb" value="0.30" type="double"/>
   <param name="/exploration_node/mission/task_search/recovery/turn_confirmation_count" value="1" type="int"/>
   <param name="/exploration_node/mission/task_search/recovery/turn_in_place_enabled" value="true" type="bool"/>
   <param name="/exploration_node/mission/task_search/recovery/turn_in_place_yaw_rate_deg" value="30.0" type="double"/>
@@ -136,6 +142,8 @@
   <param name="/exploration_node/fapp/planner_priority" value="$(arg fapp_planner_priority)" type="bool"/>
   <!-- 对齐探索入口：历史保留横向摆幅，不累计前后和上下抖动。 -->
   <param name="/exploration_node/fapp/lateral_motion_only" value="true" type="bool"/>
+  <!-- 复用探索的连续/分段下穿、原地下降、局部重试及穿越后补高流程。 -->
+  <param name="/exploration_node/fapp/exploration_crossing_enabled" value="true" type="bool"/>
   <param name="/exploration_node/fapp/topic" value="/UAV0/fapp/states"/>
   <!-- 以定位雷达参考点为准：上方5cm、下方20cm；下穿目标Z最低0.10m。 -->
   <param name="/exploration_node/fapp/vehicle_top_height" value="0.05" type="double"/>
