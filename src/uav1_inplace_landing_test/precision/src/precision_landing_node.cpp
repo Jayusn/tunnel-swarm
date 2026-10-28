@@ -13,12 +13,14 @@
 #include <vector>
 
 #include <Eigen/Core>
+#include <Eigen/Geometry>
 #include <Eigen/LU>
 #include <cv_bridge/cv_bridge.h>
 #include <geometry_msgs/PointStamped.h>
 #include <geometry_msgs/PoseStamped.h>
 #include <image_transport/image_transport.h>
 #include <mavros_msgs/PositionTarget.h>
+#include <mavros_msgs/ExtendedState.h>
 #include <nav_msgs/Odometry.h>
 #include <mavros_msgs/SetMode.h>
 #include <mavros_msgs/State.h>
@@ -460,6 +462,10 @@ class PrecisionLandingNode {
     std::string camera_info_topic{"/usb_cam/camera_info"};
     std::string pose_topic{"/mavros/local_position/pose"};
     std::string mavros_state_topic{"/mavros/state"};
+    std::string extended_state_topic{"mavros/extended_state"};
+    loadParameter(private_node_, "topics/extended_state", extended_state_topic);
+    extended_state_subscriber_ = node_.subscribe(
+        extended_state_topic, 1, &PrecisionLandingNode::extendedStateCallback, this);
     std::string trigger_topic{"/need_to_land"};
     std::string target_id_topic{"/landing/target_id"};
     std::string setpoint_topic{"/mavros/setpoint_raw/local"};
@@ -580,7 +586,8 @@ class PrecisionLandingNode {
   }
 
   bool imageFresh(const ros::Time& now) const {
-    return image_valid_ &&
+    return image_valid_ && !image_content_time_.isZero() &&
+           (now - image_content_time_).toSec() <= image_timeout_sec_ &&
            messageFresh(image_received_, image_receive_time_,
                         image_header_stamp_, image_timeout_sec_, now);
   }
@@ -675,8 +682,19 @@ class PrecisionLandingNode {
     latest_image_header_ = message->header;
 
     try {
-      latest_image_ = cv_bridge::toCvCopy(
+      cv::Mat next_image = cv_bridge::toCvCopy(
           message, sensor_msgs::image_encodings::BGR8)->image;
+      const bool changed = latest_image_.empty() || next_image.size() != latest_image_.size() ||
+          next_image.type() != latest_image_.type() ||
+          cv::norm(next_image, latest_image_, cv::NORM_INF) != 0.0;
+      if (changed) {
+        image_content_time_ = image_receive_time_;
+        observation_content_stamp_ = message->header.stamp;
+        observation_pose_ = local_pose_;
+        observation_pose_valid_ = poseFresh(image_receive_time_);
+      }
+      latest_image_ = next_image;
+      // 使用该帧接收时的定位，避免定时器重复把同一观测叠加到移动后的位姿上。
       image_valid_ = !latest_image_.empty();
     } catch (const cv_bridge::Exception& error) {
       ROS_WARN_THROTTLE(1.0, "Could not convert landing image: %s",
@@ -684,18 +702,14 @@ class PrecisionLandingNode {
       latest_image_.release();
       image_valid_ = false;
       latest_observation_ = TargetObservation();
-      revokeModeRequestAuthorization();
       return;
     }
     const bool fresh_message =
         messageFresh(image_received_, image_receive_time_,
                      image_header_stamp_, image_timeout_sec_,
                      image_receive_time_);
-    if (!fresh_message) {
-      revokeModeRequestAuthorization();
-    }
     processLatestImage(
-        trackerMutationAllowed() && fresh_message &&
+        trackerMutationAllowed() && fresh_message && imageFresh(image_receive_time_) &&
         cameraInfoFresh(image_receive_time_));
   }
 
@@ -731,14 +745,7 @@ class PrecisionLandingNode {
       camera_matrix_.release();
       distortion_.release();
       latest_observation_ = TargetObservation();
-      revokeModeRequestAuthorization();
       return;
-    }
-    if (!messageFresh(camera_info_received_, camera_info_receive_time_,
-                      camera_info_header_stamp_,
-                      camera_info_timeout_sec_,
-                      camera_info_receive_time_)) {
-      revokeModeRequestAuthorization();
     }
 
     camera_matrix_ = cv::Mat(3, 3, CV_64F);
@@ -805,6 +812,13 @@ class PrecisionLandingNode {
     triggerCallback(stop);
   }
 
+  void extendedStateCallback(const mavros_msgs::ExtendedStateConstPtr& message) {
+    extended_state_ = *message;
+    extended_state_time_ = ros::Time::now();
+    if (trigger_ && message->landed_state == mavros_msgs::ExtendedState::LANDED_STATE_IN_AIR)
+      seen_airborne_ = true;
+  }
+
   void triggerCallback(const std_msgs::BoolConstPtr& message) {
     if (rc_land_active_ && message->data) return;
     const bool rising_edge = message->data && !trigger_;
@@ -818,6 +832,11 @@ class PrecisionLandingNode {
       latest_observation_ = TargetObservation();
       last_error_body_.setZero();
       last_marker_height_m_ = 0.0;
+      remembered_target_valid_ = false;
+      remembered_image_stamp_ = ros::Time(0);
+      fixed_xy_descent_valid_ = false;
+      fixed_ground_valid_ = false;
+      seen_airborne_ = false;
       yaw_captured_ = poseFresh(now) && captureCurrentYaw();
       captureHoldPosition();
       mission_trigger_time_ = now;
@@ -864,17 +883,10 @@ class PrecisionLandingNode {
     const bool perception_inputs_fresh =
         fresh_image && fresh_camera_info && fresh_pose;
     const bool critical_inputs_fresh =
-        perception_inputs_fresh && fresh_mavros_state &&
-        current_yaw_valid;
+        fresh_pose && fresh_mavros_state && current_yaw_valid;
     const double remaining_freshness_sec = std::max(
         0.0,
         std::min({
-            messageFreshnessRemaining(
-                image_received_, image_receive_time_,
-                image_header_stamp_, image_timeout_sec_, now),
-            messageFreshnessRemaining(
-                camera_info_received_, camera_info_receive_time_,
-                camera_info_header_stamp_, camera_info_timeout_sec_, now),
             messageFreshnessRemaining(
                 pose_received_, pose_receive_time_, pose_header_stamp_,
                 pose_timeout_sec_, now),
@@ -916,6 +928,18 @@ class PrecisionLandingNode {
         marker_height_m = candidate_marker_height_m;
         last_error_body_ = current_error_body;
         last_marker_height_m_ = marker_height_m;
+        if (observation_pose_valid_ && observation_content_stamp_ != remembered_image_stamp_ &&
+            previous_state_ != LandingState::FIXED_XY_DESCENT &&
+            previous_state_ != LandingState::REQUEST_AUTO_LAND) {
+          const auto& q = observation_pose_.pose.orientation;
+          const Eigen::Quaterniond attitude(q.w, q.x, q.y, q.z);
+          const Eigen::Vector3d offset_body(current_error_body.x(), current_error_body.y(),
+                                            -marker_height_m);
+          const auto& p = observation_pose_.pose.position;
+          remembered_target_ = Eigen::Vector3d(p.x, p.y, p.z) + attitude.normalized() * offset_body;
+          remembered_target_valid_ = remembered_target_.allFinite();
+          remembered_image_stamp_ = observation_content_stamp_;
+        }
       }
     }
 
@@ -929,13 +953,20 @@ class PrecisionLandingNode {
 
     bool landing_contact = false;
     if (auto_land_at_cutoff_ && previous_state_ == LandingState::FIXED_XY_DESCENT &&
-        fixed_xy_descent_valid_ && fresh_pose) {
+        fixed_xy_descent_valid_ && fixed_ground_valid_ && fresh_pose) {
       const double height_above_ground =
           local_pose_.pose.position.z - fixed_xy_ground_z_;
       landing_contact = height_above_ground <= cutoff_height_m_;
     }
+    // 从未得到过平台高度时，下降至飞控确认接地，再沿用末端模式交接。
+    if (auto_land_at_cutoff_ && previous_state_ == LandingState::FIXED_XY_DESCENT &&
+        !fixed_ground_valid_ && seen_airborne_ &&
+        !extended_state_time_.isZero() && (now - extended_state_time_).toSec() <= state_timeout_sec_ &&
+        headerFresh(extended_state_.header.stamp, state_timeout_sec_, now) &&
+        extended_state_.landed_state == mavros_msgs::ExtendedState::LANDED_STATE_ON_GROUND)
+      landing_contact = true;
     if (landing_contact) {
-      ROS_WARN("LOW HEIGHT CUTOFF: height=%.3f z=%.3f threshold=%.3f; "
+      ROS_WARN("LANDING END GATE: estimated_height=%.3f z=%.3f threshold=%.3f; "
                "requesting AUTO.LAND mode",
                local_pose_.pose.position.z - fixed_xy_ground_z_,
                local_pose_.pose.position.z, cutoff_height_m_);
@@ -955,6 +986,9 @@ class PrecisionLandingNode {
         now.toSec(),
         critical_inputs_fresh,
         landing_contact);
+    input.remembered_target_valid = remembered_target_valid_;
+    input.remembered_error_m = (remembered_target_.head<2>() -
+        Eigen::Vector2d(local_pose_.pose.position.x, local_pose_.pose.position.y)).norm();
     const StateOutput output = state_machine_.update(input);
 
     if (output.state == LandingState::ALIGN &&
@@ -963,23 +997,16 @@ class PrecisionLandingNode {
     }
 
     if (output.state == LandingState::FIXED_XY_DESCENT &&
-        previous_state_ != LandingState::FIXED_XY_DESCENT &&
-        fresh_pose && target_visible) {
-      fixed_xy_position_ = Eigen::Vector2d(
-          local_pose_.pose.position.x, local_pose_.pose.position.y);
-      fixed_xy_ground_z_ =
-          local_pose_.pose.position.z - marker_height_m;
+        previous_state_ != LandingState::FIXED_XY_DESCENT && fresh_pose) {
+      fixed_xy_position_ = remembered_target_valid_ ? Eigen::Vector2d(remembered_target_.head<2>()) :
+          Eigen::Vector2d(local_pose_.pose.position.x, local_pose_.pose.position.y);
+      fixed_ground_valid_ = remembered_target_valid_;
+      fixed_xy_ground_z_ = remembered_target_.z();
       fixed_xy_target_z_ = local_pose_.pose.position.z;
-      fixed_xy_descent_valid_ =
-          fixed_xy_position_.allFinite() &&
-          isFinite(fixed_xy_ground_z_) &&
-          isFinite(fixed_xy_target_z_);
-      if (fixed_xy_descent_valid_) {
-        ROS_WARN("FIXED XYZ DESCENT START: hold x=%.3f y=%.3f, "
-                 "estimated ground z=%.3f, ramp Z target down",
-                 fixed_xy_position_.x(), fixed_xy_position_.y(),
-                 fixed_xy_ground_z_);
-      }
+      fixed_xy_descent_valid_ = true;
+      ROS_WARN("CONTROLLER DESCENT: remembered_target=%s x=%.3f y=%.3f ground_valid=%s z=%.3f",
+               remembered_target_valid_ ? "yes" : "no", fixed_xy_position_.x(), fixed_xy_position_.y(),
+               fixed_ground_valid_ ? "yes" : "no", fixed_xy_ground_z_);
     }
 
     if (output.reset_target_lock) {
@@ -989,8 +1016,12 @@ class PrecisionLandingNode {
       yaw_captured_ = false;
       last_error_body_.setZero();
       last_marker_height_m_ = 0.0;
-      hold_position_valid_ = false;
+      remembered_target_valid_ = false;
+      remembered_image_stamp_ = ros::Time(0);
       fixed_xy_descent_valid_ = false;
+      fixed_ground_valid_ = false;
+      seen_airborne_ = false;
+      hold_position_valid_ = false;
       mission_trigger_time_ = ros::Time(0);
     }
     if (output.reset_target_jump_history) {
@@ -1025,9 +1056,9 @@ class PrecisionLandingNode {
            output.state != LandingState::FIXED_XY_DESCENT);
       if (output.state == LandingState::FIXED_XY_DESCENT &&
           fixed_xy_descent_valid_) {
-        fixed_xy_target_z_ = std::max(
-            fixed_xy_ground_z_ - ground_target_offset_m_,
-            fixed_xy_target_z_ - output.descent_speed_mps * dt_sec);
+        fixed_xy_target_z_ -= output.descent_speed_mps * dt_sec;
+        if (fixed_ground_valid_)
+          fixed_xy_target_z_ = std::max(fixed_xy_ground_z_ - ground_target_offset_m_, fixed_xy_target_z_);
         publishPositionHold(
             Eigen::Vector3d(fixed_xy_position_.x(),
                             fixed_xy_position_.y(),
@@ -1040,6 +1071,11 @@ class PrecisionLandingNode {
                             fixed_xy_position_.y(),
                             fixed_xy_target_z_),
             captured_yaw_rad_, now);
+      } else if (!target_visible && remembered_target_valid_ && critical_inputs_fresh &&
+                 (output.state == LandingState::ACQUIRE || output.state == LandingState::ALIGN ||
+                  output.state == LandingState::DESCEND_HIGH || output.state == LandingState::REACQUIRE)) {
+        publishPositionHold(Eigen::Vector3d(remembered_target_.x(), remembered_target_.y(),
+                                           hold_position_.z()), captured_yaw_rad_, now);
       } else if (position_hold_state && hold_position_valid_) {
         publishPositionHold(hold_position_, captured_yaw_rad_, now);
       } else if (output.state == LandingState::ALIGN && target_visible &&
@@ -1081,8 +1117,7 @@ class PrecisionLandingNode {
     if (searching && !mission_trigger_time_.isZero() &&
         !search_timeout_warning_logged_ &&
         (now - mission_trigger_time_).toSec() >= search_warning_sec_) {
-      ROS_WARN("ARUCO SEARCH EXCEEDED %.1f s: continuing position hold "
-               "and automatic search",
+      ROS_WARN("ARUCO SEARCH EXCEEDED %.1f s: awaiting controller descent fallback",
                search_warning_sec_);
       search_timeout_warning_logged_ = true;
     }
@@ -1668,6 +1703,18 @@ class PrecisionLandingNode {
   double fixed_xy_ground_z_{0.0};
   double fixed_xy_target_z_{0.0};
   bool fixed_xy_descent_valid_{false};
+  bool fixed_ground_valid_{false};
+  Eigen::Vector3d remembered_target_{Eigen::Vector3d::Zero()};
+  bool remembered_target_valid_{false};
+  ros::Time remembered_image_stamp_;
+  ros::Time image_content_time_;
+  ros::Time observation_content_stamp_;
+  geometry_msgs::PoseStamped observation_pose_;
+  bool observation_pose_valid_{false};
+  ros::Subscriber extended_state_subscriber_;
+  mavros_msgs::ExtendedState extended_state_;
+  ros::Time extended_state_time_;
+  bool seen_airborne_{false};
   bool last_target_visible_for_hold_{false};
   ros::Time mission_trigger_time_;
   bool search_timeout_warning_logged_{false};

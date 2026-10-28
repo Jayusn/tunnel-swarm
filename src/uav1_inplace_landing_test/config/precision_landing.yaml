@@ -36,9 +36,8 @@ safety:
   # skew accommodates normal ROS callback scheduling and synchronized clocks.
   max_header_future_sec: 0.05
   target_loss_timeout_sec: 0.50
-  # Target search and reacquisition continue while positioning, camera,
-  # MAVROS and OFFBOARD remain healthy. If precision landing still has not
-  # completed after total_timeout_sec, request PX4 AUTO.LAND at the current position.
+  # 丢码后依靠保存的世界目标对准；20 秒仍未完成则使用控制器定点下降。
+  # 图像失效不阻断此策略；定位/飞控状态失效仍保持原处置。
   reacquire_timeout_sec: 5.0
   total_timeout_sec: 20.0
 state_machine:

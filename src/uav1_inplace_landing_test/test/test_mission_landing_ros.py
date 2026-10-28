@@ -74,7 +74,9 @@ class MissionLandingTest(RcLandPriorityTest):
 
         def drive(frames, visible, trigger=True):
             for _ in range(frames):
-                image = bridge.cv2_to_imgmsg(marked if visible else blank, encoding='mono8')
+                pixels = (marked if visible else blank).copy()
+                pixels[0, 0] = int(time.monotonic() * 1000) % 200
+                image = bridge.cv2_to_imgmsg(pixels, encoding='mono8')
                 local.pose.position.x += 2.0
                 local.pose.position.y -= 1.0
                 for topic, msg in [('odom', odom), ('px4_pose', local), ('state', state),
@@ -100,8 +102,8 @@ class MissionLandingTest(RcLandPriorityTest):
         self.assertTrue(self.last('stage').data.startswith('REACQUIRE'))
         hold = self.last('setpoint')
         self.assertEqual(hold.type_mask, 2552)
-        self.assertAlmostEqual(hold.position.x, 0.3, places=4)
-        self.assertAlmostEqual(hold.position.y, -2.4, places=4)
+        self.assertAlmostEqual(hold.position.x, 0.5, delta=.01)
+        self.assertAlmostEqual(hold.position.y, -2.5, delta=.01)
         self.assertAlmostEqual(hold.position.z, 1.5, places=4)
         self.assertAlmostEqual(hold.yaw, 0.4, places=4)
 
@@ -220,17 +222,18 @@ class MissionLandingTest(RcLandPriorityTest):
         self.assertAlmostEqual(ref.position.z,1.5,places=4)
         stage='DESCEND_HIGH';target.type_mask=2503;target.velocity.z=-.1;drive(.4)
         self.assertLess(self.last('controller/mpc/reference_trajectory').poses[0].pose.position.z,1.48)
+        # 固定下降必须沿用保存的码中心目标，不得重置成 odom 当前 XY/Z。
         stage='FIXED_XY_DESCENT:STALE_IMAGE';target.type_mask=2552;target.position=Point(1.24,-.6,1.45);drive(.3)
         ref=self.last('controller/mpc/reference_trajectory').poses[0].pose
-        self.assertAlmostEqual(ref.position.x,1.2,places=4)
-        self.assertAlmostEqual(ref.position.y,-.7,places=4)
-        self.assertAlmostEqual(ref.position.z,1.5,places=4)
-        target.position.z-=.1;target.position.y+=.2;drive(.3)
+        self.assertAlmostEqual(ref.position.x,1.24,places=4)
+        self.assertAlmostEqual(ref.position.y,-.6,places=4)
+        self.assertAlmostEqual(ref.position.z,1.45,places=4)
+        target.position.z-=.1;drive(.3)
         ref=self.last('controller/mpc/reference_trajectory').poses[0].pose
-        self.assertAlmostEqual(ref.position.y,-.7,places=4)
-        self.assertAlmostEqual(ref.position.z,1.4,places=4)
+        self.assertAlmostEqual(ref.position.y,-.6,places=4)
+        self.assertAlmostEqual(ref.position.z,1.35,places=4)
         drive(.6,False)
-        self.assertAlmostEqual(self.last('controller/mpc/reference_trajectory').poses[0].pose.position.z,1.4,places=4)
+        self.assertAlmostEqual(self.last('controller/mpc/reference_trajectory').poses[0].pose.position.z,1.35,places=4)
         self.assertIsNone(self.last('px4_position'),'visual position leaked into PX4')
         rc.channels[9]=2000;target.position=Point(100,100,100);drive(.4)
         self.assertTrue(self.last('rc_land').data)

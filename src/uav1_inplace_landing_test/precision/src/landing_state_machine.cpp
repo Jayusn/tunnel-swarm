@@ -17,11 +17,10 @@ bool clearsOnFalseTrigger(LandingState state) {
          state == LandingState::DONE;
 }
 
-bool canUseTimeoutAutoLand(LandingState state) {
+bool canUseControllerFallback(LandingState state) {
   return state == LandingState::ACQUIRE || state == LandingState::ALIGN ||
          state == LandingState::DESCEND_HIGH ||
-         state == LandingState::REACQUIRE ||
-         state == LandingState::FIXED_XY_DESCENT;
+         state == LandingState::REACQUIRE;
 }
 
 }  // namespace
@@ -43,6 +42,7 @@ StateOutput LandingStateMachine::update(const StateInput& input) {
     descent_gate_state_ = LandingState::IDLE;
     reacquire_started_sec_ = -1.0;
     mission_started_sec_ = -1.0;
+    remembered_aligned_since_sec_ = -1.0;
     reset_target_lock = true;
   } else if (state_ == LandingState::IDLE && input.trigger) {
     state_ = LandingState::PRECHECK;
@@ -159,13 +159,23 @@ StateOutput LandingStateMachine::update(const StateInput& input) {
     }
   }
 
-  // 视觉精降长时间无法完成时，交给 PX4 在当前位置执行最终降落。
-  // 只在输入仍健康且仍处于精降工作阶段时触发，避免覆盖失联/失去 OFFBOARD 的原有处置。
-  if (!entered_precheck && canUseTimeoutAutoLand(state_) &&
-      mission_started_sec_ >= 0.0 && input.critical_inputs_fresh &&
-      input.offboard &&
+  // 丢码后以保存的世界目标继续对准，沿用原有 12 cm / 0.5 s 门限。
+  if (canUseControllerFallback(state_) && !input.target_visible &&
+      input.remembered_target_valid && input.critical_inputs_fresh && input.offboard &&
+      input.remembered_error_m <= config_.auto_land_error_m) {
+    if (remembered_aligned_since_sec_ < 0.0)
+      remembered_aligned_since_sec_ = input.now_sec;
+    if (input.now_sec - remembered_aligned_since_sec_ >= config_.fine_align_stable_sec)
+      state_ = LandingState::FIXED_XY_DESCENT;
+  } else {
+    remembered_aligned_since_sec_ = -1.0;
+  }
+
+  // 20 秒兜底只切入控制器的定点下降；末端高度交接保持原逻辑。
+  if (!entered_precheck && canUseControllerFallback(state_) &&
+      mission_started_sec_ >= 0.0 && input.critical_inputs_fresh && input.offboard &&
       input.now_sec - mission_started_sec_ >= config_.total_timeout_sec) {
-    state_ = LandingState::REQUEST_AUTO_LAND;
+    state_ = LandingState::FIXED_XY_DESCENT;
   }
 
   StateOutput output;

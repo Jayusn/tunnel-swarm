@@ -448,19 +448,7 @@ namespace PayloadMPC
             const Eigen::Vector3d position(p.x, p.y, p.z);
             if (target.type_mask == 2552)
             {
-                if (landing_fixed_stage_ && target.header.stamp >= landing_fixed_stage_time_)
-                {
-                    if (!landing_fixed_latched_)
-                    {
-                        landing_fixed_origin_ = odom_data.p;
-                        landing_fixed_source_z_ = p.z;
-                        landing_fixed_latched_ = true;
-                        ROS_WARN("[精降NMPC] FAST-LIO锁点 x=%.3f y=%.3f z=%.3f", odom_data.p.x(), odom_data.p.y(), odom_data.p.z());
-                    }
-                    hover_pose_ = landing_fixed_origin_;
-                    hover_pose_.z() += p.z - landing_fixed_source_z_;
-                }
-                else hover_pose_ = position;
+                hover_pose_ = position;  // 精降节点已给出补偿后的世界目标。
             }
             else
             {
