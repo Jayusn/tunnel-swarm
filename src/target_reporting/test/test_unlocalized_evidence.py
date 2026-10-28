@@ -107,3 +107,55 @@ def test_unlocalized_thermal_still_uses_leader_projection(reporter):
     args = reporter._is_leader_thermal_source.call_args.args
     assert args[0] is None
     assert args[2].point.z == 1.0
+
+
+def test_interval_or_movement_saves_new_images_and_preserves_old_files(reporter):
+    reporter.save_unlocalized_evidence = True
+    reporter.unlocalized_save_interval = 5.0
+    reporter.unlocalized_center_shift = 80.0
+    for stamp, cx in [(10, 40), (11, 45), (12, 130), (16, 135), (17, 135)]:
+        send_image(reporter, "color", stamp)
+        send_status(reporter, "color", status("color", stamp, center_u=cx, center_v=40))
+    events = reporter.store.unlocalized_events()
+    assert [e["timestamp"] for e in events] == [10, 12, 17]
+    assert len({e["image"]["id"] for e in events}) == 3
+    assert len(list(Path(reporter.store.image_dir).rglob("*.jpg"))) == 3
+    assert reporter.store.all_events() == []
+    reporter.observation_pub.publish.assert_not_called()
+
+
+def test_restart_restores_repeat_suppression_and_continues_numbering(reporter):
+    reporter.save_unlocalized_evidence = True
+    send_image(reporter, "qr", 10)
+    send_status(reporter, "qr", status("qr", 10))
+    restarted = type(reporter)()
+    restarted.save_unlocalized_evidence = True
+    for stamp in (11, 15):
+        send_image(restarted, "qr", stamp)
+        send_status(restarted, "qr", status("qr", stamp))
+    events = restarted.store.unlocalized_events()
+    assert [e["evidence_seq"] for e in events] == [1, 2]
+    assert [e["timestamp"] for e in events] == [10, 15]
+    assert len(list(Path(restarted.store.image_dir).rglob("*.jpg"))) == 2
+
+
+def test_legacy_unlocalized_filename_is_not_overwritten(reporter):
+    old = {"target_type": "qr_code", "position": None, "localization_status": "unlocalized",
+           "timestamp": 1, "result": {"center_u": 40, "center_v": 40}}
+    reporter.store.append_unlocalized(old)
+    path = Path(reporter.store.save_image("uav1_unlocalized_qr_code.jpg", b"old", "qr_code"))
+    restarted = type(reporter)()
+    restarted.save_unlocalized_evidence = True
+    send_image(restarted, "qr", 10)
+    send_status(restarted, "qr", status("qr", 10))
+    assert path.read_bytes() == b"old"
+    assert restarted.store.unlocalized_events()[-1]["evidence_seq"] == 2
+
+
+def test_missing_leader_information_is_marked_incomplete(reporter):
+    reporter.save_unlocalized_evidence = True
+    reporter.leader_thermal_filter_enabled = True
+    reporter.leader_thermal_projection_filter_enabled = True
+    send_image(reporter, "thermal")
+    send_status(reporter, "thermal", status("thermal"))
+    assert reporter.store.unlocalized_events()[0]["leader_projection_status"] == "incomplete"

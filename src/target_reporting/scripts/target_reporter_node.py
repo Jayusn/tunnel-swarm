@@ -50,6 +50,12 @@ class TargetReporterNode:
             rospy.get_param("~save_unlocalized_evidence", False)
         )
         self.pending_unlocalized = defaultdict(lambda: deque(maxlen=40))
+        self.unlocalized_save_interval = max(0.0, float(rospy.get_param("~unlocalized_save_interval_s", 5.0)))
+        self.unlocalized_center_shift = max(0.0, float(rospy.get_param("~unlocalized_center_shift_px", 80.0)))
+        self.thermal_evidence_image_topic = rospy.get_param(
+            "~thermal_evidence_image_topic", "/UAV0/thermal/image_raw"
+        )
+        self.thermal_fused_topic = str(rospy.get_param("~thermal_fused_candidate_topic", "")).strip()
         self.exit_plane_filter_enabled = bool(
             rospy.get_param("~exit_plane_filter_enabled", False)
         )
@@ -128,9 +134,13 @@ class TargetReporterNode:
         )
         for target_type in self.store.IMAGE_TARGET_TYPES:
             os.makedirs(os.path.join(self.store.image_dir, target_type), exist_ok=True)
-        self.saved_unlocalized_types = {
-            event["target_type"] for event in self.store.unlocalized_events()
-        }
+        self.last_unlocalized = {}
+        saved_unlocalized = self.store.unlocalized_events()
+        for event in saved_unlocalized:
+            self.last_unlocalized[event["target_type"]] = event
+        self.unlocalized_seq = max(
+            [len(saved_unlocalized)] + [int(e.get("evidence_seq", 0)) for e in saved_unlocalized]
+        )
         self.tracker = CandidateTracker(
             rospy.get_param("~dedup_distance_m", 0.30),
             rospy.get_param("~confirm_hits", 1),
@@ -228,9 +238,7 @@ class TargetReporterNode:
                 String,
                 "/UAV0/vision/qr_debug_image",
             )
-            thermal_fused_topic = str(
-                rospy.get_param("~thermal_fused_candidate_topic", "")
-            ).strip()
+            thermal_fused_topic = self.thermal_fused_topic
             if thermal_fused_topic:
                 rospy.Subscriber(
                     thermal_fused_topic,
@@ -239,7 +247,7 @@ class TargetReporterNode:
                     queue_size=10,
                 )
                 rospy.Subscriber(
-                    "/UAV0/thermal/debug_image",
+                    self.thermal_evidence_image_topic,
                     Image,
                     lambda msg: self._image_cb("thermal", msg),
                     queue_size=2,
@@ -257,7 +265,7 @@ class TargetReporterNode:
                         "/UAV0/thermal/target_candidate_status",
                     ),
                     String,
-                    "/UAV0/thermal/debug_image",
+                    self.thermal_evidence_image_topic,
                 )
         else:
             # Compatibility path for old detector nodes without candidate topics.
@@ -271,7 +279,7 @@ class TargetReporterNode:
             )
             self._subscribe(
                 "thermal", "/UAV0/thermal/target_camera_point", PointStamped,
-                "/UAV0/thermal/fusion_valid", Bool, "/UAV0/thermal/debug_image"
+                "/UAV0/thermal/fusion_valid", Bool, self.thermal_evidence_image_topic
             )
         rospy.Subscriber(
             rospy.get_param(
@@ -439,63 +447,93 @@ class TargetReporterNode:
             return
         # A camera ray carries direction, not a made-up target distance. Only
         # the existing leader projection test can be evaluated without depth.
-        projection_checked = False
+        projection = {"status": "incomplete"}
+        if not (self.leader_thermal_filter_enabled and self.leader_thermal_projection_filter_enabled):
+            projection["status"] = "disabled"
         if source == "thermal" and data.get("camera_ray"):
             ray = data["camera_ray"]
             point = PointStamped()
             point.header.frame_id = ray["frame_id"]
             point.header.stamp = rospy.Time.from_sec(stamp)
             point.point.x, point.point.y, point.point.z = (ray[k] for k in ("x", "y", "z"))
-            if self._is_leader_thermal_source(None, stamp, point):
+            if self._is_leader_thermal_source(None, stamp, point, projection):
                 return
-            projection_checked = self.leader_thermal_filter_enabled and self.leader_thermal_projection_filter_enabled
         data = dict(data)
-        data["leader_projection_requested"] = bool(projection_checked)
+        data["leader_projection_status"] = projection["status"] if source == "thermal" else "not_applicable"
         with self.lock:
             self.pending_unlocalized[source].append(data)
         self._try_save_unlocalized(source)
+
+    @staticmethod
+    def _evidence_result(data):
+        result = {
+            "content": data.get("data", ""), "color": data.get("color", ""),
+            "points": data.get("points"), "bbox": data.get("bbox"),
+            "center_u": data.get("center_u", data.get("u", data.get("cx"))),
+            "center_v": data.get("center_v", data.get("v", data.get("cy"))),
+        }
+        if result["center_u"] is None or result["center_v"] is None:
+            bbox = result["bbox"]
+            if bbox is not None:
+                result["center_u"] = bbox[0] + bbox[2] / 2.0
+                result["center_v"] = bbox[1] + bbox[3] / 2.0
+        return result
+
+    def _unlocalized_due(self, target_type, stamp, result):
+        previous = self.last_unlocalized.get(target_type)
+        if previous is None:
+            return True
+        if stamp <= previous["timestamp"]:
+            return False
+        if stamp - previous["timestamp"] >= self.unlocalized_save_interval:
+            return True
+        old = previous["result"]
+        coords = [result.get("center_u"), result.get("center_v"), old.get("center_u"), old.get("center_v")]
+        if any(v is None for v in coords):
+            return False
+        return math.hypot(coords[0] - coords[2], coords[1] - coords[3]) >= self.unlocalized_center_shift
 
     def _try_save_unlocalized(self, source):
         if not self.save_unlocalized_evidence or source not in ("qr", "color", "thermal"):
             return
         target_type = {"qr": "qr_code", "color": "color_tag", "thermal": "thermal_source"}[source]
         with self.candidate_lock:
-            if target_type in self.saved_unlocalized_types:
-                return
             with self.lock:
                 pending = list(self.pending_unlocalized.get(source, ()))
             image = None
             for data in pending:
                 stamp = float(data["stamp"])
-                image = self.images.nearest(source, stamp, self.image_tolerance)
+                result = self._evidence_result(data)
+                if not self._unlocalized_due(target_type, stamp, result):
+                    continue
+                image_stamp = data.get("source_timing", {}).get("thermal_stamp", stamp) if source == "thermal" else stamp
+                image = self.images.nearest(source, image_stamp, 1e-7 if source == "thermal" else self.image_tolerance)
                 if image is not None:
                     break
             if image is None:
                 return
-            result = {
-                "content": data.get("data", ""), "color": data.get("color", ""),
-                "points": data.get("points"), "bbox": data.get("bbox"),
-                "center_u": data.get("center_u", data.get("u", data.get("cx"))),
-                "center_v": data.get("center_v", data.get("v", data.get("cy"))),
-            }
+            self.unlocalized_seq += 1
             event = {
                 "version": 1, "timestamp": stamp, "drone_id": self.drone_id,
                 "target_type": target_type,
-                "target_id": self.drone_id + "-unlocalized-" + target_type,
+                "target_id": "{}-unlocalized-{}-{:06d}".format(self.drone_id, target_type, self.unlocalized_seq),
+                "evidence_seq": self.unlocalized_seq,
                 "message_type": "unlocalized_evidence", "position": None,
                 "localization_status": "unlocalized", "localization_label": "未定位",
                 "result": result,
                 "spatial_filters": "not_evaluable_without_valid_position",
-                "leader_projection_requested": data.get("leader_projection_requested", False),
+                "leader_projection_status": data["leader_projection_status"],
             }
-            name = "{}_unlocalized_{}.jpg".format(self.drone_id, target_type)
+            name = "{}_unlocalized_{:06d}_{}.jpg".format(self.drone_id, self.unlocalized_seq, target_type)
             jpeg = build_evidence_jpeg(draw_detection_overlay(image, event), event)
             self.store.save_image(name, jpeg, target_type=target_type)
             event["image"] = image_metadata(name, jpeg)
             self.store.append_unlocalized(event)
-            self.saved_unlocalized_types.add(target_type)
+            self.last_unlocalized[target_type] = event
             with self.lock:
-                self.pending_unlocalized.pop(source, None)
+                self.pending_unlocalized[source] = deque(
+                    (item for item in self.pending_unlocalized[source] if item["stamp"] > stamp), maxlen=40
+                )
             rospy.loginfo("Saved local unlocalized evidence: %s", name)
 
     def _leader_odom_cb(self, msg):
@@ -503,7 +541,7 @@ class TargetReporterNode:
             self.leader_odom_history.append(msg)
             self.latest_leader_odom_received = rospy.Time.now()
 
-    def _is_leader_thermal_source(self, position, event_stamp, camera_point=None):
+    def _is_leader_thermal_source(self, position, event_stamp, camera_point=None, projection=None):
         if not self.leader_thermal_filter_enabled:
             return False
         with self.lock:
@@ -564,9 +602,9 @@ class TargetReporterNode:
             return True
         if not self.leader_thermal_projection_filter_enabled or camera_point is None:
             return False
-        return self._is_in_leader_projection(leader, camera_point, event_stamp)
+        return self._is_in_leader_projection(leader, camera_point, event_stamp, projection)
 
-    def _is_in_leader_projection(self, leader, camera_point, event_stamp):
+    def _is_in_leader_projection(self, leader, camera_point, event_stamp, projection=None):
         """Compare image directions without trusting the candidate's depth.
 
         For an optical-frame point, X/Z and Y/Z are normalized image pixels.
@@ -601,6 +639,8 @@ class TargetReporterNode:
             candidate.x / candidate.z * projected.z - projected.x,
             candidate.y / candidate.z * projected.z - projected.y,
         )
+        if projection is not None:
+            projection["status"] = "clear" if offset > self.leader_thermal_projection_radius else "filtered"
         if offset > self.leader_thermal_projection_radius:
             return False
         rospy.logwarn_throttle(
@@ -626,6 +666,7 @@ class TargetReporterNode:
     def _retry_pending(self, _event):
         for source in ("color", "qr", "thermal"):
             self._try_process(source)
+            self._try_save_unlocalized(source)
 
     def _wait_for_matching_image(self, source, stamp, tolerance=None):
         """Wait briefly for the debug image from the confirmed source frame.
@@ -738,7 +779,7 @@ class TargetReporterNode:
             evidence_ready = self.images.has_match(
                 "thermal_d435",
                 event_stamp,
-                self.thermal_d435_ready_tolerance,
+                1e-7 if self.thermal_fused_topic else self.thermal_d435_ready_tolerance,
             )
         with self.candidate_lock:
             candidate, confirmed = self.tracker.update(
@@ -777,7 +818,13 @@ class TargetReporterNode:
             return
         report_position = self._world_to_channel(position)
         target_id = observation["target_id"]
-        image = self._wait_for_matching_image(source, event_stamp)
+        if source == "thermal":
+            # All candidates share the raw thermal frame. The fusion status
+            # retains its base stamp; candidate stamps differ by microseconds.
+            thermal_stamp = result.get("source_timing", {}).get("thermal_stamp", event_stamp)
+            image = self._wait_for_matching_image(source, thermal_stamp, 1e-7)
+        else:
+            image = self._wait_for_matching_image(source, event_stamp)
         image_id = "{}_seq{:06d}_{}.jpg".format(self.drone_id, event_seq, target_type)
         event = TargetEvent(
             seq=event_seq, timestamp=event_stamp, drone_id=self.drone_id,
@@ -788,6 +835,8 @@ class TargetReporterNode:
         jpeg = None
         d435_jpeg = None
         if image is not None:
+            if source == "thermal":
+                image = draw_detection_overlay(image, event)
             jpeg = build_evidence_jpeg(image, event,
                                        (point.point.x, point.point.y, point.point.z))
             event["image"] = image_metadata(image_id, jpeg)
@@ -801,7 +850,8 @@ class TargetReporterNode:
             )
         if source == "thermal":
             d435_image = self._wait_for_matching_image(
-                "thermal_d435", event_stamp, self.d435_image_tolerance
+                "thermal_d435", event_stamp,
+                1e-7 if self.thermal_fused_topic else self.d435_image_tolerance
             )
             if d435_image is not None:
                 d435_image_id = "{}_seq{:06d}_thermal_source_d435.jpg".format(

@@ -137,8 +137,8 @@ def _image_bbox(value):
 def draw_detection_overlay(image, event):
     """Legacy helper for explicit geometry overlays.
 
-    Confirmed evidence retains the detector's own box. Unlocalized evidence
-    may have no detector box, so it uses this helper for an outline only.
+    Thermal evidence uses the raw frame and this event's own geometry.
+    Unlocalized evidence also uses this helper for an outline only.
     """
     import cv2
     import numpy as np
@@ -174,7 +174,8 @@ def draw_detection_overlay(image, event):
         if center_u is not None and center_v is not None:
             center = (int(round(center_u)), int(round(center_v)))
 
-    if center is None or event.get("localization_status") == "unlocalized":
+    if (center is None or event.get("localization_status") == "unlocalized"
+            or target_type == "thermal_source"):
         return image
 
     cv2.drawMarker(
@@ -217,6 +218,8 @@ def build_evidence_jpeg(image, event, camera_xyz=None, quality=85):
     ]
     if camera_xyz is not None:
         lines.insert(1, "Camera: X={:.3f} Y={:.3f} Z={:.3f} m".format(*camera_xyz))
+    if event.get("leader_projection_status") in ("incomplete", "disabled"):
+        lines.insert(2, "Leader filter: {} (not verified)".format(event["leader_projection_status"]))
 
     height, width = source_image.shape[:2]
     lines = wrap_evidence_lines(lines, width - 24)

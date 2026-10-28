@@ -229,6 +229,7 @@
     <remap from="/UAV0/vision/qr_debug_image"
            to="/UAV1/vision/qr_debug_image" />
     <remap from="/UAV0/thermal/debug_image" to="/UAV1/thermal/debug_image" />
+    <remap from="/UAV0/thermal/image_raw" to="/UAV1/thermal/image_raw" />
   </node>
 
   <!-- RViz 已由 Diff 分屏启动；这里只发布 UAV1 目标、点云和包围框。 -->
