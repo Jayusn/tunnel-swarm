@@ -349,10 +349,15 @@
     <rosparam param="/exploration_node/mission/vertical_detour/required_confirmations">1</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/release_confirmations">2</rosparam>
     <rosparam param="/exploration_node/mission/vertical_detour/footprint_radius">0.17</rosparam>
-    <!-- 低位下方足迹出现受支撑障碍时，优先尝试固定XY/yaw直升到默认0.6m；
-         若无法静止或上升柱不安全则继续普通规划，不把恢复到0.6m作为硬性条件。 -->
+    <!-- 低位下方足迹出现受支撑障碍时，优先尝试固定XY/yaw恢复默认巡航高度；
+         上升失败计数后切换后退斜升，尚未开始时无法静止则让出普通规划。 -->
     <rosparam param="/exploration_node/mission/ground_ascent/enabled">true</rosparam>
     <rosparam param="/exploration_node/mission/ground_ascent/cruise_height">0.60</rosparam>
+    <!-- 与定点共用：失败3次先退后斜升，继续失败侧绕；原地升完再微调XY。
+         越障目标取障碍顶与1.35m的中点，原地单段至少升0.20m。 -->
+    <param name="/exploration_node/mission/ground_ascent/failure_limit" value="3" type="int"/>
+    <param name="/exploration_node/mission/ground_ascent/min_rise" value="0.20" type="double"/>
+    <param name="/exploration_node/mission/ground_ascent/upper_height" value="1.35" type="double"/>
     <rosparam param="/exploration_node/mission/ground_ascent/lower_probe_depth">0.20</rosparam>
     <rosparam param="/exploration_node/mission/ground_ascent/min_lower_obstacles">2</rosparam>
     <rosparam param="/exploration_node/mission/ground_ascent/max_stationary_speed">0.12</rosparam>
