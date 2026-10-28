@@ -18,6 +18,7 @@ This node intentionally does not use PnP, YOLO, or any known physical tag size.
 
 import json
 import math
+import time
 from collections import deque
 
 import cv2
@@ -88,6 +89,10 @@ DEFAULT_COLORS = {
 class ColorTagDetector(object):
     def __init__(self):
         self.bridge = CvBridge()
+        self.exposure_warmup_seconds = max(
+            0.0, float(rospy.get_param("~exposure_warmup_seconds", 5.0))
+        )
+        self.first_image_wall_time = None
 
         # Input topics. Defaults match realsense2_camera with aligned depth.
         self.color_topic = rospy.get_param("~color_topic", "/camera/color/image_raw")
@@ -322,6 +327,24 @@ class ColorTagDetector(object):
         if color_bgr is None or depth_raw is None:
             self.publish_no_detection(color_msg.header, "empty_image")
             return
+
+        # Start at the first usable image pair, not process launch: the camera
+        # may start later. Warm-up frames must not enter either evidence path
+        # or the stability history, including visually credible invalid-depth tags.
+        if self.exposure_warmup_seconds > 0.0:
+            now = time.monotonic()
+            if self.first_image_wall_time is None:
+                self.first_image_wall_time = now
+                rospy.loginfo("Color detection exposure warm-up: %.1f s", self.exposure_warmup_seconds)
+            remaining = self.exposure_warmup_seconds - (now - self.first_image_wall_time)
+            if remaining > 0.0:
+                preview = color_bgr.copy()
+                cv2.putText(preview, "Exposure warm-up: %.1f s" % remaining,
+                            (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                self.publish_debug(preview, color_msg.header)
+                self.publish_mask(np.zeros(color_bgr.shape[:2], dtype=np.uint8), color_msg.header)
+                self.publish_no_detection(color_msg.header, "exposure_warmup")
+                return
 
         hsv = cv2.cvtColor(color_bgr, cv2.COLOR_BGR2HSV)
         image_h, image_w = color_bgr.shape[:2]

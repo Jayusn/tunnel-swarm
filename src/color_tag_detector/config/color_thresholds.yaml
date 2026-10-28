@@ -17,6 +17,11 @@ camera_info_topic: /camera/color/camera_info
 candidate_point_topic: /UAV0/color_tag_detector/candidate_point_camera
 candidate_text_topic: /UAV0/color_tag_detector/candidate_text
 
+# 收到第一对可用彩色/深度图后等待 5 秒，让开机自动曝光由暗变亮的过程结束。
+# 等待期间仅显示预览，不累计稳定帧、不输出目标或未定位留图候选；0 关闭。
+# 每次检测节点启动生效一次，等待结束后恢复原有检测条件。
+exposure_warmup_seconds: 5.0
+
 target_color: ""
 enabled_colors: []
 
