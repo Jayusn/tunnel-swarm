@@ -2249,6 +2249,40 @@ class LeaderSafePathFollower {
            std::abs(px * dy - py * dx) / length <= relay_arrive_radius_;
   }
 
+  bool ordinaryRelayAlreadyFlown(const geometry_msgs::Point& current_world) const {
+    if (!isOrdinaryRelayPoint(active_relay_index_) ||
+        active_relay_index_ + 1 >= relay_waypoints_.size()) return false;
+    const auto& target = relay_waypoints_[active_relay_index_].position;
+    const auto& next = relay_waypoints_[active_relay_index_ + 1].position;
+    double nearest_distance = std::numeric_limits<double>::infinity();
+    geometry_msgs::Point nearest;
+    for (std::size_t i = 1; i < follower_executed_route_.size(); ++i) {
+      const auto& a = follower_executed_route_[i - 1].position;
+      const auto& b = follower_executed_route_[i].position;
+      const double dx = b.x - a.x, dy = b.y - a.y;
+      const double length_squared = dx * dx + dy * dy;
+      if (length_squared < 1e-8) continue;
+      const double t = std::max(0.0, std::min(1.0,
+          ((target.x - a.x) * dx + (target.y - a.y) * dy) / length_squared));
+      geometry_msgs::Point projected;
+      projected.x = a.x + t * dx;
+      projected.y = a.y + t * dy;
+      projected.z = a.z + t * (b.z - a.z);
+      const double distance = distance3d(target, projected);
+      if (distance >= nearest_distance) continue;
+      nearest_distance = distance;
+      nearest = projected;
+    }
+    // 复用已有实飞轨迹和到达半径。目标附近实际飞过，且后机已沿该段离开；
+    // 下一点还应延续前进，不能将沿原路返回的任务点当作重复点删除。
+    const double departed_x = current_world.x - nearest.x;
+    const double departed_y = current_world.y - nearest.y;
+    return nearest_distance <= relay_arrive_radius_ &&
+        std::hypot(departed_x, departed_y) > relay_arrive_radius_ &&
+        (next.x - current_world.x) * departed_x +
+            (next.y - current_world.y) * departed_y > 0.0;
+  }
+
   void dynamicPassageCallback(const std_msgs::Bool::ConstPtr& msg) {
     in_dynamic_passage_ = msg->data;
     if (in_dynamic_passage_ && simple_segment_endpoint_following_ &&
@@ -2454,8 +2488,10 @@ class LeaderSafePathFollower {
           follower_vertical_speed_ <= relay_arrive_max_vertical_speed_));
     const bool ordinary_dwell_started = ordinary_relay && ordinary_waypoint_dwell_ > 0.0 &&
         !relay_arrival_stamp_.isZero();
+    const bool skip_flown_point = ordinaryRelayAlreadyFlown(current_world);
     const bool skip_passed_point = ordinary_scan_stage_ == 0 && !ordinary_scan_done_ &&
-        !ordinary_dwell_started && ordinaryRelayPassed(current_world, vertical_error);
+        !ordinary_dwell_started &&
+        (ordinaryRelayPassed(current_world, vertical_error) || skip_flown_point);
 
     // 使用Diff对当前目标的地图占据回执；普通规划失败或快照超时不等于占据。
     // 前机未离开当前点时不能跳点；下一普通点仍由原放行门槛和Diff检查。
@@ -2599,8 +2635,9 @@ class LeaderSafePathFollower {
 
       if (skip_passed_point) {
         ROS_WARN("[safe_follower] FIFO SKIP PASSED id=%u endpoint (%.2f,%.2f,%.2f); "
-                 "already beyond incoming segment, continue to next point without scan.",
-                 desired_world.safe_relay_id, desired_local.x, desired_local.y, desired_local.z);
+                 "reason=%s, continue to next point without scan.",
+                 desired_world.safe_relay_id, desired_local.x, desired_local.y, desired_local.z,
+                 skip_flown_point ? "already flown route" : "beyond incoming segment");
         // 取消已越过点的执行归属，迟到的重试/脱障回执不能再把飞机拉回。
         for (auto it = simple_diff_goal_owners_.begin(); it != simple_diff_goal_owners_.end();) {
           if (desired_world.diff_goal_owner_stamp_ns != 0ULL &&

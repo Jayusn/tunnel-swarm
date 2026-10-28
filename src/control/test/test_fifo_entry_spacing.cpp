@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdint>
 #include <deque>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <sstream>
@@ -2036,6 +2037,94 @@ TEST_F(FifoEntrySpacing, PassedCheckPreservesDoorExitOutsideAndTerminalTargets) 
     follower->active_relay_index_ = i;
     EXPECT_FALSE(follower->ordinaryRelayPassed(current, 0.0));
   }
+}
+
+TEST_F(FifoEntrySpacing, RecordedSixToSevenRevisionSkipsToEight) {
+  // 2026-10-28 13:01:01.225～13:01:40.575 的 UAV1 里程计，按现有 8cm 间隔采样。
+  const std::string source(__FILE__);
+  std::ifstream input(source.substr(0, source.find_last_of('/')) +
+                      "/data/relay_6_to_7_1_flown.csv");
+  ASSERT_TRUE(input.good());
+  follower->door_waypoint_released_ = true;
+  follower->follower_alignment_x_ = -1.2;
+  follower->relay_arrive_radius_ = 0.4;
+  std::string line;
+  std::getline(input, line);
+  while (std::getline(input, line)) {
+    std::replace(line.begin(), line.end(), ',', ' ');
+    std::istringstream row(line);
+    double stamp;
+    nav_msgs::Odometry odom;
+    ASSERT_TRUE(static_cast<bool>(row >> stamp >> odom.pose.pose.position.x >>
+                                 odom.pose.pose.position.y >> odom.pose.pose.position.z));
+    follower->appendFollowerExecutedPoint(odom);
+  }
+  ASSERT_GT(follower->follower_executed_route_.size(), 20U);
+  RoutePoint six, seven, eight;
+  six.position.x = 6.199207; six.position.y = -2.477319; six.position.z = 0.666167;
+  seven.position.x = 6.148647; seven.position.y = -1.393247; seven.position.z = 0.838322;
+  eight.position.x = 5.157354; eight.position.y = -3.078487; eight.position.z = 0.877023;
+  six.safe_relay_id = 6; seven.safe_relay_id = 7; eight.safe_relay_id = 8;
+  follower->relay_waypoints_ = {six, seven, eight};
+  follower->safe_relay_valid_ids_ = {6, 7, 8};
+  follower->consumeSimpleRelayFront();
+  auto& current = follower->follower_odom_.pose.pose.position;
+  current.x = 7.186435213; current.y = -2.375418095; current.z = 0.648526727;
+  follower->ordinary_scan_enabled_ = true;
+  setLeader(10.0);
+  ASSERT_FALSE(follower->ordinaryRelayPassed(follower->followerToWorld(current),
+                                            std::abs(current.z - seven.position.z)));
+  ASSERT_TRUE(follower->ordinaryRelayAlreadyFlown(follower->followerToWorld(current)));
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(1U, follower->relay_waypoints_.size());
+  EXPECT_EQ(8U, follower->relay_waypoints_[0].safe_relay_id);
+  EXPECT_EQ(0, follower->ordinary_scan_stage_);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_TRUE(follower->diff_goal_published_);
+  const ros::WallTime deadline = ros::WallTime::now() + ros::WallDuration(1.0);
+  while (goals.empty() && ros::WallTime::now() < deadline) {
+    ros::spinOnce(); ros::WallDuration(.01).sleep();
+  }
+  ASSERT_EQ(1U, goals.size());
+  EXPECT_NEAR(6.357354, goals[0].pose.position.x, 1e-6);
+  EXPECT_NEAR(-3.078487, goals[0].pose.position.y, 1e-6);
+}
+
+TEST_F(FifoEntrySpacing, FlownCheckKeepsReturnNewBranchHeightAndSpecialPoints) {
+  follower->relay_arrive_radius_ = 0.4;
+  for (double x : {0.0, 1.0, 2.0}) {
+    nav_msgs::Odometry odom;
+    odom.pose.pose.position.x = x; odom.pose.pose.position.z = 0.6;
+    follower->appendFollowerExecutedPoint(odom);
+  }
+  queuePoint(1.0);
+  queuePoint(3.0);
+  geometry_msgs::Point current;
+  current.x = 2.0; current.z = 0.6;
+  EXPECT_TRUE(follower->ordinaryRelayAlreadyFlown(current));
+  follower->relay_waypoints_[1].position.x = 0.0; // 下一点也返回，保留正常回程。
+  EXPECT_FALSE(follower->ordinaryRelayAlreadyFlown(current));
+  follower->relay_waypoints_[1].position.x = 3.0;
+  follower->relay_waypoints_[0].position.y = 0.8; // 新的拐弯分支没有实飞覆盖。
+  EXPECT_FALSE(follower->ordinaryRelayAlreadyFlown(current));
+  follower->relay_waypoints_[0].position.y = 0.0;
+  follower->relay_waypoints_[0].position.z = 1.2;
+  EXPECT_FALSE(follower->ordinaryRelayAlreadyFlown(current));
+  follower->relay_waypoints_[0].position.z = 0.6;
+  current.x = 1.05; // 尚未离开目标附近，不因扫描抖动跳过。
+  EXPECT_FALSE(follower->ordinaryRelayAlreadyFlown(current));
+  current.x = 2.0;
+  follower->relay_waypoints_[0].is_door = true;
+  EXPECT_FALSE(follower->ordinaryRelayAlreadyFlown(current));
+  follower->relay_waypoints_[0].is_door = false;
+  for (auto index : {&follower->exit_waypoint_index_, &follower->outside_wait_waypoint_index_,
+                     &follower->terminal_waypoint_index_}) {
+    *index = 0;
+    EXPECT_FALSE(follower->ordinaryRelayAlreadyFlown(current));
+    *index = std::numeric_limits<std::size_t>::max();
+  }
+  follower->relay_waypoints_.pop_back();
+  EXPECT_FALSE(follower->ordinaryRelayAlreadyFlown(current)); // 无下一点不能区分回程意图。
 }
 
 int main(int argc, char** argv) {
