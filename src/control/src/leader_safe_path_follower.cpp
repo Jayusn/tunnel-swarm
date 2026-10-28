@@ -204,9 +204,6 @@ class LeaderSafePathFollower {
     // 2026-07-16: 接力点使用前机任务命名空间公开，后续实机可直接将该Path桥接给第二架无人机。
     pnh_.param<std::string>("relay_path_topic", relay_path_topic_,
                             "/UAV0/mission/relay_waypoints");
-    pnh_.param("safe_relay_timeout", safe_relay_timeout_, 1.0);
-    if (!std::isfinite(safe_relay_timeout_) || safe_relay_timeout_ <= 0.0)
-      throw std::runtime_error("safe_relay_timeout must be finite and positive");
     const std::string alignment_prefix = "/dual_uav_frame_alignment";
     if (!nh_.getParam(alignment_prefix + "/mission_frame", world_frame_) ||
         !nh_.getParam(alignment_prefix + "/follower/x", follower_alignment_x_) ||
@@ -1392,21 +1389,19 @@ class LeaderSafePathFollower {
            relay_waypoints_[active_relay_index_].safe_relay_id != 0U;
   }
 
-  bool safeRelayFresh() const {
-    return !safe_relay_fault_ && safe_relay_live_messages_ >= 2 &&
-           !safe_relay_received_.isZero() &&
-           (ros::Time::now() - safe_relay_received_).toSec() <= safe_relay_timeout_;
+  bool safeRelayAvailable() const {
+    return !safe_relay_fault_ && !safe_relay_points_.empty();
   }
 
   bool activeSafeRelayValid() const {
     return !activeSafeRelay() ||
-        (safeRelayFresh() && safe_relay_valid_ids_.count(
-            relay_waypoints_[active_relay_index_].safe_relay_id) != 0U);
+        safe_relay_valid_ids_.count(
+            relay_waypoints_[active_relay_index_].safe_relay_id) != 0U;
   }
 
   void safeRelayCallback(const nav_msgs::Path::ConstPtr& msg) {
-    // Header stamp identifies one producer run. Require two advancing heartbeat
-    // sequences so a single old latched message cannot start a new follower.
+    // Header stamp identifies one producer run; sequence rejects delayed older revisions.
+    // 已接收航点持续有效；不以快照接收间隔撤销目标，也不等待第二帧。
     if (msg->header.frame_id != world_frame_ || msg->header.stamp.isZero()) return;
     if (!safe_relay_session_.isZero() && msg->header.stamp != safe_relay_session_) {
       safe_relay_fault_ = true;
@@ -1414,13 +1409,8 @@ class LeaderSafePathFollower {
       return;
     }
     if (!safe_relay_session_.isZero() && msg->header.seq <= safe_relay_sequence_) return;
-    if (safe_relay_received_.isZero() ||
-        (ros::Time::now() - safe_relay_received_).toSec() > safe_relay_timeout_)
-      safe_relay_live_messages_ = 0;
     safe_relay_session_ = msg->header.stamp;
     safe_relay_sequence_ = msg->header.seq;
-    safe_relay_received_ = ros::Time::now();
-    ++safe_relay_live_messages_;
     std::set<uint32_t> valid;
     uint32_t previous = 0;
     for (const auto& pose : msg->poses) {
@@ -1481,12 +1471,13 @@ class LeaderSafePathFollower {
       safe_relay_points_[id] = pose;
       valid.insert(id);
     }
-    safe_relay_valid_ids_ = std::move(valid);  // Missing IDs are invalid, including an empty snapshot.
+    // 快照缺项或空快照不撤回已接收点；同编号新坐标在上面原位替换。
+    safe_relay_valid_ids_.insert(valid.begin(), valid.end());
     enqueueSafeRelay();
   }
 
   void enqueueSafeRelay() {
-    if (!safeRelayFresh() || !door_waypoint_released_ || terminal_mode_active_ ||
+    if (!safeRelayAvailable() || !door_waypoint_released_ || terminal_mode_active_ ||
         exit_waypoint_released_) return;
     if (!relayWaypointSeparationReady("INTERNAL")) return;
     while (safe_relay_valid_ids_.count(safe_relay_next_id_) != 0U) {
@@ -1973,7 +1964,7 @@ class LeaderSafePathFollower {
           diff_goal_index_ != active_relay_index_ ||
           response_goal_stamp_ns != diff_active_goal_stamp_ns_) return;
       if (!activeSafeRelayValid()) {
-        setDiffWaitPositionHold(true, "qualified leader relay stale or withdrawn");
+        setDiffWaitPositionHold(true, "relay point not received");
         diff_goal_published_ = diff_accepted_goal_valid_ = false;
         return;
       }
@@ -2371,7 +2362,7 @@ class LeaderSafePathFollower {
 
   bool handleSimpleDiffPlannerExecution(const ros::Time& now) {
     if (activeSafeRelay() && !use_diff_planner_) {
-      setDiffWaitPositionHold(true, "qualified relay stale/invalid or Diff disabled");
+      setDiffWaitPositionHold(true, "relay point unavailable or Diff disabled");
       diff_goal_published_ = diff_accepted_goal_valid_ = false;
       relay_arrival_stamp_ = diff_endpoint_capture_stamp_ = ros::Time(0);
       publishState("WAIT_VALID_LEADER_RELAY", 1.0, 0.3, 0.0);
@@ -2456,8 +2447,7 @@ class LeaderSafePathFollower {
         diff_occupied_goal_stamp_ns_ != 0ULL &&
         diff_occupied_goal_stamp_ns_ == diff_active_goal_stamp_ns_ &&
         (relay_waypoints_[next].safe_relay_id == 0U ||
-         (safeRelayFresh() &&
-          safe_relay_valid_ids_.count(relay_waypoints_[next].safe_relay_id) != 0U))) {
+         safe_relay_valid_ids_.count(relay_waypoints_[next].safe_relay_id) != 0U)) {
       const auto leader_world = leaderToWorld(leader_odom_.pose.pose.position);
       const double leader_to_point = std::hypot(
           leader_world.x - desired_world.position.x,
@@ -2466,10 +2456,10 @@ class LeaderSafePathFollower {
           leader_to_point + 1e-6 >= ordinarySpacing(waypoint_release_min_separation_);
     }
 
-    // 撤点或快照超时本身不能证明有障碍，仍沿用原有效性等待。
+    // 这里只检查是否接收过当前点；快照超时和缺项不撤销执行资格。
     if (activeSafeRelay() && !activeSafeRelayValid() &&
         !skip_occupied_point) {
-      setDiffWaitPositionHold(true, "qualified relay stale/invalid or Diff disabled");
+      setDiffWaitPositionHold(true, "relay point unavailable or Diff disabled");
       diff_goal_published_ = diff_accepted_goal_valid_ = false;
       relay_arrival_stamp_ = diff_endpoint_capture_stamp_ = ros::Time(0);
       publishState("WAIT_VALID_LEADER_RELAY", 1.0, 0.3, 0.0);
@@ -4393,7 +4383,7 @@ class LeaderSafePathFollower {
     enqueueSafeRelay();
     // 执行分支统一检查有效性及尝试后确认占据的跳点条件。
     if (activeSafeRelay() && !use_diff_planner_) {
-      setDiffWaitPositionHold(true, "qualified relay stale/invalid or Diff disabled");
+      setDiffWaitPositionHold(true, "relay point unavailable or Diff disabled");
       diff_goal_published_ = diff_accepted_goal_valid_ = false;
       relay_arrival_stamp_ = diff_endpoint_capture_stamp_ = ros::Time(0);
       publishState("WAIT_VALID_LEADER_RELAY", 1.0, 0.3, 0.0);
@@ -4659,11 +4649,9 @@ class LeaderSafePathFollower {
   }
 
   ros::Subscriber safe_relay_sub_;
-  ros::Time safe_relay_session_, safe_relay_received_;
+  ros::Time safe_relay_session_;
   uint32_t safe_relay_sequence_{0U}, safe_relay_next_id_{1U};
-  int safe_relay_live_messages_{0};
   bool safe_relay_fault_{false};
-  double safe_relay_timeout_{1.0};
   std::map<uint32_t, geometry_msgs::PoseStamped> safe_relay_points_;
   std::set<uint32_t> safe_relay_valid_ids_;
 

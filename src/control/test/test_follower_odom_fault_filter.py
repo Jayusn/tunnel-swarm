@@ -170,7 +170,7 @@ def test_normal_points_come_from_leader_safe_snapshot():
     assert "leader_trajectory_sub_ = nh_.subscribe" not in SOURCE
     assert "confirmPendingLeaderSegmentEndpoint(" not in odom_callback
     assert "enqueueSafeRelay();" in odom_callback
-    assert "!safeRelayFresh()" in enqueue
+    assert "!safeRelayAvailable()" in enqueue
     assert "!door_waypoint_released_" in enqueue
     assert "exit_waypoint_released_" in enqueue
     assert 'appendRelayWaypoint(point, "SAFE_RELAY")' in enqueue

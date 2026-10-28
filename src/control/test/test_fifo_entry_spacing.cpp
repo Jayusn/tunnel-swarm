@@ -130,8 +130,6 @@ class FifoEntrySpacing : public ::testing::Test {
     follower->relay_waypoints_[0].safe_relay_id = 1;
     follower->relay_waypoints_[1].safe_relay_id = 2;
     follower->safe_relay_valid_ids_ = {1, 2};
-    follower->safe_relay_live_messages_ = 2;
-    follower->safe_relay_received_ = ros::Time::now();
     follower->follower_odom_.pose.pose.orientation.w = 1.0;
     setLeader(4.0);
   }
@@ -1735,7 +1733,6 @@ TEST_F(FifoEntrySpacing, OutsideRelayScanUsesRelayHeadingAndCompletesBeforeNextG
   double finish_time = 0.0;
   for (int i = 1; i <= 400; ++i) {
     const ros::Time now = start + ros::Duration(i * 0.05);
-    follower->safe_relay_received_ = now;
     follower->leader_odom_stamp_ = now;
     const double previous = follower->ordinary_scan_yaw_;
     const int phase = follower->ordinary_scan_stage_;
@@ -1783,7 +1780,7 @@ TEST_F(FifoEntrySpacing, ScanHeadingLagAndVelocityNoiseCannotBlockNextGoal) {
   double finish_time = 0;
   for (int i = 1; i <= 350; ++i) {
     const ros::Time now = start + ros::Duration(i * 0.05);
-    follower->safe_relay_received_ = follower->leader_odom_stamp_ = now;
+    follower->leader_odom_stamp_ = now;
     follower->handleSimpleDiffPlannerExecution(now);
     if (follower->relay_waypoints_.size() == 1U) {
       finish_time = i * 0.05;
@@ -1901,7 +1898,8 @@ TEST_F(FifoEntrySpacing, QueuedPointReplacementDoesNotInterruptCurrentGoal) {
   reportDiffStatus("TRAJECTORY_PUBLISHED", stamp, " 1 0 0.6");
   ASSERT_TRUE(follower->diff_accepted_goal_valid_);
   ++path->header.seq;
-  path->poses[1].pose.position.x = 2.8;
+  path->poses.erase(path->poses.begin()); // 只发布下一点的修订，当前点未出现在快照中。
+  path->poses[0].pose.position.x = 2.8;
   follower->safeRelayCallback(path);
   EXPECT_FALSE(follower->safe_relay_fault_);
   EXPECT_DOUBLE_EQ(2.8, follower->relay_waypoints_[1].position.x);
@@ -1910,7 +1908,7 @@ TEST_F(FifoEntrySpacing, QueuedPointReplacementDoesNotInterruptCurrentGoal) {
   EXPECT_EQ(stamp, follower->diff_active_goal_stamp_ns_);
   EXPECT_FALSE(follower->diff_wait_hold_active_);
   --path->header.seq;
-  path->poses[1].pose.position.x = 2.0;
+  path->poses[0].pose.position.x = 2.0;
   follower->safeRelayCallback(path); // 延迟旧快照不能把更新后的点改回去。
   EXPECT_DOUBLE_EQ(2.8, follower->relay_waypoints_[1].position.x);
 }

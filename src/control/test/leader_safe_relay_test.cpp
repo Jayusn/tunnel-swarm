@@ -111,7 +111,10 @@ class LeaderSafeRelayTest {
     pose.pose.orientation.w = 1;
     path->poses.push_back(pose);
     follower.safeRelayCallback(path);
-    EXPECT_TRUE(follower.relay_waypoints_.empty()); // A stale latched singleton cannot move UAV1.
+    ASSERT_EQ(1U, follower.relay_waypoints_.size()); // 首帧即可接收，不等待心跳确认。
+    EXPECT_TRUE(follower.activeSafeRelayValid());
+    follower.relay_waypoints_.clear();
+    follower.safe_relay_next_id_ = 1;
     follower.leader_odom_.pose.pose.position =
         follower.followerToWorld(follower.follower_odom_.pose.pose.position);
     path->header.seq = 2;
@@ -177,10 +180,11 @@ class LeaderSafeRelayTest {
     path->header.seq = 3;
     path->poses.clear();
     follower.safeRelayCallback(path);
-    EXPECT_FALSE(follower.activeSafeRelayValid());
+    EXPECT_TRUE(follower.activeSafeRelayValid());
     follower.leader_odom_stamp_ = follower.follower_odom_stamp_ = ros::Time::now();
     follower.timerCallback(ros::TimerEvent());
-    EXPECT_TRUE(follower.diff_wait_hold_active_);
+    EXPECT_FALSE(follower.diff_wait_hold_active_); // 空快照不能中断已接收目标。
+    EXPECT_TRUE(follower.diff_accepted_goal_valid_);
     EXPECT_EQ(0U, follower.active_relay_index_);
     path->header.seq = 4;
     path->poses.push_back(pose);
@@ -188,12 +192,17 @@ class LeaderSafeRelayTest {
     EXPECT_TRUE(follower.activeSafeRelayValid());
     EXPECT_EQ(1U, follower.relay_waypoints_.size()); // Revalidation does not append duplicates.
 
-    ros::Time::setNow(ros::Time(102));
+    ros::Time::setNow(ros::Time(160));
     follower.leader_odom_stamp_ = follower.follower_odom_stamp_ = ros::Time::now();
-    EXPECT_FALSE(follower.activeSafeRelayValid());
+    // 只中断前机给点快照；本机规划指令与里程计仍正常更新。
+    follower.diffCommandCallback(boost::make_shared<quadrotor_msgs::PositionCommand>());
+    EXPECT_TRUE(follower.activeSafeRelayValid());
+    follower.timerCallback(ros::TimerEvent());
+    EXPECT_FALSE(follower.diff_wait_hold_active_); // 60秒无新快照仍执行已接收点。
+    EXPECT_TRUE(follower.diff_accepted_goal_valid_);
     path->header.seq = 5;
     follower.safeRelayCallback(path);
-    EXPECT_FALSE(follower.activeSafeRelayValid());
+    EXPECT_TRUE(follower.activeSafeRelayValid());
     path->header.seq = 6;
     follower.safeRelayCallback(path);
     EXPECT_TRUE(follower.activeSafeRelayValid());
@@ -212,12 +221,12 @@ class LeaderSafeRelayTest {
     follower.relay_arrival_stamp_ = ros::Time::now() - ros::Duration(2.0);
     follower.handleDiffPlannerExecution(ros::Time::now());
     EXPECT_TRUE(follower.relay_waypoints_.empty());
-    EXPECT_TRUE(follower.diff_wait_hold_active_);
+    EXPECT_FALSE(follower.diff_wait_hold_active_); // 到达后原轨迹继续收敛，不继承超时锁点。
     path->header.seq = 8;
     path->poses[0].pose.position.x += 0.2;
     follower.safeRelayCallback(path);
     EXPECT_FALSE(follower.safe_relay_fault_);
-    EXPECT_TRUE(follower.safeRelayFresh());
+    EXPECT_TRUE(follower.safeRelayAvailable());
     EXPECT_TRUE(follower.relay_waypoints_.empty()); // 已消费的点更新后也不重新入队。
   }
   static void replacement(uint32_t id, bool completed = false, double offset = .4) {
@@ -253,8 +262,9 @@ class LeaderSafeRelayTest {
     follower.simple_segment_endpoint_following_ = true;
     follower.diff_goal_published_ = true;
     follower.relay_arrival_stamp_ = ros::Time(199);
+    ros::Time::setNow(ros::Time(260)); // 旧点接收60秒后，新版本仍直接替换。
     path->header.seq = 2;
-    path->poses.front().header.stamp = ros::Time(200);
+    path->poses.front().header.stamp = ros::Time(260);
     path->poses.front().pose.position.x -= offset;
     follower.safeRelayCallback(path);
     EXPECT_FALSE(follower.safe_relay_fault_);
@@ -295,6 +305,9 @@ TEST(LeaderSafeRelay, DisabledTargetSwitchRetainsScanningAndDetection) {
 }
 TEST(LeaderSafeRelay, ThirdRevisionUpdatesActiveGoalWithoutAppending) {
   LeaderSafeRelayTest::replacement(3);
+}
+TEST(LeaderSafeRelay, FifthRevisionReplacesOriginalWithoutAppending) {
+  LeaderSafeRelayTest::replacement(5);
 }
 TEST(LeaderSafeRelay, CompletedGoalIsNotRevisited) {
   LeaderSafeRelayTest::replacement(3, true);

@@ -1072,7 +1072,8 @@ void GridMap::publishMap()
           continue;
         const Eigen::Vector3d point = globalIdx2Pos(BufIdx2GlobalIdx(address));
         const Eigen::Vector3d relative_dir = point - md_.camera_pos_;
-        if (mp_.preserve_global_map_ || heading.dot(relative_dir.normalized()) > 0.5)
+        // 普通地图与膨胀地图统一显示机头前方左右各90度，仅影响发布显示。
+        if (mp_.preserve_global_map_ || heading.dot(relative_dir.normalized()) > 0.0)
           cloud.push_back(pcl::PointXYZ(point.x(), point.y(), point.z()));
       }
     }
