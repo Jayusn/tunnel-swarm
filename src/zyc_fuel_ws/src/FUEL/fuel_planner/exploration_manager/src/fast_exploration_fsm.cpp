@@ -690,6 +690,8 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
                 velocity_error);
             break;
           }
+          if (pending_ground_ascent_)
+            expl_manager_->reportGroundAscentFailure("trajectory release rejected");
           ROS_ERROR("[trajectory_release] reject before publish: position_error=%.3fm "
                     "velocity_error=%.3fm/s acceleration_error=%.3fm/s^2 continuous=%d "
                     "turn_policy=%d raw_safe=%d inflated=%d clears=%d turn_space=%d.",
@@ -793,6 +795,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
         // 垂直恢复是一条完整的固定XY轨迹；普通“剩余1秒”重规划会在上升途中
         // 把它截断并重新触发水平逃逸，因此只在硬终点后回到规划状态确认高度。
         if (time_to_end <= 0.05) {
+          expl_manager_->completeGroundAscentReference(fd_->odom_pos_);
           active_ground_ascent_ = false;
           fd_->static_state_ = true;
           transitState(PLAN_TRAJ, "ground-ascent-endpoint");
@@ -1199,21 +1202,7 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
                               active_traj_braked_))
     return;
 
-  // 主动避障回退拥有平移目标，不能被原地升高的旧XY锚点拉回去。
-  if (active_ground_ascent_ && !active_escape_step_ &&
-      expl_manager_->groundAscentXYCorrectionNeeded(fd_->odom_pos_)) {
-    auto& ascent = active_traj_.position_traj_;
-    const double rise = ascent.evaluateDeBoorT(active_traj_.duration_).z() -
-                        ascent.evaluateDeBoorT(0.0).z();
-    // 同高度回正段继续执行；只有仍在抬高的段才因XY偏离停止上升。
-    if (rise > 0.02) {
-      requestActiveTrajectoryBrake("ascent XY drift; correct locked XY before climbing");
-      active_ground_ascent_ = false;
-      fd_->static_state_ = true;
-      transitState(PLAN_TRAJ, "ground-ascent-xy-correction");
-      return;
-    }
-  }
+  // 原地升高执行完整段后再微调XY；真实碰撞与严重跟踪误差仍由下方检查中止。
 
   // 新通道可提前发现，但已发布的升高段须先执行完，不能在原低位点抢转。
   // 只看当前已发布轨迹及其终点，不要求达到固定巡航高度，也不增加速度门槛。
@@ -1301,7 +1290,8 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
   const double error_xy = tracking_error.head<2>().norm();
   const double error_z = std::fabs(tracking_error.z());
   const bool in_handover_grace = traj_time < fp_->tracking_error_grace_time_;
-  const bool tracking_exceeded = error_xy > fp_->max_tracking_error_xy_ ||
+  const bool tracking_exceeded = error_xy > (active_ground_ascent_
+      ? fp_->hard_tracking_error_xy_ : fp_->max_tracking_error_xy_) ||
                                  error_z > fp_->max_tracking_error_z_;
   if (in_handover_grace || !tracking_exceeded) {
     tracking_error_since_ = ros::Time(0);
@@ -1311,6 +1301,8 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
     const bool hard_error = error_xy > fp_->hard_tracking_error_xy_ ||
                             error_z > fp_->hard_tracking_error_z_;
     if (hard_error || exceeded_time >= fp_->tracking_error_confirm_time_) {
+      if (active_ground_ascent_)
+        expl_manager_->reportGroundAscentFailure("ascent tracking failure");
       if (hard_error) requestActiveTrajectoryBrake("hard tracking error");
       fd_->static_state_ = true;
       ROS_ERROR("[tracking_safety] %s replan: error_xy=%.2fm error_z=%.2fm duration=%.2fs.",
@@ -1356,6 +1348,8 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
       planner_manager_->checkTrajCollision(active_traj_, dist, inflation_escape_active_);
   if (exploration_policy::shouldBrakePublishedTrajectory(active_traj_valid_, !safe,
                                                           active_traj_braked_)) {
+    if (active_ground_ascent_)
+      expl_manager_->reportGroundAscentFailure("ascent collision");
     requestActiveTrajectoryBrake("future footprint collision");
     expl_manager_->reportTrajectoryCollision();
     ROS_WARN("Replan: collision detected, old trajectory short-braked at path_dist=%.2fm", dist);

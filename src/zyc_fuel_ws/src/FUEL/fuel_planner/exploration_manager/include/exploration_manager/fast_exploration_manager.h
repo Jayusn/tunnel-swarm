@@ -110,6 +110,8 @@ public:
   bool planFailedMotionEscape(const Vector3d& pos, const Vector3d& vel,
                              const Vector3d& acc, const Vector3d& yaw);
   bool currentPlanIsGroundAscent() const { return ground_ascent_plan_; }
+  void reportGroundAscentFailure(const char* reason);
+  void completeGroundAscentReference(const Vector3d& actual);
   bool groundAscentXYCorrectionNeeded(const Vector3d& position) const {
     return ground_ascent_active_ && ground_ascent_anchor_valid_ &&
         (position - ground_ascent_target_).head<2>().norm() >
@@ -351,6 +353,17 @@ private:
   // 普通动作后的 0.60m 高度恢复只是偏好，与转弯无关。
   bool ground_ascent_optional_{false};
   bool ground_ascent_plan_{false};
+  int ground_ascent_failure_limit_{3};
+  int ground_ascent_failures_{0};
+  bool ground_ascent_attempt_pending_{false};
+  bool ground_ascent_retreated_{false};
+  bool ground_ascent_alternative_plan_{false};
+  double ground_ascent_min_rise_{0.20};
+  double ground_ascent_upper_height_{1.35};
+  double obstacleAscentTargetHeight(double obstacle_top) const;
+  bool findAscentAlternative(const Vector3d& pos, const Vector3d& forward,
+                             Vector3d& target, bool allow_side_step) const;
+  bool buildAscentAlternative(const Vector3d& pos, const Vector3d& yaw);
   bool vertical_detour_plan_{false};
   double ground_ascent_cruise_height_{0.60};
   double ground_ascent_lower_probe_depth_{0.20};

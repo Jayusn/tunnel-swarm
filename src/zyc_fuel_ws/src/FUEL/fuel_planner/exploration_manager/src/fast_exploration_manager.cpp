@@ -39,8 +39,6 @@ namespace fast_planner {
 namespace {
 // 远处悬挂物只用于预见；进入半米接近段后才刹停并开始固定 XY 下穿。
 constexpr double kUnderpassStartDistance = 0.50;
-// 越障目标在顶部20cm实际净空之外留10cm跟踪余量，不改变默认巡航高度。
-constexpr double kObstacleAscentTrackingMargin = 0.10;
 }
 // SECTION interfaces for setup and query
 
@@ -54,13 +52,24 @@ FastExplorationManager::~FastExplorationManager() {
 }
 
 void FastExplorationManager::recordPublishedTrajectoryHeight() {
-  if (escape_step_plan_ && obstacleAscentPending()) {
+  if (escape_step_plan_ && ground_ascent_active_) {
     // 只有实际发布的避障退让才能解除旧XY；候选审核失败仍保留原地升高锚点。
     auto& trajectory = planner_manager_->local_data_.position_traj_;
     ground_ascent_target_.head<2>() =
         trajectory.evaluateDeBoorT(trajectory.getTimeSum()).head<2>();
     ground_ascent_anchor_valid_ = false;
     ground_ascent_still_since_ = ros::Time(0);
+    if (ground_ascent_failures_ >= ground_ascent_failure_limit_)
+      ground_ascent_retreated_ = true;
+  }
+  if (ground_ascent_plan_ && ground_ascent_active_) {
+    ground_ascent_attempt_pending_ = true;
+    if (ground_ascent_alternative_plan_) {
+      auto& trajectory = planner_manager_->local_data_.position_traj_;
+      ground_ascent_target_.head<2>() =
+          trajectory.evaluateDeBoorT(trajectory.getTimeSum()).head<2>();
+      ground_ascent_anchor_valid_ = true;
+    }
   }
   if (manual_fapp_active_ && fapp_local_step_pending_ &&
       std::isfinite(pending_reference_height_))
@@ -654,12 +663,92 @@ bool FastExplorationManager::shouldStartGroundAscent(
   return needed;
 }
 
+double FastExplorationManager::obstacleAscentTargetHeight(double top) const {
+  const double ceiling = task_search_manager_
+      ? std::min(ground_ascent_upper_height_,task_search_manager_->clampSearchHeight(ground_ascent_upper_height_))
+      : ground_ascent_upper_height_;
+  return std::max(top + 0.5 * (ceiling-top),
+                  top + std::max(0.20,vertical_detour_upper_obstacle_clearance_));
+}
+
+void FastExplorationManager::reportGroundAscentFailure(const char* reason) {
+  if (!ground_ascent_active_ || !ground_ascent_attempt_pending_) return;
+  ground_ascent_attempt_pending_ = false; // 同一候选的多次定时器回调只记一次。
+  ++ground_ascent_failures_;
+  ROS_WARN("[ascent_retry] failure=%d threshold=%d reason=%s; retreated=%d.",
+      ground_ascent_failures_,ground_ascent_failure_limit_,reason,ground_ascent_retreated_);
+}
+
+void FastExplorationManager::completeGroundAscentReference(const Vector3d& actual) {
+  if (!ground_ascent_active_) return;
+  const double required = std::isfinite(obstacle_clearance_height_)
+      ? obstacle_clearance_height_ : ground_ascent_target_.z()-ground_ascent_height_tolerance_;
+  if (actual.z() < required || groundAscentXYCorrectionNeeded(actual))
+    reportGroundAscentFailure("endpoint height or XY not reached");
+  else ground_ascent_attempt_pending_ = false;
+}
+
+bool FastExplorationManager::findAscentAlternative(
+    const Vector3d& pos, const Vector3d& forward, Vector3d& target, bool allow_side_step) const {
+  if (forward.head<2>().norm()<1e-3) return false;
+  const Vector3d travel(forward.head<2>().normalized().x(),forward.head<2>().normalized().y(),0);
+  const bool side_first=ground_ascent_failures_>=2*ground_ascent_failure_limit_;
+  const vector<double> angles=side_first ? vector<double>{M_PI_2,-M_PI_2,M_PI_4,-M_PI_4,0}
+      : vector<double>{0,M_PI_4,-M_PI_4};
+  // 先到完整高度，继续失败才尝试同高度侧移腾空间；所有连接均检查完整机体与动态障碍。
+  for (int level=0;level<(allow_side_step && side_first ? 2 : 1);++level) {
+    const double z=level==0 ? ground_ascent_target_.z() : pos.z();
+    if (z>ground_ascent_upper_height_+1e-6 ||
+        (task_search_manager_ && z>task_search_manager_->clampSearchHeight(z)+1e-6)) continue;
+    for (const double angle:angles) {
+      if (level==1 && std::fabs(angle)<M_PI_4) continue;
+      const Vector3d direction(std::cos(angle)*travel.x()-std::sin(angle)*travel.y(),
+          std::sin(angle)*travel.x()+std::cos(angle)*travel.y(),0);
+      for (const double distance:{0.40,0.60,0.30}) {
+        Vector3d candidate=pos+distance*direction; candidate.z()=z;
+        const vector<Vector3d> path{pos,candidate};
+        const bool known=passage_centering::knownSegment(pos,candidate,0.05,
+            [&](const Vector3d& p){ return planner_manager_->isKnownFreePosition(p); });
+        if (!known || !pathInsideWorkspaceLock(path) || !planner_manager_->isPathSafe(path) ||
+            !planner_manager_->isFappPathSafe(path) ||
+            (task_search_manager_ && !task_search_manager_->isRecoveryPathAllowed(path,false))) continue;
+        target=candidate;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool FastExplorationManager::buildAscentAlternative(const Vector3d& pos,const Vector3d& yaw) {
+  ground_ascent_attempt_pending_=true;
+  const Vector3d forward=task_search_manager_->recoveryForwardDirection(yaw[0]);
+  Vector3d target;
+  if (!findAscentAlternative(pos,forward,target,true) ||
+      !planner_manager_->planStraightTraj(pos,target) ||
+      !planner_manager_->isTrajectorySafe() ||
+      !planner_manager_->planYawTurnInPlace(yaw,ground_ascent_yaw_)) {
+    reportGroundAscentFailure("diagonal/side ascent unavailable");
+    return false;
+  }
+  ed_->path_next_goal_={pos,target}; ed_->next_goal_=target;
+  last_requested_goal_=target; has_last_requested_goal_=true;
+  ground_ascent_plan_=true; ground_ascent_alternative_plan_=true;
+  pending_reference_height_=target.z();
+  ROS_WARN("[ascent_retry] failure=%d choose %s target=(%.2f,%.2f,%.2f).",
+      ground_ascent_failures_,target.z()>pos.z()+.02?"diagonal ascent":"side bypass",
+      target.x(),target.y(),target.z());
+  return true;
+}
+
 bool FastExplorationManager::buildGroundAscentPlan(
     const Vector3d& pos, const Vector3d& vel, const Vector3d& yaw) {
   const ros::Time now = ros::Time::now();
   if (!ground_ascent_active_) {
     if (!shouldStartGroundAscent(pos)) return false;
     ground_ascent_active_ = true;
+    ground_ascent_failures_=0;
+    ground_ascent_retreated_=false;
     // 0.6 m remains the preferred cruise layer, but low-altitude recovery must
     // not monopolize planning when the vehicle cannot settle or climb safely.
     ground_ascent_optional_ = true;
@@ -673,7 +762,7 @@ bool FastExplorationManager::buildGroundAscentPlan(
     ground_ascent_still_since_ = ros::Time(0);
     cancelActiveLowProbe("ground ascent recovery owns xy/yaw");
     ROS_ERROR("[ground_ascent] try before horizontal escape: z=%.2f -> %.2f, "
-              "resume normal planning if stationary or climb conditions are unavailable.",
+              "count failed attempts before retreat/diagonal recovery.",
               pos.z(), ground_ascent_target_.z());
   }
 
@@ -695,6 +784,9 @@ bool FastExplorationManager::buildGroundAscentPlan(
         ground_ascent_still_confirm_time_)
       return false;
     ground_ascent_active_ = false;
+    ground_ascent_failures_=0;
+    ground_ascent_retreated_=false;
+    ground_ascent_attempt_pending_=false;
     obstacle_clearance_height_ = std::numeric_limits<double>::quiet_NaN();
     ground_ascent_optional_ = false;
     ground_ascent_anchor_valid_ = false;
@@ -705,7 +797,7 @@ bool FastExplorationManager::buildGroundAscentPlan(
   }
 
   if (!std::isfinite(speed) || speed > ground_ascent_max_stationary_speed_) {
-    if (ground_ascent_optional_ && !groundAscentXYCorrectionNeeded(pos)) {
+    if (ground_ascent_optional_ && ground_ascent_failures_==0 && !groundAscentXYCorrectionNeeded(pos)) {
       ground_ascent_active_ = false;
       ground_ascent_optional_ = false;
       ground_ascent_anchor_valid_ = false;
@@ -721,6 +813,12 @@ bool FastExplorationManager::buildGroundAscentPlan(
                       "[ground_ascent] wait for brake: speed=%.3fm/s limit=%.3fm/s.",
                       speed, ground_ascent_max_stationary_speed_);
     return false;
+  }
+
+  if (ground_ascent_failures_>=ground_ascent_failure_limit_) {
+    if (!ground_ascent_retreated_ && ground_ascent_failures_<2*ground_ascent_failure_limit_)
+      return false; // 失败三次，先让失败回退入口退让；退路也反复不可用则比较侧路。
+    return buildAscentAlternative(pos,yaw);
   }
 
   // 首次锁定后保留整次上升的XY；重试不能把气流造成的漂移变成新目标。
@@ -739,6 +837,10 @@ bool FastExplorationManager::buildGroundAscentPlan(
   const bool correct_xy = groundAscentXYCorrectionNeeded(pos);
   Vector3d target = ground_ascent_target_;
   if (correct_xy) target.z() = pos.z();
+  else if (!height_reached) target.z() = std::max(target.z(),pos.z()+ground_ascent_min_rise_);
+  ground_ascent_attempt_pending_=true;
+  const bool height_allowed=target.z()<=ground_ascent_upper_height_+1e-6 &&
+      (!task_search_manager_ || target.z()<=task_search_manager_->clampSearchHeight(target.z())+1e-6);
   const bool controlled_escape =
       planner_manager_->isControlledEscapePosition(start);
   bool path_safe = false;
@@ -759,7 +861,7 @@ bool FastExplorationManager::buildGroundAscentPlan(
     // 容差内的小偏移随上升收回原XY，按实际斜段检查，不能平移整条参考。
     path_safe = isKnownSafeGroundAscentPath(start, target);
   }
-  bool generated_safe = path_safe && planner_manager_->planStraightTraj(start, target);
+  bool generated_safe = height_allowed && path_safe && planner_manager_->planStraightTraj(start, target);
   if (generated_safe) {
     auto& trajectory = planner_manager_->local_data_.position_traj_;
     generated_safe = (trajectory.evaluateDeBoorT(trajectory.getTimeSum()) -
@@ -776,17 +878,10 @@ bool FastExplorationManager::buildGroundAscentPlan(
                                  0.02, true)) &&
       planner_manager_->planYawTurnInPlace(yaw, ground_ascent_yaw_);
   if (!ascent_ready) {
-    if (ground_ascent_optional_ && !correct_xy) {
-      ground_ascent_active_ = false;
-      ground_ascent_optional_ = false;
-      ground_ascent_anchor_valid_ = false;
-      ground_ascent_still_since_ = ros::Time(0);
-      ROS_WARN("[ground_ascent] optional recovery to fixed %.2fm is unavailable; "
-               "keep the configured cruise height and resume normal planning.",
-               ground_ascent_target_.z());
-    }
+    reportGroundAscentFailure("ascent/correction planning rejected");
     return false;
   }
+  if (!correct_xy) ground_ascent_target_.z()=target.z();
 
   ed_->path_next_goal_ = {start, 0.5 * (start + target), target};
   ed_->next_goal_ = target;
@@ -1761,9 +1856,9 @@ bool FastExplorationManager::ensureObstacleTopClearance(
   if (!insufficient && actual_height >= required) return false;
   ascent_needed = true;
   Vector3d target = pos;
-  // 参考端点留出跟踪余量，但实际放行仍必须达到障碍顶部+20cm。
-  target.z() = std::max(pos.z(), required) + kObstacleAscentTrackingMargin;
-  if ((task_search_manager_ &&
+  // 用障碍顶部到1.35m上界的剩余高度中点作为目标，而非固定只多升20cm。
+  target.z() = obstacleAscentTargetHeight(top);
+  if (target.z()>ground_ascent_upper_height_+1e-6 || (task_search_manager_ &&
        target.z() > task_search_manager_->clampSearchHeight(target.z())+1e-6) ||
       !pointInsideWorkspaceLock(target) || !isKnownSafeGroundAscentPath(pos,target) ||
       !planner_manager_->isFappPathSafe({pos,target})) {
@@ -1773,6 +1868,7 @@ bool FastExplorationManager::ensureObstacleTopClearance(
     return false;
   }
   obstacle_clearance_height_ = required;
+  ground_ascent_failures_=0; ground_ascent_retreated_=false;
   ground_ascent_active_ = true;
   ground_ascent_optional_ = false;
   ground_ascent_anchor_valid_ = false;
@@ -3273,11 +3369,12 @@ bool FastExplorationManager::planFailedMotionEscape(
       (manual_path_enabled_ && (!manual_path_exploration_style_ ||
        (manual_path_wait_for_trigger_ && !manual_path_started_) || manual_path_.finished())) ||
       turn_in_place_session_active_ ||
-      (ground_ascent_active_ && !obstacleAscentPending()) || suspended_underpass_active_ ||
+      (ground_ascent_active_ && !obstacleAscentPending() &&
+       ground_ascent_failures_<ground_ascent_failure_limit_) || suspended_underpass_active_ ||
       low_probe_phase_ != vertical_detour::LowProbePhase::IDLE) return false;
   // 等待刹停或普通漂移仍交给原地升高/回正。只有升高或回正连接被障碍
   // 挡住时，才豁免旧XY并寻找能完成升高的后方空间。
-  if (obstacleAscentPending()) {
+  if (ground_ascent_active_) {
     if (!vel.allFinite() || vel.norm() > ground_ascent_max_stationary_speed_) return false;
     Vector3d target = ground_ascent_target_;
     const bool correct_xy = groundAscentXYCorrectionNeeded(pos);
@@ -3285,9 +3382,17 @@ bool FastExplorationManager::planFailedMotionEscape(
     const bool usable = correct_xy
         ? isKnownSafeHorizontalCorridor(pos,target-pos,(target-pos).head<2>().norm())
         : isKnownSafeGroundAscentPath(pos,target);
-    if (usable && planner_manager_->isFappPathSafe({pos,target})) return false;
+    if (ground_ascent_failures_<ground_ascent_failure_limit_ &&
+        usable && planner_manager_->isFappPathSafe({pos,target})) return false;
+    if (ground_ascent_retreated_ || ground_ascent_failures_>=2*ground_ascent_failure_limit_)
+      return false;
   }
-  return planInflationHistoryEscape(pos,vel,acc,yaw,true);
+  const bool escaped=planInflationHistoryEscape(pos,vel,acc,yaw,true);
+  if (!escaped && ground_ascent_active_ && ground_ascent_failures_>=ground_ascent_failure_limit_) {
+    ground_ascent_attempt_pending_=true;
+    reportGroundAscentFailure("retreat with diagonal continuation unavailable");
+  }
+  return escaped;
 }
 
 bool FastExplorationManager::incrementalEscapePlanSafe() const {
@@ -3313,7 +3418,9 @@ bool FastExplorationManager::planInflationHistoryEscape(
   const bool controlled_start = planner_manager_->isControlledEscapePosition(pos);
   const bool turn_clearance_needed = turn_in_place_session_active_ &&
       !planner_manager_->isTurnPositionSafe(pos);
-  const bool ascent_clearance_needed = obstacleAscentPending();
+  const bool ascent_clearance_needed = ground_ascent_active_;
+  const bool retry_ascent = ascent_clearance_needed &&
+      ground_ascent_failures_>=ground_ascent_failure_limit_;
   if (!inflation_history_escape_enabled_ || recovery_odom_history_.size() < 2 ||
       (!controlled_start && !(after_failure && planner_manager_->isPositionSafe(pos))))
     return false;
@@ -3374,12 +3481,16 @@ bool FastExplorationManager::planInflationHistoryEscape(
         traveled += advance;
         Vector3d ascent_target = point;
         ascent_target.z() = ground_ascent_target_.z();
+        Vector3d diagonal_target;
+        const Vector3d ascent_forward=task_search_manager_->recoveryForwardDirection(yaw[0]);
+        const bool ascent_exit=!ascent_clearance_needed || (retry_ascent
+            ? findAscentAlternative(point,ascent_forward,diagonal_target,false)
+            : (isKnownSafeGroundAscentPath(point,ascent_target) &&
+               planner_manager_->isFappPathSafe({point,ascent_target})));
         const bool fully_clear =
             !planner_manager_->isPositionInflated(point) && contacts == 0 &&
             (!turn_clearance_needed || planner_manager_->isTurnPositionSafe(point)) &&
-            (!ascent_clearance_needed ||
-             (isKnownSafeGroundAscentPath(point,ascent_target) &&
-              planner_manager_->isFappPathSafe({point,ascent_target})));
+            (!ascent_clearance_needed || ascent_exit);
         if (fully_clear) {
           if (!reached_clear) {
             reached_clear = true;
@@ -3387,20 +3498,23 @@ bool FastExplorationManager::planInflationHistoryEscape(
           } else {
             clear_run += advance;
           }
-          if (clear_run + 1e-6 >= inflation_escape_clear_margin_) break;
+          if (clear_run + 1e-6 >= inflation_escape_clear_margin_ &&
+              (!retry_ascent || traveled>=0.30-1e-6)) break;
         } else if (reached_clear) {
           // 离开膨胀层后禁止为了凑路径长度再次擦回墙面。
           return;
         }
         if (traveled >= limit - 1e-6) break;
       }
-      if ((reached_clear && clear_run + 1e-6 >= inflation_escape_clear_margin_) ||
+      if ((reached_clear && clear_run + 1e-6 >= inflation_escape_clear_margin_ &&
+           (!retry_ascent || traveled>=0.30-1e-6)) ||
           traveled >= limit - 1e-6)
         break;
     }
     if (traveled < 0.03) return;
     // 为上升腾空间时不能退20cm就再次尝试同一根受阻柱；终点必须已能补到完整目标高度。
     if (ascent_clearance_needed && !reached_clear) return;
+    if (retry_ascent && traveled<0.30-1e-6) return;
     // 未完全腾出旋转空间时，仍允许沿原有净空改善规则分步退出。
     if (!reached_clear && (sdf_map_->getOccupancy(checked.back()) != SDFMap::FREE ||
         !(previous_contacts < start_contacts || previous_clearance > start_clearance+0.02))) return;
@@ -3452,6 +3566,9 @@ bool FastExplorationManager::planInflationHistoryEscape(
     if (manual_fapp_active_ || ascent_clearance_needed) for (auto& p : history) p.z()=pos.z();
     validateAndTruncate(history,true,0,"history-backtrack-step",step_distance);
     validateAndTruncate(history,true,0,"history-backtrack",max_distance);
+    if (retry_ascent)
+      validateAndTruncate(inflation_escape::buildDirectionalPath(pos,-forward,max_distance,sample_step),
+                          true,0,"ascent-backtrack",max_distance);
   }
   if (inflation_wall_pull_enabled_) {
     // 在累计地图内找可连通的侧方空地；比较所有可行方向，不能只试评分最高的一条。
@@ -3763,6 +3880,11 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
   nh.param("mission/task_search/recovery/turn_in_place_max_duration",
            turn_in_place_max_duration_, 4.0);
   nh.param("mission/ground_ascent/enabled", ground_ascent_enabled_, true);
+  nh.param("mission/ground_ascent/failure_limit",ground_ascent_failure_limit_,3);
+  nh.param("mission/ground_ascent/min_rise",ground_ascent_min_rise_,0.20);
+  nh.param("mission/ground_ascent/upper_height",ground_ascent_upper_height_,1.35);
+  ground_ascent_failure_limit_=std::max(1,ground_ascent_failure_limit_);
+  ground_ascent_min_rise_=std::max(0.20,ground_ascent_min_rise_);
   nh.param("mission/ground_ascent/cruise_height",
            ground_ascent_cruise_height_, 0.60);
   nh.param("mission/ground_ascent/lower_probe_depth",
@@ -4762,12 +4884,13 @@ int FastExplorationManager::planManualWaypointMotion(
       bypass_motion = true;
       const Vector3d lateral(-forward.y(), forward.x(), 0.0);
       Vector3d ascent_target = pos;
-      ascent_target.z() = task_search_manager_->clampSearchHeight(
-          target.z() + kObstacleAscentTrackingMargin);
+      ascent_target.z() = std::max(target.z(),obstacleAscentTargetHeight(obstacle_top));
       if (std::fabs((target-pos).dot(lateral)) < 1e-6 && target.z() > pos.z()+0.02 &&
+          ascent_target.z()<=ground_ascent_upper_height_+1e-6 &&
           isKnownSafeGroundAscentPath(pos, ascent_target) &&
           planner_manager_->isFappPathSafe({pos, ascent_target})) {
         obstacle_clearance_height_ = target.z();
+        ground_ascent_failures_=0; ground_ascent_retreated_=false;
         ground_ascent_active_ = true;
         ground_ascent_optional_ = false;
         ground_ascent_anchor_valid_ = false;
@@ -4940,6 +5063,7 @@ int FastExplorationManager::planExploreMotion(
   recovery_side_continuation_pending_ = false;
   turn_in_place_plan_ = false;
   ground_ascent_plan_ = false;
+  ground_ascent_alternative_plan_ = false;
   vertical_detour_plan_ = false;
   pending_short_backtrack_ = false;
   ros::Time t1 = ros::Time::now();
@@ -5109,13 +5233,14 @@ int FastExplorationManager::planExploreMotion(
       // 直上后前进的候选不能只保留终点再交给A*斜切；先完成已检查的竖直段。
       const Vector3d lateral(-forward.y(), forward.x(), 0.0);
       Vector3d ascent_target = pos;
-      ascent_target.z() = task_search_manager_->clampSearchHeight(
-          next_pos.z() + kObstacleAscentTrackingMargin);
+      ascent_target.z() = std::max(next_pos.z(),obstacleAscentTargetHeight(obstacle_top));
       if (std::fabs((next_pos-pos).dot(lateral)) < 1e-6 &&
           next_pos.z() > pos.z() + 0.02 &&
+          ascent_target.z()<=ground_ascent_upper_height_+1e-6 &&
           isKnownSafeGroundAscentPath(pos, ascent_target) &&
           planner_manager_->isFappPathSafe({pos, ascent_target})) {
         obstacle_clearance_height_ = next_pos.z();
+        ground_ascent_failures_=0; ground_ascent_retreated_=false;
         ground_ascent_active_ = true;
         ground_ascent_optional_ = false;
         ground_ascent_anchor_valid_ = false;

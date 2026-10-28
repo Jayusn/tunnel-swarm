@@ -369,6 +369,10 @@ public:
     fsm.fd_->odom_yaw_ = 0.0;
     fsm.fp_->emergency_brake_horizon_ = .12;
     fsm.fp_->max_tracking_error_xy_ = fsm.fp_->max_tracking_error_z_ = 1.0;
+    fsm.fp_->hard_tracking_error_xy_ = .65;
+    fsm.fp_->hard_tracking_error_z_ = 1.0;
+    fsm.fp_->tracking_error_grace_time_ = 0.0;
+    fsm.fp_->tracking_error_confirm_time_ = .30;
     fsm.active_traj_ = planner.local_data_;
     fsm.active_traj_.start_time_ = ros::Time::now();
     fsm.active_traj_valid_ = true;
@@ -379,9 +383,121 @@ public:
     fsm.last_suspended_underpass_check_ = ros::Time::now() + ros::Duration(30.0);
     fsm.emergency_brake_pub_ = nh.advertise<std_msgs::Int32>("ascent_xy_brake", 1);
     fsm.safetyCallback(ros::TimerEvent());
-    EXPECT_EQ(fsm.active_traj_braked_, mode == 2);
-    EXPECT_EQ(fsm.state_, mode == 2 ? PLAN_TRAJ : EXEC_TRAJ);
+    EXPECT_FALSE(fsm.active_traj_braked_);
+    EXPECT_EQ(fsm.state_, EXEC_TRAJ);
     EXPECT_TRUE(manager.ground_ascent_target_.isApprox(target));
+    if (mode==2) {
+      // 上升期间偏12cm不打断；完整段结束后才以同高度回正。
+      Vector3d end_actual=target+Vector3d(.12,0,0);
+      manager.latest_odom_height_=end_actual.z();
+      manager.ground_ascent_attempt_pending_=true;
+      manager.completeGroundAscentReference(end_actual);
+      EXPECT_EQ(manager.ground_ascent_failures_,1);
+      ASSERT_TRUE(manager.buildGroundAscentPlan(end_actual,zero,zero));
+      auto& correction=planner.local_data_.position_traj_;
+      const Vector3d end=correction.evaluateDeBoorT(correction.getTimeSum());
+      EXPECT_NEAR(end.z(),end_actual.z(),1e-6);
+      EXPECT_LT((end-target).head<2>().norm(),1e-6);
+    }
+  }
+
+  static void runAscentRetryPolicy(bool manual) {
+    ros::NodeHandle nh("~ascent_retry_policy");
+    nh.setParam("manager/use_geometric_path",true);
+    nh.setParam("astar/resolution_astar",.05);
+    nh.setParam("astar/allocate_num",100000);
+    FastExplorationManager manager; initialize(nh,manager);
+    auto& map=*manager.sdf_map_; auto& task=*manager.task_search_manager_;
+    std::fill(map.md_->occupancy_buffer_.begin(),map.md_->occupancy_buffer_.end(),map.mp_->clamp_min_log_);
+    std::fill(map.md_->occupancy_buffer_inflate_.begin(),map.md_->occupancy_buffer_inflate_.end(),0);
+    std::fill(map.md_->distance_buffer_.begin(),map.md_->distance_buffer_.end(),1.0);
+    task.max_search_height_=1.50; task.min_search_height_=.10;
+    task.global_no_return_=false;
+    task.stable_progress_direction_=Eigen::Vector2d(1,0);
+    task.stable_progress_direction_valid_=true;
+    const Vector3d pos(.025,.025,.60),zero=Vector3d::Zero();
+    EXPECT_NEAR(manager.obstacleAscentTargetHeight(.85),1.10,1e-6);
+    EXPECT_NEAR(manager.obstacleAscentTargetHeight(.70),1.025,1e-6);
+    EXPECT_NEAR(manager.obstacleAscentTargetHeight(.95),1.15,1e-6);
+    manager.ground_ascent_active_=true;
+    manager.ground_ascent_anchor_valid_=true;
+    manager.ground_ascent_target_=Vector3d(pos.x(),pos.y(),1.10);
+    manager.obstacle_clearance_height_=1.05;
+    manager.ground_ascent_still_confirm_time_=0;
+    manager.inflation_history_escape_enabled_=true;
+    manager.inflation_wall_pull_enabled_=false;
+    manager.recovery_odom_history_={pos-Vector3d(.70,0,0),pos};
+    if (manual) {
+      manager.manual_path_enabled_=manager.manual_path_exploration_style_=true;
+      manager.manual_path_started_=true;
+      manager.manual_path_.points={Vector3d(1.4,.025,.60)};
+    }
+    const auto plan=[&](const Vector3d& p) {
+      manager.ground_ascent_plan_=false;
+      manager.ground_ascent_alternative_plan_=false;
+      manager.escape_step_plan_=false;
+      return manual ? manager.planExploreMotion(p,zero,zero,zero)==SUCCEED
+                    : manager.buildGroundAscentPlan(p,zero,zero);
+    };
+    // 等待静止并非失败，不按100Hz计数。
+    ASSERT_FALSE(manager.buildGroundAscentPlan(pos,Vector3d(.3,0,0),zero));
+    EXPECT_EQ(manager.ground_ascent_failures_,0);
+    for (int attempt=1;attempt<=3;++attempt) {
+      ASSERT_TRUE(plan(pos));
+      manager.recordPublishedTrajectoryHeight();
+      manager.completeGroundAscentReference(pos);
+      manager.reportGroundAscentFailure("duplicate callback");
+      EXPECT_EQ(manager.ground_ascent_failures_,attempt);
+      EXPECT_FALSE(manager.ground_ascent_retreated_);
+    }
+    ASSERT_FALSE(plan(pos));
+    ASSERT_TRUE(manager.planFailedMotionEscape(pos,zero,zero,zero));
+    EXPECT_TRUE(manager.currentPlanIsEscapeStep());
+    const Vector3d retreat=manager.ed_->next_goal_;
+    EXPECT_LE(retreat.x(),pos.x()-.30+1e-6);
+    EXPECT_NEAR(retreat.z(),pos.z(),1e-6);
+    EXPECT_FALSE(manager.ground_ascent_retreated_);
+    manager.recordPublishedTrajectoryHeight();
+    EXPECT_TRUE(manager.ground_ascent_retreated_);
+    for (int attempt=4;attempt<=6;++attempt) {
+      ASSERT_TRUE(plan(retreat));
+      const Vector3d target=manager.ed_->next_goal_;
+      EXPECT_GT(target.x(),retreat.x()+.20);
+      EXPECT_NEAR(target.z(),1.10,1e-6);
+      auto& curve=manager.planner_manager_->local_data_.position_traj_;
+      const Vector3d middle=curve.evaluateDeBoorT(curve.getTimeSum()*.5);
+      EXPECT_GT(middle.x(),retreat.x()); EXPECT_GT(middle.z(),retreat.z());
+      manager.recordPublishedTrajectoryHeight();
+      manager.completeGroundAscentReference(retreat);
+      EXPECT_EQ(manager.ground_ascent_failures_,attempt);
+    }
+    ASSERT_TRUE(plan(retreat));
+    const Vector3d side=manager.ed_->next_goal_;
+    EXPECT_GT(std::fabs(side.y()-retreat.y()),.20);
+    EXPECT_NEAR(side.z(),1.10,1e-6);
+    manager.recordPublishedTrajectoryHeight();
+    manager.latest_odom_height_=side.z();
+    manager.completeGroundAscentReference(side);
+    EXPECT_FALSE(manager.buildGroundAscentPlan(side,zero,zero));
+    EXPECT_FALSE(manager.ground_ascent_active_);
+    EXPECT_EQ(manager.ground_ascent_failures_,0);
+    if (manual) EXPECT_EQ(manager.manual_path_.next,0u);
+
+    // 20cm只约束原地升高；前进/侧向斜升只差10cm时不能再额外抬高。
+    const Vector3d high_start(.025,.025,1.0);
+    manager.ground_ascent_active_=true;
+    manager.ground_ascent_target_=Vector3d(.025,.025,1.10);
+    manager.obstacle_clearance_height_=1.05;
+    manager.latest_odom_height_=high_start.z();
+    manager.ground_ascent_retreated_=true;
+    for (int failures:{3,6}) {
+      manager.ground_ascent_failures_=failures;
+      ASSERT_TRUE(plan(high_start));
+      auto& trajectory=manager.planner_manager_->local_data_.position_traj_;
+      const Vector3d end=trajectory.evaluateDeBoorT(trajectory.getTimeSum());
+      EXPECT_NEAR(end.z()-high_start.z(),.10,1e-6);
+      EXPECT_GT((end-high_start).head<2>().norm(),.20);
+    }
   }
 
   static void runBlockedAscentRetreat(bool rear_blocked, bool manual = false) {
@@ -481,7 +597,7 @@ public:
       } else {
         EXPECT_TRUE(planned);
         EXPECT_TRUE(manager.currentPlanIsGroundAscent());
-        EXPECT_DOUBLE_EQ(manager.ed_->next_goal_.z(), .625);
+        EXPECT_NEAR(manager.ed_->next_goal_.z(), height+.20,1e-6);
       }
     }
   }
@@ -4980,7 +5096,7 @@ TEST(GroundAscentXY, RepeatedDriftReturnsToOriginalXYBeforeClimbing) {
 TEST(GroundAscentXY, BlockedCorrectionDoesNotMoveAnchorOrClimb) {
   fast_planner::TurnEscapeTest::runGroundAscentXY(1);
 }
-TEST(GroundAscentXY, DriftStopsActiveAscentBeforeGeneralTrackingLimit) {
+TEST(GroundAscentXY, DriftWaitsForAscentEndpointBeforeCorrection) {
   fast_planner::TurnEscapeTest::runGroundAscentXY(2);
 }
 TEST(GroundAscentXY, HorizontalCorrectionIsNotInterruptedByAscentCheck) {
@@ -5736,4 +5852,11 @@ TEST(PassableTurn, RecordedOctober25CornerSelectsRight) {
   const char* fixture = std::getenv("TURN_PASSABILITY_FIXTURE");
   if (!fixture) GTEST_SKIP() << "requires October 25 pre-turn point clouds";
   fast_planner::TurnEscapeTest::runRecordedTurn(fixture);
+}
+
+TEST(AscentRetry, ExplorationRetreatsAfterThreeThenUsesDiagonalAndSideAscent) {
+  fast_planner::TurnEscapeTest::runAscentRetryPolicy(false);
+}
+TEST(AscentRetry, WaypointsUseSameRetryPolicyWithoutAdvancingWaypoint) {
+  fast_planner::TurnEscapeTest::runAscentRetryPolicy(true);
 }
