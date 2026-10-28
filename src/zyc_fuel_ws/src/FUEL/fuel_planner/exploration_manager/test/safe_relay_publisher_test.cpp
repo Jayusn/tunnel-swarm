@@ -500,17 +500,28 @@ class SafeRelayPublisherTest {
       }
     }
     publisher.qualifyCandidate(record, true, forward);
+    if (uniform_floor) {
+      // 这个夹具的低面在z=0.225，高于地图地面；如今不能当作可停的地板。
+      EXPECT_FALSE(record.candidate.hold_free);
+      EXPECT_FALSE(record.candidate.confirmed);
+      return;
+    }
     ASSERT_TRUE(record.candidate.hold_free);
     EXPECT_FALSE(record.candidate.confirmed);
     const Eigen::Vector3d selected = record.candidate.position;
     EXPECT_NEAR(reference.z() + (pair_height && !block_paired_height ? 0.10 : 0.0),
                 selected.z(), 1e-6);
-    if (uniform_floor || unknown_ahead || block_paired_height) {
-      EXPECT_TRUE(selected.isApprox(reference)) << selected.transpose();
+    EXPECT_TRUE(publisher.lowerObstacleFree(selected));
+    EXPECT_GT((selected.head<2>() - reference.head<2>()).dot(forward),0.0);
+    EXPECT_TRUE(publisher.volumeFree(selected,publisher.hold_radius_,publisher.hold_half_height_));
+    if (block_paired_height) {
+      // 另找下方无障碍的位置，但仍必须使用该XY匹配到的实飞高度。
+      EXPECT_DOUBLE_EQ(publisher.routeHeight(record,selected),selected.z());
     } else {
       EXPECT_GE((selected.head<2>() - reference.head<2>()).dot(forward), 0.30);
       EXPECT_LE((selected - reference).norm(), 0.60 + 1e-6);
-      EXPECT_GT(publisher.verticalClearance(selected), publisher.verticalClearance(reference));
+      if (!unknown_ahead)
+        EXPECT_GT(publisher.verticalClearance(selected), publisher.verticalClearance(reference));
       EXPECT_NEAR(reference.y(), selected.y(), 1e-6);
     }
     // 同一帧不能增加确认；重复更新不从上次候选继续前移。
@@ -594,6 +605,14 @@ class SafeRelayPublisherTest {
     record.sample.position = reference;
     record.candidate = record.sample;
     publisher.qualifyCandidate(record, true, Eigen::Vector2d::Zero());
+    if (obstacle) {
+      // 接力点不能再用抬高来保留障碍正上方位置；无越障后候选就不发布。
+      EXPECT_FALSE(record.candidate.hold_free);
+      EXPECT_FALSE(record.candidate.confirmed);
+      publisher.qualifyCandidate(record, true, Eigen::Vector2d::Zero());
+      EXPECT_FALSE(record.candidate.confirmed);
+      return;
+    }
     ASSERT_TRUE(record.candidate.hold_free);
     const Eigen::Vector3d selected = record.candidate.position;
     EXPECT_TRUE(selected.head<2>().isApprox(reference.head<2>()));
@@ -611,6 +630,93 @@ class SafeRelayPublisherTest {
     EXPECT_TRUE(record.candidate.confirmed);
     EXPECT_TRUE(selected.isApprox(record.candidate.position));
     EXPECT_TRUE(reference.isApprox(record.sample.position));
+  }
+
+  static void afterLowerObstacle(int axis, bool revision, bool blocked_after,
+                                 bool floor_only = false) {
+    ros::NodeHandle nh("~after_lower_obstacle");
+    nh.setParam("sdf_map/resolution",0.05);
+    nh.setParam("sdf_map/map_size_x",4.0);
+    nh.setParam("sdf_map/map_size_y",4.0);
+    nh.setParam("sdf_map/map_size_z",2.0);
+    nh.setParam("sdf_map/ground_height",0.0);
+    nh.setParam("sdf_map/box_min_z",0.05);
+    nh.setParam("sdf_map/max_ray_length",20.0);
+    nh.setParam("sdf_map/obstacles_inflation",0.05);
+    auto map=std::make_shared<SDFMap>(); map->initMap(nh);
+    SafeRelayPublisher publisher;
+    publisher.map_=map; publisher.planner_=std::make_shared<FastPlannerManager>();
+    publisher.hold_radius_=0.30; publisher.hold_half_height_=0.10;
+    const Eigen::Vector3d reference(0.025,0.025,0.625);
+    const Eigen::Vector2d forward = axis==0 ? Eigen::Vector2d(1,0) :
+        (axis==1 ? Eigen::Vector2d(-1,0) : Eigen::Vector2d(0,-1));
+    for (int x=-25; x<=25; ++x)
+      for (int z=0; z<=24; ++z) {
+        pcl::PointCloud<pcl::PointXYZ> cloud;
+        cloud.push_back(pcl::PointXYZ(0.05*x+0.025,20.0,0.05*z+0.025));
+        for (int repeat=0; repeat<2; ++repeat)
+          map->inputPointCloud(cloud,1,Eigen::Vector3d(cloud[0].x,-1.9,cloud[0].z));
+      }
+    const auto occupy = [&](const Eigen::Vector3d& p) {
+      pcl::PointCloud<pcl::PointXYZ> cloud;
+      cloud.push_back(pcl::PointXYZ(p.x(),p.y(),p.z()));
+      for (int repeat=0; repeat<10; ++repeat)
+        map->inputPointCloud(cloud,1,Eigen::Vector3d(p.x(),p.y(),reference.z()));
+      ASSERT_EQ(SDFMap::OCCUPIED,map->getOccupancy(p));
+    };
+    const Eigen::Vector2d lateral(-forward.y(),forward.x());
+    for (int x=-2; x<=2; ++x)
+      for (int y=-2; y<=2; ++y) {
+        Eigen::Vector3d p=reference;
+        p.head<2>() += 0.05*x*forward+0.05*y*lateral;
+        p.z()=floor_only ? 0.025 : 0.225;
+        occupy(p);
+      }
+    if (blocked_after) {
+      // 越障后的区域不可停，前侧仍宽；不能退回去凑一个目标。
+      for (int x=3; x<=16; ++x)
+        for (int y=-18; y<=18; ++y) {
+          Eigen::Vector3d p=reference;
+          p.head<2>() += 0.05*x*forward+0.05*y*lateral;
+          p.z()=0.225;
+          occupy(p);
+        }
+    }
+    ASSERT_TRUE(publisher.volumeFree(reference,0.30,0.10));
+    EXPECT_DOUBLE_EQ(0.60,publisher.horizontalClearance(reference));
+    EXPECT_EQ(floor_only,publisher.lowerObstacleFree(reference));
+    SafeRelayPublisher::Record previous,record;
+    previous.sample.position=reference;
+    previous.sample.position.head<2>()-=0.8*forward;
+    previous.candidate=previous.sample;
+    record.sample.position=reference; record.sample.progress=0.8;
+    record.candidate=record.sample;
+    publisher.history_={previous,record};
+    if (revision) {
+      geometry_msgs::PoseStamped pose;
+      pose.header.stamp=ros::Time::now()-ros::Duration(1.0);
+      pose.pose.position.x=reference.x(); pose.pose.position.y=reference.y();
+      pose.pose.position.z=reference.z();
+      publisher.goals_.push_back({1,4,pose});
+      publisher.leader_=reference; publisher.leader_.head<2>()+=forward;
+      publisher.odom_stamp_=ros::Time::now();
+      publisher.improveInternalGoals(true);
+      publisher.improveInternalGoals(true);
+      EXPECT_EQ(!blocked_after,publisher.goals_.front().revised);
+      const auto& p=publisher.goals_.front().pose.pose.position;
+      record.candidate.position=Eigen::Vector3d(p.x,p.y,p.z);
+    } else {
+      publisher.qualifyCandidate(record,true,forward);
+      publisher.qualifyCandidate(record,true,forward);
+      EXPECT_EQ(!blocked_after,record.candidate.confirmed);
+      EXPECT_EQ(!blocked_after,record.candidate.hold_free);
+    }
+    if (!blocked_after) {
+      EXPECT_TRUE(publisher.lowerObstacleFree(record.candidate.position));
+      EXPECT_DOUBLE_EQ(reference.z(),record.candidate.position.z());
+      if (floor_only) EXPECT_TRUE(reference.isApprox(record.candidate.position));
+      else EXPECT_GT((record.candidate.position-reference).head<2>().dot(forward),0.0);
+    }
   }
 
   static void recordedForwardOrder() {
@@ -907,10 +1013,10 @@ TEST(SafeRelayPublisher, BetterForwardVerticalPocketKeepsHeightAndDoesNotDrift) 
 TEST(SafeRelayPublisher, NegativeXProgressUsesForwardPocketInsteadOfBodyYaw) {
   SafeRelayPublisherTest::forwardVerticalPocket(true, false, false);
 }
-TEST(SafeRelayPublisher, NoBetterVerticalSpaceKeepsOriginalPoint) {
+TEST(SafeRelayPublisher, RaisedPlatformWithoutClearEndpointCannotKeepOverheadPoint) {
   SafeRelayPublisherTest::forwardVerticalPocket(false, true, false);
 }
-TEST(SafeRelayPublisher, UnknownForwardSpaceCannotMoveHoldPoint) {
+TEST(SafeRelayPublisher, KnownStoppingBandAfterObstacleDoesNotRequireExtraVerticalMargin) {
   SafeRelayPublisherTest::forwardVerticalPocket(false, false, true);
 }
 TEST(SafeRelayPublisher, OffsetXYUsesLocalFlownHeightAndIgnoresOtherRouteLeg) {
@@ -922,17 +1028,33 @@ TEST(SafeRelayPublisher, ForwardCandidateUsesPairedHeightAndRemainsConfirmed) {
 TEST(SafeRelayPublisher, BlockedPairedHeightCannotFallBackToOldLowZAtSameXY) {
   SafeRelayPublisherTest::forwardVerticalPocket(false, false, false, true, true);
 }
-TEST(SafeRelayPublisher, LowObstacleRaisesOnlyEnoughForBodyAndMargin) {
+TEST(SafeRelayPublisher, LowObstacleCannotBecomeRaisedRelayGoal) {
   SafeRelayPublisherTest::lowObstacleHeight(false, false, true);
 }
-TEST(SafeRelayPublisher, LowCeilingKeepsOriginalQualifiedHeight) {
+TEST(SafeRelayPublisher, LowCeilingCannotKeepGoalOverLowerObstacle) {
   SafeRelayPublisherTest::lowObstacleHeight(true, false, true);
 }
-TEST(SafeRelayPublisher, UnknownAboveCannotRaiseHoldPoint) {
+TEST(SafeRelayPublisher, UnknownAboveCannotKeepGoalOverLowerObstacle) {
   SafeRelayPublisherTest::lowObstacleHeight(false, true, true);
 }
 TEST(SafeRelayPublisher, OpenSpaceDoesNotRaiseHoldPoint) {
   SafeRelayPublisherTest::lowObstacleHeight(false, false, false);
+}
+TEST(SafeRelayPublisher, LowerObstacleMovesRelayBeyondObstacleAlongRoute) {
+  for (int axis=0; axis<3; ++axis)
+    SafeRelayPublisherTest::afterLowerObstacle(axis,false,false);
+}
+TEST(SafeRelayPublisher, NoSpaceAfterObstacleCannotReleasePointAboveOrBeforeIt) {
+  SafeRelayPublisherTest::afterLowerObstacle(0,false,true);
+}
+TEST(SafeRelayPublisher, RevisionLeavesLowerObstacleEvenWithoutClearanceGain) {
+  SafeRelayPublisherTest::afterLowerObstacle(2,true,false);
+}
+TEST(SafeRelayPublisher, RevisionCannotMoveBackWhenSpaceAfterObstacleIsBlocked) {
+  SafeRelayPublisherTest::afterLowerObstacle(0,true,true);
+}
+TEST(SafeRelayPublisher, FloorBelowFlightRegionDoesNotRejectRelay) {
+  SafeRelayPublisherTest::afterLowerObstacle(0,false,false,true);
 }
 }  // namespace fast_planner
 int main(int argc, char** argv) {

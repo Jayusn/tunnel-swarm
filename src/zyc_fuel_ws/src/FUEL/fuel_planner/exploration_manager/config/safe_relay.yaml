@@ -16,6 +16,8 @@ mission:
     # 出口交接后仍可更新；接收端只更新未完成的点，已完成点不回访，入口/出口点不参与。
     hold_radius: 0.30
     hold_half_height: 0.10
+    # 自动接力点还检查任务box_min_z到悬停高度带下方的实体障碍（复用hold_radius）。
+    # 不在障碍正上方发点；越障样本移向沿前进方向越过障碍后的空地。
     clearance_search_radius: 0.60  # 合格点在自身高度带内比较原始体素水平净空，上限 0.60m。
     candidate_search_radius: 0.60  # 在实飞参考位置附近搜索更宽敞的已知自由空间，不要求点本身飞过。
     map_confirmations: 2

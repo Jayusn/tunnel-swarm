@@ -45,6 +45,7 @@ class SafeRelayPublisher {
   void exitCallback(const geometry_msgs::PoseStamped::ConstPtr& message);
   bool insideCorridor(const Eigen::Vector3d& reference, const Eigen::Vector3d& point) const;
   bool volumeFree(const Eigen::Vector3d& point, double radius, double height) const;
+  bool lowerObstacleFree(const Eigen::Vector3d& point) const;
   double horizontalClearance(const Eigen::Vector3d& point) const;
   std::vector<Eigen::Vector2d> horizontalBoundaries(const Eigen::Vector3d& point,
                                                   double radius) const;

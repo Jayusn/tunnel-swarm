@@ -189,6 +189,35 @@ bool SafeRelayPublisher::volumeFree(const Eigen::Vector3d& point, double radius,
   return true;
 }
 
+bool SafeRelayPublisher::lowerObstacleFree(const Eigen::Vector3d& point) const {
+  if (!point.allFinite() || !map_->isInMap(point)) return false;
+  Eigen::Vector3d box_min, box_max;
+  map_->getBox(box_min, box_max);
+  // 地图存储下界ground_height不是地面高度。沿用任务可飞区域下界，
+  // 检查其上、原悬停高度带之下的实体障碍，避免把地板投影成整片禁区。
+  const double top = point.z() - hold_half_height_;
+  if (top <= box_min.z()) return true;
+  Eigen::Vector3i lower, upper;
+  map_->posToIndex(Eigen::Vector3d(point.x()-hold_radius_, point.y()-hold_radius_,
+                                  box_min.z()), lower);
+  map_->posToIndex(Eigen::Vector3d(point.x()+hold_radius_, point.y()+hold_radius_, top), upper);
+  map_->boundIndex(lower);
+  map_->boundIndex(upper);
+  const double half_cell = 0.5 * map_->getResolution();
+  for (int x = lower.x(); x <= upper.x(); ++x)
+    for (int y = lower.y(); y <= upper.y(); ++y)
+      for (int z = lower.z(); z <= upper.z(); ++z) {
+        const Eigen::Vector3i index(x,y,z);
+        if (map_->getOccupancy(index) != SDFMap::OCCUPIED) continue;
+        Eigen::Vector3d centre;
+        map_->indexToPos(index, centre);
+        const double dx = std::max(0.0, std::fabs(centre.x()-point.x())-half_cell);
+        const double dy = std::max(0.0, std::fabs(centre.y()-point.y())-half_cell);
+        if (dx*dx + dy*dy <= hold_radius_*hold_radius_ + 1e-9) return false;
+      }
+  return true;
+}
+
 std::vector<Eigen::Vector2d> SafeRelayPublisher::horizontalBoundaries(
     const Eigen::Vector3d& point, double radius) const {
   // Project all non-free voxel boxes intersecting the stopping-height band.
@@ -322,13 +351,24 @@ void SafeRelayPublisher::qualifyCandidate(
       const double gap = clearanceToBoxes(p, boundaries, half_cell, clearance_search_radius_);
       if (gap + 1e-9 >= hold_radius_) options.push_back({p, gap, offset});
     }
-  std::sort(options.begin(), options.end(), [](const Option& a, const Option& b) {
+  const bool over_obstacle = !lowerObstacleFree(reference);
+  std::sort(options.begin(), options.end(), [&](const Option& a, const Option& b) {
     if (a.clearance != b.clearance) return a.clearance > b.clearance;
+    if (over_obstacle && forward.norm() > 0.5) {
+      const Eigen::Vector2d side(-forward.y(), forward.x());
+      const double a_side = std::fabs((a.position-reference).head<2>().dot(side));
+      const double b_side = std::fabs((b.position-reference).head<2>().dot(side));
+      if (std::fabs(a_side-b_side) > 1e-9) return a_side < b_side;
+    }
     return a.offset < b.offset;
   });
   const auto safe = [&](const Eigen::Vector3d& p) {
+    // 后机用局部地图：越障样本只能移到沿路线越过障碍后的空地，
+    // 不能在障碍正上方停留，也不能因前方较窄而退选障碍前侧。
+    if (over_obstacle && (forward.norm() <= 0.5 ||
+        (p-reference).head<2>().dot(forward) <= 1e-6)) return false;
     return preservesGoalOrder(p, goal_index) && insideCorridor(reference, p) &&
-        volumeFree(p, hold_radius_, hold_half_height_) &&
+        volumeFree(p, hold_radius_, hold_half_height_) && lowerObstacleFree(p) &&
         planner_->isRelayHoldDynamicallySafe(p, hold_radius_, hold_half_height_, dynamic_wait_horizon_);
   };
   const auto paired = [&](Eigen::Vector3d p) {
@@ -437,7 +477,8 @@ void SafeRelayPublisher::improveInternalGoals(bool new_map) {
     if (!candidate.confirmed || offset < 0.05 || offset > 0.60 + 1e-6) continue;
     const double old_gap = horizontalClearance(original);
     const double gain = std::max(0.05, map_->getResolution());
-    const bool better = candidate.clearance >= old_gap + gain - 1e-6 ||
+    const bool better = !lowerObstacleFree(original) ||
+        candidate.clearance >= old_gap + gain - 1e-6 ||
         (candidate.clearance + 0.02 >= old_gap &&
          verticalClearance(candidate.position) >= verticalClearance(original) + gain - 1e-6);
     if (!better) continue;
