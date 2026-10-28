@@ -82,25 +82,39 @@ TEST(LandingStateMachine, TargetLossStopsVisualDescentAndReacquires) {
   EXPECT_TRUE(confirmed.reset_target_jump_history);
 }
 
-TEST(LandingStateMachine, FiveSecondsOfLossLocksXyAndDescendsBeforeAutoLand) {
+TEST(LandingStateMachine, ReacquisitionContinuesWhileInputsRemainHealthy) {
   LandingStateMachine machine;
   ReachHighDescent(machine);
   machine.update(ActiveInput(0.90, 2.0, 0.05, false));
   ASSERT_EQ(machine.update(ActiveInput(1.41, 2.0, 0.05, false)).state,
             LandingState::REACQUIRE);
-  EXPECT_EQ(machine.update(ActiveInput(5.89, 2.0, 0.05, false)).state,
-            LandingState::REACQUIRE);
-  const auto timeout = machine.update(ActiveInput(5.90, 2.0, 0.05, false));
-  EXPECT_EQ(timeout.state, LandingState::FIXED_XY_DESCENT);
-  EXPECT_DOUBLE_EQ(timeout.descent_speed_mps, 0.25);
-  EXPECT_FALSE(timeout.request_auto_land);
   EXPECT_EQ(machine.update(ActiveInput(20.0, 2.0, 0.05, false)).state,
-            LandingState::FIXED_XY_DESCENT);
-  auto contact = ActiveInput(20.1, 0.30, 0.0, false);
-  contact.landing_contact = true;
-  const auto landed = machine.update(contact);
-  EXPECT_EQ(landed.state, LandingState::REQUEST_AUTO_LAND);
-  EXPECT_TRUE(landed.request_auto_land);
+            LandingState::REACQUIRE);
+}
+
+TEST(LandingStateMachine, TimeoutUsesControllerDescentAtCurrentPosition) {
+  precision_landing::StateMachineConfig config;
+  config.total_timeout_sec = 2.0;
+  LandingStateMachine machine(config);
+  machine.update(ActiveInput(0.0));
+  ASSERT_EQ(machine.update(ActiveInput(0.0)).state, LandingState::ACQUIRE);
+  const auto output = machine.update(ActiveInput(2.0, 2.0, 0.25, false));
+  EXPECT_EQ(output.state, LandingState::FIXED_XY_DESCENT);
+  EXPECT_FALSE(output.request_auto_land);
+  EXPECT_DOUBLE_EQ(output.descent_speed_mps, config.fixed_descent_mps);
+}
+
+TEST(LandingStateMachine, TimeoutDoesNotOverrideStaleInputAbort) {
+  precision_landing::StateMachineConfig config;
+  config.total_timeout_sec = 2.0;
+  LandingStateMachine machine(config);
+  machine.update(ActiveInput(0.0));
+  ASSERT_EQ(machine.update(ActiveInput(0.0)).state, LandingState::ACQUIRE);
+  auto stale = ActiveInput(2.0, 2.0, 0.25, false);
+  stale.critical_inputs_fresh = false;
+  const auto output = machine.update(stale);
+  EXPECT_EQ(output.state, LandingState::ABORT_HOLD);
+  EXPECT_FALSE(output.request_auto_land);
 }
 
 TEST(LandingStateMachine, ReacquiredTargetReturnsToAlignment) {
@@ -207,7 +221,7 @@ TEST(LandingStateMachine, FixedWorldXyDescentNoLongerRequiresMarker) {
   ReachFixedDescent(machine);
   const auto output = machine.update(ActiveInput(1.2, 0.0, 0.0, false));
   EXPECT_EQ(output.state, LandingState::FIXED_XY_DESCENT);
-  EXPECT_DOUBLE_EQ(output.descent_speed_mps, 0.25);
+  EXPECT_DOUBLE_EQ(output.descent_speed_mps, precision_landing::StateMachineConfig().fixed_descent_mps);
   EXPECT_FALSE(output.request_auto_land);
 }
 
@@ -261,7 +275,7 @@ TEST(LandingStateMachine, FallingTriggerDoesNotInterruptFixedDescent) {
   input.trigger = false;
   const auto output = machine.update(input);
   EXPECT_EQ(output.state, LandingState::FIXED_XY_DESCENT);
-  EXPECT_DOUBLE_EQ(output.descent_speed_mps, 0.25);
+  EXPECT_DOUBLE_EQ(output.descent_speed_mps, precision_landing::StateMachineConfig().fixed_descent_mps);
 }
 
 TEST(LandingStateMachine, FalseTriggerResetsAbortToIdle) {
@@ -276,55 +290,51 @@ TEST(LandingStateMachine, FalseTriggerResetsAbortToIdle) {
   EXPECT_TRUE(output.reset_target_lock);
 }
 
-TEST(LandingStateMachine, ReacquiringResetsContinuousLossTimer) {
+TEST(LandingStateMachine, RememberedTargetRequiresStableOdomAlignment) {
   LandingStateMachine machine;
   ReachHighDescent(machine);
-  machine.update(ActiveInput(1.0, 2.0, 0.05, false));
-  machine.update(ActiveInput(1.5, 2.0, 0.05, false));
-  EXPECT_EQ(machine.update(ActiveInput(6.0)).state, LandingState::ALIGN);
-  machine.update(ActiveInput(6.1, 2.0, 0.05, false));
-  machine.update(ActiveInput(6.6, 2.0, 0.05, false));
-  EXPECT_EQ(machine.update(ActiveInput(11.09, 2.0, 0.05, false)).state,
-            LandingState::REACQUIRE);
-  EXPECT_EQ(machine.update(ActiveInput(11.11, 2.0, 0.05, false)).state,
-            LandingState::FIXED_XY_DESCENT);
-}
-
-TEST(LandingStateMachine, AcquireLossAfterSeeingTargetAlsoLocksAndDescends) {
-  LandingStateMachine machine;
-  machine.update(ActiveInput(0.0));
-  machine.update(ActiveInput(0.0));
-  machine.update(ActiveInput(0.2, 2.0, 0.05, false));
-  EXPECT_EQ(machine.update(ActiveInput(5.19, 2.0, 0.05, false)).state,
-            LandingState::ACQUIRE);
-  const auto output = machine.update(ActiveInput(5.21, 2.0, 0.05, false));
+  auto input = ActiveInput(0.9, 2.0, 0.4, false);
+  input.remembered_target_valid = true;
+  input.remembered_error_m = 0.4;
+  machine.update(input);
+  input.now_sec = 1.5;
+  EXPECT_EQ(machine.update(input).state, LandingState::REACQUIRE);
+  input.remembered_error_m = 0.10;
+  input.now_sec = 1.6;
+  EXPECT_EQ(machine.update(input).state, LandingState::REACQUIRE);
+  input.now_sec = 2.11;
+  const auto output = machine.update(input);
   EXPECT_EQ(output.state, LandingState::FIXED_XY_DESCENT);
   EXPECT_FALSE(output.request_auto_land);
 }
 
-TEST(LandingStateMachine, NeverSeeingTargetKeepsSearching) {
+TEST(LandingStateMachine, RememberedAlignmentResetsWhenErrorIncreases) {
   LandingStateMachine machine;
-  machine.update(ActiveInput(0.0, 0.0, 0.0, false));
-  machine.update(ActiveInput(0.1, 0.0, 0.0, false));
-  const auto output = machine.update(ActiveInput(60.0, 0.0, 0.0, false));
-  EXPECT_EQ(output.state, LandingState::ACQUIRE);
-  EXPECT_DOUBLE_EQ(output.descent_speed_mps, 0.0);
-  EXPECT_FALSE(output.request_auto_land);
+  ReachHighDescent(machine);
+  auto input = ActiveInput(0.9, 2.0, 0.4, false);
+  input.remembered_target_valid = true;
+  input.remembered_error_m = 0.1;
+  machine.update(input);
+  input.now_sec = 1.2;
+  input.remembered_error_m = 0.2;
+  machine.update(input);
+  input.now_sec = 1.5;
+  input.remembered_error_m = 0.1;
+  EXPECT_EQ(machine.update(input).state, LandingState::REACQUIRE);
+  input.now_sec = 2.01;
+  EXPECT_EQ(machine.update(input).state, LandingState::FIXED_XY_DESCENT);
 }
 
-TEST(LandingStateMachine, LossTimeoutDoesNotOverrideStaleInputsOrManualMode) {
-  for (bool stale : {true, false}) {
-    LandingStateMachine machine;
-    ReachHighDescent(machine);
-    machine.update(ActiveInput(1.0, 2.0, 0.05, false));
-    machine.update(ActiveInput(1.5, 2.0, 0.05, false));
-    auto input = ActiveInput(6.0, 2.0, 0.05, false);
-    input.critical_inputs_fresh = !stale;
-    input.offboard = stale;
-    const auto output = machine.update(input);
-    EXPECT_EQ(output.state, stale ? LandingState::ABORT_HOLD
-                                 : LandingState::PASSIVE_ABORT);
-    EXPECT_DOUBLE_EQ(output.descent_speed_mps, 0.0);
-    EXPECT_FALSE(output.request_auto_land);
-  }
+TEST(LandingStateMachine, TimeoutDoesNotOverrideManualModeOrRestartFixedDescent) {
+  precision_landing::StateMachineConfig config;
+  config.total_timeout_sec = 2.0;
+  LandingStateMachine machine(config);
+  ReachFixedDescent(machine);
+  auto input = ActiveInput(3.0, 0.3, 0.1, false);
+  input.landing_contact = true;
+  EXPECT_EQ(machine.update(input).state, LandingState::REQUEST_AUTO_LAND);
+  LandingStateMachine manual(config);
+  ReachHighDescent(manual);
+  input.offboard = false;
+  EXPECT_EQ(manual.update(input).state, LandingState::PASSIVE_ABORT);
 }

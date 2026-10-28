@@ -50,6 +50,8 @@ struct StateInput {
   double now_sec;
   bool critical_inputs_fresh;
   bool landing_contact;
+  bool remembered_target_valid{false};
+  double remembered_error_m{0.0};
 };
 
 struct StateOutput {
@@ -74,13 +76,13 @@ class LandingStateMachine {
   LandingState state_{LandingState::IDLE};
   double target_visible_since_sec_{-1.0};
   double aligned_since_sec_{-1.0};
-  bool target_seen_{false};
   double target_loss_since_sec_{-1.0};
   double fine_aligned_since_sec_{-1.0};
   double descent_gate_since_sec_{-1.0};
   LandingState descent_gate_state_{LandingState::IDLE};
   double reacquire_started_sec_{-1.0};
   double mission_started_sec_{-1.0};
+  double remembered_aligned_since_sec_{-1.0};
 };
 
 }  // namespace precision_landing

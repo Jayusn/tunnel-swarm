@@ -17,6 +17,12 @@ bool clearsOnFalseTrigger(LandingState state) {
          state == LandingState::DONE;
 }
 
+bool canUseControllerFallback(LandingState state) {
+  return state == LandingState::ACQUIRE || state == LandingState::ALIGN ||
+         state == LandingState::DESCEND_HIGH ||
+         state == LandingState::REACQUIRE;
+}
+
 }  // namespace
 
 LandingStateMachine::LandingStateMachine(const StateMachineConfig& config) : config_(config) {}
@@ -31,25 +37,17 @@ StateOutput LandingStateMachine::update(const StateInput& input) {
     fine_aligned_since_sec_ = -1.0;
     target_visible_since_sec_ = -1.0;
     aligned_since_sec_ = -1.0;
-    target_seen_ = false;
     target_loss_since_sec_ = -1.0;
     descent_gate_since_sec_ = -1.0;
     descent_gate_state_ = LandingState::IDLE;
     reacquire_started_sec_ = -1.0;
     mission_started_sec_ = -1.0;
+    remembered_aligned_since_sec_ = -1.0;
     reset_target_lock = true;
   } else if (state_ == LandingState::IDLE && input.trigger) {
     state_ = LandingState::PRECHECK;
     mission_started_sec_ = input.now_sec;
     entered_precheck = true;
-  }
-
-  const bool visual_tracking =
-      state_ == LandingState::ACQUIRE || state_ == LandingState::ALIGN ||
-      state_ == LandingState::DESCEND_HIGH || state_ == LandingState::REACQUIRE;
-  if (visual_tracking && input.target_visible) {
-    target_seen_ = true;
-    target_loss_since_sec_ = -1.0;
   }
 
   if (!entered_precheck && state_ == LandingState::REQUEST_AUTO_LAND &&
@@ -68,17 +66,9 @@ StateOutput LandingStateMachine::update(const StateInput& input) {
   } else if (!entered_precheck && state_ == LandingState::PRECHECK && input.precheck_ok &&
              input.offboard) {
     state_ = LandingState::ACQUIRE;
-    target_seen_ = input.target_visible;
     target_visible_since_sec_ = input.target_visible ? input.now_sec : -1.0;
-  } else if (!entered_precheck && visual_tracking &&
-             !input.target_visible && target_loss_since_sec_ >= 0.0 &&
-             input.now_sec - target_loss_since_sec_ >= config_.reacquire_timeout_sec) {
-    state_ = LandingState::FIXED_XY_DESCENT;
   } else if (!entered_precheck && state_ == LandingState::ACQUIRE) {
     if (!input.target_visible) {
-      if (target_seen_ && target_loss_since_sec_ < 0.0) {
-        target_loss_since_sec_ = input.now_sec;
-      }
       target_visible_since_sec_ = -1.0;
     } else if (target_visible_since_sec_ < 0.0) {
       target_visible_since_sec_ = input.now_sec;
@@ -167,6 +157,25 @@ StateOutput LandingStateMachine::update(const StateInput& input) {
       descent_gate_state_ = LandingState::IDLE;
       reset_controller = true;
     }
+  }
+
+  // 丢码后以保存的世界目标继续对准，沿用原有 12 cm / 0.5 s 门限。
+  if (canUseControllerFallback(state_) && !input.target_visible &&
+      input.remembered_target_valid && input.critical_inputs_fresh && input.offboard &&
+      input.remembered_error_m <= config_.auto_land_error_m) {
+    if (remembered_aligned_since_sec_ < 0.0)
+      remembered_aligned_since_sec_ = input.now_sec;
+    if (input.now_sec - remembered_aligned_since_sec_ >= config_.fine_align_stable_sec)
+      state_ = LandingState::FIXED_XY_DESCENT;
+  } else {
+    remembered_aligned_since_sec_ = -1.0;
+  }
+
+  // 20 秒兜底只切入控制器的定点下降；末端高度交接保持原逻辑。
+  if (!entered_precheck && canUseControllerFallback(state_) &&
+      mission_started_sec_ >= 0.0 && input.critical_inputs_fresh && input.offboard &&
+      input.now_sec - mission_started_sec_ >= config_.total_timeout_sec) {
+    state_ = LandingState::FIXED_XY_DESCENT;
   }
 
   StateOutput output;
