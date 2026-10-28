@@ -2292,13 +2292,42 @@ public:
     EXPECT_TRUE(planner.isTrajectorySafe());
   }
 
-  static void runStaticTurnCollision(int stage) {
+  static void runTurnMinimumHeight() {
+    ros::NodeHandle nh("~turn_minimum_height");
+    FastExplorationManager manager;
+    initialize(nh, manager);
+    auto& planner = *manager.planner_manager_;
+    auto& task = *manager.task_search_manager_;
+    task.setMap(manager.sdf_map_);
+    task.enabled_ = true;
+    task.setCorridorFrame(Vector3d(-2.0, 0.025, 0.20), Vector3d::UnitX());
+    const Vector3d zero = Vector3d::Zero();
+    for (double z : {0.10, 0.15, 0.199999, 0.20, 0.25}) {
+      SCOPED_TRACE(z);
+      const Vector3d position(0.025, 0.025, z);
+      task.updateRobotPose(position, 0.0);
+      task.turn_yaw_follow_latch_.arm(Eigen::Vector2d::UnitY());
+      manager.turn_in_place_session_active_ = false;
+      manager.turn_in_place_plan_ = false;
+      ASSERT_TRUE(planner.isPositionSafe(position));
+      EXPECT_EQ(planner.isTurnPositionSafe(position), z >= 0.20);
+      // 低位不得抢占当前平移，也不得从规划入口发布转弯；20cm边界允许。
+      EXPECT_EQ(manager.requestMappedTurn(position, 0.0), z >= 0.20);
+      EXPECT_EQ(manager.buildTurnInPlacePlan(position, Vector3d(0.1, 0.0, -0.1),
+                                            zero, zero, Vector3d::UnitY()), z >= 0.20);
+      EXPECT_EQ(manager.currentPlanIsTurnInPlace(), z >= 0.20);
+      ASSERT_TRUE(planner.planStraightTraj(position, position + 0.4 * Vector3d::UnitX()));
+      EXPECT_TRUE(planner.isTrajectorySafe());
+    }
+  }
+
+  static void runStaticTurnCollision(int stage, bool low_height = false) {
     ros::NodeHandle nh("~static_turn_safety");
     FastExplorationManager manager;
     initialize(nh, manager);
     auto& planner = *manager.planner_manager_;
     auto& task = *manager.task_search_manager_;
-    const Vector3d start(0.025, 0.025, 1.025), zero = Vector3d::Zero();
+    const Vector3d start(0.025, 0.025, low_height ? 0.21 : 1.025), zero = Vector3d::Zero();
     task.setMap(manager.sdf_map_);
     task.enabled_ = true;
     task.setCorridorFrame(start - 2.0 * Vector3d::UnitX(), Vector3d::UnitX());
@@ -2336,7 +2365,7 @@ public:
     fsm.last_suspended_underpass_check_ = ros::Time::now() + ros::Duration(30.0);
     fsm.emergency_brake_pub_ = nh.advertise<std_msgs::Int32>("static_turn_brake", 1);
 
-    if (stage < 2) {
+    if (stage < 2 && !low_height) {
       // 有重复邻域支撑的细障碍落在旧12点圆环间隙内，中心与旧采样仍安全。
       pcl::PointCloud<pcl::PointXYZ> obstacle;
       for (double z : {0.975, 1.025, 1.075})
@@ -2367,10 +2396,12 @@ public:
       fsm.state_ = PUB_TRAJ;
       fsm.active_traj_braked_ = true;
       fsm.pending_turn_in_place_ = true;
+      if (low_height) fsm.fd_->odom_pos_.z() = 0.19;
       for (int i = 0; i < 5; ++i) {
         OdomReviewSample sample;
         sample.stamp = 1.0 + 0.01 * i;
-        sample.position = {{start.x(), start.y(), start.z()}};
+        sample.position = {{fsm.fd_->odom_pos_.x(), fsm.fd_->odom_pos_.y(),
+                            fsm.fd_->odom_pos_.z()}};
         sample.velocity = {{0.0, 0.0, 0.0}};
         fsm.odom_review_window_.push_back(sample);
       }
@@ -2380,8 +2411,13 @@ public:
       return;
     }
     // 实际机体偏离参考点碰到静态障碍，参考轨迹本身仍安全，也必须停止转向。
-    fsm.fd_->odom_pos_ = start + Vector3d(0.30, 0.0, 0.0);
-    manager.sdf_map_->setOccupied(fsm.fd_->odom_pos_);
+    if (low_height) {
+      fsm.fd_->odom_pos_.z() = 0.19;
+      ASSERT_TRUE(planner.isPositionSafe(fsm.fd_->odom_pos_));
+    } else {
+      fsm.fd_->odom_pos_ = start + Vector3d(0.30, 0.0, 0.0);
+      manager.sdf_map_->setOccupied(fsm.fd_->odom_pos_);
+    }
     ASSERT_TRUE(planner.isTurnPositionSafe(start));
     ASSERT_FALSE(planner.isTurnPositionSafe(fsm.fd_->odom_pos_));
     double collision_distance;
@@ -4732,6 +4768,15 @@ TEST(BlindRangeFusion, UnobservedBlindRegionIsNotCarvedFree) {
 }
 TEST(TurnHeight, TrackingDropAndResidualVelocityDoNotDelayYawOrTriggerAscent) {
   fast_planner::TurnEscapeTest::runRetainedTurnHeight(false);
+}
+TEST(TurnHeight, BelowTwentyCentimetresBlocksTurnButNotTranslation) {
+  fast_planner::TurnEscapeTest::runTurnMinimumHeight();
+}
+TEST(TurnHeight, DropBelowTwentyCentimetresRejectsPendingPublication) {
+  fast_planner::TurnEscapeTest::runStaticTurnCollision(1, true);
+}
+TEST(TurnHeight, DropBelowTwentyCentimetresStopsExecutingTurn) {
+  fast_planner::TurnEscapeTest::runStaticTurnCollision(2, true);
 }
 TEST(TurnHeight, RealObstacleStillBlocksRotationWithoutForcingAscent) {
   fast_planner::TurnEscapeTest::runRetainedTurnHeight(true);

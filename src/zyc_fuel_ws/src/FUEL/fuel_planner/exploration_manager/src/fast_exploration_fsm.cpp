@@ -1221,7 +1221,7 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
     const Eigen::Vector3d reference = active_traj_.position_traj_.evaluateDeBoorT(elapsed);
     if (!planner_manager_->isTurnPositionSafe(fd_->odom_pos_) ||
         !planner_manager_->isTurnPositionSafe(reference)) {
-      requestActiveTrajectoryBrake("static obstacle in rotation footprint");
+      requestActiveTrajectoryBrake("turn below minimum Z or unsafe rotation footprint");
       active_turn_in_place_ = false;
       fd_->static_state_ = true;
       transitState(PLAN_TRAJ, "safetyCallback-turn-obstacle");

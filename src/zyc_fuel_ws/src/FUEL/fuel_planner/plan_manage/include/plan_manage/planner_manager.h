@@ -69,7 +69,7 @@ public:
                           bool allow_inflation_escape = false);
   // 2026-07-13: 使用独立机体足迹检查轨迹/路径，避免 0.15m 建图膨胀小于 Iris 实际旋翼半径。
   bool isPositionSafe(const Eigen::Vector3d& position) const;
-  // 原地转向检查整片旋转圆盘内的静态障碍，补齐稀疏圆环采样间隙。
+  // 原地转向要求Z>=0.20m，并检查整片旋转圆盘内的静态障碍。
   bool isTurnPositionSafe(const Eigen::Vector3d& position) const;
   // 2026-07-28: FSM发布门控需要区分原始占据碰撞与仅接触膨胀层，决定能否执行受控逃逸。
   bool isRawPositionSafe(const Eigen::Vector3d& position) const;

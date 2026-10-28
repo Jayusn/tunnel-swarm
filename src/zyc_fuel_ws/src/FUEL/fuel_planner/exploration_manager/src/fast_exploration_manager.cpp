@@ -3485,7 +3485,7 @@ bool FastExplorationManager::requestMappedTurn(const Vector3d& position, double 
       task_search_manager_->exitVerificationActive() ||
       task_search_manager_->landingRequested())
     return false;
-  // 当前旋转圆盘有静态障碍时不抢占平移；旧轨迹仍由正常碰撞检查决定能否继续。
+  // 高度不足或旋转圆盘有静态障碍时不抢占平移；旧轨迹仍由正常碰撞检查决定能否继续。
   if (!planner_manager_->isTurnPositionSafe(position)) return false;
   // 通道位置已由里程计回调更新，不能用重规划的未来起点覆盖它。
   Vector3d direction;
@@ -3548,7 +3548,7 @@ bool FastExplorationManager::buildTurnInPlacePlan(
                    (yaw_rate * (1.0 - kTurnRampFraction))));
   if (!planner_manager_->isTurnPositionSafe(turn_in_place_anchor_)) {
     turn_in_place_plan_ = false;
-    ROS_WARN_THROTTLE(0.5, "[turn_in_place] static obstacle in rotation footprint "
+    ROS_WARN_THROTTLE(0.5, "[turn_in_place] minimum Z or rotation footprint check "
                            "blocks turn; keep final yaw and try validated history retreat.");
     return !external_selection_only_ && planInflationHistoryEscape(pos, vel, acc, yaw, true);
   }
