@@ -309,6 +309,7 @@ public:
     manager.ground_ascent_target_ = target;
     manager.ground_ascent_still_confirm_time_ = 0.0;
     manager.horizontal_reference_height_ = target.z();
+    if (mode == 2 || mode == 5) manager.obstacle_clearance_height_ = .85;
     if (mode == 0) {
       // 连续漂移重试不能重置XY；较大偏差先同高度回正，小偏差随升高收回。
       for (const Vector3d& offset : {Vector3d(.12, 0, 0), Vector3d(.16, .08, .03),
@@ -363,6 +364,7 @@ public:
     fsm.active_traj_.start_time_ = ros::Time::now();
     fsm.active_traj_valid_ = true;
     fsm.active_ground_ascent_ = mode != 4;
+    fsm.active_escape_step_ = mode == 5;
     fsm.state_ = EXEC_TRAJ;
     fsm.last_mapped_turn_check_ = ros::Time::now() + ros::Duration(30.0);
     fsm.last_suspended_underpass_check_ = ros::Time::now() + ros::Duration(30.0);
@@ -371,6 +373,74 @@ public:
     EXPECT_EQ(fsm.active_traj_braked_, mode == 2);
     EXPECT_EQ(fsm.state_, mode == 2 ? PLAN_TRAJ : EXEC_TRAJ);
     EXPECT_TRUE(manager.ground_ascent_target_.isApprox(target));
+  }
+
+  static void runBlockedAscentRetreat(bool rear_blocked) {
+    ros::NodeHandle nh("~blocked_ascent_retreat");
+    nh.setParam("manager/use_geometric_path",true);
+    nh.setParam("astar/resolution_astar",.05);
+    nh.setParam("astar/allocate_num",100000);
+    nh.setParam("astar/lambda_heu",1.0);
+    nh.setParam("astar/max_search_time",1.0);
+    FastExplorationManager manager;
+    initialize(nh,manager);
+    auto& map=*manager.sdf_map_;
+    auto& planner=*manager.planner_manager_;
+    const Vector3d pos(.025,.025,.525), target(.025,.025,.95), zero=Vector3d::Zero();
+    manager.ground_ascent_active_=true;
+    manager.ground_ascent_anchor_valid_=true;
+    manager.ground_ascent_target_=target;
+    manager.ground_ascent_anchor_=pos;
+    manager.obstacle_clearance_height_=.85;
+    manager.ground_ascent_still_confirm_time_=0.0;
+    manager.inflation_history_escape_enabled_=true;
+    manager.inflation_wall_pull_enabled_=false;
+    manager.task_search_manager_->global_no_return_=false;
+    manager.task_search_manager_->stable_progress_direction_=Eigen::Vector2d(1,0);
+    manager.task_search_manager_->stable_progress_direction_valid_=true;
+    manager.recovery_odom_history_={pos-Vector3d(.70,0,0),pos};
+    for (int x=0;x<map.mp_->map_voxel_num_.x();++x)
+      for (int y=0;y<map.mp_->map_voxel_num_.y();++y)
+        for (int z=0;z<map.mp_->map_voxel_num_.z();++z) {
+          const Eigen::Vector3i id(x,y,z); Vector3d p;map.indexToPos(id,p);
+          // 当前位置前后均能平移，但上升柱被阻挡；退20cm仍会擦到上方障碍。
+          const bool roof=p.x()>=-.15 && p.x()<=.20 &&
+              std::fabs(p.y()-.025)<.25 && p.z()>=.75 && p.z()<=.85;
+          const bool rear=rear_blocked && p.x()>=-.30 && p.x()<=-.20 &&
+              std::fabs(p.y()-.025)<.25 && p.z()<.70;
+          const int address=map.toAddress(id);
+          map.md_->occupancy_buffer_[address]=(roof||rear)?map.mp_->clamp_max_log_:map.mp_->clamp_min_log_;
+          map.md_->occupancy_buffer_inflate_[address]=roof||rear;
+          map.md_->distance_buffer_[address]=1.0;
+        }
+    ASSERT_TRUE(planner.isPositionSafe(pos));
+    ASSERT_FALSE(manager.buildGroundAscentPlan(pos,zero,zero));
+    const bool escaped=manager.planFailedMotionEscape(pos,zero,zero,zero);
+    if (rear_blocked) { EXPECT_FALSE(escaped); return; }
+    ASSERT_TRUE(escaped);
+    ASSERT_TRUE(manager.currentPlanIsEscapeStep());
+    EXPECT_FALSE(manager.currentPlanIsGroundAscent());
+    Vector3d end=manager.ed_->next_goal_;
+    EXPECT_LT(end.x(),pos.x()-.30);
+    EXPECT_NEAR(end.z(),pos.z(),1e-6);
+    EXPECT_TRUE(planner.isTrajectorySafe(.03,true));
+    EXPECT_TRUE(manager.obstacleAscentPending());
+    EXPECT_TRUE(manager.ground_ascent_anchor_valid_);
+    EXPECT_TRUE(manager.ground_ascent_target_.isApprox(target));
+    manager.recordPublishedTrajectoryHeight();
+    EXPECT_FALSE(manager.ground_ascent_anchor_valid_);
+    EXPECT_FALSE(manager.groundAscentXYCorrectionNeeded(end));
+    EXPECT_DOUBLE_EQ(manager.ground_ascent_target_.z(),target.z());
+    Vector3d elevated=end; elevated.z()=target.z();
+    EXPECT_TRUE(manager.isKnownSafeGroundAscentPath(end,elevated));
+    manager.latest_odom_height_=end.z();
+    ASSERT_TRUE(manager.buildGroundAscentPlan(end,zero,zero));
+    EXPECT_TRUE(manager.currentPlanIsGroundAscent());
+    EXPECT_TRUE(manager.ground_ascent_anchor_valid_);
+    EXPECT_LT((manager.ground_ascent_anchor_-end).norm(),1e-6);
+    auto& curve=planner.local_data_.position_traj_;
+    EXPECT_NEAR(curve.evaluateDeBoorT(curve.getTimeSum()).z(),target.z(),1e-5);
+    EXPECT_TRUE(planner.isTrajectorySafe());
   }
 
   static void runCruiseRecoveryTolerance() {
@@ -4823,6 +4893,15 @@ TEST(GroundAscentXY, HorizontalCorrectionIsNotInterruptedByAscentCheck) {
 }
 TEST(GroundAscentXY, OrdinaryTrajectoryKeepsExistingTrackingRules) {
   fast_planner::TurnEscapeTest::runGroundAscentXY(4);
+}
+TEST(GroundAscentXY, ActiveObstacleRetreatIsExemptFromOldAscentAnchor) {
+  fast_planner::TurnEscapeTest::runGroundAscentXY(5);
+}
+TEST(GroundAscentXY, BlockedAscentRetreatsBeyondShortStepThenClimbs) {
+  fast_planner::TurnEscapeTest::runBlockedAscentRetreat(false);
+}
+TEST(GroundAscentXY, BlockedAscentCannotRetreatThroughRearObstacle) {
+  fast_planner::TurnEscapeTest::runBlockedAscentRetreat(true);
 }
 TEST(FappLocalStep, RemoteStaticObstacleAllowsStationaryDescentThenPartialCrossing) {
   fast_planner::TurnEscapeTest::runLocalFappStep(0);

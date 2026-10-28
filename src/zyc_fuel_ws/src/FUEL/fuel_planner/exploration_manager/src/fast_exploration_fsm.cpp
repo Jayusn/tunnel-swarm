@@ -1198,7 +1198,8 @@ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
                               active_traj_braked_))
     return;
 
-  if (active_ground_ascent_ &&
+  // 主动避障回退拥有平移目标，不能被原地升高的旧XY锚点拉回去。
+  if (active_ground_ascent_ && !active_escape_step_ &&
       expl_manager_->groundAscentXYCorrectionNeeded(fd_->odom_pos_)) {
     auto& ascent = active_traj_.position_traj_;
     const double rise = ascent.evaluateDeBoorT(active_traj_.duration_).z() -

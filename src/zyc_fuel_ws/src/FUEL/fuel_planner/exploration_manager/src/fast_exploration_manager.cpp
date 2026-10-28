@@ -39,8 +39,8 @@ namespace fast_planner {
 namespace {
 // 远处悬挂物只用于预见；进入半米接近段后才刹停并开始固定 XY 下穿。
 constexpr double kUnderpassStartDistance = 0.50;
-// 越障上升沿用原6cm跟踪余量，与普通巡航恢复的到高容差分开。
-constexpr double kObstacleAscentTrackingMargin = 0.06;
+// 越障目标在顶部20cm实际净空之外留10cm跟踪余量，不改变默认巡航高度。
+constexpr double kObstacleAscentTrackingMargin = 0.10;
 }
 // SECTION interfaces for setup and query
 
@@ -54,6 +54,14 @@ FastExplorationManager::~FastExplorationManager() {
 }
 
 void FastExplorationManager::recordPublishedTrajectoryHeight() {
+  if (escape_step_plan_ && obstacleAscentPending()) {
+    // 只有实际发布的避障退让才能解除旧XY；候选审核失败仍保留原地升高锚点。
+    auto& trajectory = planner_manager_->local_data_.position_traj_;
+    ground_ascent_target_.head<2>() =
+        trajectory.evaluateDeBoorT(trajectory.getTimeSum()).head<2>();
+    ground_ascent_anchor_valid_ = false;
+    ground_ascent_still_since_ = ros::Time(0);
+  }
   if (manual_fapp_active_ && fapp_local_step_pending_ &&
       std::isfinite(pending_reference_height_))
     manual_fapp_hold_height_ = pending_reference_height_;
@@ -3259,8 +3267,20 @@ bool FastExplorationManager::buildMissionForwardFallback(const Vector3d& pos, do
 bool FastExplorationManager::planFailedMotionEscape(
     const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, const Vector3d& yaw) {
   if (external_selection_only_ || manual_path_enabled_ || turn_in_place_session_active_ ||
-      ground_ascent_active_ || suspended_underpass_active_ ||
+      (ground_ascent_active_ && !obstacleAscentPending()) || suspended_underpass_active_ ||
       low_probe_phase_ != vertical_detour::LowProbePhase::IDLE) return false;
+  // 等待刹停或普通漂移仍交给原地升高/回正。只有升高或回正连接被障碍
+  // 挡住时，才豁免旧XY并寻找能完成升高的后方空间。
+  if (obstacleAscentPending()) {
+    if (!vel.allFinite() || vel.norm() > ground_ascent_max_stationary_speed_) return false;
+    Vector3d target = ground_ascent_target_;
+    const bool correct_xy = groundAscentXYCorrectionNeeded(pos);
+    if (correct_xy) target.z() = pos.z();
+    const bool usable = correct_xy
+        ? isKnownSafeHorizontalCorridor(pos,target-pos,(target-pos).head<2>().norm())
+        : isKnownSafeGroundAscentPath(pos,target);
+    if (usable && planner_manager_->isFappPathSafe({pos,target})) return false;
+  }
   return planInflationHistoryEscape(pos,vel,acc,yaw,true);
 }
 
@@ -3287,6 +3307,7 @@ bool FastExplorationManager::planInflationHistoryEscape(
   const bool controlled_start = planner_manager_->isControlledEscapePosition(pos);
   const bool turn_clearance_needed = turn_in_place_session_active_ &&
       !planner_manager_->isTurnPositionSafe(pos);
+  const bool ascent_clearance_needed = obstacleAscentPending();
   if (!inflation_history_escape_enabled_ || recovery_odom_history_.size() < 2 ||
       (!controlled_start && !(after_failure && planner_manager_->isPositionSafe(pos))))
     return false;
@@ -3345,9 +3366,14 @@ bool FastExplorationManager::planInflationHistoryEscape(
         previous_clearance = std::max(previous_clearance, clearance);
         checked.push_back(point);
         traveled += advance;
+        Vector3d ascent_target = point;
+        ascent_target.z() = ground_ascent_target_.z();
         const bool fully_clear =
             !planner_manager_->isPositionInflated(point) && contacts == 0 &&
-            (!turn_clearance_needed || planner_manager_->isTurnPositionSafe(point));
+            (!turn_clearance_needed || planner_manager_->isTurnPositionSafe(point)) &&
+            (!ascent_clearance_needed ||
+             (isKnownSafeGroundAscentPath(point,ascent_target) &&
+              planner_manager_->isFappPathSafe({point,ascent_target})));
         if (fully_clear) {
           if (!reached_clear) {
             reached_clear = true;
@@ -3367,6 +3393,8 @@ bool FastExplorationManager::planInflationHistoryEscape(
         break;
     }
     if (traveled < 0.03) return;
+    // 为上升腾空间时不能退20cm就再次尝试同一根受阻柱；终点必须已能补到完整目标高度。
+    if (ascent_clearance_needed && !reached_clear) return;
     // 未完全腾出旋转空间时，仍允许沿原有净空改善规则分步退出。
     if (!reached_clear && (sdf_map_->getOccupancy(checked.back()) != SDFMap::FREE ||
         !(previous_contacts < start_contacts || previous_clearance > start_clearance+0.02))) return;
@@ -3402,19 +3430,20 @@ bool FastExplorationManager::planInflationHistoryEscape(
         planner_manager_->isPositionInflated(pos+step_distance*direction);
   };
   const bool front_blocked=blocked(forward), rear_blocked=blocked(-forward);
-  if (!controlled_start && !front_blocked && !rear_blocked && !turn_clearance_needed)
+  if (!controlled_start && !front_blocked && !rear_blocked &&
+      !turn_clearance_needed && !ascent_clearance_needed)
     return false;
-  if (!front_blocked) {
+  if (!front_blocked && !ascent_clearance_needed) {
     validateAndTruncate(inflation_escape::buildDirectionalPath(pos,forward,max_distance,sample_step),
                         false,turn_clearance_needed ? 1 : 0,"corridor-forward-step",step_distance);
     validateAndTruncate(inflation_escape::buildDirectionalPath(pos,forward,max_distance,sample_step),
                         false,turn_clearance_needed ? 1 : 0,"corridor-forward-exit",max_distance);
   }
-  if (front_blocked || turn_clearance_needed) {
+  if (front_blocked || turn_clearance_needed || ascent_clearance_needed) {
     auto history=inflation_escape::buildBackwardHistoryPath(
         pos,recovery_odom_history_,max_distance,recovery_history_spacing_);
     // 动态穿越保持本次实际高度，不沿历史高度下降/抬升。
-    if (manual_fapp_active_) for (auto& p : history) p.z()=pos.z();
+    if (manual_fapp_active_ || ascent_clearance_needed) for (auto& p : history) p.z()=pos.z();
     validateAndTruncate(history,true,0,"history-backtrack-step",step_distance);
     validateAndTruncate(history,true,0,"history-backtrack",max_distance);
   }
@@ -3443,7 +3472,7 @@ bool FastExplorationManager::planInflationHistoryEscape(
   ROS_WARN_THROTTLE(0.5,"[inflation_history_escape] front_blocked=%d rear_blocked=%d "
       "candidates=%zu; prefer %s, then mapped side space.",
       front_blocked,rear_blocked,candidates.size(),
-      (front_blocked || turn_clearance_needed)?"history backtrack":"forward step");
+      (front_blocked || turn_clearance_needed || ascent_clearance_needed)?"history backtrack":"forward step");
   if (candidates.empty()) {
     ROS_WARN_THROTTLE(0.5,
                       "[inflation_history_escape] no improving forward/history/mapped-side step "
@@ -3485,6 +3514,12 @@ bool FastExplorationManager::planInflationHistoryEscape(
     has_last_requested_goal_ = true;
     // 脱障保持当前朝向，恒定零航向也使用确定性样条，避免普通优化器退化。
     if (!planner_manager_->planYawTurnInPlace(yaw,yaw[0])) continue;
+    if (ascent_clearance_needed) {
+      ground_ascent_plan_ = false;
+      pending_reference_height_ = std::numeric_limits<double>::quiet_NaN();
+      ROS_WARN("[upper_clearance] retreat %.2fm to validated ascent column; "
+               "retain full height target %.2fm.",candidate.length,ground_ascent_target_.z());
+    }
     escape_step_plan_ = true;
     ROS_ERROR("[inflation_history_escape] publish %s %s escape %.2fm "
               "to (%.2f %.2f %.2f), yaw held at %.1fdeg, start_contacts=%d.",
