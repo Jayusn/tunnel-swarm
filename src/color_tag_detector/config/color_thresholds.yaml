@@ -164,9 +164,9 @@ switch_score_margin: 0.18
 lost_keep_frames: 18
 
 stable_window: 12
-stable_min_count: 8
-max_pixel_jump: 50
-max_depth_jump: 0.25
+stable_min_count: 3
+max_pixel_jump: 100
+max_depth_jump: 0.35
 # 同色轮廓面积突变通常意味着切换到了另一个物体，不能继承稳定计数。
 max_area_ratio_jump: 2.0
 
