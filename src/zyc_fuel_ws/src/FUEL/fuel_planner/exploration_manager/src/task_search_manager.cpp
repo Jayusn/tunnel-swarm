@@ -25,6 +25,16 @@ namespace fast_planner {
 void TaskSearchManager::initialize(ros::NodeHandle& nh) {
   nh.param("mission/task_search/enabled", enabled_, true);
   nh.param("mission/task_search/curve_heading/enabled", curve_heading_enabled_, false);
+  nh.param("mission/task_search/return_straight/enabled", return_straight_enabled_, false);
+  nh.param("mission/task_search/manual_exit/enabled", manual_exit_enabled_, false);
+  nh.param("mission/task_search/manual_exit/x", manual_exit_center_.x(), 1.8);
+  nh.param("mission/task_search/manual_exit/y", manual_exit_center_.y(), -3.0);
+  nh.param("mission/task_search/manual_exit/z", manual_exit_center_.z(), 0.6);
+  double manual_exit_yaw_deg = 180.0;
+  nh.param("mission/task_search/manual_exit/yaw_deg", manual_exit_yaw_deg, 180.0);
+  manual_exit_yaw_ = manual_exit_yaw_deg * M_PI / 180.0;
+  nh.param("mission/task_search/manual_exit/half_width", manual_exit_half_width_, 0.75);
+  nh.param("mission/task_search/manual_exit/half_height", manual_exit_half_height_, 0.75);
   nh.param("fsm/use_diff_for_fuel_exploration",
            hybrid_constraints_enabled_, false);
   // 2026-07-16: false只关闭三类识别对任务状态切换的阻塞，不删除话题订阅和后续接入接口。
@@ -471,6 +481,8 @@ void TaskSearchManager::updateRobotPose(const Eigen::Vector3d& pos, double yaw) 
     latest_robot_pose_valid_ = true;
     ++latest_robot_pose_sequence_;
   }
+  if (manual_exit_enabled_ && exit_portal_locked_)
+    publishFinalExitPose(ros::Time::now());
   if (segment_direction_.norm() > 1e-3) {
     const double progress =
         (pos.head<2>() - segment_origin_).dot(segment_direction_.normalized());
@@ -671,7 +683,8 @@ Eigen::Vector2d TaskSearchManager::turnDetectionDirection() const {
 }
 
 void TaskSearchManager::updateCurveHeading() {
-  if (!curve_heading_enabled_ || !sdf_map_ || !corridor_entry_crossed_ ||
+  if ((return_straight_active_ && corridorFlightLimitsActive()) ||
+      !curve_heading_enabled_ || !sdf_map_ || !corridor_entry_crossed_ ||
       entry_forward::needsAdvance((latest_robot_pos_-corridor_origin_).dot(corridor_dir_)) ||
       mission_stage_ != SEARCH_CORRIDOR ||
       transition_active_ || turn_yaw_follow_latch_.active()) {
@@ -761,6 +774,11 @@ void TaskSearchManager::updateCurveHeading() {
 
 bool TaskSearchManager::corridorCurveYaw(
     const Eigen::Vector3d& position,double& yaw) const {
+  if (return_straight_active_ && corridorFlightLimitsActive()) {
+    yaw = manual_exit_enabled_ ? manual_exit_yaw_ :
+        std::atan2(-corridor_dir_.y(), -corridor_dir_.x());
+    return true;
+  }
   if (!curve_heading_active_) return false;
   const double forward=(position.head<2>()-curve_origin_.head<2>()).dot(curve_forward_);
   // 只使用已拟合的前方墙体范围；横向绕障位移不改变通道朝向。
@@ -1135,6 +1153,8 @@ bool TaskSearchManager::inferOccupancyTurnDirection(
     bool require_current_turn_site) const {
   forward_free_length = 0.0;
   turn_free_length = 0.0;
+  // 已确认的U形出口直道不因局部避障空隙再次改写方向。
+  if (return_straight_active_ && corridorFlightLimitsActive()) return false;
   if (!recovery_occupancy_turn_enabled_ || !sdf_map_ || visited_positions_.empty() ||
       travel_direction.head<2>().norm() < 1e-3)
     return false;
@@ -1605,6 +1625,28 @@ void TaskSearchManager::commitCorridorTurn(
             std::atan2(outgoing.y(), outgoing.x()) * 180.0 / M_PI);
 }
 
+bool TaskSearchManager::inferReturnStraightDirection(Eigen::Vector3d& direction) const {
+  if (!return_straight_enabled_ || !corridorFlightLimitsActive() || !sdf_map_ ||
+      !latest_robot_pose_valid_ || entryForwardPhaseActive()) return false;
+  direction = -corridor_dir_;
+  if (manual_exit_enabled_)
+    direction = Eigen::Vector3d(std::cos(manual_exit_yaw_), std::sin(manual_exit_yaw_), 0.0);
+  // 已过U形弯的横向段才检查入口反向，不能在入口或第一段提前掉头。
+  if (turnDetectionDirection().dot(direction.head<2>()) <= 1e-6) return false;
+  if (turnDirectionRetracesVisitedRoute(latest_robot_pos_.head<2>(), direction.head<2>()))
+    return false;
+  // 精确反向不受15度候选格或最小转角约束；仍需从实机位置连续容纳机体。
+  // 沿用普通通道候选的观察长度，不要求先撞到旧方向的前墙。
+  const double length = std::min(1.0, recovery_turn_probe_length_);
+  if (length <= 0.0) return false;
+  const int samples = std::max(1, static_cast<int>(std::ceil(
+      length / std::min(0.05, sdf_map_->getResolution()))));
+  for (int i = 0; i <= samples; ++i)
+    if (!mapExitFootprintFree(latest_robot_pos_ + (length*i/samples)*direction))
+      return false;
+  return true;
+}
+
 bool TaskSearchManager::mappedCorridorDirection(
     double cur_yaw, Eigen::Vector3d& direction, bool check_entry_forward_phase,
     bool require_observed_yaw) {
@@ -1619,6 +1661,7 @@ bool TaskSearchManager::mappedCorridorDirection(
     direction = Eigen::Vector3d(latched_direction.x(), latched_direction.y(), 0.0);
     return true;
   }
+  if (return_straight_active_ && corridorFlightLimitsActive()) return false;
 
   // 已确认的转弯尚未沿新通道离开转角时，不得把同一片转角地图再次解释成
   // 另一条新通道。保持刚提交的通道方向，走出既有0.60m过渡区后再恢复检测。
@@ -1633,6 +1676,21 @@ bool TaskSearchManager::mappedCorridorDirection(
   }
 
   updateCurveHeading();
+  if (inferReturnStraightDirection(direction)) {
+    if (require_observed_yaw && task_search::corridorYawCorrectionNeeded(
+            direction.head<2>(), cur_yaw,
+            recovery_turn_yaw_release_angle_deg_ * M_PI / 180.0)) return false;
+    if (!confirmCorridorTurnEvidence(direction)) return false;
+    commitCorridorTurn(direction);
+    return_straight_active_ = true;
+    curve_heading_active_ = false;
+    clearActiveGoal();
+    ROS_WARN("[return_straight] mapped exit leg confirmed at (%.2f,%.2f); "
+             "hold entry-reverse yaw=%.1fdeg through local avoidance.",
+             latest_robot_pos_.x(), latest_robot_pos_.y(),
+             std::atan2(direction.y(), direction.x()) * 180.0 / M_PI);
+    return true;
+  }
   if (curve_heading_active_) {
     // 渐变双墙轮廓只更新滚动方向，不锁存一次离散转弯；直角弯仍走下方原流程。
     clearPendingTurnEvidence();
@@ -2141,17 +2199,19 @@ bool TaskSearchManager::landingColumnSafe(const Eigen::Vector3d& marker,
 // 2026-07-23: 只在当前里程计高度上下各0.40m内投影占据，地图和里程计共同漂移时仍保持相对一致；
 // 不再用固定世界高度找“门柱”，同时避开明显低于机体的地面和明显高于机体的顶棚。
 bool TaskSearchManager::mapRelativeColumnOccupied(const Eigen::Vector3d& point,
-                                                  double reference_z) const {
+                                                  double reference_z, bool exclude_below_body) const {
   if (!sdf_map_) return false;
   Eigen::Vector3d box_min, box_max;
   sdf_map_->getBox(box_min, box_max);
-  const double min_z = std::max(box_min.z() + 0.05, reference_z - 0.40);
+  const double min_z = std::max(box_min.z() + 0.05, reference_z -
+      (exclude_below_body ? exit_footprint_half_height_ : 0.40));
   const double max_z = std::min(box_max.z() - 0.05, reference_z + 0.40);
   if (max_z < min_z) return false;
   const double xy_offsets[][2] = {{0.0, 0.0}, {0.06, 0.0}, {-0.06, 0.0},
                                   {0.0, 0.06}, {0.0, -0.06}};
   int occupied_layers = 0;
-  for (double z = min_z; z <= max_z + 1e-6; z += 0.10) {
+  const double step = exclude_below_body ? std::min(0.10, sdf_map_->getResolution()) : 0.10;
+  for (double z = min_z; z <= max_z + 1e-6; z += step) {
     bool occupied = false;
     for (const auto& offset : xy_offsets) {
       Eigen::Vector3d probe(point.x() + offset[0], point.y() + offset[1], z);
@@ -2194,7 +2254,10 @@ bool TaskSearchManager::detectLocalMapExit(const Eigen::Vector3d& cur_pos,
       return point;
     };
     auto occupied = [&](double along, double across) {
-      return mapRelativeColumnOccupied(pointAt(along, across), cur_pos.z());
+      // 排除机体下方的地板，保留上方支架，不能要求透明侧板在机体高度形成连续墙面。
+      // 按地图分辨率采样，避免漏掉单层横梁；转弯轮廓和机体路径检查不变。
+      return mapRelativeColumnOccupied(pointAt(along, across), cur_pos.z(),
+                                       true);
     };
     auto known_free = [&](double along, double across) {
       Eigen::Vector3d point = pointAt(along, across);
@@ -2458,6 +2521,66 @@ bool TaskSearchManager::recordExitEvidence(const OpenExitResult& detection,
   return exit_candidate_confirmed_;
 }
 
+bool TaskSearchManager::insideManualExitAperture(const Eigen::Vector3d& position) const {
+  const Eigen::Vector3d offset = position - manual_exit_center_;
+  const Eigen::Vector2d lateral(-std::sin(manual_exit_yaw_), std::cos(manual_exit_yaw_));
+  return std::fabs(offset.head<2>().dot(lateral)) <= manual_exit_half_width_ + 1e-6 &&
+         std::fabs(offset.z()) <= manual_exit_half_height_ + 1e-6;
+}
+
+void TaskSearchManager::updateManualExitCandidate(const Eigen::Vector3d& position) {
+  const Eigen::Vector2d outward(std::cos(manual_exit_yaw_), std::sin(manual_exit_yaw_));
+  const double side = (position - manual_exit_center_).head<2>().dot(outward);
+  // 只在指定矩形门附近接管，其他位置的同一平面不算出口。
+  if (!insideManualExitAperture(position) || side < -exit_confirmation_max_distance_ ||
+      side > exit_cross_confirm_distance_ || stableProgressDirection().dot(outward) <= 0.0)
+    return;
+  Eigen::Vector3d inside = manual_exit_center_;
+  inside.head<2>() -= exit_standoff_ * outward;
+  if (!mapExitFootprintFree(manual_exit_center_) || !mapExitFootprintFree(inside)) return;
+  exit_candidate_ = pending_exit_candidate_ = inside;
+  exit_portal_center_ = pending_exit_portal_center_ = manual_exit_center_;
+  exit_outward_direction_ = pending_exit_outward_direction_ = outward;
+  exit_candidate_hits_ = exit_confirmation_count_;
+  exit_candidate_confirmed_ = exit_portal_outside_verified_ =
+      pending_exit_portal_outside_verified_ = true;
+  if (exit_auto_crossing_enabled_ && (!require_stage2_detections_ || allStage2TargetsFound())) {
+    if (exit_crossing_deferred_) lockExitPortal(ros::Time::now());
+    else beginExitCrossing(ros::Time::now());
+  }
+  publishSearchState();
+}
+
+void TaskSearchManager::publishFinalExitPose(const ros::Time& stamp) {
+  if (final_exit_pose_published_) return;
+  if (manual_exit_enabled_) {
+    Eigen::Vector3d actual;
+    {
+      std::lock_guard<std::mutex> lock(body_cloud_mutex_);
+      if (!latest_robot_pose_valid_) return;
+      actual = latest_robot_pos_;
+    }
+    if (!insideManualExitAperture(actual) ||
+        std::fabs((actual - exit_portal_center_).head<2>().dot(exit_outward_direction_)) >
+            exit_portal_arrive_distance_) return;
+  }
+  geometry_msgs::PoseStamped pose;
+  pose.header.stamp = stamp;
+  pose.header.frame_id = world_frame_;
+  pose.pose.position.x = exit_portal_center_.x();
+  pose.pose.position.y = exit_portal_center_.y();
+  pose.pose.position.z = exit_portal_center_.z();
+  const double yaw = std::atan2(exit_outward_direction_.y(), exit_outward_direction_.x());
+  pose.pose.orientation.w = std::cos(0.5 * yaw);
+  pose.pose.orientation.z = std::sin(0.5 * yaw);
+  if (final_exit_pose_pub_) final_exit_pose_pub_.publish(pose);
+  final_exit_pose_published_ = true;
+  ROS_WARN("[exit_mission] final exit shared%s at (%.2f,%.2f,%.2f), yaw=%.1fdeg.",
+           manual_exit_enabled_ ? " after actual portal arrival" : "",
+           exit_portal_center_.x(), exit_portal_center_.y(), exit_portal_center_.z(),
+           yaw*180.0/M_PI);
+}
+
 void TaskSearchManager::lockExitPortal(const ros::Time& now) {
   exit_portal_locked_ = true;
   active_goal_valid_ = false;
@@ -2470,7 +2593,7 @@ void TaskSearchManager::lockExitPortal(const ros::Time& now) {
   const double yaw = std::atan2(exit_outward_direction_.y(), exit_outward_direction_.x());
   pose.pose.orientation.w = std::cos(0.5 * yaw);
   pose.pose.orientation.z = std::sin(0.5 * yaw);
-  if (final_exit_pose_pub_) final_exit_pose_pub_.publish(pose);
+  publishFinalExitPose(now);
   if (exit_pose_pub_) exit_pose_pub_.publish(pose);
   ROS_ERROR("[exit_mission] FINAL OPEN EXIT LOCKED center=(%.2f,%.2f) yaw=%.1fdeg.",
             exit_portal_center_.x(), exit_portal_center_.y(), yaw * 180.0 / M_PI);
@@ -2509,6 +2632,10 @@ void TaskSearchManager::updateExitCandidate(const Eigen::Vector3d& cur_pos) {
   if (rc_land_active_ || !enabled_ || !exit_detection_enabled_ || !sdf_map_ ||
       !corridor_frame_received_ || !corridor_entry_crossed_ ||
       mission_stage_ != SEARCH_CORRIDOR || exit_portal_locked_) return;
+  if (manual_exit_enabled_) {
+    updateManualExitCandidate(cur_pos);
+    return;
+  }
   // 复用现有转弯流程，过弯期间不能锁定出口。
   if (transition_active_ || pending_turn_confirmations_ > 0 || turn_yaw_follow_latch_.active()) {
     ROS_INFO_THROTTLE(1.0,
@@ -2595,7 +2722,7 @@ bool TaskSearchManager::buildStage3Goal(const Eigen::Vector3d& cur_pos, double c
     // 外部Diff必须到锁定门心附近才接管；越过门平面但偏离门心时仍返回门心。
     Eigen::Vector3d approach =
         external_landing_planner_ ? exit_portal_center_ : exit_candidate_;
-    if (external_landing_planner_) approach.z() = cruise_height_;
+    if (external_landing_planner_ && !manual_exit_enabled_) approach.z() = cruise_height_;
     const double arrive_distance =
         external_landing_planner_ ? exit_portal_arrive_distance_ : exit_arrive_distance_;
     Eigen::Vector3d arrival_pos = cur_pos;
@@ -2605,7 +2732,7 @@ bool TaskSearchManager::buildStage3Goal(const Eigen::Vector3d& cur_pos, double c
       if (latest_robot_pose_valid_) arrival_pos = latest_robot_pos_;
     }
     const bool height_ready = !external_landing_planner_ ||
-        std::fabs(arrival_pos.z() - cruise_height_) <= exit_portal_arrive_distance_;
+        std::fabs(arrival_pos.z() - approach.z()) <= exit_portal_arrive_distance_;
     if (height_ready &&
         ((arrival_pos.head<2>() - approach.head<2>()).norm() <= arrive_distance ||
          (!external_landing_planner_ && signed_side >= exit_cross_confirm_distance_))) {
@@ -2632,8 +2759,8 @@ bool TaskSearchManager::buildStage3Goal(const Eigen::Vector3d& cur_pos, double c
         ROS_WARN_THROTTLE(1.0, "[exit_mission] verified exit approach temporarily blocked.");
         return false;
       }
-      // 回到门心只修正位置，不因门法向或倒退方向而改变当前机头朝向。
-      goal_yaw = external_landing_planner_ ? cur_yaw :
+      // 自动出口接近保留当前机头；手动出口按用户设置的门朝向接近。
+      goal_yaw = external_landing_planner_ && !manual_exit_enabled_ ? cur_yaw :
           std::atan2(exit_outward_direction_.y(), exit_outward_direction_.x());
       return true;
     }

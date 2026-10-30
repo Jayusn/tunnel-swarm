@@ -129,6 +129,10 @@ public:
   }
 
 private:
+  bool inferReturnStraightDirection(Eigen::Vector3d& direction) const;
+  bool insideManualExitAperture(const Eigen::Vector3d& position) const;
+  void updateManualExitCandidate(const Eigen::Vector3d& position);
+  void publishFinalExitPose(const ros::Time& stamp);
   bool exit_crossing_deferred_{false};
   friend class TurnEscapeTest;
   friend class TaskSearchManagerTest;
@@ -174,7 +178,8 @@ private:
   void lockExitPortal(const ros::Time& now);
   void beginExitCrossing(const ros::Time& now);
   bool mapExitFootprintFree(const Eigen::Vector3d& point) const;
-  bool mapRelativeColumnOccupied(const Eigen::Vector3d& point, double reference_z) const;
+  bool mapRelativeColumnOccupied(const Eigen::Vector3d& point, double reference_z,
+                                 bool exclude_below_body = false) const;
   // 2026-07-21: 穿门只发布已成为FREE的短滚动目标，UNKNOWN只用于证明开口延伸，不能直接飞入。
   bool buildSafeExitCrossingGoal(const Eigen::Vector3d& cur_pos, Eigen::Vector3d& goal) const;
   // 2026-07-22: 出口候选接近确认且普通frontier耗尽时，发布门内局部补扫点，避免停在门口无法补齐地图证据。
@@ -243,6 +248,12 @@ private:
   Eigen::Vector2d turn_detection_direction_{0.0, 0.0};
   bool curve_heading_enabled_{false};
   bool curve_heading_active_{false};
+  bool return_straight_enabled_{false};
+  bool return_straight_active_{false};
+  bool manual_exit_enabled_{false}, final_exit_pose_published_{false};
+  Eigen::Vector3d manual_exit_center_{1.8, -3.0, 0.6};
+  double manual_exit_yaw_{M_PI};
+  double manual_exit_half_width_{0.75}, manual_exit_half_height_{0.75};
   std::uint64_t curve_map_sequence_{0};
   bool curve_sample_valid_{false};
   Eigen::Vector3d curve_origin_{0.0, 0.0, 0.0};

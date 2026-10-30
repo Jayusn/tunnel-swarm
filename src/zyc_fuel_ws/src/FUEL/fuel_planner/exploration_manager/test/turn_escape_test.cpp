@@ -80,6 +80,157 @@ class TurnEscapeTest {
     manager.task_search_manager_->initialize(nh);
   }
 public:
+  static void runReturnStraight(int mode) {
+    ros::NodeHandle nh("~return_straight_"+std::to_string(mode));
+    FastExplorationManager manager; initialize(nh,manager);
+    auto& task=*manager.task_search_manager_;
+    auto& map=*manager.sdf_map_;
+    task.setMap(manager.sdf_map_);
+    task.exit_detection_enabled_=false;
+    task.return_straight_enabled_=mode!=1;
+    task.corridor_width_=1.3;
+    const double entry_yaw=mode==6 ? M_PI/3.0 : 0.0;
+    const Vector3d entry(std::cos(entry_yaw),std::sin(entry_yaw),0);
+    const Vector3d start(0,0,.6);
+    task.setCorridorFrame(start-3*entry,entry);
+    task.corridor_entry_crossed_=true;
+    const double yaw=entry_yaw+(mode==2 ? -M_PI/3.0 : (mode==5 ? -165.0 : -135.0)*M_PI/180.0);
+    task.turn_detection_direction_=Eigen::Vector2d(std::cos(yaw),std::sin(yaw));
+    task.stable_progress_direction_=task.turn_detection_direction_;
+    task.width_origin_=start.head<2>();
+    task.width_direction_=task.turn_detection_direction_;
+    task.segment_origin_=start.head<2>();
+    task.segment_direction_=task.turn_detection_direction_;
+    std::fill(map.md_->occupancy_buffer_.begin(),map.md_->occupancy_buffer_.end(),map.mp_->clamp_min_log_);
+    std::fill(map.md_->occupancy_buffer_inflate_.begin(),map.md_->occupancy_buffer_inflate_.end(),0);
+    task.updateRobotPose(start,yaw);
+    task.visited_positions_={start};
+    if (mode==3 || mode==4) {
+      Eigen::Vector3i id; map.posToIndex(start-.5*entry,id);
+      map.md_->occupancy_buffer_[map.toAddress(id)]=mode==3 ? map.mp_->clamp_max_log_
+          : map.mp_->clamp_min_log_-map.mp_->unknown_flag_;
+    }
+    Vector3d direction;
+    if (mode>=1 && mode<=4) {
+      EXPECT_FALSE(task.inferReturnStraightDirection(direction));
+      EXPECT_FALSE(task.return_straight_active_);
+      return;
+    }
+    ASSERT_TRUE(manager.requestMappedTurn(start,yaw));
+    EXPECT_TRUE(task.return_straight_active_);
+    EXPECT_TRUE(task.turnYawAlignmentPending());
+    EXPECT_TRUE(task.turnDetectionDirection().isApprox(-entry.head<2>()));
+    task.completeTurnYawAlignment();
+    task.updateRobotPose(start-.7*entry,yaw);
+    EXPECT_FALSE(task.mappedCorridorDirection(yaw,direction));
+    double commanded_yaw=0.0;
+    ASSERT_TRUE(task.corridorCurveYaw(start,commanded_yaw));
+    EXPECT_NEAR(std::cos(commanded_yaw),-entry.x(),1e-6);
+    EXPECT_NEAR(std::sin(commanded_yaw),-entry.y(),1e-6);
+    double old_free,branch_free;
+    EXPECT_FALSE(task.inferOccupancyTurnDirection(-entry,direction,old_free,branch_free));
+    task.mission_stage_=TaskSearchManager::SEARCH_OUTSIDE_LANDING;
+    EXPECT_FALSE(task.corridorCurveYaw(start,commanded_yaw));
+  }
+
+  static void runManualExit(int mode) {
+    ros::NodeHandle nh("~manual_exit_"+std::to_string(mode));
+    nh.setParam("mission/task_search/exit/portal_arrive_distance",.1);
+    FastExplorationManager manager; initialize(nh,manager);
+    auto& task=*manager.task_search_manager_;
+    auto& map=*manager.sdf_map_;
+    task.setMap(manager.sdf_map_);
+    task.manual_exit_enabled_=mode!=1;
+    task.manual_exit_center_=Vector3d(0,0,.6);
+    task.manual_exit_yaw_=M_PI;
+    task.require_stage2_detections_=false;
+    task.external_landing_planner_=true;
+    task.corridor_width_=1.3;
+    task.setCorridorFrame(Vector3d(-3,0,.6),Vector3d::UnitX());
+    task.corridor_entry_crossed_=true;
+    task.turn_detection_direction_=task.stable_progress_direction_=-Eigen::Vector2d::UnitX();
+    std::fill(map.md_->occupancy_buffer_.begin(),map.md_->occupancy_buffer_.end(),map.mp_->clamp_min_log_);
+    std::fill(map.md_->occupancy_buffer_inflate_.begin(),map.md_->occupancy_buffer_inflate_.end(),0);
+    if (mode==2) {
+      for (const auto& p : {Vector3d(.5,.8,.6), Vector3d(.5,0,1.4), Vector3d(1.2,0,.6)}) {
+        task.updateRobotPose(p,M_PI);
+        EXPECT_FALSE(task.exit_portal_locked_);
+        EXPECT_FALSE(task.final_exit_pose_published_);
+      }
+      return;
+    }
+    if (mode==3) {
+      Eigen::Vector3i id;map.posToIndex(task.manual_exit_center_,id);
+      map.md_->occupancy_buffer_[map.toAddress(id)]=map.mp_->clamp_max_log_;
+    }
+    task.updateRobotPose(Vector3d(.8,0,.6),M_PI);
+    if (mode==1 || mode==3) {
+      EXPECT_FALSE(task.exit_portal_locked_);
+      EXPECT_EQ(task.mission_stage_,TaskSearchManager::SEARCH_CORRIDOR);
+      EXPECT_FALSE(task.final_exit_pose_published_);
+      return;
+    }
+    ASSERT_TRUE(task.exit_portal_locked_);
+    EXPECT_TRUE(task.exit_portal_center_.isApprox(task.manual_exit_center_));
+    EXPECT_FALSE(task.final_exit_pose_published_);
+    Vector3d goal;double yaw;
+    ASSERT_TRUE(task.buildStage3Goal(Vector3d(0,0,.6),0.7,false,goal,yaw));
+    EXPECT_TRUE(goal.isApprox(task.manual_exit_center_));
+    EXPECT_NEAR(std::fabs(yaw),M_PI,1e-6);
+    EXPECT_FALSE(task.final_exit_pose_published_); // 预测起点到门不等于实机到门。
+    task.updateRobotPose(Vector3d(.2,0,.6),M_PI);
+    EXPECT_FALSE(task.final_exit_pose_published_);
+    task.updateRobotPose(Vector3d(.05,0,.6),M_PI);
+    EXPECT_TRUE(task.final_exit_pose_published_);
+    EXPECT_FALSE(task.buildStage3Goal(Vector3d(.05,0,.6),M_PI,false,goal,yaw));
+    EXPECT_EQ(task.mission_stage_,TaskSearchManager::SEARCH_OUTSIDE_LANDING);
+  }
+
+  static void runLowExit(int mode) {
+    ros::NodeHandle nh("~low_exit_"+std::to_string(mode));
+    FastExplorationManager manager; initialize(nh,manager,true,true);
+    auto& task=*manager.task_search_manager_;
+    auto& map=*manager.sdf_map_;
+    task.setMap(manager.sdf_map_);
+    task.exit_outside_length_=.60;
+    task.exit_footprint_extra_radius_=.20;
+    std::fill(map.md_->occupancy_buffer_.begin(),map.md_->occupancy_buffer_.end(),map.mp_->clamp_min_log_);
+    std::fill(map.md_->occupancy_buffer_inflate_.begin(),map.md_->occupancy_buffer_inflate_.end(),0);
+    auto mark=[&](double x,double y,double z,double value) {
+      Eigen::Vector3i id;map.posToIndex(Vector3d(x,y,z),id);
+      map.md_->occupancy_buffer_[map.toAddress(id)]=value;
+    };
+    for (double x=-1.8;x<1.8;x+=.05) {
+      // 地板在机体范围以下，旧的上下0.4m投影却会把整片通道填成占据。
+      if (x<.5)
+        for (double y=-1.8;y<1.8;y+=.05) mark(x,y,-.075,map.mp_->clamp_max_log_);
+      if (mode!=4 && (x<.5 || mode==5 || (mode==6 && x>.8))) {
+        // 透明侧板只有高于飞行高度的细横梁，不要求机体高度有连续实体墙。
+        for (int side : {-1,1}) {
+          if (mode==3 && side==-1) continue;
+          mark(x,side*.75,.625,map.mp_->clamp_max_log_);
+        }
+      }
+      if (mode==2 && x>.55)
+        for (double y=-1.8;y<1.8;y+=.05)
+          for (double z=.075;z<.8;z+=.05)
+            mark(x,y,z,map.mp_->clamp_min_log_-map.mp_->unknown_flag_);
+    }
+    if (mode==1)
+      for (double y=-1.8;y<1.8;y+=.05)
+        for (double z=.125;z<.8;z+=.05) mark(.85,y,z,map.mp_->clamp_max_log_);
+    const Vector3d start(0,0,.233);
+    TaskSearchManager::OpenExitResult result;
+    const bool found=task.detectLocalMapExit(start,Eigen::Vector2d::UnitX(),result);
+    if (mode!=0) { EXPECT_FALSE(found); return; }
+    ASSERT_TRUE(found);
+    EXPECT_NEAR(result.portal_center.x(),.5,.16);
+    EXPECT_NEAR(result.portal_center.y(),0,.08);
+    EXPECT_TRUE(task.mapRelativeColumnOccupied(start,start.z()));
+    EXPECT_FALSE(task.mapRelativeColumnOccupied(start,start.z(),true));
+    EXPECT_TRUE(task.mapExitFootprintFree(result.portal_center));
+  }
+
   static void runCorridorTurnBoundary(int mode) {
     ros::NodeHandle nh("~corridor_turn_boundary_"+std::to_string(mode));
     FastExplorationManager manager;
@@ -1049,7 +1200,7 @@ public:
     EXPECT_NEAR(manager.ed_->next_goal_.z(), low.z(), 1e-6);
   }
 
-  static void runRecordedTurn(const char* fixture, bool corridor_case = false) {
+  static void runRecordedTurn(const char* fixture, int corridor_case = 0) {
     ros::NodeHandle nh("~");
     // 与正式fuel_map.yaml的分辨率、融合概率和膨胀配置一致。
     nh.setParam("sdf_map/resolution", 0.05);
@@ -1081,6 +1232,41 @@ public:
     TaskSearchManager task;
     task.initialize(nh); task.setMap(map);
     task.exit_detection_enabled_ = false;
+    if (corridor_case==3) {
+      task.exit_outside_length_=.60;
+      task.exit_footprint_extra_radius_=.20;
+      TaskSearchManager::OpenExitResult result;
+      const double old_yaw=150.1*M_PI/180.0;
+      const bool old_found=task.detectLocalMapExit(pos,Eigen::Vector2d(std::cos(old_yaw),std::sin(old_yaw)),result);
+      const bool found=task.detectLocalMapExit(pos,-Eigen::Vector2d::UnitX(),result);
+      std::cout << "Recorded automatic exit old=" << old_found << " aligned=" << found
+                << " position=" << pos.transpose() << " portal=" << result.portal_center.transpose() << std::endl;
+      ASSERT_TRUE(found);
+      EXPECT_NEAR(result.portal_center.x()+3,1.8,.25);
+      EXPECT_NEAR(result.portal_center.y()-2,-3,.15);
+      EXPECT_TRUE(result.outward_direction.isApprox(-Eigen::Vector2d::UnitX()));
+      return;
+    }
+    if (corridor_case==2) {
+      const double entry=.1*M_PI/180.0, heading=-134.9*M_PI/180.0;
+      const Vector3d initial(std::cos(entry),std::sin(entry),0);
+      task.setCorridorFrame(Vector3d(-3.2,2,.6),initial);
+      task.corridor_width_=1.3;
+      task.corridor_entry_crossed_=true;
+      task.return_straight_enabled_=true;
+      task.curve_heading_enabled_=false;
+      task.turn_detection_direction_=Eigen::Vector2d(std::cos(heading),std::sin(heading));
+      task.stable_progress_direction_=task.turn_detection_direction_;
+      task.updateRobotPose(pos,heading);
+      task.visited_positions_={pos};
+      Vector3d direction;
+      ASSERT_TRUE(task.mappedCorridorDirection(heading,direction));
+      EXPECT_TRUE(task.return_straight_active_);
+      EXPECT_TRUE(direction.isApprox(-initial));
+      std::cout << "Recorded return heading=" << std::atan2(direction.y(),direction.x())*180/M_PI
+                << " at " << pos.transpose() << std::endl;
+      return;
+    }
     if (corridor_case) {
       // 输入为平移到局部坐标的实测雷达帧；由日志给出旧轴和最后双墙切线。
       task.setCorridorFrame(Vector3d(-4.2,1,.6),Vector3d::UnitX());
@@ -6071,6 +6257,34 @@ TEST(AscentRetry, WaypointsUseSameRetryPolicyWithoutAdvancingWaypoint) {
   fast_planner::TurnEscapeTest::runAscentRetryPolicy(true);
 }
 
+TEST(ReturnStraight, ExactReverseRemainsStableThroughLocalAvoidance) { fast_planner::TurnEscapeTest::runReturnStraight(0); }
+TEST(ReturnStraight, DisabledPreservesExistingDirection) { fast_planner::TurnEscapeTest::runReturnStraight(1); }
+TEST(ReturnStraight, EntryAndFirstLegCannotTurnBack) { fast_planner::TurnEscapeTest::runReturnStraight(2); }
+TEST(ReturnStraight, OccupiedReturnLegDoesNotAlign) { fast_planner::TurnEscapeTest::runReturnStraight(3); }
+TEST(ReturnStraight, UnknownReturnLegDoesNotAlign) { fast_planner::TurnEscapeTest::runReturnStraight(4); }
+TEST(ReturnStraight, SmallRemainingAngleStillAligns) { fast_planner::TurnEscapeTest::runReturnStraight(5); }
+TEST(ReturnStraight, RotatedEntranceUsesRelativeReverse) { fast_planner::TurnEscapeTest::runReturnStraight(6); }
+TEST(ReturnStraight, RecordedOctober30ExitLeg) {
+  const char* fixture=std::getenv("RETURN_STRAIGHT_FIXTURE");
+  if (!fixture) GTEST_SKIP() << "RETURN_STRAIGHT_FIXTURE not provided";
+  fast_planner::TurnEscapeTest::runRecordedTurn(fixture,2);
+}
+TEST(ExitPortal, RecordedOctober30AutomaticExit) {
+  const char* fixture=std::getenv("AUTO_EXIT_FIXTURE");
+  if (!fixture) GTEST_SKIP() << "AUTO_EXIT_FIXTURE not provided";
+  fast_planner::TurnEscapeTest::runRecordedTurn(fixture,3);
+}
+TEST(AutomaticExit, LowFlightUsesRailsExcludesFloor) { fast_planner::TurnEscapeTest::runLowExit(0); }
+TEST(AutomaticExit, BlockedDoorRejected) { fast_planner::TurnEscapeTest::runLowExit(1); }
+TEST(AutomaticExit, UnknownOutsideRejected) { fast_planner::TurnEscapeTest::runLowExit(2); }
+TEST(AutomaticExit, SingleSideOpeningRejected) { fast_planner::TurnEscapeTest::runLowExit(3); }
+TEST(AutomaticExit, FloorAloneIsNotCorridor) { fast_planner::TurnEscapeTest::runLowExit(4); }
+TEST(AutomaticExit, ContinuousCorridorIsNotExit) { fast_planner::TurnEscapeTest::runLowExit(5); }
+TEST(AutomaticExit, ShortFrameSeamIsNotExit) { fast_planner::TurnEscapeTest::runLowExit(6); }
+TEST(ManualExit, ApproachYawAndActualArrivalBeforeSharing) { fast_planner::TurnEscapeTest::runManualExit(0); }
+TEST(ManualExit, DisabledCoordinatesDoNotAffectPlanning) { fast_planner::TurnEscapeTest::runManualExit(1); }
+TEST(ManualExit, OtherPartsOfPlaneAreNotDoor) { fast_planner::TurnEscapeTest::runManualExit(2); }
+TEST(ManualExit, OccupiedDoorCannotTakeOver) { fast_planner::TurnEscapeTest::runManualExit(3); }
 TEST(CorridorTurnBoundary, OutsideContinuationDoesNotVetoBend) { fast_planner::TurnEscapeTest::runCorridorTurnBoundary(0); }
 TEST(CorridorTurnBoundary, InsideBypassStillKeepsDirection) { fast_planner::TurnEscapeTest::runCorridorTurnBoundary(1); }
 TEST(CorridorTurnBoundary, PhysicalTurnCanUpdateStaleBoundary) { fast_planner::TurnEscapeTest::runCorridorTurnBoundary(2); }
