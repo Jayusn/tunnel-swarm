@@ -7,6 +7,20 @@
     <arg name="entry_center_z" default="0.60"/>
     <arg name="manual_entry_enabled" default="false"/>
 
+    <!-- 仅通道内：巡航0.6m，优先侧绕/下穿；确认底部被高于0.5m的落地障碍封死才允许上绕。 -->
+    <arg name="corridor_normal_max_height" default="0.70"/>
+    <arg name="corridor_upper_max_height" default="1.10"/>
+    <arg name="corridor_width" default="1.30"/>
+    <!-- 障碍距离按飞机中心计算，不再叠加机体半径；碰撞检查仍保留。 -->
+    <arg name="side_obstacle_center_distance" default="0.20"/>
+    <param name="/exploration_node/mission/corridor_low_flight/enabled" value="true"/>
+    <param name="/exploration_node/mission/corridor_low_flight/normal_max_height" value="$(arg corridor_normal_max_height)"/>
+    <param name="/exploration_node/mission/corridor_low_flight/upper_max_height" value="$(arg corridor_upper_max_height)"/>
+    <param name="/exploration_node/mission/corridor_low_flight/blocking_height" value="0.50"/>
+    <param name="/exploration_node/mission/corridor_low_flight/floor_z" value="$(eval float(arg('entry_center_z')) - 0.5 * float(arg('entry_door_height')))"/>
+    <param name="/exploration_node/mission/task_search/corridor_width" value="$(arg corridor_width)"/>
+    <param name="/exploration_node/mission/wide_side_bypass/preferred_obstacle_distance" value="$(arg side_obstacle_center_distance)"/>
+
     <!-- 到出口后、搜索降落码前沿出口方向前进的距离，单位m。 -->
     <arg name="front_approach_distance" default="0.2"/>
     <!-- 与单机航点入口共用已验证的检测、历史包络及连续穿越策略。 -->
