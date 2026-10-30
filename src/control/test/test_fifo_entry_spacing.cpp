@@ -368,23 +368,116 @@ TEST_F(FifoEntrySpacing, EntryWaitCachesPointsUntilExitThenFliesEntireQueueInOrd
   EXPECT_FALSE(follower->simple_door_hover_active_);
   EXPECT_DOUBLE_EQ(1.0, follower->relay_waypoints_.front().position.x);
 
-  follower->leader_outside_exit_ = true;
+  // 前机随后超时且没有再发出门状态，仍继续执行本次缓存的路线。
+  follower->leader_odom_stamp_ = ros::Time(1);
   follower->tryReleaseFinalExitWaypoint("test cached route release");
-  ASSERT_EQ(4U, follower->relay_waypoints_.size());
+  ASSERT_EQ(2U, follower->relay_waypoints_.size()); // 先保留普通点，末尾再接续出口。
   const std::vector<double> expected = {1.0, 2.0, 3.0,
       3.0 + follower->outside_door_distance_};
   for (std::size_t i = 0; i < expected.size(); ++i) {
-    setLeader(10.0);
-    ASSERT_EQ(expected.size() - i, follower->relay_waypoints_.size());
+    follower->tryReleaseFinalExitWaypoint("test cached route release");
+    const std::size_t remaining = i < 2 ? 2 - i : expected.size() - i;
+    ASSERT_EQ(remaining, follower->relay_waypoints_.size());
     EXPECT_DOUBLE_EQ(expected[i], follower->relay_waypoints_.front().position.x);
     follower->handleSimpleDiffPlannerExecution(ros::Time::now());
     ASSERT_TRUE(follower->diff_goal_published_);
     follower->follower_odom_.pose.pose.position.x = expected[i];
     follower->handleSimpleDiffPlannerExecution(ros::Time::now());
-    EXPECT_EQ(expected.size() - i - 1, follower->relay_waypoints_.size());
+    EXPECT_EQ(remaining - 1, follower->relay_waypoints_.size());
   }
   EXPECT_TRUE(follower->outside_wait_arrived_);
   EXPECT_TRUE(follower->diff_wait_hold_active_);
+}
+
+TEST_F(FifoEntrySpacing, LeaderTimeoutAfterExitKeepsCurrentTrajectoryAndCachedLandingTarget) {
+  prepareQualifiedPoints();
+  follower->enable_search_landing_ = true;
+  auto snapshot = relaySnapshot();
+  geometry_msgs::PoseStamped::Ptr target(new geometry_msgs::PoseStamped);
+  target->pose.position.x = 4.0;
+  target->pose.position.y = 0.7;
+  target->pose.position.z = 0.2;
+  target->pose.orientation.w = std::cos(0.3);
+  target->pose.orientation.z = std::sin(0.3);
+  follower->followerAssignedTargetCallback(target);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_TRUE(follower->diff_goal_published_);
+  const auto goal_stamp = follower->diff_active_goal_stamp_ns_;
+  reportDiffStatus("TRAJECTORY_PUBLISHED", goal_stamp, " 1 0 0.6");
+  ASSERT_TRUE(follower->diff_plan_response_received_);
+  ASSERT_FALSE(follower->diff_wait_hold_active_);
+  follower->leader_odom_stamp_ = ros::Time(1);
+  // 迟到的前机里程计被拒绝，但不清空航点或落点，不撤销当前轨迹。
+  nav_msgs::Odometry::Ptr delayed(new nav_msgs::Odometry);
+  delayed->header.stamp = ros::Time::now() - ros::Duration(10.0);
+  follower->leaderOdomCallback(delayed);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->diff_goal_published_);
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+  EXPECT_EQ(goal_stamp, follower->diff_active_goal_stamp_ns_);
+  EXPECT_EQ(2U, follower->relay_waypoints_.size());
+  EXPECT_EQ(2U, follower->safe_relay_points_.size());
+  EXPECT_TRUE(follower->have_assigned_follower_target_);
+  EXPECT_DOUBLE_EQ(4.0, follower->assigned_follower_target_.position.x);
+  EXPECT_DOUBLE_EQ(0.7, follower->assigned_follower_target_.position.y);
+  EXPECT_NEAR(0.6, follower->assigned_follower_target_.yaw, 1e-9);
+  // 空快照也不撤销已接收的路线；出口后仍可使用已缓存落点和放行信号。
+  snapshot->poses.clear();
+  ++snapshot->header.seq;
+  follower->safeRelayCallback(snapshot);
+  EXPECT_EQ(2U, follower->safe_relay_points_.size());
+  EXPECT_EQ(2U, follower->relay_waypoints_.size());
+  auto release = boost::make_shared<std_msgs::Bool>();
+  release->data = true;
+  follower->releaseUav1Callback(release);
+  EXPECT_FALSE(follower->terminal_mode_active_);
+  follower->consumeSimpleRelayFront();
+  follower->consumeSimpleRelayFront();
+  follower->outside_wait_arrived_ = true;
+  follower->tryQueueFollowerTerminalTarget();
+  ASSERT_TRUE(follower->terminal_mode_active_);
+  ASSERT_EQ(1U, follower->relay_waypoints_.size());
+  EXPECT_DOUBLE_EQ(4.0, follower->relay_waypoints_.front().position.x);
+  EXPECT_DOUBLE_EQ(0.7, follower->relay_waypoints_.front().position.y);
+}
+
+TEST_F(FifoEntrySpacing, CachedRouteAcceptsLatePointsWithoutLeaderOdometryAndResumesHeldGoal) {
+  prepareQualifiedPoints();
+  auto snapshot = relaySnapshot();
+  follower->leader_odom_stamp_ = ros::Time(1);
+  geometry_msgs::PoseStamped pose = snapshot->poses.back();
+  pose.header.seq = 3;
+  pose.pose.position.x = 3.0;
+  snapshot->poses.push_back(pose);
+  ++snapshot->header.seq;
+  follower->safeRelayCallback(snapshot);
+  ASSERT_EQ(3U, follower->relay_waypoints_.size());
+  EXPECT_EQ(3U, follower->relay_waypoints_.back().safe_relay_id);
+  follower->simple_waypoint_clearance_hold_active_ = true;
+  follower->setDiffWaitPositionHold(true, "test previous stale leader hold");
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_FALSE(follower->simple_waypoint_clearance_hold_active_);
+  ASSERT_TRUE(follower->diff_goal_published_);
+  reportDiffStatus("TRAJECTORY_PUBLISHED", follower->diff_active_goal_stamp_ns_, " 1 0 0.6");
+  ASSERT_TRUE(follower->diff_plan_response_received_);
+  EXPECT_FALSE(follower->diff_wait_hold_active_);
+  follower->follower_odom_.pose.pose.position.x = 1.0;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_EQ(2U, follower->relay_waypoints_.size());
+  EXPECT_EQ(2U, follower->relay_waypoints_.front().safe_relay_id);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->diff_goal_published_);
+}
+
+TEST_F(FifoEntrySpacing, BeforeExitStillRequiresFreshLeaderOdometry) {
+  prepareQualifiedPoints();
+  follower->have_final_exit_ = false;
+  follower->leader_odom_stamp_ = ros::Time(1);
+  EXPECT_FALSE(follower->relayWaypointSeparationReady("INTERNAL"));
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_FALSE(follower->diff_goal_published_);
+  EXPECT_TRUE(follower->diff_wait_hold_active_);
+  EXPECT_EQ(2U, follower->relay_waypoints_.size());
 }
 
 TEST_F(FifoEntrySpacing, ExitReceivedBeforeEntryArrivalReleasesCachedPointsAfterArrival) {

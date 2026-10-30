@@ -566,6 +566,10 @@ class LeaderSafePathFollower {
   }
 
   bool relayWaypointSeparationReady(const char* label) const {
+    // 出口已确认后，前机超时不阻止缓存普通点及出口任务入队；入口仍沿用原规则。
+    if (simple_segment_endpoint_following_ && have_final_exit_ && have_follower_odom_ &&
+        std::string(label) != "DOOR" && !leaderOdomFresh(ros::Time::now()))
+      return true;
     if (!have_leader_odom_ || !have_follower_odom_) {
       ROS_WARN_THROTTLE(1.0,
                         "[safe_follower] HOLD %s waypoint release: dual odometry unavailable.",
@@ -656,13 +660,14 @@ class LeaderSafePathFollower {
     return true;
   }
 
-  // 2026-07-28: 复用后文已有的nearestRouteProgress确定出口在前机实飞折线上的顺序；
-  // 像入口一样在前机清空门后再释放出口门心，此前内部点保持原顺序，之后停止新增内部点。
+  // FIFO先执行缓存普通点，期间继续接收后到的点；队列执行完再接续已确认出口。
   void tryReleaseFinalExitWaypoint(const char* reason) {
-    if (!have_final_exit_ || !leader_outside_exit_ || exit_waypoint_released_ ||
-        terminal_mode_active_)
+    if (!have_final_exit_ || exit_waypoint_released_ || terminal_mode_active_) return;
+    if (simple_segment_endpoint_following_) {
+      if (!door_waypoint_released_ || active_relay_index_ < relay_waypoints_.size()) return;
+    } else if (!leader_outside_exit_ || !leaderOdomFresh(ros::Time::now())) {
       return;
-    if (!leaderOdomFresh(ros::Time::now())) return;
+    }
     if (!relayWaypointSeparationReady("EXIT")) return;
     pending_relay_valid_ = false;
     confirmed_exit_.progress = nearestRouteProgress(confirmed_exit_.position);
@@ -1231,7 +1236,7 @@ class LeaderSafePathFollower {
         ROS_WARN_THROTTLE(
             1.0,
             "[safe_follower] reject delayed leader odometry age=%.3fs > %.3fs; "
-            "keep UAV1 parked.",
+            "retain cached route and landing target.",
             transport_age, leader_odom_max_transport_age_);
         return;
       }
@@ -2532,10 +2537,13 @@ class LeaderSafePathFollower {
 
     if (ordinary_scan_stage_ != 0 && !stepOrdinaryScan(now)) return true;
 
+    // 出口已收到时不使用过期前机位置阻断航段，也不撤销正在执行的Diff轨迹。
+    const bool cached_route_without_leader = have_final_exit_ && !leaderOdomFresh(now);
+    if (cached_route_without_leader) simple_waypoint_clearance_hold_active_ = false;
     // 已到达当前普通点时直接消费，不能再被旧点的间距保护拉回。
     if (!terminal_relay && !waypoint_arrival && !skip_passed_point &&
         !ordinary_dwell_started && !ordinary_scan_done_ &&
-        enable_diff_separation_safety_) {
+        enable_diff_separation_safety_ && !cached_route_without_leader) {
       if (!leaderOdomFresh(now)) {
         simple_waypoint_clearance_hold_active_ = true;
         setDiffWaitPositionHold(true, "waiting for fresh UAV0 odometry before FIFO release");

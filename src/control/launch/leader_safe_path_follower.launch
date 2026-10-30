@@ -112,7 +112,9 @@
         <!-- 普通点按前机安全点快照入队，保留原XYZ；队首有效时才交给Diff。
              入口/出口沿用本机任务适配，普通点保留现有1.20m放行门槛。 -->
         <!-- 当前队首未到达时不切换候选点；仅两机距离小于0.60m时允许间距退让。 -->
-        <!-- 到入口停稳后悬停并缓存航点；收到 /UAV0/mission/final_exit 后按FIFO顺序执行。 -->
+        <!-- 到入口停稳后悬停并缓存航点；收到 /UAV0/mission/final_exit 后按FIFO顺序执行。
+             此后前机里程计超时不阻断缓存航点；普通点执行完接续已确认出口。
+             航点和已分配降落目标仅在本次节点运行中缓存，不因前机超时清空。 -->
         <param name="simple_segment_endpoint_following" value="true"/>
         <param name="simple_diff_retry_delay" value="0.20"/>
         <param name="diff_goal_topic" value="/UAV1/planning/goal"/>
