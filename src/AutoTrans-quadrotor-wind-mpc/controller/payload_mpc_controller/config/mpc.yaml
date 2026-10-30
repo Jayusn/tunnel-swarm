@@ -41,7 +41,7 @@ max_bodyrate_z:     0.5         # 连续轨迹偏航的最大角速度 [rad/s]
 min_thrust:         1.0
 max_thrust:         29.5
 # NMPC 世界系正常速度软约束，单位 m/s；x/y 分量使用同一上限，z 单独限制。
-max_velocity_xy: 0.3
+max_velocity_xy: 0.5
 max_velocity_z: 1.0
 # 松弛量硬上限形成紧急速度边界：|vx/vy| <= 2.0 m/s，|vz| <= 2.0 m/s。
 max_velocity_slack_xy: 1.5
