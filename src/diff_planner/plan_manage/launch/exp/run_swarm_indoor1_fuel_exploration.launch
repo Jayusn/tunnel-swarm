@@ -7,10 +7,30 @@
     <arg name="entry_center_z" default="0.60"/>
     <arg name="manual_entry_enabled" default="false"/>
 
+    <!-- 手动出口：默认关闭；坐标系同入口。开启后仅在该矩形门附近接管，实际到门才发给后机。 -->
+    <arg name="manual_exit_enabled" default="false"/>
+    <arg name="manual_exit_x" default="1.8"/>
+    <arg name="manual_exit_y" default="-3.0"/>
+    <arg name="manual_exit_z" default="0.60"/>
+    <arg name="manual_exit_yaw_deg" default="180.0"/>
+    <!-- 门中心左右各0.75m、上下各0.75m；法向由 yaw 指定，默认门平面为 X=1.8。 -->
+    <arg name="manual_exit_half_width" default="0.75"/>
+    <arg name="manual_exit_half_height" default="0.75"/>
+    <param name="/exploration_node/mission/task_search/manual_exit/enabled" value="$(arg manual_exit_enabled)"/>
+    <param name="/exploration_node/mission/task_search/manual_exit/x" value="$(arg manual_exit_x)"/>
+    <param name="/exploration_node/mission/task_search/manual_exit/y" value="$(arg manual_exit_y)"/>
+    <param name="/exploration_node/mission/task_search/manual_exit/z" value="$(arg manual_exit_z)"/>
+    <param name="/exploration_node/mission/task_search/manual_exit/yaw_deg" value="$(arg manual_exit_yaw_deg)"/>
+    <param name="/exploration_node/mission/task_search/manual_exit/half_width" value="$(arg manual_exit_half_width)"/>
+    <param name="/exploration_node/mission/task_search/manual_exit/half_height" value="$(arg manual_exit_half_height)"/>
+
     <!-- 仅通道内：巡航0.6m，优先侧绕/下穿；确认底部被高于0.5m的落地障碍封死才允许上绕。 -->
     <arg name="corridor_normal_max_height" default="0.70"/>
     <arg name="corridor_upper_max_height" default="1.10"/>
     <arg name="corridor_width" default="1.30"/>
+    <!-- 本场地U形通道：确认出弯直道可通行后，机头及通道轴对准入口航向+180度。 -->
+    <arg name="return_straight_enabled" default="true"/>
+    <param name="/exploration_node/mission/task_search/return_straight/enabled" value="$(arg return_straight_enabled)"/>
     <!-- 障碍距离按飞机中心计算，不再叠加机体半径；碰撞检查仍保留。 -->
     <arg name="side_obstacle_center_distance" default="0.20"/>
     <param name="/exploration_node/mission/corridor_low_flight/enabled" value="true"/>
@@ -478,7 +498,8 @@
     <rosparam param="/exploration_node/mission/task_search/exit/sector_ray_count">11</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/sector_half_angle_deg">20.0</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/inside_length">0.90</rosparam>
-    <rosparam param="/exploration_node/mission/task_search/exit/outside_length">1.20</rosparam>
+    <!-- 只确认门外近段，避免更远杂物或尚未观测的空间遮蔽真实出口；机体净空检查保留。 -->
+    <rosparam param="/exploration_node/mission/task_search/exit/outside_length">0.60</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/confirmation_angle_deg">15.0</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/footprint_half_height">0.15</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/inference_period">0.50</rosparam>
