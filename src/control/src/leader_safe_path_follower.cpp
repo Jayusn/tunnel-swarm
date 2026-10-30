@@ -2432,6 +2432,13 @@ class LeaderSafePathFollower {
       return true;
     }
 
+    // 到入口并停稳后只缓存后续点；收到最终出口消息才开始执行整条FIFO路线。
+    if (simple_door_hover_active_ && !have_final_exit_ && !terminal_mode_active_) {
+      setDiffWaitPositionHold(true, "waiting at entry for final exit pose");
+      publishState("DIFF_WAIT_FINAL_EXIT_AT_ENTRY", 1.0, 0.65, 0.0);
+      return true;
+    }
+
     if (active_relay_index_ >= relay_waypoints_.size()) {
       // Ordinary segments finish at their actual endpoint in the controller.
       // Do not discard that trajectory at the edge of the arrival radius.

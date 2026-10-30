@@ -47,6 +47,8 @@ class FifoEntrySpacing : public ::testing::Test {
     ASSERT_DOUBLE_EQ(follower->min_separation_, 1.0);
     ASSERT_DOUBLE_EQ(follower->separation_release_distance_, 1.0);
     follower->simple_segment_endpoint_following_ = true;
+    // 其余FIFO/扫描用例默认已收到出口；入口等待用例单独设为未收到。
+    follower->have_final_exit_ = true;
     follower->relay_arrive_radius_ = 0.05;
     follower->follower_alignment_x_ = 0.0;
     follower->follower_alignment_y_ = 0.0;
@@ -313,6 +315,100 @@ TEST_F(FifoEntrySpacing, DoorUsesJointTwoPiecePlanningAndNormalPointUsesDefaultT
   ros::spinOnce();
   EXPECT_EQ(entry_goals, 1);
   EXPECT_TRUE(follower->diff_goal_published_);
+}
+
+TEST_F(FifoEntrySpacing, EntryWaitCachesPointsUntilExitThenFliesEntireQueueInOrder) {
+  follower->have_final_exit_ = false;
+  follower->enable_search_landing_ = true;
+  follower->follower_odom_.pose.pose.orientation.w = 1.0;
+  follower->follower_odom_.pose.pose.position.x = -2.0;
+  setLeader(10.0);
+  ASSERT_TRUE(follower->tryReleaseDoorWaypointFromLeaderPosition(
+      follower->leader_odom_.pose.pose.position));
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_TRUE(follower->diff_goal_published_); // 未收到出口仍先飞入口。
+  follower->follower_odom_.pose.pose.position.x = 0.0;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_TRUE(follower->simple_door_hover_active_);
+  ASSERT_TRUE(follower->relay_waypoints_.empty());
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->diff_wait_hold_active_);
+  EXPECT_FALSE(follower->diff_goal_published_);
+
+  nav_msgs::Path::Ptr path(new nav_msgs::Path);
+  path->header.frame_id = follower->world_frame_;
+  path->header.stamp = ros::Time::now();
+  path->header.seq = 1;
+  for (uint32_t id = 1; id <= 2; ++id) {
+    geometry_msgs::PoseStamped pose;
+    pose.header = path->header;
+    pose.header.seq = id;
+    pose.pose.position.x = id;
+    pose.pose.position.z = 0.6;
+    pose.pose.orientation.w = 1.0;
+    path->poses.push_back(pose);
+    follower->safeRelayCallback(path);
+    ++path->header.seq;
+    follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+    ASSERT_EQ(id, follower->relay_waypoints_.size());
+    EXPECT_TRUE(follower->simple_door_hover_active_);
+    EXPECT_TRUE(follower->diff_wait_hold_active_);
+    EXPECT_FALSE(follower->diff_goal_published_);
+    EXPECT_EQ(1U, follower->relay_waypoints_.front().safe_relay_id);
+  }
+  geometry_msgs::PoseStamped::Ptr exit(new geometry_msgs::PoseStamped);
+  exit->pose.position.x = 3.0;
+  exit->pose.position.z = 0.6;
+  exit->pose.orientation.w = 1.0;
+  follower->finalExitPoseCallback(exit);
+  ASSERT_TRUE(follower->have_final_exit_);
+  ASSERT_FALSE(follower->exit_waypoint_released_);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->diff_goal_published_); // 收到出口就放行，不额外等待出门状态。
+  EXPECT_FALSE(follower->simple_door_hover_active_);
+  EXPECT_DOUBLE_EQ(1.0, follower->relay_waypoints_.front().position.x);
+
+  follower->leader_outside_exit_ = true;
+  follower->tryReleaseFinalExitWaypoint("test cached route release");
+  ASSERT_EQ(4U, follower->relay_waypoints_.size());
+  const std::vector<double> expected = {1.0, 2.0, 3.0,
+      3.0 + follower->outside_door_distance_};
+  for (std::size_t i = 0; i < expected.size(); ++i) {
+    setLeader(10.0);
+    ASSERT_EQ(expected.size() - i, follower->relay_waypoints_.size());
+    EXPECT_DOUBLE_EQ(expected[i], follower->relay_waypoints_.front().position.x);
+    follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+    ASSERT_TRUE(follower->diff_goal_published_);
+    follower->follower_odom_.pose.pose.position.x = expected[i];
+    follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+    EXPECT_EQ(expected.size() - i - 1, follower->relay_waypoints_.size());
+  }
+  EXPECT_TRUE(follower->outside_wait_arrived_);
+  EXPECT_TRUE(follower->diff_wait_hold_active_);
+}
+
+TEST_F(FifoEntrySpacing, ExitReceivedBeforeEntryArrivalReleasesCachedPointsAfterArrival) {
+  follower->have_final_exit_ = false;
+  follower->enable_search_landing_ = true;
+  follower->door_waypoint_released_ = true;
+  queuePoint(1.0, true);
+  queuePoint(2.0);
+  setLeader(5.0);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  geometry_msgs::PoseStamped::Ptr exit(new geometry_msgs::PoseStamped);
+  exit->pose.position.x = 3.0;
+  exit->pose.orientation.w = 1.0;
+  follower->finalExitPoseCallback(exit);
+  ASSERT_EQ(2U, follower->relay_waypoints_.size());
+  ASSERT_TRUE(follower->relay_waypoints_.front().is_door);
+  follower->follower_odom_.pose.pose.position.x = 1.0;
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  ASSERT_TRUE(follower->simple_door_hover_active_);
+  follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+  EXPECT_TRUE(follower->diff_goal_published_);
+  EXPECT_FALSE(follower->simple_door_hover_active_);
+  ASSERT_EQ(1U, follower->relay_waypoints_.size());
+  EXPECT_DOUBLE_EQ(2.0, follower->relay_waypoints_.front().position.x);
 }
 
 TEST_F(FifoEntrySpacing, NormalPointWaitsForOneMeterLeaderClearance) {
@@ -782,6 +878,7 @@ TEST_F(FifoEntrySpacing, ExitYawStartsAfterEarlierPointsAndSurvivesFifoConsumpti
 }
 
 TEST_F(FifoEntrySpacing, ExitYawTransformsAndIgnoresLaterLeaderHeading) {
+  follower->have_final_exit_ = false;
   follower->enable_search_landing_ = true;
   geometry_msgs::PoseStamped::Ptr exit(new geometry_msgs::PoseStamped);
   exit->pose.orientation.z = std::sin(-3.0 / 2.0);
