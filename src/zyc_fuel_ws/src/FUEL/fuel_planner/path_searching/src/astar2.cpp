@@ -69,6 +69,7 @@ void Astar::clearProgressConstraint() {
 
 int Astar::search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt,
                   bool hold_goal_height) {
+  if (corridor_point_allowed_ && !corridor_point_allowed_(end_pt)) return NO_PATH;
   if (progress_constraint_enabled_ &&
       !directional_progress::isAllowed(start_pt, end_pt, progress_direction_,
                                        maximum_progress_regression_)) {
@@ -112,6 +113,13 @@ int Astar::search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt
     cur_node = open_set_.top();
     bool reach_end = abs(cur_node->index(0) - end_index(0)) <= 1 &&
         abs(cur_node->index(1) - end_index(1)) <= 1 && abs(cur_node->index(2) - end_index(2)) <= 1;
+    if (reach_end && corridor_point_allowed_) {
+      const int n = std::max(1, static_cast<int>(std::ceil((end_pt-cur_node->position).norm()/0.025)));
+      for (int i=1; i<=n; ++i)
+        if (!corridor_point_allowed_(cur_node->position + (end_pt-cur_node->position)*i/n)) {
+          reach_end = false; break;
+        }
+    }
     if (reach_end) {
       backtrack(cur_node, end_pt);
       return REACH_END;
@@ -147,6 +155,7 @@ int Astar::search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt
           if (step.norm() < 1e-3) continue;
           nbr_pos = cur_pos + step;
           if (hold_goal_height) nbr_pos.z() = end_pt.z();
+          if (corridor_point_allowed_ && !corridor_point_allowed_(nbr_pos)) continue;
           // 多机通道的禁回头约束必须在搜索阶段生效。纯横移(dot=0)和斜前绕障
           // 正常展开，旧通道方向上的负进度节点不进入open set。
           if (progress_constraint_enabled_ &&
@@ -184,6 +193,9 @@ int Astar::search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt
           dir.normalize();
           for (double l = 0.1; l < len; l += 0.1) {
             Vector3d ckpt = cur_pos + l * dir;
+            if (corridor_point_allowed_ && !corridor_point_allowed_(ckpt)) {
+              safe = false; break;
+            }
             if (progress_constraint_enabled_ &&
                 !directional_progress::isAllowed(start_pt, ckpt, progress_direction_,
                                                  maximum_progress_regression_)) {

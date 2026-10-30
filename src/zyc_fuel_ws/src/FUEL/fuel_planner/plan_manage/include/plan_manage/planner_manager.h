@@ -68,6 +68,7 @@ public:
   bool checkTrajCollision(LocalTrajData& trajectory, double& distance,
                           bool allow_inflation_escape = false);
   // 2026-07-13: 使用独立机体足迹检查轨迹/路径，避免 0.15m 建图膨胀小于 Iris 实际旋翼半径。
+  std::function<bool(const Eigen::Vector3d&)> corridor_point_allowed_;
   bool isPositionSafe(const Eigen::Vector3d& position) const;
   // 原地转向检查整片旋转圆盘内的静态障碍，补齐稀疏圆环采样间隙。
   bool isTurnPositionSafe(const Eigen::Vector3d& position) const;

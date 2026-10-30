@@ -37,6 +37,7 @@ void TaskSearchManager::initialize(ros::NodeHandle& nh) {
   nh.param("mission/task_search/max_history_size", max_history_size_, 120);
   nh.param("mission/task_search/cruise_height", cruise_height_, 0.75);
   nh.param("mission/task_search/min_height", min_search_height_, 0.55);
+  nh.param("mission/task_search/corridor_width", corridor_width_, 0.0);
   nh.param("mission/task_search/max_height", max_search_height_, 1.00);
   // 2026-07-13: 比赛窄道采用水平优先搜索，目标高度不能随 frontier 一次跳到顶层。
   nh.param("mission/task_search/max_goal_climb", max_goal_climb_, 0.06);
@@ -413,6 +414,8 @@ void TaskSearchManager::setCorridorFrame(const Eigen::Vector3d& origin,
   segment_origin_ = corridor_origin_.head<2>();
   segment_direction_ = corridor_dir_.head<2>().normalized();
   segment_high_water_ = 0.0;
+  width_origin_ = segment_origin_;
+  width_direction_ = segment_direction_;
   stable_progress_direction_ = corridor_dir_.head<2>().normalized();
   stable_progress_direction_valid_ = true;
   turn_detection_direction_ = stable_progress_direction_;
@@ -715,6 +718,15 @@ void TaskSearchManager::updateCurveHeading() {
   corridor_curve::Result geometry;
   const bool fitted = corridor_curve::infer(
       left,right,std::max(0.06,0.8*resolution),geometry);
+  width_curve_valid_ = fitted;
+  if (fitted) {
+    width_curve_ = geometry;
+    width_curve_origin_ = origin.head<2>();
+    width_curve_forward_ = curve_forward_;
+    width_origin_ = origin.head<2>() + geometry.center[0] * lateral;
+    const double heading = std::atan2(curve_forward_.y(), curve_forward_.x()) + geometry.yaw(0.0);
+    width_direction_ = Eigen::Vector2d(std::cos(heading), std::sin(heading));
+  }
   // 首次局部曲线拟合不改变旧基准；连续双墙证据才用当前位置切线交接。
   // 前视0.35m的机头参考独立计算，不把前视角度当成旧通道方向。
   if (fitted && following_curve) {
@@ -1559,6 +1571,9 @@ void TaskSearchManager::commitCorridorTurn(
   // 但必须防止恢复轨迹沿当前段长距离倒退。
   segment_origin_ = anchor;
   segment_direction_ = outgoing;
+  width_origin_ = anchor;
+  width_direction_ = outgoing;
+  width_curve_valid_ = false;
   segment_high_water_ = 0.0;
   if (!exit_portal_locked_) clearExitEvidence();
   stable_progress_direction_ = outgoing;
@@ -1764,7 +1779,28 @@ bool TaskSearchManager::isMissionBoundaryMotionAllowed(
   return true;
 }
 
+Eigen::Vector3d TaskSearchManager::corridorSectionCenter(const Eigen::Vector3d& point) const {
+  Eigen::Vector3d center = point;
+  if (width_curve_valid_) {
+    const Eigen::Vector2d lateral(-width_curve_forward_.y(), width_curve_forward_.x());
+    const double x = (point.head<2>() - width_curve_origin_).dot(width_curve_forward_);
+    center.head<2>() = width_curve_origin_ + x * width_curve_forward_ +
+        width_curve_.center.dot(Eigen::Vector3d(1.0, x, x*x)) * lateral;
+  } else {
+    center.head<2>() = width_origin_ +
+        (point.head<2>() - width_origin_).dot(width_direction_) * width_direction_;
+  }
+  return center;
+}
+
+bool TaskSearchManager::isInsideCorridorWidth(const Eigen::Vector3d& point, double radius) const {
+  return !corridorFlightLimitsActive() ||
+      (point - corridorSectionCenter(point)).head<2>().norm() <=
+          std::max(0.0, 0.5 * corridor_width_ - radius) + 1e-6;
+}
+
 bool TaskSearchManager::isTaskMotionAllowed(const Eigen::Vector3d& candidate) const {
+  if (!isInsideCorridorWidth(candidate)) return false;
   if (!isMissionBoundaryMotionAllowed(candidate)) return false;
   if (!global_no_return_ || !corridor_frame_received_) return true;
   if (!hybrid_constraints_enabled_) {

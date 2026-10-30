@@ -130,8 +130,10 @@ double FastExplorationManager::horizontalGoalHeight(double current_height) const
     return low_probe_height_;
   if (manual_fapp_active_ && std::isfinite(manual_fapp_hold_height_))
     return manual_fapp_hold_height_;
-  const double height = std::isfinite(horizontal_reference_height_)
+  double height = std::isfinite(horizontal_reference_height_)
       ? horizontal_reference_height_ : current_height;
+  // Once upper avoidance ends, an old high reference must not command another climb.
+  if (corridorPolicyActive()) height = std::min(height, std::max(current_height, corridor_height_limit_));
   return task_search_manager_ ? task_search_manager_->clampSearchHeight(height) : height;
 }
 
@@ -281,7 +283,93 @@ void FastExplorationManager::workspaceLockCallback(const geometry_msgs::PoseStam
                     yaw * 180.0 / M_PI);
 }
 
+bool FastExplorationManager::corridorPolicyActive() const {
+  return corridor_low_flight_enabled_ && task_search_manager_ &&
+      task_search_manager_->corridorFlightLimitsActive();
+}
+
+bool FastExplorationManager::corridorPointAllowed(const Vector3d& point) const {
+  if (!corridorPolicyActive()) return true;
+  // Above-band initial odometry can return horizontally/downward, never command another climb.
+  const double ceiling = std::max(corridor_height_limit_, corridor_limit_start_.z());
+  const double half_width = std::max(0.0, task_search_manager_->corridorWidth()*0.5 -
+      planner_manager_->footprintRadius());
+  const double start_offset = (corridor_limit_start_ -
+      task_search_manager_->corridorSectionCenter(corridor_limit_start_)).head<2>().norm();
+  const double offset = (point-task_search_manager_->corridorSectionCenter(point)).head<2>().norm();
+  return point.z() <= ceiling + 1e-6 && offset <= std::max(half_width, start_offset) + 1e-6;
+}
+
+bool FastExplorationManager::corridorBottomBlocked(const Vector3d& pos,
+                                                   const Vector3d& forward) const {
+  if (!sdf_map_ || !task_search_manager_ || forward.head<2>().norm() < 1e-3) return false;
+  const Vector3d travel(forward.x(),forward.y(),0.0);
+  const Vector3d lateral(-travel.y(),travel.x(),0.0);
+  const double radius = planner_manager_->footprintRadius();
+  const double half_width = std::max(0.0,task_search_manager_->corridorWidth()*0.5-radius);
+  const double step = std::max(0.025,0.5*sdf_map_->getResolution());
+  const double resolution = sdf_map_->getResolution();
+  // Confirm support from near the floor to the top of the normal flight band.
+  // UNKNOWN, isolated top returns and suspended objects never prove the bottom sealed.
+  auto supportedBlocker = [&](const Vector3d& center) {
+    for (double dx=-radius; dx<=radius+1e-6; dx+=step) {
+      for (double dy=-radius; dy<=radius+1e-6; dy+=step) {
+        if (dx*dx+dy*dy>radius*radius) continue;
+        Vector3d probe = center + dx*travel + dy*lateral;
+        double highest = -1e9, lowest = 1e9, gap = 0.0;
+        bool continuous = true;
+        for (double z=corridor_floor_z_+0.5*resolution;
+             z<=corridor_normal_max_height_+1e-6; z+=resolution) {
+          probe.z()=z;
+          if (sdf_map_->isInMap(probe) && sdf_map_->getOccupancy(probe)==SDFMap::OCCUPIED) {
+            highest=z+0.5*resolution; lowest=std::min(lowest,z-0.5*resolution); gap=0.0;
+          } else {
+            gap+=resolution;
+            if (gap>std::max(0.15,1.5*resolution)+1e-6 && highest<0.0) continuous=false;
+            if (gap>std::max(0.15,1.5*resolution)+1e-6 &&
+                z<corridor_normal_max_height_-0.06) continuous=false;
+          }
+        }
+        if (continuous && lowest<=corridor_floor_z_+0.15 &&
+            highest-corridor_floor_z_>corridor_blocking_height_+1e-6 &&
+            highest>=corridor_normal_max_height_-0.06) return true;
+      }
+    }
+    return false;
+  };
+  int closed_sections=0;
+  for (double distance=wide_side_bypass_min_lookahead_;
+       distance<=wide_side_bypass_max_lookahead_+1e-6; distance+=step) {
+    const Vector3d center = task_search_manager_->corridorSectionCenter(pos+distance*travel);
+    bool sealed=true;
+    const int samples=std::max(1,static_cast<int>(std::ceil(2.0*half_width/step)));
+    for (int i=0;i<=samples;++i) {
+      if (!supportedBlocker(center+(-half_width+2.0*half_width*i/samples)*lateral)) {
+        sealed=false; break;
+      }
+    }
+    closed_sections=sealed ? closed_sections+1 : 0;
+    if (closed_sections>=2) return true;
+  }
+  return false;
+}
+
+void FastExplorationManager::updateCorridorFlightLimits(const Vector3d& pos, double yaw) {
+  if (!corridorPolicyActive()) return;
+  corridor_limit_start_=pos;
+  const Vector3d forward=task_search_manager_->recoveryForwardDirection(yaw);
+  const bool blocked=corridorBottomBlocked(pos,forward);
+  // Preserve an already authorized ascent until it clears the same obstacle; do not
+  // authorize new ones from an isolated top point or from failed A* alone.
+  const bool finishing_ascent=ground_ascent_active_ && corridor_bottom_blocked_;
+  corridor_bottom_blocked_=blocked || finishing_ascent;
+  corridor_height_limit_=corridor_bottom_blocked_ ? corridor_upper_max_height_ : corridor_normal_max_height_;
+  ROS_INFO_THROTTLE(1.0,"[corridor_low_flight] bottom_sealed=%d height_limit=%.2fm width=%.2fm; prefer low/side route.",
+      corridor_bottom_blocked_,corridor_height_limit_,task_search_manager_->corridorWidth());
+}
+
 bool FastExplorationManager::pointInsideWorkspaceLock(const Vector3d& pt) const {
+  if (!corridorPointAllowed(pt)) return false;
   if (!ep_->mission_global_no_return_ || !ep_->mission_use_workspace_lock_ ||
       !mission_workspace_lock_received_)
     return true;
@@ -664,9 +752,10 @@ bool FastExplorationManager::shouldStartGroundAscent(
 }
 
 double FastExplorationManager::obstacleAscentTargetHeight(double top) const {
-  const double ceiling = task_search_manager_
+  double ceiling = task_search_manager_
       ? std::min(ground_ascent_upper_height_,task_search_manager_->clampSearchHeight(ground_ascent_upper_height_))
       : ground_ascent_upper_height_;
+  if (corridorPolicyActive()) ceiling = std::min(ceiling, corridor_upper_max_height_);
   return std::max(top + 0.5 * (ceiling-top),
                   top + std::max(0.20,vertical_detour_upper_obstacle_clearance_));
 }
@@ -838,6 +927,8 @@ bool FastExplorationManager::buildGroundAscentPlan(
   Vector3d target = ground_ascent_target_;
   if (correct_xy) target.z() = pos.z();
   else if (!height_reached) target.z() = std::max(target.z(),pos.z()+ground_ascent_min_rise_);
+  if (corridorPolicyActive() && !correct_xy)
+    target.z() = std::min(target.z(), corridor_height_limit_);
   ground_ascent_attempt_pending_=true;
   const bool height_allowed=target.z()<=ground_ascent_upper_height_+1e-6 &&
       (!task_search_manager_ || target.z()<=task_search_manager_->clampSearchHeight(target.z())+1e-6);
@@ -983,6 +1074,8 @@ bool FastExplorationManager::buildVerticalDetourFallback(
     return true;
   }
 
+  if (corridorPolicyActive() && !corridor_bottom_blocked_)
+    return allow_descend && startLowProbe();
   // 高层按正前及左右前斜向组成扇形搜索，并逐段扩大前进距离；始终不生成后向候选。
   const double max_side_angle =
       std::min(89.0, std::max(0.0, vertical_detour_upper_max_side_angle_deg_)) *
@@ -1705,6 +1798,7 @@ bool FastExplorationManager::findForwardObstacleTop(
 bool FastExplorationManager::buildRaisedSideBypass(
     const Vector3d& pos, double cur_yaw, const Vector3d& forward, double obstacle_top,
     Vector3d& next_pos, double& next_yaw, bool prefer_forward) {
+  if (corridorPolicyActive() && !corridor_bottom_blocked_) return false;
   // 只为低静态障碍增加候选；高度沿用地图/任务的Z基准，不改变点云滤波或下穿。
   const double minimum_z = std::max(pos.z(), obstacle_top +
       std::max(0.20, vertical_detour_upper_obstacle_clearance_));
@@ -1858,6 +1952,14 @@ bool FastExplorationManager::ensureObstacleTopClearance(
   Vector3d target = pos;
   // 用障碍顶部到1.35m上界的剩余高度中点作为目标，而非固定只多升20cm。
   target.z() = obstacleAscentTargetHeight(top);
+  if (corridorPolicyActive() && (!corridor_bottom_blocked_ ||
+      target.z() > corridor_upper_max_height_ + 1e-6)) {
+    if (task_search_manager_) task_search_manager_->reportGoalFailure(ed_->next_goal_);
+    ROS_WARN_THROTTLE(0.5, "[corridor_low_flight] reject over-top shortcut: low corridor not "
+        "confirmed sealed by tall supported obstacles, or upper clearance exceeds %.2fm; reselect low route.",
+        corridor_upper_max_height_);
+    return false;
+  }
   if (target.z()>ground_ascent_upper_height_+1e-6 || (task_search_manager_ &&
        target.z() > task_search_manager_->clampSearchHeight(target.z())+1e-6) ||
       !pointInsideWorkspaceLock(target) || !isKnownSafeGroundAscentPath(pos,target) ||
@@ -2127,7 +2229,11 @@ bool FastExplorationManager::splitPassagePath(
   const double distance = std::max(route_width_horizon_, lane.exit + 0.05);
   // 同一侧从入口到障碍后沿都必须已知可通；单个截面的宽度不代表通路。
   const double step = sdf_map_->getResolution();
-  const double centre = 0.5 * (lane.offset + lane.outer_offset);
+  const double preferred = (lane.side > 0 ? lane.obstacle_max : -lane.obstacle_min) +
+      preferred_obstacle_distance_;
+  const double centre = preferred_obstacle_distance_ > 0.0
+      ? std::max(lane.offset, std::min(lane.outer_offset, preferred))
+      : 0.5 * (lane.offset + lane.outer_offset);
   vector<double> offsets{centre};
   for (double delta = step; delta <= lane.outer_offset - lane.offset + step; delta += step) {
     if (centre - delta >= lane.offset) offsets.push_back(centre - delta);
@@ -2451,6 +2557,7 @@ bool FastExplorationManager::buildWideSideBypass(
     double forward_step{0.0};
     double lane_width{0.0};
     double centre_error{0.0};
+    double obstacle_distance_error{0.0};
     bool connected{false};
     route_width::Score width;
   } best;
@@ -2476,7 +2583,7 @@ bool FastExplorationManager::buildWideSideBypass(
       std::min(wide_side_bypass_forward_step_,
                std::max(0.0, split.forward_distance - 0.10)),
       0.10, 0.0};
-  const double minimum_shift = narrow_pullout ? 0.20 : 0.15;
+  const double minimum_shift = preferred_obstacle_distance_ > 0.0 ? 0.05 : (narrow_pullout ? 0.20 : 0.15);
   // 首次选侧先比较通路间距；同侧优先采用可行的前进量，再比较净空。
   // 纯横移只在前进候选不可用时采用，避免净空评分持续选中零前进量。
   const double remembered_sign = sameRecoveryObstacle(pos, travel, split) &&
@@ -2502,10 +2609,20 @@ bool FastExplorationManager::buildWideSideBypass(
     }
     const double lane_min = right_side ? split.right_free_min : split.left_free_min;
     const double lane_max = right_side ? split.right_free_max : split.left_free_max;
-    const double lane_center = 0.5 * (lane_min + lane_max);
-    const double max_shift = std::min(wide_side_bypass_max_lateral_step_,
-                                      std::fabs(lane_center));
-    for (double shift = max_shift; shift >= minimum_shift - 1e-6; shift -= 0.05) {
+    const double preferred_offset = right_side
+        ? split.obstacle_min_offset - preferred_obstacle_distance_
+        : split.obstacle_max_offset + preferred_obstacle_distance_;
+    const double lane_center = preferred_obstacle_distance_ > 0.0
+        ? std::max(lane_min, std::min(lane_max, preferred_offset))
+        : 0.5 * (lane_min + lane_max);
+    const double max_shift = preferred_obstacle_distance_ > 0.0
+        ? wide_side_bypass_max_lateral_step_
+        : std::min(wide_side_bypass_max_lateral_step_, std::fabs(lane_center));
+    vector<double> shifts;
+    if (preferred_obstacle_distance_ > 0.0)
+      shifts.push_back(std::min(max_shift, std::max(minimum_shift, std::fabs(lane_center))));
+    for (double shift=max_shift; shift>=minimum_shift-1e-6; shift-=0.05) shifts.push_back(shift);
+    for (double shift : shifts) {
       const double lateral_offset = side_sign * shift;
       for (const double forward_step : forward_steps) {
         Vector3d candidate = pos + forward_step * travel + lateral_offset * lateral;
@@ -2528,6 +2645,8 @@ bool FastExplorationManager::buildWideSideBypass(
              !task_search_manager_->isRecoveryPathAllowed(path, false)))
           continue;
 
+        const double obstacle_distance_error = preferred_obstacle_distance_ > 0.0
+            ? std::fabs(lateral_offset - preferred_offset) : 0.0;
         const double path_clearance = minimumPathClearance(path);
         const double endpoint_clearance = sdf_map_->getDistance(candidate);
         const double centre_error = passage_centering_enabled_
@@ -2536,6 +2655,8 @@ bool FastExplorationManager::buildWideSideBypass(
                                                    : route_width::Score{};
         if (best.valid && best.connected && !connected) continue;
         if (best.valid && connected && !best.connected) best.valid = false;
+        if (best.valid && obstacle_distance_error > best.obstacle_distance_error + 0.025) continue;
+        if (best.valid && obstacle_distance_error < best.obstacle_distance_error - 0.025) best.valid = false;
         const bool comparable = width.complete == best.width.complete;
         const bool width_tied = comparable &&
             !route_width::prefer(width, best.width) && !route_width::prefer(best.width, width);
@@ -2559,6 +2680,7 @@ bool FastExplorationManager::buildWideSideBypass(
           best.forward_step = forward_step;
           best.lane_width = lane_width;
           best.centre_error = centre_error;
+          best.obstacle_distance_error = obstacle_distance_error;
         }
       }
     }
@@ -2925,7 +3047,8 @@ bool FastExplorationManager::buildSideRecoveryContinuation(
           pathInsideWorkspaceLock(path) &&
           task_search_manager_->isRecoveryPathAllowed(path, false);
     };
-    if (passage_centering_enabled_ && forward_clear && !manual_side && !manual_fapp_active_) {
+    if (passage_centering_enabled_ && preferred_obstacle_distance_ <= 0.0 &&
+        forward_clear && !manual_side && !manual_fapp_active_) {
       passage_centering::Config cfg;
       cfg.step = std::min(0.05, 0.5 * sdf_map_->getResolution());
       cfg.search_radius = passage_centering_search_radius_;
@@ -3879,6 +4002,17 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
            turn_in_place_min_duration_, 1.0);
   nh.param("mission/task_search/recovery/turn_in_place_max_duration",
            turn_in_place_max_duration_, 4.0);
+  nh.param("mission/corridor_low_flight/enabled", corridor_low_flight_enabled_, false);
+  nh.param("mission/corridor_low_flight/normal_max_height", corridor_normal_max_height_, 0.70);
+  nh.param("mission/corridor_low_flight/upper_max_height", corridor_upper_max_height_, 1.10);
+  nh.param("mission/corridor_low_flight/floor_z", corridor_floor_z_, -0.15);
+  nh.param("mission/corridor_low_flight/blocking_height", corridor_blocking_height_, 0.50);
+  nh.param("mission/wide_side_bypass/preferred_obstacle_distance", preferred_obstacle_distance_, 0.0);
+  if (corridor_low_flight_enabled_) {
+    planner_manager_->corridor_point_allowed_ = [this](const Vector3d& p) { return corridorPointAllowed(p); };
+    if (planner_manager_->path_finder_)
+      planner_manager_->path_finder_->corridor_point_allowed_ = planner_manager_->corridor_point_allowed_;
+  }
   nh.param("mission/ground_ascent/enabled", ground_ascent_enabled_, true);
   nh.param("mission/ground_ascent/failure_limit",ground_ascent_failure_limit_,3);
   nh.param("mission/ground_ascent/min_rise",ground_ascent_min_rise_,0.20);
@@ -5077,6 +5211,7 @@ int FastExplorationManager::planExploreMotion(
   if (manual_path_enabled_) return planManualWaypointMotion(pos, vel, acc, yaw);
 
   updateMissionRegionState(pos);
+  updateCorridorFlightLimits(pos, yaw[0]);
   // 2026-07-22: 真实航迹已由FSM里程计回调连续写入；这里的pos可能是未来重规划起点，禁止重复记入历史。
 
   Vector3d next_pos;
@@ -5885,6 +6020,7 @@ int FastExplorationManager::planExploreMotion(
   // 避免刚穿门就发布跨越数米未知/窄区的整条轨迹，并让新点云在每段之间更新地图。
   const double route_horizon = std::max(0.20, ep_->mission_max_route_segment_length_);
   const bool centre_guidance = passage_centering_enabled_ &&
+      !(preferred_obstacle_distance_ > 0.0 && recovery_side_latched_) &&
       !planned_split_route_.side &&
       !(manual_fapp_active_ && recovery_side_latched_) &&
       !use_forced_entry_target && !use_stage3_target && !exit_transit_active && !use_entry_forward_target &&

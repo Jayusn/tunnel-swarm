@@ -80,6 +80,90 @@ class TurnEscapeTest {
     manager.task_search_manager_->initialize(nh);
   }
 public:
+  static void runCorridorLowFlight(int scenario) {
+    ros::NodeHandle nh("~corridor_low_"+std::to_string(scenario));
+    nh.setParam("manager/use_geometric_path", true);
+    nh.setParam("astar/resolution_astar", 0.05);
+    nh.setParam("astar/allocate_num", 100000);
+    nh.setParam("astar/lambda_heu", 1.0);
+    nh.setParam("astar/max_search_time", 1.0);
+    FastExplorationManager manager;
+    initialize(nh,manager);
+    auto& map=*manager.sdf_map_;
+    auto& planner=*manager.planner_manager_;
+    auto& task=*manager.task_search_manager_;
+    task.corridor_width_=1.30;
+    task.setCorridorFrame(Vector3d(0,0,.6),Vector3d::UnitX());
+    task.corridor_entry_crossed_=true;
+    manager.corridor_low_flight_enabled_=true;
+    manager.corridor_floor_z_=0.0;
+    manager.corridor_limit_start_=Vector3d(0,0,.60);
+    planner.corridor_point_allowed_=[&](const Vector3d& p) { return manager.corridorPointAllowed(p); };
+    planner.path_finder_->corridor_point_allowed_=planner.corridor_point_allowed_;
+    std::fill(map.md_->occupancy_buffer_.begin(),map.md_->occupancy_buffer_.end(),map.mp_->clamp_min_log_);
+    std::fill(map.md_->occupancy_buffer_inflate_.begin(),map.md_->occupancy_buffer_inflate_.end(),0);
+    std::fill(map.md_->distance_buffer_.begin(),map.md_->distance_buffer_.end(),1.0);
+    // 0: isolated top; 1: suspended box; 2: supported full blockage; 3: right-hand gap;
+    // 4: short obstacle; 5: unknown lower support; 6: free corridor and out-of-corridor landing.
+    if (scenario<6) {
+      for (double x=.425;x<=.575;x+=.05)
+        for (double y=-.725;y<=.725;y+=.05)
+          for (double z=.025;z<=.675;z+=.05) {
+            if (scenario==3 && y<-.025) continue;
+            bool occupied=z<=.65;
+            if (scenario==0) occupied=z>.60 && z<.65;
+            if (scenario==1) occupied=z>.40 && z<.65;
+            if (scenario==4) occupied=z<.50;
+            Eigen::Vector3i id; map.posToIndex(Vector3d(x,y,z),id);
+            const int address=map.toAddress(id);
+            map.md_->occupancy_buffer_[address]=scenario==5 && z<.60
+                ? map.mp_->clamp_min_log_-map.mp_->unknown_flag_
+                : (occupied ? map.mp_->clamp_max_log_ : map.mp_->clamp_min_log_);
+            map.md_->occupancy_buffer_inflate_[address]=occupied;
+          }
+      EXPECT_EQ(manager.corridorBottomBlocked(Vector3d(0,0,.6),Vector3d::UnitX()),scenario==2);
+      manager.updateCorridorFlightLimits(Vector3d(0,0,.6),0.0);
+      EXPECT_NEAR(manager.corridor_height_limit_,scenario==2 ? 1.1 : .7,1e-6);
+      EXPECT_EQ(manager.corridorPointAllowed(Vector3d(.1,0,.9)),scenario==2);
+      EXPECT_FALSE(manager.corridorPointAllowed(Vector3d(.1,0,1.101)));
+      return;
+    }
+    manager.updateCorridorFlightLimits(Vector3d(0,0,.6),0.0);
+    EXPECT_TRUE(manager.corridorPointAllowed(Vector3d(.5,.2,.7)));
+    EXPECT_FALSE(manager.corridorPointAllowed(Vector3d(.5,.2,.71)));
+    EXPECT_FALSE(manager.corridorPointAllowed(Vector3d(.5,.60,.6))); // body crosses assumed wall
+    EXPECT_FALSE(planner.isPathSafe({Vector3d(0,0,.6),Vector3d(.3,0,.8),Vector3d(.6,0,.6)}));
+    ASSERT_TRUE(planner.planStraightTraj(Vector3d(0,0,.6),Vector3d(.5,0,.85)));
+    EXPECT_FALSE(planner.isTrajectorySafe());
+    planner.path_finder_->reset();
+    EXPECT_EQ(planner.path_finder_->search(Vector3d(0,0,.6),Vector3d(.5,0,.8)),Astar::NO_PATH);
+    planner.path_finder_->reset();
+    EXPECT_EQ(planner.path_finder_->search(Vector3d(0,0,.6),Vector3d(.5,0,.6)),Astar::REACH_END);
+    // The geometric corridor, rather than current vehicle XY, defines the lateral bound.
+    task.latest_robot_pos_=Vector3d(.2,.3,.6);
+    EXPECT_FALSE(manager.corridorPointAllowed(Vector3d(.5,.60,.6)));
+    task.width_curve_valid_=true;
+    task.width_curve_origin_=Eigen::Vector2d(0,0);
+    task.width_curve_forward_=Eigen::Vector2d::UnitX();
+    task.width_curve_.center=Vector3d(0,0,.5);
+    EXPECT_TRUE(manager.corridorPointAllowed(Vector3d(1,.5,.6)));
+    EXPECT_FALSE(manager.corridorPointAllowed(Vector3d(1,-.2,.6)));
+    // Initial tracking overshoot may recover but cannot authorize another upward step.
+    manager.corridor_limit_start_.z()=.8;
+    manager.horizontal_reference_height_=.95;
+    EXPECT_NEAR(manager.horizontalGoalHeight(.8),.8,1e-6);
+    EXPECT_TRUE(manager.corridorPointAllowed(Vector3d(0,0,.75)));
+    EXPECT_FALSE(manager.corridorPointAllowed(Vector3d(0,0,.81)));
+    for (const auto stage : {TaskSearchManager::SEARCH_OUTSIDE_LANDING,
+                            TaskSearchManager::APPROACH_LANDING, TaskSearchManager::LANDING}) {
+      task.mission_stage_=stage;
+      EXPECT_TRUE(manager.corridorPointAllowed(Vector3d(2,2,1.5)));
+      EXPECT_TRUE(manager.corridorPointAllowed(Vector3d(2,2,.05)));
+    }
+    task.mission_stage_=TaskSearchManager::SEARCH_CORRIDOR;
+    task.corridor_entry_crossed_=false;
+    EXPECT_TRUE(manager.corridorPointAllowed(Vector3d(2,2,1.5)));
+  }
   static void runIsolatedInflationNearVehicle() {
     ros::NodeHandle nh("~isolated_inflation_near_vehicle");
     FastExplorationManager manager;
@@ -4717,7 +4801,7 @@ public:
   }
 
   static void runBypassContinuation(double side, bool change_width, bool block_side,
-                                    bool height_drift = false) {
+                                    bool height_drift = false, bool prefer_near_obstacle = false) {
     ros::NodeHandle nh("~");
     nh.setParam("manager/use_geometric_path", true);
     nh.setParam("astar/resolution_astar", 0.05);
@@ -4777,10 +4861,18 @@ public:
     Vector3d next;
     double yaw;
     bool split;
+    if (prefer_near_obstacle) manager.preferred_obstacle_distance_ = 0.20;
     check(manager.buildWideSideBypass(origin, 0.0, Vector3d::UnitX(), next, yaw, split) &&
           manager.wide_side_bypass_active_ && (next-origin).y()*side > 0.15 &&
           next.x() >= origin.x()+0.19,
           "initial bypass did not choose the wider lane with available forward progress");
+    if (prefer_near_obstacle) {
+      const auto evidence=manager.findWideSideSplit(origin,Vector3d::UnitX());
+      const double edge=side>0 ? evidence.obstacle_max_offset : evidence.obstacle_min_offset;
+      EXPECT_NEAR(std::fabs((next-origin).y()-edge),0.20,0.026);
+      EXPECT_TRUE(manager.planner_manager_->isPositionSafe(next));
+      return;
+    }
     if (height_drift) {
       check(std::fabs(next.z() - reference_height) < 1e-9,
             "wide-side bypass copied the low measured height into its goal");
@@ -5860,3 +5952,20 @@ TEST(AscentRetry, ExplorationRetreatsAfterThreeThenUsesDiagonalAndSideAscent) {
 TEST(AscentRetry, WaypointsUseSameRetryPolicyWithoutAdvancingWaypoint) {
   fast_planner::TurnEscapeTest::runAscentRetryPolicy(true);
 }
+
+TEST(CorridorLowFlight, IsolatedTopDoesNotUnlockAscent) { fast_planner::TurnEscapeTest::runCorridorLowFlight(0); }
+
+TEST(CorridorLowFlight, SuspendedObstacleDoesNotSealBottom) { fast_planner::TurnEscapeTest::runCorridorLowFlight(1); }
+
+TEST(CorridorLowFlight, SupportedFullBlockageUnlocksOnlyUpToOnePointOne) { fast_planner::TurnEscapeTest::runCorridorLowFlight(2); }
+
+TEST(CorridorLowFlight, SideGapKeepsLowFlight) { fast_planner::TurnEscapeTest::runCorridorLowFlight(3); }
+
+TEST(CorridorLowFlight, HalfMeterObstacleDoesNotUnlockAscent) { fast_planner::TurnEscapeTest::runCorridorLowFlight(4); }
+
+TEST(CorridorLowFlight, UnknownSupportDoesNotUnlockAscent) { fast_planner::TurnEscapeTest::runCorridorLowFlight(5); }
+
+TEST(CorridorLowFlight, SearchTrajectoryCurveAndOutsideLandingScope) { fast_planner::TurnEscapeTest::runCorridorLowFlight(6); }
+
+TEST(CorridorLowFlight, LeftBypassPrefersTwentyCentimetersFromCenter) { fast_planner::TurnEscapeTest::runBypassContinuation(1,true,false,false,true); }
+TEST(CorridorLowFlight, RightBypassPrefersTwentyCentimetersFromCenter) { fast_planner::TurnEscapeTest::runBypassContinuation(-1,true,false,false,true); }

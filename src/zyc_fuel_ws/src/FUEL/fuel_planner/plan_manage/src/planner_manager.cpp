@@ -886,6 +886,7 @@ bool FastPlannerManager::isTurnPositionSafe(const Eigen::Vector3d& position) con
 }
 
 bool FastPlannerManager::isPositionSafe(const Eigen::Vector3d& position) const {
+  if (corridor_point_allowed_ && !corridor_point_allowed_(position)) return false;
   if (!isRawFootprintSafe(position)) return false;
 
   // 2026-07-27: 膨胀层接触对普通目标/路径点恢复为硬拒绝；起点脱困例外只由路径和轨迹
@@ -959,6 +960,7 @@ bool FastPlannerManager::isPathSafe(const vector<Eigen::Vector3d>& path,
     for (int sample = 1; sample <= samples; ++sample) {
       const Eigen::Vector3d point =
           path[segment - 1] + delta * static_cast<double>(sample) / static_cast<double>(samples);
+      if (corridor_point_allowed_ && !corridor_point_allowed_(point)) return false;
       const int contacts = rawFootprintCollisionCount(point);
       const bool still_needs_escape =
           sdf_map_->getInflateOccupancy(point) != 0 || contacts > 0;
@@ -992,6 +994,7 @@ bool FastPlannerManager::isTrajectorySafe(double sample_dt,
   for (int sample = 0; sample <= samples; ++sample) {
     const double t = duration * static_cast<double>(sample) / static_cast<double>(samples);
     const Eigen::Vector3d point = local_data_.position_traj_.evaluateDeBoorT(t);
+    if (corridor_point_allowed_ && !corridor_point_allowed_(point)) return false;
     if (!fapp_planner_priority_ && !fappPositionSafe(point, fapp_reference+t, fapp_reference)) return false;
     // 2026-07-27: 与几何路径一致，轨迹起点若已在膨胀层只能沿ESDF净空不下降方向连续退出。
     bool safe = false;

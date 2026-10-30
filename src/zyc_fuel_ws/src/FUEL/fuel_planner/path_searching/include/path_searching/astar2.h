@@ -11,6 +11,7 @@
 #include "plan_env/edt_environment.h"
 #include <boost/functional/hash.hpp>
 #include <queue>
+#include <functional>
 #include <path_searching/matrix_hash.h>
 #include <path_searching/directional_progress_policy.h>
 namespace fast_planner {
@@ -44,6 +45,7 @@ public:
 
   void init(ros::NodeHandle& nh, const EDTEnvironment::Ptr& env);
   void reset();
+  std::function<bool(const Eigen::Vector3d&)> corridor_point_allowed_;
   // 动态穿越回退可沿目标高度搜索侧路，选项只作用于当前调用。
   int search(const Eigen::Vector3d& start_pt, const Eigen::Vector3d& end_pt,
              bool hold_goal_height = false);
