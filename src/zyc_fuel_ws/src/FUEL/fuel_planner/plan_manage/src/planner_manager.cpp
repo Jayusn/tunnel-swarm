@@ -862,8 +862,12 @@ int FastPlannerManager::lowerFootprintObstacleCount(
   return occupied_samples;
 }
 
-bool FastPlannerManager::isTurnPositionSafe(const Eigen::Vector3d& position) const {
-  if (!position.allFinite() || !isPositionSafe(position)) return false;
+bool FastPlannerManager::isTurnPositionSafe(const Eigen::Vector3d& position,
+                                           bool check_corridor_bounds) const {
+  if (!position.allFinite() || !isRawFootprintSafe(position) ||
+      sdf_map_->getInflateOccupancy(position) != 0) return false;
+  if (check_corridor_bounds && corridor_point_allowed_ &&
+      !corridor_point_allowed_(position)) return false;
   // 转弯使用独立检测半径，不改变平移足迹；枚举整个yaw包络相交的体素。
   const double radius = turn_check_radius_;
   constexpr double half_height = 0.06;

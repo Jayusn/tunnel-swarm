@@ -1192,7 +1192,7 @@ bool TaskSearchManager::inferOccupancyTurnDirection(
         sample.head<2>() +=
             (-half + forward_sample * sample_step) * travel +
             (-half + lateral_sample * sample_step) * lateral;
-        if (!sdf_map_->isInMap(sample) ||
+        if (!isInsideCorridorWidth(sample) || !sdf_map_->isInMap(sample) ||
             sdf_map_->getOccupancy(sample) != SDFMap::FREE)
           return false;
       }
@@ -1429,11 +1429,22 @@ bool TaskSearchManager::inferOccupancyTurnDirection(
         // 这里只识别通道，不发布这条折线路径，也不要求实际直飞一米。
         const Eigen::Vector3d continuation_start = branch.back();
         bool old_corridor_continues = true;
+        // 通道外的空地不能否决转弯：普通绕行必须整条连接段都在旧通道内。
+        // 新通道候选仍按地图验证，确认转弯后才更新通道边界。
+        for (std::size_t i = 1; i < anchors.size() && i <= a; ++i)
+          old_corridor_continues = old_corridor_continues &&
+              isInsideCorridorWidth(anchors[i], exit_footprint_extra_radius_);
+        for (double distance = 0.0; old_corridor_continues && distance <= horizon + 1e-6;
+             distance += body_step)
+          old_corridor_continues = isInsideCorridorWidth(
+              anchor + distance * forward, exit_footprint_extra_radius_);
         for (double distance = body_step; distance <= horizon + 1e-6;
              distance += body_step) {
           const Eigen::Vector3d point = continuation_start +
               distance * Eigen::Vector3d(travel.x(), travel.y(), 0.0);
-          if (!mapExitFootprintFree(point)) {
+          if (!old_corridor_continues ||
+              !isInsideCorridorWidth(point, exit_footprint_extra_radius_) ||
+              !mapExitFootprintFree(point)) {
             old_corridor_continues = false;
             break;
           }

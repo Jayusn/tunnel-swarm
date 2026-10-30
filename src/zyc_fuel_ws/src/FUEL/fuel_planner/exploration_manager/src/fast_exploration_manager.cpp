@@ -52,6 +52,19 @@ FastExplorationManager::~FastExplorationManager() {
 }
 
 void FastExplorationManager::recordPublishedTrajectoryHeight() {
+  if (escape_step_plan_ && corridorPolicyActive() && !ground_ascent_active_ &&
+      !manual_fapp_active_ && !turn_in_place_session_active_ &&
+      low_probe_phase_ == vertical_detour::LowProbePhase::IDLE) {
+    // 已发布的普通脱困替换了失败路线；不能在下一轮重新追逐旧目标。
+    // 保留已承诺的绕障侧，避免尚未越过障碍时反向换侧。
+    task_search_manager_->clearActiveGoal();
+    clearWiderRoute();
+    if (!committedSplitRoute()) {
+      recovery_side_latched_ = false;
+      wide_side_bypass_active_ = false;
+      recovery_side_continuation_pending_ = false;
+    }
+  }
   if (escape_step_plan_ && ground_ascent_active_) {
     // 只有实际发布的避障退让才能解除旧XY；候选审核失败仍保留原地升高锚点。
     auto& trajectory = planner_manager_->local_data_.position_traj_;
@@ -3791,8 +3804,10 @@ bool FastExplorationManager::requestMappedTurn(const Vector3d& position, double 
       task_search_manager_->landingRequested())
     return false;
   // 高度不足或旋转圆盘有静态障碍时不抢占平移；旧轨迹仍由正常碰撞检查决定能否继续。
+  // 此处只审核真实旋转净空。旧段的横向边界不能阻止识别下一段；
+  // 确认转弯更新边界后，实际转向轨迹仍执行完整边界和碰撞检查。
   if (!turnInPlaceHeightAllowed(position.z()) ||
-      !planner_manager_->isTurnPositionSafe(position)) return false;
+      !planner_manager_->isTurnPositionSafe(position, false)) return false;
   // 通道位置已由里程计回调更新，不能用重规划的未来起点覆盖它。
   Vector3d direction;
   if (!task_search_manager_->mappedCorridorDirection(yaw, direction)) return false;
