@@ -1,7 +1,8 @@
 <launch>
     <arg name="use_nmpc_landing" default="false"/>
     <!-- 区域外普通接力点：以前机随点发来的航向为中心，原地观察后再继续。 -->
-    <arg name="ordinary_scan_enabled" default="true"/>
+    <!-- 摆头开关：false=关闭入口门点及通道普通航点左右扫描；true=开启。启动时加载。 -->
+    <arg name="ordinary_scan_enabled" default="false"/>
     <arg name="ordinary_scan_angle_deg" default="45.0"/>
     <arg name="ordinary_scan_rate_deg" default="15.0"/>
     <arg name="ordinary_scan_return_rate_deg" default="30.0"/>
