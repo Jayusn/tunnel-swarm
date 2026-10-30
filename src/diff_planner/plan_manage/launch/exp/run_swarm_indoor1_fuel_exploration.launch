@@ -1,4 +1,12 @@
 <launch>
+    <!-- arch=矩形下部+半圆拱顶；a/b/c保留原检测，可显式切回。 -->
+    <arg name="entry_detection_mode" default="arch"/>
+    <!-- 本次拱门宽高1.5m；飞行中心Z=0.6m，横向中心由同一门截面自动识别。 -->
+    <arg name="entry_door_width" default="1.50"/>
+    <arg name="entry_door_height" default="1.50"/>
+    <arg name="entry_center_z" default="0.60"/>
+    <arg name="manual_entry_enabled" default="false"/>
+
     <!-- 到出口后、搜索降落码前沿出口方向前进的距离，单位m。 -->
     <arg name="front_approach_distance" default="0.2"/>
     <!-- 与单机航点入口共用已验证的检测、历史包络及连续穿越策略。 -->
@@ -95,9 +103,6 @@
     <arg name="search_start_waypoint_type" default="point"/>
     <!-- FUEL静态占据锁存开关；默认关闭，让旧障碍能被后续自由射线清除。 -->
     <arg name="retain_global_static_cloud" default="false"/>
-    <!-- a=原入口检测；b=适配断裂门框、少量细杆和低完整度地图的软门框检测。 -->
-    <arg name="entry_detection_mode" default="c"/>
-
     <!-- 2026-07-07: 继续沿用 indoor1 当前稳定的雷达里程计和注册点云话题，验证“探索上层 + 雷达建图”而不是再用固定巡航。 -->
     <arg name="odom_topic" default="/UAV0/fast_lio/Odom_high_freq"/>
     <arg name="cloud_topic" default="/UAV0/fast_lio/cloud_registered"/>
@@ -112,6 +117,11 @@
     <arg name="init_x" default="-2.5"/>
     <arg name="init_y" default="-3.0"/>
     <arg name="init_z" default="0.15"/>
+     <!-- enter -->
+    <arg name="manual_entry_x" default="1.8"/>
+    <arg name="manual_entry_y" default="0.0"/>
+    <arg name="manual_entry_z" default="0.60"/>
+    <arg name="manual_entry_yaw_deg" default="0.0"/>
 
     <!-- 2026-07-07: 先给验证版一个覆盖 indoor1 的探索盒和地图尺寸，后续再按真实场地继续放大。 -->
     <arg name="map_size_x" default="20.0"/>
@@ -647,17 +657,21 @@
         <!-- 2026-07-10: 过滤仿真雷达累计图里的孤立重复噪声点，避免脏点被门检测当成墙/障碍。 -->
         <param name="search_manager/map_accum_min_neighbors" value="2"/>
         <param name="search_manager/map_accum_min_vertical_bins" value="2"/>
-        <!-- 2026-07-10: RViz 显示和找门输入去掉天花板层，避免顶面点云投影成假门柱。 -->
+        <!-- 旧 A/B/C 模式的投影上限；arch 模式保留到 search_region_max_z，避免删掉拱顶。 -->
         <param name="search_manager/map_accum_max_use_z" value="1.25"/>
         <!-- 2026-07-09: 门候选必须保证从当前位置到门后 through-point 的累计地图中心走廊无障碍，
              避免把起飞区内部墙边的小缺口当成可通过门。 -->
         <param name="search_manager/door_path_clearance" value="0.25"/>
         <!-- 2026-07-08 19:26: 改成内部自找门框模式，前置阶段不再盲飞固定点，而是在前向扇区里自己判断门的位置并打标。 -->
-        <param name="search_manager/use_fixed_entry_goal" value="false"/>
-        <!-- 2026-07-08 19:26: 下面这个 entry_goal 不再直接拿来飞，只保留作调试参考；真正入口点由 corridor_search_manager 内部从点云判断。 -->
-        <param name="search_manager/entry_goal_x" value="-0.20"/>
-        <param name="search_manager/entry_goal_y" value="1.15"/>
-        <param name="search_manager/entry_goal_z" value="0.80"/>
+        <param name="search_manager/arch_door_width" value="$(arg entry_door_width)"/>
+        <param name="search_manager/arch_door_height" value="$(arg entry_door_height)"/>
+        <param name="search_manager/arch_entry_center_z" value="$(arg entry_center_z)"/>
+        <param name="search_manager/use_fixed_entry_goal" value="$(arg manual_entry_enabled)"/>
+        <!-- 仅在 manual_entry_enabled=true 时启用手填点；关闭后仅用雷达自动识别。 -->
+        <param name="search_manager/entry_goal_x" value="$(arg manual_entry_x)"/>
+        <param name="search_manager/entry_goal_y" value="$(arg manual_entry_y)"/>
+        <param name="search_manager/entry_goal_z" value="$(arg manual_entry_z)"/>
+        <param name="search_manager/manual_entry_yaw_deg" value="$(arg manual_entry_yaw_deg)"/>
         <param name="search_manager/entry_arrive_dist" value="0.30"/>
         <param name="search_manager/entry_reach_by_search_region" value="true"/>
         <param name="search_manager/publish_entry_marker" value="true"/>

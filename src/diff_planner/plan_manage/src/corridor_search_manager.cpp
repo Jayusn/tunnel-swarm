@@ -25,6 +25,7 @@
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <diff_planner/entry_frame_rules.h>
+#include <diff_planner/arch_entry.h>
 #include <diff_planner/entry_point_to_point.h>
 #include <std_msgs/Bool.h>
 #include <visualization_msgs/Marker.h>
@@ -45,6 +46,7 @@ struct CandidateScore {
   bool door_detected = false;
   double door_width = 0.0;
   double door_depth = 0.0;
+  double arch_spring_z = std::numeric_limits<double>::quiet_NaN();
   geometry_msgs::Point goal_point;
   geometry_msgs::Point door_point;
   geometry_msgs::Point left_post;
@@ -103,10 +105,17 @@ public:
     nh_.param("search_manager/workspace_lock_topic", workspace_lock_topic_,
               std::string("/corridor_search/workspace_lock"));
     nh_.param("search_manager/wait_for_hover_ready", wait_for_hover_ready_, true);
-    nh_.param("search_manager/use_fixed_entry_goal", use_fixed_entry_goal_, true);
+    nh_.param("search_manager/use_fixed_entry_goal", use_fixed_entry_goal_, false);
     nh_.param("search_manager/entry_goal_x", entry_goal_.x, -0.20);
     nh_.param("search_manager/entry_goal_y", entry_goal_.y, 1.15);
     nh_.param("search_manager/entry_goal_z", entry_goal_.z, 0.80);
+    nh_.param("search_manager/manual_entry_yaw_deg", manual_entry_yaw_deg_, 0.0);
+    nh_.param("search_manager/arch_door_width", arch_door_width_, 1.50);
+    nh_.param("search_manager/arch_door_height", arch_door_height_, 1.50);
+    nh_.param("search_manager/arch_entry_center_z", arch_entry_center_z_, .60);
+    if (use_fixed_entry_goal_ && (!std::isfinite(entry_goal_.x) || !std::isfinite(entry_goal_.y) ||
+        !std::isfinite(entry_goal_.z) || !std::isfinite(manual_entry_yaw_deg_)))
+      throw std::invalid_argument("manual entry coordinates and yaw must be finite");
     nh_.param("search_manager/entry_arrive_dist", entry_arrive_dist_, 0.65);
     nh_.param("search_manager/entry_reach_by_search_region", entry_reach_by_search_region_, true);
     nh_.param("search_manager/publish_entry_marker", publish_entry_marker_, true);
@@ -132,7 +141,7 @@ public:
     nh_.param("search_manager/stale_cloud_timeout", stale_cloud_timeout_, 1.0);
     nh_.param("search_manager/entry_detection_mode", entry_detection_mode_, std::string("a"));
     if (entry_detection_mode_ != "a" && entry_detection_mode_ != "b" &&
-        entry_detection_mode_ != "c") {
+        entry_detection_mode_ != "c" && entry_detection_mode_ != "arch") {
       ROS_ERROR("[corridor_search_manager] invalid entry_detection_mode='%s', fallback to mode a.",
                 entry_detection_mode_.c_str());
       entry_detection_mode_ = "a";
@@ -247,6 +256,7 @@ public:
 
     ROS_WARN("[corridor_search_manager] entry detector mode=%s (%s).",
              entry_detection_mode_.c_str(),
+             entry_detection_mode_ == "arch" ? "rectangular opening with semicircular arch" :
              entry_detection_mode_ == "c" ? "nearest geometric frame" :
              (entry_detection_mode_ == "b" ? "soft frame" : "legacy"));
 
@@ -334,6 +344,9 @@ private:
 
   void accumulateOccupancyMap(const pcl::PointCloud<pcl::PointXYZ>& incoming_cloud) {
     if (incoming_cloud.points.empty()) return;
+    // 拱形检测必须保留弧顶，不能用旧的1.25m二维投影截高删掉顶部。
+    const double structure_max_z = entry_detection_mode_ == "arch"
+        ? search_region_max_.z : map_accum_max_use_z_;
 
     for (const auto& pt : incoming_cloud.points) {
       if (!std::isfinite(pt.x) || !std::isfinite(pt.y) || !std::isfinite(pt.z)) continue;
@@ -369,7 +382,7 @@ private:
     for (const auto& item : accumulated_occ_voxels_) {
       if (item.second.hits < map_accum_min_hits_) continue;
       // 2026-07-10: stable XY 统计也排除天花板，避免顶面体素增加“竖向连续”假象。
-      if (item.second.center.z > map_accum_max_use_z_) continue;
+      if (item.second.center.z > structure_max_z) continue;
       ++stable_xy_bins[makeAccumXYKey(item.second.ix, item.second.iy)];
     }
 
@@ -381,7 +394,7 @@ private:
     for (const auto& item : accumulated_occ_voxels_) {
       const AccumulatedVoxel& voxel = item.second;
       if (voxel.hits < map_accum_min_hits_) continue;
-      if (voxel.center.z > map_accum_max_use_z_) {
+      if (voxel.center.z > structure_max_z) {
         ++ceiling_filtered;
         continue;
       }
@@ -396,7 +409,7 @@ private:
                 accumulated_occ_voxels_.find(makeAccumVoxelKey(voxel.ix + dx, voxel.iy + dy, voxel.iz + dz));
             if (neighbor_it == accumulated_occ_voxels_.end()) continue;
             if (neighbor_it->second.hits < map_accum_min_hits_) continue;
-            if (neighbor_it->second.center.z > map_accum_max_use_z_) continue;
+            if (neighbor_it->second.center.z > structure_max_z) continue;
             ++neighbor_count;
           }
         }
@@ -428,7 +441,7 @@ private:
                       accumulated_occ_voxels_.size(), stable_before_noise_filter,
                       local_occ_map_cloud_.points.size(), noise_filtered, ceiling_filtered,
                       map_accum_min_hits_, map_accum_min_neighbors_, map_accum_min_vertical_bins_,
-                      map_accum_max_use_z_);
+                      structure_max_z);
   }
 
   void mapUnknownCallback(const sensor_msgs::PointCloud2ConstPtr& msg) {
@@ -559,7 +572,7 @@ private:
     }
 
     if (mission_stage_ == SEARCH_ENTRY && !entry_locked_) {
-      if (!entrySearchReady(now)) {
+      if (!use_fixed_entry_goal_ && !entrySearchReady(now)) {
         // 2026-07-09: 地图未预热完成前不再发布前向位移点。
         // 最新日志显示 0.25m warmup 点会被连续跟踪并把飞机慢慢送到墙上，预热阶段只允许原地保持。
         CandidateScore warmup_candidate = makeHoldCandidate(entry_search_ref_yaw_);
@@ -569,15 +582,16 @@ private:
       }
 
       CandidateScore candidate = detectEntryCandidate();
-      const bool support_ok = candidate.support_count >= min_entry_support_points_;
-      const bool progress_ok = candidate.ref_progress >= min_entry_progress_;
+      const bool support_ok = use_fixed_entry_goal_ || candidate.support_count >= min_entry_support_points_;
+      const bool progress_ok = use_fixed_entry_goal_ || candidate.ref_progress >= min_entry_progress_;
       const double door_distance =
           candidate.door_detected
               ? std::hypot(candidate.door_point.x - odom_.pose.pose.position.x,
                            candidate.door_point.y - odom_.pose.pose.position.y)
               : std::numeric_limits<double>::infinity();
-      const bool distance_ok = door_distance <= max_entry_door_distance_;
-      const bool door_confirmed = distance_ok && confirmDoorCandidate(candidate);
+      // 手填点是明确指定的入口，不再要求自动检测的地图支撑、距离与连续确认。
+      const bool distance_ok = use_fixed_entry_goal_ || door_distance <= max_entry_door_distance_;
+      const bool door_confirmed = use_fixed_entry_goal_ || (distance_ok && confirmDoorCandidate(candidate));
       // 未经连续确认的入口候选只用于检测和调试，不能直接发给飞控。
       // 否则累计地图每次更新造成的门中心/航向小幅跳变，会通过 PositionCommand
       // 直接表现为无人机左右摆动。
@@ -666,17 +680,70 @@ private:
              msg->pose.position.x, msg->pose.position.y, msg->pose.position.z);
   }
 
+  std::vector<Eigen::Vector3d> entryStructureCloud() const {
+    std::vector<Eigen::Vector3d> points;
+    points.reserve(local_occ_map_cloud_.size());
+    for (const auto& p : local_occ_map_cloud_) points.emplace_back(p.x,p.y,p.z);
+    return points;
+  }
+
+  diff_planner::arch_entry::Config archEntryConfig() const {
+    diff_planner::arch_entry::Config config;
+    config.width=arch_door_width_; config.height=arch_door_height_;
+    config.range=local_radius_; config.min_progress=min_entry_progress_;
+    config.max_lateral=max_door_center_lateral_;
+    config.half_fov=front_search_half_fov_deg_*M_PI/180.0;
+    config.min_structure_z=search_region_min_.z; config.max_z=search_region_max_.z;
+    config.goal_z=arch_entry_center_z_;
+    config.min_goal_z=min_goal_z_; config.max_goal_z=max_goal_z_;
+    config.body_radius=door_path_clearance_;
+    return config;
+  }
+
   CandidateScore makeEntryCandidate() const {
     CandidateScore candidate;
-    const double dx = entry_goal_.x - odom_.pose.pose.position.x;
-    const double dy = entry_goal_.y - odom_.pose.pose.position.y;
-    candidate.yaw = std::atan2(dy, dx);
-    candidate.score = 1.0;
-    candidate.target_dist = std::sqrt(dx * dx + dy * dy);
-    candidate.forward_extent = candidate.target_dist;
-    candidate.has_goal_point = true;
-    candidate.goal_point = entry_goal_;
-    candidate.door_point = entry_goal_;
+    const auto& p=odom_.pose.pose.position;
+    const Eigen::Vector3d start(p.x,p.y,p.z), target(entry_goal_.x,entry_goal_.y,entry_goal_.z);
+    candidate.yaw=manual_entry_yaw_deg_*M_PI/180.0;
+    candidate.score=1.0;
+    candidate.target_dist=(target-start).head<2>().norm();
+    candidate.forward_extent=candidate.ref_progress=candidate.target_dist;
+    candidate.has_goal_point=candidate.door_detected=true;
+    candidate.goal_point=candidate.door_point=entry_goal_;
+    candidate.door_width=door_prefer_width_;
+    candidate.left_post=candidate.right_post=entry_goal_;
+    candidate.left_post.x-=.5*candidate.door_width*std::sin(candidate.yaw);
+    candidate.left_post.y+=.5*candidate.door_width*std::cos(candidate.yaw);
+    candidate.right_post.x+=.5*candidate.door_width*std::sin(candidate.yaw);
+    candidate.right_post.y-=.5*candidate.door_width*std::cos(candidate.yaw);
+    return candidate;
+  }
+
+  CandidateScore detectArchEntry() const {
+    const auto& p=odom_.pose.pose.position;
+    const auto fit=diff_planner::arch_entry::detect(entryStructureCloud(),
+        Eigen::Vector3d(p.x,p.y,p.z),entry_search_ref_yaw_,archEntryConfig());
+    if (!fit.found) {
+      ROS_WARN_THROTTLE(1.0,"[arch_entry] no supported arch with clear opening; hold.");
+      return makeHoldCandidate(entry_search_ref_yaw_);
+    }
+    CandidateScore candidate;
+    candidate.yaw=fit.yaw; candidate.score=fit.score; candidate.support_count=fit.support;
+    candidate.has_goal_point=candidate.door_detected=true;
+    candidate.door_point.x=fit.center.x(); candidate.door_point.y=fit.center.y();
+    candidate.door_point.z=fit.center.z(); candidate.goal_point=candidate.door_point;
+    candidate.target_dist=std::hypot(fit.center.x()-p.x,fit.center.y()-p.y);
+    candidate.ref_progress=candidate.target_dist;
+    candidate.door_width=candidate.lateral_span=2*fit.radius;
+    candidate.arch_spring_z=fit.spring_z;
+    candidate.left_post=candidate.right_post=candidate.door_point;
+    candidate.left_post.x-=fit.radius*std::sin(fit.yaw);
+    candidate.left_post.y+=fit.radius*std::cos(fit.yaw);
+    candidate.right_post.x+=fit.radius*std::sin(fit.yaw);
+    candidate.right_post.y-=fit.radius*std::cos(fit.yaw);
+    ROS_INFO_THROTTLE(1.0,"[arch_entry] center=(%.2f,%.2f,%.2f) width=%.2f spring_z=%.2f top_z=%.2f yaw=%.1f support=%d.",
+        fit.center.x(),fit.center.y(),fit.center.z(),2*fit.radius,fit.spring_z,
+        fit.spring_z+fit.radius,fit.yaw*180/M_PI,fit.support);
     return candidate;
   }
 
@@ -757,6 +824,8 @@ private:
       fallback.has_goal_point = true;
       return fallback;
     }
+
+    if (entry_detection_mode_ == "arch") return detectArchEntry();
 
     // 2026-07-09: 显式找“左右墙柱 + 中间空隙”的门框几何。
     // 上一版把“开口”误写成“前方有足够远的点云”，这在雷达场景里会把真门口漏掉，
@@ -1865,7 +1934,6 @@ private:
   geometry_msgs::Point makePoint(double target_dist, double yaw) const {
     if (use_fixed_entry_goal_) {
       geometry_msgs::Point pt = entry_goal_;
-      pt.z = resolveGoalHeightFor(entry_goal_.z);
       return pt;
     }
 
@@ -2120,6 +2188,21 @@ private:
     frame.points.push_back(right_top);
     frame.points.push_back(left_bottom);
     frame.points.push_back(right_bottom);
+    if (std::isfinite(candidate.arch_spring_z)) {
+      frame.points.clear();
+      left_bottom.z=right_bottom.z=arch_entry_center_z_-.5*arch_door_height_;
+      left_top.z=right_top.z=candidate.arch_spring_z;
+      frame.points={left_bottom,left_top,right_bottom,right_top};
+      const double radius=.5*candidate.door_width;
+      for (int i=0;i<24;++i) for (int j=0;j<2;++j) {
+        const double angle=(i+j)*M_PI/24;
+        geometry_msgs::Point point=candidate.door_point;
+        point.x-=radius*std::cos(angle)*std::sin(candidate.yaw);
+        point.y+=radius*std::cos(angle)*std::cos(candidate.yaw);
+        point.z=candidate.arch_spring_z+radius*std::sin(angle);
+        frame.points.push_back(point);
+      }
+    }
     marker_pub_.publish(frame);
 
     visualization_msgs::Marker center = frame;
@@ -2381,7 +2464,9 @@ private:
   double frame_b_path_clearance_{0.10};
   int frame_b_path_max_blocked_bins_{6};
   bool wait_for_hover_ready_{true};
-  bool use_fixed_entry_goal_{true};
+  bool use_fixed_entry_goal_{false};
+  double manual_entry_yaw_deg_{0.0};
+  double arch_door_width_{1.50}, arch_door_height_{1.50}, arch_entry_center_z_{.60};
   bool entry_reach_by_search_region_{true};
 	  bool publish_entry_marker_{true};
 	  bool publish_pre_entry_pos_cmd_{true};
