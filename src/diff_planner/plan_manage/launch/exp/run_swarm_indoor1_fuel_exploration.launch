@@ -5,10 +5,9 @@
     <arg name="entry_door_width" default="1.50"/>
     <arg name="entry_door_height" default="1.50"/>
     <arg name="entry_center_z" default="0.60"/>
-    <arg name="manual_entry_enabled" default="false"/>
+    <arg name="manual_entry_enabled" default="true"/>
 
-    <!-- 手动出口：默认关闭；坐标系同入口。开启后仅在该矩形门附近接管，实际到门才发给后机。 -->
-    <arg name="manual_exit_enabled" default="false"/>
+    <arg name="manual_exit_enabled" default="true"/>
     <arg name="manual_exit_x" default="1.8"/>
     <arg name="manual_exit_y" default="-3.0"/>
     <arg name="manual_exit_z" default="0.60"/>
@@ -32,7 +31,7 @@
     <arg name="return_straight_enabled" default="true"/>
     <param name="/exploration_node/mission/task_search/return_straight/enabled" value="$(arg return_straight_enabled)"/>
     <!-- 障碍距离按飞机中心计算，不再叠加机体半径；碰撞检查仍保留。 -->
-    <arg name="side_obstacle_center_distance" default="0.20"/>
+    <arg name="side_obstacle_center_distance" default="0.25"/>
     <param name="/exploration_node/mission/corridor_low_flight/enabled" value="true"/>
     <param name="/exploration_node/mission/corridor_low_flight/normal_max_height" value="$(arg corridor_normal_max_height)"/>
     <param name="/exploration_node/mission/corridor_low_flight/upper_max_height" value="$(arg corridor_upper_max_height)"/>
@@ -42,7 +41,7 @@
     <param name="/exploration_node/mission/wide_side_bypass/preferred_obstacle_distance" value="$(arg side_obstacle_center_distance)"/>
 
     <!-- 到出口后、搜索降落码前沿出口方向前进的距离，单位m。 -->
-    <arg name="front_approach_distance" default="0.2"/>
+    <arg name="front_approach_distance" default="0.3"/>
     <!-- 与单机航点入口共用已验证的检测、历史包络及连续穿越策略。 -->
     <arg name="enable_fapp_detection" default="true"/>
     <arg name="dynamic_mode" default="swing-only"/>
@@ -154,7 +153,7 @@
      <!-- enter -->
     <arg name="manual_entry_x" default="1.8"/>
     <arg name="manual_entry_y" default="0.0"/>
-    <arg name="manual_entry_z" default="0.60"/>
+    <arg name="manual_entry_z" default="0.65"/>
     <arg name="manual_entry_yaw_deg" default="0.0"/>
 
     <!-- 2026-07-07: 先给验证版一个覆盖 indoor1 的探索盒和地图尺寸，后续再按真实场地继续放大。 -->
