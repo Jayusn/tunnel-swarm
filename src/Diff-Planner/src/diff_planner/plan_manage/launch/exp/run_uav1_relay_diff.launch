@@ -1,8 +1,8 @@
 <launch>
     <!-- 动态检测开关：true=开启，false=关闭。默认运行 six/seven 脚本时直接使用此处配置。 -->
-    <arg name="enable_dynamic_detection" default="true"/>
+    <arg name="enable_dynamic_detection" default="false"/>
     <!-- 动态避障开关：true=开启，false=仅检测、不参与 FAPP 动态避障。 -->
-    <arg name="enable_fapp_dynamic_avoidance" default="true"/>
+    <arg name="enable_fapp_dynamic_avoidance" default="false"/>
     <!-- 障碍物高度范围：定位坐标系中目标中心的 Z，单位 m；不是障碍物自身尺寸。 -->
     <arg name="fapp_detection_min_z" default="0.3"/>
     <arg name="fapp_detection_max_z" default="1.2"/>
