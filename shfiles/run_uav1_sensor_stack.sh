@@ -58,15 +58,19 @@ wait_for_mavros()
     local deadline=$((SECONDS + WAIT_TIMEOUT)) check_timeout
     echo "[UAV1 MAVROS] 等待 /UAV1/mavros/state connected: True ..."
 
-    while [ "$SECONDS" -lt "$deadline" ]; do
-        check_timeout=$((deadline - SECONDS))
-        [ "$check_timeout" -gt 0 ] || break
+    # WAIT_TIMEOUT=0 时持续等待；timeout 0 不设置时间限制。
+    while [ "$WAIT_TIMEOUT" -eq 0 ] || [ "$SECONDS" -lt "$deadline" ]; do
+        check_timeout=0
+        if [ "$WAIT_TIMEOUT" -ne 0 ]; then
+            check_timeout=$((deadline - SECONDS))
+            [ "$check_timeout" -gt 0 ] || break
+        fi
         # 保持订阅直到连接成功，避免每条 disconnected 状态都重新启动检测。
         if timeout --kill-after=1s "${check_timeout}s" rostopic echo --filter 'm.connected' -n 1 /UAV1/mavros/state 2>/dev/null |
             grep -F 'connected: True' >/dev/null; then
             return 0
         fi
-        if [ "$SECONDS" -lt "$deadline" ]; then sleep 1; fi
+        if [ "$WAIT_TIMEOUT" -eq 0 ] || [ "$SECONDS" -lt "$deadline" ]; then sleep 1; fi
     done
     fail "等待 UAV1 MAVROS 连接超时。"
 }

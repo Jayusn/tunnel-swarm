@@ -68,6 +68,7 @@ usage() {
   - 第 5 屏默认启动热成像检测和 D435 融合；未接设备时可加 --no-thermal。
   - 动态检测、动态避障和障碍物高度范围直接修改 run_uav1_relay_diff.launch 开头的参数。
   - 正常运行本脚本即可使用上述配置，无需追加命令参数。
+  - 第 6 屏不等待前机里程计；第 1 屏持续等待飞控连接，不因连接超时关闭 MAVROS。
   - 可用环境变量 UAV1_SIX_WAIT_TIMEOUT 修改前级等待超时，默认按实际时间等待 180 秒。
 
 选项：
@@ -293,7 +294,8 @@ run_mavros_pane() {
   pane_init 1 MAVROS
   wait_for_ros_master || keep_pane_open
   printf '[启动] UAV1 MAVROS，设置原始 IMU 目标 220 Hz、ESC 目标 200 Hz\n'
-  UAV1_HIGHRES_IMU_INTERVAL_US=4545 sh "${MATCH_WS}/shfiles/run_uav1_sensor_stack.sh" mavros
+  WAIT_TIMEOUT=0 UAV1_HIGHRES_IMU_INTERVAL_US=4545 \
+    sh "${MATCH_WS}/shfiles/run_uav1_sensor_stack.sh" mavros
   printf '[退出] MAVROS 分屏，返回码=%s\n' "$?"
   keep_pane_open
 }
@@ -381,9 +383,9 @@ run_planner_pane() {
     sh "${MATCH_WS}/shfiles/run_uav1_sensor_stack.sh" landing &
     down_camera_pid=$!
   fi
-  # 相机与 FAST-LIO 并行初始化；规划器仍等待定位、点云和相机全部就绪。
+  # 相机与 FAST-LIO 并行初始化；仅等待本机定位、点云和相机就绪。
   if ! wait_for_topic_messages "${ODOM_TOPIC}" "${CLOUD_TOPIC}" \
-      /UAV0/fast_lio/Odom_high_freq "${DOWN_CAMERA_TOPIC}"; then
+      "${DOWN_CAMERA_TOPIC}"; then
     stop_owned_planner_helpers
     trap - EXIT INT TERM
     keep_pane_open
