@@ -59,7 +59,7 @@ usage() {
   1 MAVROS、2 MID360、3 FAST-LIO、4 高频视觉位姿回传、
   5 D435/颜色/二维码/前视ArUco/目标上报、
   6 下视相机/航点接力管理器/UAV1 Diff/RViz、
-  7 AutoTrans 控制器/桥接/日志/自动 rosbag。
+  7 AutoTrans 控制器/桥接/日志（自动录包默认关闭）。
 
 说明：
   - 不自动解锁、不切换 OFFBOARD、不发送目标点。
@@ -310,7 +310,7 @@ run_mid360_pane() {
 run_fastlio_pane() {
   pane_init 3 FAST-LIO
   wait_for_ros_master || keep_pane_open
-  printf '[准备] UAV1 FAST-LIO 诊断录包；与雷达初始化并行\n'
+  printf '[准备] UAV1 FAST-LIO；自动诊断录包默认关闭\n'
   UAV1_FASTLIO_LIDAR_WAIT_TIMEOUT="${WAIT_TIMEOUT}" \
     sh "${MATCH_WS}/shfiles/run_uav1_sensor_stack.sh" fastlio
   printf '[退出] FAST-LIO 分屏，返回码=%s\n' "$?"
@@ -416,7 +416,7 @@ run_controller_pane() {
   wait "${mavros_wait_pid}" || readiness_status=1
   wait "${topics_wait_pid}" || readiness_status=1
   (( readiness_status == 0 )) || keep_pane_open
-  printf '[启动] UAV1 轨迹桥接、AutoTrans、日志和自动 rosbag\n'
+  printf '[启动] UAV1 轨迹桥接、AutoTrans和日志（自动录包默认关闭）\n'
   printf '[说明] uav1_diff_autotrans.launch 默认不重复启动 Diff-Planner\n'
   roslaunch autotrans_reference_bridge uav1_diff_autotrans.launch \
     setpoint_topic:=/UAV1/control/attitude_setpoint \
@@ -564,7 +564,7 @@ sed "s|__UAV1_SIX_SCRIPT__|${SCRIPT_PATH}|g" \
 
 log '打开 UAV1 Terminator 七分屏'
 log '上排：1 MAVROS | 2 MID360 | 3 FAST-LIO'
-log '下排：4 视觉位姿 | 5 检测/上报 | 6 Diff/RViz | 7 AutoTrans/日志/rosbag'
+log '下排：4 视觉位姿 | 5 检测/上报 | 6 Diff/RViz | 7 AutoTrans/日志（录包默认关闭）'
 log "检测参数：thermal=${THERMAL}, odom=${ODOM_TOPIC}"
 log "动态障碍检测：${DETECTOR:-跟随 launch}，FAPP 动态避障：${DYNAMIC_AVOIDANCE:-跟随 launch}，规划优先：${PLANNER_PRIORITY}"
 log "前级等待超时：${WAIT_TIMEOUT}s"

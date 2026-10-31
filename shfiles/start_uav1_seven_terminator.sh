@@ -60,12 +60,12 @@ usage() {
   打开一个 UAV1 单机 Terminator 七分屏窗口并依次等待、启动：
   1 本机 ROS master/MAVROS、2 MID360、3 FAST-LIO、4 高频视觉位姿回传、
   5 D435/颜色/二维码/前视ArUco/目标上报、6 run_swarm Diff/RViz、
-  7 AutoTrans 控制器/桥接/日志/自动 rosbag。
+  7 AutoTrans 控制器/桥接/日志（自动录包默认关闭）。
 
 说明：
   - ROS master 默认使用 UAV1 本机 192.168.43.21:11311。
   - 第 6 屏执行 run_swarm.launch 中当前配置的单机预设航点。
-  - 第 6 屏启动下视相机、单机 Diff/RViz 和动态检测复盘录包。
+  - 第 6 屏启动下视相机和单机 Diff/RViz，动态检测复盘录包关闭。
   - 动态检测、动态避障和障碍物高度范围直接修改 run_swarm.launch 开头的参数。
   - 正常运行本脚本即可使用上述配置，无需追加命令参数。
   - AutoTrans 直接向 /UAV1/mavros/setpoint_raw/attitude 发布控制量。
@@ -446,7 +446,7 @@ run_planner_pane() {
   roslaunch diff_planner run_swarm.launch "${dynamic_args[@]}" \
     fapp_verified_preset:=true object_motion_evidence_enabled:=true dynamic_mode:="${DYNAMIC_MODE}" \
     fapp_planner_priority:="${PLANNER_PRIORITY}" \
-    record_dynamic_debug:=true
+    record_dynamic_debug:=false
   launch_status=$?
   stop_owned_down_camera
   trap - EXIT INT TERM
@@ -464,9 +464,9 @@ run_controller_pane() {
     "${VISION_STABILIZE_SECONDS}"
   sleep "${VISION_STABILIZE_SECONDS}"
   wait_for_topic_message "${VISION_POSE_TOPIC}" || keep_pane_open
-  printf '[启动] UAV1 轨迹桥接、AutoTrans、日志和自动 rosbag\n'
+  printf '[启动] UAV1 轨迹桥接、AutoTrans和日志（自动录包默认关闭）\n'
   printf '[控制] AutoTrans 直接发布 /UAV1/mavros/setpoint_raw/attitude\n'
-  printf '[录包] 自动记录 /UAV1/mpc_controller_node/mpc/input_diagnostics 和 /UAV1/fast_lio/queue_diagnostics\n'
+  printf '[录包] 自动 rosbag 默认关闭，保留 CSV 和文本日志\n'
   roslaunch autotrans_reference_bridge uav1_diff_autotrans.launch \
     enable_planner:=false \
     setpoint_topic:=/UAV1/mavros/setpoint_raw/attitude

@@ -35,7 +35,8 @@
   <arg name="goal_topic" default="/UAV1/planning/goal"/>
   <arg name="planning_stop_topic" default="/mandatory_stop_to_planner"/>
   <arg name="enable_logger" default="true"/>
-  <arg name="enable_rosbag" default="true"/>
+  <!-- 保留CSV和文本日志，自动rosbag默认关闭。 -->
+  <arg name="enable_rosbag" default="false"/>
   <arg name="enable_planner" default="false"/>
   <arg name="enable_controller" default="true"/>
   <arg name="enable_rviz" default="true"/>

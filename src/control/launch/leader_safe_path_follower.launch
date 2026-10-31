@@ -25,8 +25,8 @@
     <!-- 与前机一致：定位坐标系中的目标中心Z范围，单位m。 -->
     <arg name="fapp_detection_min_z" default=""/>
     <arg name="fapp_detection_max_z" default=""/>
-    <!-- six 第6屏独立录制检测复盘数据，不使用 AutoTrans 录包。 -->
-    <arg name="record_dynamic_debug" default="true"/>
+    <!-- 通道检测复盘录包默认关闭；需要时显式设置 record_dynamic_debug:=true。 -->
+    <arg name="record_dynamic_debug" default="false"/>
     <arg name="dynamic_bag_prefix" default="/home/oem/bags/corridor_debug"/>
     <!-- 2026-07-28: 终端6同时启动UAV1独立Diff；接力管理器只发目标，traj_server唯一输出后机PositionCommand。 -->
     <include file="$(find diff_planner)/launch/exp/run_uav1_relay_diff.launch">
