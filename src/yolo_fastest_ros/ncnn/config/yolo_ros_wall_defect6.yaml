@@ -1,0 +1,15 @@
+subscribers:
+  camera_reading:
+    img_topic: /camera/color/image_raw
+    depth_topic: /camera/aligned_depth_to_color/image_raw
+yolo:
+  model_reading:
+    model_path: model/wall_defect6-legacy.bin
+    para_path: model/wall_defect6-legacy.param
+    class_names: ["spall_light", "spall_medium", "crack", "rust_corrosion", "spall_heavy", "water_efflorescence"]
+    anchors: [27.87, 75.03, 53.56, 31.74, 68.35, 109.4, 125.2, 47.37, 140.63, 110.75, 225.25, 225.6]
+  detection_parameters:
+    use_gpu: false
+    input_size: 352
+    nmsThresh: 0.25
+    confThresh: 0.25

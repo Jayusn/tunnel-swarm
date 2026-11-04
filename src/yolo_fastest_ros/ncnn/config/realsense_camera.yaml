@@ -1,0 +1,16 @@
+# RealSense D400 RGB + aligned depth; actual device tested: D435IF.
+color_width: 1280
+color_height: 720
+color_fps: 30
+depth_width: 848
+depth_height: 480
+depth_fps: 30
+enable_color: true
+enable_depth: true
+align_depth: true
+enable_sync: true
+enable_infra1: false
+enable_infra2: false
+enable_gyro: false
+enable_accel: false
+enable_pointcloud: false

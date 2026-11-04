@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<launch>
+  <!-- Camera values live in YAML. Arguments select files, not numeric overrides. -->
+  <arg name="camera_param_file" default="$(find hikmvs_ros_driver)/config/camera.yaml"/>
+  <arg name="ros_param_file" default="$(find yolo_detector)/config/yolo_ros.yaml"/>
+
+  <rosparam command="load" file="$(arg ros_param_file)"/>
+  <rosparam command="load" file="$(find hikmvs_ros_driver)/config/calibration.yaml"/>
+  <rosparam command="load" file="$(arg camera_param_file)"/>
+  <!-- One YAML topic value connects the camera and detector after model loading. -->
+  <rosparam command="load" file="$(find hikmvs_ros_driver)/config/setup_ros.yaml"/>
+
+  <node pkg="hikmvs_ros_driver" type="hikmvs_ros_driver" name="hikmvs_ros_driver"
+        respawn="true" respawn_delay="2" output="screen"/>
+  <node pkg="yolo_detector" type="rosnode_yolo" name="rosnode_yolo"
+        required="true" output="screen"/>
+</launch>
