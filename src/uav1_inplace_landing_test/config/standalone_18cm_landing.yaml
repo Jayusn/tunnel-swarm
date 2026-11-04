@@ -3,8 +3,11 @@
 # 按 FAST-LIO Z [0.60, 0.63] m 筛选；实际入选 [0.6161, 0.6252] m。
 # 排除移动/明显偏侧片段，使用本次手举对中基准的未补偿 body X/Y 中位数。
 # error_body = measured_body - bias_xy_m；只校准 XY，不调整 Z。
+# 210542 实飞后实测机身偏后 6 cm、偏右 7 cm（body FLU）。
+# 在静态补偿基础上减去 [0.06, 0.07] m，使目标向前 6 cm、向左 7 cm。
+# 此次经验修正待两次复飞核对；高度、速度及丢码逻辑保持不变。
 center_alignment:
-  bias_xy_m: [0.01056531, 0.08260303]
+  bias_xy_m: [-0.04943469, 0.01260303]
 
 state_machine:
   align_error_m: 0.08
