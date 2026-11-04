@@ -1,5 +1,6 @@
 <launch>
   <arg name="down_camera_image_topic" default="/UAV1/down_camera/image_raw"/>
+  <arg name="landing_topic_prefix" default="/UAV1"/>
   <arg name="precision_landing_mission_mode" default="false"/>
   <arg name="precision_landing_test_mode" default="false"/>
   <arg name="precision_test_target_in_odom_frame" default="false"/>
@@ -148,6 +149,24 @@
     <!-- 控制器调参与规划恢复诊断所需话题；默认不录原始点云。 -->
     <rosparam param="rosbag_topics" subst_value="true">
       - "$(arg down_camera_image_topic)"
+      # 精降分析：码中心测量、对准误差、目标交接及最终发送给飞控的指令。
+      - "$(arg landing_topic_prefix)/down_camera/camera_info"
+      - "$(arg landing_topic_prefix)/need_to_land"
+      - "$(arg landing_topic_prefix)/landing/target_id"
+      - "$(arg landing_topic_prefix)/landing/locked_id"
+      - "$(arg landing_topic_prefix)/landing/target_pose"
+      - "$(arg landing_topic_prefix)/landing/error_xy"
+      - "$(arg landing_topic_prefix)/landing/status"
+      - "$(arg landing_topic_prefix)/landing/success"
+      - "$(arg landing_topic_prefix)/landing_test/takeoff_reference_z"
+      - "$(arg landing_topic_prefix)/landing_test/takeoff_position"
+      - "$(arg landing_topic_prefix)/landing_test/precision_position"
+      - "$(arg precision_landing_test_target)"
+      - "$(arg recovery_position_setpoint_topic)"
+      - "$(arg landing_topic_prefix)/landing_test/descent_owner"
+      - "$(arg landing_topic_prefix)/mavros/setpoint_raw/local"
+      - "$(arg landing_topic_prefix)/mavros/setpoint_raw/attitude"
+      - "$(arg mavros_local_pose_topic)"
       - "$(arg odom_topic)"
       - "$(arg force_attitude_odom_topic)"
       - "$(arg imu_topic)"

@@ -3,6 +3,9 @@
   <arg name="odometry_topic" default="$(arg topic_prefix)/fast_lio/Odom_high_freq"/>
   <include file="$(find uav1_inplace_landing_test)/launch/mpc.launch">
     <arg name="down_camera_image_topic" value="$(arg topic_prefix)/down_camera/image_raw"/>
+    <arg name="landing_topic_prefix" value="$(arg topic_prefix)"/>
+    <!-- 日志器统一管理录包，和 CSV/文本日志保存在同一次运行目录。 -->
+    <arg name="enable_rosbag" value="true"/>
     <arg name="precision_landing_test_mode" value="true"/>
     <arg name="precision_test_target_in_odom_frame" value="true"/>
     <arg name="precision_landing_test_target" value="$(arg topic_prefix)/landing_test/nmpc_target"/>
