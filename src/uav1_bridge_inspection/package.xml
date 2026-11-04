@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>uav1_bridge_inspection</name>
+  <version>0.1.0</version>
+  <description>UAV1 桥洞航点巡检、检测显示及车载 ArUco 精降。</description>
+  <maintainer email="competition@example.com">Competition Team</maintainer>
+  <license>MIT</license>
+  <buildtool_depend>catkin</buildtool_depend>
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>mavros_msgs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>python_qt_binding</exec_depend>
+  <exec_depend>rviz</exec_depend>
+  <exec_depend>diff_planner</exec_depend>
+  <exec_depend>autotrans_reference_bridge</exec_depend>
+  <exec_depend>payload_mpc_controller</exec_depend>
+  <exec_depend>uav1_inplace_landing_test</exec_depend>
+  <exec_depend>uav0_competition_bringup</exec_depend>
+  <exec_depend>realsense2_camera</exec_depend>
+  <exec_depend>yolo_detector</exec_depend>
+  <exec_depend>precision_landing</exec_depend>
+  <exec_depend>uvc_ubuntu</exec_depend>
+</package>

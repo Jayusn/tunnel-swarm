@@ -1,0 +1,54 @@
+<?xml version="1.0" ?>
+<launch>
+  <arg name="ground_z"/>
+  <arg name="entrance_x"/>
+  <arg name="entrance_y"/>
+  <arg name="bridge_yaw"/>
+  <arg name="landing_x"/>
+  <arg name="landing_y"/>
+  <arg name="bridge_floor_height" default="1.5"/>
+  <arg name="bridge_clear_height" default="1.2"/>
+  <arg name="cruise_height_above_floor" default=".6"/>
+  <arg name="landing_platform_delta_z" default="0.0"/>
+  <arg name="route_file" default="$(find uav1_bridge_inspection)/config/route.yaml"/>
+  <arg name="enable_view" default="true"/>
+  <arg name="enable_detection" default="true"/>
+  <arg name="enable_thermal" default="true"/>
+  <arg name="floor_z" default="$(eval float(arg(&quot;ground_z&quot;)) + float(arg(&quot;bridge_floor_height&quot;)))"/>
+  <arg name="ceiling_z" default="$(eval float(arg(&quot;floor_z&quot;)) + float(arg(&quot;bridge_clear_height&quot;)))"/>
+  <arg name="takeoff_z" default="$(eval float(arg(&quot;floor_z&quot;)) + float(arg(&quot;cruise_height_above_floor&quot;)))"/>
+  <arg name="landing_approach_z" default="$(arg takeoff_z)"/>
+  <include file="$(find uav1_bridge_inspection)/launch/planner.launch">
+    <arg name="ground_z" value="$(arg ground_z)"/>
+    <arg name="floor_z" value="$(arg floor_z)"/>
+    <arg name="ceiling_z" value="$(arg ceiling_z)"/>
+  </include>
+  <include file="$(find uav1_bridge_inspection)/launch/control.launch">
+    <arg name="takeoff_z" value="$(arg takeoff_z)"/>
+  </include>
+  <include file="$(find uav1_bridge_inspection)/launch/detection.launch" if="$(arg enable_detection)">
+    <arg name="enable_thermal" value="$(arg enable_thermal)"/>
+  </include>
+  <node pkg="uav1_bridge_inspection" type="bridge_mission.py" name="bridge_mission" output="screen">
+    <rosparam command="load" file="$(arg route_file)"/>
+    <param name="entrance_x" value="$(arg entrance_x)"/>
+    <param name="entrance_y" value="$(arg entrance_y)"/>
+    <param name="bridge_yaw" value="$(arg bridge_yaw)"/>
+    <param name="floor_z" value="$(arg floor_z)"/>
+    <param name="landing_x" value="$(arg landing_x)"/>
+    <param name="landing_y" value="$(arg landing_y)"/>
+    <param name="landing_approach_z" value="$(arg landing_approach_z)"/>
+    <param name="landing_platform_delta_z" value="$(arg landing_platform_delta_z)"/>
+    <remap from="odom" to="/UAV1/fast_lio/Odom_high_freq"/>
+    <remap from="state" to="/UAV1/mavros/state"/>
+    <remap from="start" to="/UAV1/bridge/start"/>
+    <remap from="goal" to="/UAV1/planning/goal"/>
+    <remap from="need_to_land" to="/UAV1/need_to_land"/>
+    <remap from="platform_reference" to="/UAV1/bridge/platform_reference"/>
+    <remap from="status" to="/UAV1/bridge/status"/>
+    <remap from="route" to="/UAV1/bridge/route"/>
+  </node>
+  <node if="$(arg enable_view)" pkg="uav1_bridge_inspection" type="bridge_view.py" name="bridge_view" output="screen">
+    <param name="rviz_config" value="$(find uav1_bridge_inspection)/config/bridge.rviz"/>
+  </node>
+</launch>

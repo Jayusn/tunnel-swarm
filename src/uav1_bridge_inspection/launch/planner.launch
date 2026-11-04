@@ -1,0 +1,67 @@
+<?xml version="1.0" ?>
+<launch>
+  <arg name="ground_z"/>
+  <arg name="floor_z"/>
+  <arg name="ceiling_z"/>
+  <include file="$(find diff_planner)/launch/include/advanced_param_exp.xml">
+    <arg name="local_map_size_x" value="7.5"/>
+    <arg name="local_map_size_y" value="4.5"/>
+    <arg name="local_map_size_z" value="3.0"/>
+    <arg name="odom_topic" value="/UAV1/fast_lio/Odom_high_freq"/>
+    <arg name="cloud_topic" value="/UAV1/fast_lio/cloud_registered"/>
+    <arg name="camera_pose_topic" value="unused_camera_pose"/>
+    <arg name="depth_topic" value="unused_depth"/>
+    <arg name="cx" value="319.3"/>
+    <arg name="cy" value="239.1"/>
+    <arg name="fx" value="386.2"/>
+    <arg name="fy" value="386.2"/>
+    <arg name="max_vel" value=".5"/>
+    <arg name="max_acc" value=".5"/>
+    <arg name="max_jer" value="20.0"/>
+    <arg name="planning_horizon" value="7.5"/>
+    <arg name="enable_virtual_wall" value="true"/>
+    <arg name="virtual_ground" value="$(arg floor_z)"/>
+    <arg name="virtual_ceil" value="$(arg ceiling_z)"/>
+    <arg name="map_resolution" value=".05"/>
+    <arg name="inflation_size" value=".099"/>
+    <arg name="flight_type" value="1"/>
+    <arg name="point_num" value="0"/>
+    <arg name="drone_id" value="1"/>
+    <arg name="init_x" value="0.0"/>
+    <arg name="init_y" value="0.0"/>
+    <arg name="init_z" value="0.0"/>
+    <arg name="cloud_use_init_offset" value="false"/>
+    <arg name="planning_frame" value="UAV1/camera_init"/>
+    <arg name="manual_goal_topic" value="/UAV1/planning/goal"/>
+    <arg name="require_pre_agent_trajectory" value="false"/>
+    <arg name="enable_fapp_dynamic_avoidance" value="false"/>
+    <arg name="fading_time" value="-1.0"/>
+    <arg name="mondify_final_goal" value="false"/>
+    <arg name="point0_x" value="0.0"/>
+    <arg name="point0_y" value="0.0"/>
+    <arg name="point0_z" value="0.0"/>
+    <arg name="point1_x" value="0.0"/>
+    <arg name="point1_y" value="0.0"/>
+    <arg name="point1_z" value="0.0"/>
+    <arg name="point2_x" value="0.0"/>
+    <arg name="point2_y" value="0.0"/>
+    <arg name="point2_z" value="0.0"/>
+    <arg name="point3_x" value="0.0"/>
+    <arg name="point3_y" value="0.0"/>
+    <arg name="point3_z" value="0.0"/>
+    <arg name="point4_x" value="0.0"/>
+    <arg name="point4_y" value="0.0"/>
+    <arg name="point4_z" value="0.0"/>
+  </include>
+  <param name="/drone_1_diff_planner_node/grid_map/ground_height" value="$(arg ground_z)"/>
+  <param name="/drone_1_diff_planner_node/grid_map/visualization_truncate_height" value="$(eval float(arg(&quot;ceiling_z&quot;)) + 1.0)"/>
+  <node pkg="diff_planner" type="traj_server" name="drone_1_traj_server" output="screen">
+    <remap from="/position_cmd" to="/UAV1/planning/pos_cmd"/>
+    <remap from="~planning/trajectory" to="/drone_1_planning/trajectory"/>
+    <remap from="/planning/yaw" to="/UAV1/bridge/traj_yaw"/>
+    <remap from="~heartbeat" to="/drone_1_traj_server/heartbeat"/>
+    <remap from="/planning/traj_started" to="/UAV1/planning/traj_started"/>
+    <param name="traj_server/time_forward" value="1.0"/>
+    <param name="traj_server/heartbeat_timeout" value="180.0"/>
+  </node>
+</launch>

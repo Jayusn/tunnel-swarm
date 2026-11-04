@@ -26,6 +26,8 @@ class Router:
         self.control_pose = None
         self.odometry_topic = rospy.get_param('~odometry_topic', '')
         self.offboard_touchdown = rospy.get_param('~offboard_touchdown', False)
+        # 桥梁巡检共用任务 NMPC：透传其起飞/巡航输出，精降沿用本路由的接地处理。
+        self.mission_attitude_input = rospy.get_param('~mission_attitude_input', False)
         self.takeoff_reference_z = None
         self.touchdown_odom = None
         self.contact_samples = deque()
@@ -39,7 +41,7 @@ class Router:
         self.takeoff_yaw = None
         self.takeoff_speed = None
         self.takeoff_stamp = None
-        self.requested = False
+        self.requested = self.mission_attitude_input
         self.owned = False
         self.finished = False
         self.flying = False
@@ -284,6 +286,12 @@ class Router:
     def attitude_cb(self, msg):
         with self.lock:
             values = (msg.thrust, msg.body_rate.x, msg.body_rate.y, msg.body_rate.z)
+            # 任务控制器自行产生进入 OFFBOARD 前的预流；此处不生成控制量。
+            if (self.mission_attitude_input and not self.owned and not self.flying and
+                    not self.finished and self.fresh(msg) and
+                    all(math.isfinite(v) for v in values) and 0 <= msg.thrust <= 1):
+                self.attitude.publish(msg)
+                return
             if (self.requested and self.output_allowed() and self.fresh(msg) and
                     all(math.isfinite(v) for v in values) and 0 <= msg.thrust <= 1):
                 self.take_control()

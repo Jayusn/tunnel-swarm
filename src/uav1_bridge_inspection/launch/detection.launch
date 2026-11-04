@@ -1,0 +1,38 @@
+<?xml version="1.0" ?>
+<launch>
+  <arg name="enable_thermal" default="true"/>
+  <include file="$(find realsense2_camera)/launch/rs_camera.launch">
+    <arg name="camera" value="UAV1/camera"/>
+    <arg name="tf_prefix" value="UAV1_camera"/>
+    <arg name="align_depth" value="true"/>
+    <arg name="color_width" value="1280"/>
+    <arg name="color_height" value="720"/>
+    <arg name="color_fps" value="30"/>
+    <arg name="depth_width" value="848"/>
+    <arg name="depth_height" value="480"/>
+    <arg name="depth_fps" value="30"/>
+    <arg name="enable_pointcloud" value="true"/>
+  </include>
+  <include file="$(find uav0_competition_bringup)/launch/uav1_detection_stack.launch">
+    <arg name="enable_realsense" value="false"/>
+    <arg name="enable_color_tag" value="false"/>
+    <arg name="enable_qr" value="false"/>
+    <arg name="enable_front_aruco" value="false"/>
+    <arg name="enable_thermal" value="$(arg enable_thermal)"/>
+    <arg name="detection_activation_config" value="$(find target_reporting)/config/uav1_detection_test_activation.yaml"/>
+    <arg name="target_reporting_record_root" value="$(env HOME)/match_ws/target_reports/bridge"/>
+  </include>
+  <param name="/uav1_thermal_d435_fusion/thermal_ground_filter_enabled" value="false"/>
+  <param name="/uav1_target_reporter/thermal_ground_filter_enabled" value="false"/>
+  <param name="/uav1_target_reporter/leader_thermal_filter_enabled" value="false"/>
+  <param name="/uav1_target_reporter/leader_thermal_projection_filter_enabled" value="false"/>
+  <param name="/uav1_target_reporter/exit_plane_filter_enabled" value="false"/>
+  <rosparam command="load" file="$(find yolo_detector)/config/yolo_ros.yaml"/>
+  <param name="/subscribers/camera_reading/img_topic" value="/UAV1/camera/color/image_raw"/>
+  <param name="/subscribers/camera_reading/depth_topic" value="/UAV1/camera/aligned_depth_to_color/image_raw"/>
+  <node pkg="yolo_detector" type="rosnode_yolo" name="bridge_crack_detector" output="screen">
+    <remap from="/image_converter/output_video" to="/UAV1/bridge/crack/debug_image"/>
+    <remap from="/objects" to="/UAV1/bridge/crack/objects"/>
+    <remap from="/detection_status" to="/UAV1/bridge/crack/detected"/>
+  </node>
+</launch>

@@ -1,0 +1,51 @@
+<?xml version="1.0" ?>
+<launch>
+  <arg name="takeoff_z"/>
+  <rosparam command="load" ns="/UAV1/mpc_controller_node" file="$(find uav1_inplace_landing_test)/config/mpc_defaults.yaml"/>
+  <include file="$(find autotrans_reference_bridge)/launch/uav1_diff_autotrans.launch">
+    <arg name="precision_landing_enabled" value="true"/>
+    <arg name="enable_planner" value="false"/>
+    <arg name="enable_rosbag" value="false"/>
+    <arg name="locked_yaw_topic" value=""/>
+    <arg name="setpoint_topic" value="/UAV1/bridge/nmpc_attitude"/>
+    <arg name="cmd_trigger_topic" value="/UAV1/bridge/start"/>
+  </include>
+  <param name="/UAV1/mpc_controller_node/takeoff/enabled" value="true"/>
+  <param name="/UAV1/mpc_controller_node/takeoff/target_z" value="$(arg takeoff_z)"/>
+  <param name="/UAV1/mpc_controller_node/fixed_hover/enabled" value="false"/>
+  <param name="/UAV1/mpc_controller_node/msg_timeout/state" value="1.5"/>
+  <include file="$(find uav1_inplace_landing_test)/launch/precision.launch">
+    <arg name="vehicle_ns" value="UAV1"/>
+    <arg name="camera_extrinsic_config" value="$(find precision_landing)/config/down_camera_extrinsic_uav1.yaml"/>
+    <arg name="odometry_topic" value="/UAV1/fast_lio/Odom_high_freq"/>
+    <arg name="takeoff_reference_topic" value="/UAV1/bridge/platform_reference"/>
+    <arg name="auto_land_at_cutoff" value="false"/>
+    <arg name="enable_setpoint_arbiter" value="false"/>
+    <arg name="enable_landing_search" value="false"/>
+    <arg name="landing_setpoint_input" value="/UAV1/bridge/precision_position"/>
+  </include>
+  <rosparam command="load" ns="/UAV1/precision_landing_node" file="$(find uav1_inplace_landing_test)/config/standalone_center_offset.yaml"/>
+  <param name="/UAV1/precision_landing_node/marker/size_m" value=".18"/>
+  <param name="/UAV1/precision_landing_node/marker/dictionary" value="DICT_4X4_50"/>
+  <param name="/UAV1/precision_landing_node/topics/rc_land_active" value="/UAV1/landing/rc_land_active"/>
+  <node pkg="uav1_inplace_landing_test" type="landing_nmpc_test_router.py" name="bridge_landing_router" output="screen">
+    <param name="odometry_topic" value="/UAV1/fast_lio/Odom_high_freq"/>
+    <param name="offboard_touchdown" value="true"/>
+    <param name="mission_attitude_input" value="true"/>
+    <remap from="takeoff_reference" to="/UAV1/bridge/platform_reference"/>
+    <remap from="extended_state" to="/UAV1/mavros/extended_state"/>
+    <remap from="rc_land" to="/UAV1/landing/rc_land_active"/>
+    <remap from="arming" to="/UAV1/mavros/cmd/arming"/>
+    <remap from="takeoff_position" to="/UAV1/bridge/unused_takeoff_position"/>
+    <remap from="local_pose" to="/UAV1/mavros/local_position/pose"/>
+    <remap from="landing_position" to="/UAV1/bridge/precision_position"/>
+    <remap from="landing_state" to="/UAV1/landing/state"/>
+    <remap from="mavros_state" to="/UAV1/mavros/state"/>
+    <remap from="nmpc_target" to="/UAV1/landing/nmpc_target"/>
+    <remap from="nmpc_attitude" to="/UAV1/bridge/nmpc_attitude"/>
+    <remap from="nmpc_recovery" to="/UAV1/bridge/unused_recovery"/>
+    <remap from="mavros_position" to="/UAV1/mavros/setpoint_raw/local"/>
+    <remap from="mavros_attitude" to="/UAV1/mavros/setpoint_raw/attitude"/>
+    <remap from="owner" to="/UAV1/bridge/descent_owner"/>
+  </node>
+</launch>
