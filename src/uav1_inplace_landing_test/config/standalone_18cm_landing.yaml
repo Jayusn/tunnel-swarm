@@ -14,18 +14,18 @@ control:
   freeze_descent_hold_height: true
 
 state_machine:
-  # 低空初始/重新对中取 8 cm 与高度门限的较小值；高空边降边对中。
-  align_error_m: 0.08
+  # 低空初始/重新对中随高度收紧，最大 15 cm；高空边降边对中。
+  align_error_m: 0.15
 
 stages:
   high:
     min_height_m: 0.60
     # >=1.00 m 有效识码后边下降边对中，不因 XY 误差暂停。
     align_while_descending_above_m: 1.00
-    # 低于 1.00 m 才应用高度门限：由 1.30 m 的 10 cm 线性收紧至 0.60 m 的 5 cm。
+    # 低于 1.00 m 才应用高度门限：由 1.00 m 的 15 cm 线性收紧至 0.60 m 的 5 cm。
     # 低空超限保持高度对中，连续达标 0.5 s 再下降。
-    taper_start_height_m: 1.30
-    error_m: 0.10
+    taper_start_height_m: 1.00
+    error_m: 0.15
     # 视觉离码 1.0 -> 0.8 m，下降速度从 0.25 平滑降至 0.15 m/s。
     # 0.8 -> 0.6 m 保持慢速接近；误差超限仍暂停下降。
     slowdown_start_height_m: 1.00
