@@ -33,6 +33,8 @@ bash shfiles/start_uav1_bridge_inspection.sh
 
 本机 ROS master 就绪后，巡检任务自动打开左侧四路检测、右侧嵌入 RViz 的窗口；不需要先解锁或切 OFFBOARD，没有传感器消息时相应画面显示等待。分屏程序退出后保留终端，便于查看报错。仅使用 `--help` 时才打印帮助并退出。
 
+本机 `/home/oem/.bashrc` 已将新终端的默认 ROS 环境设为 `ROS_MASTER_URI=http://127.0.0.1:11311`、`ROS_IP=127.0.0.1`，并取消 `ROS_HOSTNAME`。桥梁脚本运行后，新开终端即可直接执行 `rostopic list` 或 `rostopic echo -n 1 /UAV1/fast_lio/Odom_high_freq/pose/pose/position`；已经打开的终端需要关闭后重开。原多机启动脚本仍自行设置多机网络，新开查询终端默认连接本机。这项终端设置位于仓库外，复制仓库到其他电脑不会自动修改该电脑的 `.bashrc`。
+
 飞行前在 `launch/bridge.launch` 填好地面 Z、降落点 XY，在 `config/route.yaml` 填好航点。先在车辆静止时完成 FAST-LIO 初始化，再让车辆行驶；整个任务保持同一定位坐标系。也可在启动时临时覆盖配置：
 
 ```bash
