@@ -17,8 +17,8 @@
     <arg name="cy" value="239.1"/>
     <arg name="fx" value="386.2"/>
     <arg name="fy" value="386.2"/>
-    <arg name="max_vel" value=".5"/>
-    <arg name="max_acc" value=".5"/>
+    <arg name="max_vel" value=".2"/>
+    <arg name="max_acc" value=".2"/>
     <arg name="max_jer" value="20.0"/>
     <arg name="planning_horizon" value="7.5"/>
     <arg name="enable_virtual_wall" value="true"/>
