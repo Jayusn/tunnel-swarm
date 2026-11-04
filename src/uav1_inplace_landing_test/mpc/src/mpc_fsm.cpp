@@ -450,6 +450,8 @@ namespace PayloadMPC
                 update_hover_pose();
                 if (!controller_.resetForHover(est_state_, hover_pose_, hover_yaw_)) return;
                 precision_test_ground_z_ = odom_data.p.z();
+                precision_thrust_learning_ready_ = false;
+                precision_thrust_stable_since_ = ros::Time(0);
                 precision_test_started_ = true;
                 fsm_state = AUTO_HOVER;
                 ROS_WARN("[精降NMPC] 已接收精降目标，MPC接管；CH10优先。");
@@ -892,6 +894,8 @@ namespace PayloadMPC
 		{
 			// 门控关闭周期结束前清空队列，保留最后有效 thrustscale/P。
 			controller_.clearThrustCommandHistory();
+			if (thrust_model_gate != ThrustModelGateReason::TAKEOFF_NOT_SETTLED)
+				precision_thrust_stable_since_ = ros::Time(0);
 		}
 
 		// STEP6: Clear flags beyound their lifetime
@@ -1562,7 +1566,7 @@ namespace PayloadMPC
 		force_observer_input_valid_ = true;
 	}
 
-	MPCFSM::ThrustModelGateReason MPCFSM::thrustModelGate(const ros::Time &now) const
+	MPCFSM::ThrustModelGateReason MPCFSM::thrustModelGate(const ros::Time &now)
 	{
 		if (params_.thr_map_.accurate_thrust_model != 1)
 			return ThrustModelGateReason::DISABLED_BY_PARAM;
@@ -1587,6 +1591,23 @@ namespace PayloadMPC
 		if (!rpm_data.rpm_vec.allFinite() ||
 			rpm_data.rpm_vec.minCoeff() < params_.thr_map_.min_learning_rpm)
 			return ThrustModelGateReason::RPM_INVALID;
+		// 独立测试从地面进入 AUTO_HOVER；PX4 的 IN_AIR 可能早于真正离地。
+		// 仅首次学习前等待实际升高并停止快速爬升，排除电机启动瞬态。
+		if (precision_test_mode_ && !precision_thrust_learning_ready_)
+		{
+			if (!odom_is_received(now) || !odom_data.p.allFinite() ||
+				!odom_data.v.allFinite() || odom_data.p.z() - precision_test_ground_z_ < 0.30 ||
+				std::abs(odom_data.v.z()) >= 0.15)
+			{
+				precision_thrust_stable_since_ = ros::Time(0);
+				return ThrustModelGateReason::TAKEOFF_NOT_SETTLED;
+			}
+			if (precision_thrust_stable_since_.isZero())
+				precision_thrust_stable_since_ = now;
+			if ((now - precision_thrust_stable_since_).toSec() < 0.50)
+				return ThrustModelGateReason::TAKEOFF_NOT_SETTLED;
+			precision_thrust_learning_ready_ = true;
+		}
 		return ThrustModelGateReason::ACTIVE;
 	}
 
@@ -1604,6 +1625,7 @@ namespace PayloadMPC
 		case ThrustModelGateReason::LANDED: name = "尚未确认离地"; break;
 		case ThrustModelGateReason::RPM_STALE: name = "RPM 消息超时"; break;
 		case ThrustModelGateReason::RPM_INVALID: name = "RPM 无效"; break;
+		case ThrustModelGateReason::TAKEOFF_NOT_SETTLED: name = "等待实际离地并稳定后开始学习"; break;
 		case ThrustModelGateReason::ACTIVE: name = "在线学习已生效"; break;
 		}
 

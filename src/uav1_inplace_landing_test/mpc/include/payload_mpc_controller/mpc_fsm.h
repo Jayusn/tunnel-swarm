@@ -126,6 +126,8 @@ namespace PayloadMPC
         Eigen::Vector3d precision_test_translation_{Eigen::Vector3d::Zero()};
         double precision_test_yaw_offset_{0.0};
         double precision_test_ground_z_{0.0};
+        bool precision_thrust_learning_ready_{false};
+        ros::Time precision_thrust_stable_since_{0};
         // Subscribers and publisher.
 		ros::Publisher pub_control_command, pub_predicted_trajectory_, pub_reference_trajectory_;
 		ros::Publisher pub_all_ref_data_, pub_rmse_info_;
@@ -267,6 +269,7 @@ namespace PayloadMPC
 			LANDED,
 			RPM_STALE,
 			RPM_INVALID,
+			TAKEOFF_NOT_SETTLED,
 			ACTIVE
 		};
 		ThrustModelGateReason last_thrust_model_gate_reason_{
@@ -302,7 +305,7 @@ namespace PayloadMPC
 		void processMpcRecovery(const ros::Time &now);
 		void beginDirectAutoLand(const ros::Time &now, const char *reason);
 		void processDirectAutoLand(const ros::Time &now);
-		ThrustModelGateReason thrustModelGate(const ros::Time &now) const;
+		ThrustModelGateReason thrustModelGate(const ros::Time &now);
 		void reportThrustModelGate(ThrustModelGateReason reason);
 
 		void publishPrediction(const Eigen::Ref<const Eigen::Matrix<real_t, kStateSize, kSamples + 1>> reference_states,
