@@ -161,7 +161,7 @@ namespace PayloadMPC
 		double landing_search_yaw_timeout_{0.5};
 		double landing_search_hold_height_{0.6};
 		ros::Time last_landing_search_yaw_time_{0};
-		// CH8 低位触发一次起飞；失败后必须离开低位再重新进入，避免循环反复重启。
+		// CH9 低位触发一次起飞；失败后必须离开低位再重新进入，避免循环反复重启。
 		bool takeoff_request_latched_{false};
 		// 仅在起飞前置条件的失败原因变化时输出提示，避免控制周期反复刷屏。
 		std::string last_takeoff_precondition_reason_;

@@ -5,17 +5,11 @@
 
 namespace
 {
-const char *requestedRcMode(double pwm, int low_threshold, int mid_low_threshold,
-                            int mid_high_threshold, int high_threshold)
+const char *requestedRcMode(bool takeoff, bool hover, bool command)
 {
-    if (!std::isfinite(pwm) || pwm < 800.0 || pwm > 2200.0)
-        return "安全状态";
-    if (pwm < low_threshold)
-        return "AUTO_TAKEOFF";
-    if (pwm >= mid_low_threshold && pwm <= mid_high_threshold)
-        return "AUTO_HOVER";
-    if (pwm > high_threshold)
-        return "CMD_CTRL";
+    if (command) return "CMD_CTRL";
+    if (hover) return "AUTO_HOVER";
+    if (takeoff) return "AUTO_TAKEOFF";
     return "过渡区";
 }
 }
@@ -44,9 +38,10 @@ RC_Data_t::RC_Data_t()
 }
 
 void RC_Data_t::set_mode_params(int mode_ch, int land_ch, int low_th, int mid_low_th,
-                                int mid_high_th, int high_th)
+                                int mid_high_th, int high_th, int takeoff_hover_ch)
 {
     mode_channel = mode_ch;
+    takeoff_hover_channel = takeoff_hover_ch;
     land_channel = land_ch;
     low_threshold = low_th;
     mid_low_threshold = mid_low_th;
@@ -65,7 +60,7 @@ void RC_Data_t::feed(mavros_msgs::RCInConstPtr pMsg)
 
     if (msg.channels.size() < 4)
     {
-        ROS_WARN_THROTTLE(5.0, "[RC] CH8 信号无效：RC 通道数量不足，保持上一条有效模式请求。");
+        ROS_WARN_THROTTLE(5.0, "[RC] CH8/CH9 信号无效：RC 通道数量不足，保持上一条有效模式请求。");
         mode_input_valid = false;
         return;
     }
@@ -83,53 +78,45 @@ void RC_Data_t::feed(mavros_msgs::RCInConstPtr pMsg)
 
     if (mode_channel < 0 || msg.channels.size() <= static_cast<size_t>(mode_channel))
     {
-        ROS_WARN_THROTTLE(5.0, "[RC] CH8 信号无效：未收到模式通道 CH%d，保持上一条有效模式请求。", mode_channel + 1);
+        ROS_WARN_THROTTLE(5.0, "[RC] CH8/CH9 信号无效：未收到模式通道 CH%d，保持上一条有效模式请求。", mode_channel + 1);
         mode_input_valid = false;
         return;
     }
 
-    // CH8(数组下标7)作为三段主模式通道：低位起飞、中位悬停、高位命令。
-    // PWM/us 由 mavros_msgs/RCIn.channels 提供；CH6 的 OFFBOARD 仍由 PX4/QGC 管理。
-    // 1700~1800 us 是未定义过渡区，不触发新的自动模式。
+    if (takeoff_hover_channel < 0 ||
+        msg.channels.size() <= static_cast<size_t>(takeoff_hover_channel))
+    {
+        ROS_WARN_THROTTLE(5.0, "[RC] 未收到起飞/悬停通道 CH%d，保持上一条有效模式请求。",
+                          takeoff_hover_channel + 1);
+        mode_input_valid = false;
+        return;
+    }
+
+    // CH8 高位优先请求轨迹控制；退出 CH8 高位后由 CH9 两档选择起飞/悬停。
     mode = static_cast<double>(msg.channels[mode_channel]);
-    const char *requested_mode = requestedRcMode(
-        mode, low_threshold, mid_low_threshold, mid_high_threshold, high_threshold);
+    gear = static_cast<double>(msg.channels[takeoff_hover_channel]);
     check_validity();
-    if (!have_init_last_mode)
+    if (mode < 800.0 || mode > 2200.0 || gear < 800.0 || gear > 2200.0)
     {
-        have_init_last_mode = true;
-        last_mode = mode;
-    }
-
-    const bool mode_valid = mode >= 800.0 && mode <= 2200.0;
-    if (!mode_valid)
-    {
-        ROS_WARN_THROTTLE(5.0, "[RC] CH8 信号无效：PWM=%.0f us，保持上一条有效模式请求。", mode);
         mode_input_valid = false;
-        last_mode = mode;
         return;
     }
 
-    const bool last_command_mode = last_mode > high_threshold;
-    const bool last_hover_mode = last_mode >= mid_low_threshold && last_mode <= mid_high_threshold;
-
+    const bool last_command_mode = is_command_mode;
+    const bool last_hover_mode = is_hover_mode;
+    const char *previous_mode = requestedRcMode(is_takeoff_mode, is_hover_mode, is_command_mode);
     mode_input_valid = true;
-    is_takeoff_mode = mode < low_threshold;
-    is_hover_mode = mode >= mid_low_threshold && mode <= mid_high_threshold;
     is_command_mode = mode > high_threshold;
-    if (have_init_last_mode)
+    is_takeoff_mode = !is_command_mode && gear < low_threshold;
+    is_hover_mode = !is_command_mode && gear > high_threshold;
+    const char *requested_mode = requestedRcMode(is_takeoff_mode, is_hover_mode, is_command_mode);
+    if (have_init_last_mode && std::strcmp(previous_mode, requested_mode) != 0)
     {
-        const char *previous_mode = requestedRcMode(
-            last_mode, low_threshold, mid_low_threshold, mid_high_threshold, high_threshold);
-        if (std::strcmp(previous_mode, requested_mode) != 0)
-        {
-            ROS_INFO("[RC] CH8 模式切换：%s -> %s。", previous_mode, requested_mode);
-        }
+        ROS_INFO("[RC] CH8/CH9 模式切换：%s -> %s。", previous_mode, requested_mode);
     }
-    // 低位触发一次起飞；已经处于自动控制时，低位不会重新启动起飞流程。
-    // 中位是悬停，高位是命令/轨迹控制。
-    enter_hover_mode = !last_hover_mode && is_hover_mode;
-    enter_command_mode = !last_command_mode && is_command_mode;
+    enter_hover_mode = have_init_last_mode && !last_hover_mode && is_hover_mode;
+    enter_command_mode = have_init_last_mode && !last_command_mode && is_command_mode;
+    have_init_last_mode = true;
 
     // CH6 不由 AutoTrans 读取；OFFBOARD 由 PX4/QGC 的 RC_MAP_OFFB_SW 负责切换。
 
@@ -152,10 +139,10 @@ void RC_Data_t::feed(mavros_msgs::RCInConstPtr pMsg)
     }
     else
     {
-        ROS_WARN_THROTTLE(5.0, "[RC] CH8 信号无效，保持安全状态：未收到降落通道 CH%d。", land_channel + 1);
+        ROS_WARN_THROTTLE(5.0, "[RC] CH8/CH9 信号无效，保持安全状态：未收到降落通道 CH%d。", land_channel + 1);
     }
 
-    // CH8 已改为主模式通道，不再兼任飞控重启触发，避免模式切换和重启命令冲突。
+    // 模式通道不兼任飞控重启触发。
     reboot_cmd = mode;
     toggle_reboot = false;
 
@@ -164,13 +151,13 @@ void RC_Data_t::feed(mavros_msgs::RCInConstPtr pMsg)
 
 void RC_Data_t::check_validity()
 {
-    if (mode >= 800.0 && mode <= 2200.0)
+    if (mode >= 800.0 && mode <= 2200.0 && gear >= 800.0 && gear <= 2200.0)
     {
         // pass
     }
     else
     {
-        ROS_ERROR("[RC] CH8 信号无效，保持安全状态：模式 PWM=%.1f。", mode);
+        ROS_ERROR("[RC] CH8/CH9 信号无效，保持安全状态：轨迹通道 PWM=%.1f，起飞/悬停通道 PWM=%.1f。", mode, gear);
     }
 }
 

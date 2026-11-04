@@ -199,7 +199,8 @@ namespace PayloadMPC
 								params_.rc_mode_.low_threshold,
 								params_.rc_mode_.mid_low_threshold,
 								params_.rc_mode_.mid_high_threshold,
-								params_.rc_mode_.high_threshold);
+								params_.rc_mode_.high_threshold,
+								params_.rc_mode_.takeoff_hover_channel);
 		nh_.param("precision_landing_test_mode", precision_test_mode_, false);
         nh_.param("precision_target_in_fast_lio", precision_target_in_fast_lio_, false);
         nh_.param("precision_landing_mission_mode", precision_mission_mode_, false);
@@ -409,7 +410,7 @@ namespace PayloadMPC
                 (now_time - state_data.rcv_stamp).toSec() < params_.msg_timeout_.state &&
                 state_data.current_state.connected && state_data.current_state.armed &&
                 state_data.current_state.mode == "OFFBOARD";
-            // 待命期间不输出预流、不按CH8起飞；退出OFFBOARD后不重新接管。
+            // 待命期间不输出预流、不按CH9起飞；退出OFFBOARD后不重新接管。
             if (!flying)
             {
                 if (precision_test_started_ && fsm_state != MANUAL_CTRL)
@@ -532,7 +533,7 @@ namespace PayloadMPC
 				if (!rc_data.is_takeoff_mode)
 					break;
 				auto_land_lockout_ = false;
-				ROS_WARN("[AUTO_LAND] CH8 已回到低位，解除 AUTO.LAND 锁定。");
+				ROS_WARN("[AUTO_LAND] CH9 已回到低位，解除 AUTO.LAND 锁定。");
 			}
 			if (!rc_data.is_takeoff_mode)
 			{
@@ -568,7 +569,7 @@ namespace PayloadMPC
 				if (rc_data.is_hover_mode)
 				{
 					fsm_state = AUTO_HOVER;
-					ROS_INFO("[AUTO_HOVER] CH8 中位：MANUAL_CTRL -> AUTO_HOVER。");
+					ROS_INFO("[AUTO_HOVER] CH9 高位：MANUAL_CTRL -> AUTO_HOVER。");
 				}
 				else if (rc_data.is_command_mode)
 				{
@@ -582,7 +583,7 @@ namespace PayloadMPC
 			{
 				takeoff_request_latched_ = true;
 				takeoff_requested_ = true;
-				ROS_INFO("[AUTO_TAKEOFF] CH8 低位：持续发送安全预流，等待 PX4 OFFBOARD 和起飞条件满足。");
+				ROS_INFO("[AUTO_TAKEOFF] CH9 低位：持续发送安全预流，等待 PX4 OFFBOARD 和起飞条件满足。");
 			}
 				if (takeoff_requested_)
 			{
@@ -738,14 +739,14 @@ namespace PayloadMPC
 			}
 			else if (rc_mode_available && (rc_data.is_takeoff_mode || rc_data.is_hover_mode))
 			{
-				// 高位退出命令模式后，低位和中位都回到悬停；已在空中的低位不重复启动起飞。
+				// CH8 退出高位后回到悬停；已在空中时 CH9 低位不重复启动起飞。
 				trajectory_data.exec_traj = 0;
 				exec_traj_state_ = HOVER;
 				update_mode_hover_pose();
 				controller_.setHoverReference(hover_pose_, hover_yaw_);
 				controller_.execMPC(est_state_, mpc_predicted_states_, mpc_predicted_inputs_);
 				fsm_state = AUTO_HOVER;
-				ROS_INFO("[AUTO_HOVER] CH8 低位/中位：CMD_CTRL -> AUTO_HOVER。");
+				ROS_INFO("[AUTO_HOVER] CH8 退出高位：CMD_CTRL -> AUTO_HOVER。");
 			}
 			else
 			{
@@ -784,7 +785,7 @@ namespace PayloadMPC
 				controller_.setHoverReference(hover_pose_, hover_yaw_);
 				controller_.execMPC(est_state_, mpc_predicted_states_, mpc_predicted_inputs_);
 				fsm_state = AUTO_HOVER;
-				ROS_INFO("[AUTO_HOVER] CH8 中位：AUTO_TAKEOFF -> AUTO_HOVER。");
+				ROS_INFO("[AUTO_HOVER] CH9 高位：AUTO_TAKEOFF -> AUTO_HOVER。");
 				break;
 			}
 			if (rc_mode_available && rc_data.is_command_mode)
@@ -1990,7 +1991,7 @@ namespace PayloadMPC
 	void MPCFSM::handleOffboardLoss()
 	{
 		clearAutonomousState();
-		// CH8 仍在低位时不自动重新起飞，必须先离开低位再重新进入。
+		// CH9 仍在低位时不自动重新起飞，必须先离开低位再重新进入。
 		takeoff_request_latched_ = true;
 		suppress_manual_setpoint_ = true;
 		fsm_state = MANUAL_CTRL;

@@ -39,18 +39,19 @@ public:
   mavros_msgs::RCIn msg;
   ros::Time rcv_stamp;
 
-  // CH8 输入是否有效；无效时保留上一条有效模式请求，不把信号异常解释为手动模式。
+  // CH8/CH9 输入是否有效；无效时保留上一条有效模式请求，不把信号异常解释为手动模式。
   bool mode_input_valid;
   bool is_command_mode;
   bool enter_command_mode;
   bool is_hover_mode;
   bool enter_hover_mode;
   bool enter_land_mode;
-  // CH8 低位请求 AUTO_TAKEOFF，中位保持 AUTO_HOVER，高位进入 CMD_CTRL；CH6 只由 QGC/PX4 处理 OFFBOARD。
+  // CH8 高位优先进入 CMD_CTRL；否则 CH9 低位起飞、高位悬停。CH6 由 PX4 处理 OFFBOARD。
   bool is_takeoff_mode;
   bool toggle_reboot;
 
   int mode_channel{7};
+  int takeoff_hover_channel{8};
   int land_channel{9};
   int low_threshold{1300};
   int mid_low_threshold{1300};
@@ -62,7 +63,7 @@ public:
 
   RC_Data_t();
   void set_mode_params(int mode_ch, int land_ch, int low_th, int mid_low_th,
-                       int mid_high_th, int high_th);
+                       int mid_high_th, int high_th, int takeoff_hover_ch = 8);
   void check_validity();
   bool check_centered();
   void feed(mavros_msgs::RCInConstPtr pMsg);

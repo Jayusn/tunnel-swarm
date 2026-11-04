@@ -167,6 +167,7 @@ namespace PayloadMPC
 		struct RCMode
 		{
 			int mode_channel{7};
+			int takeoff_hover_channel{8};
 			int land_channel{9};
 			// RCIn.channels 下标 5 对应 CH6；CH6 由 PX4 RC_MAP_OFFB_SW 切换 OFFBOARD。
 			int low_threshold{1300};
@@ -380,6 +381,7 @@ namespace PayloadMPC
 			read_essential_param(nh, "rc_reverse/throttle", rc_reverse_.throttle);
 
 			read_essential_param(nh, "rc_mode/mode_channel", rc_mode_.mode_channel);
+			nh.param("rc_mode/takeoff_hover_channel", rc_mode_.takeoff_hover_channel, 8);
 			read_essential_param(nh, "rc_mode/land_channel", rc_mode_.land_channel);
 			read_essential_param(nh, "rc_mode/low_threshold", rc_mode_.low_threshold);
 			read_essential_param(nh, "rc_mode/mid_low_threshold", rc_mode_.mid_low_threshold);
