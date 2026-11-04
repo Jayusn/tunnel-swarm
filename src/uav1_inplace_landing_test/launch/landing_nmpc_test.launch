@@ -1,10 +1,12 @@
 <launch>
   <arg name="topic_prefix" default="/UAV1"/>
+  <arg name="odometry_topic" default="$(arg topic_prefix)/fast_lio/Odom_high_freq"/>
   <include file="$(find uav1_inplace_landing_test)/launch/mpc.launch">
     <arg name="down_camera_image_topic" value="$(arg topic_prefix)/down_camera/image_raw"/>
     <arg name="precision_landing_test_mode" value="true"/>
+    <arg name="precision_test_target_in_odom_frame" value="true"/>
     <arg name="precision_landing_test_target" value="$(arg topic_prefix)/landing_test/nmpc_target"/>
-    <arg name="odom_topic" value="$(arg topic_prefix)/fast_lio/Odom_high_freq"/>
+    <arg name="odom_topic" value="$(arg odometry_topic)"/>
     <arg name="imu_topic" value="$(arg topic_prefix)/livox/imu_mps2"/>
     <arg name="force_attitude_odom_topic" value="$(arg topic_prefix)/fast_lio/Odom_high_freq"/>
     <arg name="state_topic" value="$(arg topic_prefix)/mavros/state"/>
@@ -38,6 +40,7 @@
     <arg name="enable_evo_report" value="false"/>
   </include>
   <node pkg="uav1_inplace_landing_test" type="landing_nmpc_test_router.py" name="landing_nmpc_test_router" output="screen" required="true">
+    <param name="odometry_topic" value="$(arg odometry_topic)"/>
     <remap from="extended_state" to="$(arg topic_prefix)/mavros/extended_state"/>
     <remap from="rc_land" to="$(arg topic_prefix)/mission/rc_land_active"/>
     <remap from="arming" to="$(arg topic_prefix)/mavros/cmd/arming"/>

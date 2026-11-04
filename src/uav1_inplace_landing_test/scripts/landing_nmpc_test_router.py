@@ -5,6 +5,7 @@ import math
 import threading
 import rospy
 from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Odometry
 from mavros_msgs.msg import AttitudeTarget, PositionTarget, State, ExtendedState
 from std_msgs.msg import String, Bool
 from mavros_msgs.srv import CommandBool
@@ -21,6 +22,8 @@ class Router:
         self.disarm = rospy.ServiceProxy('arming', CommandBool)
         self.stage = ''
         self.local_pose = None
+        self.control_pose = None
+        self.odometry_topic = rospy.get_param('~odometry_topic', '')
         self.landing_started = False
         self.takeoff_z = None
         self.takeoff_yaw = None
@@ -47,6 +50,9 @@ class Router:
             rospy.Subscriber('nmpc_attitude', AttitudeTarget, self.attitude_cb, queue_size=1),
             rospy.Subscriber('nmpc_recovery', PositionTarget, self.recovery_cb, queue_size=1),
         ]
+        if self.odometry_topic:
+            self.subs.append(rospy.Subscriber(
+                self.odometry_topic, Odometry, self.odometry_cb, queue_size=1))
 
         self.disarm_timer = rospy.Timer(rospy.Duration(.5), self.disarm_tick)
 
@@ -115,6 +121,17 @@ class Router:
                     (p.x, p.y, p.z, q.x, q.y, q.z, q.w)) and
                     .5 < q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w < 1.5):
                 self.local_pose = msg
+                if not self.odometry_topic:
+                    self.control_pose = msg
+
+    def odometry_cb(self, msg):
+        pose = PoseStamped(header=msg.header, pose=msg.pose.pose)
+        with self.lock:
+            p, q = pose.pose.position, pose.pose.orientation
+            if (self.fresh(pose) and all(math.isfinite(x) for x in
+                    (p.x, p.y, p.z, q.x, q.y, q.z, q.w)) and
+                    .5 < q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w < 1.5):
+                self.control_pose = pose
 
     @staticmethod
     def pose_target(msg):
@@ -128,7 +145,8 @@ class Router:
     def takeoff_cb(self, msg):
         with self.lock:
             if (self.finished or self.landing_started or not self.fresh(msg) or
-                    self.local_pose is None or not self.fresh(self.local_pose)):
+                    self.local_pose is None or not self.fresh(self.local_pose) or
+                    self.control_pose is None or not self.fresh(self.control_pose)):
                 return
             now = rospy.Time.now()
             # 解锁前仅用当前位置预流以建立OFFBOARD；起飞目标绝不直发PX4。
@@ -139,9 +157,9 @@ class Router:
             if not self.output_allowed():
                 return
             if self.takeoff_z is None:
-                self.takeoff_z = self.local_pose.pose.position.z
-                # 解锁等待期间 PX4 航向可能重对齐；使用实际接管时的航向。
-                self.takeoff_yaw = hold.yaw
+                self.takeoff_z = self.control_pose.pose.position.z
+                # 与起飞目标同坐标系；FAST-LIO 模式不使用飞控融合高度和航向。
+                self.takeoff_yaw = self.pose_target(self.control_pose).yaw
                 # 从接管时的高度到起飞目标，斜坡用时5秒。
                 self.takeoff_speed = max(0.0, msg.pose.position.z - self.takeoff_z) / 5.0
                 self.takeoff_stamp = now

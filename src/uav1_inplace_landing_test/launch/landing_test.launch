@@ -2,6 +2,7 @@
   <arg name="enable_nmpc_descent" default="true"/>
   <arg name="vehicle_ns" default="UAV1"/>
   <arg name="topic_prefix" default="$(eval '/' + arg('vehicle_ns').strip('/'))"/>
+  <arg name="odometry_topic" default="$(arg topic_prefix)/fast_lio/Odom_high_freq"/>
   <!-- 后机传入自身的相机外参及中心补偿配置。 -->
   <arg name="camera_extrinsic_config" default="$(find precision_landing)/config/down_camera_extrinsic_uav1.yaml"/>
   <arg name="start_camera" default="false"/>
@@ -23,6 +24,7 @@
   <include file="$(find uav1_inplace_landing_test)/launch/precision.launch">
     <arg name="vehicle_ns" value="$(arg vehicle_ns)"/>
     <arg name="camera_extrinsic_config" value="$(arg camera_extrinsic_config)"/>
+    <arg name="odometry_topic" value="$(eval arg('odometry_topic') if arg('enable_nmpc_descent') else '')"/>
     <arg name="auto_land_at_cutoff" value="true"/>
     <arg name="enable_landing_search" value="false"/>
     <arg name="enable_front_aruco_hint" value="false"/>
@@ -40,12 +42,14 @@
 
   <include if="$(arg enable_nmpc_descent)" file="$(find uav1_inplace_landing_test)/launch/landing_nmpc_test.launch">
     <arg name="topic_prefix" value="$(arg topic_prefix)"/>
+    <arg name="odometry_topic" value="$(arg odometry_topic)"/>
   </include>
 
   <node pkg="uav1_inplace_landing_test" type="uav1_test_landing_test_mission_node"
         name="landing_test" output="screen" required="true">
     <param name="mavros_state_topic" value="$(arg topic_prefix)/mavros/state"/>
     <param name="local_pose_topic" value="$(arg topic_prefix)/mavros/local_position/pose"/>
+    <param name="odometry_topic" value="$(eval arg('odometry_topic') if arg('enable_nmpc_descent') else '')"/>
     <param name="position_setpoint_topic" value="$(eval arg('topic_prefix') + ('/landing_test/takeoff_position' if arg('enable_nmpc_descent') else '/mavros/setpoint_position/local'))"/>
     <param name="landing_trigger_topic" value="$(arg topic_prefix)/need_to_land"/>
     <param name="landing_state_topic" value="$(arg topic_prefix)/landing/state"/>

@@ -2,6 +2,7 @@
   <arg name="down_camera_image_topic" default="/UAV1/down_camera/image_raw"/>
   <arg name="precision_landing_mission_mode" default="false"/>
   <arg name="precision_landing_test_mode" default="false"/>
+  <arg name="precision_test_target_in_odom_frame" default="false"/>
   <arg name="precision_landing_test_target" default="/UAV0/landing_test/nmpc_target"/>
   <!-- UAV0 控制状态与外力观察器统一使用 MID360/FAST-LIO 数据。 -->
   <arg name="odom_topic" default="/UAV0/fast_lio/Odom_high_freq"/>
@@ -76,6 +77,7 @@
 
     <param name="precision_landing_mission_mode" value="$(arg precision_landing_mission_mode)"/>
     <param name="precision_landing_test_mode" value="$(arg precision_landing_test_mode)"/>
+    <param name="precision_test_target_in_odom_frame" value="$(arg precision_test_target_in_odom_frame)"/>
     <remap from="~precision_landing_test_target" to="$(arg precision_landing_test_target)"/>
     <!-- NMPC 的位置/线速度来自 FAST-LIO 高频 Odom。 -->
     <remap from="~odom" to="$(arg odom_topic)"/>

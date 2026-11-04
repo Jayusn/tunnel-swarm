@@ -6,6 +6,7 @@ import unittest
 
 import rospy
 from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Odometry
 from mavros_msgs.msg import State
 from mavros_msgs.srv import CommandBool, CommandBoolResponse, SetMode, SetModeResponse
 from std_msgs.msg import Bool, String
@@ -36,6 +37,13 @@ class OffboardStartTest(RcLandPriorityTest):
             self.addCleanup(arm.shutdown)
             self.addCleanup(mode.shutdown)
         ns = self.prefix+'/mission/'
+        self.odom = None
+        if self._testMethodName == 'test_fastlio_height_controls_takeoff_and_handoff':
+            self.odom = Odometry()
+            self.odom.pose.pose.orientation.w = 1.0
+            self.odom.pose.pose.position.z = 10.0
+            self.odom_pub = self.publisher('odom', Odometry)
+            rospy.set_param(ns+'odometry_topic', self.prefix+'/odom')
         for key, value in {'allow_arming': False, 'auto_start': False,
                            'start_on_offboard': True, 'takeoff_height_m': 2.0,
                            'prestream_sec': 1.0, 'operation_timeout_sec': 2.0,
@@ -57,6 +65,9 @@ class OffboardStartTest(RcLandPriorityTest):
         self.state_pub.publish(self.state)
         self.pose_pub.publish(self.pose)
         self.stage_pub.publish(String(data=self.landing_stage))
+        if self.odom is not None:
+            self.odom.header.stamp = rospy.Time.now()
+            self.odom_pub.publish(self.odom)
 
     def arm(self, request):
         self.arm_requests.append(request.value)
@@ -128,6 +139,21 @@ class OffboardStartTest(RcLandPriorityTest):
         self.state.mode = 'OFFBOARD'
         self.wait(lambda: self.phase() == 'TAKEOFF' and self.messages['target'],
                   'manual takeoff without flight command services')
+
+    def test_fastlio_height_controls_takeoff_and_handoff(self):
+        self.assertEqual(self.messages['prestream'][-1].pose.position.z, 1.0)
+        self.state.armed = True
+        self.state.mode = 'OFFBOARD'
+        self.wait(lambda: self.messages['target'], 'FAST-LIO takeoff target')
+        self.assertEqual(self.messages['target'][-1].pose.position.z, 12.0)
+        self.assertEqual(self.messages['target'][-1].pose.position.x, 0.0)
+        self.pose.pose.position.z = 12.0  # 飞控高度到位不能代替 FAST-LIO 到位。
+        time.sleep(.25)
+        self.assertEqual(self.phase(), 'TAKEOFF')
+        self.assertFalse(any(m.data for m in self.messages['trigger']))
+        self.odom.pose.pose.position.z = 12.0
+        self.wait(lambda: any(m.data for m in self.messages['trigger']), 'FAST-LIO height handoff')
+        self.assert_no_automatic_flight_requests()
 
 
 if __name__ == '__main__':

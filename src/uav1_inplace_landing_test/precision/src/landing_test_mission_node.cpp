@@ -8,6 +8,7 @@
 #include <mavros_msgs/CommandBool.h>
 #include <mavros_msgs/SetMode.h>
 #include <mavros_msgs/State.h>
+#include <nav_msgs/Odometry.h>
 #include <ros/ros.h>
 #include <std_msgs/Bool.h>
 #include <std_msgs/String.h>
@@ -82,6 +83,9 @@ class LandingTestMissionNode {
     const std::string local_pose_topic =
         private_node_.param<std::string>("local_pose_topic",
                                          "/mavros/local_position/pose");
+    const std::string odometry_topic =
+        private_node_.param<std::string>("odometry_topic", "");
+    use_odometry_ = !odometry_topic.empty();
     const std::string position_setpoint_topic =
         private_node_.param<std::string>("position_setpoint_topic",
                                          "/mavros/setpoint_position/local");
@@ -103,6 +107,10 @@ class LandingTestMissionNode {
         this);
     pose_subscriber_ = node_.subscribe(
         local_pose_topic, 1, &LandingTestMissionNode::poseCallback, this);
+    if (use_odometry_) {
+      odometry_subscriber_ = node_.subscribe(
+          odometry_topic, 1, &LandingTestMissionNode::odometryCallback, this);
+    }
     landing_state_subscriber_ = node_.subscribe(
         landing_state_topic, 1,
         &LandingTestMissionNode::landingStateCallback, this);
@@ -219,7 +227,7 @@ class LandingTestMissionNode {
       return false;
     }
     if (!inputsFresh(now)) {
-      reason = "MAVROS state/local pose missing, stale, or disconnected";
+      reason = "MAVROS state/control pose missing, stale, or disconnected";
       return false;
     }
     if (!start_on_offboard_ && mavros_state_.armed) {
@@ -280,7 +288,22 @@ class LandingTestMissionNode {
   }
 
   void poseCallback(const geometry_msgs::PoseStampedConstPtr& message) {
-    local_pose_ = *message;
+    mavros_pose_ = *message;
+    mavros_pose_time_ = ros::Time::now();
+    if (!use_odometry_) {
+      updateControlPose(*message);
+    }
+  }
+
+  void odometryCallback(const nav_msgs::OdometryConstPtr& message) {
+    geometry_msgs::PoseStamped pose;
+    pose.header = message->header;
+    pose.pose = message->pose.pose;
+    updateControlPose(pose);
+  }
+
+  void updateControlPose(const geometry_msgs::PoseStamped& message) {
+    local_pose_ = message;
     pose_received_ = true;
     pose_receive_time_ = ros::Time::now();
   }
@@ -305,7 +328,9 @@ class LandingTestMissionNode {
           publishTarget(now);
         } else {
           // 直接向飞控预流当前位置，不提前向 NMPC 路由器发送起飞目标。
-          auto hold = local_pose_;
+          if (mavros_pose_time_.isZero() || !validPose(mavros_pose_) ||
+              (now - mavros_pose_time_).toSec() > pose_timeout_sec_) return;
+          auto hold = mavros_pose_;
           hold.header.stamp = now;
           prestream_publisher_.publish(hold);
         }
@@ -344,7 +369,7 @@ class LandingTestMissionNode {
     }
 
     if (!inputsFresh(now)) {
-      enterFailsafeHold("MAVROS state or local pose became stale");
+      enterFailsafeHold("MAVROS state or control pose became stale");
       return;
     }
     if ((now - operation_started_).toSec() > operation_timeout_sec_) {
@@ -531,6 +556,7 @@ class LandingTestMissionNode {
   ros::NodeHandle private_node_;
   ros::Subscriber mavros_state_subscriber_;
   ros::Subscriber pose_subscriber_;
+  ros::Subscriber odometry_subscriber_;
   ros::Subscriber landing_state_subscriber_;
   ros::Publisher setpoint_publisher_;
   ros::Publisher prestream_publisher_;
@@ -546,6 +572,7 @@ class LandingTestMissionNode {
   bool allow_arming_{false};
   bool auto_start_{false};
   bool start_on_offboard_{false};
+  bool use_odometry_{false};
   bool state_received_{false};
   bool pose_received_{false};
   bool target_valid_{false};
@@ -562,10 +589,12 @@ class LandingTestMissionNode {
 
   mavros_msgs::State mavros_state_;
   geometry_msgs::PoseStamped local_pose_;
+  geometry_msgs::PoseStamped mavros_pose_;
   geometry_msgs::PoseStamped target_pose_;
   std::string landing_state_;
   ros::Time state_receive_time_;
   ros::Time pose_receive_time_;
+  ros::Time mavros_pose_time_;
   ros::Time operation_started_;
   ros::Time phase_started_;
   ros::Time stable_since_;

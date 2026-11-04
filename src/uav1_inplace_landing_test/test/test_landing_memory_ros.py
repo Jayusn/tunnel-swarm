@@ -22,6 +22,7 @@ import roslib.packages
 import rospy
 from cv_bridge import CvBridge
 from geometry_msgs.msg import PoseStamped, PointStamped
+from nav_msgs.msg import Odometry
 from mavros_msgs.msg import PositionTarget, State, ExtendedState
 from mavros_msgs.srv import SetMode, SetModeResponse
 from sensor_msgs.msg import CameraInfo, Image
@@ -98,6 +99,10 @@ class LandingMemoryTest(unittest.TestCase):
                   'topics/setpoint': 'command', 'topics/landing_state': 'stage',
                   'topics/error_xy': 'error', 'topics/target_pose': 'target',
                   'topics/set_mode_service': 'mode'}
+        if getattr(self, 'use_fastlio', False):
+            params['topics/odometry'] = 'odom'
+            self.pubs['odom'] = rospy.Publisher(self.ns+'/odom', Odometry, queue_size=1)
+            self.handles.append(self.pubs['odom'])
         for k, v in params.items():
             rospy.set_param(self.ns+'/node/'+k, self.ns+'/'+v)
         for k, v in {'safety/total_timeout_sec': 2., 'safety/reacquire_timeout_sec': 1.,
@@ -137,6 +142,15 @@ class LandingMemoryTest(unittest.TestCase):
         pose.pose.position.x, pose.pose.position.y, pose.pose.position.z = self.x, self.y, self.z
         pose.pose.orientation.z = pose.pose.orientation.w = math.sqrt(.5)  # yaw +90 deg
         if self.pose_enabled:
+            if getattr(self, 'use_fastlio', False):
+                odom = Odometry(header=pose.header)
+                odom.pose.pose = pose.pose
+                self.pubs['odom'].publish(odom)
+                # 故意给飞控融合位姿加入偏移，验证码面记忆和末段交接只用里程计。
+                pose = PoseStamped()
+                pose.header.stamp = now
+                pose.pose.position.x, pose.pose.position.y, pose.pose.position.z = 100., 200., 30.
+                pose.pose.orientation.w = 1.
             self.pubs['pose'].publish(pose)
         state = State(connected=True, armed=True, mode=self.mode)
         state.header.stamp = now
