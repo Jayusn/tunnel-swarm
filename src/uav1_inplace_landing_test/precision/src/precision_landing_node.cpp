@@ -135,6 +135,15 @@ void validateStateMachineConfig(const StateMachineConfig& config) {
     throw std::runtime_error("height taper requires start height above handoff and high error >= final error");
   }
   requireFinitePositive(config.high_descent_mps, "stages/high/descent_mps");
+  requireFiniteNonNegative(config.slowdown_start_height_m, "stages/high/slowdown_start_height_m");
+  if (config.slowdown_start_height_m > 0.0) {
+    requireFinitePositive(config.slowdown_end_height_m, "stages/high/slowdown_end_height_m");
+    requireFinitePositive(config.slow_descent_mps, "stages/high/slow_descent_mps");
+    if (config.slowdown_start_height_m <= config.slowdown_end_height_m ||
+        config.slowdown_end_height_m < config.auto_land_height_m ||
+        config.slow_descent_mps > config.high_descent_mps)
+      throw std::runtime_error("invalid visual descent slowdown heights or speed");
+  }
   requireFinitePositive(config.auto_land_error_m, "stages/auto_land/error_m");
   requireFinitePositive(config.fine_align_stable_sec,
                         "stages/auto_land/fine_stable_sec");
@@ -175,6 +184,9 @@ StateMachineConfig loadStateMachineConfig(ros::NodeHandle& private_node) {
   loadParameter(private_node, "stages/high/taper_start_height_m", config.taper_start_height_m);
   loadParameter(private_node, "stages/high/descent_mps",
                 "state_machine/high_descent_mps", config.high_descent_mps);
+  loadParameter(private_node, "stages/high/slowdown_start_height_m", config.slowdown_start_height_m);
+  loadParameter(private_node, "stages/high/slowdown_end_height_m", config.slowdown_end_height_m);
+  loadParameter(private_node, "stages/high/slow_descent_mps", config.slow_descent_mps);
   loadParameter(private_node, "stages/auto_land/error_m",
                 config.auto_land_error_m);
   loadParameter(private_node, "stages/auto_land/fine_stable_sec",
@@ -363,6 +375,8 @@ class PrecisionLandingNode {
                   max_header_future_sec_);
     loadParameter(private_node_, "safety/total_timeout_sec",
                   search_warning_sec_);
+    loadParameter(private_node_, "control/freeze_descent_hold_height",
+                  freeze_descent_hold_height_);
     loadParameter(private_node_, "control/publish_rate_hz", "control/rate_hz",
                   control_rate_hz_);
     loadParameter(private_node_, "auto_land/request_rate_hz",
@@ -654,7 +668,9 @@ class PrecisionLandingNode {
       return false;
     }
     const double hold_z = preserve_descent_height && hold_position_valid_
-        ? std::min(hold_position_.z(), local_pose_.pose.position.z)
+        ? (freeze_descent_hold_height_
+            ? (visual_descent_active_ ? local_pose_.pose.position.z : hold_position_.z())
+            : std::min(hold_position_.z(), local_pose_.pose.position.z))
         : local_pose_.pose.position.z;
     hold_position_ = Eigen::Vector3d(
         local_pose_.pose.position.x,
@@ -879,6 +895,7 @@ class PrecisionLandingNode {
     }
     if (falling_edge) {
       hold_position_valid_ = false;
+      visual_descent_active_ = false;
       mission_trigger_time_ = ros::Time(0);
       ROS_WARN("LANDING TRIGGER CLEARED: current_state=%s",
                toString(previous_state_));
@@ -1050,6 +1067,7 @@ class PrecisionLandingNode {
       fixed_ground_valid_ = false;
       seen_airborne_ = false;
       hold_position_valid_ = false;
+      visual_descent_active_ = false;
       mission_trigger_time_ = ros::Time(0);
     }
     if (output.reset_target_jump_history) {
@@ -1130,11 +1148,12 @@ class PrecisionLandingNode {
         velocity_enu = controller_.compute(
             current_error_body, current_vehicle_yaw_rad,
             output.descent_speed_mps, dt_sec).velocity_enu;
-        if (fresh_pose) {
+        if (fresh_pose && (!freeze_descent_hold_height_ ||
+            output.descent_speed_mps > 0.0 || visual_descent_active_ || !hold_position_valid_)) {
           hold_position_ = Eigen::Vector3d(
               local_pose_.pose.position.x,
               local_pose_.pose.position.y,
-              hold_position_valid_
+              !freeze_descent_hold_height_ && hold_position_valid_
                   ? std::min(hold_position_.z(), local_pose_.pose.position.z)
                   : local_pose_.pose.position.z);
           hold_position_valid_ = hold_position_.allFinite();
@@ -1174,6 +1193,9 @@ class PrecisionLandingNode {
     logFlightPosition(output, fresh_pose, fresh_mavros_state,
                       current_yaw_valid, current_vehicle_yaw_rad, now);
     publishDiagnostics(output, current_error_body, target_visible, now);
+    visual_descent_active_ = is_controlling && owns_offboard && yaw_captured_ &&
+        output.state == LandingState::DESCEND_HIGH && target_visible &&
+        current_yaw_valid && output.descent_speed_mps > 0.0;
     previous_state_ = output.state;
   }
 
@@ -1738,6 +1760,8 @@ class PrecisionLandingNode {
   LandingState previous_state_{LandingState::IDLE};
   Eigen::Vector3d hold_position_{Eigen::Vector3d::Zero()};
   bool hold_position_valid_{false};
+  bool freeze_descent_hold_height_{false};
+  bool visual_descent_active_{false};
   Eigen::Vector2d fixed_xy_position_{Eigen::Vector2d::Zero()};
   double fixed_xy_ground_z_{0.0};
   ros::Subscriber takeoff_reference_subscriber_;

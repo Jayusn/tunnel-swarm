@@ -91,6 +91,31 @@ TEST(LandingStateMachine, HeightTaperInitialAlignmentKeepsEightCmCap) {
   EXPECT_EQ(low.update(ActiveInput(1.51, 1.0, 0.07)).state, LandingState::DESCEND_HIGH);
 }
 
+TEST(LandingStateMachine, SlowVisualApproachStillPausesForAlignment) {
+  precision_landing::StateMachineConfig config;
+  config.align_error_m = 0.08;
+  config.high_align_error_m = 0.10;
+  config.auto_land_error_m = 0.05;
+  config.high_height_m = config.auto_land_height_m = 0.60;
+  config.taper_start_height_m = 1.30;
+  config.slowdown_start_height_m = 1.0;
+  config.slowdown_end_height_m = 0.8;
+  config.slow_descent_mps = 0.10;
+  config.fixed_descent_mps = 0.25;
+  LandingStateMachine machine(config);
+  ReachHighDescent(machine);
+  EXPECT_DOUBLE_EQ(machine.update(ActiveInput(0.9, 1.2, 0.04)).descent_speed_mps, 0.25);
+  EXPECT_NEAR(machine.update(ActiveInput(1.0, 0.9, 0.04)).descent_speed_mps, 0.175, 1e-9);
+  EXPECT_DOUBLE_EQ(machine.update(ActiveInput(1.1, 0.8, 0.04)).descent_speed_mps, 0.10);
+  EXPECT_DOUBLE_EQ(machine.update(ActiveInput(1.2, 0.7, 0.08)).descent_speed_mps, 0.0);
+  machine.update(ActiveInput(1.3, 0.7, 0.04));
+  EXPECT_DOUBLE_EQ(machine.update(ActiveInput(1.79, 0.7, 0.04)).descent_speed_mps, 0.0);
+  EXPECT_DOUBLE_EQ(machine.update(ActiveInput(1.81, 0.7, 0.04)).descent_speed_mps, 0.10);
+  const auto locked = machine.update(ActiveInput(1.9, 0.6, 0.04));
+  EXPECT_EQ(locked.state, LandingState::FIXED_XY_DESCENT);
+  EXPECT_DOUBLE_EQ(locked.descent_speed_mps, 0.25);
+}
+
 TEST(LandingStateMachine, NeverDescendsWhenPrecheckFails) {
   LandingStateMachine machine;
   machine.update(StateInput{true, false, true, true, false, 0.0, 2.0, 0.0});

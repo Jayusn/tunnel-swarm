@@ -206,6 +206,13 @@ StateOutput LandingStateMachine::update(const StateInput& input) {
       input.now_sec - descent_gate_since_sec_ >=
           config_.align_stable_sec) {
     output.descent_speed_mps = config_.high_descent_mps;
+    if (config_.slowdown_start_height_m > config_.slowdown_end_height_m) {
+      const double ratio = std::max(0.0, std::min(1.0,
+          (input.marker_height_m - config_.slowdown_end_height_m) /
+          (config_.slowdown_start_height_m - config_.slowdown_end_height_m)));
+      output.descent_speed_mps = config_.slow_descent_mps +
+          ratio * (config_.high_descent_mps - config_.slow_descent_mps);
+    }
   } else if (state_ == LandingState::REQUEST_AUTO_LAND) {
     output.request_auto_land = true;
   } else if (state_ == LandingState::DONE) {
