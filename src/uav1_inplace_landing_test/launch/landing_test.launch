@@ -9,8 +9,10 @@
   <arg name="allow_arming" default="false"/>
   <arg name="auto_start" default="false"/>
   <arg name="auto_start_delay_sec" default="5.0"/>
-  <!-- 2.05 m target with 0.05 m tolerance prevents handoff below 2.00 m. -->
+  <!-- 相对起飞点的目标高度；18 cm 测试入口传入 2.0 m。 -->
   <arg name="takeoff_height_m" default="1.70"/>
+  <arg name="marker_size_m" default="0.50"/>
+  <arg name="marker_dictionary" default="DICT_4X4_250"/>
 
   <include if="$(arg start_camera)" file="$(find precision_landing)/launch/down_camera.launch">
     <arg name="vehicle_ns" value="$(arg vehicle_ns)"/>
@@ -30,6 +32,10 @@
   <!-- 在公共精降配置之后加载，仅覆盖单独测试的中心补偿。 -->
   <rosparam command="load" ns="$(arg vehicle_ns)/precision_landing_node"
             file="$(find uav1_inplace_landing_test)/config/standalone_center_offset.yaml"/>
+  <param name="$(arg vehicle_ns)/precision_landing_node/marker/size_m"
+         value="$(arg marker_size_m)"/>
+  <param name="$(arg vehicle_ns)/precision_landing_node/marker/dictionary"
+         value="$(arg marker_dictionary)"/>
 
   <include if="$(arg enable_nmpc_descent)" file="$(find uav1_inplace_landing_test)/launch/landing_nmpc_test.launch">
     <arg name="topic_prefix" value="$(arg topic_prefix)"/>

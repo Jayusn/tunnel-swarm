@@ -207,6 +207,14 @@ void validateTrackerConfig(const ArucoTrackerConfig& config) {
 
 ArucoTrackerConfig loadTrackerConfig(ros::NodeHandle& private_node) {
   ArucoTrackerConfig config;
+  std::string dictionary{"DICT_4X4_250"};
+  loadParameter(private_node, "marker/dictionary", dictionary);
+  if (dictionary == "DICT_4X4_50") {
+    config.dictionary = cv::aruco::DICT_4X4_50;
+  } else if (dictionary != "DICT_4X4_250") {
+    throw std::runtime_error(
+        "~marker/dictionary must be DICT_4X4_250 or DICT_4X4_50");
+  }
   loadParameter(private_node, "marker/size_m", config.marker_size_m);
   loadParameter(private_node, "marker/max_reprojection_error_px",
                 config.max_reprojection_error_px);
@@ -396,12 +404,6 @@ class PrecisionLandingNode {
         std::chrono::duration_cast<ModeRequestClock::duration>(
             std::chrono::duration<double>(
                 auto_land_authorization_delay_sec_));
-
-    std::string dictionary{"DICT_4X4_250"};
-    loadParameter(private_node_, "marker/dictionary", dictionary);
-    if (dictionary != "DICT_4X4_250") {
-      throw std::runtime_error("~marker/dictionary must be DICT_4X4_250");
-    }
 
     XmlRpc::XmlRpcValue rotation;
     if (private_node_.getParam("camera_to_body/rotation", rotation)) {

@@ -130,7 +130,7 @@ bool markerTiltWithinLimit(const cv::Vec3d& rvec,
 
 ArucoTracker::ArucoTracker(const ArucoTrackerConfig& config)
     : config_(config),
-      dictionary_(cv::aruco::getPredefinedDictionary(cv::aruco::DICT_4X4_250)) {}
+      dictionary_(cv::aruco::getPredefinedDictionary(config.dictionary)) {}
 
 TargetObservation ArucoTracker::process(const cv::Mat& image,
                                         const cv::Mat& camera_matrix,

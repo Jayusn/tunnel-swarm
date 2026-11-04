@@ -4,7 +4,8 @@
 set -eo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 MATCH_WS="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
-SCRIPT_PATH="${SCRIPT_DIR}/start_uav1_inplace_landing_test.sh"
+SCRIPT_PATH="${UAV1_TEST_ENTRY_SCRIPT:-${SCRIPT_DIR}/start_uav1_inplace_landing_test.sh}"
+TAKEOFF_HEIGHT_M="${UAV1_TEST_TAKEOFF_HEIGHT_M:-1.70}"
 
 source_ros() {
   source /opt/ros/noetic/setup.bash
@@ -25,7 +26,9 @@ case "${1:-}" in
         # MAVROS 所在分屏负责启动 master，避免多个 roslaunch 同时创建它。
         until rosnode list >/dev/null 2>&1; do sleep 1; done
         exec rosrun uav1_inplace_landing_test start_landing_test.sh \
-          allow_arming:=true auto_start:=false takeoff_height_m:=1.70 \
+          allow_arming:=true auto_start:=false takeoff_height_m:="${TAKEOFF_HEIGHT_M}" \
+          marker_size_m:="${UAV1_TEST_MARKER_SIZE_M:-0.50}" \
+          marker_dictionary:="${UAV1_TEST_MARKER_DICTIONARY:-DICT_4X4_250}" \
           enable_nmpc_descent:="${UAV1_TEST_NMPC_DESCENT:-true}"
         ;;
       image)
@@ -43,7 +46,7 @@ case "${1:-}" in
   --nmpc) export UAV1_TEST_NMPC_DESCENT=true ;;
   start)
     source_ros
-    echo '触发实飞：OFFBOARD → 解锁 → 原地起飞 1.70 米 → 精降。'
+    echo "触发实飞：OFFBOARD → 解锁 → 原地起飞 ${TAKEOFF_HEIGHT_M} 米 → 精降。"
     exec rosservice call /landing_test/start '{}'
     ;;
   -h|--help)

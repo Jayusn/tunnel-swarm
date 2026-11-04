@@ -8,6 +8,7 @@
 namespace precision_landing {
 
 struct ArucoTrackerConfig {
+  cv::aruco::PREDEFINED_DICTIONARY_NAME dictionary{cv::aruco::DICT_4X4_250};
   double marker_size_m{0.60};
   double max_reprojection_error_px{4.0};
   double min_distance_m{0.15};
