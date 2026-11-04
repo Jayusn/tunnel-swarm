@@ -54,6 +54,7 @@ class LandingTestMissionNode {
       : node_(), private_node_("~") {
     allow_arming_ = private_node_.param<bool>("allow_arming", false);
     auto_start_ = private_node_.param<bool>("auto_start", false);
+    start_on_offboard_ = private_node_.param<bool>("start_on_offboard", false);
     auto_start_delay_sec_ =
         private_node_.param<double>("auto_start_delay_sec", 5.0);
     takeoff_height_m_ =
@@ -108,6 +109,11 @@ class LandingTestMissionNode {
 
     setpoint_publisher_ =
         node_.advertise<geometry_msgs::PoseStamped>(position_setpoint_topic, 1);
+    if (start_on_offboard_) {
+      prestream_publisher_ = node_.advertise<geometry_msgs::PoseStamped>(
+          private_node_.param<std::string>("offboard_prestream_topic",
+                                          "/mavros/setpoint_position/local"), 1);
+    }
     trigger_publisher_ =
         node_.advertise<std_msgs::Bool>(landing_trigger_topic, 1);
     status_publisher_ =
@@ -127,7 +133,10 @@ class LandingTestMissionNode {
     publishTrigger(false);
     publishStatus();
 
-    if (auto_start_) {
+    if (start_on_offboard_) {
+      ROS_WARN("RC takeoff enabled: prestream current position; manually arm "
+               "and switch PX4 to OFFBOARD to start the landing test");
+    } else if (auto_start_) {
       ROS_WARN("REAL VEHICLE AUTO-START ENABLED: the vehicle will arm and "
                "take off %.1f s after all prerequisites become ready",
                auto_start_delay_sec_);
@@ -179,6 +188,11 @@ class LandingTestMissionNode {
 
   bool startCallback(std_srvs::Trigger::Request&,
                      std_srvs::Trigger::Response& response) {
+    if (start_on_offboard_) {
+      response.success = false;
+      response.message = "RC start enabled: manually arm and switch to OFFBOARD";
+      return true;
+    }
     const ros::Time now = ros::Time::now();
     if (phase_ != Phase::WAITING) {
       response.success = false;
@@ -200,7 +214,7 @@ class LandingTestMissionNode {
   }
 
   bool autoStartReady(const ros::Time& now, std::string& reason) {
-    if (!allow_arming_) {
+    if (!start_on_offboard_ && !allow_arming_) {
       reason = "allow_arming is false; refusing real vehicle start";
       return false;
     }
@@ -208,12 +222,13 @@ class LandingTestMissionNode {
       reason = "MAVROS state/local pose missing, stale, or disconnected";
       return false;
     }
-    if (mavros_state_.armed) {
+    if (!start_on_offboard_ && mavros_state_.armed) {
       reason = "vehicle is already armed; refusing ambiguous start";
       return false;
     }
     if (setpoint_publisher_.getNumSubscribers() == 0U ||
-        !arming_client_.exists() || !set_mode_client_.exists()) {
+        (!start_on_offboard_ &&
+         (!arming_client_.exists() || !set_mode_client_.exists()))) {
       reason = "required MAVROS setpoint/services are unavailable";
       return false;
     }
@@ -235,7 +250,8 @@ class LandingTestMissionNode {
     phase_started_ = now;
     stable_since_ = ros::Time(0);
     last_service_request_ = ros::Time(0);
-    phase_ = Phase::PRESTREAM;
+    // 遥控器入口已由操作者解锁并切入 OFFBOARD，直接开始起飞。
+    phase_ = start_on_offboard_ ? Phase::TAKEOFF : Phase::PRESTREAM;
     publishTrigger(false);
     publishStatus();
 
@@ -278,6 +294,23 @@ class LandingTestMissionNode {
 
     if (phase_ == Phase::WAITING) {
       publishTrigger(false);
+      if (start_on_offboard_) {
+        std::string reason;
+        if (!autoStartReady(now, reason)) {
+          ROS_WARN_THROTTLE(2.0, "RC takeoff waiting: %s", reason.c_str());
+          return;
+        }
+        if (mavros_state_.armed && mavros_state_.mode == "OFFBOARD") {
+          beginTest(now);
+          publishTarget(now);
+        } else {
+          // 直接向飞控预流当前位置，不提前向 NMPC 路由器发送起飞目标。
+          auto hold = local_pose_;
+          hold.header.stamp = now;
+          prestream_publisher_.publish(hold);
+        }
+        return;
+      }
       if (auto_start_) {
         std::string reason;
         if (!autoStartReady(now, reason)) {
@@ -500,6 +533,7 @@ class LandingTestMissionNode {
   ros::Subscriber pose_subscriber_;
   ros::Subscriber landing_state_subscriber_;
   ros::Publisher setpoint_publisher_;
+  ros::Publisher prestream_publisher_;
   ros::Publisher trigger_publisher_;
   ros::Publisher status_publisher_;
   ros::ServiceServer start_service_;
@@ -511,6 +545,7 @@ class LandingTestMissionNode {
   Phase phase_{Phase::WAITING};
   bool allow_arming_{false};
   bool auto_start_{false};
+  bool start_on_offboard_{false};
   bool state_received_{false};
   bool pose_received_{false};
   bool target_valid_{false};

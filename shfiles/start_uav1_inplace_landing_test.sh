@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
 
-# 原地起飞精降：一次启动基础链路和待命任务；start 子命令才触发实飞。
+# 原地起飞精降：默认由 start 触发，18 cm 入口由手动解锁及 OFFBOARD 触发。
 set -eo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 MATCH_WS="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 SCRIPT_PATH="${UAV1_TEST_ENTRY_SCRIPT:-${SCRIPT_DIR}/start_uav1_inplace_landing_test.sh}"
 TAKEOFF_HEIGHT_M="${UAV1_TEST_TAKEOFF_HEIGHT_M:-1.70}"
+START_ON_OFFBOARD="${UAV1_TEST_START_ON_OFFBOARD:-false}"
+
+show_start_instruction() {
+  if [[ "$START_ON_OFFBOARD" == true ]]; then
+    echo "定位和画面正常后，先手动解锁，再用遥控器切入 OFFBOARD：起飞 ${TAKEOFF_HEIGHT_M} 米后精降。"
+  else
+    echo "准备好后在另一个终端执行：bash ${SCRIPT_PATH} start"
+  fi
+}
 
 source_ros() {
   source /opt/ros/noetic/setup.bash
@@ -26,7 +35,8 @@ case "${1:-}" in
         # MAVROS 所在分屏负责启动 master，避免多个 roslaunch 同时创建它。
         until rosnode list >/dev/null 2>&1; do sleep 1; done
         exec rosrun uav1_inplace_landing_test start_landing_test.sh \
-          allow_arming:=true auto_start:=false takeoff_height_m:="${TAKEOFF_HEIGHT_M}" \
+          allow_arming:="${UAV1_TEST_ALLOW_ARMING:-true}" auto_start:=false \
+          start_on_offboard:="${START_ON_OFFBOARD}" takeoff_height_m:="${TAKEOFF_HEIGHT_M}" \
           marker_size_m:="${UAV1_TEST_MARKER_SIZE_M:-0.50}" \
           marker_dictionary:="${UAV1_TEST_MARKER_DICTIONARY:-DICT_4X4_250}" \
           enable_nmpc_descent:="${UAV1_TEST_NMPC_DESCENT:-true}"
@@ -45,6 +55,10 @@ case "${1:-}" in
     ;;
   --nmpc) export UAV1_TEST_NMPC_DESCENT=true ;;
   start)
+    if [[ "$START_ON_OFFBOARD" == true ]]; then
+      show_start_instruction
+      exit 2
+    fi
     source_ros
     echo "触发实飞：OFFBOARD → 解锁 → 原地起飞 ${TAKEOFF_HEIGHT_M} 米 → 精降。"
     exec rosservice call /landing_test/start '{}'
@@ -52,7 +66,7 @@ case "${1:-}" in
   -h|--help)
     echo "全程NMPC测试：bash ${SCRIPT_PATH} --nmpc"
     echo "启动待命及画面：bash ${SCRIPT_PATH}"
-    echo "定位正常、飞机放稳且遥控可接管后开始实飞：bash ${SCRIPT_PATH} start"
+    show_start_instruction
     exit 0
     ;;
   '') ;;
@@ -67,5 +81,5 @@ sed "s|__UAV1_INPLACE_TEST_SCRIPT__|bash ${SCRIPT_PATH}|g" \
   "${SCRIPT_DIR}/terminator_uav1_inplace_landing_test.conf" > "$runtime_config"
 echo '启动 MAVROS、MID360、FAST-LIO、位姿回传、精降待命和下视画面。'
 echo '请先关闭手持标定和其他飞行控制流程；勿重复启动。'
-echo "准备好后在另一个终端执行：bash ${SCRIPT_PATH} start"
+show_start_instruction
 terminator --no-dbus --maximise --config="$runtime_config" --layout=uav1_inplace_landing_test
