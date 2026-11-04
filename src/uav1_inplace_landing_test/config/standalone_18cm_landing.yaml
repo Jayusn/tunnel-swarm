@@ -5,30 +5,32 @@
 # error_body = measured_body - bias_xy_m；只校准 XY，不调整 Z。
 # 210542 实飞后实测机身偏后 6 cm、偏右 7 cm（body FLU）。
 # 在静态补偿基础上减去 [0.06, 0.07] m，使目标向前 6 cm、向左 7 cm。
-# 此次经验修正待两次复飞核对；高度、速度及丢码逻辑保持不变。
+# 215355 实飞后实测左偏 2.5 cm，Y 补偿增加 0.025 m，使目标右移 2.5 cm。
 center_alignment:
-  bias_xy_m: [-0.04943469, 0.01260303]
+  bias_xy_m: [-0.04943469, 0.03760303]
 
 control:
   # 暂停下降时捕获一次当前 Z；后续下沉、丢码不再下移保持目标。
   freeze_descent_hold_height: true
 
 state_machine:
-  # 起始对中保留 8 cm：连续达标 0.5 s 才进入视觉下降。
+  # 低空初始/重新对中取 8 cm 与高度门限的较小值；高空边降边对中。
   align_error_m: 0.08
 
 stages:
   high:
     min_height_m: 0.60
-    # >=1.30 m 允许 10 cm；向下线性收紧，到 0.60 m 为 5 cm。
-    # 超过当前高度的门限就保持高度对中，连续达标 0.5 s 再下降。
+    # >=1.00 m 有效识码后边下降边对中，不因 XY 误差暂停。
+    align_while_descending_above_m: 1.00
+    # 低于 1.00 m 才应用高度门限：由 1.30 m 的 10 cm 线性收紧至 0.60 m 的 5 cm。
+    # 低空超限保持高度对中，连续达标 0.5 s 再下降。
     taper_start_height_m: 1.30
     error_m: 0.10
-    # 视觉离码 1.0 -> 0.8 m，下降速度从 0.25 平滑降至 0.10 m/s。
+    # 视觉离码 1.0 -> 0.8 m，下降速度从 0.25 平滑降至 0.15 m/s。
     # 0.8 -> 0.6 m 保持慢速接近；误差超限仍暂停下降。
     slowdown_start_height_m: 1.00
     slowdown_end_height_m: 0.80
-    slow_descent_mps: 0.10
+    slow_descent_mps: 0.15
   # 视觉估计离码高度 <= 0.60 m，且误差 <= 5 cm 连续 0.5 s 后锁定 XY。
   # 沿用已有丢码/20 秒超时转定点下降逻辑，此门限描述正常可见码流程。
   auto_land:

@@ -15,6 +15,8 @@ struct StateMachineConfig {
   double high_align_error_m{0.25};
   // Zero keeps the legacy constant gate; enabled only by the 18 cm test config.
   double taper_start_height_m{0.0};
+  // Zero preserves alignment-before-descent at all heights.
+  double align_while_descending_above_m{0.0};
   double high_descent_mps{0.25};
   // Zero start height preserves the original fixed visual descent speed.
   double slowdown_start_height_m{0.0};

@@ -42,6 +42,8 @@ StateOutput LandingStateMachine::update(const StateInput& input) {
   bool reset_controller = false;
   bool reset_target_jump_history = false;
   bool entered_precheck = false;
+  const bool align_while_descending = config_.align_while_descending_above_m > 0.0 &&
+      input.marker_height_m >= config_.align_while_descending_above_m;
   if (!input.trigger && clearsOnFalseTrigger(state_)) {
     state_ = LandingState::IDLE;
     fine_aligned_since_sec_ = -1.0;
@@ -132,6 +134,11 @@ StateOutput LandingStateMachine::update(const StateInput& input) {
             input.now_sec - fine_aligned_since_sec_ >= config_.fine_align_stable_sec) {
           state_ = LandingState::FIXED_XY_DESCENT;
         }
+      } else if (align_while_descending) {
+        state_ = LandingState::DESCEND_HIGH;
+        // Start a fresh alignment interval when entering the low-height region.
+        descent_gate_since_sec_ = -1.0;
+        descent_gate_state_ = LandingState::IDLE;
       } else if (state_ == LandingState::ALIGN) {
         const double alignment_gate =
             initialAlignmentGate(config_, input.marker_height_m);
@@ -200,11 +207,11 @@ StateOutput LandingStateMachine::update(const StateInput& input) {
     output.descent_speed_mps = config_.fixed_descent_mps;
   } else if (state_ == LandingState::DESCEND_HIGH && input.target_visible &&
       above_visual_descent_floor &&
-      input.horizontal_error_m <= descentAlignmentGate(config_, input.marker_height_m) &&
-      descent_gate_state_ == state_ &&
-      descent_gate_since_sec_ >= 0.0 &&
-      input.now_sec - descent_gate_since_sec_ >=
-          config_.align_stable_sec) {
+      (align_while_descending ||
+       (input.horizontal_error_m <= descentAlignmentGate(config_, input.marker_height_m) &&
+        descent_gate_state_ == state_ &&
+        descent_gate_since_sec_ >= 0.0 &&
+        input.now_sec - descent_gate_since_sec_ >= config_.align_stable_sec))) {
     output.descent_speed_mps = config_.high_descent_mps;
     if (config_.slowdown_start_height_m > config_.slowdown_end_height_m) {
       const double ratio = std::max(0.0, std::min(1.0,

@@ -125,6 +125,50 @@ TEST(LandingStateMachine, NeverDescendsWhenPrecheckFails) {
   EXPECT_DOUBLE_EQ(output.descent_speed_mps, 0.0);
 }
 
+TEST(LandingStateMachine, HighDescentAlignsWhileMovingThenRequiresLowAlignment) {
+  precision_landing::StateMachineConfig config;
+  config.align_error_m = 0.08;
+  config.high_align_error_m = 0.10;
+  config.auto_land_error_m = 0.05;
+  config.high_height_m = config.auto_land_height_m = 0.60;
+  config.taper_start_height_m = 1.30;
+  config.align_while_descending_above_m = 1.0;
+  config.slowdown_start_height_m = 1.0;
+  config.slowdown_end_height_m = 0.8;
+  config.slow_descent_mps = 0.15;
+  LandingStateMachine machine(config);
+  machine.update(ActiveInput(0.0, 2.0, 0.5));
+  machine.update(ActiveInput(0.0, 2.0, 0.5));
+  EXPECT_DOUBLE_EQ(machine.update(ActiveInput(0.29, 2.0, 0.5)).descent_speed_mps, 0.0);
+  machine.update(ActiveInput(0.31, 2.0, 0.5));
+  EXPECT_DOUBLE_EQ(machine.update(ActiveInput(0.36, 2.0, 0.5)).descent_speed_mps, 0.25);
+  EXPECT_DOUBLE_EQ(machine.update(ActiveInput(0.5, 1.0, 0.15)).descent_speed_mps, 0.25);
+  EXPECT_DOUBLE_EQ(machine.update(ActiveInput(0.6, 0.99, 0.15)).descent_speed_mps, 0.0);
+  machine.update(ActiveInput(0.7, 0.9, 0.04));
+  EXPECT_DOUBLE_EQ(machine.update(ActiveInput(1.19, 0.9, 0.04)).descent_speed_mps, 0.0);
+  EXPECT_NEAR(machine.update(ActiveInput(1.21, 0.9, 0.04)).descent_speed_mps, 0.20, 1e-9);
+  EXPECT_DOUBLE_EQ(machine.update(ActiveInput(1.3, 0.7, 0.06)).descent_speed_mps, 0.0);
+  machine.update(ActiveInput(1.4, 0.7, 0.04));
+  EXPECT_DOUBLE_EQ(machine.update(ActiveInput(1.91, 0.7, 0.04)).descent_speed_mps, 0.15);
+  EXPECT_EQ(machine.update(ActiveInput(2.0, 0.6, 0.06)).state, LandingState::ALIGN);
+  machine.update(ActiveInput(2.1, 0.6, 0.04));
+  EXPECT_EQ(machine.update(ActiveInput(2.59, 0.6, 0.04)).state, LandingState::ALIGN);
+  EXPECT_EQ(machine.update(ActiveInput(2.61, 0.6, 0.04)).state, LandingState::FIXED_XY_DESCENT);
+}
+
+TEST(LandingStateMachine, HighSimultaneousAlignmentStillStopsOnMarkerLoss) {
+  precision_landing::StateMachineConfig config;
+  config.auto_land_height_m = config.high_height_m = 0.6;
+  config.align_while_descending_above_m = 1.0;
+  LandingStateMachine machine(config);
+  ReachHighDescent(machine);
+  EXPECT_DOUBLE_EQ(machine.update(ActiveInput(0.9, 2.0, 0.5)).descent_speed_mps, 0.25);
+  EXPECT_DOUBLE_EQ(machine.update(ActiveInput(1.0, 2.0, 0.5, false)).descent_speed_mps, 0.0);
+  EXPECT_EQ(machine.update(ActiveInput(1.51, 2.0, 0.5, false)).state, LandingState::REACQUIRE);
+  machine.update(ActiveInput(1.6, 2.0, 0.5));
+  EXPECT_DOUBLE_EQ(machine.update(ActiveInput(1.7, 2.0, 0.5)).descent_speed_mps, 0.25);
+}
+
 TEST(LandingStateMachine, RequiresStableAcquireAndAlignBeforeVisualDescent) {
   LandingStateMachine machine;
   machine.update(ActiveInput(0.0));

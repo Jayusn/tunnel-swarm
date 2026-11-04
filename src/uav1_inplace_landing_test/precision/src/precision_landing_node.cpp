@@ -134,6 +134,11 @@ void validateStateMachineConfig(const StateMachineConfig& config) {
         config.high_align_error_m < config.auto_land_error_m))) {
     throw std::runtime_error("height taper requires start height above handoff and high error >= final error");
   }
+  requireFiniteNonNegative(config.align_while_descending_above_m,
+                           "stages/high/align_while_descending_above_m");
+  if (config.align_while_descending_above_m > 0.0 &&
+      config.align_while_descending_above_m <= config.auto_land_height_m)
+    throw std::runtime_error("simultaneous alignment/descent must end above final alignment height");
   requireFinitePositive(config.high_descent_mps, "stages/high/descent_mps");
   requireFiniteNonNegative(config.slowdown_start_height_m, "stages/high/slowdown_start_height_m");
   if (config.slowdown_start_height_m > 0.0) {
@@ -182,6 +187,8 @@ StateMachineConfig loadStateMachineConfig(ros::NodeHandle& private_node) {
   loadParameter(private_node, "stages/high/error_m",
                 "state_machine/high_align_error_m", config.high_align_error_m);
   loadParameter(private_node, "stages/high/taper_start_height_m", config.taper_start_height_m);
+  loadParameter(private_node, "stages/high/align_while_descending_above_m",
+                config.align_while_descending_above_m);
   loadParameter(private_node, "stages/high/descent_mps",
                 "state_machine/high_descent_mps", config.high_descent_mps);
   loadParameter(private_node, "stages/high/slowdown_start_height_m", config.slowdown_start_height_m);
