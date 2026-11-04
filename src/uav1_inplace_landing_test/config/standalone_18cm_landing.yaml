@@ -10,11 +10,15 @@ center_alignment:
   bias_xy_m: [-0.04943469, 0.01260303]
 
 state_machine:
+  # 起始对中保留 8 cm：连续达标 0.5 s 才进入视觉下降。
   align_error_m: 0.08
 
 stages:
   high:
     min_height_m: 0.60
+    # >=1.30 m 允许 10 cm；向下线性收紧，到 0.60 m 为 5 cm。
+    # 超过当前高度的门限就保持高度对中，连续达标 0.5 s 再下降。
+    taper_start_height_m: 1.30
     error_m: 0.10
   # 视觉估计离码高度 <= 0.60 m，且误差 <= 5 cm 连续 0.5 s 后锁定 XY。
   # 沿用已有丢码/20 秒超时转定点下降逻辑，此门限描述正常可见码流程。

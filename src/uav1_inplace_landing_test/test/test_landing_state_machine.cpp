@@ -48,6 +48,49 @@ TEST(StateInput, SupportsDefaultAndLegacyConstruction) {
   EXPECT_TRUE(legacy_input.critical_inputs_fresh);
 }
 
+TEST(LandingStateMachine, HeightTaperPausesUntilAlignedAtEachHeight) {
+  precision_landing::StateMachineConfig config;
+  config.align_error_m = 0.08;
+  config.high_align_error_m = 0.10;
+  config.auto_land_error_m = 0.05;
+  config.high_height_m = config.auto_land_height_m = 0.60;
+  config.taper_start_height_m = 1.30;
+  LandingStateMachine machine(config);
+  ReachHighDescent(machine);
+  EXPECT_DOUBLE_EQ(machine.update(ActiveInput(0.9, 1.5, 0.09)).descent_speed_mps, 0.25);
+  // Same error is allowed high up but must stop descent as height decreases.
+  EXPECT_DOUBLE_EQ(machine.update(ActiveInput(1.0, 1.0, 0.09)).descent_speed_mps, 0.0);
+  machine.update(ActiveInput(1.1, 1.0, 0.07));
+  EXPECT_DOUBLE_EQ(machine.update(ActiveInput(1.59, 1.0, 0.07)).descent_speed_mps, 0.0);
+  EXPECT_DOUBLE_EQ(machine.update(ActiveInput(1.61, 1.0, 0.07)).descent_speed_mps, 0.25);
+  EXPECT_DOUBLE_EQ(machine.update(ActiveInput(1.7, 0.8, 0.065)).descent_speed_mps, 0.0);
+  machine.update(ActiveInput(1.8, 0.8, 0.06));
+  EXPECT_DOUBLE_EQ(machine.update(ActiveInput(2.31, 0.8, 0.06)).descent_speed_mps, 0.25);
+  EXPECT_EQ(machine.update(ActiveInput(2.4, 0.6, 0.06)).state, LandingState::ALIGN);
+  machine.update(ActiveInput(2.5, 0.6, 0.04));
+  EXPECT_EQ(machine.update(ActiveInput(2.99, 0.6, 0.04)).state, LandingState::ALIGN);
+  EXPECT_EQ(machine.update(ActiveInput(3.01, 0.6, 0.04)).state, LandingState::FIXED_XY_DESCENT);
+}
+
+TEST(LandingStateMachine, HeightTaperInitialAlignmentKeepsEightCmCap) {
+  precision_landing::StateMachineConfig config;
+  config.align_error_m = 0.08;
+  config.high_align_error_m = 0.10;
+  config.auto_land_error_m = 0.05;
+  config.high_height_m = config.auto_land_height_m = 0.60;
+  config.taper_start_height_m = 1.30;
+  LandingStateMachine high(config);
+  ReachAlign(high);
+  EXPECT_EQ(high.update(ActiveInput(0.9, 2.0, 0.09)).state, LandingState::ALIGN);
+  high.update(ActiveInput(1.0, 2.0, 0.07));
+  EXPECT_EQ(high.update(ActiveInput(1.51, 2.0, 0.07)).state, LandingState::DESCEND_HIGH);
+  LandingStateMachine low(config);
+  ReachAlign(low, 1.0);
+  EXPECT_EQ(low.update(ActiveInput(0.9, 1.0, 0.079)).state, LandingState::ALIGN);
+  low.update(ActiveInput(1.0, 1.0, 0.07));
+  EXPECT_EQ(low.update(ActiveInput(1.51, 1.0, 0.07)).state, LandingState::DESCEND_HIGH);
+}
+
 TEST(LandingStateMachine, NeverDescendsWhenPrecheckFails) {
   LandingStateMachine machine;
   machine.update(StateInput{true, false, true, true, false, 0.0, 2.0, 0.0});

@@ -128,6 +128,12 @@ void validateStateMachineConfig(const StateMachineConfig& config) {
   requireFinitePositive(config.auto_land_height_m,
                         "stages/auto_land/height_m");
   requireFinitePositive(config.high_align_error_m, "stages/high/error_m");
+  if (!std::isfinite(config.taper_start_height_m) || config.taper_start_height_m < 0.0 ||
+      (config.taper_start_height_m > 0.0 &&
+       (config.taper_start_height_m <= config.auto_land_height_m ||
+        config.high_align_error_m < config.auto_land_error_m))) {
+    throw std::runtime_error("height taper requires start height above handoff and high error >= final error");
+  }
   requireFinitePositive(config.high_descent_mps, "stages/high/descent_mps");
   requireFinitePositive(config.auto_land_error_m, "stages/auto_land/error_m");
   requireFinitePositive(config.fine_align_stable_sec,
@@ -166,6 +172,7 @@ StateMachineConfig loadStateMachineConfig(ros::NodeHandle& private_node) {
                 "state_machine/auto_land_height_m", config.auto_land_height_m);
   loadParameter(private_node, "stages/high/error_m",
                 "state_machine/high_align_error_m", config.high_align_error_m);
+  loadParameter(private_node, "stages/high/taper_start_height_m", config.taper_start_height_m);
   loadParameter(private_node, "stages/high/descent_mps",
                 "state_machine/high_descent_mps", config.high_descent_mps);
   loadParameter(private_node, "stages/auto_land/error_m",

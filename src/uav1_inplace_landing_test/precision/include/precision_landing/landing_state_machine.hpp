@@ -13,6 +13,8 @@ struct StateMachineConfig {
   double high_height_m{1.50};
   double auto_land_height_m{1.50};
   double high_align_error_m{0.25};
+  // Zero keeps the legacy constant gate; enabled only by the 18 cm test config.
+  double taper_start_height_m{0.0};
   double high_descent_mps{0.25};
   double fixed_descent_mps{0.10};
   double auto_land_error_m{0.12};

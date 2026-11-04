@@ -5,9 +5,19 @@
 namespace precision_landing {
 namespace {
 
+double descentAlignmentGate(const StateMachineConfig& config, double height_m) {
+  if (config.taper_start_height_m <= config.auto_land_height_m)
+    return config.high_align_error_m;
+  const double ratio = std::max(0.0, std::min(1.0,
+      (height_m - config.auto_land_height_m) /
+      (config.taper_start_height_m - config.auto_land_height_m)));
+  return config.auto_land_error_m +
+      ratio * (config.high_align_error_m - config.auto_land_error_m);
+}
+
 double initialAlignmentGate(const StateMachineConfig& config,
-                            double /*marker_height_m*/) {
-  return std::min(config.align_error_m, config.high_align_error_m);
+                            double marker_height_m) {
+  return std::min(config.align_error_m, descentAlignmentGate(config, marker_height_m));
 }
 
 bool clearsOnFalseTrigger(LandingState state) {
@@ -124,7 +134,7 @@ StateOutput LandingStateMachine::update(const StateInput& input) {
         }
       } else if (state_ == LandingState::ALIGN) {
         const double alignment_gate =
-            std::min(config_.align_error_m, config_.high_align_error_m);
+            initialAlignmentGate(config_, input.marker_height_m);
         if (input.horizontal_error_m > alignment_gate) {
           aligned_since_sec_ = -1.0;
         } else if (aligned_since_sec_ < 0.0) {
@@ -135,7 +145,7 @@ StateOutput LandingStateMachine::update(const StateInput& input) {
           descent_gate_since_sec_ = aligned_since_sec_;
         }
       } else {
-        if (input.horizontal_error_m > config_.high_align_error_m) {
+        if (input.horizontal_error_m > descentAlignmentGate(config_, input.marker_height_m)) {
           descent_gate_since_sec_ = -1.0;
         } else if (descent_gate_state_ != state_ ||
                    descent_gate_since_sec_ < 0.0) {
@@ -190,7 +200,7 @@ StateOutput LandingStateMachine::update(const StateInput& input) {
     output.descent_speed_mps = config_.fixed_descent_mps;
   } else if (state_ == LandingState::DESCEND_HIGH && input.target_visible &&
       above_visual_descent_floor &&
-      input.horizontal_error_m <= config_.high_align_error_m &&
+      input.horizontal_error_m <= descentAlignmentGate(config_, input.marker_height_m) &&
       descent_gate_state_ == state_ &&
       descent_gate_since_sec_ >= 0.0 &&
       input.now_sec - descent_gate_since_sec_ >=
