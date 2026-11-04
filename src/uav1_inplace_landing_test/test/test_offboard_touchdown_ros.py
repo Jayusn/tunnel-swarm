@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""隔离 ROS master：保持 OFFBOARD，按 FAST-LIO 接地判据输出零推力并普通上锁。"""
+"""隔离 ROS master：区分慢降与接触，组合判据确认后平滑减推力并普通上锁。"""
 import sys
 import time
 import unittest
@@ -35,12 +35,17 @@ class OffboardTouchdownTest(RcLandPriorityTest):
                   self.pubs['nmpc_attitude'].get_num_connections(), 'router connections')
         self.pubs['takeoff_reference'].publish(Float64(data=10.))
         self.z, self.vz = 11., 0.
-        self.stage, self.rc_land = 'FIXED_XY_DESCENT', False
+        self.target_z, self.thrust = 9.8, .6
+        self.stage, self.rc_land = 'ALIGN', False
         self.armed = True
         self.odom_enabled = True
+        self.target_enabled = True
+        self.attitude_enabled = True
+        self.z_rate = 0.
         self.landed = ExtendedState.LANDED_STATE_IN_AIR
-        self.drive(.3)
+        self.drive(.5)
         self.assertGreater(self.last('mavros_attitude').thrust, 0.)
+        self.stage, self.thrust = 'FIXED_XY_DESCENT', .35
 
     def disarm(self, request):
         self.requests.append((time.monotonic(), request.value))
@@ -48,7 +53,11 @@ class OffboardTouchdownTest(RcLandPriorityTest):
 
     def drive(self, seconds):
         until = time.monotonic()+seconds
+        previous = time.monotonic()
         while time.monotonic() < until:
+            now = time.monotonic()
+            self.z += self.z_rate*(now-previous)
+            previous = now
             stamp = rospy.Time.now()
             odom = Odometry()
             odom.pose.pose.orientation.w = 1.
@@ -60,8 +69,8 @@ class OffboardTouchdownTest(RcLandPriorityTest):
             state = State(connected=True, armed=self.armed, mode='OFFBOARD')
             extended = ExtendedState(landed_state=self.landed)
             target = PositionTarget(coordinate_frame=1, type_mask=2552)
-            target.position.z = 9.97
-            attitude = AttitudeTarget(type_mask=128, thrust=.35)
+            target.position.z = self.target_z
+            attitude = AttitudeTarget(type_mask=128, thrust=self.thrust)
             attitude.body_rate.x = .2
             self.pubs['landing_state'].publish(String(data=self.stage))
             self.pubs['rc_land'].publish(Bool(data=self.rc_land))
@@ -69,6 +78,10 @@ class OffboardTouchdownTest(RcLandPriorityTest):
                               ('local_pose',local),('odom',odom),
                               ('landing_position',target),('nmpc_attitude',attitude)]:
                 if topic == 'odom' and not self.odom_enabled:
+                    continue
+                if topic == 'landing_position' and not self.target_enabled:
+                    continue
+                if topic == 'nmpc_attitude' and not self.attitude_enabled:
                     continue
                 msg.header.stamp = stamp
                 self.pubs[topic].publish(msg)
@@ -82,14 +95,20 @@ class OffboardTouchdownTest(RcLandPriorityTest):
             self.assertFalse(self.requests)
         self.z, self.vz = 10.02,0.
         self.drive(.25)
-        self.assertFalse(self.requests, 'not stable for 0.5 seconds')
+        self.assertFalse(self.requests, 'not stable for 0.6 seconds')
         self.vz = -.2
         self.drive(.1)
         self.vz = 0.
         started = time.monotonic()
-        self.drive(1.1)
+        mark = len(self.messages['mavros_attitude'])
+        self.drive(1.8)
         self.assertTrue(self.requests)
-        self.assertGreaterEqual(self.requests[0][0]-started, .48)
+        self.assertGreaterEqual(self.requests[0][0]-started, .9)
+        outputs = self.messages['mavros_attitude'][mark:]
+        self.assertTrue(any(0.01 < m.thrust < .34 for m in outputs), 'ramp before zero thrust')
+        for before, after in zip(outputs, outputs[1:]):
+            dt = (after.header.stamp-before.header.stamp).to_sec()
+            self.assertLessEqual(before.thrust-after.thrust, .35/.3*max(dt,0.)+.025)
         self.assertTrue(all(value is False for _,value in self.requests))
         self.assertEqual(self.last('owner').data, 'TOUCHDOWN_DISARMING')
         self.assertEqual(self.last('mavros_attitude').thrust, 0.)
@@ -114,8 +133,45 @@ class OffboardTouchdownTest(RcLandPriorityTest):
         self.assertFalse(self.requests, 'stale pose cannot prove contact')
         self.odom_enabled = True
         self.drive(.25)
-        self.assertFalse(self.requests, 'new samples restart the 0.5 second interval')
-        self.drive(1.)
+        self.assertFalse(self.requests, 'new samples restart the 0.6 second interval')
+        self.drive(1.8)
+        self.assertTrue(self.requests)
+
+    def test_slow_descent_and_missing_unloading_do_not_disarm(self):
+        # 实飞提前停推力片段：虽低于 5 cm，但仍慢降，推力接近悬停值。
+        self.z, self.vz, self.z_rate, self.thrust = 10.045, -.026, -.026, .56
+        self.drive(1.1)
+        self.assertFalse(self.requests)
+        # 即使推力已降低，真实高度持续变化也不能用小 vz 代替稳定高度窗口。
+        self.z, self.vz, self.z_rate, self.thrust = 10.04, -.02, -.025, .35
+        self.drive(1.1)
+        self.assertFalse(self.requests)
+        self.z, self.vz, self.z_rate, self.thrust = 10.01, 0., 0., .56
+        self.drive(1.3)
+        self.assertFalse(self.requests, 'stable low hover is not contact')
+        self.thrust = .35
+        self.target_z = 10.0
+        self.drive(1.3)
+        self.assertFalse(self.requests, 'no downward position error')
+        self.target_z = 9.8
+        self.drive(1.8)
+        self.assertTrue(self.requests)
+
+    def test_missing_hover_reference_does_not_disarm(self):
+        # 新起飞基准清空上一次空中推力标定，缺失本次基准时不能凭低推力停桨。
+        self.pubs['takeoff_reference'].publish(Float64(data=10.))
+        self.z = 10.01
+        self.drive(1.8)
+        self.assertFalse(self.requests)
+
+    def test_stale_target_does_not_prove_contact(self):
+        self.target_enabled = False
+        self.drive(.4)
+        self.z = 10.01
+        self.drive(1.3)
+        self.assertFalse(self.requests)
+        self.target_enabled = True
+        self.drive(1.8)
         self.assertTrue(self.requests)
 
     def test_ch10_preempts_pending_contact_and_wrong_stage(self):
@@ -131,6 +187,19 @@ class OffboardTouchdownTest(RcLandPriorityTest):
         self.drive(1.1)
         self.assertFalse(self.requests)
         self.assertGreater(self.last('mavros_attitude').thrust, 0.)
+
+    def test_ch10_interrupts_thrust_ramp(self):
+        self.z = 10.01
+        deadline = time.monotonic()+2.
+        while time.monotonic() < deadline:
+            self.drive(.02)
+            if self.last('owner').data == 'TOUCHDOWN_RAMP_DOWN':
+                break
+        self.assertEqual(self.last('owner').data, 'TOUCHDOWN_RAMP_DOWN')
+        self.rc_land = True
+        self.drive(.8)
+        self.assertFalse(self.requests, 'CH10 must cancel pending direct disarm')
+        self.assertAlmostEqual(self.last('mavros_attitude').thrust, self.thrust, places=4)
 
 
 if __name__ == '__main__':

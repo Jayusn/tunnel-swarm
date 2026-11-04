@@ -162,12 +162,20 @@ class FastlioOffboardDescentTest(FastlioPrecisionTest):
         self.frames = False
         self.x, self.y = expected
         self.wait(lambda: self.stage() == 'FIXED_XY_DESCENT', 'locked XY descent')
+        # 先让下降目标到达近地减速区，再模拟机体跟随；不能瞬间把机体跳到目标下方。
+        self.wait(lambda: self.commands[-1].position.z <= 1.15, 'target reaches near-ground band')
         self.z = 1.29
         time.sleep(.4)
         self.assertFalse(self.requests, 'must not switch AUTO.LAND at 0.3 m')
         self.z = 1.02
-        self.wait(lambda: self.commands[-1].position.z <= .971, 'takeoff-relative descent floor')
-        self.assertAlmostEqual(self.commands[-1].position.z, .97, places=3)
+        self.wait(lambda: self.commands[-1].position.z < 1.14, 'near-ground slow descent')
+        before = self.commands[-1]
+        time.sleep(.5)
+        after = self.commands[-1]
+        dt = (after.header.stamp-before.header.stamp).to_sec()
+        self.assertAlmostEqual((before.position.z-after.position.z)/dt, .1, delta=.015)
+        self.wait(lambda: self.commands[-1].position.z <= .701, 'takeoff-relative descent floor')
+        self.assertAlmostEqual(self.commands[-1].position.z, .70, places=3)
         self.assertAlmostEqual(self.commands[-1].position.x, expected[0], delta=.025)
         self.assertAlmostEqual(self.commands[-1].position.y, expected[1], delta=.025)
         self.assertFalse(self.requests, 'remain OFFBOARD at ground height')

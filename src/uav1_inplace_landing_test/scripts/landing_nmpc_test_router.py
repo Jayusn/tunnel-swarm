@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """独立测试专用：起飞与全部精降目标交给NMPC，统一飞控输出。"""
 import copy
+from collections import deque
 import math
 import threading
 import rospy
@@ -27,6 +28,12 @@ class Router:
         self.offboard_touchdown = rospy.get_param('~offboard_touchdown', False)
         self.takeoff_reference_z = None
         self.touchdown_odom = None
+        self.contact_samples = deque()
+        self.descent_target = None
+        self.nmpc_output = None
+        self.hover_thrust = None
+        self.touchdown_started = None
+        self.touchdown_thrust = 0.0
         self.landing_started = False
         self.takeoff_z = None
         self.takeoff_yaw = None
@@ -64,6 +71,10 @@ class Router:
 
     def rc_land_cb(self, msg):
         with self.lock:
+            if msg.data and not self.rc_land and self.offboard_touchdown:
+                self.contact_samples.clear()
+                self.touchdown = False
+                self.touchdown_started = None
             self.rc_land = self.rc_land or msg.data
 
     def extended_cb(self, msg):
@@ -93,19 +104,27 @@ class Router:
             if self.offboard_touchdown and self.rc_land:
                 return
             if not self.touchdown:
-                contact_sample = self.touchdown_odom if self.offboard_touchdown else self.extended
-                contact_time = (contact_sample.header.stamp
-                                if self.offboard_touchdown and contact_sample is not None
-                                else rospy.Time.now())
-                if (contact_sample is None or not self.fresh(contact_sample) or
-                        self.ground_since is None or
-                        (contact_time-self.ground_since).to_sec() < .5):
-                    return
                 if self.offboard_touchdown:
-                    rospy.logwarn('FAST-LIO 接地判据满足：相对高度 %.3f m，垂直速度 %.3f m/s；保持 OFFBOARD，零推力并请求上锁',
+                    if (not self.contact_candidate() or len(self.contact_samples) < 2 or
+                            self.contact_samples[-1][0]-self.contact_samples[0][0] < .6 or
+                            max(z for _, z in self.contact_samples)-min(z for _, z in self.contact_samples) > .01):
+                        return
+                    self.touchdown_started = rospy.Time.now()
+                    self.touchdown_thrust = self.nmpc_output.thrust
+                    rospy.logwarn('接地组合判据满足：相对高度 %.3f m，垂直速度 %.3f m/s，推力比 %.3f；保持 OFFBOARD，0.3 秒减推力后请求上锁',
                                   self.touchdown_odom.pose.pose.position.z-self.takeoff_reference_z,
-                                  self.touchdown_odom.twist.twist.linear.z)
+                                  self.touchdown_odom.twist.twist.linear.z,
+                                  self.nmpc_output.thrust/self.hover_thrust)
+                elif (self.extended is None or not self.fresh(self.extended) or
+                      self.ground_since is None or
+                      (rospy.Time.now()-self.ground_since).to_sec() < .5):
+                    return
             self.touchdown = True
+            if (self.offboard_touchdown and
+                    (rospy.Time.now()-self.touchdown_started).to_sec() < .3):
+                self.owner.publish(String(data='TOUCHDOWN_RAMP_DOWN'))
+                self.publish_idle()
+                return
             self.owner.publish(String(data='TOUCHDOWN_DISARMING'))
             self.publish_idle()
         # 普通上锁请求；不使用强制解锁/上锁的MAV_CMD参数。
@@ -158,29 +177,47 @@ class Router:
             if valid_pose:
                 self.control_pose = pose
             if self.offboard_touchdown:
-                # 连续新鲜里程计满足同地面接地条件；不依赖飞控先报告 ON_GROUND。
-                if self.touchdown_odom is None or not self.fresh(self.touchdown_odom):
-                    self.ground_since = None
+                if (self.touchdown_odom is None or not self.fresh(self.touchdown_odom) or
+                        msg.header.stamp <= self.touchdown_odom.header.stamp):
+                    self.contact_samples.clear()
                 self.touchdown_odom = msg
-                vz = msg.twist.twist.linear.z
-                near_ground = (valid_pose and math.isfinite(vz) and
-                               self.takeoff_reference_z is not None and
-                               abs(p.z-self.takeoff_reference_z) <= .05 and abs(vz) < .1)
-                if (near_ground and self.seen_airborne and self.owned and self.output_allowed() and
-                        self.stage == 'FIXED_XY_DESCENT' and not self.rc_land):
-                    if self.ground_since is None:
-                        self.ground_since = rospy.Time.now()
+                if valid_pose and self.contact_candidate():
+                    stamp = msg.header.stamp.to_sec()
+                    self.contact_samples.append((stamp, p.z))
+                    # 保留至少 0.6 秒窗口及其前一帧，检查整个窗口的高度变化。
+                    while len(self.contact_samples) > 2 and self.contact_samples[1][0] <= stamp-.6:
+                        self.contact_samples.popleft()
                 else:
-                    self.ground_since = None
+                    self.contact_samples.clear()
+
+    def contact_candidate(self):
+        if (not self.seen_airborne or not self.owned or not self.output_allowed() or
+                self.stage != 'FIXED_XY_DESCENT' or self.rc_land or
+                self.takeoff_reference_z is None or self.hover_thrust is None or
+                any(msg is None or not self.fresh(msg) for msg in
+                    (self.touchdown_odom, self.descent_target, self.nmpc_output))):
+            return False
+        z = self.touchdown_odom.pose.pose.position.z
+        vz = self.touchdown_odom.twist.twist.linear.z
+        target_z = self.descent_target.position.z
+        thrust = self.nmpc_output.thrust
+        return (all(math.isfinite(v) for v in (z, vz, target_z, thrust)) and
+                abs(z-self.takeoff_reference_z) <= .05 and abs(vz) < .03 and
+                z-target_z >= .08 and 0.0 < thrust <= .85*self.hover_thrust)
 
     def takeoff_reference_cb(self, msg):
         with self.lock:
             if math.isfinite(msg.data):
                 self.takeoff_reference_z = msg.data
                 self.ground_since = None
+                self.contact_samples.clear()
+                self.hover_thrust = None
 
     def publish_idle(self):
         idle = AttitudeTarget(type_mask=AttitudeTarget.IGNORE_ATTITUDE, thrust=0.0)
+        if self.offboard_touchdown and self.touchdown_started is not None:
+            elapsed = (rospy.Time.now()-self.touchdown_started).to_sec()
+            idle.thrust = self.touchdown_thrust*max(0.0, 1.0-elapsed/.3)
         idle.header.stamp = rospy.Time.now()
         self.attitude.publish(idle)
 
@@ -230,6 +267,7 @@ class Router:
                 return
             self.landing_started = True
             self.requested = True
+            self.descent_target = msg
             self.target.publish(msg)
             # 尚未得到NMPC输出时只维持当前位置，不用PX4执行视觉速度。
             if not self.owned and self.local_pose is not None and self.fresh(self.local_pose):
@@ -249,6 +287,16 @@ class Router:
             if (self.requested and self.output_allowed() and self.fresh(msg) and
                     all(math.isfinite(v) for v in values) and 0 <= msg.thrust <= 1):
                 self.take_control()
+                self.nmpc_output = msg
+                # 用本次空中平稳起飞/找码/对中时的控制推力作为基准，下降后冻结。
+                if (self.offboard_touchdown and not self.rc_land and
+                        self.stage in ('IDLE', 'PRECHECK', 'ACQUIRE', 'ALIGN') and
+                        self.touchdown_odom is not None and self.fresh(self.touchdown_odom) and
+                        self.takeoff_reference_z is not None and
+                        self.touchdown_odom.pose.pose.position.z-self.takeoff_reference_z > .3 and
+                        abs(self.touchdown_odom.twist.twist.linear.z) < .1 and msg.thrust > 0.0):
+                    self.hover_thrust = (msg.thrust if self.hover_thrust is None else
+                                         .95*self.hover_thrust+.05*msg.thrust)
                 if self.touchdown:
                     self.publish_idle()
                 else:

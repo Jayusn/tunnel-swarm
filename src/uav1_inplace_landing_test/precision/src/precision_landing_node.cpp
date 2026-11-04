@@ -1077,12 +1077,20 @@ class PrecisionLandingNode {
            output.state != LandingState::FIXED_XY_DESCENT);
       if (output.state == LandingState::FIXED_XY_DESCENT &&
           fixed_xy_descent_valid_) {
-        fixed_xy_target_z_ -= output.descent_speed_mps * dt_sec;
-        // OFFBOARD 同地面接地测试的下降下限也用起飞基准，避免视觉码面误差阻止触地。
-        if (!auto_land_at_cutoff_ && takeoff_reference_valid_)
-          fixed_xy_target_z_ = std::max(takeoff_reference_z_ - ground_target_offset_m_, fixed_xy_target_z_);
-        else if (fixed_ground_valid_)
-          fixed_xy_target_z_ = std::max(fixed_xy_ground_z_ - ground_target_offset_m_, fixed_xy_target_z_);
+        if (!auto_land_at_cutoff_ && takeoff_reference_valid_) {
+          // 同地面独立测试：目标进入近地 15 cm 后按至多 0.10 m/s 下压，XY 不变。
+          const double slow_z = takeoff_reference_z_ + 0.15;
+          const bool near_ground = std::min(local_pose_.pose.position.z, fixed_xy_target_z_) <= slow_z;
+          const double descent_speed = near_ground ? std::min(output.descent_speed_mps, 0.10) : output.descent_speed_mps;
+          fixed_xy_target_z_ -= descent_speed * dt_sec;
+          // 保留有限的向下位置误差，让控制器在被地面托住时降低推力，供接地判断。
+          fixed_xy_target_z_ = std::max(near_ground ? takeoff_reference_z_ - 0.30 : slow_z,
+                                        fixed_xy_target_z_);
+        } else {
+          fixed_xy_target_z_ -= output.descent_speed_mps * dt_sec;
+          if (fixed_ground_valid_)
+            fixed_xy_target_z_ = std::max(fixed_xy_ground_z_ - ground_target_offset_m_, fixed_xy_target_z_);
+        }
         publishPositionHold(
             Eigen::Vector3d(fixed_xy_position_.x(),
                             fixed_xy_position_.y(),
