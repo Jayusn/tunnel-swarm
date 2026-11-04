@@ -85,8 +85,8 @@ class BridgeTest(RcLandPriorityTest):
         self.assertAlmostEqual(ref.x,1.2,places=4)
 
     def test_route_without_detections(self):
-        params = dict(bridge_yaw=1.5707963267948966, entrance_x=10., entrance_y=20.,
-                      floor_z=1., waypoints=[[0., 0., .6, 0.], [2., 0., .6, .15]],
+        params = dict(bridge_yaw=1.5707963267948966,
+                      waypoints=[[10., 20., 1.6], [10., 22., 1.6]],
                       landing_x=10., landing_y=24., landing_approach_z=1.6,
                       landing_platform_delta_z=.1)
         for key, value in params.items():
@@ -112,8 +112,14 @@ class BridgeTest(RcLandPriorityTest):
         self.wait(lambda: self.last('goal') is not None, 'first goal')
         self.assertAlmostEqual(self.last('goal').pose.position.x,10.)
         self.assertAlmostEqual(self.last('goal').pose.position.y,20.)
+        self.assertAlmostEqual(self.last('goal').pose.position.z,1.6)
+        self.assertEqual(self.last('goal').header.frame_id,'UAV1/camera_init')
         # 按实际航点依次到达；整个测试不发布任何检测消息。
         for i,y in enumerate([20.,22.,24.]):
+            goal=self.last('goal').pose.position
+            self.assertAlmostEqual(goal.x,10.)
+            self.assertAlmostEqual(goal.y,y)
+            self.assertAlmostEqual(goal.z,1.6)
             odom.pose.pose.position=Point(10.,y,1.6)
             odom.header.stamp=rospy.Time.now()
             pubs['odom'].publish(odom)

@@ -1,9 +1,7 @@
 <?xml version="1.0" ?>
 <launch>
   <arg name="ground_z"/>
-  <arg name="entrance_x"/>
-  <arg name="entrance_y"/>
-  <arg name="bridge_yaw"/>
+  <arg name="bridge_yaw" default="0.0"/>
   <arg name="landing_x"/>
   <arg name="landing_y"/>
   <arg name="bridge_floor_height" default="1.5"/>
@@ -35,10 +33,7 @@
   </include>
   <node pkg="uav1_bridge_inspection" type="bridge_mission.py" name="bridge_mission" output="screen">
     <rosparam command="load" file="$(arg route_file)"/>
-    <param name="entrance_x" value="$(arg entrance_x)"/>
-    <param name="entrance_y" value="$(arg entrance_y)"/>
     <param name="bridge_yaw" value="$(arg bridge_yaw)"/>
-    <param name="floor_z" value="$(arg floor_z)"/>
     <param name="landing_x" value="$(arg landing_x)"/>
     <param name="landing_y" value="$(arg landing_y)"/>
     <param name="landing_approach_z" value="$(arg landing_approach_z)"/>

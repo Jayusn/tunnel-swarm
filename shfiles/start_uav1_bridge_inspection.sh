@@ -11,13 +11,13 @@ if [[ "${1:-}" == --help || $# == 0 ]]; then
   cat <<'EOF'
 单机桥梁巡检（先填写现场坐标）：
   bash shfiles/start_uav1_bridge_inspection.sh \
-    ground_z:=地面Z entrance_x:=入口X entrance_y:=入口Y \
-    bridge_yaw:=沿桥方向弧度 landing_x:=出口停车X landing_y:=出口停车Y
+    ground_z:=地面Z landing_x:=出口停车X landing_y:=出口停车Y
 
 全部坐标使用 UAV1/camera_init（FAST-LIO），ground_z 不是车面高度。
-桥底离地1.5m、净高1.2m，初始航点高度为桥底以上0.5m（离地2.0m）。
+桥底离地1.5m、净高1.2m，默认起飞高度为 ground_z+2.0。
 Diff 上下边界各向洞内留15cm；可追加 floor_margin:=0.15 ceiling_margin:=0.15 调整。
-航点在 src/uav1_bridge_inspection/config/route.yaml 中修改。
+航点在 src/uav1_bridge_inspection/config/route.yaml 中直接填写 [x,y,z]，满足到点条件后切点，无额外停留。
+航点 z 不再叠加底板高度；示例 z=2.0 只在 ground_z=0 时表示离地2米。
 启动后：车停稳，手动解锁，CH8低位并切OFFBOARD起飞；到起飞高度后CH8高位执行航点。
 到最后的车上方航点后自动触发18cm精降；沿用CH10人工降落。
 左侧显示裂缝/热源/二维码/ArUco，右侧显示点云及规划轨迹。

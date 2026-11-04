@@ -10,23 +10,16 @@ from nav_msgs.msg import Odometry, Path
 from std_msgs.msg import Bool, Float64, String
 
 
-def world_waypoints(points, entrance_x, entrance_y, floor_z, yaw):
-    c, s = math.cos(yaw), math.sin(yaw)
-    return [(entrance_x + c*x - s*y, entrance_y + s*x + c*y,
-             floor_z + z, dwell) for x, y, z, dwell in points]
-
-
 class Mission:
     def __init__(self):
         self.lock = threading.RLock()
         self.yaw = float(rospy.get_param('~bridge_yaw'))
         self.frame = 'UAV1/camera_init'
-        self.points = world_waypoints(
-            rospy.get_param('~waypoints'), float(rospy.get_param('~entrance_x')),
-            float(rospy.get_param('~entrance_y')), float(rospy.get_param('~floor_z')), self.yaw)
+        # 航点直接使用 FAST-LIO 地图 XYZ，不叠加入口或底板偏移。
+        self.points = [tuple(point) for point in rospy.get_param('~waypoints')]
         self.points.append((float(rospy.get_param('~landing_x')),
                             float(rospy.get_param('~landing_y')),
-                            float(rospy.get_param('~landing_approach_z')), 0.0))
+                            float(rospy.get_param('~landing_approach_z'))))
         self.radius = float(rospy.get_param('~arrival_distance_m', .15))
         self.speed = float(rospy.get_param('~arrival_speed_mps', .15))
         self.platform_delta = float(rospy.get_param('~landing_platform_delta_z', 0.0))
@@ -34,7 +27,6 @@ class Mission:
         self.state = State()
         self.reference_z = None
         self.index = -1
-        self.arrived_at = None
         self.goal = rospy.Publisher('goal', PoseStamped, queue_size=1)
         self.landing = rospy.Publisher('need_to_land', Bool, queue_size=1, latch=True)
         self.reference = rospy.Publisher('platform_reference', Float64, queue_size=1, latch=True)
@@ -79,7 +71,6 @@ class Mission:
             self.send_goal()
 
     def send_goal(self):
-        self.arrived_at = None
         self.goal.publish(self.pose(self.points[self.index]))
         self.status.publish(String(data='巡检航点 %d/%d' % (self.index + 1, len(self.points))))
 
@@ -88,16 +79,10 @@ class Mission:
             if self.odom is None or not 0 <= self.index < len(self.points):
                 return
             p, v = self.odom.pose.pose.position, self.odom.twist.twist.linear
-            x, y, z, dwell = self.points[self.index]
+            x, y, z = self.points[self.index]
             at_point = (math.sqrt((p.x-x)**2+(p.y-y)**2+(p.z-z)**2) <= self.radius and
                         math.sqrt(v.x*v.x+v.y*v.y+v.z*v.z) <= self.speed)
             if not at_point:
-                self.arrived_at = None
-                return
-            now = rospy.Time.now()
-            if self.arrived_at is None:
-                self.arrived_at = now
-            if (now-self.arrived_at).to_sec() < dwell:
                 return
             self.index += 1
             if self.index == len(self.points):
