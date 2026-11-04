@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """隔离 master，实际启动任务/路由节点；不启动相机、飞控或电机。"""
 import sys
+import math
 import subprocess
 import time
 import unittest
@@ -116,6 +117,10 @@ class BridgeTest(RcLandPriorityTest):
         points = list(rospy.get_param('/bridge_mission/waypoints'))
         points.append([rospy.get_param('/bridge_mission/'+key) for key in
                        ('landing_x', 'landing_y', 'landing_approach_z')])
+        approach_yaw = math.atan2(points[-1][1]-points[-2][1],
+                                 points[-1][0]-points[-2][0])
+        if math.hypot(points[-1][0]-points[-2][0], points[-1][1]-points[-2][1]) <= 1.e-6:
+            approach_yaw = rospy.get_param('/bridge_mission/bridge_yaw')
         for topic, kind in [('planning/goal', PoseStamped), ('need_to_land', Bool),
                             ('landing/state', String), ('landing/nmpc_target', PositionTarget),
                             ('bridge/precision_position', PositionTarget)]:
@@ -174,7 +179,13 @@ class BridgeTest(RcLandPriorityTest):
             goal = self.last('planning/goal')
             self.assertEqual(goal.header.frame_id, 'UAV1/camera_init')
             self.assertEqual([goal.pose.position.x, goal.pose.position.y, goal.pose.position.z], point)
+            expected_yaw = (approach_yaw if index == len(points)-1
+                            else rospy.get_param('/bridge_mission/bridge_yaw'))
+            q = goal.pose.orientation
+            self.assertAlmostEqual(math.atan2(2*q.w*q.z, 1-2*q.z*q.z), expected_yaw)
             self.assertIsNone(self.last('need_to_land'))
+            # 模拟跟随航点转向；精降应锁定到点时的右转航向而非桥洞航向。
+            odom.pose.pose.orientation = q
             odom.pose.pose.position = Point(*point)
             odom.pose.pose.position.z += radius+.05
             drive(.12)
@@ -196,6 +207,7 @@ class BridgeTest(RcLandPriorityTest):
         self.assertTrue(any(s.startswith(('ALIGN', 'DESCEND_HIGH')) for s in stages), stages)
         target = self.last('landing/nmpc_target')
         self.assertIsNotNone(target, 'precision setpoint did not reach NMPC router output')
+        self.assertAlmostEqual(target.yaw, approach_yaw, places=4)
         # ACQUIRE 保持最后航点位置；ALIGN/DESCEND 可输出速度，不能把被屏蔽的 position 当作目标。
         holds = [m for m in self.messages['landing/nmpc_target']
                  if not m.type_mask & (PositionTarget.IGNORE_PX | PositionTarget.IGNORE_PY)]

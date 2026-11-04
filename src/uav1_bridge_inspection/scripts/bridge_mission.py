@@ -20,6 +20,13 @@ class Mission:
         self.points.append((float(rospy.get_param('~landing_x')),
                             float(rospy.get_param('~landing_y')),
                             float(rospy.get_param('~landing_approach_z'))))
+        # 最后航段朝向降落点，避免 NMPC 到点前又转回桥洞航向。
+        self.point_yaws = [self.yaw] * len(self.points)
+        if len(self.points) > 1:
+            dx = self.points[-1][0] - self.points[-2][0]
+            dy = self.points[-1][1] - self.points[-2][1]
+            if math.hypot(dx, dy) > 1.e-6:
+                self.point_yaws[-1] = math.atan2(dy, dx)
         self.radius = float(rospy.get_param('~arrival_distance_m', .15))
         self.speed = float(rospy.get_param('~arrival_speed_mps', .15))
         self.platform_delta = float(rospy.get_param('~landing_platform_delta_z', 0.0))
@@ -37,16 +44,19 @@ class Mission:
                      rospy.Subscriber('start', PoseStamped, self.start_cb, queue_size=1)]
         self.status.publish(String(data='等待起飞后 CH8 高位开始巡检'))
         self.route.publish(Path(header=self.pose(self.points[0]).header,
-                                poses=[self.pose(p) for p in self.points]))
+                                poses=[self.pose(p, yaw) for p, yaw in
+                                       zip(self.points, self.point_yaws)]))
         self.timer = rospy.Timer(rospy.Duration(.05), self.tick)
 
-    def pose(self, point):
+    def pose(self, point, yaw=None):
+        if yaw is None:
+            yaw = self.yaw
         msg = PoseStamped()
         msg.header.frame_id = self.frame
         msg.header.stamp = rospy.Time.now()
         msg.pose.position.x, msg.pose.position.y, msg.pose.position.z = point[:3]
-        msg.pose.orientation.z = math.sin(self.yaw/2)
-        msg.pose.orientation.w = math.cos(self.yaw/2)
+        msg.pose.orientation.z = math.sin(yaw/2)
+        msg.pose.orientation.w = math.cos(yaw/2)
         return msg
 
     def odom_cb(self, msg):
@@ -71,7 +81,7 @@ class Mission:
             self.send_goal()
 
     def send_goal(self):
-        self.goal.publish(self.pose(self.points[self.index]))
+        self.goal.publish(self.pose(self.points[self.index], self.point_yaws[self.index]))
         self.status.publish(String(data='巡检航点 %d/%d' % (self.index + 1, len(self.points))))
 
     def tick(self, _):
