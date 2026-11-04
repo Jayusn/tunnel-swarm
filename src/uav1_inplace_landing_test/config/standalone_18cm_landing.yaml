@@ -10,6 +10,8 @@ center_alignment:
   bias_xy_m: [-0.04943469, 0.03760303]
 
 control:
+  # 略提高横向修正速度，缩短低空精对中的收敛时间。
+  kp_xy: 0.65
   # 分段、误差门限、减速和最终对中均使用画面中的 FAST-LIO Z，非视觉距离。
   use_fastlio_z_for_height: true
   # 暂停下降时捕获一次当前 Z；后续下沉、丢码不再下移保持目标。
@@ -24,9 +26,10 @@ stages:
     min_height_m: 0.65
     # >=1.00 m 有效识码后边下降边对中，不因 XY 误差暂停。
     align_while_descending_above_m: 1.00
-    # 低于 FAST-LIO Z=1.00 m 才应用门限：15 cm 线性收紧至 Z=0.65 m 的 5 cm。
+    # FAST-LIO Z 从 1.00 到 0.85 m 保持 15 cm 门限；
+    # 从 0.85 m 起线性收紧至 Z=0.65 m 的 5 cm。
     # 低空超限保持高度对中，连续达标 0.5 s 再下降。
-    taper_start_height_m: 1.00
+    taper_start_height_m: 0.85
     error_m: 0.15
     # FAST-LIO Z 从 1.0 -> 0.8 m，下降速度从 0.25 平滑降至 0.15 m/s。
     # Z 从 0.8 -> 0.65 m 保持慢速接近；误差超限仍暂停下降。
