@@ -89,6 +89,9 @@ class Router:
         with self.lock:
             if not self.output_allowed():
                 return
+            # CH10 交给控制器切 AUTO.LAND，不抢先执行视觉精降的接地上锁。
+            if self.offboard_touchdown and self.rc_land:
+                return
             if not self.touchdown:
                 contact_sample = self.touchdown_odom if self.offboard_touchdown else self.extended
                 contact_time = (contact_sample.header.stamp
@@ -164,7 +167,7 @@ class Router:
                                self.takeoff_reference_z is not None and
                                abs(p.z-self.takeoff_reference_z) <= .05 and abs(vz) < .1)
                 if (near_ground and self.seen_airborne and self.owned and self.output_allowed() and
-                        (self.stage == 'FIXED_XY_DESCENT' or self.rc_land)):
+                        self.stage == 'FIXED_XY_DESCENT' and not self.rc_land):
                     if self.ground_since is None:
                         self.ground_since = rospy.Time.now()
                 else:

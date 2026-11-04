@@ -29,7 +29,6 @@ class FastlioControllerTest(RcLandPriorityTest):
             if name.startswith('/mpc_controller_node/'):
                 rospy.set_param(self.prefix+'/controller/'+name.split('/mpc_controller_node/')[1], value.value)
         rospy.set_param(self.prefix+'/router/odometry_topic', self.prefix+'/odom')
-        rospy.set_param(self.prefix+'/controller/land/timeout', .2)
         mode_calls = []
         service = rospy.Service(self.prefix+'/mode', SetMode,
             lambda req: (mode_calls.append(req.custom_mode) or SetModeResponse(mode_sent=True)))
@@ -110,13 +109,11 @@ class FastlioControllerTest(RcLandPriorityTest):
         self.assertAlmostEqual(ref.position.x, 1.1, places=4)
         self.assertAlmostEqual(ref.position.y, 2.2, places=4)
         self.assertAlmostEqual(ref.position.z, 6.8, places=4)
-        # CH10 近地仍由 NMPC 下降，不再切 PX4 AUTO.LAND。
+        # CH10 恢复原近地 AUTO.LAND 交接，判断仍使用 FAST-LIO。
         odom.pose.pose.position.z = 5.2
         rc.channels[9] = 1933
         drive(.6)
-        self.assertEqual(mode_calls, [])
-        self.assertGreater(self.last('mavros_attitude').thrust, 0.)
-        self.assertLess(self.last('controller/mpc/reference_trajectory').poses[0].pose.position.z, 5.2)
+        self.assertIn('AUTO.LAND', mode_calls)
 
 
 class FastlioPrecisionTest(LandingMemoryTest):

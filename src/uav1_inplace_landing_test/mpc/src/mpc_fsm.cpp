@@ -847,8 +847,8 @@ namespace PayloadMPC
                    odom_data.p(2) <= params_.land_.switch_odom_z);
 			const bool timeout = params_.land_.timeout > 0.0 &&
 								 (now_time - land_start_time_).toSec() > params_.land_.timeout;
-			// 独立测试由路由器按 FAST-LIO 接地判据上锁，CH10 也保持 OFFBOARD。
-			if (!precision_test_mode_ && controller_.lastMpcSolveSuccessful() && (low_enough || timeout))
+			// CH10 沿用原流程：近地或超时后交给 PX4 AUTO.LAND。
+			if (controller_.lastMpcSolveSuccessful() && (low_enough || timeout))
 			{
 				auto_land_request_sent_ = request_px4_auto_land() || auto_land_request_sent_;
 			}

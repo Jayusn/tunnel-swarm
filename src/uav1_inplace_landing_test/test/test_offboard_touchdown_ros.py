@@ -118,16 +118,19 @@ class OffboardTouchdownTest(RcLandPriorityTest):
         self.drive(1.)
         self.assertTrue(self.requests)
 
-    def test_ch10_contact_and_wrong_stage(self):
+    def test_ch10_preempts_pending_contact_and_wrong_stage(self):
         self.stage = 'ALIGN'
         self.z = 10.01
         self.drive(.7)
         self.assertFalse(self.requests, 'alignment is not descent')
-        # CH10 会打断视觉精降；即使视觉阶段退出，仍按同一接地判据处理。
+        self.stage = 'FIXED_XY_DESCENT'
+        self.drive(.25)
+        self.assertFalse(self.requests)
+        # 接地计时尚未完成时 CH10 接管，即使视觉阶段还未更新也不能抢先上锁。
         self.rc_land = True
         self.drive(1.1)
-        self.assertTrue(self.requests)
-        self.assertEqual(self.last('mavros_attitude').thrust, 0.)
+        self.assertFalse(self.requests)
+        self.assertGreater(self.last('mavros_attitude').thrust, 0.)
 
 
 if __name__ == '__main__':
