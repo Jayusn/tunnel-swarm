@@ -20,7 +20,8 @@ Diff 上下边界各向洞内留15cm；可追加 floor_margin:=0.15 ceiling_marg
 航点在 src/uav1_bridge_inspection/config/route.yaml 中修改。
 启动后：车停稳，手动解锁，CH8低位并切OFFBOARD起飞；到起飞高度后CH8高位执行航点。
 到最后的车上方航点后自动触发18cm精降；沿用CH10人工降落。
-左侧显示裂缝/热源/ArUco，右侧显示点云及规划轨迹。
+左侧显示裂缝/热源/二维码/ArUco，右侧显示点云及规划轨迹。
+裂缝带框图、确认后的热源和二维码证据图保存到 ~/match_ws/target_reports/bridge。
 其他 roslaunch 参数可直接追加，如 enable_thermal:=false。
 EOF
   exit 0

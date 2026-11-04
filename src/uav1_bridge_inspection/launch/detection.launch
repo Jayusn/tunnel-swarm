@@ -16,7 +16,7 @@
   <include file="$(find uav0_competition_bringup)/launch/uav1_detection_stack.launch">
     <arg name="enable_realsense" value="false"/>
     <arg name="enable_color_tag" value="false"/>
-    <arg name="enable_qr" value="false"/>
+    <arg name="enable_qr" value="true"/>
     <arg name="enable_front_aruco" value="false"/>
     <arg name="enable_thermal" value="$(arg enable_thermal)"/>
     <arg name="detection_activation_config" value="$(find target_reporting)/config/uav1_detection_test_activation.yaml"/>
@@ -34,5 +34,10 @@
     <remap from="/image_converter/output_video" to="/UAV1/bridge/crack/debug_image"/>
     <remap from="/objects" to="/UAV1/bridge/crack/objects"/>
     <remap from="/detection_status" to="/UAV1/bridge/crack/detected"/>
+  </node>
+  <node pkg="uav1_bridge_inspection" type="crack_image_recorder.py" name="bridge_crack_recorder" output="screen">
+    <param name="record_root" value="$(env HOME)/match_ws/target_reports/bridge/crack"/>
+    <remap from="image" to="/UAV1/bridge/crack/debug_image"/>
+    <remap from="objects" to="/UAV1/bridge/crack/objects"/>
   </node>
 </launch>

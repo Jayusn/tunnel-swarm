@@ -25,6 +25,7 @@ class View(QMainWindow):
         layout = QVBoxLayout(left)
         for title, topic in [('裂缝', '/UAV1/bridge/crack/debug_image'),
                              ('热源', '/UAV1/thermal/d435_debug_image'),
+                             ('二维码', '/UAV1/vision/qr_debug_image'),
                              ('18 cm ArUco 降落', '/UAV1/landing/debug_image')]:
             layout.addWidget(QLabel(title))
             label = QLabel('等待图像')

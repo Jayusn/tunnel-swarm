@@ -148,7 +148,7 @@ Visualization Manager:
     Enabled: true
     Name: Mapping
   - Class: rviz/MarkerArray
-    Name: 热源位置
+    Name: 热源和二维码位置
     Enabled: true
     Value: true
     Marker Topic: /UAV1/target_reporting/markers
