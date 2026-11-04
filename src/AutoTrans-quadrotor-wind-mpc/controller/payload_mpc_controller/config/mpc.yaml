@@ -112,7 +112,7 @@ force_estimator: # *
     imu_body_length: 0.66844507
     # 只估计模式：计算并记录世界系外力 f_Q（单位 N），但不把它传入 NMPC。
     enable_force_estimation: true
-    enable_disturbance_compensation: false
+    enable_disturbance_compensation: true
     # true：控制姿态和外力估计姿态都复用主 FAST-LIO 高频 odom，不再单独订阅第二路姿态。
     force_attitude_from_odom: true
     # 源 header.stamp 用于插值，本机 ROS 接收时间用于统一判断新鲜度，避免雷达与 PX4 时钟偏差导致误判过期。
