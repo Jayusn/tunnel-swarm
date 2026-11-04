@@ -100,6 +100,9 @@ filter:
     cutoff_freq_dcable: 20.0
 
 force_estimator: # *
+    method: window_opt # 启动时选择 window_opt 或 aerothrow_ndob，修改后需重启控制器
+    ndob_rate: 20.0 # NDOB 观测器增益，单位 1/s
+    ndob_cutoff_freq: 20.0 # NDOB 输出低通截止频率，单位 Hz
     # kf 将当前 CAV0 四个电机的机械转速平方和换算为总推力，单位 N/rpm^2；由 1.817 kg 实机稳定悬停日志标定。
     kf: 1.785e-8 # 用于世界系外力估计和 thrust_model 模式 1 的 RPM 推力反馈。
 
@@ -140,11 +143,11 @@ force_estimator: # *
     # 实际写入 NMPC OnlineData 的世界系三维补偿力模长上限，单位 N。
     max_applied_force: 5.0
     # 补偿力变化率限制：XY 按水平向量模长限制，Z 单独限制，单位 N/s。
-    # 先削弱短时估计尖峰；从零建立 1 N 补偿时，XY 约需 0.5 s，Z 约需 0.33 s。
-    max_applied_force_rate_xy: 2.0
-    max_applied_force_rate_z: 3.0
+    # 0 表示关闭对应变化率限制；正数为最大变化率，单位 N/s。
+    max_applied_force_rate_xy: 0.0
+    max_applied_force_rate_z: 0.0
     # 实际 Z 补偿进入分轴增益前的二阶低通；0 表示旁路，不改变原始 /mpc/force，单位 Hz。
-    cutoff_freq_applied_force_z: 0.7
+    cutoff_freq_applied_force_z: 0.0
     # 写入 NMPC 前的世界系分轴补偿增益。
     force_axis_gain_x: 1.0
     force_axis_gain_y: 1.0

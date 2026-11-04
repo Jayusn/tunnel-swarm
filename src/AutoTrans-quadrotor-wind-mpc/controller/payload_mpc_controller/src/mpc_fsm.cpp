@@ -179,7 +179,7 @@ namespace PayloadMPC
 			if (params_.force_estimator_param_.enable_disturbance_compensation)
 			{
 				ROS_INFO("[FORCE] 外力补偿已启用。");
-				ROS_INFO("[FORCE] 补偿变化率上限：XY=%.2f N/s，Z=%.2f N/s。",
+				ROS_INFO("[FORCE] 补偿变化率上限：XY=%.2f N/s，Z=%.2f N/s（0 表示关闭对应限速）。",
 					params_.force_estimator_param_.max_applied_force_rate_xy,
 					params_.force_estimator_param_.max_applied_force_rate_z);
 				ROS_INFO("[FORCE] 实际 Z 补偿低通：%s，截止频率=%.2f Hz。",
