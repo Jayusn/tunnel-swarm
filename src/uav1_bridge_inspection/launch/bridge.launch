@@ -42,7 +42,7 @@
     <param name="landing_platform_delta_z" value="$(arg landing_platform_delta_z)"/>
     <remap from="odom" to="/UAV1/fast_lio/Odom_high_freq"/>
     <remap from="state" to="/UAV1/mavros/state"/>
-    <remap from="start" to="/UAV1/bridge/start"/>
+    <remap from="start" to="/traj_start_trigger"/>
     <remap from="goal" to="/UAV1/planning/goal"/>
     <remap from="need_to_land" to="/UAV1/need_to_land"/>
     <remap from="platform_reference" to="/UAV1/bridge/platform_reference"/>

@@ -84,6 +84,134 @@ class BridgeTest(RcLandPriorityTest):
         self.assertLess(ref.z,1.6)
         self.assertAlmostEqual(ref.x,1.2,places=4)
 
+    def test_launch_ch8_route_and_landing(self):
+        """使用真实 launch 接线和控制器 CH8 输出，逐点验证到达与精降交接。"""
+        import cv2
+        import numpy as np
+        from cv_bridge import CvBridge
+        from sensor_msgs.msg import CameraInfo, Image
+        from test_precision_landing_node import generate_aruco_marker
+
+        # 独立 master 上保留生产话题名，避免测试重映射掩盖接线错误。
+        self.prefix = '/UAV1'
+        launch = str(Path(__file__).resolve().parents[1] / 'launch/bridge.launch')
+        config = roslaunch.config.load_config_default(
+            [(launch, ['enable_detection:=false', 'enable_view:=false'])], None)
+        for name, param in config.params.items():
+            rospy.set_param(name, param.value)
+        selected = ('mpc_controller_node', 'bridge_mission',
+                    'precision_landing_node', 'bridge_landing_router')
+        controller = None
+        for node in config.nodes:
+            if node.name not in selected:
+                continue
+            command = [roslib.packages.find_node(node.package, node.type)[0],
+                       '__name:='+node.name, '__ns:='+node.namespace]
+            command += [a+':='+b for a, b in node.remap_args]
+            process = subprocess.Popen(command, stdout=self.log, stderr=self.log,
+                                       start_new_session=True)
+            self.processes.append(process)
+            if node.name == 'mpc_controller_node':
+                controller = process
+        points = list(rospy.get_param('/bridge_mission/waypoints'))
+        points.append([rospy.get_param('/bridge_mission/'+key) for key in
+                       ('landing_x', 'landing_y', 'landing_approach_z')])
+        for topic, kind in [('planning/goal', PoseStamped), ('need_to_land', Bool),
+                            ('landing/state', String), ('landing/nmpc_target', PositionTarget),
+                            ('bridge/precision_position', PositionTarget)]:
+            self.subscribe(topic, kind)
+        pubs = {topic: self.publisher(topic, kind) for topic, kind in [
+            ('fast_lio/Odom_high_freq', Odometry), ('livox/imu_mps2', Imu),
+            ('mavros/state', State), ('mavros/extended_state', ExtendedState),
+            ('mavros/rc/in', RCIn), ('down_camera/image_raw', Image),
+            ('down_camera/camera_info', CameraInfo)]}
+        self.wait(lambda: pubs['mavros/rc/in'].get_num_connections() and
+                  pubs['fast_lio/Odom_high_freq'].get_num_connections() >= 4 and
+                  pubs['down_camera/image_raw'].get_num_connections(), 'production subscriptions')
+        odom = Odometry()
+        odom.header.frame_id = 'UAV1/camera_init'
+        odom.pose.pose.orientation.w = 1.
+        odom.pose.pose.position.z = 2.
+        state = State(connected=True, armed=False, mode='POSCTL')
+        ext = ExtendedState(landed_state=ExtendedState.LANDED_STATE_IN_AIR)
+        imu = Imu(); imu.orientation.w = 1.; imu.linear_acceleration.z = 9.795
+        rc = RCIn(channels=[1500]*10); rc.channels[7] = 1000; rc.channels[9] = 1000
+        info = CameraInfo(width=640, height=480)
+        info.K = [600., 0., 320., 0., 600., 240., 0., 0., 1.]
+        info.D = [0.]*5
+        pixels = np.full((480, 640), 255, dtype=np.uint8)
+        pixels[211:269, 291:349] = generate_aruco_marker(
+            cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50), 0, 58)
+        bridge = CvBridge()
+        def drive(seconds):
+            end = time.monotonic()+seconds
+            while time.monotonic() < end:
+                # 模拟新相机帧，避免同一张静态图片被精降冻结检测判为失效。
+                pixels[0, 0] = int(time.monotonic()*1000) % 200
+                image = bridge.cv2_to_imgmsg(pixels, 'mono8')
+                for topic, msg in [('fast_lio/Odom_high_freq', odom), ('livox/imu_mps2', imu),
+                                   ('mavros/state', state), ('mavros/extended_state', ext),
+                                   ('mavros/rc/in', rc), ('down_camera/camera_info', info),
+                                   ('down_camera/image_raw', image)]:
+                    msg.header.stamp = rospy.Time.now()
+                    pubs[topic].publish(msg)
+                time.sleep(.02)
+        drive(.5)
+        state.armed = True; state.mode = 'OFFBOARD'; rc.channels[7] = 1500
+        drive(.8)
+        self.assertIsNone(self.last('planning/goal'))
+        self.assertIsNone(self.last('need_to_land'))
+        rc.channels[7] = 2000
+        drive(.8)
+        self.assertIsNotNone(self.last('planning/goal'), 'CH8 did not start bridge mission')
+        self.assertEqual(len(self.messages['planning/goal']), 1)
+        # 后续仅模拟逐点到达，不用跳变的定位数据驱动控制器求解。
+        self.stop(controller)
+        self.processes.remove(controller)
+        radius = rospy.get_param('/bridge_mission/arrival_distance_m')
+        speed = rospy.get_param('/bridge_mission/arrival_speed_mps')
+        for index, point in enumerate(points):
+            goal = self.last('planning/goal')
+            self.assertEqual(goal.header.frame_id, 'UAV1/camera_init')
+            self.assertEqual([goal.pose.position.x, goal.pose.position.y, goal.pose.position.z], point)
+            self.assertIsNone(self.last('need_to_land'))
+            odom.pose.pose.position = Point(*point)
+            odom.pose.pose.position.z += radius+.05
+            drive(.12)
+            self.assertEqual(len(self.messages['planning/goal']), index+1)
+            self.assertIsNone(self.last('need_to_land'))
+            odom.pose.pose.position = Point(*point)
+            odom.twist.twist.linear.x = speed+.05
+            drive(.12)
+            self.assertEqual(len(self.messages['planning/goal']), index+1)
+            self.assertIsNone(self.last('need_to_land'))
+            odom.twist.twist.linear.x = 0.
+            drive(.2)
+            if index < len(points)-1:
+                self.assertEqual(len(self.messages['planning/goal']), index+2)
+                self.assertIsNone(self.last('need_to_land'))
+        self.assertTrue(self.last('need_to_land').data)
+        drive(3.)
+        stages = [m.data for m in self.messages['landing/state']]
+        self.assertTrue(any(s.startswith(('ALIGN', 'DESCEND_HIGH')) for s in stages), stages)
+        target = self.last('landing/nmpc_target')
+        self.assertIsNotNone(target, 'precision setpoint did not reach NMPC router output')
+        # ACQUIRE 保持最后航点位置；ALIGN/DESCEND 可输出速度，不能把被屏蔽的 position 当作目标。
+        holds = [m for m in self.messages['landing/nmpc_target']
+                 if not m.type_mask & (PositionTarget.IGNORE_PX | PositionTarget.IGNORE_PY)]
+        self.assertTrue(holds, 'missing position hold at landing approach point')
+        self.assertAlmostEqual(holds[0].position.x, points[-1][0], delta=.01)
+        self.assertAlmostEqual(holds[0].position.y, points[-1][1], delta=.01)
+        # ROS 发布者会重新编号 header.seq；比较时间戳及实际控制字段。
+        self.assertTrue(any(m.header.stamp == target.header.stamp and
+                            m.type_mask == target.type_mask and
+                            m.coordinate_frame == target.coordinate_frame and
+                            m.position == target.position and m.velocity == target.velocity and
+                            m.yaw == target.yaw
+                            for m in self.messages['bridge/precision_position']),
+                        'router changed precision reference')
+        self.assertEqual(len(self.messages['planning/goal']), len(points))
+
     def test_route_without_detections(self):
         params = dict(bridge_yaw=1.5707963267948966,
                       waypoints=[[10., 20., 1.6], [10., 22., 1.6]],
@@ -171,6 +299,6 @@ class BridgeTest(RcLandPriorityTest):
 if __name__=='__main__':
     suite=unittest.TestSuite(BridgeTest(name) for name in
                             ['test_route_without_detections','test_mission_router_handoff',
-                             'test_task_nmpc_precision'])
+                             'test_task_nmpc_precision','test_launch_ch8_route_and_landing'])
     result=unittest.TextTestRunner(verbosity=2).run(suite)
     sys.exit(not result.wasSuccessful())
