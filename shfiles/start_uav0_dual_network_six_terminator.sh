@@ -7,8 +7,8 @@ set -e
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 NETWORK_SETUP="${SCRIPT_DIR}/configure_dual_uav_ros_network.sh"
 UAV0_LAUNCHER="${SCRIPT_DIR}/start_uav0_six_terminator.sh"
-export DUAL_UAV_ROS_MASTER_IP="${DUAL_UAV_ROS_MASTER_IP:-192.168.43.14}"
-export UAV0_ROS_IP="${UAV0_ROS_IP:-192.168.43.14}"
+# 前机及 ROS master 默认地址统一在 configure_dual_uav_ros_network.sh 设置。
+# 如需临时覆盖，可在启动前设置 DUAL_UAV_ROS_MASTER_IP 和 UAV0_ROS_IP。
 
 [[ -r "${NETWORK_SETUP}" ]] || { printf '找不到 %s\n' "${NETWORK_SETUP}" >&2; exit 1; }
 [[ -x "${UAV0_LAUNCHER}" ]] || { printf '找不到 %s\n' "${UAV0_LAUNCHER}" >&2; exit 1; }
