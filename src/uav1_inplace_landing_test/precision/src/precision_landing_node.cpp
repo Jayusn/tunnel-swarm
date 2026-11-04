@@ -30,6 +30,7 @@
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/image_encodings.h>
 #include <std_msgs/Bool.h>
+#include <std_msgs/Float64.h>
 #include <std_msgs/Header.h>
 #include <std_msgs/Int32.h>
 #include <std_msgs/String.h>
@@ -502,6 +503,12 @@ class PrecisionLandingNode {
     camera_info_subscriber_ = node_.subscribe(
         camera_info_topic, 1, &PrecisionLandingNode::cameraInfoCallback, this);
     // 正式任务直接使用 FAST-LIO；未配置 odometry 的独立测试保留原位姿接口。
+    std::string takeoff_reference_topic;
+    private_node_.param<std::string>("topics/takeoff_reference", takeoff_reference_topic, "");
+    if (!takeoff_reference_topic.empty()) {
+      takeoff_reference_subscriber_ = node_.subscribe(
+          takeoff_reference_topic, 1, &PrecisionLandingNode::takeoffReferenceCallback, this);
+    }
     std::string odometry_topic;
     private_node_.param<std::string>("topics/odometry", odometry_topic, "");
     if (!odometry_topic.empty()) {
@@ -821,6 +828,14 @@ class PrecisionLandingNode {
       seen_airborne_ = true;
   }
 
+  void takeoffReferenceCallback(const std_msgs::Float64ConstPtr& message) {
+    if (isFinite(message->data)) {
+      takeoff_reference_z_ = message->data;
+      takeoff_reference_valid_ = true;
+      ROS_INFO("LANDING TAKEOFF REFERENCE RECEIVED: z=%.3f", takeoff_reference_z_);
+    }
+  }
+
   void triggerCallback(const std_msgs::BoolConstPtr& message) {
     if (rc_land_active_ && message->data) return;
     const bool rising_edge = message->data && !trigger_;
@@ -953,11 +968,14 @@ class PrecisionLandingNode {
       last_target_visible_for_hold_ = false;
     }
 
+    // 同地面测试以起飞时定位原点的 Z 为基准，避免把原点离脚架的高度算作离地高度。
+    const double cutoff_reference_z = takeoff_reference_valid_ ?
+        takeoff_reference_z_ : fixed_xy_ground_z_;
     bool landing_contact = false;
     if (auto_land_at_cutoff_ && previous_state_ == LandingState::FIXED_XY_DESCENT &&
-        fixed_xy_descent_valid_ && fixed_ground_valid_ && fresh_pose) {
+        fixed_xy_descent_valid_ && (takeoff_reference_valid_ || fixed_ground_valid_) && fresh_pose) {
       const double height_above_ground =
-          local_pose_.pose.position.z - fixed_xy_ground_z_;
+          local_pose_.pose.position.z - cutoff_reference_z;
       landing_contact = height_above_ground <= cutoff_height_m_;
     }
     // 从未得到过平台高度时，下降至飞控确认接地，再沿用末端模式交接。
@@ -969,9 +987,10 @@ class PrecisionLandingNode {
       landing_contact = true;
     if (landing_contact) {
       ROS_WARN("LANDING END GATE: estimated_height=%.3f z=%.3f threshold=%.3f; "
-               "requesting AUTO.LAND mode",
-               local_pose_.pose.position.z - fixed_xy_ground_z_,
-               local_pose_.pose.position.z, cutoff_height_m_);
+               "reference=%s reference_z=%.3f; requesting AUTO.LAND mode",
+               local_pose_.pose.position.z - cutoff_reference_z,
+               local_pose_.pose.position.z, cutoff_height_m_,
+               takeoff_reference_valid_ ? "takeoff" : "marker", cutoff_reference_z);
     }
 
     StateInput input(
@@ -1703,6 +1722,9 @@ class PrecisionLandingNode {
   bool hold_position_valid_{false};
   Eigen::Vector2d fixed_xy_position_{Eigen::Vector2d::Zero()};
   double fixed_xy_ground_z_{0.0};
+  ros::Subscriber takeoff_reference_subscriber_;
+  double takeoff_reference_z_{0.0};
+  bool takeoff_reference_valid_{false};
   double fixed_xy_target_z_{0.0};
   bool fixed_xy_descent_valid_{false};
   bool fixed_ground_valid_{false};

@@ -11,6 +11,7 @@
 #include <nav_msgs/Odometry.h>
 #include <ros/ros.h>
 #include <std_msgs/Bool.h>
+#include <std_msgs/Float64.h>
 #include <std_msgs/String.h>
 #include <std_srvs/Trigger.h>
 
@@ -117,6 +118,12 @@ class LandingTestMissionNode {
 
     setpoint_publisher_ =
         node_.advertise<geometry_msgs::PoseStamped>(position_setpoint_topic, 1);
+    const auto takeoff_reference_topic = private_node_.param<std::string>(
+        "takeoff_reference_topic", "");
+    if (!takeoff_reference_topic.empty()) {
+      takeoff_reference_publisher_ =
+          node_.advertise<std_msgs::Float64>(takeoff_reference_topic, 1, true);
+    }
     if (start_on_offboard_) {
       prestream_publisher_ = node_.advertise<geometry_msgs::PoseStamped>(
           private_node_.param<std::string>("offboard_prestream_topic",
@@ -249,6 +256,12 @@ class LandingTestMissionNode {
   }
 
   void beginTest(const ros::Time& now) {
+    if (takeoff_reference_publisher_) {
+      std_msgs::Float64 reference;
+      reference.data = local_pose_.pose.position.z;
+      takeoff_reference_publisher_.publish(reference);
+      ROS_INFO("LANDING TAKEOFF REFERENCE: z=%.3f", reference.data);
+    }
     target_pose_ = local_pose_;
     target_pose_.header.frame_id =
         local_pose_.header.frame_id.empty() ? "map" : local_pose_.header.frame_id;
@@ -559,6 +572,7 @@ class LandingTestMissionNode {
   ros::Subscriber odometry_subscriber_;
   ros::Subscriber landing_state_subscriber_;
   ros::Publisher setpoint_publisher_;
+  ros::Publisher takeoff_reference_publisher_;
   ros::Publisher prestream_publisher_;
   ros::Publisher trigger_publisher_;
   ros::Publisher status_publisher_;

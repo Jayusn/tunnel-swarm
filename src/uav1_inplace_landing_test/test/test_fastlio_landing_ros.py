@@ -120,9 +120,45 @@ class FastlioPrecisionTest(LandingMemoryTest):
     use_fastlio = True
 
 
+class FastlioTakeoffReferenceTest(FastlioPrecisionTest):
+    use_takeoff_reference = True
+
+    def test_takeoff_reference_handoff_with_marker_offset(self):
+        expected = self.acquire()
+        # 模拟落地后定位原点仍在码面上方；旧码面门限此时不会触发。
+        marker_ground = 3. - self.targets[-1].pose.position.z
+        self.assertGreater(1.29 - marker_ground, .3)
+        self.frames = False
+        self.x, self.y = expected
+        self.wait(lambda: self.stage() == 'FIXED_XY_DESCENT', 'locked XY descent')
+        self.z = 1.31
+        time.sleep(.4)
+        self.assertFalse(self.requests, 'above 0.3 m relative to takeoff')
+        self.assertAlmostEqual(self.commands[-1].position.x, expected[0], delta=.025)
+        self.assertAlmostEqual(self.commands[-1].position.y, expected[1], delta=.025)
+        self.z = 1.29
+        self.wait(lambda: self.requests, 'takeoff-relative handoff with camera stopped')
+        self.assertEqual(self.requests[-1], 'AUTO.LAND')
+
+    def test_takeoff_reference_handoff_without_marker(self):
+        self.have_marker = False
+        self.trigger = True
+        self.wait(lambda: self.stage() == 'FIXED_XY_DESCENT', 'no-marker descent')
+        self.z = 1.31
+        time.sleep(.4)
+        self.assertFalse(self.requests)
+        self.z = 1.29
+        self.wait(lambda: self.requests, 'takeoff reference without marker ground')
+        self.assertEqual(self.requests[-1], 'AUTO.LAND')
+
+
 if __name__ == '__main__':
     # 每个测试基类管理自己的 master/rospy 生命周期，分别运行。
-    if len(sys.argv) > 1 and sys.argv[1] == 'precision':
+    if len(sys.argv) > 1 and sys.argv[1] == 'takeoff_reference':
+        suite = unittest.TestSuite([
+            FastlioTakeoffReferenceTest('test_takeoff_reference_handoff_with_marker_offset'),
+            FastlioTakeoffReferenceTest('test_takeoff_reference_handoff_without_marker')])
+    elif len(sys.argv) > 1 and sys.argv[1] == 'precision':
         suite = unittest.TestSuite([FastlioPrecisionTest('test_stopped_camera_preserves_compensated_world_goal')])
     else:
         suite = unittest.TestSuite([FastlioControllerTest('test_target_frame_and_takeoff_ramp')])

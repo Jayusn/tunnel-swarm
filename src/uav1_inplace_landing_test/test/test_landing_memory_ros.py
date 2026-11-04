@@ -26,7 +26,7 @@ from nav_msgs.msg import Odometry
 from mavros_msgs.msg import PositionTarget, State, ExtendedState
 from mavros_msgs.srv import SetMode, SetModeResponse
 from sensor_msgs.msg import CameraInfo, Image
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Float64, String
 
 
 class LandingMemoryTest(unittest.TestCase):
@@ -103,6 +103,12 @@ class LandingMemoryTest(unittest.TestCase):
             params['topics/odometry'] = 'odom'
             self.pubs['odom'] = rospy.Publisher(self.ns+'/odom', Odometry, queue_size=1)
             self.handles.append(self.pubs['odom'])
+        if getattr(self, 'use_takeoff_reference', False):
+            params['topics/takeoff_reference'] = 'takeoff_reference'
+            self.pubs['takeoff_reference'] = rospy.Publisher(
+                self.ns+'/takeoff_reference', Float64, queue_size=1, latch=True)
+            self.handles.append(self.pubs['takeoff_reference'])
+            self.pubs['takeoff_reference'].publish(Float64(data=1.0))
         for k, v in params.items():
             rospy.set_param(self.ns+'/node/'+k, self.ns+'/'+v)
         for k, v in {'safety/total_timeout_sec': 2., 'safety/reacquire_timeout_sec': 1.,

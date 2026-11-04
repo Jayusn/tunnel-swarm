@@ -25,6 +25,8 @@
     <arg name="vehicle_ns" value="$(arg vehicle_ns)"/>
     <arg name="camera_extrinsic_config" value="$(arg camera_extrinsic_config)"/>
     <arg name="odometry_topic" value="$(eval arg('odometry_topic') if arg('enable_nmpc_descent') else '')"/>
+    <!-- 同一地面独立测试：用起飞时里程计 Z 作为脚架接地高度基准。 -->
+    <arg name="takeoff_reference_topic" value="$(eval arg('topic_prefix') + '/landing_test/takeoff_reference_z' if arg('enable_nmpc_descent') else '')"/>
     <arg name="auto_land_at_cutoff" value="true"/>
     <arg name="enable_landing_search" value="false"/>
     <arg name="enable_front_aruco_hint" value="false"/>
@@ -50,6 +52,7 @@
     <param name="mavros_state_topic" value="$(arg topic_prefix)/mavros/state"/>
     <param name="local_pose_topic" value="$(arg topic_prefix)/mavros/local_position/pose"/>
     <param name="odometry_topic" value="$(eval arg('odometry_topic') if arg('enable_nmpc_descent') else '')"/>
+    <param name="takeoff_reference_topic" value="$(eval arg('topic_prefix') + '/landing_test/takeoff_reference_z' if arg('enable_nmpc_descent') else '')"/>
     <param name="position_setpoint_topic" value="$(eval arg('topic_prefix') + ('/landing_test/takeoff_position' if arg('enable_nmpc_descent') else '/mavros/setpoint_position/local'))"/>
     <param name="landing_trigger_topic" value="$(arg topic_prefix)/need_to_land"/>
     <param name="landing_state_topic" value="$(arg topic_prefix)/landing/state"/>

@@ -9,7 +9,7 @@ from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 from mavros_msgs.msg import State
 from mavros_msgs.srv import CommandBool, CommandBoolResponse, SetMode, SetModeResponse
-from std_msgs.msg import Bool, String
+from std_msgs.msg import Bool, Float64, String
 from std_srvs.srv import Trigger
 from test_rc_land_priority_ros import RcLandPriorityTest
 
@@ -29,7 +29,8 @@ class OffboardStartTest(RcLandPriorityTest):
         self.pose_pub = self.publisher('pose', PoseStamped)
         self.stage_pub = self.publisher('landing_state', String)
         for topic, kind in [('mission/status', String), ('trigger', Bool),
-                            ('target', PoseStamped), ('prestream', PoseStamped)]:
+                            ('target', PoseStamped), ('prestream', PoseStamped),
+                            ('takeoff_reference', Float64)]:
             self.subscribe(topic, kind)
         if self._testMethodName != 'test_manual_start_needs_no_arming_or_mode_service':
             arm = rospy.Service(self.prefix+'/arm', CommandBool, self.arm)
@@ -53,6 +54,7 @@ class OffboardStartTest(RcLandPriorityTest):
                     'mission', mavros_state_topic='state', local_pose_topic='pose',
                     position_setpoint_topic='target', offboard_prestream_topic='prestream',
                     landing_trigger_topic='trigger', landing_state_topic='landing_state',
+                    takeoff_reference_topic='takeoff_reference',
                     arming_service='arm', set_mode_service='mode')
         self.timer = rospy.Timer(rospy.Duration(.02), self.publish)
         self.addCleanup(self.timer.shutdown)
@@ -147,12 +149,18 @@ class OffboardStartTest(RcLandPriorityTest):
         self.wait(lambda: self.messages['target'], 'FAST-LIO takeoff target')
         self.assertEqual(self.messages['target'][-1].pose.position.z, 12.0)
         self.assertEqual(self.messages['target'][-1].pose.position.x, 0.0)
+        self.wait(lambda: self.messages['takeoff_reference'], 'takeoff reference')
+        self.assertEqual(self.messages['takeoff_reference'][-1].data, 10.0)
         self.pose.pose.position.z = 12.0  # 飞控高度到位不能代替 FAST-LIO 到位。
         time.sleep(.25)
         self.assertEqual(self.phase(), 'TAKEOFF')
         self.assertFalse(any(m.data for m in self.messages['trigger']))
         self.odom.pose.pose.position.z = 12.0
         self.wait(lambda: any(m.data for m in self.messages['trigger']), 'FAST-LIO height handoff')
+        self.assertEqual(self.messages['takeoff_reference'][-1].data, 10.0)
+        # 精降节点稍晚订阅也必须收到起飞时的锁存值，而不是当前空中高度。
+        late_reference = rospy.wait_for_message(self.prefix+'/takeoff_reference', Float64, timeout=2)
+        self.assertEqual(late_reference.data, 10.0)
         self.assert_no_automatic_flight_requests()
 
 
