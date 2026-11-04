@@ -36,6 +36,17 @@ class DescentHoldTest(LandingMemoryTest):
         if self._testMethodName == 'test_high_descent_keeps_xy_control_then_aligns_low':
             params['stages/high/align_while_descending_above_m'] = 1.0
             params['stages/high/slow_descent_mps'] = .15
+        if self._testMethodName == 'test_fastlio_z_controls_speed_and_final_alignment':
+            params.update({
+                'control/use_fastlio_z_for_height': True,
+                'stages/high/align_while_descending_above_m': 1.0,
+                'stages/high/slow_descent_mps': .15,
+                'state_machine/align_error_m': .15,
+                'stages/high/error_m': .15,
+                'stages/high/taper_start_height_m': 1.0,
+                'stages/high/min_height_m': .65,
+                'stages/auto_land/height_m': .65,
+            })
         for key, value in params.items():
             rospy.set_param(self.ns+'/node/'+key, value)
         self.draw_marker(0)
@@ -109,11 +120,34 @@ class DescentHoldTest(LandingMemoryTest):
         self.assertAlmostEqual(self.commands[-1].position.z, 2.65, delta=.001)
         self.assertFalse(self.requests)
 
+    def test_fastlio_z_controls_speed_and_final_alignment(self):
+        # Vision remains about 0.9 m; only FAST-LIO Z changes. MAVROS Z is 30 m.
+        self.z = 1.2
+        self.draw_marker(40)
+        time.sleep(.2)
+        self.trigger = True
+        self.wait(lambda: self.latest_mask(2503), 'FAST-LIO high descent')
+        self.assertAlmostEqual(self.commands[-1].velocity.z, -.25, delta=.001)
+        self.z = .9
+        self.wait(lambda: self.latest_mask(2503) and
+                  abs(self.commands[-1].velocity.z+.20) < .005, 'FAST-LIO speed taper')
+        self.z = .75
+        self.draw_marker(60)
+        self.wait(lambda: self.latest_mask(2531), 'FAST-LIO low-height error gate')
+        self.z = .65
+        self.wait(lambda: self.stage() == 'ALIGN', 'FAST-LIO final alignment height')
+        self.assertNotEqual(self.stage(), 'FIXED_XY_DESCENT')
+        self.draw_marker(0)
+        self.wait(lambda: self.stage() == 'FIXED_XY_DESCENT', 'aligned lock at FAST-LIO Z 0.65')
+        self.assertGreater(self.targets[-1].pose.position.z, .85)
+        self.assertFalse(self.requests)
+
 
 if __name__ == '__main__':
     suite = unittest.TestSuite([
         DescentHoldTest('test_pause_loss_and_resume_keep_distinct_hold_heights'),
         DescentHoldTest('test_high_descent_keeps_xy_control_then_aligns_low'),
+        DescentHoldTest('test_fastlio_z_controls_speed_and_final_alignment'),
     ])
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     raise SystemExit(not result.wasSuccessful())

@@ -384,6 +384,7 @@ class PrecisionLandingNode {
                   search_warning_sec_);
     loadParameter(private_node_, "control/freeze_descent_hold_height",
                   freeze_descent_hold_height_);
+    loadParameter(private_node_, "control/use_fastlio_z_for_height", use_fastlio_z_for_height_);
     loadParameter(private_node_, "control/publish_rate_hz", "control/rate_hz",
                   control_rate_hz_);
     loadParameter(private_node_, "auto_land/request_rate_hz",
@@ -539,6 +540,8 @@ class PrecisionLandingNode {
     }
     std::string odometry_topic;
     private_node_.param<std::string>("topics/odometry", odometry_topic, "");
+    if (use_fastlio_z_for_height_ && odometry_topic.empty())
+      throw std::runtime_error("FAST-LIO height control requires topics/odometry");
     if (!odometry_topic.empty()) {
       pose_subscriber_ = node_.subscribe(
           odometry_topic, 1, &PrecisionLandingNode::odometryCallback, this);
@@ -1024,6 +1027,10 @@ class PrecisionLandingNode {
                takeoff_reference_valid_ ? "takeoff" : "marker", cutoff_reference_z);
     }
 
+    // Vision depth remains necessary for projecting the marker into world XY.
+    // Height gates use the displayed FAST-LIO Z directly when configured.
+    const double control_height_m = use_fastlio_z_for_height_
+        ? local_pose_.pose.position.z : marker_height_m;
     StateInput input(
         trigger_,
         fresh_image && fresh_camera_info && fresh_pose &&
@@ -1034,7 +1041,7 @@ class PrecisionLandingNode {
         fresh_mavros_state && mavros_state_.connected &&
             mavros_state_.mode == "AUTO.LAND",
         current_error_body.norm(),
-        marker_height_m,
+        control_height_m,
         now.toSec(),
         critical_inputs_fresh,
         landing_contact);
@@ -1199,7 +1206,7 @@ class PrecisionLandingNode {
     }
     logFlightPosition(output, fresh_pose, fresh_mavros_state,
                       current_yaw_valid, current_vehicle_yaw_rad, now);
-    publishDiagnostics(output, current_error_body, target_visible, now);
+    publishDiagnostics(output, current_error_body, target_visible, control_height_m, now);
     visual_descent_active_ = is_controlling && owns_offboard && yaw_captured_ &&
         output.state == LandingState::DESCEND_HIGH && target_visible &&
         current_yaw_valid && output.descent_speed_mps > 0.0;
@@ -1587,6 +1594,7 @@ class PrecisionLandingNode {
   void publishDiagnostics(const StateOutput& output,
                           const Eigen::Vector2d& error_body,
                           bool target_visible,
+                          double control_height_m,
                           const ros::Time& now) {
     std_msgs::String state_message;
     state_message.data = diagnosticState(output, now);
@@ -1608,16 +1616,18 @@ class PrecisionLandingNode {
           output.state == LandingState::REQUEST_AUTO_LAND;
       if (warning_state) {
         ROS_WARN("LANDING STATE: %s | display=\"%s\" id=%d visible=%s "
-                 "height=%.3f error=%.3f px4_mode=%s",
+                 "height=%.3f height_source=%s visual_height=%.3f error=%.3f px4_mode=%s",
                  state_message.data.c_str(), operator_message.data.c_str(),
                  locked_id_message.data, target_visible ? "yes" : "no",
+                 control_height_m, use_fastlio_z_for_height_ ? "FASTLIO_Z" : "VISION",
                  last_marker_height_m_, error_body.norm(),
                  mavros_state_.mode.c_str());
       } else {
         ROS_INFO("LANDING STATE: %s | display=\"%s\" id=%d visible=%s "
-                 "height=%.3f error=%.3f px4_mode=%s",
+                 "height=%.3f height_source=%s visual_height=%.3f error=%.3f px4_mode=%s",
                  state_message.data.c_str(), operator_message.data.c_str(),
                  locked_id_message.data, target_visible ? "yes" : "no",
+                 control_height_m, use_fastlio_z_for_height_ ? "FASTLIO_Z" : "VISION",
                  last_marker_height_m_, error_body.norm(),
                  mavros_state_.mode.c_str());
       }
@@ -1626,7 +1636,7 @@ class PrecisionLandingNode {
 
     if (locked_id_message.data != last_logged_locked_id_) {
       if (locked_id_message.data >= 0) {
-        ROS_INFO("ARUCO LOCKED: id=%d height=%.3f error=%.3f",
+        ROS_INFO("ARUCO LOCKED: id=%d visual_height=%.3f error=%.3f",
                  locked_id_message.data, last_marker_height_m_,
                  error_body.norm());
       } else if (last_logged_locked_id_ >= 0) {
@@ -1640,18 +1650,18 @@ class PrecisionLandingNode {
       target_visibility_initialized_ = true;
       last_logged_target_visible_ = target_visible;
       if (target_visible) {
-        ROS_INFO("ARUCO VISIBLE: id=%d height=%.3f error=%.3f",
+        ROS_INFO("ARUCO VISIBLE: id=%d visual_height=%.3f error=%.3f",
                  locked_id_message.data, last_marker_height_m_,
                  error_body.norm());
       }
     } else if (target_visible != last_logged_target_visible_ &&
                (now - last_visibility_log_time_).toSec() >= 1.0) {
       if (target_visible) {
-        ROS_INFO("ARUCO REACQUIRED: id=%d height=%.3f error=%.3f",
+        ROS_INFO("ARUCO REACQUIRED: id=%d visual_height=%.3f error=%.3f",
                  locked_id_message.data, last_marker_height_m_,
                  error_body.norm());
       } else {
-        ROS_WARN("ARUCO LOST: locked_id=%d last_height=%.3f "
+        ROS_WARN("ARUCO LOST: locked_id=%d last_visual_height=%.3f "
                  "last_error=%.3f",
                  locked_id_message.data, last_marker_height_m_,
                  error_body.norm());
@@ -1768,6 +1778,7 @@ class PrecisionLandingNode {
   Eigen::Vector3d hold_position_{Eigen::Vector3d::Zero()};
   bool hold_position_valid_{false};
   bool freeze_descent_hold_height_{false};
+  bool use_fastlio_z_for_height_{false};
   bool visual_descent_active_{false};
   Eigen::Vector2d fixed_xy_position_{Eigen::Vector2d::Zero()};
   double fixed_xy_ground_z_{0.0};
