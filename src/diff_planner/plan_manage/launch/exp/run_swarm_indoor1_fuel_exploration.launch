@@ -125,10 +125,10 @@
     <arg name="enable_uav1_dynamic_obstacle_detection"
          default="$(optenv UAV1_ENABLE_DYNAMIC_OBSTACLE_DETECTION false)"/>
     <!-- 出口确认后默认自动锁存、穿越并搜索降落；false可恢复仅检测。
-         CH9仍保留：有确认出口时人工启动穿越，无确认出口时沿用门外搜索入口。 -->
+         CH9 已用于起飞/悬停，关闭其人工搜索降落触发。 -->
     <arg name="enable_auto_exit" default="$(optenv UAV0_ENABLE_AUTO_EXIT true)"/>
     <!-- 搜索降落链路默认开启；如需临时关闭可设置 UAV0_ENABLE_SEARCH_LANDING=false。
-         UAV0 CH9 低->高持续0.5s仍可人工触发降落搜索模式。 -->
+         CH9 人工降落搜索触发已关闭。 -->
     <arg name="enable_search_landing"
          default="$(optenv UAV0_ENABLE_SEARCH_LANDING true)"/>
     <!-- 2026-07-08 19:26: FUEL 的真正开始触发改为前置通道管理器内部发布，避免 RViz 一点击就直接让 exploration FSM 起跑。 -->
@@ -483,9 +483,9 @@
     <param name="/exploration_node/mission/task_search/exit/auto_crossing_enabled"
            value="$(arg enable_auto_exit)" type="bool"/>
     <param name="/exploration_node/mission/task_search/exit/rc_trigger/enabled"
-           value="$(arg enable_search_landing)" type="bool"/>
+           value="false" type="bool"/>
     <rosparam param="/exploration_node/mission/task_search/exit/rc_trigger/topic">/UAV0/mavros/rc/in</rosparam>
-    <!-- RCIn.channels 数组下标8即遥控器CH9。必须先见低位，再高位保持0.5s，仅触发一次。 -->
+    <!-- CH9 人工触发已禁用；以下参数保留但不生效。 -->
     <rosparam param="/exploration_node/mission/task_search/exit/rc_trigger/channel_index">8</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/rc_trigger/low_pwm">1300</rosparam>
     <rosparam param="/exploration_node/mission/task_search/exit/rc_trigger/high_pwm">1800</rosparam>
