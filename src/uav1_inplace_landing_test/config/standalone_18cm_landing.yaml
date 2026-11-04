@@ -1,4 +1,11 @@
 # 仅由 landing_test.launch 的 18 cm 单独测试加载；不覆盖桥梁或多机参数。
+# 2026-11-04：205131 录包，20:52:35--20:52:45，ID 0，597 帧。
+# 按 FAST-LIO Z [0.60, 0.63] m 筛选；实际入选 [0.6161, 0.6252] m。
+# 排除移动/明显偏侧片段，使用本次手举对中基准的未补偿 body X/Y 中位数。
+# error_body = measured_body - bias_xy_m；只校准 XY，不调整 Z。
+center_alignment:
+  bias_xy_m: [0.01056531, 0.08260303]
+
 state_machine:
   align_error_m: 0.08
 
