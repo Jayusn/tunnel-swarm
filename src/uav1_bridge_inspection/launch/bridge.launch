@@ -1,9 +1,11 @@
 <?xml version="1.0" ?>
 <launch>
-  <arg name="ground_z"/>
+  <!-- 现场配置：以下默认值仅供启动查看界面，飞行前按 FAST-LIO 实测坐标修改。
+       当前降落 XY 与 route.yaml 示例末点一致，右侧 ArUco 的实际位置需另行填写。 -->
+  <arg name="ground_z" default="0.0"/>
   <arg name="bridge_yaw" default="0.0"/>
-  <arg name="landing_x"/>
-  <arg name="landing_y"/>
+  <arg name="landing_x" default="11.3"/>
+  <arg name="landing_y" default="0.0"/>
   <arg name="bridge_floor_height" default="1.5"/>
   <arg name="bridge_clear_height" default="1.2"/>
   <arg name="floor_margin" default="0.15"/>

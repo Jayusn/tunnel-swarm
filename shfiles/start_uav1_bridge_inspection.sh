@@ -7,11 +7,13 @@ SCRIPT_PATH="${SCRIPT_DIR}/start_uav1_bridge_inspection.sh"
 export UAV1_SINGLE_ROS_IP="${UAV1_SINGLE_ROS_IP:-127.0.0.1}"
 export UAV1_SINGLE_ROS_MASTER_IP="${UAV1_SINGLE_ROS_MASTER_IP:-${UAV1_SINGLE_ROS_IP}}"
 
-if [[ "${1:-}" == --help || $# == 0 ]]; then
+if [[ "${1:-}" == --help ]]; then
   cat <<'EOF'
-单机桥梁巡检（先填写现场坐标）：
-  bash shfiles/start_uav1_bridge_inspection.sh \
-    ground_z:=地面Z landing_x:=出口停车X landing_y:=出口停车Y
+单机桥梁巡检（直接打开六分屏和检测/RViz窗口）：
+  bash shfiles/start_uav1_bridge_inspection.sh
+
+地面Z和降落点XY在 src/uav1_bridge_inspection/launch/bridge.launch 开头修改。
+也可临时覆盖：ground_z:=实测值 landing_x:=实测值 landing_y:=实测值。
 
 全部坐标使用 UAV1/camera_init（FAST-LIO），ground_z 不是车面高度。
 桥底离地1.5m、净高1.2m，默认起飞高度为 ground_z+2.0。
@@ -27,7 +29,7 @@ EOF
   exit 0
 fi
 
-if [[ "$1" == --pane ]]; then
+if [[ "${1:-}" == --pane ]]; then
   pane="$2"
   shift 2
   case "$pane" in
@@ -57,13 +59,17 @@ roslaunch --nodes uav1_bridge_inspection bridge.launch "$@" >/dev/null
 runtime_config="$(mktemp /tmp/uav1_bridge_XXXXXX.conf)"
 trap 'rm -f -- "$runtime_config"' EXIT
 printf -v quoted_script '%q' "$SCRIPT_PATH"
-printf -v quoted_args '%q ' "$@"
+quoted_args=""
+if (( $# > 0 )); then
+  printf -v quoted_args '%q ' "$@"
+fi
 cat > "$runtime_config" <<EOF
 [global_config]
   suppress_multiple_term_dialog = True
 [keybindings]
 [profiles]
   [[default]]
+    exit_action = hold
 [layouts]
   [[uav1_bridge]]
     [[[window0]]]
@@ -78,32 +84,41 @@ cat > "$runtime_config" <<EOF
     [[[top]]]
       type = HPaned
       parent = root
+      order = 0
       ratio = 0.333
     [[[top_right]]]
       type = HPaned
       parent = top
+      order = 1
       ratio = 0.5
     [[[bottom]]]
       type = HPaned
       parent = root
+      order = 1
       ratio = 0.333
     [[[bottom_right]]]
       type = HPaned
       parent = bottom
+      order = 1
       ratio = 0.5
 EOF
 panes=(mavros mid360 fastlio pose camera mission)
 parents=(top top_right top_right bottom bottom_right bottom_right)
+orders=(0 0 1 0 0 1)
 titles=('本机Master/MAVROS' 'MID360' 'FAST-LIO' '视觉位姿回传' '下视相机' '航点/Diff/NMPC/检测显示')
 for i in "${!panes[@]}"; do
   cat >> "$runtime_config" <<EOF
     [[[pane${i}]]]
       type = Terminal
       parent = ${parents[$i]}
+      order = ${orders[$i]}
       profile = default
       title = ${titles[$i]}
       command = bash ${quoted_script} --pane ${panes[$i]} ${quoted_args}
 EOF
 done
 printf '[plugins]\n' >> "$runtime_config"
+printf '[桥梁巡检] 打开六分屏：MAVROS / MID360 / FAST-LIO / 位姿回传 / 下视相机 / 巡检任务\n'
+printf '[桥梁巡检] 本机 ROS master 就绪后自动打开检测/RViz窗口；无传感器数据时显示等待画面。\n'
+printf '[桥梁巡检] 地面Z、降落点XY读取 launch/bridge.launch；当前配置数值需按现场确认。\n'
 terminator --no-dbus --maximise --config="$runtime_config" --layout=uav1_bridge
