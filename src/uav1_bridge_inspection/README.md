@@ -46,8 +46,8 @@ bash shfiles/start_uav1_bridge_inspection.sh \
 
 所有检测存图均位于 `~/match_ws/target_reports/bridge`：
 
-- 裂缝：`crack/YYYYMMDD/flight_HHMMSS_微秒/crack_图像时间戳_序号.png`。按同一时间戳匹配 YOLO 检测框与带框图，每个成功配对且含裂缝的检测帧保存一张 PNG，保留原检测框和置信度，不要求深度有效；无裂缝帧不保存。此处未做裂缝空间去重或三维标记。
-- 热源：`YYYYMMDD/flight_HHMMSS/images/annotated/thermal_source/`，沿用已有确认、深度定位、去重和证据图记录。
+- 裂缝：`crack/YYYYMMDD/flight_HHMMSS_微秒/crack_图像时间戳_序号.png`。按同一时间戳匹配 YOLO 检测框与带框图，每个成功配对且含裂缝的检测帧保存一张 PNG，保留原检测框和置信度，底部附相机 XYZ 和地图 XYZ；同名 `.json` 保存每个框的像素范围、置信度、坐标系、米制坐标及定位状态。位置由框中心射线、现有 YOLO 框中心区域的最近有效深度（mm 转 m）及图像时刻 TF 估算，代表检测框的位置，不是整条裂缝的精确几何。地图系为 `UAV1/camera_init`，不是以桥洞入口为原点；未使用 Channel 占位变换。深度或 TF 不可用时仍存图，缺失坐标写 `null`、图上标注 `unavailable`，不使用最新 TF 代替该帧位姿。无裂缝帧不保存，未做裂缝空间去重或三维标记。
+- 热源：`YYYYMMDD/flight_HHMMSS/images/annotated/thermal_source/`，沿用已有确认、深度定位、去重和证据图记录。正常图像配对成功后，每个确认记录保存两张图：热成像带框图和 D435 映射带框图（文件名带 `_d435`）；缺失对应图像时沿用原逻辑，不拿其他帧代替。
 - 二维码：`YYYYMMDD/flight_HHMMSS/images/annotated/qr_code/`，沿用已有解码、深度验证、确认和去重流程保存带框证据图；同一任务目录中的 `reports.jsonl` 记录确认结果。二维码启动预热为 5 秒，解码或深度验证未通过时不会按已确认目标保存。
 
 关闭显示窗口或用 `enable_view:=false` 不影响检测存图；关闭整个任务才停止记录。

@@ -39,5 +39,7 @@
     <param name="record_root" value="$(env HOME)/match_ws/target_reports/bridge/crack"/>
     <remap from="image" to="/UAV1/bridge/crack/debug_image"/>
     <remap from="objects" to="/UAV1/bridge/crack/objects"/>
+    <remap from="camera_info" to="/UAV1/camera/color/camera_info"/>
+    <param name="world_frame" value="UAV1/camera_init"/>
   </node>
 </launch>
