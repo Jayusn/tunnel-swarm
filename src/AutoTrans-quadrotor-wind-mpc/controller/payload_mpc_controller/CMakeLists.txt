@@ -102,6 +102,12 @@ target_link_libraries(mpc_controller_node
 )
 
 if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(test_selected_force_estimator test/test_selected_force_estimator.cpp)
+  if(TARGET test_selected_force_estimator)
+    get_target_property(force_test_includes mpc_controller_node INCLUDE_DIRECTORIES)
+    target_include_directories(test_selected_force_estimator PRIVATE ${force_test_includes})
+    target_link_libraries(test_selected_force_estimator ${catkin_LIBRARIES})
+  endif()
   # 使用与实机相同的控制器和 ACADO/qpOASES，回归四元数符号边界与动态限速恢复。
   get_target_property(quaternion_test_sources mpc_controller_node SOURCES)
   list(REMOVE_ITEM quaternion_test_sources
