@@ -3,6 +3,8 @@
   <arg name="ground_z"/>
   <arg name="floor_z"/>
   <arg name="ceiling_z"/>
+  <arg name="floor_margin" default="0.15"/>
+  <arg name="ceiling_margin" default="0.15"/>
   <include file="$(find diff_planner)/launch/include/advanced_param_exp.xml">
     <arg name="local_map_size_x" value="7.5"/>
     <arg name="local_map_size_y" value="4.5"/>
@@ -20,8 +22,9 @@
     <arg name="max_jer" value="20.0"/>
     <arg name="planning_horizon" value="7.5"/>
     <arg name="enable_virtual_wall" value="true"/>
-    <arg name="virtual_ground" value="$(arg floor_z)"/>
-    <arg name="virtual_ceil" value="$(arg ceiling_z)"/>
+    <!-- 只收缩规划边界；实际底板坐标和相对底板的航点高度不变。 -->
+    <arg name="virtual_ground" value="$(eval float(arg('floor_z')) + float(arg('floor_margin')))"/>
+    <arg name="virtual_ceil" value="$(eval float(arg('ceiling_z')) - float(arg('ceiling_margin')))"/>
     <arg name="map_resolution" value=".05"/>
     <arg name="inflation_size" value=".099"/>
     <arg name="flight_type" value="1"/>

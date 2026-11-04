@@ -8,6 +8,8 @@
   <arg name="landing_y"/>
   <arg name="bridge_floor_height" default="1.5"/>
   <arg name="bridge_clear_height" default="1.2"/>
+  <arg name="floor_margin" default="0.15"/>
+  <arg name="ceiling_margin" default="0.15"/>
   <arg name="cruise_height_above_floor" default=".6"/>
   <arg name="landing_platform_delta_z" default="0.0"/>
   <arg name="route_file" default="$(find uav1_bridge_inspection)/config/route.yaml"/>
@@ -22,6 +24,8 @@
     <arg name="ground_z" value="$(arg ground_z)"/>
     <arg name="floor_z" value="$(arg floor_z)"/>
     <arg name="ceiling_z" value="$(arg ceiling_z)"/>
+    <arg name="floor_margin" value="$(arg floor_margin)"/>
+    <arg name="ceiling_margin" value="$(arg ceiling_margin)"/>
   </include>
   <include file="$(find uav1_bridge_inspection)/launch/control.launch">
     <arg name="takeoff_z" value="$(arg takeoff_z)"/>

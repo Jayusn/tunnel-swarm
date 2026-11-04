@@ -16,6 +16,7 @@ if [[ "${1:-}" == --help || $# == 0 ]]; then
 
 全部坐标使用 UAV1/camera_init（FAST-LIO），ground_z 不是车面高度。
 桥底离地1.5m、净高1.2m，初始航点高度为桥底以上0.6m。
+Diff 上下边界各向洞内留15cm；可追加 floor_margin:=0.15 ceiling_margin:=0.15 调整。
 航点在 src/uav1_bridge_inspection/config/route.yaml 中修改。
 启动后：车停稳，手动解锁，CH8低位并切OFFBOARD起飞；到起飞高度后CH8高位执行航点。
 到最后的车上方航点后自动触发18cm精降；沿用CH10人工降落。
