@@ -55,6 +55,8 @@ bash shfiles/start_uav1_bridge_inspection.sh \
 
 左侧依次显示裂缝、热源融合、二维码、下视 ArUco；右侧为 FAST-LIO 点云、Diff 轨迹和占据地图、配置航点及确认的热源/二维码标记。D435 只启动一次，裂缝、热源和二维码共用 RGB/对齐深度，不启动独立实验的另一套相机/窗口。
 
+地图中的无人机模型沿用多机的 `odom_visualization`，位置来自 `/UAV1/fast_lio/Odom_high_freq`。橙色 `drone_path` 是 `/UAV1/fast_lio/path` 发布的实际飞行轨迹；`optimal_traj`、`global_path` 和 `goal_point` 分别显示 Diff 发布的规划轨迹、全局路径和目标点，有相应数据后显示。模型与多机使用相同的大小和航向显示配置。
+
 拖动画面之间的横向分隔条可上下调整各检测画面的高度，拖动检测区与地图之间的竖向分隔条可调整左右宽度；图像保持原始宽高比。降落画面沿用独立降落测试的底栏，显示 `/UAV1/fast_lio/Odom_high_freq` 的当前 XYZ（米，`UAV1/camera_init`），保留原有 ArUco 框、ID 和状态文字。没有定位、定位无效或超时时，底栏沿用测试程序的等待/无效/过期提示。
 
 所有检测存图均位于 `~/match_ws/target_reports/bridge`：
