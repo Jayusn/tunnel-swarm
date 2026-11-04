@@ -29,7 +29,7 @@
 #include <mavros_msgs/AttitudeTarget.h>
 #include <mavros_msgs/PositionTarget.h>
 #include <mavros_msgs/ESCStatus.h>
-#include "selected_force_estimator.h"
+#include "multi_optimization_based_force_estimator.hpp"
 
 namespace PayloadMPC
 {
@@ -138,7 +138,7 @@ namespace PayloadMPC
 
 		MpcParams &params_;
 		MpcController &controller_;
-		SelectedForceEstimator force_estimator_;
+		MultiOptForceEstimator force_estimator_;
 		DisturbanceSlewLimiter disturbance_slew_limiter_;
 		VerticalDisturbanceLowPass vertical_disturbance_low_pass_;
 		ForceAttitudeAligner force_attitude_aligner_;
