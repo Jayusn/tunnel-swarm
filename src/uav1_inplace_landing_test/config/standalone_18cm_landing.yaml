@@ -1,0 +1,13 @@
+# 仅由 landing_test.launch 的 18 cm 单独测试加载；不覆盖桥梁或多机参数。
+state_machine:
+  align_error_m: 0.08
+
+stages:
+  high:
+    min_height_m: 0.60
+    error_m: 0.10
+  # 视觉估计离码高度 <= 0.60 m，且误差 <= 5 cm 连续 0.5 s 后锁定 XY。
+  # 沿用已有丢码/20 秒超时转定点下降逻辑，此门限描述正常可见码流程。
+  auto_land:
+    height_m: 0.60
+    error_m: 0.05

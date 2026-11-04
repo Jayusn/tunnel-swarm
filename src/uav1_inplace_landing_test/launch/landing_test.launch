@@ -41,6 +41,10 @@
          value="$(arg marker_size_m)"/>
   <param name="$(arg vehicle_ns)/precision_landing_node/marker/dictionary"
          value="$(arg marker_dictionary)"/>
+  <!-- 18 cm 单独测试使用更低的锁定高度和更小的对准误差。 -->
+  <rosparam if="$(eval abs(float(arg('marker_size_m')) - 0.18) &lt; 0.000001)"
+            command="load" ns="$(arg vehicle_ns)/precision_landing_node"
+            file="$(find uav1_inplace_landing_test)/config/standalone_18cm_landing.yaml"/>
 
   <include if="$(arg enable_nmpc_descent)" file="$(find uav1_inplace_landing_test)/launch/landing_nmpc_test.launch">
     <arg name="topic_prefix" value="$(arg topic_prefix)"/>
