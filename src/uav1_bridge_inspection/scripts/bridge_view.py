@@ -21,22 +21,28 @@ class View(QMainWindow):
         self.lock = threading.Lock()
         self.frames, self.labels, self.subs = {}, {}, []
         split = QSplitter(Qt.Horizontal)
-        left = QWidget()
-        layout = QVBoxLayout(left)
+        left = QSplitter(Qt.Vertical)
+        left.setChildrenCollapsible(False)
+        left.setHandleWidth(6)
         for title, topic in [('裂缝', '/UAV1/bridge/crack/debug_image'),
                              ('热源', '/UAV1/thermal/d435_debug_image'),
                              ('二维码', '/UAV1/vision/qr_debug_image'),
-                             ('18 cm ArUco 降落', '/UAV1/landing/debug_image')]:
+                             ('18 cm ArUco 降落', '/UAV1/bridge/landing/xyz_image')]:
+            panel = QWidget()
+            layout = QVBoxLayout(panel)
+            layout.setContentsMargins(4, 4, 4, 4)
             layout.addWidget(QLabel(title))
             label = QLabel('等待图像')
             label.setAlignment(Qt.AlignCenter)
             label.setMinimumSize(160, 100)
-            label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+            label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
             label.setStyleSheet('background: #181b20; color: #dddddd')
             layout.addWidget(label, 1)
+            left.addWidget(panel)
             self.labels[topic] = label
             self.subs.append(rospy.Subscriber(topic, Image, self.image_cb,
                                              callback_args=topic, queue_size=1, buff_size=8388608))
+        left.setSizes([220, 220, 220, 220])
         self.rviz = rviz.VisualizationFrame()
         self.rviz.setSplashPath('')
         self.rviz.initialize()

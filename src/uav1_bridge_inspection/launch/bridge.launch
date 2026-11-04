@@ -49,6 +49,12 @@
     <remap from="status" to="/UAV1/bridge/status"/>
     <remap from="route" to="/UAV1/bridge/route"/>
   </node>
+  <node if="$(arg enable_view)" pkg="uav1_inplace_landing_test" type="uav1_xyz_overlay.py"
+        name="bridge_landing_xyz_overlay" output="screen">
+    <param name="odometry_topic" value="/UAV1/fast_lio/Odom_high_freq"/>
+    <param name="image_topic" value="/UAV1/landing/debug_image"/>
+    <param name="output_topic" value="/UAV1/bridge/landing/xyz_image"/>
+  </node>
   <node if="$(arg enable_view)" pkg="uav1_bridge_inspection" type="bridge_view.py" name="bridge_view" output="screen">
     <param name="rviz_config" value="$(find uav1_bridge_inspection)/config/bridge.rviz"/>
   </node>
