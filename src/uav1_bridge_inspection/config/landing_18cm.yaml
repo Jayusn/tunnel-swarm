@@ -1,0 +1,45 @@
+# 桥梁专用 18 cm 精降参数，2026-11-04 从单独降落测试同步。
+# 独立保存，后续修改单独测试不会自动改变桥梁或原多机配置。
+# 高度门限为 FAST-LIO 绝对 Z；更换平台高度/定位原点后需重新核对。
+# 2026-11-04：205131 录包，20:52:35--20:52:45，ID 0，597 帧。
+# 按 FAST-LIO Z [0.60, 0.63] m 筛选；实际入选 [0.6161, 0.6252] m。
+# 排除移动/明显偏侧片段，使用本次手举对中基准的未补偿 body X/Y 中位数。
+# error_body = measured_body - bias_xy_m；只校准 XY，不调整 Z。
+# 210542 实飞后实测机身偏后 6 cm、偏右 7 cm（body FLU）。
+# 在静态补偿基础上减去 [0.06, 0.07] m，使目标向前 6 cm、向左 7 cm。
+# 215355 实飞后实测左偏 2.5 cm，Y 补偿增加 0.025 m，使目标右移 2.5 cm。
+center_alignment:
+  bias_xy_m: [-0.04943469, 0.03760303]
+
+control:
+  # 略提高横向修正速度，缩短低空精对中的收敛时间。
+  kp_xy: 0.65
+  # 分段、误差门限、减速和最终对中均使用画面中的 FAST-LIO Z，非视觉距离。
+  use_fastlio_z_for_height: true
+  # 暂停下降时捕获一次当前 Z；后续下沉、丢码不再下移保持目标。
+  freeze_descent_hold_height: true
+
+state_machine:
+  # 低空初始/重新对中随高度收紧，最大 15 cm；高空边降边对中。
+  align_error_m: 0.15
+
+stages:
+  high:
+    min_height_m: 0.65
+    # >=1.00 m 有效识码后边下降边对中，不因 XY 误差暂停。
+    align_while_descending_above_m: 1.00
+    # FAST-LIO Z 从 1.00 到 0.85 m 保持 15 cm 门限；
+    # 从 0.85 m 起线性收紧至 Z=0.65 m 的 5 cm。
+    # 低空超限保持高度对中，连续达标 0.5 s 再下降。
+    taper_start_height_m: 0.85
+    error_m: 0.15
+    # FAST-LIO Z 从 1.0 -> 0.8 m，下降速度从 0.25 平滑降至 0.15 m/s。
+    # Z 从 0.8 -> 0.65 m 保持慢速接近；误差超限仍暂停下降。
+    slowdown_start_height_m: 1.00
+    slowdown_end_height_m: 0.80
+    slow_descent_mps: 0.15
+  # FAST-LIO Z <= 0.65 m，且误差 <= 5 cm 连续 0.5 s 后锁定 XY。
+  # 沿用已有丢码/20 秒超时转定点下降逻辑，此门限描述正常可见码流程。
+  auto_land:
+    height_m: 0.65
+    error_m: 0.05
