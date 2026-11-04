@@ -29,6 +29,7 @@ class FastlioControllerTest(RcLandPriorityTest):
             if name.startswith('/mpc_controller_node/'):
                 rospy.set_param(self.prefix+'/controller/'+name.split('/mpc_controller_node/')[1], value.value)
         rospy.set_param(self.prefix+'/router/odometry_topic', self.prefix+'/odom')
+        rospy.set_param(self.prefix+'/controller/land/timeout', .2)
         mode_calls = []
         service = rospy.Service(self.prefix+'/mode', SetMode,
             lambda req: (mode_calls.append(req.custom_mode) or SetModeResponse(mode_sent=True)))
@@ -109,11 +110,13 @@ class FastlioControllerTest(RcLandPriorityTest):
         self.assertAlmostEqual(ref.position.x, 1.1, places=4)
         self.assertAlmostEqual(ref.position.y, 2.2, places=4)
         self.assertAlmostEqual(ref.position.z, 6.8, places=4)
-        # CH10 的近地判断也使用 FAST-LIO 相对起飞高度，飞控高度仍为 121 m。
+        # CH10 近地仍由 NMPC 下降，不再切 PX4 AUTO.LAND。
         odom.pose.pose.position.z = 5.2
         rc.channels[9] = 1933
         drive(.6)
-        self.assertIn('AUTO.LAND', mode_calls)
+        self.assertEqual(mode_calls, [])
+        self.assertGreater(self.last('mavros_attitude').thrust, 0.)
+        self.assertLess(self.last('controller/mpc/reference_trajectory').poses[0].pose.position.z, 5.2)
 
 
 class FastlioPrecisionTest(LandingMemoryTest):
@@ -152,9 +155,32 @@ class FastlioTakeoffReferenceTest(FastlioPrecisionTest):
         self.assertEqual(self.requests[-1], 'AUTO.LAND')
 
 
+class FastlioOffboardDescentTest(FastlioPrecisionTest):
+    use_takeoff_reference = True
+    offboard_touchdown = True
+    descent_mps = 1.
+
+    def test_offboard_descent_uses_takeoff_floor(self):
+        expected = self.acquire()
+        self.frames = False
+        self.x, self.y = expected
+        self.wait(lambda: self.stage() == 'FIXED_XY_DESCENT', 'locked XY descent')
+        self.z = 1.29
+        time.sleep(.4)
+        self.assertFalse(self.requests, 'must not switch AUTO.LAND at 0.3 m')
+        self.z = 1.02
+        self.wait(lambda: self.commands[-1].position.z <= .971, 'takeoff-relative descent floor')
+        self.assertAlmostEqual(self.commands[-1].position.z, .97, places=3)
+        self.assertAlmostEqual(self.commands[-1].position.x, expected[0], delta=.025)
+        self.assertAlmostEqual(self.commands[-1].position.y, expected[1], delta=.025)
+        self.assertFalse(self.requests, 'remain OFFBOARD at ground height')
+
+
 if __name__ == '__main__':
     # 每个测试基类管理自己的 master/rospy 生命周期，分别运行。
-    if len(sys.argv) > 1 and sys.argv[1] == 'takeoff_reference':
+    if len(sys.argv) > 1 and sys.argv[1] == 'offboard_descent':
+        suite = unittest.TestSuite([FastlioOffboardDescentTest('test_offboard_descent_uses_takeoff_floor')])
+    elif len(sys.argv) > 1 and sys.argv[1] == 'takeoff_reference':
         suite = unittest.TestSuite([
             FastlioTakeoffReferenceTest('test_takeoff_reference_handoff_with_marker_offset'),
             FastlioTakeoffReferenceTest('test_takeoff_reference_handoff_without_marker')])

@@ -41,6 +41,8 @@
   </include>
   <node pkg="uav1_inplace_landing_test" type="landing_nmpc_test_router.py" name="landing_nmpc_test_router" output="screen" required="true">
     <param name="odometry_topic" value="$(arg odometry_topic)"/>
+    <param name="offboard_touchdown" value="true"/>
+    <remap from="takeoff_reference" to="$(arg topic_prefix)/landing_test/takeoff_reference_z"/>
     <remap from="extended_state" to="$(arg topic_prefix)/mavros/extended_state"/>
     <remap from="rc_land" to="$(arg topic_prefix)/mission/rc_land_active"/>
     <remap from="arming" to="$(arg topic_prefix)/mavros/cmd/arming"/>

@@ -1078,7 +1078,10 @@ class PrecisionLandingNode {
       if (output.state == LandingState::FIXED_XY_DESCENT &&
           fixed_xy_descent_valid_) {
         fixed_xy_target_z_ -= output.descent_speed_mps * dt_sec;
-        if (fixed_ground_valid_)
+        // OFFBOARD 同地面接地测试的下降下限也用起飞基准，避免视觉码面误差阻止触地。
+        if (!auto_land_at_cutoff_ && takeoff_reference_valid_)
+          fixed_xy_target_z_ = std::max(takeoff_reference_z_ - ground_target_offset_m_, fixed_xy_target_z_);
+        else if (fixed_ground_valid_)
           fixed_xy_target_z_ = std::max(fixed_xy_ground_z_ - ground_target_offset_m_, fixed_xy_target_z_);
         publishPositionHold(
             Eigen::Vector3d(fixed_xy_position_.x(),

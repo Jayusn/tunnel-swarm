@@ -7,7 +7,7 @@ import rospy
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 from mavros_msgs.msg import AttitudeTarget, PositionTarget, State, ExtendedState
-from std_msgs.msg import String, Bool
+from std_msgs.msg import String, Bool, Float64
 from mavros_msgs.srv import CommandBool
 
 
@@ -24,6 +24,9 @@ class Router:
         self.local_pose = None
         self.control_pose = None
         self.odometry_topic = rospy.get_param('~odometry_topic', '')
+        self.offboard_touchdown = rospy.get_param('~offboard_touchdown', False)
+        self.takeoff_reference_z = None
+        self.touchdown_odom = None
         self.landing_started = False
         self.takeoff_z = None
         self.takeoff_yaw = None
@@ -53,6 +56,9 @@ class Router:
         if self.odometry_topic:
             self.subs.append(rospy.Subscriber(
                 self.odometry_topic, Odometry, self.odometry_cb, queue_size=1))
+        if self.offboard_touchdown:
+            self.subs.append(rospy.Subscriber(
+                'takeoff_reference', Float64, self.takeoff_reference_cb, queue_size=1))
 
         self.disarm_timer = rospy.Timer(rospy.Duration(.5), self.disarm_tick)
 
@@ -64,10 +70,13 @@ class Router:
         with self.lock:
             self.extended = msg
             if not self.fresh(msg):
-                self.ground_since = None
+                if not self.offboard_touchdown:
+                    self.ground_since = None
                 return
             if msg.landed_state == ExtendedState.LANDED_STATE_IN_AIR:
                 self.seen_airborne = self.seen_airborne or self.flying
+            if self.offboard_touchdown:
+                return
             if (msg.landed_state == ExtendedState.LANDED_STATE_ON_GROUND and
                     self.seen_airborne and self.owned and
                     (self.stage == 'FIXED_XY_DESCENT' or self.rc_land)):
@@ -78,12 +87,24 @@ class Router:
 
     def disarm_tick(self, _):
         with self.lock:
-            if (not self.output_allowed() or self.extended is None or
-                    not self.fresh(self.extended) or self.ground_since is None or
-                    (rospy.Time.now()-self.ground_since).to_sec() < .5):
+            if not self.output_allowed():
                 return
+            if not self.touchdown:
+                contact_sample = self.touchdown_odom if self.offboard_touchdown else self.extended
+                contact_time = (contact_sample.header.stamp
+                                if self.offboard_touchdown and contact_sample is not None
+                                else rospy.Time.now())
+                if (contact_sample is None or not self.fresh(contact_sample) or
+                        self.ground_since is None or
+                        (contact_time-self.ground_since).to_sec() < .5):
+                    return
+                if self.offboard_touchdown:
+                    rospy.logwarn('FAST-LIO 接地判据满足：相对高度 %.3f m，垂直速度 %.3f m/s；保持 OFFBOARD，零推力并请求上锁',
+                                  self.touchdown_odom.pose.pose.position.z-self.takeoff_reference_z,
+                                  self.touchdown_odom.twist.twist.linear.z)
             self.touchdown = True
             self.owner.publish(String(data='TOUCHDOWN_DISARMING'))
+            self.publish_idle()
         # 普通上锁请求；不使用强制解锁/上锁的MAV_CMD参数。
         try:
             if not self.disarm(value=False).success:
@@ -128,10 +149,37 @@ class Router:
         pose = PoseStamped(header=msg.header, pose=msg.pose.pose)
         with self.lock:
             p, q = pose.pose.position, pose.pose.orientation
-            if (self.fresh(pose) and all(math.isfinite(x) for x in
+            valid_pose = (self.fresh(pose) and all(math.isfinite(x) for x in
                     (p.x, p.y, p.z, q.x, q.y, q.z, q.w)) and
-                    .5 < q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w < 1.5):
+                    .5 < q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w < 1.5)
+            if valid_pose:
                 self.control_pose = pose
+            if self.offboard_touchdown:
+                # 连续新鲜里程计满足同地面接地条件；不依赖飞控先报告 ON_GROUND。
+                if self.touchdown_odom is None or not self.fresh(self.touchdown_odom):
+                    self.ground_since = None
+                self.touchdown_odom = msg
+                vz = msg.twist.twist.linear.z
+                near_ground = (valid_pose and math.isfinite(vz) and
+                               self.takeoff_reference_z is not None and
+                               abs(p.z-self.takeoff_reference_z) <= .05 and abs(vz) < .1)
+                if (near_ground and self.seen_airborne and self.owned and self.output_allowed() and
+                        (self.stage == 'FIXED_XY_DESCENT' or self.rc_land)):
+                    if self.ground_since is None:
+                        self.ground_since = rospy.Time.now()
+                else:
+                    self.ground_since = None
+
+    def takeoff_reference_cb(self, msg):
+        with self.lock:
+            if math.isfinite(msg.data):
+                self.takeoff_reference_z = msg.data
+                self.ground_since = None
+
+    def publish_idle(self):
+        idle = AttitudeTarget(type_mask=AttitudeTarget.IGNORE_ATTITUDE, thrust=0.0)
+        idle.header.stamp = rospy.Time.now()
+        self.attitude.publish(idle)
 
     @staticmethod
     def pose_target(msg):
@@ -199,9 +247,7 @@ class Router:
                     all(math.isfinite(v) for v in values) and 0 <= msg.thrust <= 1):
                 self.take_control()
                 if self.touchdown:
-                    idle = AttitudeTarget(type_mask=AttitudeTarget.IGNORE_ATTITUDE, thrust=0.0)
-                    idle.header.stamp = rospy.Time.now()
-                    self.attitude.publish(idle)
+                    self.publish_idle()
                 else:
                     self.attitude.publish(msg)
 

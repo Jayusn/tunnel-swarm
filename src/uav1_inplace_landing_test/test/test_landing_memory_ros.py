@@ -114,7 +114,8 @@ class LandingMemoryTest(unittest.TestCase):
         for k, v in {'safety/total_timeout_sec': 2., 'safety/reacquire_timeout_sec': 1.,
                      'safety/image_timeout_sec': .3, 'safety/pose_timeout_sec': .3,
                      'center_alignment/bias_xy_m': [.06, -.04], 'marker/size_m': .5,
-                     'stages/fixed_xy_descent/descent_mps': .25}.items():
+                     'auto_land_at_cutoff': not getattr(self, 'offboard_touchdown', False),
+                     'stages/fixed_xy_descent/descent_mps': getattr(self, 'descent_mps', .25)}.items():
             rospy.set_param(self.ns+'/node/'+k, v)
         package = os.environ.get('LANDING_TEST_PACKAGE', 'uav1_inplace_landing_test')
         exe = os.environ.get('LANDING_TEST_EXECUTABLE', 'uav1_test_precision_landing_node')
