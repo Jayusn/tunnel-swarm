@@ -25,9 +25,9 @@ Diff 上下边界各向洞内留15cm；可追加 floor_margin:=0.15 ceiling_marg
 左侧显示裂缝/热源/二维码/ArUco，右侧显示点云及规划轨迹。
 裂缝带框图、确认后的热源和二维码证据图保存到 ~/match_ws/target_reports/bridge。
 其他 roslaunch 参数可直接追加，如 enable_thermal:=false。
-外力估计默认 NDOB（aerothrow_ndob）；切回原滑动窗口方法：
-  bash shfiles/start_uav1_bridge_inspection.sh force_estimator_method:=window_opt
-切回 NDOB：追加 force_estimator_method:=aerothrow_ndob。
+外力估计默认原滑动窗口方法（window_opt）；切换到 NDOB：
+  bash shfiles/start_uav1_bridge_inspection.sh force_estimator_method:=aerothrow_ndob
+切回原方法：追加 force_estimator_method:=window_opt，或不指定此参数。
 NDOB 参数：ndob_rate:=20.0 ndob_cutoff_freq:=5.0；修改后重启任务生效。
 EOF
   exit 0

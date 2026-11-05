@@ -17,7 +17,7 @@
   <arg name="enable_detection" default="true"/>
   <arg name="enable_thermal" default="true"/>
   <!-- 外力估计：aerothrow_ndob 为 NDOB，window_opt 保留原滑动窗口方法；重启生效。 -->
-  <arg name="force_estimator_method" default="aerothrow_ndob"/>
+  <arg name="force_estimator_method" default="window_opt"/>
   <arg name="ndob_rate" default="20.0"/>
   <arg name="ndob_cutoff_freq" default="5.0"/>
   <arg name="floor_z" default="$(eval float(arg(&quot;ground_z&quot;)) + float(arg(&quot;bridge_floor_height&quot;)))"/>

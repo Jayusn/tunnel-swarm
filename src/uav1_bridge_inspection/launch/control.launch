@@ -1,7 +1,7 @@
 <?xml version="1.0" ?>
 <launch>
   <arg name="takeoff_z"/>
-  <arg name="force_estimator_method" default="aerothrow_ndob"/>
+  <arg name="force_estimator_method" default="window_opt"/>
   <arg name="ndob_rate" default="20.0"/>
   <arg name="ndob_cutoff_freq" default="5.0"/>
   <rosparam command="load" ns="/UAV1/mpc_controller_node" file="$(find uav1_inplace_landing_test)/config/mpc_defaults.yaml"/>
