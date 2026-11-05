@@ -704,3 +704,65 @@ TEST_F(WaypointYaw, RelayScanYawDoesNotOverrideFlightLandingOrRecovery) {
   fsm->mpc_recovery_active_ = false; command->header.stamp = ros::Time(999);
   fsm->relayScanYawCallback(command); EXPECT_DOUBLE_EQ(0.0, fsm->hover_yaw_);
 }
+
+TEST_F(WaypointYaw, BridgeWaypointReferenceLimitsPreserveLandingDescent) {
+  params.waypoint_reference_max_velocity_ = 0.2;
+  params.waypoint_reference_max_acceleration_ = 0.2;
+  controller->setExternalForce(Eigen::Vector3d::Zero());
+  Piece::CoefficientMat coefficients = Piece::CoefficientMat::Zero(3, 6);
+  coefficients.col(3) = Eigen::Vector3d(0.3, 0.4, 0.2);
+  coefficients.col(4) = Eigen::Vector3d(0.4, 0.3, 0.2);
+  coefficients.col(5) = Eigen::Vector3d(0., 0., 2.);
+  Trajectory trajectory;
+  trajectory.emplace_back(8., coefficients);
+  controller->setTrajectoyReference(trajectory, 0.2, 0.);
+  for (int i = 0; i <= kSamples; ++i) {
+    const auto state = controller->reference_states_.col(i);
+    EXPECT_LE(state.segment<3>(kVelX).norm(), 0.200001);
+    Eigen::Quaterniond q(state(kOriW), state(kOriX), state(kOriY), state(kOriZ));
+    const Eigen::Vector3d acceleration = q.normalized() * Eigen::Vector3d::UnitZ() *
+        (controller->reference_inputs_(kThrust, i) / params.dyn_params_.mass_q) -
+        Eigen::Vector3d(0., 0., params.gravity_);
+    EXPECT_NEAR(acceleration.norm(), 0.2, 1e-5);
+  }
+  ASSERT_TRUE(controller->setPositionCommandReference(Eigen::Vector3d(1., 2., 0.65),
+      Eigen::Vector3d(0., 0., -0.25), Eigen::Vector3d::Zero(),
+      Eigen::Vector3d::Zero(), 0., 0.));
+  for (int i = 0; i <= kSamples; ++i)
+    EXPECT_NEAR(controller->reference_states_(kVelZ, i), -0.25, 1e-6);
+}
+
+TEST_F(WaypointYaw, BridgeWaypointLimitsRestoreImmediatelyOnPrecisionHandoff) {
+  const double original_xy = params.max_velocity_xy_, original_z = params.max_velocity_z_;
+  params.waypoint_reference_max_velocity_ = 0.2;
+  params.waypoint_reference_max_acceleration_ = 0.2;
+  for (bool entry : {false, true}) {
+    fsm->handleWaypointGoal(goal(Eigen::Vector3d(3., 0., 2.), 0.), entry);
+    controller->waitForPreparation();
+    EXPECT_NEAR(params.max_velocity_xy_, 0.2, 1e-6);
+    EXPECT_NEAR(params.max_velocity_z_, 0.2, 1e-6);
+    EXPECT_NEAR(acadoVariables.ubAValues[0], 0.2, 1e-6);
+    EXPECT_NEAR(acadoVariables.ubAValues[4], 0.2, 1e-6);
+  }
+  fsm->fsm_state = MPCFSM::CMD_CTRL;
+  fsm->state_data.current_state.armed = true;
+  fsm->state_data.current_state.mode = "OFFBOARD";
+  fsm->odom_data.p = Eigen::Vector3d(3., 0., 2.);
+  fsm->odom_data.v.setZero();
+  fsm->odom_data.q = Eigen::Quaterniond::Identity();
+  fsm->force_attitude_odom_data.q = Eigen::Quaterniond::Identity();
+  fsm->odom_data.rcv_stamp = ros::Time::now();
+  fsm->force_attitude_odom_data.rcv_stamp = fsm->odom_data.rcv_stamp;
+  auto target = boost::make_shared<mavros_msgs::PositionTarget>();
+  target->header.stamp = ros::Time::now();
+  target->coordinate_frame = mavros_msgs::PositionTarget::FRAME_LOCAL_NED;
+  target->type_mask = 2503;
+  target->velocity.z = -0.25;
+  fsm->landingTargetCallback(target);
+  controller->waitForPreparation();
+  ASSERT_TRUE(fsm->precision_landing_active_);
+  EXPECT_NEAR(params.max_velocity_xy_, original_xy, 1e-6);
+  EXPECT_NEAR(params.max_velocity_z_, original_z, 1e-6);
+  EXPECT_NEAR(acadoVariables.ubAValues[0], original_xy, 1e-6);
+  EXPECT_NEAR(acadoVariables.ubAValues[4], original_z, 1e-6);
+}

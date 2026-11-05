@@ -378,7 +378,11 @@ namespace PayloadMPC
         waypoint_yaw_ = get_yaw_from_quaternion(attitude.normalized());
         waypoint_stamp_ = msg->header.stamp;
         waypoint_yaw_valid_ = true;
-        const double velocity = entry ? entry_velocity_xy_ : normal_velocity_xy_;
+        const double velocity = params_.waypoint_reference_max_velocity_ > 0.0
+            ? params_.waypoint_reference_max_velocity_
+            : (entry ? entry_velocity_xy_ : normal_velocity_xy_);
+        if (params_.waypoint_reference_max_velocity_ > 0.0)
+            controller_.setVerticalVelocityLimit(velocity);
         if (controller_.setHorizontalVelocityLimit(velocity))
             ROS_INFO("[waypoint_speed] %s goal: NMPC XY velocity threshold %.2f m/s.",
                      entry ? "entry" : "ordinary", velocity);
@@ -422,6 +426,11 @@ namespace PayloadMPC
             trajectory_data.exec_traj = 0;
             exec_traj_state_ = HOVER;
             precision_landing_active_ = true;
+            if (params_.waypoint_reference_max_velocity_ > 0.0)
+            {
+                controller_.setHorizontalVelocityLimit(normal_velocity_xy_);
+                controller_.setVerticalVelocityLimit(normal_velocity_z_);
+            }
             // 已在自动飞行；不解锁、不起飞，只切换参考来源。
             fsm_state = AUTO_HOVER;
             ROS_WARN("[精降NMPC] 任务精降接管，CH10仍优先。");
@@ -477,6 +486,16 @@ namespace PayloadMPC
         if (fsm_state != CMD_CTRL || rc_data.enter_land_mode || rc_land_active_ ||
             precision_landing_active_ || mpc_recovery_active_)
             controller_.setVerticalVelocityLimit(normal_velocity_z_);
+        if (params_.waypoint_reference_max_velocity_ > 0.0)
+        {
+            const bool waypoint_mode = fsm_state == CMD_CTRL && waypoint_yaw_valid_ &&
+                !rc_data.enter_land_mode && !rc_land_active_ &&
+                !precision_landing_active_ && !mpc_recovery_active_;
+            controller_.setHorizontalVelocityLimit(waypoint_mode
+                ? params_.waypoint_reference_max_velocity_ : normal_velocity_xy_);
+            controller_.setVerticalVelocityLimit(waypoint_mode
+                ? params_.waypoint_reference_max_velocity_ : normal_velocity_z_);
+        }
         if (precision_landing_enabled_ && rc_data.enter_land_mode && !rc_land_active_)
         {
             rc_land_active_ = true;

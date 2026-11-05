@@ -16,6 +16,9 @@
   <param name="/UAV1/mpc_controller_node/takeoff/target_z" value="$(arg takeoff_z)"/>
   <param name="/UAV1/mpc_controller_node/fixed_hover/enabled" value="false"/>
   <param name="/UAV1/mpc_controller_node/msg_timeout/state" value="1.5"/>
+  <!-- 仅航点参考和航点模式速度阈值；精降/起飞沿用原参数。 -->
+  <param name="/UAV1/mpc_controller_node/waypoint_reference/max_velocity" value="0.2"/>
+  <param name="/UAV1/mpc_controller_node/waypoint_reference/max_acceleration" value="0.2"/>
   <include file="$(find uav1_inplace_landing_test)/launch/precision.launch">
     <arg name="vehicle_ns" value="UAV1"/>
     <arg name="camera_extrinsic_config" value="$(find precision_landing)/config/down_camera_extrinsic_uav1.yaml"/>

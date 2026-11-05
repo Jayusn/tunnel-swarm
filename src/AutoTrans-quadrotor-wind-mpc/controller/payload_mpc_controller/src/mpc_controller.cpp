@@ -497,6 +497,17 @@ namespace PayloadMPC
       vel_quad = vel;
       acc_quad = acc;
       jerk_quad = jerk;
+      // 只限制多项式航点参考；精降的 PositionCommand 参考不经过这里。
+      const double velocity_limit = params_.waypoint_reference_max_velocity_;
+      if (velocity_limit > 0.0 && vel_quad.norm() > velocity_limit)
+        vel_quad *= velocity_limit / vel_quad.norm();
+      const double acceleration_limit = params_.waypoint_reference_max_acceleration_;
+      if (acceleration_limit > 0.0 && acc_quad.norm() > acceleration_limit)
+      {
+        const double scale = acceleration_limit / acc_quad.norm();
+        acc_quad *= scale;
+        jerk_quad *= scale;
+      }
       if (locked_yaw_active_ || params_.use_fix_yaw_)
       {
         yaw = locked_yaw_active_ ? locked_yaw_ : start_yaw;
