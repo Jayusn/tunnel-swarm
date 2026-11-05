@@ -4,7 +4,7 @@ set -eo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 MATCH_WS="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 SCRIPT_PATH="${SCRIPT_DIR}/start_uav1_bridge_inspection.sh"
-export UAV1_SINGLE_ROS_IP="${UAV1_SINGLE_ROS_IP:-127.0.0.1}"
+export UAV1_SINGLE_ROS_IP="${UAV1_SINGLE_ROS_IP:-192.168.230.232}"
 export UAV1_SINGLE_ROS_MASTER_IP="${UAV1_SINGLE_ROS_MASTER_IP:-${UAV1_SINGLE_ROS_IP}}"
 
 if [[ "${1:-}" == --help ]]; then
