@@ -16,6 +16,10 @@
   <arg name="enable_view" default="true"/>
   <arg name="enable_detection" default="true"/>
   <arg name="enable_thermal" default="true"/>
+  <!-- 外力估计：aerothrow_ndob 为 NDOB，window_opt 保留原滑动窗口方法；重启生效。 -->
+  <arg name="force_estimator_method" default="aerothrow_ndob"/>
+  <arg name="ndob_rate" default="20.0"/>
+  <arg name="ndob_cutoff_freq" default="5.0"/>
   <arg name="floor_z" default="$(eval float(arg(&quot;ground_z&quot;)) + float(arg(&quot;bridge_floor_height&quot;)))"/>
   <arg name="ceiling_z" default="$(eval float(arg(&quot;floor_z&quot;)) + float(arg(&quot;bridge_clear_height&quot;)))"/>
   <arg name="takeoff_z" default="$(eval float(arg(&quot;floor_z&quot;)) + float(arg(&quot;cruise_height_above_floor&quot;)))"/>
@@ -29,6 +33,9 @@
   </include>
   <include file="$(find uav1_bridge_inspection)/launch/control.launch">
     <arg name="takeoff_z" value="$(arg takeoff_z)"/>
+    <arg name="force_estimator_method" value="$(arg force_estimator_method)"/>
+    <arg name="ndob_rate" value="$(arg ndob_rate)"/>
+    <arg name="ndob_cutoff_freq" value="$(arg ndob_cutoff_freq)"/>
   </include>
   <include file="$(find uav1_bridge_inspection)/launch/detection.launch" if="$(arg enable_detection)">
     <arg name="enable_thermal" value="$(arg enable_thermal)"/>
