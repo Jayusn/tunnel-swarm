@@ -226,7 +226,7 @@ class BridgeTest(RcLandPriorityTest):
 
     def test_route_without_detections(self):
         params = dict(bridge_yaw=1.5707963267948966,
-                      waypoints=[[10., 20., 1.6], [10., 22., 1.6]],
+                      waypoints=[[10., 20., 1.6, .6], [10., 22., 1.6]],
                       landing_x=10., landing_y=24., landing_approach_z=1.6,
                       landing_platform_delta_z=.1)
         for key, value in params.items():
@@ -263,6 +263,11 @@ class BridgeTest(RcLandPriorityTest):
             odom.pose.pose.position=Point(10.,y,1.6)
             odom.header.stamp=rospy.Time.now()
             pubs['odom'].publish(odom)
+            if i == 0:
+                # 到点后保留当前目标，保持期内既不切换航点，也不触发精降。
+                time.sleep(.3)
+                self.assertEqual(len(self.messages['goal']), 1)
+                self.assertIsNone(self.last('need_to_land'))
             if i < 2:
                 self.wait(lambda: len(self.messages['goal']) >= i+2, 'next goal')
                 self.assertIsNone(self.last('need_to_land'))

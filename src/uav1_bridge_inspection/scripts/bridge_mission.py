@@ -16,7 +16,12 @@ class Mission:
         self.yaw = float(rospy.get_param('~bridge_yaw'))
         self.frame = 'UAV1/camera_init'
         # 航点直接使用 FAST-LIO 地图 XYZ，不叠加入口或底板偏移。
-        self.points = [tuple(point) for point in rospy.get_param('~waypoints')]
+        waypoints = rospy.get_param('~waypoints')
+        self.points = [tuple(point[:3]) for point in waypoints]
+        self.hold_seconds = [float(point[3]) if len(point) > 3 else 0.0
+                             for point in waypoints]
+        self.hold_seconds.append(0.0)  # 自动追加的降落接近点不额外等待。
+        self.arrived_at = None
         self.points.append((float(rospy.get_param('~landing_x')),
                             float(rospy.get_param('~landing_y')),
                             float(rospy.get_param('~landing_approach_z'))))
@@ -81,6 +86,7 @@ class Mission:
             self.send_goal()
 
     def send_goal(self):
+        self.arrived_at = None
         self.goal.publish(self.pose(self.points[self.index], self.point_yaws[self.index]))
         self.status.publish(String(data='巡检航点 %d/%d' % (self.index + 1, len(self.points))))
 
@@ -94,6 +100,15 @@ class Mission:
                         math.sqrt(v.x*v.x+v.y*v.y+v.z*v.z) <= self.speed)
             if not at_point:
                 return
+            hold = self.hold_seconds[self.index]
+            if hold > 0.0:
+                now = rospy.Time.now()
+                if self.arrived_at is None:
+                    self.arrived_at = now
+                    self.status.publish(String(data='航点 %d/%d 到达：保持 %.1f 秒' %
+                                               (self.index + 1, len(self.points), hold)))
+                if (now - self.arrived_at).to_sec() < hold:
+                    return
             self.index += 1
             if self.index == len(self.points):
                 self.status.publish(String(data='航点完成：18 cm ArUco 精降'))
