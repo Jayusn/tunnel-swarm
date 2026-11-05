@@ -5,11 +5,13 @@
   <include file="$(find autotrans_reference_bridge)/launch/uav1_diff_autotrans.launch">
     <arg name="precision_landing_enabled" value="true"/>
     <arg name="enable_planner" value="false"/>
-    <arg name="enable_rosbag" value="false"/>
+    <arg name="enable_rosbag" value="true"/>
     <arg name="locked_yaw_topic" value=""/>
     <arg name="setpoint_topic" value="/UAV1/bridge/nmpc_attitude"/>
     <arg name="cmd_trigger_topic" value="/UAV1/bridge/start"/>
   </include>
+  <rosparam command="load" ns="/UAV1/autotrans_mpc_logger"
+            file="$(find uav1_bridge_inspection)/config/rosbag_topics.yaml"/>
   <param name="/UAV1/mpc_controller_node/takeoff/enabled" value="true"/>
   <param name="/UAV1/mpc_controller_node/takeoff/target_z" value="$(arg takeoff_z)"/>
   <param name="/UAV1/mpc_controller_node/fixed_hover/enabled" value="false"/>
