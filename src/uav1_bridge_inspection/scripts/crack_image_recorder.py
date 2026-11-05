@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """保存含裂缝的同帧带框图、相机坐标和 FAST-LIO 地图坐标。"""
-from datetime import datetime
 import json
 import math
 from pathlib import Path
@@ -19,7 +18,8 @@ from target_ros_msgs.msg import BoundingBoxes
 class CrackImageRecorder:
     def __init__(self):
         root = Path(rospy.get_param('~record_root')).expanduser()
-        self.directory = root / datetime.now().strftime('%Y%m%d/flight_%H%M%S_%f')
+        mission_id = rospy.get_param(rospy.get_param('~mission_id_param')).strip()
+        self.directory = root / mission_id / 'images' / 'annotated' / 'crack'
         self.directory.mkdir(parents=True, exist_ok=True)
         self.bridge = CvBridge()
         self.world_frame = rospy.get_param('~world_frame', 'UAV1/camera_init')

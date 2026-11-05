@@ -25,6 +25,9 @@ class CrackRecordingTest(RcLandPriorityTest):
     def test_save_matching_annotated_frames(self):
         with tempfile.TemporaryDirectory(prefix='bridge_crack_test_') as root:
             rospy.set_param(self.prefix + '/recorder/record_root', root)
+            rospy.set_param(self.prefix + '/reporter/mission_id', '20261105/flight_120000\n')
+            rospy.set_param(self.prefix + '/recorder/mission_id_param',
+                            self.prefix + '/reporter/mission_id')
             self.launch('uav1_bridge_inspection', 'crack_image_recorder.py', 'recorder')
             images = self.publisher('image', Image)
             objects = self.publisher('objects', BoundingBoxes)
@@ -64,6 +67,8 @@ class CrackRecordingTest(RcLandPriorityTest):
                       'first annotated image saved')
             np.testing.assert_array_equal(cv2.imread(str(files()[0]))[:120], annotated)
             self.assertTrue(files()[0].name.startswith('crack_21_'))
+            self.assertEqual(files()[0].parent,
+                             Path(root) / '20261105/flight_120000/images/annotated/crack')
             # 相反到达顺序及连续检测帧也都能正常保存。
             images.publish(frame(22, annotated))
             objects.publish(detections(22))
@@ -83,6 +88,9 @@ class CrackRecordingTest(RcLandPriorityTest):
     def test_camera_and_world_coordinates_at_image_time(self):
         with tempfile.TemporaryDirectory(prefix='bridge_crack_xyz_test_') as root:
             rospy.set_param(self.prefix + '/recorder/record_root', root)
+            rospy.set_param(self.prefix + '/reporter/mission_id', '20261105/flight_120001')
+            rospy.set_param(self.prefix + '/recorder/mission_id_param',
+                            self.prefix + '/reporter/mission_id')
             rospy.set_param(self.prefix + '/recorder/world_frame', 'test_map')
             self.launch('uav1_bridge_inspection', 'crack_image_recorder.py', 'recorder')
             images = self.publisher('image', Image)
