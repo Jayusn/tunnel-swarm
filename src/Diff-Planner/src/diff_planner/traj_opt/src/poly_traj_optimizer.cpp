@@ -1,4 +1,5 @@
 #include "optimizer/poly_traj_optimizer.h"
+#include <stdexcept>
 
 using namespace std;
 
@@ -75,6 +76,7 @@ namespace diff_planner
         ? planning_reference_time_ : ros::Time::now().toSec();
     piece_num_ = initT.size();
     jerkOpt_.reset(iniState, finState, piece_num_);
+    prepareCorridorCenters(iniState.col(0), finState.col(0));
     variable_num_ = 4 * (piece_num_ - 1) + 1;
     double x_init[variable_num_];
     memcpy(x_init, initInnerPts.data(), initInnerPts.size() * sizeof(x_init[0]));
@@ -782,6 +784,42 @@ namespace diff_planner
     segments = final_segment_ids;
     addNearObstacleConstraints(i_end);
     return CHK_RET::FINISH;
+  }
+
+  void PolyTrajOptimizer::prepareCorridorCenters(
+      const Eigen::Vector3d &start, const Eigen::Vector3d &goal)
+  {
+    corridor_center_offsets_.clear();
+    if (wei_corridor_center_ <= 0.0 || dynamic_candidate_active_) return;
+    const Eigen::Vector2d forward = (goal - start).head<2>();
+    if (forward.norm() < 1.e-3) return;
+    corridor_center_normal_ = Eigen::Vector3d(-forward.y(), forward.x(), 0.0).normalized();
+    corridor_center_offsets_.assign(cps_.cp_size, std::numeric_limits<double>::quiet_NaN());
+    const double step = 0.5 * grid_map_->getResolution();
+    for (int i = 1; i + 1 < cps_.cp_size; ++i)
+    {
+      const Eigen::Vector3d point = cps_.points.col(i);
+      if (grid_map_->getInflateOccupancy(point) != 0) continue;
+      double bounds[2] = {0.0, 0.0};
+      bool found[2] = {false, false};
+      for (int side = 0; side < 2; ++side)
+      {
+        const double sign = side == 0 ? -1.0 : 1.0;
+        for (double distance = step; distance <= corridor_center_search_distance_; distance += step)
+        {
+          const Eigen::Vector3d sample = point + sign * distance * corridor_center_normal_;
+          const int occupied = grid_map_->getInflateOccupancy(sample);
+          if (occupied < 0) break; // 无有效占据数据时不构造边界。
+          if (occupied == 0) continue;
+          bounds[side] = sign * (distance - 0.5 * step);
+          found[side] = true;
+          break; // 只使用当前自由通路的边界，不跨过障碍寻找其他通道。
+        }
+      }
+      if (found[0] && found[1])
+        corridor_center_offsets_[i] = corridor_center_normal_.dot(point) +
+            0.5 * (bounds[0] + bounds[1]);
+    }
   }
 
   bool PolyTrajOptimizer::addNearObstacleConstraints(const int id_end)
@@ -1889,6 +1927,16 @@ namespace diff_planner
     gradp.setZero();
     costp = 0;
 
+    // 横向居中作为软偏好加入原避障代价；端点、纵向进度与高度不被固定。
+    if (i_dp < static_cast<int>(corridor_center_offsets_.size()) &&
+        std::isfinite(corridor_center_offsets_[i_dp]))
+    {
+      const double error = corridor_center_normal_.dot(p) - corridor_center_offsets_[i_dp];
+      costp += wei_corridor_center_ * error * error;
+      gradp += 2.0 * wei_corridor_center_ * error * corridor_center_normal_;
+      ret = true;
+    }
+
     double passage_error;
     Eigen::Vector3d passage_direction;
     if (!dynamic_candidate_active_ && vertical_obstacle_side_lock_.passageCenterError(
@@ -2213,6 +2261,11 @@ namespace diff_planner
     nh.param("optimization/weight_feasibility", wei_feas_, -1.0);
     nh.param("optimization/weight_sqrvariance", wei_sqrvar_, -1.0);
     nh.param("optimization/weight_time", wei_time_, -1.0);
+    nh.param("optimization/weight_corridor_center", wei_corridor_center_, 0.0);
+    nh.param("optimization/corridor_center_search_distance", corridor_center_search_distance_, 0.8);
+    if (!std::isfinite(wei_corridor_center_) || wei_corridor_center_ < 0.0 ||
+        !std::isfinite(corridor_center_search_distance_) || corridor_center_search_distance_ <= 0.0)
+      throw std::invalid_argument("invalid corridor centering weight or search distance");
     nh.param("optimization/obstacle_clearance", obs_clearance_, -1.0);
     nh.param("optimization/obstacle_clearance_soft", obs_clearance_soft_, -1.0);
     nh.param("optimization/upper_obstacle_clearance", upper_obstacle_clearance_, 0.0);

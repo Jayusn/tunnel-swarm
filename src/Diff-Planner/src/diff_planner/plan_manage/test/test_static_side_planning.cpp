@@ -139,6 +139,94 @@ protected:
   const Vector3d start{-0.9, 0.0, 0.6}, end{0.9, 0.0, 0.6};
 };
 
+class CorridorCenterPlanning : public StaticSidePlanning {
+protected:
+  void passage(bool both_sides = true, bool rotated = false) {
+    for (int z = 0; z < 30; ++z)
+      for (int y = -40; y < 40; ++y)
+        for (int x = -30; x < 30; ++x) {
+          const Eigen::Vector3i cell(x, y, z);
+          const Vector3d p = map->globalIdx2Pos(cell);
+          const double lateral = rotated ? p.x() : p.y();
+          map->md_.occupancy_buffer_inflate_[map->globalIdx2InfBufIdx(cell)] =
+              lateral >= 0.30 || (both_sides && lateral <= -0.15);
+        }
+  }
+};
+
+TEST_F(CorridorCenterPlanning, BilateralCenterGradientAndSingleSideFallback)
+{
+  for (bool rotated : {false, true}) {
+    passage(true, rotated);
+    PolyTrajOptimizer optimizer;
+    configure(optimizer, false);
+    optimizer.wei_corridor_center_ = 10000.0;
+    optimizer.cps_.resize_cp(3);
+    const Vector3d a = rotated ? Vector3d(0,-0.9,0.6) : start;
+    const Vector3d b = rotated ? Vector3d(0,0.9,0.6) : end;
+    optimizer.cps_.points << a, Vector3d(0,0,0.6), b;
+    optimizer.prepareCorridorCenters(a, b);
+    ASSERT_TRUE(std::isfinite(optimizer.corridor_center_offsets_[1]));
+    const int axis = rotated ? 0 : 1;
+    const Vector3d center = optimizer.corridor_center_normal_ * optimizer.corridor_center_offsets_[1];
+    EXPECT_NEAR(center[axis], 0.075, 0.015);
+    Vector3d point(0,0,0.6), gradient;
+    double cost;
+    ASSERT_TRUE(optimizer.obstacleGradCostP(1, point, gradient, cost));
+    EXPECT_LT(gradient[axis], 0.0); // 梯度下降向正侧中线移动。
+    EXPECT_DOUBLE_EQ(gradient.z(), 0.0);
+    for (int j = 0; j < 3; ++j) {
+      const Vector3d delta = 1e-6 * Vector3d::Unit(j);
+      Vector3d unused; double plus, minus;
+      optimizer.obstacleGradCostP(1, point + delta, unused, plus);
+      optimizer.obstacleGradCostP(1, point - delta, unused, minus);
+      EXPECT_NEAR(gradient[j], (plus-minus)/2e-6, 1e-5);
+    }
+    passage(false, rotated);
+    optimizer.prepareCorridorCenters(a, b);
+    EXPECT_FALSE(optimizer.obstacleGradCostP(1, point, gradient, cost));
+    EXPECT_DOUBLE_EQ(cost, 0.0);
+    passage(true, rotated);
+    optimizer.wei_corridor_center_ = 0.0;
+    optimizer.prepareCorridorCenters(a, b);
+    EXPECT_TRUE(optimizer.corridor_center_offsets_.empty());
+  }
+}
+
+TEST_F(CorridorCenterPlanning, OptimizedCurveCentersWithoutChangingEndpoints)
+{
+  passage();
+  PolyTrajOptimizer optimizer;
+  configure(optimizer, false);
+  optimizer.wei_corridor_center_ = 10000.0;
+  optimizer.beginPlanningCycle();
+  Eigen::Matrix3d head, tail;
+  head << Vector3d(-0.9,0.0,0.6), Vector3d::Zero(), Vector3d::Zero();
+  tail << Vector3d(0.9,0.0,0.6), Vector3d::Zero(), Vector3d::Zero();
+  Eigen::MatrixXd midpoint(3,1); midpoint.col(0) = Vector3d(0,-0.03,0.6);
+  const Eigen::VectorXd durations = Eigen::Vector2d::Constant(3.0);
+  poly_traj::MinJerkOpt seed;
+  seed.reset(head,tail,2);seed.generate(midpoint,durations);
+  std::vector<std::pair<int,int>> segments;
+  ASSERT_NE(optimizer.finelyCheckAndSetConstraintPoints(segments,seed,true),PolyTrajOptimizer::ERR);
+  double cost;
+  ASSERT_TRUE(optimizer.optimizeTrajectory(head,tail,midpoint,durations,cost));
+  const auto trajectory = optimizer.getMinJerkOpt().getTraj();
+  EXPECT_LT((trajectory.getPos(0)-head.col(0)).norm(),1e-8);
+  EXPECT_LT((trajectory.getPos(trajectory.getTotalDuration())-tail.col(0)).norm(),1e-8);
+  int middle_samples = 0;
+  for (int i=0;i<=500;++i) {
+    const auto p = trajectory.getPos(trajectory.getTotalDuration()*i/500.0);
+    EXPECT_EQ(map->getInflateOccupancy(p),0);
+    if (std::abs(p.x())<0.2) {
+      ++middle_samples;
+      EXPECT_NEAR(p.y(),0.075,0.035);
+    }
+  }
+  EXPECT_GT(middle_samples,0);
+  optimizer.endPlanningCycle();
+}
+
 TEST_F(StaticSidePlanning, RecoveryValidationAllowsOnlyAShortInitialOccupiedSegment)
 {
   PolyTrajOptimizer optimizer;

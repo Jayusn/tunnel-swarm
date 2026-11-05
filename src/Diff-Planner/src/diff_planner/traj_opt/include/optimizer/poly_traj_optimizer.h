@@ -112,6 +112,11 @@ namespace diff_planner
     double wei_feas_;                                             // feasibility weight
     double wei_sqrvar_;                                           // squared variance weight
     double wei_time_;                                             // time weight
+    // 仅桥梁启用：在已观测到的横向双侧边界之间优先居中。
+    double wei_corridor_center_{0.0}, corridor_center_search_distance_{0.8};
+    Eigen::Vector3d corridor_center_normal_{Eigen::Vector3d::Zero()};
+    std::vector<double> corridor_center_offsets_;
+    void prepareCorridorCenters(const Eigen::Vector3d &start, const Eigen::Vector3d &goal);
     double obs_clearance_, obs_clearance_soft_, swarm_clearance_; // safe distance
     double upper_obstacle_clearance_{0.0};
     double obstacle_inflation_{0.0};

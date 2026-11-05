@@ -59,6 +59,9 @@
   <!-- 保留优化校验余量；发布前统一缩放多项式时间，规划器和 NMPC 共用同一执行轨迹。 -->
   <param name="/drone_1_diff_planner_node/manager/execution_max_velocity" value="0.2"/>
   <param name="/drone_1_diff_planner_node/manager/execution_max_acceleration" value="0.2"/>
+  <!-- 双侧均有障碍时优先走当前通路中间；仅本桥梁实例开启。 -->
+  <param name="/drone_1_diff_planner_node/optimization/weight_corridor_center" value="10000.0"/>
+  <param name="/drone_1_diff_planner_node/optimization/corridor_center_search_distance" value="0.8"/>
   <param name="/drone_1_diff_planner_node/grid_map/ground_height" value="$(arg ground_z)"/>
   <param name="/drone_1_diff_planner_node/grid_map/visualization_truncate_height" value="$(eval float(arg(&quot;ceiling_z&quot;)) + 1.0)"/>
   <node pkg="diff_planner" type="traj_server" name="drone_1_traj_server" output="screen">
