@@ -294,7 +294,8 @@ TEST_F(StaticSidePlanning, MapVisualizationPreservesWrappedVoxelsAndClipping)
     }
     ASSERT_TRUE(raw);
     ASSERT_TRUE(inflated);
-    std::set<std::array<int, 3>> expected_raw{{{10, 0, 12}}};
+    // 原始与膨胀地图都显示机头前方左右各90度，侧前方体素也应保留。
+    std::set<std::array<int, 3>> expected_raw{{{10, 0, 12}}, {{0, 10, 12}}};
     std::set<std::array<int, 3>> expected_inflated{{{10, 0, 12}}, {{0, 10, 12}}};
     if (preserve_global)
       expected_raw = expected_inflated = {

@@ -705,9 +705,8 @@ TEST_F(WaypointYaw, RelayScanYawDoesNotOverrideFlightLandingOrRecovery) {
   fsm->relayScanYawCallback(command); EXPECT_DOUBLE_EQ(0.0, fsm->hover_yaw_);
 }
 
-TEST_F(WaypointYaw, BridgeWaypointReferenceLimitsPreserveLandingDescent) {
+TEST_F(WaypointYaw, PolynomialReferencePreservesDerivativesAndLandingDescent) {
   params.waypoint_reference_max_velocity_ = 0.2;
-  params.waypoint_reference_max_acceleration_ = 0.2;
   controller->setExternalForce(Eigen::Vector3d::Zero());
   Piece::CoefficientMat coefficients = Piece::CoefficientMat::Zero(3, 6);
   coefficients.col(3) = Eigen::Vector3d(0.3, 0.4, 0.2);
@@ -718,12 +717,14 @@ TEST_F(WaypointYaw, BridgeWaypointReferenceLimitsPreserveLandingDescent) {
   controller->setTrajectoyReference(trajectory, 0.2, 0.);
   for (int i = 0; i <= kSamples; ++i) {
     const auto state = controller->reference_states_.col(i);
-    EXPECT_LE(state.segment<3>(kVelX).norm(), 0.200001);
+    const double t = 0.2 + i * controller->getTimeStep();
+    EXPECT_LT((state.segment<3>(kPosX).cast<double>() - trajectory.getPos(t)).norm(), 1e-5);
+    EXPECT_LT((state.segment<3>(kVelX).cast<double>() - trajectory.getVel(t)).norm(), 1e-5);
     Eigen::Quaterniond q(state(kOriW), state(kOriX), state(kOriY), state(kOriZ));
     const Eigen::Vector3d acceleration = q.normalized() * Eigen::Vector3d::UnitZ() *
         (controller->reference_inputs_(kThrust, i) / params.dyn_params_.mass_q) -
         Eigen::Vector3d(0., 0., params.gravity_);
-    EXPECT_NEAR(acceleration.norm(), 0.2, 1e-5);
+    EXPECT_LT((acceleration - trajectory.getAcc(t)).norm(), 1e-5);
   }
   ASSERT_TRUE(controller->setPositionCommandReference(Eigen::Vector3d(1., 2., 0.65),
       Eigen::Vector3d(0., 0., -0.25), Eigen::Vector3d::Zero(),
@@ -735,7 +736,6 @@ TEST_F(WaypointYaw, BridgeWaypointReferenceLimitsPreserveLandingDescent) {
 TEST_F(WaypointYaw, BridgeWaypointLimitsRestoreImmediatelyOnPrecisionHandoff) {
   const double original_xy = params.max_velocity_xy_, original_z = params.max_velocity_z_;
   params.waypoint_reference_max_velocity_ = 0.2;
-  params.waypoint_reference_max_acceleration_ = 0.2;
   for (bool entry : {false, true}) {
     fsm->handleWaypointGoal(goal(Eigen::Vector3d(3., 0., 2.), 0.), entry);
     controller->waitForPreparation();

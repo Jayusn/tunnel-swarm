@@ -1,8 +1,10 @@
 // #include <fstream>
 #include <plan_manage/planner_manager.h>
+#include <plan_manage/trajectory_time_scaling.h>
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <stdexcept>
 #include <thread>
 #include "visualization_msgs/Marker.h" // zx-todo
 
@@ -39,6 +41,12 @@ namespace diff_planner
     if (!std::isfinite(entry_max_vel_) || entry_max_vel_ <= 0.0)
       entry_max_vel_ = normal_max_vel_;
     nh.param("manager/max_acc", pp_.max_acc_, -1.0);
+    // 仅显式启用的桥梁实例对普通航点输出统一缩放时间；原多机默认关闭。
+    nh.param("manager/execution_max_velocity", execution_max_velocity_, 0.0);
+    nh.param("manager/execution_max_acceleration", execution_max_acceleration_, 0.0);
+    if (!std::isfinite(execution_max_velocity_) || execution_max_velocity_ < 0.0 ||
+        !std::isfinite(execution_max_acceleration_) || execution_max_acceleration_ < 0.0)
+      throw std::invalid_argument("execution velocity/acceleration limits must be finite and non-negative");
     normal_max_acc_ = pp_.max_acc_;
     nh.param("manager/entry_max_acc", entry_max_acc_, normal_max_acc_);
     if (!std::isfinite(entry_max_acc_) || entry_max_acc_ <= 0.0)
@@ -371,15 +379,16 @@ namespace diff_planner
 
     bool retained_current_trajectory = false;
     const auto commit_candidate = [&](const poly_traj::MinJerkOpt &candidate_opt) {
+      const poly_traj::Trajectory candidate = scaleTrajectoryTime(
+          candidate_opt.getTraj(), execution_max_velocity_, execution_max_acceleration_);
       if (segmentedPlanning() && !ploy_traj_opt_->trajectoryCollisionFree(
-          candidate_opt.getTraj(), ros::Time::now().toSec(), ros::Time::now().toSec())) return false;
+          candidate, ros::Time::now().toSec(), ros::Time::now().toSec())) return false;
       if (require_improvement && enable_replan_quality_gate_ &&
           traj_.local_traj.traj.getPieceNum() > 0)
       {
         const double current_elapsed = std::max(
             0.0, std::min(ros::Time::now().toSec() - traj_.local_traj.start_time,
                           traj_.local_traj.duration));
-        const poly_traj::Trajectory candidate = candidate_opt.getTraj();
         const ReplanTrajectoryMetrics current_metrics =
             evaluateTrajectoryQuality(traj_.local_traj.traj, current_elapsed);
         const ReplanTrajectoryMetrics candidate_metrics =
@@ -408,7 +417,9 @@ namespace diff_planner
         }
       }
 
-      if (!setLocalTrajFromOpt(candidate_opt, touch_goal))
+      Eigen::MatrixXd cps = candidate_opt.getInitConstraintPoints(getCpsNumPrePiece());
+      if (!setLocalTrajFromTrajectory(candidate,
+          ConstraintPoints::two_thirds_id(cps, touch_goal), true, 0.0))
       {
         ROS_ERROR("Failed to store the optimized local trajectory; report planning failure.");
         return false;

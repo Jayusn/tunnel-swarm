@@ -246,9 +246,8 @@ namespace PayloadMPC
 		real_t max_velocity_z_;
 		real_t max_velocity_slack_xy_;
 		real_t max_velocity_slack_z_;
-        // 仅桥梁航点启用；0 保持原多机和起降参考行为。
+        // 仅桥梁航点模式的求解器速度阈值；参考时间缩放由规划器完成。
         double waypoint_reference_max_velocity_{0.0};
-        double waypoint_reference_max_acceleration_{0.0};
 
 		real_t state_cost_exponential_;
 		real_t input_cost_exponential_;
@@ -319,11 +318,9 @@ namespace PayloadMPC
 			}
 
         nh.param("waypoint_reference/max_velocity", waypoint_reference_max_velocity_, 0.0);
-        nh.param("waypoint_reference/max_acceleration", waypoint_reference_max_acceleration_, 0.0);
-        if (!std::isfinite(waypoint_reference_max_velocity_) || waypoint_reference_max_velocity_ < 0.0 ||
-            !std::isfinite(waypoint_reference_max_acceleration_) || waypoint_reference_max_acceleration_ < 0.0)
+        if (!std::isfinite(waypoint_reference_max_velocity_) || waypoint_reference_max_velocity_ < 0.0)
         {
-            ROS_ERROR("[MPCCTRL] 航点参考速度/加速度上限必须为非负有限值，0 表示关闭。");
+            ROS_ERROR("[MPCCTRL] 航点模式速度阈值必须为非负有限值，0 表示关闭。");
             ROS_BREAK();
         }
 			read_essential_param(nh, "min_thrust", min_thrust_);

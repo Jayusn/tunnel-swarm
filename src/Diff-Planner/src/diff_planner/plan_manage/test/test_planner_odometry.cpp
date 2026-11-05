@@ -3,6 +3,7 @@
 #include <ros/ros.h>
 #include <ros/callback_queue.h>
 #include <plan_manage/planner_manager.h>
+#include <plan_manage/trajectory_time_scaling.h>
 #include <plan_manage/swing_obstacle_guard.h>
 #include <traj_utils/MINCOTraj.h>
 #include <traj_utils/DataDisp.h>
@@ -63,6 +64,55 @@ TEST(EntryTwoPiece, ContinuousMidpointAndBoundedSpeedAndAcceleration)
   }
 }
 
+TEST(TrajectoryTimeScaling, BoundsPreserveGeometryAndConsistentDerivatives)
+{
+  Eigen::Matrix3d head = Eigen::Matrix3d::Zero(), tail = head;
+  head.col(0) = Eigen::Vector3d(0.0, 0.0, 2.0);
+  tail.col(0) = Eigen::Vector3d(3.0, 0.0, 2.0);
+  Eigen::MatrixXd inner(3, 1);
+  inner.col(0) = Eigen::Vector3d(1.0, 0.4, 2.1);
+  poly_traj::MinJerkOpt polynomial;
+  polynomial.reset(head, tail, 2);
+  polynomial.generate(inner, Eigen::Vector2d(1.2, 2.0));
+  const auto original = polynomial.getTraj();
+  // Exercise combined limits and each independently dominating the time scale.
+  for (const auto &limits : std::vector<std::pair<double, double>>{
+      {0.2, 0.2}, {0.2, 0.0}, {0.0, 0.2}}) {
+    const auto scaled = diff_planner::scaleTrajectoryTime(original, limits.first, limits.second);
+    const double factor = scaled.getTotalDuration() / original.getTotalDuration();
+    ASSERT_GT(factor, 1.0);
+    ASSERT_EQ(scaled.getPieceNum(), original.getPieceNum());
+    if (limits.first > 0.0) { EXPECT_LE(scaled.getMaxVelRate(), limits.first); }
+    if (limits.second > 0.0) { EXPECT_LE(scaled.getMaxAccRate(), limits.second); }
+    for (int i = 0; i <= 200; ++i) {
+      const double old_t = original.getTotalDuration() * i / 200.0;
+      const double t = old_t * factor;
+      EXPECT_LT((scaled.getPos(t) - original.getPos(old_t)).norm(), 1e-8);
+      EXPECT_LT((scaled.getVel(t) - original.getVel(old_t) / factor).norm(), 1e-8);
+      EXPECT_LT((scaled.getAcc(t) - original.getAcc(old_t) / (factor * factor)).norm(), 1e-8);
+      if (i > 0 && i < 200) {
+        constexpr double dt = 1e-4;
+        EXPECT_LT(((scaled.getPos(t + dt) - scaled.getPos(t - dt)) / (2 * dt) -
+                   scaled.getVel(t)).norm(), 1e-7);
+        EXPECT_LT(((scaled.getVel(t + dt) - scaled.getVel(t - dt)) / (2 * dt) -
+                   scaled.getAcc(t)).norm(), 1e-7);
+      }
+    }
+    const double end = scaled[0].getDuration();
+    EXPECT_LT((scaled[0].getPos(end) - scaled[1].getPos(0)).norm(), 1e-8);
+    EXPECT_LT((scaled[0].getVel(end) - scaled[1].getVel(0)).norm(), 1e-8);
+    EXPECT_LT((scaled[0].getAcc(end) - scaled[1].getAcc(0)).norm(), 1e-8);
+  }
+  // Default multi-UAV configuration and already slow trajectories are identical.
+  for (const double bound : {0.0, 100.0}) {
+    const auto unchanged = diff_planner::scaleTrajectoryTime(original, bound, bound);
+    for (int i = 0; i < original.getPieceNum(); ++i) {
+      EXPECT_DOUBLE_EQ(unchanged[i].getDuration(), original[i].getDuration());
+      EXPECT_EQ((unchanged[i].getCoeffMat() - original[i].getCoeffMat()).squaredNorm(), 0.0);
+    }
+  }
+}
+
 TEST(PlannerOdometry, LatestStateIsAvailableBeforeQueuedMapWork)
 {
   ros::NodeHandle nh("~");
@@ -104,12 +154,15 @@ class PlannerEndpoint : public testing::Test
 protected:
   using FSM = diff_planner::DiffReplanFSM;
   virtual int routeSegments() const { return 1; }
+  virtual double executionLimit() const { return 0.0; }
   virtual double normalAcceleration() const { return 1.0; }
   virtual bool fappMemory() const { return false; }
   virtual bool requireLeaderConfirmation() const { return false; }
   void SetUp() override
   {
     nh.setParam("manager/route_segment_count", routeSegments());
+    nh.setParam("manager/execution_max_velocity", executionLimit());
+    nh.setParam("manager/execution_max_acceleration", executionLimit());
     nh.setParam("manager/fapp_memory_enabled", fappMemory());
     nh.setParam("manager/fapp_require_leader_confirmation", requireLeaderConfirmation());
     nh.setParam("optimization/fapp_continuous_crossing", fappMemory());
@@ -254,6 +307,54 @@ protected:
   traj_utils::PolyTraj last_trajectory;
   int published{0}, initial_id{0};
 };
+
+class BridgeExecutionEndpoint : public PlannerEndpoint {
+  double executionLimit() const override { return 0.2; }
+};
+
+TEST_F(BridgeExecutionEndpoint, StoredAndPublishedTrajectoryShareLimitedTimeline)
+{
+  planner.checkCollisionCallback(ros::TimerEvent());
+  ASSERT_EQ(planner.exec_state_, FSM::WAIT_TARGET);
+  auto message = boost::make_shared<geometry_msgs::PoseStamped>();
+  message->header.stamp = ros::Time::now();
+  message->pose.position.x = goal.x() + 1.0;
+  message->pose.position.y = goal.y();
+  message->pose.position.z = goal.z();
+  planner.waypointCallback(message);
+  exec();
+  exec();
+  ASSERT_EQ(planner.exec_state_, FSM::EXEC_TRAJ);
+  drain();
+  ASSERT_GT(published, 0);
+  const auto &local = planner.planner_manager_->traj_.local_traj;
+  const auto &trajectory = local.traj;
+  EXPECT_LE(trajectory.getMaxVelRate(), 0.2);
+  EXPECT_LE(trajectory.getMaxAccRate(), 0.2);
+  EXPECT_DOUBLE_EQ(local.duration, trajectory.getTotalDuration());
+  ASSERT_EQ(last_trajectory.duration.size(), trajectory.getPieceNum());
+  EXPECT_EQ(last_trajectory.traj_id, local.traj_id);
+  EXPECT_DOUBLE_EQ(last_trajectory.start_time.toSec(), local.start_time);
+  for (int piece = 0; piece < trajectory.getPieceNum(); ++piece) {
+    EXPECT_FLOAT_EQ(last_trajectory.duration[piece], trajectory[piece].getDuration());
+    poly_traj::CoefficientMat coefficients;
+    for (int c = 0; c < 6; ++c)
+      coefficients.col(c) << last_trajectory.coef_x[6 * piece + c],
+          last_trajectory.coef_y[6 * piece + c], last_trajectory.coef_z[6 * piece + c];
+    EXPECT_LT((coefficients - trajectory[piece].getCoeffMat()).norm(), 1e-6);
+    poly_traj::Piece wire_piece(last_trajectory.duration[piece], coefficients);
+    EXPECT_LE(wire_piece.getMaxVelRate(), 0.2 + 1e-6);
+    EXPECT_LE(wire_piece.getMaxAccRate(), 0.2 + 1e-6);
+    for (int sample = 0; sample <= 100; ++sample) {
+      const double fraction = sample / 100.0;
+      EXPECT_LT((wire_piece.getPos(fraction * wire_piece.getDuration()) -
+                 trajectory[piece].getPos(fraction * trajectory[piece].getDuration())).norm(), 1e-5);
+    }
+  }
+  for (const auto &group : local.pts_chk)
+    for (const auto &point : group)
+      EXPECT_LT((trajectory.getPos(point.first) - point.second).norm(), 1e-8);
+}
 
 class RollingPlannerEndpoint : public PlannerEndpoint {
   int routeSegments() const override { return 3; }
