@@ -976,3 +976,87 @@ TEST_F(WaypointYaw, BridgeTurnOnlyChangesYawAfterMatchingWaypointFinishes) {
   fsm->waypointTurnCallback(turn);
   EXPECT_DOUBLE_EQ(fsm->hover_yaw_, 0);
 }
+
+TEST_F(WaypointYaw, LandingLockReplaysFlightOffsetWithoutReferenceJump) {
+  // 2026-11-06 21:21:01 实飞：位置参考原先在锁点时突变 12.2 cm。
+  const Eigen::Vector3d before(11.2879343, -1.7073019, .672674);
+  const Eigen::Vector3d locked(11.3925152, -1.7702554, .628475);
+  for (const Eigen::Vector3d initial_velocity : {
+      Eigen::Vector3d::Zero().eval(), Eigen::Vector3d(-.01408, .00174, 0.)}) {
+    fsm->landing_xy_handoff_duration_ = 1.5;
+    fsm->landing_previous_mask_ = 2531;
+    fsm->landing_xy_handoff_start_ = ros::Time(0);
+    fsm->landing_reference_velocity_ = initial_velocity;
+    fsm->hover_pose_ = before;
+    fsm->force_attitude_odom_data.q = Eigen::Quaterniond::Identity();
+    fsm->odom_data.p = locked;
+    fsm->odom_data.v.setZero();
+    fsm->est_state_.setZero();
+    fsm->est_state_.head<3>() = locked.cast<real_t>();
+    fsm->est_state_(kOriW) = 1.;
+    ASSERT_TRUE(controller->resetForHover(fsm->est_state_, locked, 0.));
+    Eigen::Vector3d previous = before;
+    for (int i = 0; i <= 160; ++i) {
+      const auto now = ros::Time(1000) + ros::Duration(i*.01);
+      ros::Time::setNow(now);
+      fsm->odom_data.rcv_stamp = fsm->force_attitude_odom_data.rcv_stamp = now;
+      fsm->imu_data.rcv_stamp = now;
+      fsm->landing_target_time_ = now;
+      auto &target = fsm->landing_target_;
+      target.type_mask = 2552;
+      target.position.x = locked.x(); target.position.y = locked.y();
+      target.position.z = locked.z() - .25*i*.01;
+      target.yaw = -1.68348;
+      fsm->processPrecisionLanding(now);
+      controller->waitForPreparation();
+      const Eigen::Vector3d actual = controller->reference_states_.block<3,1>(kPosX,0).cast<double>();
+      const Eigen::Vector3d velocity = controller->reference_states_.block<3,1>(kVelX,0).cast<double>();
+      ASSERT_TRUE(actual.allFinite());
+      EXPECT_LT((actual-previous).head<2>().norm(), .002);
+      EXPECT_NEAR(actual.z(), target.position.z, 1e-6); // Z 下降参考不变。
+      EXPECT_NEAR(velocity.z(), 0., 1e-9);
+      EXPECT_NEAR(yaw(), target.yaw, .05); // 平坦性倾角不改变锁定航向。
+      if (i == 0) {
+        EXPECT_LT((actual-before).head<2>().norm(), 1e-6);
+        EXPECT_LT((velocity-initial_velocity).norm(), 1e-6);
+      }
+      if (i >= 150) {
+        EXPECT_LT((actual-locked).head<2>().norm(), 1e-6);
+        EXPECT_LT(velocity.norm(), 1e-6);
+      }
+      previous = actual;
+    }
+    EXPECT_TRUE(fsm->landing_xy_handoff_start_.isZero());
+  }
+}
+
+TEST_F(WaypointYaw, LandingHandoffDefaultStaysDirectAndResetClearsHistory) {
+  EXPECT_DOUBLE_EQ(fsm->landing_xy_handoff_duration_, 0.0);
+  ros::Time::setNow(ros::Time(1000));
+  fsm->landing_previous_mask_ = 2531;
+  fsm->hover_pose_ = Eigen::Vector3d(11.288, -1.707, .673);
+  fsm->odom_data.p = Eigen::Vector3d(11.38, -1.774, .64);
+  fsm->odom_data.v.setZero();
+  fsm->force_attitude_odom_data.q = Eigen::Quaterniond::Identity();
+  fsm->odom_data.rcv_stamp = fsm->force_attitude_odom_data.rcv_stamp = ros::Time(1000);
+  fsm->imu_data.rcv_stamp = ros::Time(1000);
+  fsm->landing_target_time_ = ros::Time(1000);
+  fsm->landing_target_.type_mask = 2552;
+  fsm->landing_target_.position.x = 11.393;
+  fsm->landing_target_.position.y = -1.770;
+  fsm->landing_target_.position.z = .628;
+  fsm->est_state_.setZero();
+  fsm->est_state_.head<3>() = fsm->odom_data.p.cast<real_t>();
+  fsm->est_state_(kOriW) = 1.;
+  ASSERT_TRUE(controller->resetForHover(fsm->est_state_, fsm->odom_data.p, 0.));
+  fsm->processPrecisionLanding(ros::Time(1000));
+  EXPECT_NEAR(fsm->hover_pose_.x(), 11.393, 1e-9);
+  EXPECT_NEAR(fsm->hover_pose_.y(), -1.770, 1e-9);
+  EXPECT_TRUE(fsm->landing_xy_handoff_start_.isZero());
+  fsm->landing_xy_handoff_start_ = ros::Time(1000);
+  fsm->landing_reference_velocity_ = Eigen::Vector3d(.1, .2, 0.);
+  fsm->clear_autonomous_inputs();
+  EXPECT_TRUE(fsm->landing_xy_handoff_start_.isZero());
+  EXPECT_DOUBLE_EQ(fsm->landing_reference_velocity_.norm(), 0.);
+  EXPECT_EQ(fsm->landing_previous_mask_, 0u);
+}

@@ -146,6 +146,10 @@ namespace PayloadMPC
         Eigen::Vector3d landing_fixed_origin_{Eigen::Vector3d::Zero()};
         double landing_fixed_source_z_{0.0};
         unsigned landing_previous_mask_{0};
+        double landing_xy_handoff_duration_{0.0};
+        ros::Time landing_xy_handoff_start_{0};
+        Piece landing_xy_handoff_offset_;
+        Eigen::Vector3d landing_reference_velocity_{Eigen::Vector3d::Zero()};
 		// Subscribers and publisher.
 		ros::Publisher pub_control_command, pub_predicted_trajectory_, pub_reference_trajectory_;
 		ros::Publisher pub_all_ref_data_, pub_rmse_info_;

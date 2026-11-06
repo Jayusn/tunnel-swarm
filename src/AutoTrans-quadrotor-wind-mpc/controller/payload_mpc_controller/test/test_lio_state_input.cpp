@@ -27,6 +27,13 @@ class LioStateInput : public testing::Test {
     controller.reset(new MpcController(params));
     fsm.reset(new MPCFSM(nh, params, *controller));
     controller->waitForPreparation();
+    // 测试直接构造 FSM，须补上生产节点执行的 IMU 滤波器初始化。
+    // 否则首个回调会读取未初始化系数，整套测试的堆布局变化即可触发偶发失败。
+    fsm->imu_data.a.setZero();
+    fsm->imu_data.w.setZero();
+    fsm->imu_data.set_filter_params(
+        params.filter_param_.sample_freq_quad_acc, params.filter_param_.cutoff_freq_quad_acc,
+        params.filter_param_.sample_freq_quad_omg, params.filter_param_.cutoff_freq_quad_omg);
     fsm->odom_data.p = Eigen::Vector3d(1.0, 2.0, .429);
     fsm->odom_data.v = Eigen::Vector3d(.1, -.2, .525);
     fsm->odom_data.q = Eigen::Quaterniond::Identity();
