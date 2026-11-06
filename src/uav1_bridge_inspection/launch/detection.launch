@@ -22,6 +22,8 @@
     <arg name="detection_activation_config" value="$(find target_reporting)/config/uav1_detection_test_activation.yaml"/>
     <arg name="target_reporting_record_root" value="$(env HOME)/match_ws/target_reports/bridge"/>
   </include>
+  <!-- 仅显示当前帧成功解码的有效四边形，不改变检测与上报确认逻辑。 -->
+  <param name="/uav1_qr_detector/draw_current_decoded_only" value="true"/>
   <!-- 启动解析时只生成一次批次名，热源、二维码和裂缝共同使用。 -->
   <param name="/uav1_target_reporter/mission_id" type="str"
          command="/bin/date +%Y%m%d/flight_%H%M%S"/>

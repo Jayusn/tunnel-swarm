@@ -274,6 +274,9 @@ class QRDetectorNode(object):
             0.0, float(rospy.get_param("~startup_warmup_seconds", 5.0))
         )
         self.draw_raw_candidates = bool(rospy.get_param("~draw_raw_candidates", False))
+        self.draw_current_decoded_only = bool(
+            rospy.get_param("~draw_current_decoded_only", False)
+        )
         self.confirm_frames = int(rospy.get_param("~confirm_frames", 3))
         self.lost_hold_time = float(rospy.get_param("~lost_hold_time", 0.3))
         self.ema_alpha = float(rospy.get_param("~ema_alpha", 0.35))
@@ -1305,6 +1308,14 @@ class QRDetectorNode(object):
             if held_points is not None:
                 draw_points = held_points
                 draw_center = (result.get("center_u"), result.get("center_v"))
+
+        # Display-only option: decoded geometry was already validated in
+        # validate_qr_detection. Do not draw reused tracks or stale held corners.
+        if self.draw_current_decoded_only and (
+            raw_detection is None
+            or raw_detection.get("validation_reason") != "decoded"
+        ):
+            draw_points = None
 
         if draw_points is not None:
             pts = self.points_to_array(draw_points)
