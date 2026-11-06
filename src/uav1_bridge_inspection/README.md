@@ -65,6 +65,22 @@ CH8 高位的启动信号由 NMPC 发布到 `/traj_start_trigger`，桥梁任务
 
 ## 显示和记录
 
+### 手持连续采集裂缝训练原图
+
+关闭其他占用 D435 的相机节点后运行：
+
+```bash
+bash ~/match_ws/shfiles/start_uav1_crack_capture.sh
+```
+
+仅启动 D435 的 1280×720、30 FPS 彩色流和存图节点，默认每秒保存一张无标注 PNG 原图，
+不依赖裂缝识别结果。手持无人机变换角度即可，Ctrl+C 停止。
+保存到 `~/match_ws/datasets/crack_capture/YYYYMMDD_HHMMSS_微秒/`，
+每次启动一个目录，该次所有图片平铺在其中，不为每张图片创建子目录。
+文件名为 `000001_图像时间戳.png`、`000002_图像时间戳.png`，终端显示保存数量和目录。
+追加 `interval_sec:=0.5` 可改为每半秒一张，`output_root:=/绝对路径` 可更换保存根目录。
+脚本使用独立的本机 ROS master 端口 11319，不需修改无线 IP；不启动飞行或检测节点。
+
 左侧依次显示裂缝、热源融合、二维码、下视 ArUco；右侧为 FAST-LIO 点云、Diff 轨迹和占据地图、配置航点及确认的热源/二维码标记。D435 只启动一次，裂缝、热源和二维码共用 RGB/对齐深度，不启动独立实验的另一套相机/窗口。
 
 地图中的无人机模型沿用多机的 `odom_visualization`，位置来自 `/UAV1/fast_lio/Odom_high_freq`。橙色 `drone_path` 是 `/UAV1/fast_lio/path` 发布的实际飞行轨迹；`optimal_traj`、`global_path` 和 `goal_point` 分别显示 Diff 发布的规划轨迹、全局路径和目标点，有相应数据后显示。模型与多机使用相同的大小和航向显示配置。

@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="output_root" default="$(env HOME)/match_ws/datasets/crack_capture"/>
+  <arg name="interval_sec" default="1.0"/>
+  <include file="$(find realsense2_camera)/launch/rs_camera.launch">
+    <arg name="camera" value="crack_capture_camera"/>
+    <arg name="color_width" value="1280"/>
+    <arg name="color_height" value="720"/>
+    <arg name="color_fps" value="30"/>
+    <arg name="enable_color" value="true"/>
+    <arg name="enable_depth" value="false"/>
+    <arg name="enable_confidence" value="false"/>
+    <arg name="enable_infra" value="false"/>
+    <arg name="enable_infra1" value="false"/>
+    <arg name="enable_infra2" value="false"/>
+    <arg name="enable_fisheye" value="false"/>
+    <arg name="enable_gyro" value="false"/>
+    <arg name="enable_accel" value="false"/>
+    <arg name="enable_pointcloud" value="false"/>
+    <arg name="align_depth" value="false"/>
+    <arg name="publish_tf" value="false"/>
+  </include>
+  <node pkg="uav1_bridge_inspection" type="capture_color_images.py"
+        name="crack_photo_capture" output="screen" required="true">
+    <param name="output_root" value="$(arg output_root)"/>
+    <param name="interval_sec" value="$(arg interval_sec)"/>
+    <remap from="image" to="/crack_capture_camera/color/image_raw"/>
+  </node>
+</launch>
