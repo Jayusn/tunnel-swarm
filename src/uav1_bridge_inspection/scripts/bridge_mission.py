@@ -21,6 +21,9 @@ class Mission:
         self.hold_seconds = [float(point[3]) if len(point) > 3 else 0.0
                              for point in waypoints]
         self.hold_seconds.append(0.0)  # 自动追加的降落接近点不额外等待。
+        self.turn_degrees = [float(point[4]) if len(point) > 4 else 0.0
+                             for point in waypoints] + [0.0]
+        self.returning_from_turn = False
         self.arrived_at = None
         self.points.append((float(rospy.get_param('~landing_x')),
                             float(rospy.get_param('~landing_y')),
@@ -40,6 +43,7 @@ class Mission:
         self.reference_z = None
         self.index = -1
         self.goal = rospy.Publisher('goal', PoseStamped, queue_size=1)
+        self.turn_goal = rospy.Publisher('turn_goal', PoseStamped, queue_size=1)
         self.landing = rospy.Publisher('need_to_land', Bool, queue_size=1, latch=True)
         self.reference = rospy.Publisher('platform_reference', Float64, queue_size=1, latch=True)
         self.status = rospy.Publisher('status', String, queue_size=1, latch=True)
@@ -87,8 +91,34 @@ class Mission:
 
     def send_goal(self):
         self.arrived_at = None
+        self.returning_from_turn = False
         self.goal.publish(self.pose(self.points[self.index], self.point_yaws[self.index]))
         self.status.publish(String(data='巡检航点 %d/%d' % (self.index + 1, len(self.points))))
+
+    def turn_complete(self):
+        base_yaw = self.point_yaws[self.index]
+        target_yaw = base_yaw if self.returning_from_turn else (
+            base_yaw + math.radians(self.turn_degrees[self.index]))
+        # 单独请求悬停转向，不给 Diff 重发同坐标航点；NMPC 仅在轨迹结束后接受。
+        self.turn_goal.publish(self.pose(self.points[self.index], target_yaw))
+        q = self.odom.pose.pose.orientation
+        yaw = math.atan2(2*(q.w*q.z + q.x*q.y), 1-2*(q.y*q.y + q.z*q.z))
+        error = math.atan2(math.sin(target_yaw-yaw), math.cos(target_yaw-yaw))
+        if abs(error) > math.radians(5.0):
+            self.arrived_at = None
+            return False
+        if self.returning_from_turn:
+            return True
+        now = rospy.Time.now()
+        if self.arrived_at is None:
+            self.arrived_at = now
+            self.status.publish(String(data='航点 %d 转向到位：保持 %.1f 秒后转回' %
+                                       (self.index+1, self.hold_seconds[self.index])))
+        if (now-self.arrived_at).to_sec() >= self.hold_seconds[self.index]:
+            self.returning_from_turn = True
+            self.arrived_at = None
+            self.status.publish(String(data='航点 %d：转回原航向' % (self.index+1)))
+        return False
 
     def tick(self, _):
         with self.lock:
@@ -99,9 +129,14 @@ class Mission:
             at_point = (math.sqrt((p.x-x)**2+(p.y-y)**2+(p.z-z)**2) <= self.radius and
                         math.sqrt(v.x*v.x+v.y*v.y+v.z*v.z) <= self.speed)
             if not at_point:
+                if self.turn_degrees[self.index] != 0.0:
+                    self.arrived_at = None
                 return
             hold = self.hold_seconds[self.index]
-            if hold > 0.0:
+            if self.turn_degrees[self.index] != 0.0:
+                if not self.turn_complete():
+                    return
+            elif hold > 0.0:
                 now = rospy.Time.now()
                 if self.arrived_at is None:
                     self.arrived_at = now

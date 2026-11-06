@@ -115,8 +115,12 @@ class BridgeTest(RcLandPriorityTest):
             if node.name == 'mpc_controller_node':
                 controller = process
         points = list(rospy.get_param('/bridge_mission/waypoints'))
+        actions = list(points)
         points.append([rospy.get_param('/bridge_mission/'+key) for key in
                        ('landing_x', 'landing_y', 'landing_approach_z')])
+        actions.append(points[-1])
+        points = [point[:3] for point in points]
+        self.subscribe('bridge/waypoint_turn', PoseStamped)
         approach_yaw = math.atan2(points[-1][1]-points[-2][1],
                                  points[-1][0]-points[-2][0])
         if math.hypot(points[-1][0]-points[-2][0], points[-1][1]-points[-2][1]) <= 1.e-6:
@@ -197,6 +201,30 @@ class BridgeTest(RcLandPriorityTest):
             self.assertEqual(len(self.messages['planning/goal']), index+1)
             self.assertIsNone(self.last('need_to_land'))
             odom.twist.twist.linear.x = 0.
+            turn_deg = actions[index][4] if len(actions[index]) > 4 else 0.
+            hold = actions[index][3] if len(actions[index]) > 3 else 0.
+            if turn_deg:
+                # 到点后才请求转向；未转到朝向时不能启动两秒保持计时。
+                drive(.3)
+                self.assertEqual(len(self.messages['planning/goal']), index+1)
+                turn = self.last('bridge/waypoint_turn')
+                self.assertIsNotNone(turn)
+                right_yaw = expected_yaw + math.radians(turn_deg)
+                self.assertAlmostEqual(math.atan2(2*turn.pose.orientation.w*turn.pose.orientation.z,
+                                      1-2*turn.pose.orientation.z**2), right_yaw)
+                drive(hold+.1)
+                self.assertEqual(len(self.messages['planning/goal']), index+1)
+                odom.pose.pose.orientation = turn.pose.orientation
+                drive(hold/2.)
+                self.assertEqual(len(self.messages['planning/goal']), index+1)
+                drive(hold/2.+.2)
+                self.assertEqual(len(self.messages['planning/goal']), index+1)
+                back = self.last('bridge/waypoint_turn')
+                self.assertAlmostEqual(math.atan2(2*back.pose.orientation.w*back.pose.orientation.z,
+                                      1-2*back.pose.orientation.z**2), expected_yaw)
+                odom.pose.pose.orientation = back.pose.orientation
+            elif hold:
+                drive(hold+.1)
             drive(.2)
             if index < len(points)-1:
                 self.assertEqual(len(self.messages['planning/goal']), index+2)

@@ -121,6 +121,7 @@ namespace PayloadMPC
         void lockedYawCallback(const quadrotor_msgs::PositionCommand::ConstPtr &msg);
         void relayScanYawCallback(const quadrotor_msgs::PositionCommand::ConstPtr &msg);
         void waypointGoalCallback(const geometry_msgs::PoseStamped::ConstPtr &msg);
+        void waypointTurnCallback(const geometry_msgs::PoseStamped::ConstPtr &msg);
         void entryWaypointGoalCallback(const geometry_msgs::PoseStamped::ConstPtr &msg);
         void handleWaypointGoal(const geometry_msgs::PoseStamped::ConstPtr &msg, bool entry);
         double normal_velocity_xy_{0.0}, entry_velocity_xy_{0.0};
@@ -130,6 +131,7 @@ namespace PayloadMPC
         ros::Subscriber locked_yaw_sub_;
         ros::Subscriber relay_scan_yaw_sub_;
         ros::Subscriber waypoint_goal_sub_, waypoint_entry_goal_sub_;
+        ros::Subscriber waypoint_turn_sub_;
         Eigen::Vector3d waypoint_position_{Eigen::Vector3d::Zero()};
         double waypoint_yaw_{0.0};
         ros::Time waypoint_stamp_{0};

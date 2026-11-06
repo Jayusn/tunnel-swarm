@@ -51,6 +51,7 @@
     <remap from="state" to="/UAV1/mavros/state"/>
     <remap from="start" to="/traj_start_trigger"/>
     <remap from="goal" to="/UAV1/planning/goal"/>
+    <remap from="turn_goal" to="/UAV1/bridge/waypoint_turn"/>
     <remap from="need_to_land" to="/UAV1/need_to_land"/>
     <remap from="platform_reference" to="/UAV1/bridge/platform_reference"/>
     <remap from="status" to="/UAV1/bridge/status"/>

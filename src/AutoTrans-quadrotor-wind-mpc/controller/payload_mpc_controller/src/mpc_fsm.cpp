@@ -58,6 +58,11 @@ namespace PayloadMPC
             waypoint_entry_goal_sub_ = nh_.subscribe(waypoint_goal_topic + "/entry", 1,
                 &MPCFSM::entryWaypointGoalCallback, this, ros::TransportHints().tcpNoDelay());
         }
+        std::string waypoint_turn_topic;
+        nh_.param<std::string>("waypoint_turn_topic", waypoint_turn_topic, "");
+        if (!waypoint_turn_topic.empty())
+            waypoint_turn_sub_ = nh_.subscribe(waypoint_turn_topic, 1,
+                &MPCFSM::waypointTurnCallback, this, ros::TransportHints().tcpNoDelay());
         nh_.param("precision_landing_enabled", precision_landing_enabled_, false);
         if (precision_landing_enabled_)
         {
@@ -348,6 +353,25 @@ namespace PayloadMPC
     void MPCFSM::waypointGoalCallback(const geometry_msgs::PoseStamped::ConstPtr &msg)
     {
         handleWaypointGoal(msg, false);
+    }
+
+    void MPCFSM::waypointTurnCallback(const geometry_msgs::PoseStamped::ConstPtr &msg)
+    {
+        // 桥梁到点后的原地转向，只改已结束轨迹的悬停航向，不改 XYZ 或规划状态。
+        if (fsm_state != CMD_CTRL || exec_traj_state_ != HOVER ||
+            trajectory_data.exec_traj != 0 || !waypoint_yaw_valid_ ||
+            safety_hold_active_ || rc_land_active_ || precision_landing_active_ ||
+            mpc_recovery_active_ || direct_auto_land_active_) return;
+        const double age = (ros::Time::now() - msg->header.stamp).toSec();
+        const auto &p = msg->pose.position;
+        const auto &q = msg->pose.orientation;
+        const Eigen::Vector3d point(p.x, p.y, p.z);
+        const Eigen::Quaterniond attitude(q.w, q.x, q.y, q.z);
+        if (msg->header.stamp.isZero() || age < 0.0 || age > 0.5 ||
+            !point.allFinite() || !attitude.coeffs().allFinite() || attitude.norm() < 1.e-6 ||
+            (point-waypoint_position_).norm() > 1.e-3 ||
+            (point-hover_pose_).norm() > 1.e-3) return;
+        hover_yaw_ = get_yaw_from_quaternion(attitude.normalized());
     }
 
     void MPCFSM::entryWaypointGoalCallback(const geometry_msgs::PoseStamped::ConstPtr &msg)

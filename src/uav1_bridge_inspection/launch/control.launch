@@ -27,6 +27,7 @@
   <param name="/UAV1/mpc_controller_node/thrust_model/accurate_thrust_model" value="1"/>
   <param name="/UAV1/mpc_controller_node/thrust_model/enable_takeoff_learning" value="true"/>
   <param name="/UAV1/mpc_controller_node/fixed_hover/enabled" value="false"/>
+  <param name="/UAV1/mpc_controller_node/waypoint_turn_topic" value="/UAV1/bridge/waypoint_turn"/>
   <param name="/UAV1/mpc_controller_node/msg_timeout/state" value="1.5"/>
   <!-- 航点模式速度阈值；参考速度/加速度由 Diff 统一缩放时间，NMPC 不再单独裁剪导数。 -->
   <param name="/UAV1/mpc_controller_node/waypoint_reference/max_velocity" value="0.2"/>

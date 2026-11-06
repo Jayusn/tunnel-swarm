@@ -940,3 +940,39 @@ TEST_F(WaypointYaw, HoverInitialPoint54CanAdaptToRpmInsteadOfRemainingFixed) {
   EXPECT_GT(controller->currentHoverPercentage(), .54);
   EXPECT_LT(controller->currentHoverPercentage(), .55);
 }
+
+TEST_F(WaypointYaw, BridgeTurnOnlyChangesYawAfterMatchingWaypointFinishes) {
+  ros::Time::setNow(ros::Time(1000));
+  const Eigen::Vector3d point(1.85, 0, 1.8);
+  fsm->waypointGoalCallback(goal(point, 0));
+  fsm->fsm_state = MPCFSM::CMD_CTRL;
+  fsm->hover_pose_ = point;
+  fsm->hover_yaw_ = 0;
+  auto turn = goal(point, -M_PI/2);
+  fsm->exec_traj_state_ = MPCFSM::POLY_TRAJ;
+  fsm->trajectory_data.exec_traj = 1;
+  fsm->waypointTurnCallback(turn);
+  EXPECT_DOUBLE_EQ(fsm->hover_yaw_, 0); // 接近航点时不提前转向。
+  fsm->exec_traj_state_ = MPCFSM::HOVER;
+  fsm->trajectory_data.exec_traj = 0;
+  fsm->waypointTurnCallback(turn);
+  EXPECT_NEAR(fsm->hover_yaw_, -M_PI/2, 1e-9);
+  EXPECT_TRUE(fsm->hover_pose_.isApprox(point));
+  EXPECT_EQ(fsm->trajectory_data.exec_traj, 0);
+  controller->setHoverReference(fsm->hover_pose_, fsm->hover_yaw_);
+  EXPECT_NEAR(yaw(), -M_PI/2, 1e-6);
+  fsm->waypointTurnCallback(goal(point, 0));
+  EXPECT_NEAR(fsm->hover_yaw_, 0, 1e-9);
+  // 下一航点、精降或旧消息均不能被前一点的转向请求覆盖。
+  fsm->waypoint_position_.x() = 3.;
+  fsm->waypointTurnCallback(turn);
+  EXPECT_DOUBLE_EQ(fsm->hover_yaw_, 0);
+  fsm->waypoint_position_ = point;
+  fsm->precision_landing_active_ = true;
+  fsm->waypointTurnCallback(turn);
+  EXPECT_DOUBLE_EQ(fsm->hover_yaw_, 0);
+  fsm->precision_landing_active_ = false;
+  turn->header.stamp = ros::Time(999);
+  fsm->waypointTurnCallback(turn);
+  EXPECT_DOUBLE_EQ(fsm->hover_yaw_, 0);
+}
