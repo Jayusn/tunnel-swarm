@@ -17,7 +17,7 @@
 
 桥梁起飞最后 0.30 m 使用余弦减速，默认 0.15 m/s 下该段约 4 s，参考高度到达目标时速度降至零。起飞/悬停切换模式时保留已有高度参考，避免把实际超调锁成新的悬停高度；提前切模式仍保留当时参考，不直接跳到终点。参数位于 `launch/control.launch` 的 `takeoff/slowdown_distance`、`takeoff/preserve_hover_height`，公共控制器默认关闭这两项。
 
-桥梁在 `launch/control.launch` 单独覆盖 `thrust_model/hover_percentage=0.54`、`accurate_thrust_model=1`、`enable_takeoff_learning=true`。起飞阶段不再一直冻结推力映射：已解锁、OFFBOARD、飞控报告在空中且状态/RPM 满足原有条件时即可在线学习，无需等 CH8 切到悬停或航点。0.54 是启动初值，之后随学习更新；起飞外力补偿及降落逻辑不变，公共控制器的起飞学习开关默认关闭。
+桥梁在 `launch/control.launch` 单独覆盖 `thrust_model/hover_percentage=0.54`、`accurate_thrust_model=1`、`enable_takeoff_learning=false`。起飞阶段冻结推力映射，不进行在线学习；CH8 切到悬停或航点后，仍按原有解锁、OFFBOARD、空中状态和 RPM 条件学习。0.54 是启动初值，后续允许学习的阶段可更新；起飞外力补偿及降落逻辑不变，公共控制器的起飞学习开关默认关闭。
 
 `launch/planner.launch` 的 `optimization/weight_waypoint_height=1000` 为整段优化加入贴近当前局部目标 Z 的软代价，减少无必要的抬高；原碰撞检查、端点位置/速度/加速度约束仍保留，允许为避障上下绕行。这不是 1.8 m 硬限高，实际效果需要飞行验证；原多机默认权重为 0。
 
