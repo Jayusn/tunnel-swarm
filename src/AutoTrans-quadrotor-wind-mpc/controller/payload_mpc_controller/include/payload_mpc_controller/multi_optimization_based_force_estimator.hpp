@@ -20,7 +20,7 @@ namespace PayloadMPC
   {
     typedef struct
     {
-      // force_balance = m_q * a_world - T * R * e3，世界系，单位 N。
+      // force_balance = m_q * a_world - T * R * thrust_axis_body，世界系，单位 N。
       // a_world 使用 MAVROS IMU 机体系含重力加速度经姿态旋转得到，不额外减重力。
       Eigen::Vector3d force_balance;
       EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -77,6 +77,7 @@ namespace PayloadMPC
     Eigen::VectorXd opt_variable;
     double var_weight_{50.0};
     bool separate_z_limit_{false};
+    Eigen::Vector3d thrust_axis_body_{Eigen::Vector3d::UnitZ()};
 
   public:
     Eigen::Vector3d quad_acc_{Eigen::Vector3d::Zero()};
@@ -100,6 +101,7 @@ namespace PayloadMPC
     {
       mass_quad_ = params.dyn_params_.mass_q;
       sqrt_kf_ = params.force_estimator_param_.sqrt_kf;
+      thrust_axis_body_ = params.force_estimator_param_.thrust_axis_body.normalized();
       use_force_estimator_ = params.force_estimator_param_.enable_force_estimation;
       separate_z_limit_ = params.force_estimator_param_.force_axis_gain_z == 0.0;
       max_force_ = params.force_estimator_param_.max_force;
@@ -155,7 +157,7 @@ namespace PayloadMPC
 
       rpm_ = Rpm;
       T_ = (sqrt_kf_ * rpm_).squaredNorm();
-      Thr_ = T_ * quad_q_.toRotationMatrix().col(2);
+      Thr_ = T_ * (quad_q_.toRotationMatrix() * thrust_axis_body_);
 
       systemState state;
       state.force_balance = mass_quad_ * quad_acc_ - Thr_;

@@ -49,6 +49,8 @@ namespace PayloadMPC
 			double imu_body_length;
 			double kf;
 			double sqrt_kf;
+			// 推力方向使用与加速度相同的 IMU/body 坐标；旧配置默认沿 +Z。
+			Eigen::Vector3d thrust_axis_body{0.0, 0.0, 1.0};
 			// 外力估计结果的世界系三维模长上限，单位 N。
 			double max_force;
 			// 实际写入 NMPC OnlineData 的世界系补偿力模长上限，单位 N。
@@ -560,6 +562,9 @@ namespace PayloadMPC
 				ROS_BREAK();
 			}
 			force_estimator_param_.sqrt_kf = sqrt(force_estimator_param_.kf);
+            nh.param("force_estimator/thrust_axis_body/x", force_estimator_param_.thrust_axis_body.x(), 0.0);
+            nh.param("force_estimator/thrust_axis_body/y", force_estimator_param_.thrust_axis_body.y(), 0.0);
+            nh.param("force_estimator/thrust_axis_body/z", force_estimator_param_.thrust_axis_body.z(), 1.0);
 			read_essential_param(nh, "force_estimator/sample_freq_fq", force_estimator_param_.sample_freq_fq);
 			read_essential_param(nh, "force_estimator/sample_freq_fl", force_estimator_param_.sample_freq_fl);
 			read_essential_param(nh, "force_estimator/cutoff_freq_fq", force_estimator_param_.cutoff_freq_fq);
