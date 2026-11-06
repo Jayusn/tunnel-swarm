@@ -20,6 +20,8 @@
             file="$(find uav1_bridge_inspection)/config/rosbag_topics.yaml"/>
   <param name="/UAV1/mpc_controller_node/takeoff/enabled" value="true"/>
   <param name="/UAV1/mpc_controller_node/takeoff/target_z" value="$(arg takeoff_z)"/>
+  <param name="/UAV1/mpc_controller_node/takeoff/slowdown_distance" value="0.30"/>
+  <param name="/UAV1/mpc_controller_node/takeoff/preserve_hover_height" value="true"/>
   <param name="/UAV1/mpc_controller_node/fixed_hover/enabled" value="false"/>
   <param name="/UAV1/mpc_controller_node/msg_timeout/state" value="1.5"/>
   <!-- 航点模式速度阈值；参考速度/加速度由 Diff 统一缩放时间，NMPC 不再单独裁剪导数。 -->

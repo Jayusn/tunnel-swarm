@@ -874,8 +874,7 @@ namespace PayloadMPC
 
 			const double elapsed = std::max((now_time - takeoff_start_time_).toSec(), 0.0);
 			hover_pose_ = takeoff_start_pose_;
-			hover_pose_(2) = std::min(takeoff_target_z_,
-									 takeoff_start_pose_(2) + params_.takeoff_.climb_rate * elapsed);
+			hover_pose_(2) = takeoffReferenceZ(elapsed);
 			hover_yaw_ = takeoff_start_yaw_;
 			controller_.setHoverReference(hover_pose_, hover_yaw_);
 			controller_.execMPC(est_state_, mpc_predicted_states_, mpc_predicted_inputs_);
@@ -1926,6 +1925,26 @@ namespace PayloadMPC
         }
     }
 
+    double MPCFSM::takeoffReferenceZ(double elapsed) const
+    {
+        const double start = takeoff_start_pose_.z();
+        const double distance = std::max(0.0, takeoff_target_z_ - start);
+        const double speed = params_.takeoff_.climb_rate;
+        const double braking_distance = std::min(params_.takeoff_.slowdown_distance, distance);
+        elapsed = std::max(0.0, elapsed);
+        if (braking_distance <= 0.0)
+            return std::min(takeoff_target_z_, start + speed * elapsed);
+        const double braking_start = (distance - braking_distance) / speed;
+        if (elapsed <= braking_start) return start + speed * elapsed;
+        const double duration = 2.0 * braking_distance / speed;
+        const double t = elapsed - braking_start;
+        if (t >= duration) return takeoff_target_z_;
+        const double pi = std::acos(-1.0);
+        // v 从 climb_rate 连续降至 0，两端加速度为 0，目标不产生阶跃。
+        return takeoff_target_z_ - braking_distance +
+            0.5 * speed * (t + duration / pi * std::sin(pi * t / duration));
+    }
+
 	void MPCFSM::update_hover_pose()
 	{
 		last_set_hover_pose_time = ros::Time::now();
@@ -1943,9 +1962,13 @@ namespace PayloadMPC
 		// AUTO_LAND 与轨迹衔接继续调用 update_hover_pose()，避免目标位置或高度跳变。
 		if (!params_.fixed_hover_.enabled)
 		{
-			update_hover_pose();
-			return;
-		}
+            const bool preserve_height = params_.takeoff_.preserve_hover_height &&
+                (fsm_state == AUTO_TAKEOFF || fsm_state == AUTO_HOVER);
+            const double reference_z = preserve_height ? hover_pose_.z() : 0.0;
+            update_hover_pose();
+            if (preserve_height) hover_pose_.z() = reference_z;
+            return;
+        }
 
 		last_set_hover_pose_time = ros::Time::now();
 		hover_pose_ << params_.fixed_hover_.x,

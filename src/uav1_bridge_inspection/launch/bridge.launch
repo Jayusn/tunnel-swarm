@@ -10,7 +10,7 @@
   <arg name="bridge_clear_height" default="1.2"/>
   <arg name="floor_margin" default="0.15"/>
   <arg name="ceiling_margin" default="0.15"/>
-  <arg name="cruise_height_above_floor" default="0.4"/>
+  <arg name="cruise_height_above_floor" default="0.3"/>
   <arg name="landing_platform_delta_z" default="0.0"/>
   <arg name="route_file" default="$(find uav1_bridge_inspection)/config/route.yaml"/>
   <arg name="enable_view" default="true"/>

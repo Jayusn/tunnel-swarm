@@ -11,7 +11,7 @@
   <arg name="auto_start" default="false"/>
   <arg name="start_on_offboard" default="false"/>
   <arg name="auto_start_delay_sec" default="5.0"/>
-  <!-- 相对起飞点的目标高度；18 cm 测试入口传入 1.9 m。 -->
+  <!-- 相对起飞点的目标高度；18 cm 测试入口传入 1.8 m。 -->
   <arg name="takeoff_height_m" default="1.70"/>
   <arg name="marker_size_m" default="0.50"/>
   <arg name="marker_dictionary" default="DICT_4X4_250"/>

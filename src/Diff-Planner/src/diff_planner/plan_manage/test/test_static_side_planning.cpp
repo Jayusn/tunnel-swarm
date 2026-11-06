@@ -1620,3 +1620,84 @@ TEST_F(StaticSidePlanning, AlreadyLowInsideBallRegionCrossesDirectlyAtSameHeight
   fillCorridor(-.1,.1);optimizer.endDynamicCandidate();
   EXPECT_FALSE(optimizer.searchDynamicCandidate(Vector3d(0,0,safe),Vector3d(1,0,safe),ball,0,0,path));
 }
+
+TEST_F(StaticSidePlanning, WaypointHeightGradientIncludesPositionAndDuration) {
+  PolyTrajOptimizer optimizer;
+  configure(optimizer,false);
+  optimizer.setIfTouchGoal(false);
+  optimizer.wei_obs_=optimizer.wei_obs_soft_=optimizer.wei_feas_=0;
+  optimizer.wei_swarm_=optimizer.wei_dynamic_obstacle_=0;
+  optimizer.wei_sqrvar_=optimizer.wei_time_=0;
+  optimizer.piece_num_=2;optimizer.t_now_=0;optimizer.wei_swarm_mod_=0;
+  optimizer.cps_.resize_cp(13);
+  Eigen::Matrix3d head,tail;
+  head << start,Vector3d::Zero(),Vector3d::Zero();
+  tail << Vector3d(.9,0,.4),Vector3d::Zero(),Vector3d::Zero();
+  optimizer.jerkOpt_.reset(head,tail,2);optimizer.waypoint_reference_z_=.4;
+  Eigen::VectorXd x(5);x << 0,0,.7,0,0;
+  auto height_cost=[&](const Eigen::VectorXd &v,Eigen::VectorXd &g) {
+    Eigen::VectorXd ga(5),gb(5);
+    optimizer.iter_num_=0;optimizer.wei_waypoint_height_=1000;
+    double a=PolyTrajOptimizer::costFunctionCallback(&optimizer,v.data(),ga.data(),5);
+    optimizer.iter_num_=0;optimizer.wei_waypoint_height_=0;
+    double b=PolyTrajOptimizer::costFunctionCallback(&optimizer,v.data(),gb.data(),5);
+    g=ga-gb;return a-b;
+  };
+  Eigen::VectorXd g;
+  EXPECT_GT(height_cost(x,g),0);
+  for(int i=0;i<5;++i) {
+    Eigen::VectorXd a=x,b=x,unused;a[i]+=1e-6;b[i]-=1e-6;
+    double numeric=(height_cost(a,unused)-height_cost(b,unused))/2e-6;
+    EXPECT_NEAR(g[i],numeric,1e-4*std::max(1.,std::abs(numeric))) << i;
+  }
+}
+
+TEST_F(StaticSidePlanning, WaypointHeightPreferenceReducesClimbButAllowsVerticalAvoidance) {
+  fillCorridor(.1,-.1);
+  double peak[2];
+  for(int active=0;active<2;++active) {
+    PolyTrajOptimizer optimizer;configure(optimizer,false);
+    optimizer.wei_waypoint_height_=active*1000.;
+    optimizer.beginPlanningCycle();
+    Eigen::Matrix3d head,tail;
+    head << Vector3d(-.9,0,.5),Vector3d(.1,0,.07),Vector3d::Zero();
+    tail << Vector3d(.9,0,.4),Vector3d::Zero(),Vector3d::Zero();
+    Eigen::MatrixXd midpoint(3,1);midpoint.col(0)=Vector3d(0,0,.65);
+    const Eigen::VectorXd times=Eigen::Vector2d::Constant(4.0);
+    poly_traj::MinJerkOpt seed;seed.reset(head,tail,2);seed.generate(midpoint,times);
+    std::vector<std::pair<int,int>> segments;
+    ASSERT_NE(optimizer.finelyCheckAndSetConstraintPoints(segments,seed,true),PolyTrajOptimizer::ERR);
+    double cost;ASSERT_TRUE(optimizer.optimizeTrajectory(head,tail,midpoint,times,cost));
+    auto trajectory=optimizer.getMinJerkOpt().getTraj();peak[active]=0;
+    for(int i=0;i<=500;++i) {
+      auto p=trajectory.getPos(trajectory.getTotalDuration()*i/500.);
+      peak[active]=std::max(peak[active],p.z());EXPECT_EQ(map->getInflateOccupancy(p),0);
+    }
+    EXPECT_NEAR(trajectory.getPos(trajectory.getTotalDuration()).z(),.4,1e-8);
+    optimizer.endPlanningCycle();
+  }
+  EXPECT_LT(peak[1],peak[0]-.01);
+  // 横贯通道的低矮障碍：软高度项不能替代或绕过避障约束。
+  for(int z=0;z<13;++z) for(int y=-40;y<40;++y) for(int x=-4;x<=4;++x) {
+    Eigen::Vector3i cell(x,y,z);
+    map->md_.occupancy_buffer_inflate_[map->globalIdx2InfBufIdx(cell)]=1;
+  }
+  ++map->observation_revision_;
+  PolyTrajOptimizer optimizer;configure(optimizer,false);optimizer.wei_waypoint_height_=1000.;
+  optimizer.beginPlanningCycle();
+  Eigen::Matrix3d head,tail;
+  head << Vector3d(-.9,0,.4),Vector3d::Zero(),Vector3d::Zero();
+  tail << Vector3d(.9,0,.4),Vector3d::Zero(),Vector3d::Zero();
+  Eigen::MatrixXd mid(3,1);mid.col(0)=Vector3d(0,0,.9);
+  Eigen::VectorXd times=Eigen::Vector2d::Constant(3.);
+  poly_traj::MinJerkOpt seed;seed.reset(head,tail,2);seed.generate(mid,times);
+  std::vector<std::pair<int,int>> segments;
+  ASSERT_NE(optimizer.finelyCheckAndSetConstraintPoints(segments,seed,true),PolyTrajOptimizer::ERR);
+  double cost;ASSERT_TRUE(optimizer.optimizeTrajectory(head,tail,mid,times,cost));
+  auto tr=optimizer.getMinJerkOpt().getTraj();bool crossed=false;
+  for(int i=0;i<=500;++i) {
+    auto p=tr.getPos(tr.getTotalDuration()*i/500.);EXPECT_EQ(map->getInflateOccupancy(p),0);
+    if(std::abs(p.x())<.1) {crossed=true;EXPECT_GT(p.z(),.65);}
+  }
+  EXPECT_TRUE(crossed);optimizer.endPlanningCycle();
+}

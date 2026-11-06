@@ -114,6 +114,10 @@ namespace diff_planner
     double wei_time_;                                             // time weight
     // 仅桥梁启用：在已观测到的横向双侧边界之间优先居中。
     double wei_corridor_center_{0.0}, corridor_center_search_distance_{0.8};
+    // 软高度偏好，0 保留原规划行为；不改变障碍约束与终端状态。
+    double wei_waypoint_height_{0.0}, waypoint_reference_z_{0.0};
+    bool waypointHeightGradCostP(const Eigen::Vector3d &p,
+                                Eigen::Vector3d &gradient, double &cost) const;
     Eigen::Vector3d corridor_center_normal_{Eigen::Vector3d::Zero()};
     std::vector<double> corridor_center_offsets_;
     void prepareCorridorCenters(const Eigen::Vector3d &start, const Eigen::Vector3d &goal);

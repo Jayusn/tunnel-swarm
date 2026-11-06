@@ -77,6 +77,7 @@ namespace diff_planner
     piece_num_ = initT.size();
     jerkOpt_.reset(iniState, finState, piece_num_);
     prepareCorridorCenters(iniState.col(0), finState.col(0));
+    waypoint_reference_z_ = finState(2, 0);
     variable_num_ = 4 * (piece_num_ - 1) + 1;
     double x_init[variable_num_];
     memcpy(x_init, initInnerPts.data(), initInnerPts.size() * sizeof(x_init[0]));
@@ -1787,6 +1788,15 @@ namespace diff_planner
           costs(0) += omg * step * costp;
         }
 
+        // 航点高度为软偏好，覆盖整条轨迹；实际避障仍由原有约束处理。
+        if (waypointHeightGradCostP(pos, gradp, costp))
+        {
+          jerkOpt_.get_gdC().block<6, 3>(i * 6, 0) +=
+              omg * step * beta0 * gradp.transpose();
+          gdT(i) += omg * (costp / K + step * alpha * gradp.dot(vel));
+          costs(0) += omg * step * costp;
+        }
+
         // swarm
         double gradt, grad_prev_t;
         if (swarmGradCostP(i_dp, t + step * j, pos, vel, gradp, gradt, grad_prev_t, costp))
@@ -1911,6 +1921,18 @@ namespace diff_planner
       return false;
     costp = wei_underpass_floor_ * error * error * error;
     gradp.z() = -3.0 * wei_underpass_floor_ * error * error;
+    return true;
+  }
+
+  bool PolyTrajOptimizer::waypointHeightGradCostP(
+      const Eigen::Vector3d &p, Eigen::Vector3d &gradient, double &cost) const
+  {
+    gradient.setZero();
+    cost = 0.0;
+    if (wei_waypoint_height_ <= 0.0) return false;
+    const double error = p.z() - waypoint_reference_z_;
+    cost = wei_waypoint_height_ * error * error;
+    gradient.z() = 2.0 * wei_waypoint_height_ * error;
     return true;
   }
 
@@ -2261,6 +2283,9 @@ namespace diff_planner
     nh.param("optimization/weight_feasibility", wei_feas_, -1.0);
     nh.param("optimization/weight_sqrvariance", wei_sqrvar_, -1.0);
     nh.param("optimization/weight_time", wei_time_, -1.0);
+    nh.param("optimization/weight_waypoint_height", wei_waypoint_height_, 0.0);
+    if (!std::isfinite(wei_waypoint_height_) || wei_waypoint_height_ < 0.0)
+      throw std::invalid_argument("waypoint height weight must be finite and nonnegative");
     nh.param("optimization/weight_corridor_center", wei_corridor_center_, 0.0);
     nh.param("optimization/corridor_center_search_distance", corridor_center_search_distance_, 0.8);
     if (!std::isfinite(wei_corridor_center_) || wei_corridor_center_ < 0.0 ||

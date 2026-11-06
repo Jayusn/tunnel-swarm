@@ -828,3 +828,51 @@ TEST_F(WaypointYaw, WaypointWeightsIncreaseCorrectionOfRightwardTrackingError) {
   EXPECT_LT(rates[0], 0.0); // 航向为0时，负横滚角速度纠正向右偏移。
   EXPECT_LT(rates[1], rates[0] - 0.01);
 }
+
+TEST_F(WaypointYaw, TakeoffEndBrakesContinuouslyAndNeverExceedsTarget) {
+  fsm->takeoff_start_pose_ = Eigen::Vector3d(0,0,0);
+  fsm->takeoff_target_z_ = 1.9;
+  params.takeoff_.climb_rate = .15;
+  EXPECT_NEAR(fsm->takeoffReferenceZ(12), 1.8, 1e-9); // 默认仍为原线性参考。
+  params.takeoff_.slowdown_distance = .30;
+  const double braking_start = 1.6/.15, finish = braking_start+4.;
+  const double eps = 1e-4;
+  auto speed = [&](double t) {
+    return (fsm->takeoffReferenceZ(t+eps)-fsm->takeoffReferenceZ(t-eps))/(2*eps);
+  };
+  EXPECT_NEAR(speed(braking_start), .15, 1e-6);
+  EXPECT_NEAR(speed(braking_start+2), .075, 1e-6);
+  EXPECT_NEAR(speed(finish), 0, 1e-6);
+  EXPECT_DOUBLE_EQ(fsm->takeoffReferenceZ(finish+5),1.9);
+  double previous = 0;
+  for (double t=0;t<finish+1;t+=.01) {
+    const double z=fsm->takeoffReferenceZ(t);
+    EXPECT_GE(z,previous);EXPECT_LE(z,1.9);
+    previous=z;
+  }
+  fsm->takeoff_start_pose_.z()=1.8; // 剩余爬升不足30 cm也不越过终点。
+  EXPECT_NEAR(fsm->takeoffReferenceZ(.1),1.8149308,1e-5);
+  EXPECT_DOUBLE_EQ(fsm->takeoffReferenceZ(3),1.9);
+}
+
+TEST_F(WaypointYaw, OptionalModeSwitchPreservesReferenceHeightWithoutMovingXYOrLanding) {
+  params.fixed_hover_.enabled=false;
+  fsm->odom_data.p=Eigen::Vector3d(2,3,2.05);
+  fsm->fsm_state=MPCFSM::AUTO_TAKEOFF;
+  fsm->hover_pose_=Eigen::Vector3d(0,0,1.9);
+  fsm->update_mode_hover_pose();
+  EXPECT_DOUBLE_EQ(fsm->hover_pose_.z(),2.05); // 默认不改变多机模式入口。
+  params.takeoff_.preserve_hover_height=true;
+  for (auto state : {MPCFSM::AUTO_TAKEOFF,MPCFSM::AUTO_HOVER}) {
+    fsm->fsm_state=state;fsm->hover_pose_.z()=1.9;
+    fsm->update_mode_hover_pose();
+    EXPECT_DOUBLE_EQ(fsm->hover_pose_.z(),1.9);
+    EXPECT_DOUBLE_EQ(fsm->hover_pose_.x(),2);
+    EXPECT_DOUBLE_EQ(fsm->hover_pose_.y(),3);
+  }
+  fsm->fsm_state=MPCFSM::AUTO_TAKEOFF;fsm->hover_pose_.z()=.8;
+  fsm->update_mode_hover_pose();
+  EXPECT_DOUBLE_EQ(fsm->hover_pose_.z(),.8); // 提前切模式不突然拉升至1.9。
+  fsm->update_hover_pose(); // 降落和轨迹衔接使用原位置捕获。
+  EXPECT_DOUBLE_EQ(fsm->hover_pose_.z(),2.05);
+}

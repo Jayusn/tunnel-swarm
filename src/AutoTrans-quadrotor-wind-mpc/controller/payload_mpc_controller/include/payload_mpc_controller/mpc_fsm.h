@@ -298,6 +298,7 @@ namespace PayloadMPC
 		void update_hover_with_rc();
 		bool takeoffPreconditions(const ros::Time &now, const char *&reason) const;
 		void startAutoTakeoff(const ros::Time &now);
+        double takeoffReferenceZ(double elapsed) const;
 		void publish_trigger(const nav_msgs::Odometry &odom_msg);
 		bool request_px4_auto_land();
 		void reboot_FCU();

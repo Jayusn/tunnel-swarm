@@ -207,6 +207,9 @@ namespace PayloadMPC
 			double target_z{0.5};
 			// z 参考值上升速度，单位 m/s；达到 target_z 后保持目标点。
 			double climb_rate{0.15};
+            // 默认关闭；桥梁起飞末段余弦减速，模式切换保留已有高度参考。
+            double slowdown_distance{0.0};
+            bool preserve_hover_height{false};
 			// 固定悬停点启用时，起飞前允许的水平距离，单位 m。
 			double max_initial_xy_error{0.5};
 		};
@@ -456,6 +459,10 @@ namespace PayloadMPC
 			read_essential_param(nh, "takeoff/target_z", takeoff_.target_z);
 			read_essential_param(nh, "takeoff/climb_rate", takeoff_.climb_rate);
 			read_essential_param(nh, "takeoff/max_initial_xy_error", takeoff_.max_initial_xy_error);
+            nh.param("takeoff/slowdown_distance", takeoff_.slowdown_distance, 0.0);
+            nh.param("takeoff/preserve_hover_height", takeoff_.preserve_hover_height, false);
+            if (!std::isfinite(takeoff_.slowdown_distance) || takeoff_.slowdown_distance < 0.0)
+                throw std::invalid_argument("takeoff slowdown distance must be finite and nonnegative");
 			if (!std::isfinite(takeoff_.target_z) || takeoff_.target_z < 0.0 ||
 				!std::isfinite(takeoff_.climb_rate) || takeoff_.climb_rate <= 0.0 ||
 				!std::isfinite(takeoff_.max_initial_xy_error) || takeoff_.max_initial_xy_error < 0.0)
