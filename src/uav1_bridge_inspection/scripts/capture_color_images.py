@@ -16,12 +16,16 @@ class ColorImageCapture:
         self.interval = float(rospy.get_param('~interval_sec', 1.0))
         if not math.isfinite(self.interval) or self.interval <= 0:
             raise ValueError('interval_sec 必须是大于 0 的有限数值')
+        self.warmup_sec = float(rospy.get_param('~warmup_sec', 6.0))
+        if not math.isfinite(self.warmup_sec) or self.warmup_sec < 0:
+            raise ValueError('warmup_sec 必须是大于等于 0 的有限数值')
         root = Path(rospy.get_param('~output_root')).expanduser()
         self.directory = root / datetime.now().strftime('%Y%m%d_%H%M%S_%f')
         self.directory.mkdir(parents=True, exist_ok=False)
         self.bridge = CvBridge()
         self.count = 0
         self.last_saved = None
+        self.first_frame_time = None
         rospy.loginfo('采集目录：%s；每 %.2f 秒保存一张 PNG；等待彩色图像。',
                       self.directory, self.interval)
         self.sub = rospy.Subscriber('image', Image, self.save, queue_size=1,
@@ -29,6 +33,12 @@ class ColorImageCapture:
 
     def save(self, msg):
         now = time.monotonic()
+        if self.first_frame_time is None:
+            self.first_frame_time = now
+            rospy.loginfo('已收到首帧，等待 %.1f 秒让相机曝光稳定后开始存图。',
+                          self.warmup_sec)
+        if now - self.first_frame_time < self.warmup_sec:
+            return
         if self.last_saved is not None and now - self.last_saved < self.interval:
             return
         try:

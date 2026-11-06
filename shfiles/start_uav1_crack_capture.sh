@@ -8,7 +8,8 @@ if [[ "${1:-}" == --help ]]; then
   cat <<'EOF'
 连续采集 D435 彩色原图（默认每秒一张 PNG，Ctrl+C 停止）：
   bash shfiles/start_uav1_crack_capture.sh
-收到相机画面后自动存图，并自动打开 rqt_image_view 显示实时彩色画面。
+自动打开 rqt_image_view 实时预览；收到首帧后等待 6 秒，再自动存图。
+可追加 warmup_sec:=5 改为等待 5 秒，预览在等待期间正常显示。
 关闭预览窗口不会停止采集；在启动终端按 Ctrl+C 停止全部采集程序。
 每半秒一张：
   bash shfiles/start_uav1_crack_capture.sh interval_sec:=0.5

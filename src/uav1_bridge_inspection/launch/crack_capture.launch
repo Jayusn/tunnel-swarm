@@ -2,6 +2,7 @@
 <launch>
   <arg name="output_root" default="$(env HOME)/match_ws/datasets/crack_capture"/>
   <arg name="interval_sec" default="1.0"/>
+  <arg name="warmup_sec" default="6.0"/>
   <include file="$(find realsense2_camera)/launch/rs_camera.launch">
     <arg name="camera" value="crack_capture_camera"/>
     <arg name="color_width" value="1280"/>
@@ -26,6 +27,7 @@
         name="crack_photo_capture" output="screen" required="true">
     <param name="output_root" value="$(arg output_root)"/>
     <param name="interval_sec" value="$(arg interval_sec)"/>
+    <param name="warmup_sec" value="$(arg warmup_sec)"/>
     <remap from="image" to="/crack_capture_camera/color/image_raw"/>
   </node>
 </launch>
