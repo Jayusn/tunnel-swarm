@@ -47,4 +47,8 @@ rosbag_topics:
 - /UAV1/landing/nmpc_target
 - /UAV1/landing/state
 - /UAV1/landing/error_xy
+# 下视原图、标定和 ArUco 检测画面：用于按时间戳分析低空丢码。
+- /UAV1/down_camera/image_raw
+- /UAV1/down_camera/camera_info
+- /UAV1/landing/debug_image
 - /UAV1/bridge/platform_reference
