@@ -152,6 +152,9 @@ namespace PayloadMPC
 			nh_.advertise<std_msgs::Float64>("mpc/force_attitude_yaw_offset", 1, true);
 
 		pub_rmse_info_ = nh_.advertise<std_msgs::Float64MultiArray>("mpc/rmse_info", 1);
+		// data[0]=thrustscale，单位 N，物理推力 = thrustscale × MAVROS 归一化 thrust；
+		// data[1]=悬停比例 = mass_q·g / thrustscale，是归一化推力，不是 N。只用于记录。
+		pub_thrust_model_ = nh_.advertise<std_msgs::Float64MultiArray>("mpc/thrust_model", 1);
 
 		force_estimator_.init(params_);
 		vertical_disturbance_low_pass_.configure(
@@ -881,6 +884,11 @@ namespace PayloadMPC
 			// 门控关闭周期结束前清空队列，保留最后有效 thrustscale/P。
 			controller_.clearThrustCommandHistory();
 		}
+
+		// 每个控制周期发布当前推力映射，供 CSV 逐行记录；只读取状态，不改变 RLS 或控制输出。
+		std_msgs::Float64MultiArray thrust_model_msg;
+		thrust_model_msg.data = {controller_.thrustscale_, controller_.currentHoverPercentage()};
+		pub_thrust_model_.publish(thrust_model_msg);
 
 		// STEP6: Clear flags beyound their lifetime
 		rc_data.enter_hover_mode = false;

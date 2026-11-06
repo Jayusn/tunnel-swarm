@@ -58,6 +58,8 @@ namespace PayloadMPC
 		ros::Publisher recovery_position_pub_;
 		ros::Publisher pub_force_marker_, pub_force_, pub_force_applied_;
 		ros::Publisher pub_force_attitude_aligned_, pub_force_attitude_yaw_offset_;
+		// 发布当前推力映射 [thrustscale(N), 悬停归一化推力比例]，仅供 logger 记录，不参与控制。
+		ros::Publisher pub_thrust_model_;
 
 		ros::Publisher debug_pub; // debug
 		ros::ServiceClient set_FCU_mode_srv;

@@ -20,7 +20,7 @@ def install_ros_stubs():
         "quadrotor_msgs.msg": ["PolynomialTraj", "PositionCommand"],
         "rosgraph_msgs.msg": ["Log"],
         "sensor_msgs.msg": ["BatteryState"],
-        "std_msgs.msg": ["Bool", "Float64"],
+        "std_msgs.msg": ["Bool", "Float64", "Float64MultiArray"],
     }
     for module_name, class_names in message_modules.items():
         package_name = module_name.split(".")[0]
@@ -144,16 +144,30 @@ class ForceAttitudeAlignmentLoggingTest(unittest.TestCase):
 
     def test_csv_header_appends_alignment_columns(self):
         self.assertEqual(
-            self.module.CSV_HEADER[-2:],
+            self.module.CSV_HEADER[-4:-2],
             ["force_attitude_aligned", "force_attitude_yaw_offset_rad"])
 
+    def test_csv_header_appends_thrust_model_columns(self):
+        self.assertEqual(self.module.CSV_HEADER[-2:], ["thrustscale", "hover_percentage"])
+
     def test_composed_csv_row_matches_header_column_count(self):
-        section_lengths = [8, 6, 3, 3, 7, 5, 5, 6, 4, 4, 4, 2, 2]
+        section_lengths = [8, 6, 3, 3, 7, 5, 5, 6, 4, 4, 4, 2, 2, 2]
         sections = [[index] * length for index, length in enumerate(section_lengths)]
         row = self.module.AutoTransMpcLogger.compose_csv_row(*sections)
 
         self.assertEqual(len(row), len(self.module.CSV_HEADER))
-        self.assertEqual(row[-2:], [12, 12])
+        self.assertEqual(row[-2:], [13, 13])
+
+    def test_thrust_model_empty_before_first_message(self):
+        logger = self.make_logger()
+        self.assertEqual(logger.extract_thrust_model_values(), ["", ""])
+
+    def test_thrust_model_callback_records_scale_and_hover(self):
+        logger = self.make_logger()
+        logger.thrust_model_cb(types.SimpleNamespace(data=[34.2, 0.53]))
+        self.assertEqual(logger.extract_thrust_model_values(), [34.2, 0.53])
+        logger.thrust_model_cb(types.SimpleNamespace(data=[math.nan, 0.6]))
+        self.assertEqual(logger.extract_thrust_model_values(), [34.2, 0.53])
 
     def test_missing_alignment_messages_write_empty_columns(self):
         logger = self.make_logger()

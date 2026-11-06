@@ -19,7 +19,7 @@ from nav_msgs.msg import Odometry, Path
 from quadrotor_msgs.msg import PolynomialTraj, PositionCommand
 from rosgraph_msgs.msg import Log
 from sensor_msgs.msg import BatteryState
-from std_msgs.msg import Bool, Float64
+from std_msgs.msg import Bool, Float64, Float64MultiArray
 try:
     from std_msgs.msg import Empty
 except ImportError:  # 兼容不包含 Empty 的轻量单元测试消息桩。
@@ -75,6 +75,7 @@ CSV_HEADER = [
     "rpm_0", "rpm_1", "rpm_2", "rpm_3",
     "battery_voltage", "battery_percentage",
     "force_attitude_aligned", "force_attitude_yaw_offset_rad",
+    "thrustscale", "hover_percentage",
 ]
 
 POSITION_CMD_HEADER = [
@@ -319,6 +320,8 @@ class AutoTransMpcLogger:
         self.write_text("battery_percentage: PX4/MAVROS remaining battery ratio, normally 0..1")
         self.write_text("force_attitude_aligned: 1 when the configured force-attitude source is ready")
         self.write_text("force_attitude_yaw_offset_rad: PX4-to-FAST-LIO yaw offset in fallback alignment mode; otherwise 0, rad")
+        self.write_text("thrustscale: online thrust mapping, N per unit normalized thrust (physical thrust = thrustscale * thrust)")
+        self.write_text("hover_percentage: mass_q*g/thrustscale, normalized hover thrust, not N")
         self.write_text("trajectory.csv: MPC input quadrotor_msgs/PolynomialTraj; one row per polynomial piece")
         self.write_text("trajectory.csv data: original polynomial coefficient array, JSON encoded")
         self.write_text("planner_trajectory.csv: raw Diff-Planner traj_utils/PolyTraj")
@@ -345,6 +348,9 @@ class AutoTransMpcLogger:
         force_attitude_yaw_offset_topic = rospy.get_param(
             "~force_attitude_yaw_offset_topic",
             "/mpc_controller_node/mpc/force_attitude_yaw_offset")
+        # 控制器发布的推力映射 [thrustscale(N), 悬停归一化推力比例]，只记录不参与控制。
+        thrust_model_topic = rospy.get_param(
+            "~thrust_model_topic", "/mpc_controller_node/mpc/thrust_model")
         trajectory_topic = rospy.get_param(
             "~trajectory_topic", "/drone_1_planning/autotrans_trajectory")
         raw_trajectory_topic = rospy.get_param(
@@ -386,6 +392,9 @@ class AutoTransMpcLogger:
         rospy.Subscriber(
             force_attitude_yaw_offset_topic, Float64,
             self.force_attitude_yaw_offset_cb, queue_size=20)
+        rospy.Subscriber(
+            thrust_model_topic, Float64MultiArray,
+            self.thrust_model_cb, queue_size=20)
         self.trajectory_subscriber = rospy.Subscriber(
             trajectory_topic, PolynomialTraj, self.trajectory_cb, queue_size=20)
         self.raw_trajectory_topic = raw_trajectory_topic
@@ -666,6 +675,12 @@ class AutoTransMpcLogger:
         self.latest_force_attitude_yaw_offset = (
             float(msg.data) if math.isfinite(msg.data) else None)
 
+    def thrust_model_cb(self, msg):
+        # data[0]=thrustscale（N），data[1]=悬停归一化推力比例；长度不对或非有限值时不覆盖上一组。
+        values = list(msg.data)
+        if len(values) >= 2 and all(math.isfinite(v) for v in values[:2]):
+            self.latest_thrust_model = (float(values[0]), float(values[1]))
+
     def setpoint_cb(self, msg):
         self.latest_setpoint = msg
         self.latest_setpoint_received = rospy.Time.now()
@@ -683,6 +698,7 @@ class AutoTransMpcLogger:
         rpm_values = self.extract_rpm_values()
         battery_values = self.extract_battery_values()
         force_attitude_alignment_values = self.extract_force_attitude_alignment_values()
+        thrust_model_values = self.extract_thrust_model_values()
 
         setpoint_fresh = msg is not None and (
             rospy.Time.now() - self.latest_setpoint_received).to_sec() < self.setpoint_timeout
@@ -717,7 +733,8 @@ class AutoTransMpcLogger:
                 applied_force_values,
                 rpm_values,
                 battery_values,
-                force_attitude_alignment_values))
+                force_attitude_alignment_values,
+                thrust_model_values))
 
             self.rows_since_flush += 1
             if self.rows_since_flush >= self.flush_every:
@@ -826,6 +843,12 @@ class AutoTransMpcLogger:
             "" if self.latest_force_attitude_yaw_offset is None
             else self.latest_force_attitude_yaw_offset)
         return [aligned_value, yaw_offset_value]
+
+    def extract_thrust_model_values(self):
+        # 尚未收到控制器推力映射时留空。
+        if getattr(self, "latest_thrust_model", None) is None:
+            return ["", ""]
+        return list(self.latest_thrust_model)
 
     def rosout_cb(self, msg):
         if not self.log_all_rosout and msg.name not in [
