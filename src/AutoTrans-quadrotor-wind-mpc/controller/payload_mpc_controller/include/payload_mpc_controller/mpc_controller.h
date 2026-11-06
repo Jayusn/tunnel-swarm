@@ -105,6 +105,7 @@ namespace PayloadMPC
     bool restoreNominalVelocityLimits();
     bool setHorizontalVelocityLimit(real_t velocity);
     bool setVerticalVelocityLimit(real_t velocity);
+    bool setWaypointTrackingWeights(bool active);
     bool recoveryVelocityLimitsRelaxed() const
       { return recovery_velocity_limits_relaxed_; }
     void waitForPreparation();
@@ -176,6 +177,7 @@ namespace PayloadMPC
     bool solve_from_scratch_;
     bool last_mpc_solve_success_{true};
     bool recovery_velocity_limits_relaxed_{false};
+    bool waypoint_tracking_weights_active_{false};
     // 仅用于记录一次“求解失败 -> 有效输出恢复”的诊断边沿，不参与 NMPC 控制计算。
     bool mpc_failure_active_{false};
     // 仅缓存最近一次通过有限值检查的 MPC 首个控制输入，用于短时故障保持。

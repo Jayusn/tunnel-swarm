@@ -24,6 +24,9 @@
   <param name="/UAV1/mpc_controller_node/msg_timeout/state" value="1.5"/>
   <!-- 航点模式速度阈值；参考速度/加速度由 Diff 统一缩放时间，NMPC 不再单独裁剪导数。 -->
   <param name="/UAV1/mpc_controller_node/waypoint_reference/max_velocity" value="0.2"/>
+  <!-- 仅巡检航点提高横向纠偏响应；起飞、悬停、精降沿用原权重。 -->
+  <param name="/UAV1/mpc_controller_node/waypoint_tracking/Q_pos_xy" value="400.0"/>
+  <param name="/UAV1/mpc_controller_node/waypoint_tracking/R_pitchroll" value="20.0"/>
   <include file="$(find uav1_inplace_landing_test)/launch/precision.launch">
     <arg name="vehicle_ns" value="UAV1"/>
     <arg name="camera_extrinsic_config" value="$(find precision_landing)/config/down_camera_extrinsic_uav1.yaml"/>

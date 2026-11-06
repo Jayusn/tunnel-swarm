@@ -431,6 +431,7 @@ namespace PayloadMPC
                 controller_.setHorizontalVelocityLimit(normal_velocity_xy_);
                 controller_.setVerticalVelocityLimit(normal_velocity_z_);
             }
+            controller_.setWaypointTrackingWeights(false);
             // 已在自动飞行；不解锁、不起飞，只切换参考来源。
             fsm_state = AUTO_HOVER;
             ROS_WARN("[精降NMPC] 任务精降接管，CH10仍优先。");
@@ -1011,6 +1012,7 @@ namespace PayloadMPC
 				trajectory_data.total_traj_start_time = traj_info->traj_start_time;
 
 				double traj_time = (now_time - traj_info->traj_start_time).toSec();
+				controller_.setWaypointTrackingWeights(waypoint_yaw_valid_);
 				controller_.setTrajectoyReference(traj_info->traj, traj_time, hover_yaw_,
 					trajectoryEndYaw(*traj_info));
 				controller_.execMPC(est_state_, mpc_predicted_states_, mpc_predicted_inputs_);
@@ -1106,6 +1108,7 @@ namespace PayloadMPC
 
 					double traj_time = (now_time - traj_info->traj_start_time).toSec();
 					addRMSE();
+					controller_.setWaypointTrackingWeights(waypoint_yaw_valid_);
 					controller_.setTrajectoyReference(traj_info->traj, traj_time, hover_yaw_,
 						trajectoryEndYaw(*traj_info));
 					controller_.execMPC(est_state_, mpc_predicted_states_, mpc_predicted_inputs_);

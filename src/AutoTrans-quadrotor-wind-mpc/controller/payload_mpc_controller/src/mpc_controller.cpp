@@ -222,6 +222,7 @@ namespace PayloadMPC
     recovery_velocity_limits_relaxed_ = false;
     mpc_wrapper_.initialize(Q, R, reset_state, initial_input,
                             params_.state_cost_exponential_, params_.input_cost_exponential_);
+    waypoint_tracking_weights_active_ = false;
     const bool limits_ok = mpc_wrapper_.setLimits(
         params_.min_thrust_, params_.max_thrust_,
         params_.max_bodyrate_xy_, params_.max_bodyrate_z_,
@@ -243,6 +244,36 @@ namespace PayloadMPC
     preparation_thread_ = std::thread(&MpcController::preparationThread, this);
     ROS_WARN("[NMPC恢复] 已基于当前状态完整重置 ACADO 求解器。");
     return limits_ok && reference_ok;
+  }
+
+  bool MpcController::setWaypointTrackingWeights(bool active)
+  {
+    active = active && (params_.waypoint_position_weight_xy_ > 0.0 ||
+                        params_.waypoint_bodyrate_weight_xy_ > 0.0);
+    if (active == waypoint_tracking_weights_active_) return true;
+    const auto &q = params_.q_gain_;
+    const auto &r = params_.r_gain_;
+    const real_t position_weight = active && params_.waypoint_position_weight_xy_ > 0.0
+        ? params_.waypoint_position_weight_xy_ : q.Q_pos_xy;
+    const real_t rate_weight = active && params_.waypoint_bodyrate_weight_xy_ > 0.0
+        ? params_.waypoint_bodyrate_weight_xy_ : r.R_pitchroll;
+    const Eigen::Matrix<real_t, kCostSize, kCostSize> Q =
+        (Eigen::Matrix<real_t, kCostSize, 1>() << position_weight, position_weight, q.Q_pos_z,
+         q.Q_attitude_rp, q.Q_attitude_rp, q.Q_attitude_rp, q.Q_attitude_yaw,
+         q.Q_velocity, q.Q_velocity, q.Q_velocity).finished().asDiagonal();
+    const Eigen::Matrix<real_t, kInputSize, kInputSize> R =
+        (Eigen::Matrix<real_t, kInputSize, 1>() << r.R_thrust, rate_weight, rate_weight,
+         r.R_yaw, r.R_velocity_slack_xy, r.R_velocity_slack_xy,
+         r.R_velocity_slack_z).finished().asDiagonal();
+    waitForPreparation();
+    const bool success = mpc_wrapper_.setCosts(Q, R, params_.state_cost_exponential_,
+                                             params_.input_cost_exponential_);
+    if (success) waypoint_tracking_weights_active_ = active;
+    preparation_thread_ = std::thread(&MpcController::preparationThread, this);
+    if (success)
+      ROS_INFO("[航点纠偏] active=%d Q_pos_xy=%.1f R_pitchroll=%.1f",
+               int(active), double(position_weight), double(rate_weight));
+    return success;
   }
 
   bool MpcController::setHorizontalVelocityLimit(real_t velocity)
@@ -348,6 +379,7 @@ namespace PayloadMPC
   // drone pos
   void MpcController::setHoverReference(const Eigen::Ref<const Eigen::Vector3d> &quad_position, const double requested_yaw)
   {
+    setWaypointTrackingWeights(false);
     const double yaw = locked_yaw_active_ ? locked_yaw_ : requested_yaw;
     // HOVER、起飞和安全恢复都以锁存的实际航向重新建立偏航状态；
     // POLY_TRAJ 内的新轨迹不会调用这里，因此跨重规划保持连续。
@@ -395,6 +427,7 @@ namespace PayloadMPC
       return false;
     }
 
+    setWaypointTrackingWeights(false);
     // 精降接管可能带入当时姿态；继续使用出口锁存值和零偏航角速度。
     if (locked_yaw_active_)
     {

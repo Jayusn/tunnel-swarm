@@ -735,6 +735,9 @@ TEST_F(WaypointYaw, PolynomialReferencePreservesDerivativesAndLandingDescent) {
 
 TEST_F(WaypointYaw, BridgeWaypointLimitsRestoreImmediatelyOnPrecisionHandoff) {
   const double original_xy = params.max_velocity_xy_, original_z = params.max_velocity_z_;
+  params.waypoint_position_weight_xy_ = 400.0;
+  params.waypoint_bodyrate_weight_xy_ = 20.0;
+  ASSERT_TRUE(controller->setWaypointTrackingWeights(true));
   params.waypoint_reference_max_velocity_ = 0.2;
   for (bool entry : {false, true}) {
     fsm->handleWaypointGoal(goal(Eigen::Vector3d(3., 0., 2.), 0.), entry);
@@ -765,4 +768,63 @@ TEST_F(WaypointYaw, BridgeWaypointLimitsRestoreImmediatelyOnPrecisionHandoff) {
   EXPECT_NEAR(params.max_velocity_z_, original_z, 1e-6);
   EXPECT_NEAR(acadoVariables.ubAValues[0], original_xy, 1e-6);
   EXPECT_NEAR(acadoVariables.ubAValues[4], original_z, 1e-6);
+  EXPECT_NEAR(acadoVariables.W[0], params.q_gain_.Q_pos_xy, 1e-6);
+  EXPECT_NEAR(acadoVariables.W[(kRefSize + 1) * (kCostSize + kRateX)],
+              params.r_gain_.R_pitchroll, 1e-6);
+}
+
+TEST_F(WaypointYaw, OptionalWaypointWeightsRestoreAllCostsAndSurviveSolverReset) {
+  const std::vector<real_t> baseline(acadoVariables.W, acadoVariables.W + ACADO_N * ACADO_NY * ACADO_NY);
+  const std::vector<real_t> terminal(acadoVariables.WN, acadoVariables.WN + ACADO_NYN * ACADO_NYN);
+  ASSERT_TRUE(controller->setWaypointTrackingWeights(true)); // 多机默认不启用。
+  controller->waitForPreparation();
+  EXPECT_TRUE(std::equal(baseline.begin(), baseline.end(), acadoVariables.W));
+  params.waypoint_position_weight_xy_ = 400.0;
+  params.waypoint_bodyrate_weight_xy_ = 20.0;
+  for (int cycle = 0; cycle < 2; ++cycle) {
+    ASSERT_TRUE(controller->setWaypointTrackingWeights(true));
+    controller->waitForPreparation();
+    EXPECT_NEAR(acadoVariables.W[0], 400.0, 1e-6);
+    EXPECT_NEAR(acadoVariables.W[kRefSize + 1], 400.0, 1e-6);
+    EXPECT_NEAR(acadoVariables.W[2 * (kRefSize + 1)], params.q_gain_.Q_pos_z, 1e-6);
+    EXPECT_NEAR(acadoVariables.W[(kRefSize + 1) * (kCostSize + kRateX)], 20.0, 1e-6);
+    EXPECT_NEAR(acadoVariables.W[(kRefSize + 1) * (kCostSize + kRateY)], 20.0, 1e-6);
+    if (cycle == 0) {
+      Eigen::Matrix<real_t, kStateSize, 1> state;
+      state << 0, 0, 2, 1, 0, 0, 0, 0, 0, 0;
+      ASSERT_TRUE(controller->resetForHover(state, Eigen::Vector3d(0, 0, 2), 0));
+    } else {
+      ASSERT_TRUE(controller->setWaypointTrackingWeights(false));
+    }
+    controller->waitForPreparation();
+    EXPECT_TRUE(std::equal(baseline.begin(), baseline.end(), acadoVariables.W));
+    EXPECT_TRUE(std::equal(terminal.begin(), terminal.end(), acadoVariables.WN));
+  }
+}
+
+TEST_F(WaypointYaw, WaypointWeightsIncreaseCorrectionOfRightwardTrackingError) {
+  params.waypoint_position_weight_xy_ = 400.0;
+  params.waypoint_bodyrate_weight_xy_ = 20.0;
+  Eigen::Matrix<real_t, kStateSize, 1> state;
+  const Eigen::Quaterniond attitude(Eigen::AngleAxisd(0.04, Eigen::Vector3d::UnitX()));
+  state << 0, -0.08, 2, attitude.w(), attitude.x(), attitude.y(), attitude.z(), 0.2, -0.15, 0;
+  Eigen::Matrix<real_t, kStateSize, kSamples + 1> predicted;
+  Eigen::Matrix<real_t, kInputSize, kSamples> inputs;
+  double rates[2];
+  for (int active = 0; active < 2; ++active) {
+    ASSERT_TRUE(controller->resetForHover(state, Eigen::Vector3d(0, 0, 2), 0));
+    ASSERT_TRUE(controller->setWaypointTrackingWeights(active));
+    controller->setExternalForce(Eigen::Vector3d(0, 0.6, 0));
+    for (int i = 0; i < 8; ++i) {
+      ASSERT_TRUE(controller->setPositionCommandReference(Eigen::Vector3d(0, 0, 2),
+          Eigen::Vector3d(0.2, 0, 0), Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), 0, 0));
+      ASSERT_TRUE(controller->setWaypointTrackingWeights(active));
+      controller->execMPC(state, predicted, inputs);
+      controller->waitForPreparation();
+      ASSERT_TRUE(controller->lastMpcSolveSuccessful());
+    }
+    rates[active] = inputs(kRateX, 0);
+  }
+  EXPECT_LT(rates[0], 0.0); // 航向为0时，负横滚角速度纠正向右偏移。
+  EXPECT_LT(rates[1], rates[0] - 0.01);
 }
