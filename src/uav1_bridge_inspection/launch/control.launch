@@ -22,6 +22,10 @@
   <param name="/UAV1/mpc_controller_node/takeoff/target_z" value="$(arg takeoff_z)"/>
   <param name="/UAV1/mpc_controller_node/takeoff/slowdown_distance" value="0.30"/>
   <param name="/UAV1/mpc_controller_node/takeoff/preserve_hover_height" value="true"/>
+  <!-- 桥梁使用 0.54 初值；起飞离地后也按原有 RPM/状态条件在线学习。 -->
+  <param name="/UAV1/mpc_controller_node/thrust_model/hover_percentage" value="0.54"/>
+  <param name="/UAV1/mpc_controller_node/thrust_model/accurate_thrust_model" value="1"/>
+  <param name="/UAV1/mpc_controller_node/thrust_model/enable_takeoff_learning" value="true"/>
   <param name="/UAV1/mpc_controller_node/fixed_hover/enabled" value="false"/>
   <param name="/UAV1/mpc_controller_node/msg_timeout/state" value="1.5"/>
   <!-- 航点模式速度阈值；参考速度/加速度由 Diff 统一缩放时间，NMPC 不再单独裁剪导数。 -->

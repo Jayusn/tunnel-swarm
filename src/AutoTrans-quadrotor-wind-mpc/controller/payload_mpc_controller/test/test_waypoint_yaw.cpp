@@ -876,3 +876,67 @@ TEST_F(WaypointYaw, OptionalModeSwitchPreservesReferenceHeightWithoutMovingXYOrL
   fsm->update_hover_pose(); // 降落和轨迹衔接使用原位置捕获。
   EXPECT_DOUBLE_EQ(fsm->hover_pose_.z(),2.05);
 }
+
+TEST_F(WaypointYaw, TakeoffThrustLearningIsOptInAndRetainsExistingInputConditions) {
+  using Gate = MPCFSM::ThrustModelGateReason;
+  const ros::Time now(1000);
+  params.thr_map_.accurate_thrust_model = 1;
+  fsm->fsm_state = MPCFSM::AUTO_TAKEOFF;
+  fsm->state_data.rcv_stamp = now;
+  fsm->state_data.current_state.armed = true;
+  fsm->state_data.current_state.mode = "OFFBOARD";
+  fsm->extended_state_data.rcv_stamp = now;
+  fsm->extended_state_data.current_extended_state.landed_state =
+      mavros_msgs::ExtendedState::LANDED_STATE_IN_AIR;
+  fsm->rpm_data.rcv_stamp = now;
+  fsm->rpm_data.rpm_vec.setConstant(params.thr_map_.min_learning_rpm + 1000);
+  EXPECT_FALSE(params.thr_map_.enable_takeoff_learning);
+  EXPECT_EQ(fsm->thrustModelGate(now), Gate::MODE_BLOCKED);
+  params.thr_map_.enable_takeoff_learning = true;
+  EXPECT_EQ(fsm->thrustModelGate(now), Gate::ACTIVE);
+  fsm->state_data.current_state.armed = false;
+  EXPECT_EQ(fsm->thrustModelGate(now), Gate::DISARMED);
+  fsm->state_data.current_state.armed = true;
+  fsm->state_data.current_state.mode = "POSCTL";
+  EXPECT_EQ(fsm->thrustModelGate(now), Gate::NOT_OFFBOARD);
+  fsm->state_data.current_state.mode = "OFFBOARD";
+  fsm->extended_state_data.current_extended_state.landed_state =
+      mavros_msgs::ExtendedState::LANDED_STATE_ON_GROUND;
+  EXPECT_EQ(fsm->thrustModelGate(now), Gate::LANDED);
+  fsm->extended_state_data.current_extended_state.landed_state =
+      mavros_msgs::ExtendedState::LANDED_STATE_IN_AIR;
+  fsm->rpm_data.rpm_vec[0] = params.thr_map_.min_learning_rpm - 1;
+  EXPECT_EQ(fsm->thrustModelGate(now), Gate::RPM_INVALID);
+  fsm->rpm_data.rpm_vec.setConstant(params.thr_map_.min_learning_rpm + 1000);
+  fsm->rpm_data.rcv_stamp = now - ros::Duration(params.msg_timeout_.rpm + .1);
+  EXPECT_EQ(fsm->thrustModelGate(now), Gate::RPM_STALE);
+  fsm->rpm_data.rcv_stamp = now;
+  for (auto state : {MPCFSM::AUTO_HOVER, MPCFSM::CMD_CTRL}) {
+    fsm->fsm_state = state;
+    EXPECT_EQ(fsm->thrustModelGate(now), Gate::ACTIVE);
+  }
+  for (auto state : {MPCFSM::MANUAL_CTRL, MPCFSM::AUTO_LAND}) {
+    fsm->fsm_state = state;
+    EXPECT_EQ(fsm->thrustModelGate(now), Gate::MODE_BLOCKED);
+  }
+  fsm->fsm_state = MPCFSM::AUTO_TAKEOFF;
+  params.thr_map_.accurate_thrust_model = 0;
+  EXPECT_EQ(fsm->thrustModelGate(now), Gate::DISABLED_BY_PARAM);
+}
+
+TEST_F(WaypointYaw, HoverInitialPoint54CanAdaptToRpmInsteadOfRemainingFixed) {
+  ros::Time::setNow(ros::Time(1000));
+  params.thr_map_.hover_percentage = .54;
+  params.thr_map_.accurate_thrust_model = 1;
+  controller->resetThrustMapping();
+  EXPECT_NEAR(controller->currentHoverPercentage(), .54, 1e-9);
+  // 合成需要 0.55 悬停的 RPM 反馈，检验原 RLS 可更新 0.54 初值。
+  const double weight = params.gravity_ * params.dyn_params_.mass_q;
+  const double rpm = std::sqrt(weight * .54 / .55 / 4.0) /
+      params.force_estimator_param_.sqrt_kf;
+  controller->timed_thrust.emplace(ros::Time::now() - ros::Duration(.04), .54);
+  ASSERT_TRUE(controller->estimateThrustModel(Eigen::Vector3d::Zero(),
+      Eigen::Quaterniond::Identity(), Eigen::Vector4d::Constant(rpm), 15.0, params));
+  EXPECT_GT(controller->currentHoverPercentage(), .54);
+  EXPECT_LT(controller->currentHoverPercentage(), .55);
+}

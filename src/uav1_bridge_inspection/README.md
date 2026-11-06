@@ -17,6 +17,8 @@
 
 桥梁起飞最后 0.30 m 使用余弦减速，默认 0.15 m/s 下该段约 4 s，参考高度到达目标时速度降至零。起飞/悬停切换模式时保留已有高度参考，避免把实际超调锁成新的悬停高度；提前切模式仍保留当时参考，不直接跳到终点。参数位于 `launch/control.launch` 的 `takeoff/slowdown_distance`、`takeoff/preserve_hover_height`，公共控制器默认关闭这两项。
 
+桥梁在 `launch/control.launch` 单独覆盖 `thrust_model/hover_percentage=0.54`、`accurate_thrust_model=1`、`enable_takeoff_learning=true`。起飞阶段不再一直冻结推力映射：已解锁、OFFBOARD、飞控报告在空中且状态/RPM 满足原有条件时即可在线学习，无需等 CH8 切到悬停或航点。0.54 是启动初值，之后随学习更新；起飞外力补偿及降落逻辑不变，公共控制器的起飞学习开关默认关闭。
+
 `launch/planner.launch` 的 `optimization/weight_waypoint_height=1000` 为整段优化加入贴近当前局部目标 Z 的软代价，减少无必要的抬高；原碰撞检查、端点位置/速度/加速度约束仍保留，允许为避障上下绕行。这不是 1.8 m 硬限高，实际效果需要飞行验证；原多机默认权重为 0。
 
 Diff 的虚拟边界默认向洞内各收缩 0.15 m：下边界为 `ground_z+1.65`，上边界为 `ground_z+2.55`，可规划高度带宽为 0.9 m。可追加 `floor_margin:=0.15 ceiling_margin:=0.15` 分别调整，单位 m。这只改变 Diff 规划边界，不改变实际底板坐标、航点、起飞目标或精降接地高度；洞外的 Diff 航段也使用同一边界。余量应结合定位参考点到机体上下边缘的尺寸及定位/跟踪误差确定，15 cm 是初始配置，尚未实飞验证。调整余量或航点时，应确保目标位于收缩后的高度范围内。

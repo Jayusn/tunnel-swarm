@@ -117,6 +117,8 @@ namespace PayloadMPC
 		{
 			bool print_val;
 			int accurate_thrust_model;
+			// 默认保留原模式范围；桥梁可单独允许起飞阶段在线学习。
+			bool enable_takeoff_learning{false};
 			// 0：固定推力比例；1：使用四路机械转速在线辨识推力比例。普通四旋翼版本禁止模式 2。
 			double hover_percentage;
 			double filter_factor;
@@ -484,6 +486,7 @@ namespace PayloadMPC
 
 			read_essential_param(nh, "thrust_model/print_value", thr_map_.print_val);
 			read_essential_param(nh, "thrust_model/accurate_thrust_model", thr_map_.accurate_thrust_model);
+			nh.param("thrust_model/enable_takeoff_learning", thr_map_.enable_takeoff_learning, false);
 			read_essential_param(nh, "thrust_model/hover_percentage", thr_map_.hover_percentage);
 			read_essential_param(nh, "thrust_model/filter_factor", thr_map_.filter_factor);
 			read_essential_param(nh, "thrust_model/min_learning_rpm", thr_map_.min_learning_rpm);

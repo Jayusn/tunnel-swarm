@@ -1280,7 +1280,8 @@ namespace PayloadMPC
 			return ThrustModelGateReason::DISABLED_BY_PARAM;
 		if (mpc_recovery_active_ || direct_auto_land_active_)
 			return ThrustModelGateReason::MODE_BLOCKED;
-		if (fsm_state != AUTO_HOVER && fsm_state != CMD_CTRL)
+		if (fsm_state != AUTO_HOVER && fsm_state != CMD_CTRL &&
+			!(fsm_state == AUTO_TAKEOFF && params_.thr_map_.enable_takeoff_learning))
 			return ThrustModelGateReason::MODE_BLOCKED;
 		if (state_data.rcv_stamp.isZero() ||
 			(now - state_data.rcv_stamp).toSec() >= params_.msg_timeout_.state)
