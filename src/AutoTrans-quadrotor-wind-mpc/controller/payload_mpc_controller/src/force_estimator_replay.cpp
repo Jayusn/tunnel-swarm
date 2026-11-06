@@ -47,11 +47,6 @@ MpcParams parameters(const std::string& config, const std::string& model) {
   FORCE_FIELD(min_valid_rpm);
 #undef FORCE_FIELD
   p.force_estimator_param_.sqrt_kf = std::sqrt(p.force_estimator_param_.kf);
-  const auto axis = f["thrust_axis_body"];
-  if (axis) {
-    p.force_estimator_param_.thrust_axis_body = Vec(
-        axis["x"].as<double>(0.0), axis["y"].as<double>(0.0), axis["z"].as<double>(1.0));
-  }
 #define FILTER_FIELD(name) p.filter_param_.name = filters[#name].as<double>()
   FILTER_FIELD(sample_freq_quad_acc); FILTER_FIELD(cutoff_freq_quad_acc);
   FILTER_FIELD(sample_freq_rpm); FILTER_FIELD(cutoff_freq_rpm);
@@ -144,7 +139,7 @@ void synthetic(const MpcParams& p, const std::string& output) {
         if(scenario=="step_noise" || scenario=="noise") for(int j=0;j<3;++j) observed[j]+=noise(rng);
         // An isolated measurement outlier is NOT a real external force.
         if(scenario=="outlier" && k==static_cast<int>(2.0/dt)) observed[axis]+=3.0;
-        const Vec a=q.conjugate()*((observed+thrust*(q*p.force_estimator_param_.thrust_axis_body.normalized()))/p.dyn_params_.mass_q);
+        const Vec a=q.conjugate()*((observed+thrust*(q*Vec::UnitZ()))/p.dyn_params_.mass_q);
         for(auto& m:ms) { m->estimator.setSystemState(a,q,rpm); m->tick(true,true,false,p); }
         out<<scenario<<','<<axis<<','<<t;vectorOut(out,truth);vectorOut(out,observed);methodOut(out,ms);
       }

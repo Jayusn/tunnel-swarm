@@ -7,7 +7,7 @@
 
 namespace PayloadMPC {
 // AeroThrow Eq. (12)-(13), arXiv:2507.13903v1. World force is positive
-// in m*a = T*R*thrust_axis_body + m*g + f. The input is BODY SPECIFIC FORCE.
+// in m*a = T*R*e3 + m*g + f. The input is BODY SPECIFIC FORCE.
 class AeroThrowNDOB {
  public:
   EIGEN_MAKE_ALIGNED_OPERATOR_NEW
@@ -22,7 +22,6 @@ class AeroThrowNDOB {
       throw std::invalid_argument("invalid AeroThrow NDOB gain/filter frequency");
     mass_ = p.dyn_params_.mass_q;
     sqrt_kf_ = f.sqrt_kf;
-    thrust_axis_body_ = f.thrust_axis_body.normalized();
     alpha_ = f.ndob_rate / p.ctrl_freq_max_;
     max_force_ = f.max_force;
     separate_z_limit_ = f.force_axis_gain_z == 0.0;
@@ -42,7 +41,7 @@ class AeroThrowNDOB {
                       const Eigen::Vector4d& rpm) {
     const Eigen::Quaterniond q = rotation.normalized();
     residual_ = mass_ * (q * specific_force) -
-        (sqrt_kf_ * rpm).squaredNorm() * (q.toRotationMatrix() * thrust_axis_body_);
+        (sqrt_kf_ * rpm).squaredNorm() * q.toRotationMatrix().col(2);
     count_ = std::min(count_ + 1, static_cast<size_t>(std::max(1, required_samples_)));
   }
   // One call per control tick, including ticks holding the last valid input.
@@ -77,7 +76,6 @@ class AeroThrowNDOB {
   bool enabled_{false}, separate_z_limit_{false};
   int required_samples_{20};
   size_t count_{0};
-  Eigen::Vector3d thrust_axis_body_{Eigen::Vector3d::UnitZ()};
   Eigen::Vector3d residual_{Eigen::Vector3d::Zero()}, state_{Eigen::Vector3d::Zero()};
   LowPassFilter2p<Eigen::Vector3d> filter_;
 };
