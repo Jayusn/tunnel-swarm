@@ -32,7 +32,7 @@
   <param name="/uav1_target_reporter/leader_thermal_filter_enabled" value="false"/>
   <param name="/uav1_target_reporter/leader_thermal_projection_filter_enabled" value="false"/>
   <param name="/uav1_target_reporter/exit_plane_filter_enabled" value="false"/>
-  <rosparam command="load" file="$(find yolo_detector)/config/yolo_ros.yaml"/>
+  <rosparam command="load" file="$(find yolo_detector)/config/yolo_bridge_20261106.yaml"/>
   <param name="/subscribers/camera_reading/img_topic" value="/UAV1/camera/color/image_raw"/>
   <param name="/subscribers/camera_reading/depth_topic" value="/UAV1/camera/aligned_depth_to_color/image_raw"/>
   <node pkg="yolo_detector" type="rosnode_yolo" name="bridge_crack_detector" output="screen">

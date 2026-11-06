@@ -1,0 +1,33 @@
+subscribers:
+  camera_reading:
+    depth_topic: /camera/aligned_depth_to_color/image_raw
+    img_topic: /camera/color/image_raw
+yolo:
+  detection_parameters:
+    confThresh: 0.7
+    global_nms: 0.25
+    input_size: 352
+    max_tiles: 256
+    mode: whole
+    nmsThresh: 0.25
+    tile_overlap: 0.25
+    tile_size: 512
+    use_gpu: false
+  model_reading:
+    anchors:
+    - 66.0
+    - 53.779998779296875
+    - 69.77999877929688
+    - 58.66999816894531
+    - 79.75
+    - 59.88999938964844
+    - 79.75
+    - 66.61000061035156
+    - 103.47000122070312
+    - 75.77999877929688
+    - 113.44000244140625
+    - 88.61000061035156
+    class_names:
+    - crack
+    model_path: model/bridge_20261106.bin
+    para_path: model/bridge_20261106.param
