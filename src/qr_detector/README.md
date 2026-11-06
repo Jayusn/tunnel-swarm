@@ -111,6 +111,7 @@ UAV1 检测入口直接加载该文件中的检测参数，不在 launch 中覆�
 - `startup_warmup_seconds`：D435 首帧后的曝光预热时间，默认 `5.0` 秒；预热期间
   候选仍可在机载 RViz 观察，但不会进入稳定确认和远程上报。
 - `draw_raw_candidates`：是否在二维码调试图像中绘制单帧原始候选，当前为 `false`；RViz 候选标记仍由 target_reporting 单独显示。
+- `draw_current_decoded_only`：默认 `false`，桥梁配置启用。只显示已确认目标当前帧的有效四边形；允许成功解码后的有效连续跟踪，不显示未确认候选或丢失后的旧框。仅影响画面，不改变检测、坐标和上报逻辑。
 - `lost_hold_time`：短时间丢失后保留上一帧结果的时间，默认 `0.3` 秒。
 - `ema_alpha`：相机坐标 `x,y,z` 的 EMA 滤波系数。
 - `save_failed_frame`：是否保存检测失败帧，默认 `false`。

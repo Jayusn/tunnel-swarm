@@ -1309,11 +1309,13 @@ class QRDetectorNode(object):
                 draw_points = held_points
                 draw_center = (result.get("center_u"), result.get("center_v"))
 
-        # Display-only option: decoded geometry was already validated in
-        # validate_qr_detection. Do not draw reused tracks or stale held corners.
+        # Display only current, authenticated geometry. A recently decoded
+        # track still has freshly validated corners; a lost/held result does not.
         if self.draw_current_decoded_only and (
             raw_detection is None
-            or raw_detection.get("validation_reason") != "decoded"
+            or not detected
+            or not raw_detection.get("validated", False)
+            or raw_detection.get("validation_reason") not in ("decoded", "recent_decode")
         ):
             draw_points = None
 
