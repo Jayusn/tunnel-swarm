@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 手持采集裂缝训练原图：仅启动 D435 彩色相机和定时存图节点。
+# 手持采集裂缝训练原图：启动 D435 彩色相机、实时预览和定时存图节点。
 set -eo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 MATCH_WS="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
@@ -8,6 +8,8 @@ if [[ "${1:-}" == --help ]]; then
   cat <<'EOF'
 连续采集 D435 彩色原图（默认每秒一张 PNG，Ctrl+C 停止）：
   bash shfiles/start_uav1_crack_capture.sh
+收到相机画面后自动存图，并自动打开 rqt_image_view 显示实时彩色画面。
+关闭预览窗口不会停止采集；在启动终端按 Ctrl+C 停止全部采集程序。
 每半秒一张：
   bash shfiles/start_uav1_crack_capture.sh interval_sec:=0.5
 自定义保存根目录：

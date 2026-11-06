@@ -24,6 +24,7 @@
   <exec_depend>target_reporting</exec_depend>
   <exec_depend>python_qt_binding</exec_depend>
   <exec_depend>rviz</exec_depend>
+  <exec_depend>rqt_image_view</exec_depend>
   <exec_depend>odom_visualization</exec_depend>
   <exec_depend>diff_planner</exec_depend>
   <exec_depend>autotrans_reference_bridge</exec_depend>

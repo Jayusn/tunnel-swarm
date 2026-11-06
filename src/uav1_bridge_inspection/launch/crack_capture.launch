@@ -20,6 +20,8 @@
     <arg name="align_depth" value="false"/>
     <arg name="publish_tf" value="false"/>
   </include>
+  <node pkg="rqt_image_view" type="rqt_image_view" name="crack_capture_preview"
+        args="/crack_capture_camera/color/image_raw" output="screen"/>
   <node pkg="uav1_bridge_inspection" type="capture_color_images.py"
         name="crack_photo_capture" output="screen" required="true">
     <param name="output_root" value="$(arg output_root)"/>

@@ -73,8 +73,10 @@ CH8 高位的启动信号由 NMPC 发布到 `/traj_start_trigger`，桥梁任务
 bash ~/match_ws/shfiles/start_uav1_crack_capture.sh
 ```
 
-仅启动 D435 的 1280×720、30 FPS 彩色流和存图节点，默认每秒保存一张无标注 PNG 原图，
-不依赖裂缝识别结果。手持无人机变换角度即可，Ctrl+C 停止。
+启动 D435 的 1280×720、30 FPS 彩色流、存图节点和 `rqt_image_view` 实时预览，
+预览自动订阅 `/crack_capture_camera/color/image_raw`。收到相机画面后自动开始采集，
+默认每秒保存一张无标注 PNG 原图，不依赖裂缝识别结果。
+手持无人机变换角度即可；关闭预览窗口仍继续存图，在启动终端按 Ctrl+C 停止全部采集程序。
 保存到 `~/match_ws/datasets/crack_capture/YYYYMMDD_HHMMSS_微秒/`，
 每次启动一个目录，该次所有图片平铺在其中，不为每张图片创建子目录。
 文件名为 `000001_图像时间戳.png`、`000002_图像时间戳.png`，终端显示保存数量和目录。
