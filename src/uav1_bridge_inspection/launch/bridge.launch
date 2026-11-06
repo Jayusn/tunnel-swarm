@@ -80,6 +80,13 @@
     <param name="image_topic" value="/UAV1/landing/debug_image"/>
     <param name="output_topic" value="/UAV1/bridge/landing/xyz_image"/>
   </node>
+  <node if="$(arg enable_view)" pkg="uav1_bridge_inspection" type="landing_marker.py"
+        name="bridge_landing_marker" output="screen">
+    <param name="landing_config_ns" value="/UAV1/precision_landing_node"/>
+    <remap from="target_pose" to="/UAV1/landing/target_pose"/>
+    <remap from="odometry" to="/UAV1/fast_lio/Odom_high_freq"/>
+    <remap from="marker" to="/UAV1/bridge/landing_marker"/>
+  </node>
   <node if="$(arg enable_view)" pkg="uav1_bridge_inspection" type="bridge_view.py" name="bridge_view" output="screen">
     <param name="rviz_config" value="$(find uav1_bridge_inspection)/config/bridge.rviz"/>
   </node>

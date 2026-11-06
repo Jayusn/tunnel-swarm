@@ -163,12 +163,19 @@ Visualization Manager:
     Queue Size: 10
   - Class: rviz/Path
     Name: 巡检航点
-    Enabled: true
-    Value: true
+    Enabled: false
+    Value: false
     Topic: /UAV1/bridge/route
     Color: 0; 120; 255
     Line Style: Lines
     Line Width: 0.03
+  - Class: rviz/Marker
+    Name: ArUco 降落平台
+    Enabled: true
+    Value: true
+    Marker Topic: /UAV1/bridge/landing_marker
+    Namespaces: {}
+    Queue Size: 10
   Enabled: true
   Global Options:
     Background Color: 255; 255; 255
