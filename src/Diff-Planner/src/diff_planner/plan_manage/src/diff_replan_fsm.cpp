@@ -36,6 +36,8 @@ namespace diff_planner
     // 2026-07-07: 允许按场景单独指定 waypoint 切换距离，避免沿默认经验值在窄通道里提前切段。
     nh.param("fsm/waypoint_switch_dist", no_replan_thresh_, -1.0);
     nh.param("fsm/emergency_time", emergency_time_, 1.0);
+    nh.param("fsm/preserve_emergency_stop_position", preserve_emergency_stop_position_, false);
+    emergency_stop_position_valid_ = false;
     nh.param("fsm/enable_occupied_recovery", enable_occupied_recovery_, false);
     nh.param("fsm/escape_max_distance", escape_max_distance_, 0.40);
     nh.param("fsm/escape_history_time", escape_history_time_, 1.50);
@@ -1501,8 +1503,18 @@ namespace diff_planner
 
   bool DiffReplanFSM::callEmergencyStop(Eigen::Vector3d stop_pos)
   {
-    // 紧停保持调用方提供的实际XYZ，不能因旧轨迹更高而变成原地爬升。
-    // 绕障升降和虚拟地面脱障由各自的新轨迹决定。
+    // 桥梁实例锁定第一次急停的实际XYZ。失败重试不能把后续漂移/下沉
+    // 重新作为悬停目标；仅成功发布运动轨迹后开始下一次独立急停。
+    if (preserve_emergency_stop_position_)
+    {
+      if (!emergency_stop_position_valid_)
+      {
+        emergency_stop_position_ = stop_pos;
+        emergency_stop_position_valid_ = true;
+      }
+      stop_pos = emergency_stop_position_;
+    }
+    // 默认仍保持调用方给出的实际XYZ，不使用旧运动轨迹的高度。
     planner_manager_->EmergencyStop(stop_pos);
 
     traj_utils::PolyTraj poly_msg;
@@ -1863,6 +1875,7 @@ namespace diff_planner
     traj_utils::MINCOTraj minco_msg;
     polyTraj2ROSMsg(poly_msg, minco_msg);
     poly_traj_pub_.publish(poly_msg);
+    emergency_stop_position_valid_ = false;
     publishTrackingResult(poly_msg);
     // MINCO只包含端点PVA和中间位置，接收端会重新求解，无法表达拐点停转。
     // 异构接力由完整PolyTraj驱动；不能把多段退让广播成一条重新切角的MINCO。
@@ -2020,6 +2033,7 @@ namespace diff_planner
       traj_utils::MINCOTraj MINCO_msg;
       polyTraj2ROSMsg(poly_msg, MINCO_msg);
       poly_traj_pub_.publish(poly_msg);
+      emergency_stop_position_valid_ = false;
       publishTrackingResult(poly_msg);
       broadcast_ploytraj_pub_.publish(MINCO_msg);
     }

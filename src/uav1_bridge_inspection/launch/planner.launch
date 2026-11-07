@@ -56,6 +56,8 @@
     <arg name="point4_y" value="0.0"/>
     <arg name="point4_z" value="0.0"/>
   </include>
+  <!-- 失败后继续重规划，但重复急停固定首次XYZ，避免悬停目标跟随下沉。 -->
+  <param name="/drone_1_diff_planner_node/fsm/preserve_emergency_stop_position" value="true"/>
   <!-- 保留优化校验余量；发布前统一缩放多项式时间，规划器和 NMPC 共用同一执行轨迹。 -->
   <param name="/drone_1_diff_planner_node/manager/execution_max_velocity" value="0.2"/>
   <param name="/drone_1_diff_planner_node/manager/execution_max_acceleration" value="0.2"/>

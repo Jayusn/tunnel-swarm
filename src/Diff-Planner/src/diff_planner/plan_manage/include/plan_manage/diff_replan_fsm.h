@@ -115,6 +115,9 @@ namespace diff_planner
     bool enable_ground_height_measurement_;
     bool flag_escape_emergency_;
     bool need_hover_stop_;
+    bool preserve_emergency_stop_position_{false};
+    bool emergency_stop_position_valid_{false};
+    Eigen::Vector3d emergency_stop_position_{Eigen::Vector3d::Zero()};
     bool depth_timeout_emergency_{false};
     bool mondify_final_goal_;
     bool preserve_modified_goal_height_;

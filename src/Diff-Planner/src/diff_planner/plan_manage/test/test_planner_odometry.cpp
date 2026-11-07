@@ -1427,6 +1427,56 @@ TEST_F(PlannerEndpoint, EmergencyStopKeepsMeasuredHeightInsteadOfOldTrajectoryHe
   EXPECT_EQ(2, published);
 }
 
+TEST_F(PlannerEndpoint, BridgeRepeatedEmergencyKeepsFirstXYZAndStillRetries)
+{
+  planner.preserve_emergency_stop_position_ = true;
+  planner.enable_occupied_recovery_ = false;
+  const Eigen::Vector3d first = planner.odom_pos_;
+  for (int i = 0; i < 8; ++i) {
+    // Recorded failure pattern: measured XYZ drifts while each retry fails.
+    planner.odom_pos_ = first + Eigen::Vector3d(-0.02*i, 0.01*i, -0.04*i);
+    planner.exec_state_ = FSM::EMERGENCY_STOP;
+    planner.flag_escape_emergency_ = true;
+    planner.need_hover_stop_ = true;
+    exec();
+    const auto& stop = planner.planner_manager_->traj_.local_traj.traj;
+    EXPECT_LT((stop.getPos(0.0) - first).norm(), 1e-9);
+    EXPECT_LT((stop.getPos(stop.getTotalDuration()) - first).norm(), 1e-9);
+    EXPECT_TRUE(planner.emergency_stop_position_valid_);
+    exec();
+    EXPECT_EQ(planner.exec_state_, FSM::GEN_NEW_TRAJ);
+    EXPECT_TRUE(planner.have_target_);
+    EXPECT_TRUE(planner.have_trigger_);
+  }
+}
+
+TEST_F(PlannerEndpoint, BridgeSuccessfulReplanReleasesFixedStop)
+{
+  planner.preserve_emergency_stop_position_ = true;
+  const Eigen::Vector3d first = planner.odom_pos_;
+  ASSERT_TRUE(planner.callEmergencyStop(first));
+  ASSERT_TRUE(planner.emergency_stop_position_valid_);
+  // A newly accepted goal alone must not release the hold before publication.
+  auto message = boost::make_shared<geometry_msgs::PoseStamped>();
+  message->header.stamp = ros::Time::now();
+  message->pose.position.x = goal.x() + 1.0;
+  message->pose.position.y = goal.y();
+  message->pose.position.z = goal.z();
+  planner.exec_state_ = FSM::WAIT_TARGET;
+  planner.waypointCallback(message);
+  EXPECT_TRUE(planner.emergency_stop_position_valid_);
+  exec();
+  exec();
+  ASSERT_EQ(planner.exec_state_, FSM::EXEC_TRAJ);
+  EXPECT_FALSE(planner.emergency_stop_position_valid_);
+  drain();
+  EXPECT_GT(published, 1);
+  const Eigen::Vector3d next_stop = first + Eigen::Vector3d(0.5, 0.0, 0.1);
+  ASSERT_TRUE(planner.callEmergencyStop(next_stop));
+  const auto& stop = planner.planner_manager_->traj_.local_traj.traj;
+  EXPECT_LT((stop.getPos(0.0) - next_stop).norm(), 1e-9);
+}
+
 TEST_F(PlannerEndpoint, NonOccupiedEmergencyStillResumesCurrentTarget)
 {
   planner.exec_state_ = FSM::EMERGENCY_STOP;
