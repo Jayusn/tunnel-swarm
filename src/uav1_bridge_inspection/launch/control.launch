@@ -28,7 +28,7 @@
   <param name="/UAV1/mpc_controller_node/thrust_model/enable_takeoff_learning" value="false"/>
   <param name="/UAV1/mpc_controller_node/fixed_hover/enabled" value="false"/>
   <param name="/UAV1/mpc_controller_node/waypoint_turn_topic" value="/UAV1/bridge/waypoint_turn"/>
-  <!-- 精降速度对中切位置锁点时平滑交接 XY；不改变 Z 下降参考。 -->
+  <!-- XY平滑交接1.5秒；桥梁精降节点同步保持Z，稳定后才生成下降参考。 -->
   <param name="/UAV1/mpc_controller_node/precision_landing/xy_handoff_duration" value="1.5"/>
   <param name="/UAV1/mpc_controller_node/msg_timeout/state" value="1.5"/>
   <!-- 航点模式速度阈值；参考速度/加速度由 Diff 统一缩放时间，NMPC 不再单独裁剪导数。 -->

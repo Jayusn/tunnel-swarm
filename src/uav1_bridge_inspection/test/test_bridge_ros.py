@@ -236,6 +236,8 @@ class BridgeTest(RcLandPriorityTest):
                 odom.twist.twist.linear.x = 0.
             elif hold:
                 drive(hold+.1)
+            if index == len(points)-1:
+                drive(.6)  # 降落接近点摆正后连续稳定0.5秒。
             drive(.2)
             if index < len(points)-1:
                 self.assertEqual(len(self.messages['planning/goal']), index+2)
@@ -311,6 +313,26 @@ class BridgeTest(RcLandPriorityTest):
                 self.wait(lambda: len(self.messages['goal']) >= i+2, 'next goal')
                 self.assertIsNone(self.last('need_to_land'))
             else:
+                # 到点但航向未摆正时不能精降；必须实际转正并连续保持0.5秒。
+                self.subscribe('turn_goal', PoseStamped)
+                time.sleep(.7)
+                self.assertIsNone(self.last('need_to_land'))
+                self.wait(lambda: self.last('turn_goal') is not None, 'landing turn request')
+                target_q = self.last('turn_goal').pose.orientation
+                self.assertAlmostEqual(2*math.atan2(target_q.z, target_q.w), math.pi/2)
+                odom.pose.pose.orientation = target_q
+                pubs['odom'].publish(odom)
+                time.sleep(.25)
+                self.assertIsNone(self.last('need_to_land'))
+                # 稳定计时中航向再次超限，计时必须重置。
+                odom.pose.pose.orientation.z = math.sin((math.pi/2-.30)/2)
+                odom.pose.pose.orientation.w = math.cos((math.pi/2-.30)/2)
+                pubs['odom'].publish(odom)
+                time.sleep(.15)
+                odom.pose.pose.orientation = self.last('turn_goal').pose.orientation
+                pubs['odom'].publish(odom)
+                time.sleep(.3)
+                self.assertIsNone(self.last('need_to_land'))
                 self.wait(lambda: self.last('need_to_land') is not None, 'landing trigger')
         self.assertTrue(self.last('need_to_land').data)
         self.assertAlmostEqual(self.last('platform_reference').data,.3)

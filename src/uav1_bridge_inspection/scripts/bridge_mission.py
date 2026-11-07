@@ -25,6 +25,8 @@ class Mission:
                              for point in waypoints] + [0.0]
         self.returning_from_turn = False
         self.arrived_at = None
+        self.landing_yaw_stable_since = None
+        self.landing_turn_started = False
         self.points.append((float(rospy.get_param('~landing_x')),
                             float(rospy.get_param('~landing_y')),
                             float(rospy.get_param('~landing_approach_z'))))
@@ -129,7 +131,24 @@ class Mission:
             at_point = (math.sqrt((p.x-x)**2+(p.y-y)**2+(p.z-z)**2) <= self.radius and
                         math.sqrt(v.x*v.x+v.y*v.y+v.z*v.z) <= self.speed)
             hold = self.hold_seconds[self.index]
-            if self.turn_degrees[self.index] != 0.0:
+            if self.index == len(self.points) - 1:
+                # 复用到点原地转向接口；精降捕获航向前必须连续摆正。
+                if at_point:
+                    self.landing_turn_started = True
+                if self.landing_turn_started:
+                    self.turn_goal.publish(self.pose(self.points[self.index], self.point_yaws[self.index]))
+                q = self.odom.pose.pose.orientation
+                yaw = math.atan2(2*(q.w*q.z + q.x*q.y), 1-2*(q.y*q.y + q.z*q.z))
+                error = math.remainder(self.point_yaws[self.index] - yaw, 2*math.pi)
+                if not at_point or abs(error) > math.radians(5.0):
+                    self.landing_yaw_stable_since = None
+                    return
+                now = rospy.Time.now()
+                if self.landing_yaw_stable_since is None:
+                    self.landing_yaw_stable_since = now
+                if (now - self.landing_yaw_stable_since).to_sec() < 0.5:
+                    return
+            elif self.turn_degrees[self.index] != 0.0:
                 # 开始保持前仍要求到点；计时开始后持续发转向/转回请求。
                 if not at_point and self.arrived_at is None and not self.returning_from_turn:
                     return

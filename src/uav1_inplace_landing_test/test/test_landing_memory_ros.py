@@ -152,6 +152,8 @@ class LandingMemoryTest(unittest.TestCase):
             if getattr(self, 'use_fastlio', False):
                 odom = Odometry(header=pose.header)
                 odom.pose.pose = pose.pose
+                odom.twist.twist.linear.x = getattr(self, 'vx', 0.)
+                odom.twist.twist.linear.y = getattr(self, 'vy', 0.)
                 self.pubs['odom'].publish(odom)
                 # 故意给飞控融合位姿加入偏移，验证码面记忆和末段交接只用里程计。
                 pose = PoseStamped()
