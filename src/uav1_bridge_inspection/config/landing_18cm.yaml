@@ -32,21 +32,21 @@ state_machine:
 
 stages:
   high:
-    min_height_m: 0.58
+    min_height_m: 0.65
     # >=0.93 m 有效识码后边下降边对中，不因 XY 误差暂停。
     align_while_descending_above_m: 0.93
     # FAST-LIO Z 从 0.93 到 0.78 m 保持 15 cm 门限；
-    # 从 0.78 m 起线性收紧至 Z=0.58 m 的 5 cm。
+    # 从 0.78 m 起线性收紧至 Z=0.65 m 的 5 cm。
     # 低空超限保持高度对中，连续达标 0.5 s 再下降。
     taper_start_height_m: 0.78
     error_m: 0.15
     # FAST-LIO Z 从 0.93 -> 0.73 m，下降速度从 0.25 平滑降至 0.15 m/s。
-    # Z 从 0.73 -> 0.58 m 保持慢速接近；误差超限仍暂停下降。
+    # Z 从 0.73 -> 0.65 m 保持慢速接近；误差超限仍暂停下降。
     slowdown_start_height_m: 0.93
     slowdown_end_height_m: 0.73
     slow_descent_mps: 0.15
-  # FAST-LIO Z <= 0.58 m，且误差 <= 5 cm 连续 0.5 s 后锁定 XY。
+  # FAST-LIO Z <= 0.65 m，且误差 <= 5 cm 连续 0.5 s 后锁定 XY。
   # 沿用已有丢码/20 秒超时转定点下降逻辑，此门限描述正常可见码流程。
   auto_land:
-    height_m: 0.58
+    height_m: 0.65
     error_m: 0.05
