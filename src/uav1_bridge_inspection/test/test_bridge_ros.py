@@ -204,7 +204,7 @@ class BridgeTest(RcLandPriorityTest):
             turn_deg = actions[index][4] if len(actions[index]) > 4 else 0.
             hold = actions[index][3] if len(actions[index]) > 3 else 0.
             if turn_deg:
-                # 到点后才请求转向；未转到朝向时不能启动两秒保持计时。
+                # 到点后才请求转向；未转到朝向时不能启动保持计时。
                 drive(.3)
                 self.assertEqual(len(self.messages['planning/goal']), index+1)
                 turn = self.last('bridge/waypoint_turn')
@@ -217,12 +217,23 @@ class BridgeTest(RcLandPriorityTest):
                 odom.pose.pose.orientation = turn.pose.orientation
                 drive(hold/2.)
                 self.assertEqual(len(self.messages['planning/goal']), index+1)
+                # 复现实飞：计时开始后位置、速度和航向短暂超限，仍应按时转回。
+                odom.pose.pose.position.x += radius+.03
+                odom.twist.twist.linear.x = speed+.10
+                jitter_yaw = right_yaw + math.radians(6.)
+                odom.pose.pose.orientation.z = math.sin(jitter_yaw/2.)
+                odom.pose.pose.orientation.w = math.cos(jitter_yaw/2.)
                 drive(hold/2.+.2)
                 self.assertEqual(len(self.messages['planning/goal']), index+1)
                 back = self.last('bridge/waypoint_turn')
                 self.assertAlmostEqual(math.atan2(2*back.pose.orientation.w*back.pose.orientation.z,
                                       1-2*back.pose.orientation.z**2), expected_yaw)
                 odom.pose.pose.orientation = back.pose.orientation
+                drive(.2)
+                # 转回后仍保留原到点距离/速度条件，不能带着超限位置直接切下一点。
+                self.assertEqual(len(self.messages['planning/goal']), index+1)
+                odom.pose.pose.position = Point(*point)
+                odom.twist.twist.linear.x = 0.
             elif hold:
                 drive(hold+.1)
             drive(.2)

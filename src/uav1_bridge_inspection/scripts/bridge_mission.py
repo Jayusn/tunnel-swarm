@@ -104,13 +104,13 @@ class Mission:
         q = self.odom.pose.pose.orientation
         yaw = math.atan2(2*(q.w*q.z + q.x*q.y), 1-2*(q.y*q.y + q.z*q.z))
         error = math.atan2(math.sin(target_yaw-yaw), math.cos(target_yaw-yaw))
-        if abs(error) > math.radians(5.0):
-            self.arrived_at = None
-            return False
         if self.returning_from_turn:
-            return True
+            return abs(error) <= math.radians(5.0)
         now = rospy.Time.now()
         if self.arrived_at is None:
+            if abs(error) > math.radians(5.0):
+                return False
+            # 首次转向到位后只计时一次；悬停波动不重新开始保持时长。
             self.arrived_at = now
             self.status.publish(String(data='航点 %d 转向到位：保持 %.1f 秒后转回' %
                                        (self.index+1, self.hold_seconds[self.index])))
@@ -128,22 +128,24 @@ class Mission:
             x, y, z = self.points[self.index]
             at_point = (math.sqrt((p.x-x)**2+(p.y-y)**2+(p.z-z)**2) <= self.radius and
                         math.sqrt(v.x*v.x+v.y*v.y+v.z*v.z) <= self.speed)
-            if not at_point:
-                if self.turn_degrees[self.index] != 0.0:
-                    self.arrived_at = None
-                return
             hold = self.hold_seconds[self.index]
             if self.turn_degrees[self.index] != 0.0:
-                if not self.turn_complete():
+                # 开始保持前仍要求到点；计时开始后持续发转向/转回请求。
+                if not at_point and self.arrived_at is None and not self.returning_from_turn:
                     return
-            elif hold > 0.0:
-                now = rospy.Time.now()
-                if self.arrived_at is None:
-                    self.arrived_at = now
-                    self.status.publish(String(data='航点 %d/%d 到达：保持 %.1f 秒' %
-                                               (self.index + 1, len(self.points), hold)))
-                if (now - self.arrived_at).to_sec() < hold:
+                if not self.turn_complete() or not at_point:
                     return
+            else:
+                if not at_point:
+                    return
+                if hold > 0.0:
+                    now = rospy.Time.now()
+                    if self.arrived_at is None:
+                        self.arrived_at = now
+                        self.status.publish(String(data='航点 %d/%d 到达：保持 %.1f 秒' %
+                                                   (self.index + 1, len(self.points), hold)))
+                    if (now - self.arrived_at).to_sec() < hold:
+                        return
             self.index += 1
             if self.index == len(self.points):
                 self.status.publish(String(data='航点完成：18 cm ArUco 精降'))
