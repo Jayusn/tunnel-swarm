@@ -1,6 +1,7 @@
 # 桥梁专用 18 cm 精降参数，2026-11-04 从单独降落测试同步。
 # 独立保存，后续修改单独测试不会自动改变桥梁或原多机配置。
 # 高度门限为 FAST-LIO 绝对 Z；更换平台高度/定位原点后需重新核对。
+# 2026-11-07：绝对 Z 门限统一减去 0.22；相对地面高度、速度和 XY 补偿不变。
 # 2026-11-04：205131 录包，20:52:35--20:52:45，ID 0，597 帧。
 # 按 FAST-LIO Z [0.60, 0.63] m 筛选；实际入选 [0.6161, 0.6252] m。
 # 排除移动/明显偏侧片段，使用本次手举对中基准的未补偿 body X/Y 中位数。
@@ -25,21 +26,21 @@ state_machine:
 
 stages:
   high:
-    min_height_m: 0.65
-    # >=1.00 m 有效识码后边下降边对中，不因 XY 误差暂停。
-    align_while_descending_above_m: 1.00
-    # FAST-LIO Z 从 1.00 到 0.85 m 保持 15 cm 门限；
-    # 从 0.85 m 起线性收紧至 Z=0.65 m 的 5 cm。
+    min_height_m: 0.43
+    # >=0.78 m 有效识码后边下降边对中，不因 XY 误差暂停。
+    align_while_descending_above_m: 0.78
+    # FAST-LIO Z 从 0.78 到 0.63 m 保持 15 cm 门限；
+    # 从 0.63 m 起线性收紧至 Z=0.43 m 的 5 cm。
     # 低空超限保持高度对中，连续达标 0.5 s 再下降。
-    taper_start_height_m: 0.85
+    taper_start_height_m: 0.63
     error_m: 0.15
-    # FAST-LIO Z 从 1.0 -> 0.8 m，下降速度从 0.25 平滑降至 0.15 m/s。
-    # Z 从 0.8 -> 0.65 m 保持慢速接近；误差超限仍暂停下降。
-    slowdown_start_height_m: 1.00
-    slowdown_end_height_m: 0.80
+    # FAST-LIO Z 从 0.78 -> 0.58 m，下降速度从 0.25 平滑降至 0.15 m/s。
+    # Z 从 0.58 -> 0.43 m 保持慢速接近；误差超限仍暂停下降。
+    slowdown_start_height_m: 0.78
+    slowdown_end_height_m: 0.58
     slow_descent_mps: 0.15
-  # FAST-LIO Z <= 0.65 m，且误差 <= 5 cm 连续 0.5 s 后锁定 XY。
+  # FAST-LIO Z <= 0.43 m，且误差 <= 5 cm 连续 0.5 s 后锁定 XY。
   # 沿用已有丢码/20 秒超时转定点下降逻辑，此门限描述正常可见码流程。
   auto_land:
-    height_m: 0.65
+    height_m: 0.43
     error_m: 0.05
