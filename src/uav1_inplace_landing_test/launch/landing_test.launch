@@ -76,7 +76,8 @@
     <param name="takeoff_height_m" value="$(arg takeoff_height_m)"/>
     <param name="publish_rate_hz" value="20.0"/>
     <param name="prestream_sec" value="2.0"/>
-    <param name="hover_stable_sec" value="0.10"/>
+    <!-- 起飞后留出定高采样时间，保存本次接地判断所需的悬停推力基准。 -->
+    <param name="hover_stable_sec" value="1.0"/>
     <param name="altitude_tolerance_m" value="0.20"/>
     <param name="xy_tolerance_m" value="0.30"/>
     <param name="state_timeout_sec" value="1.50"/>

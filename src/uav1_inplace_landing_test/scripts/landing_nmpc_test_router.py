@@ -26,6 +26,10 @@ class Router:
         self.control_pose = None
         self.odometry_topic = rospy.get_param('~odometry_topic', '')
         self.offboard_touchdown = rospy.get_param('~offboard_touchdown', False)
+        self.hover_reference_from_hold = rospy.get_param('~hover_reference_from_hold', False)
+        self.hover_target_z = None
+        self.hover_target_since = None
+        self.last_disarm_request = None
         # 桥梁巡检共用任务 NMPC：透传其起飞/巡航输出，精降沿用本路由的接地处理。
         self.mission_attitude_input = rospy.get_param('~mission_attitude_input', False)
         self.takeoff_reference_z = None
@@ -69,7 +73,8 @@ class Router:
             self.subs.append(rospy.Subscriber(
                 'takeoff_reference', Float64, self.takeoff_reference_cb, queue_size=1))
 
-        self.disarm_timer = rospy.Timer(rospy.Duration(.5), self.disarm_tick)
+        self.touchdown_check_period = rospy.get_param('~touchdown_check_period_sec', .5)
+        self.disarm_timer = rospy.Timer(rospy.Duration(self.touchdown_check_period), self.disarm_tick)
 
     def rc_land_cb(self, msg):
         with self.lock:
@@ -129,10 +134,18 @@ class Router:
                 return
             self.owner.publish(String(data='TOUCHDOWN_DISARMING'))
             self.publish_idle()
+            now = rospy.Time.now()
+            # 接地/减推力高频检查，上锁服务仍按原来的0.5秒间隔重试。
+            if (self.touchdown_check_period < .5 and self.last_disarm_request is not None and
+                    (now-self.last_disarm_request).to_sec() < .5):
+                return
+            self.last_disarm_request = now
         # 普通上锁请求；不使用强制解锁/上锁的MAV_CMD参数。
         try:
-            if not self.disarm(value=False).success:
-                rospy.logwarn_throttle(2, '飞控未接受落地上锁请求，等待确认后重试')
+            result = self.disarm(value=False)
+            if not result.success:
+                rospy.logwarn_throttle(2, '飞控未接受落地上锁请求：result=%d landed_state=%s；保持减推力输出并重试',
+                                       result.result, self.extended.landed_state if self.extended else 'unknown')
         except rospy.ServiceException as exc:
             rospy.logwarn_throttle(2, '落地上锁服务失败: %s', exc)
 
@@ -214,6 +227,33 @@ class Router:
                 self.ground_since = None
                 self.contact_samples.clear()
                 self.hover_thrust = None
+                self.hover_target_z = None
+                self.hover_target_since = None
+                self.last_disarm_request = None
+
+    def remember_hover_target(self, target):
+        if not self.hover_reference_from_hold:
+            return
+        # 用实际发给NMPC的定高目标识别悬停，不依赖找码/对中状态持续时间。
+        z = target.position.z
+        if target.type_mask & PositionTarget.IGNORE_PZ or not math.isfinite(z):
+            self.hover_target_z = None
+            self.hover_target_since = None
+            return
+        if self.hover_target_z is None or abs(z-self.hover_target_z) > .0001:
+            self.hover_target_since = rospy.Time.now()
+        self.hover_target_z = z
+
+    def hover_reference_ready(self):
+        if not self.hover_reference_from_hold:
+            return self.stage in ('IDLE', 'PRECHECK', 'ACQUIRE', 'ALIGN')
+        if self.hover_target_since is None or self.hover_target_z is None:
+            return False
+        v = self.touchdown_odom.twist.twist.linear
+        return ((rospy.Time.now()-self.hover_target_since).to_sec() >= .3 and
+                abs(self.touchdown_odom.pose.pose.position.z-self.hover_target_z) < .1 and
+                all(math.isfinite(x) for x in (v.x, v.y, v.z)) and
+                math.sqrt(v.x*v.x+v.y*v.y+v.z*v.z) < .1)
 
     def publish_idle(self):
         idle = AttitudeTarget(type_mask=AttitudeTarget.IGNORE_ATTITUDE, thrust=0.0)
@@ -260,6 +300,7 @@ class Router:
             target.position.z = self.takeoff_z
             target.yaw = self.takeoff_yaw
             self.requested = True
+            self.remember_hover_target(target)
             self.target.publish(target)
 
     def landing_cb(self, msg):
@@ -270,6 +311,7 @@ class Router:
             self.landing_started = True
             self.requested = True
             self.descent_target = msg
+            self.remember_hover_target(msg)
             self.target.publish(msg)
             # 尚未得到NMPC输出时只维持当前位置，不用PX4执行视觉速度。
             if not self.owned and self.local_pose is not None and self.fresh(self.local_pose):
@@ -296,13 +338,16 @@ class Router:
                     all(math.isfinite(v) for v in values) and 0 <= msg.thrust <= 1):
                 self.take_control()
                 self.nmpc_output = msg
-                # 用本次空中平稳起飞/找码/对中时的控制推力作为基准，下降后冻结。
+                # 独立测试从实际定高悬停采样；参考下降时冻结，近地不再更新。
                 if (self.offboard_touchdown and not self.rc_land and
-                        self.stage in ('IDLE', 'PRECHECK', 'ACQUIRE', 'ALIGN') and
                         self.touchdown_odom is not None and self.fresh(self.touchdown_odom) and
                         self.takeoff_reference_z is not None and
                         self.touchdown_odom.pose.pose.position.z-self.takeoff_reference_z > .3 and
-                        abs(self.touchdown_odom.twist.twist.linear.z) < .1 and msg.thrust > 0.0):
+                        abs(self.touchdown_odom.twist.twist.linear.z) < .1 and msg.thrust > 0.0 and
+                        self.hover_reference_ready()):
+                    if self.hover_thrust is None:
+                        rospy.loginfo('接地推力基准已采集：thrust=%.3f FAST-LIO Z=%.3f',
+                                      msg.thrust, self.touchdown_odom.pose.pose.position.z)
                     self.hover_thrust = (msg.thrust if self.hover_thrust is None else
                                          .95*self.hover_thrust+.05*msg.thrust)
                 if self.touchdown:

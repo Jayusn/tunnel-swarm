@@ -22,6 +22,9 @@ class OffboardTouchdownTest(RcLandPriorityTest):
         self.addCleanup(service.shutdown)
         rospy.set_param(self.prefix+'/router/odometry_topic', self.prefix+'/odom')
         rospy.set_param(self.prefix+'/router/offboard_touchdown', True)
+        if self._testMethodName != 'test_bridge_defaults_keep_previous_sampling':
+            rospy.set_param(self.prefix+'/router/hover_reference_from_hold', True)
+            rospy.set_param(self.prefix+'/router/touchdown_check_period_sec', .05)
         self.launch('uav1_inplace_landing_test', 'landing_nmpc_test_router.py', 'router')
         for topic, kind in [('mavros_attitude', AttitudeTarget), ('owner', String)]:
             self.subscribe(topic, kind)
@@ -35,7 +38,8 @@ class OffboardTouchdownTest(RcLandPriorityTest):
                   self.pubs['nmpc_attitude'].get_num_connections(), 'router connections')
         self.pubs['takeoff_reference'].publish(Float64(data=10.))
         self.z, self.vz = 11., 0.
-        self.target_z, self.thrust = 9.8, .6
+        self.target_z, self.thrust = 11., .6
+        self.target_rate = 0.
         self.stage, self.rc_land = 'ALIGN', False
         self.armed = True
         self.odom_enabled = True
@@ -46,6 +50,7 @@ class OffboardTouchdownTest(RcLandPriorityTest):
         self.drive(.5)
         self.assertGreater(self.last('mavros_attitude').thrust, 0.)
         self.stage, self.thrust = 'FIXED_XY_DESCENT', .35
+        self.target_z = 9.8
 
     def disarm(self, request):
         self.requests.append((time.monotonic(), request.value))
@@ -57,6 +62,7 @@ class OffboardTouchdownTest(RcLandPriorityTest):
         while time.monotonic() < until:
             now = time.monotonic()
             self.z += self.z_rate*(now-previous)
+            self.target_z += self.target_rate*(now-previous)
             previous = now
             stamp = rospy.Time.now()
             odom = Odometry()
@@ -104,6 +110,9 @@ class OffboardTouchdownTest(RcLandPriorityTest):
         self.drive(1.8)
         self.assertTrue(self.requests)
         self.assertGreaterEqual(self.requests[0][0]-started, .9)
+        self.assertLess(self.requests[0][0]-started, 1.2, 'no extra half-second polling delay')
+        for before, after in zip(self.requests, self.requests[1:]):
+            self.assertGreaterEqual(after[0]-before[0], .48, '20Hz check must not flood arming service')
         outputs = self.messages['mavros_attitude'][mark:]
         self.assertTrue(any(0.01 < m.thrust < .34 for m in outputs), 'ramp before zero thrust')
         for before, after in zip(outputs, outputs[1:]):
@@ -163,6 +172,56 @@ class OffboardTouchdownTest(RcLandPriorityTest):
         self.z = 10.01
         self.drive(1.8)
         self.assertFalse(self.requests)
+
+    def test_hold_samples_reference_without_acquire_or_align(self):
+        # 模拟第一次飞行错过ALIGN：定高暂停仍可获得本次推力基准。
+        self.pubs['takeoff_reference'].publish(Float64(data=10.))
+        self.stage, self.z, self.target_z, self.thrust = 'DESCEND_HIGH', 11., 11., .6
+        self.drive(.65)
+        self.stage, self.z, self.target_z, self.thrust = 'FIXED_XY_DESCENT', 10.01, 9.8, .35
+        self.drive(1.2)
+        self.assertTrue(self.requests, 'sample hover without brief vision states')
+
+    def test_bridge_defaults_keep_previous_sampling(self):
+        self.pubs['takeoff_reference'].publish(Float64(data=10.))
+        self.stage, self.z, self.target_z, self.thrust = 'DESCEND_HIGH', 11., 11., .6
+        self.drive(.65)
+        self.stage, self.z, self.target_z, self.thrust = 'FIXED_XY_DESCENT', 10.01, 9.8, .35
+        self.drive(1.5)
+        self.assertFalse(self.requests, 'bridge defaults do not enable new sampling')
+        self.stage, self.z, self.target_z, self.thrust = 'ALIGN', 11., 11., .6
+        self.drive(.5)
+        self.stage, self.z, self.target_z, self.thrust = 'FIXED_XY_DESCENT', 10.01, 9.8, .35
+        self.drive(1.8)
+        self.assertTrue(self.requests, 'legacy ALIGN sampling still works')
+
+    def test_moving_reference_is_not_hover_calibration(self):
+        self.pubs['takeoff_reference'].publish(Float64(data=10.))
+        self.stage, self.z, self.target_z, self.thrust = 'ALIGN', 11., 11., .6
+        self.target_rate = -.1
+        self.drive(.65)
+        self.target_rate = 0.
+        self.stage, self.z, self.target_z, self.thrust = 'FIXED_XY_DESCENT', 10.01, 9.8, .35
+        self.drive(1.2)
+        self.assertFalse(self.requests, 'moving Z target cannot supply hover reference')
+
+    def test_ramp_continues_when_controller_output_stops(self):
+        self.z = 10.01
+        deadline = time.monotonic()+2.
+        while time.monotonic() < deadline:
+            self.drive(.02)
+            if self.last('owner').data == 'TOUCHDOWN_RAMP_DOWN':
+                break
+        self.assertEqual(self.last('owner').data, 'TOUCHDOWN_RAMP_DOWN')
+        self.attitude_enabled = False
+        mark = len(self.messages['mavros_attitude'])
+        self.drive(.8)
+        self.assertTrue(self.requests)
+        self.assertEqual(self.last('mavros_attitude').thrust, 0.)
+        outputs = self.messages['mavros_attitude'][mark:]
+        self.assertGreater(len(outputs), 10)
+        for before, after in zip(outputs, outputs[1:]):
+            self.assertLess((after.header.stamp-before.header.stamp).to_sec(), .15)
 
     def test_stale_target_does_not_prove_contact(self):
         self.target_enabled = False
