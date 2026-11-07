@@ -1,11 +1,11 @@
 <?xml version="1.0" ?>
 <launch>
-  <!-- 2026-11-07：按两次飞行点云复核，XY 平移修正为 (4.60, 1.38)，无旋转。
+  <!-- 2026-11-07：按两次飞行点云复核 X 平移；航点 Y 按当前通道居中，降落接近点为 (16.00, 0.00)。
        ground_z 沿用实测 Z 平移 -0.22；起飞、巡检与降落接近高度统一为 Z=1.58。 -->
   <arg name="ground_z" default="-0.22"/>
   <arg name="bridge_yaw" default="0.0"/>
   <arg name="landing_x" default="16.00"/>
-  <arg name="landing_y" default="-0.72"/>
+  <arg name="landing_y" default="0.00"/>
   <arg name="bridge_floor_height" default="1.5"/>
   <arg name="bridge_clear_height" default="1.2"/>
   <arg name="floor_margin" default="0.15"/>
