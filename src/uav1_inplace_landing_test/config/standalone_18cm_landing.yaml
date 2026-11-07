@@ -1,11 +1,6 @@
-# 仅由 landing_test.launch 的 18 cm 单独测试加载；不覆盖桥梁或多机参数。
-# 2026-11-04：205131 录包，20:52:35--20:52:45，ID 0，597 帧。
-# 按 FAST-LIO Z [0.60, 0.63] m 筛选；实际入选 [0.6161, 0.6252] m。
-# 排除移动/明显偏侧片段，使用本次手举对中基准的未补偿 body X/Y 中位数。
-# error_body = measured_body - bias_xy_m；只校准 XY，不调整 Z。
-# 210542 实飞后实测机身偏后 6 cm、偏右 7 cm（body FLU）。
-# 在静态补偿基础上减去 [0.06, 0.07] m，使目标向前 6 cm、向左 7 cm。
-# 215355 实飞后实测左偏 2.5 cm，Y 补偿增加 0.025 m，使目标右移 2.5 cm。
+# 2026-11-07：从桥梁同步18cm精降参数及中心补偿，后续独立调试。
+# 高度门限使用FAST-LIO绝对Z；最终精对中0.65m。
+# 同一平台起落：接地参考沿用起飞时Z，不叠加桥梁的坐标偏移。
 center_alignment:
   bias_xy_m: [-0.04943469, 0.03760303]
 
@@ -16,6 +11,12 @@ control:
   use_fastlio_z_for_height: true
   # 暂停下降时捕获一次当前 Z；后续下沉、丢码不再下移保持目标。
   freeze_descent_hold_height: true
+  # 锁定XY后先保持高度完成NMPC交接，再连续稳定0.5秒后下降。
+  fixed_xy_settle_enabled: true
+  fixed_xy_handoff_sec: 1.5
+  fixed_xy_settle_error_m: 0.05
+  fixed_xy_settle_speed_mps: 0.05
+  fixed_xy_settle_sec: 0.5
 
 state_machine:
   # 低空初始/重新对中随高度收紧，最大 15 cm；高空边降边对中。
@@ -24,17 +25,17 @@ state_machine:
 stages:
   high:
     min_height_m: 0.65
-    # >=1.00 m 有效识码后边下降边对中，不因 XY 误差暂停。
-    align_while_descending_above_m: 1.00
-    # FAST-LIO Z 从 1.00 到 0.85 m 保持 15 cm 门限；
-    # 从 0.85 m 起线性收紧至 Z=0.65 m 的 5 cm。
+    # >=0.93 m 有效识码后边下降边对中，不因 XY 误差暂停。
+    align_while_descending_above_m: 0.93
+    # FAST-LIO Z 从 0.93 到 0.78 m 保持 15 cm 门限；
+    # 从 0.78 m 起线性收紧至 Z=0.65 m 的 5 cm。
     # 低空超限保持高度对中，连续达标 0.5 s 再下降。
-    taper_start_height_m: 0.85
+    taper_start_height_m: 0.78
     error_m: 0.15
-    # FAST-LIO Z 从 1.0 -> 0.8 m，下降速度从 0.25 平滑降至 0.15 m/s。
-    # Z 从 0.8 -> 0.65 m 保持慢速接近；误差超限仍暂停下降。
-    slowdown_start_height_m: 1.00
-    slowdown_end_height_m: 0.80
+    # FAST-LIO Z 从 0.93 -> 0.73 m，下降速度从 0.25 平滑降至 0.15 m/s。
+    # Z 从 0.73 -> 0.65 m 保持慢速接近；误差超限仍暂停下降。
+    slowdown_start_height_m: 0.93
+    slowdown_end_height_m: 0.73
     slow_descent_mps: 0.15
   # FAST-LIO Z <= 0.65 m，且误差 <= 5 cm 连续 0.5 s 后锁定 XY。
   # 沿用已有丢码/20 秒超时转定点下降逻辑，此门限描述正常可见码流程。

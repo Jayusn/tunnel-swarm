@@ -3,6 +3,7 @@
 #include <cmath>
 #include <limits>
 #include <memory>
+#include <vector>
 
 namespace {
 
@@ -113,6 +114,41 @@ TEST_F(ThrustMappingTest, OutOfRangeCandidateIsStillRejected) {
 TEST_F(ThrustMappingTest, InvalidCovarianceIsStillRejected) {
   controller->P = -1;
   expectRejected(17000);
+}
+
+TEST_F(ThrustMappingTest, FixedLandingWeightsAreOptionalAndRestoreOnExit) {
+  using namespace PayloadMPC;
+  const std::vector<real_t> baseline(acadoVariables.W, acadoVariables.W + ACADO_N*ACADO_NY*ACADO_NY);
+  const std::vector<real_t> terminal(acadoVariables.WN, acadoVariables.WN + ACADO_NYN*ACADO_NYN);
+  const Eigen::Vector3d position(1., 2., .65), zero = Eigen::Vector3d::Zero();
+  ASSERT_TRUE(controller->setPositionCommandReference(position, zero, zero, zero, -.5, 0., true));
+  controller->waitForPreparation();
+  EXPECT_TRUE(std::equal(baseline.begin(), baseline.end(), acadoVariables.W));
+  params.landing_position_weight_xy_ = 400.;
+  params.landing_bodyrate_weight_xy_ = 20.;
+  for (int cycle = 0; cycle < 3; ++cycle) {
+    for (int repeat = 0; repeat < 3; ++repeat) {
+      ASSERT_TRUE(controller->setPositionCommandReference(position, zero, zero, zero, -.5, 0., true));
+      controller->waitForPreparation();
+      EXPECT_NEAR(acadoVariables.W[0], 400., 1.e-6);
+      EXPECT_NEAR(acadoVariables.W[kRefSize+1], 400., 1.e-6);
+      EXPECT_NEAR(acadoVariables.W[2*(kRefSize+1)], params.q_gain_.Q_pos_z, 1.e-6);
+      EXPECT_NEAR(acadoVariables.W[(kRefSize+1)*(kCostSize+kRateX)], 20., 1.e-6);
+      EXPECT_NEAR(acadoVariables.W[(kRefSize+1)*(kCostSize+kRateY)], 20., 1.e-6);
+    }
+    if (cycle == 0) {
+      ASSERT_TRUE(controller->setPositionCommandReference(position, zero, zero, zero, -.5, 0.));
+    } else if (cycle == 1) {
+      controller->setHoverReference(position, -.5);
+    } else {
+      Eigen::Matrix<real_t,kStateSize,1> state;
+      state << 1,2,.65,1,0,0,0,0,0,0;
+      ASSERT_TRUE(controller->resetForHover(state, position, -.5));
+    }
+    controller->waitForPreparation();
+    EXPECT_TRUE(std::equal(baseline.begin(), baseline.end(), acadoVariables.W));
+    EXPECT_TRUE(std::equal(terminal.begin(), terminal.end(), acadoVariables.WN));
+  }
 }
 
 }  // namespace

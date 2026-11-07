@@ -254,6 +254,8 @@ namespace PayloadMPC
 		OdomSpikeGuard odom_spike_guard_;
 		Takeoff takeoff_;
 		FixedHover fixed_hover_;
+        double landing_position_weight_xy_{0.0};
+        double landing_bodyrate_weight_xy_{0.0};
 
 		ForceEstimator force_estimator_param_;
 		filter filter_param_;
@@ -314,6 +316,11 @@ namespace PayloadMPC
 
 		void config_from_ros_handle(const ros::NodeHandle &nh)
 		{
+        nh.param("precision_landing/fixed_xy_Q_pos_xy", landing_position_weight_xy_, 0.0);
+        nh.param("precision_landing/fixed_xy_R_pitchroll", landing_bodyrate_weight_xy_, 0.0);
+        if (!std::isfinite(landing_position_weight_xy_) || landing_position_weight_xy_ < 0.0 ||
+            !std::isfinite(landing_bodyrate_weight_xy_) || landing_bodyrate_weight_xy_ < 0.0)
+            throw std::runtime_error("invalid precision landing tracking weights");
 			read_essential_param(nh, "Q_pos_xy", q_gain_.Q_pos_xy);
 			read_essential_param(nh, "Q_pos_z", q_gain_.Q_pos_z);
 			read_essential_param(nh, "Q_attitude_rp", q_gain_.Q_attitude_rp);

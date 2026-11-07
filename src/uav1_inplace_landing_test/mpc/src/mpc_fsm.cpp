@@ -202,6 +202,7 @@ namespace PayloadMPC
 		nh_.param("precision_landing_test_mode", precision_test_mode_, false);
         nh_.param("precision_test_target_in_odom_frame", precision_test_target_in_odom_frame_, false);
         nh_.param("precision_landing_mission_mode", precision_mission_mode_, false);
+        nh_.param("precision_landing/xy_handoff_duration", landing_xy_handoff_duration_, 0.0);
 		nh_.param("landing_search_yaw_timeout", landing_search_yaw_timeout_, 0.5);
 		nh_.param("landing_search_hold_height", landing_search_hold_height_, 0.6);
 		if (!std::isfinite(landing_search_yaw_timeout_) ||
@@ -300,6 +301,7 @@ namespace PayloadMPC
 		const std::string state = firstToken(msg->data);
 		if (precision_test_mode_)
 		{
+			if (state != "FIXED_XY_DESCENT") precision_fixed_stage_ = false;
 			if (state == "FIXED_XY_DESCENT" && !precision_fixed_stage_)
 			{
 				precision_fixed_stage_ = true;
@@ -453,6 +455,9 @@ namespace PayloadMPC
                 precision_thrust_learning_ready_ = false;
                 precision_thrust_stable_since_ = ros::Time(0);
                 precision_test_started_ = true;
+                precision_test_previous_mask_ = 0;
+                landing_xy_handoff_start_ = ros::Time(0);
+                landing_reference_velocity_.setZero();
                 fsm_state = AUTO_HOVER;
                 ROS_WARN("[精降NMPC] 已接收精降目标，MPC接管；CH10优先。");
             }
@@ -656,6 +661,7 @@ namespace PayloadMPC
                     (now_time - last_set_hover_pose_time).toSec()));
                 last_set_hover_pose_time = now_time;
                 Eigen::Vector3d velocity = Eigen::Vector3d::Zero();
+                Eigen::Vector3d acceleration = Eigen::Vector3d::Zero();
                 if ((now_time - precision_test_target_time_).toSec() <= 0.3)
                 {
                     const auto &target = precision_test_target_;
@@ -665,10 +671,39 @@ namespace PayloadMPC
                         Eigen::Vector3d(p.x, p.y, p.z) + precision_test_translation_;
                     if (target.type_mask == 2552)
                     {
-                        hover_pose_ = position;  // 精降节点已给出补偿后的世界目标。
+                        if (landing_xy_handoff_duration_ > 0.0 &&
+                            (precision_test_previous_mask_ == 2531 || precision_test_previous_mask_ == 2503))
+                        {
+                            const double T = landing_xy_handoff_duration_;
+                            Eigen::Vector3d offset = hover_pose_ - position;
+                            Eigen::Vector3d initial_velocity = landing_reference_velocity_;
+                            offset.z() = initial_velocity.z() = 0.0;
+                            Piece::CoefficientMat c = Piece::CoefficientMat::Zero(3, 6);
+                            c.col(5) = offset;
+                            c.col(4) = initial_velocity;
+                            c.col(2) = -10.0*offset/std::pow(T, 3) - 6.0*initial_velocity/std::pow(T, 2);
+                            c.col(1) = 15.0*offset/std::pow(T, 4) + 8.0*initial_velocity/std::pow(T, 3);
+                            c.col(0) = -6.0*offset/std::pow(T, 5) - 3.0*initial_velocity/std::pow(T, 4);
+                            landing_xy_handoff_offset_ = Piece(T, c);
+                            landing_xy_handoff_start_ = now_time;
+                            ROS_INFO("[精降NMPC] XY参考平滑交接：偏移 %.3f m，时长 %.2f s。", offset.head<2>().norm(), T);
+                        }
+                        hover_pose_ = position;
+                        if (!landing_xy_handoff_start_.isZero())
+                        {
+                            const double elapsed = (now_time - landing_xy_handoff_start_).toSec();
+                            if (elapsed >= 0.0 && elapsed < landing_xy_handoff_duration_)
+                            {
+                                hover_pose_ += landing_xy_handoff_offset_.getPos(elapsed);
+                                velocity = landing_xy_handoff_offset_.getVel(elapsed);
+                                acceleration = landing_xy_handoff_offset_.getAcc(elapsed);
+                            }
+                            else landing_xy_handoff_start_ = ros::Time(0);
+                        }
                     }
                     else
                     {
+                        landing_xy_handoff_start_ = ros::Time(0);
                         velocity = precision_test_rotation_ * Eigen::Vector3d(v.x, v.y, v.z);
                         // 视觉速度指令积分为连续参考，并保留速度前馈；新速度阶段从当前定位起步。
                         if (precision_test_previous_mask_ != target.type_mask) hover_pose_ = odom_data.p;
@@ -678,9 +713,14 @@ namespace PayloadMPC
                     precision_test_previous_mask_ = target.type_mask;
                     hover_yaw_ = wrapYaw(target.yaw + precision_test_yaw_offset_);
                 }
-                else ROS_WARN_THROTTLE(1.0, "[精降NMPC测试] 目标超时，保持最后位置目标。");
+                else {
+                    landing_xy_handoff_start_ = ros::Time(0);
+                    ROS_WARN_THROTTLE(1.0, "[精降NMPC测试] 目标超时，保持最后位置目标。");
+                }
+                landing_reference_velocity_ = velocity;
                 if (!controller_.setPositionCommandReference(hover_pose_, velocity,
-                    Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), hover_yaw_, 0.0))
+                    acceleration, Eigen::Vector3d::Zero(), hover_yaw_, 0.0,
+                    precision_fixed_stage_ && precision_test_target_.type_mask == 2552))
                 {
                     beginMpcRecovery(now_time, "精降测试参考无效");
                     break;

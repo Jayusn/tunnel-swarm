@@ -81,7 +81,7 @@ namespace PayloadMPC
                                      const Eigen::Ref<const Eigen::Vector3d> &acceleration,
                                      const Eigen::Ref<const Eigen::Vector3d> &jerk,
                                      double yaw,
-                                     double yaw_rate);
+                                     double yaw_rate, bool fixed_landing = false);
     // 根据位置多项式和可选的规划 yaw 生成 NMPC 参考；yaw_rate 单位 rad/s。
     // force_fixed_yaw 只供搜索降落状态使用，避免修改全局 use_fix_yaw 后影响普通规划。
     void setTrajectoyReference(Trajectory &traj, double tstart, double start_yaw,
@@ -131,6 +131,8 @@ namespace PayloadMPC
     const MpcParams &param) const;
 
   private:
+    bool setLandingTrackingWeights(bool active);
+    bool landing_tracking_weights_active_{false};
     double last_yaw_{0.0};
     double last_yaw_dot_{0.0};
     // 动态偏航只初始化一次；重规划时沿用当前偏航，避免参考突跳。

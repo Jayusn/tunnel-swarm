@@ -22,9 +22,21 @@ from test_landing_memory_ros import LandingMemoryTest
 
 class FastlioControllerTest(RcLandPriorityTest):
     def test_target_frame_and_takeoff_ramp(self):
+        self.exercise_controller(False)
+
+    def test_synced_18cm_handoff_and_ch10(self):
+        self.exercise_controller(True)
+
+    def exercise_controller(self, synced):
         # 解析实际入口，但仅启动测试所需 NMPC 和路由器；不启动记录器或真实硬件。
         launch = Path(__file__).resolve().parents[1]/'launch/landing_nmpc_test.launch'
-        config = roslaunch.config.load_config_default([str(launch)], None)
+        if synced:
+            launch = launch.with_name('landing_test.launch')
+            config = roslaunch.config.load_config_default([(str(launch), ['marker_size_m:=0.18'])], None)
+            self.assertEqual(config.params['/landing_test/takeoff_height_m'].value, 1.5)
+            self.assertEqual(config.params['/mpc_controller_node/precision_landing/fixed_xy_Q_pos_xy'].value, 400.)
+        else:
+            config = roslaunch.config.load_config_default([str(launch)], None)
         for name, value in config.params.items():
             if name.startswith('/mpc_controller_node/'):
                 rospy.set_param(self.prefix+'/controller/'+name.split('/mpc_controller_node/')[1], value.value)
@@ -103,6 +115,20 @@ class FastlioControllerTest(RcLandPriorityTest):
         local.pose.position.z = 121.  # 飞控高度漂移不改变 FAST-LIO 的起飞终点。
         drive(4.3)
         self.assertAlmostEqual(self.last('controller/mpc/reference_trajectory').poses[0].pose.position.z, 7., places=4)
+        if synced:
+            stage = 'ALIGN'
+            target.type_mask = 2531
+            target.velocity.x = .08
+            drive(.8)
+            before = self.last('controller/mpc/reference_trajectory').poses[0].pose.position
+            stage = 'FIXED_XY_DESCENT'
+            target.type_mask = 2552
+            drive(.15)
+            during = self.last('controller/mpc/reference_trajectory').poses[0].pose.position
+            self.assertLess(abs(during.y-before.y), .05, 'XY must not jump at handoff')
+            self.assertGreater(abs(during.y-target.position.y), .10)
+            self.assertAlmostEqual(during.z, target.position.z, places=4)
+            drive(1.6)
         stage = 'FIXED_XY_DESCENT'
         drive(.3)
         ref = self.last('controller/mpc/reference_trajectory').poses[0].pose
@@ -192,5 +218,6 @@ if __name__ == '__main__':
     elif len(sys.argv) > 1 and sys.argv[1] == 'precision':
         suite = unittest.TestSuite([FastlioPrecisionTest('test_stopped_camera_preserves_compensated_world_goal')])
     else:
-        suite = unittest.TestSuite([FastlioControllerTest('test_target_frame_and_takeoff_ramp')])
+        suite = unittest.TestSuite([FastlioControllerTest('test_target_frame_and_takeoff_ramp'),
+                                   FastlioControllerTest('test_synced_18cm_handoff_and_ch10')])
     sys.exit(not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful())

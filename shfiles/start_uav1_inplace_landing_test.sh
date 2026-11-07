@@ -5,7 +5,7 @@ set -eo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 MATCH_WS="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 SCRIPT_PATH="${UAV1_TEST_ENTRY_SCRIPT:-${SCRIPT_DIR}/start_uav1_inplace_landing_test.sh}"
-TAKEOFF_HEIGHT_M="${UAV1_TEST_TAKEOFF_HEIGHT_M:-1.70}"
+TAKEOFF_HEIGHT_M="${UAV1_TEST_TAKEOFF_HEIGHT_M:-1.50}"
 START_ON_OFFBOARD="${UAV1_TEST_START_ON_OFFBOARD:-false}"
 # 所有分屏共用本机地址，基础四屏也通过环境变量继承，避免各用旧默认值。
 export UAV1_SINGLE_ROS_IP="${UAV1_SINGLE_ROS_IP:-192.168.230.232}"

@@ -117,6 +117,10 @@ namespace PayloadMPC
         bool precision_mission_active_{false};
         mavros_msgs::PositionTarget precision_test_target_;
         unsigned precision_test_previous_mask_{0};
+        double landing_xy_handoff_duration_{0.0};
+        ros::Time landing_xy_handoff_start_{0};
+        Piece landing_xy_handoff_offset_;
+        Eigen::Vector3d landing_reference_velocity_{Eigen::Vector3d::Zero()};
         bool precision_fixed_stage_{false}, precision_fixed_latched_{false};
         ros::Time precision_fixed_stage_time_;
         Eigen::Vector3d precision_fixed_origin_{Eigen::Vector3d::Zero()};

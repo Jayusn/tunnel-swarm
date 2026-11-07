@@ -202,6 +202,7 @@ namespace PayloadMPC
 
     mpc_wrapper_.setDynamicParams(params_.dyn_params_.mass_q);
     recovery_velocity_limits_relaxed_ = false;
+    landing_tracking_weights_active_ = false;
     mpc_wrapper_.initialize(Q, R, reset_state, initial_input,
                             params_.state_cost_exponential_, params_.input_cost_exponential_);
     const bool limits_ok = mpc_wrapper_.setLimits(
@@ -286,6 +287,7 @@ namespace PayloadMPC
   // drone pos
   void MpcController::setHoverReference(const Eigen::Ref<const Eigen::Vector3d> &quad_position, const double yaw)
   {
+    setLandingTrackingWeights(false);
     // 悬停、起飞和恢复状态用实际锁存航向重新建立偏航状态；轨迹重规划不会调用此重置。
     last_yaw_ = angle_limit(yaw);
     last_yaw_dot_ = 0.0;
@@ -310,13 +312,43 @@ namespace PayloadMPC
     reference_inputs_ = hover_in.replicate(1, kSamples + 1);
   }
 
+  bool MpcController::setLandingTrackingWeights(bool active)
+  {
+    active = active && (params_.landing_position_weight_xy_ > 0.0 ||
+                        params_.landing_bodyrate_weight_xy_ > 0.0);
+    if (active == landing_tracking_weights_active_) return true;
+    const auto &q = params_.q_gain_;
+    const auto &r = params_.r_gain_;
+    const real_t position_weight = active && params_.landing_position_weight_xy_ > 0.0
+        ? params_.landing_position_weight_xy_ : q.Q_pos_xy;
+    const real_t rate_weight = active && params_.landing_bodyrate_weight_xy_ > 0.0
+        ? params_.landing_bodyrate_weight_xy_ : r.R_pitchroll;
+    const Eigen::Matrix<real_t, kCostSize, kCostSize> Q =
+        (Eigen::Matrix<real_t, kCostSize, 1>() << position_weight, position_weight, q.Q_pos_z,
+         q.Q_attitude_rp, q.Q_attitude_rp, q.Q_attitude_rp, q.Q_attitude_yaw,
+         q.Q_velocity, q.Q_velocity, q.Q_velocity).finished().asDiagonal();
+    const Eigen::Matrix<real_t, kInputSize, kInputSize> R =
+        (Eigen::Matrix<real_t, kInputSize, 1>() << r.R_thrust, rate_weight, rate_weight,
+         r.R_yaw, r.R_velocity_slack_xy, r.R_velocity_slack_xy,
+         r.R_velocity_slack_z).finished().asDiagonal();
+    waitForPreparation();
+    const bool success = mpc_wrapper_.setCosts(Q, R, params_.state_cost_exponential_,
+                                             params_.input_cost_exponential_);
+    if (success) landing_tracking_weights_active_ = active;
+    preparation_thread_ = std::thread(&MpcController::preparationThread, this);
+    if (success)
+      ROS_INFO("[精降锁点纠偏] active=%d Q_pos_xy=%.1f R_pitchroll=%.1f",
+               int(active), double(position_weight), double(rate_weight));
+    return success;
+  }
+
   bool MpcController::setPositionCommandReference(
       const Eigen::Ref<const Eigen::Vector3d> &position,
       const Eigen::Ref<const Eigen::Vector3d> &velocity,
       const Eigen::Ref<const Eigen::Vector3d> &acceleration,
       const Eigen::Ref<const Eigen::Vector3d> &jerk,
       double yaw,
-      double yaw_rate)
+      double yaw_rate, bool fixed_landing)
   {
     // 入口点的位置、速度和加速度位于规划器世界系；yaw/yaw_rate 由 FSM 提供。
     // 当前入口模式锁定收到目标时的机体航向，忽略 PositionCommand 自带的偏航字段。
@@ -331,6 +363,7 @@ namespace PayloadMPC
       return false;
     }
 
+    if (!setLandingTrackingWeights(fixed_landing)) return false;
     computeQuadrotorFlatness(acceleration, jerk, yaw, yaw_rate, quad_q, thrust, body_rate);
     if (!quad_q.coeffs().allFinite() || !std::isfinite(thrust) || !body_rate.allFinite())
     {
