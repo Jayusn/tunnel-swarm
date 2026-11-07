@@ -1,7 +1,7 @@
 <?xml version="1.0" ?>
 <launch>
   <!-- 2026-11-07：按两次飞行点云复核，XY 平移修正为 (4.60, 1.38)，无旋转。
-       ground_z 沿用实测 Z 平移 -0.22；起飞、巡检与降落接近高度统一降低 10 cm，Z=1.53。 -->
+       ground_z 沿用实测 Z 平移 -0.22；起飞、巡检与降落接近高度统一为 Z=1.58。 -->
   <arg name="ground_z" default="-0.22"/>
   <arg name="bridge_yaw" default="0.0"/>
   <arg name="landing_x" default="16.00"/>
@@ -10,7 +10,7 @@
   <arg name="bridge_clear_height" default="1.2"/>
   <arg name="floor_margin" default="0.15"/>
   <arg name="ceiling_margin" default="0.15"/>
-  <arg name="cruise_height_above_floor" default="0.25"/>
+  <arg name="cruise_height_above_floor" default="0.30"/>
   <!-- 从新起点 Z≈0 起飞，原降落位置的接地参考同步移至 Z≈-0.22。 -->
   <arg name="landing_platform_delta_z" default="-0.22"/>
   <arg name="route_file" default="$(find uav1_bridge_inspection)/config/route.yaml"/>
