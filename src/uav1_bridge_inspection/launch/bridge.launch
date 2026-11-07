@@ -1,7 +1,7 @@
 <?xml version="1.0" ?>
 <launch>
   <!-- 2026-11-07：按两次飞行点云复核 X 平移；航点 Y 按当前通道居中，降落接近点为 (16.00, 0.00)。
-       ground_z 沿用实测 Z 平移 -0.22；起飞、巡检Z=1.50，平台抬高15cm后降落接近Z=1.65。 -->
+       ground_z 沿用实测 Z 平移 -0.22；起飞、巡检与降落接近Z=1.50，精降阶段按平台高度上移15cm。 -->
   <arg name="ground_z" default="-0.22"/>
   <arg name="bridge_yaw" default="0.0"/>
   <arg name="landing_x" default="16.00"/>
@@ -24,7 +24,7 @@
   <arg name="floor_z" default="$(eval float(arg(&quot;ground_z&quot;)) + float(arg(&quot;bridge_floor_height&quot;)))"/>
   <arg name="ceiling_z" default="$(eval float(arg(&quot;floor_z&quot;)) + float(arg(&quot;bridge_clear_height&quot;)))"/>
   <arg name="takeoff_z" default="$(eval float(arg(&quot;floor_z&quot;)) + float(arg(&quot;cruise_height_above_floor&quot;)))"/>
-  <arg name="landing_approach_z" default="$(eval float(arg('takeoff_z')) + 0.15)"/>
+  <arg name="landing_approach_z" default="$(arg takeoff_z)"/>
   <include file="$(find uav1_bridge_inspection)/launch/planner.launch">
     <arg name="ground_z" value="$(arg ground_z)"/>
     <arg name="floor_z" value="$(arg floor_z)"/>
