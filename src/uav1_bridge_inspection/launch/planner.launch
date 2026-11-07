@@ -3,7 +3,7 @@
   <arg name="ground_z"/>
   <arg name="floor_z"/>
   <arg name="ceiling_z"/>
-  <arg name="floor_margin" default="0.15"/>
+  <arg name="floor_margin" default="0.05"/>
   <arg name="ceiling_margin" default="0.15"/>
   <include file="$(find diff_planner)/launch/include/advanced_param_exp.xml">
     <arg name="local_map_size_x" value="7.5"/>

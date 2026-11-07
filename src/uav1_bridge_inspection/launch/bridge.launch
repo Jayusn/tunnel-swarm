@@ -8,7 +8,7 @@
   <arg name="landing_y" default="0.00"/>
   <arg name="bridge_floor_height" default="1.5"/>
   <arg name="bridge_clear_height" default="1.2"/>
-  <arg name="floor_margin" default="0.15"/>
+  <arg name="floor_margin" default="0.05"/>
   <arg name="ceiling_margin" default="0.15"/>
   <arg name="cruise_height_above_floor" default="0.22"/>
   <!-- 从新起点 Z≈0 起飞，原降落位置的接地参考同步移至 Z≈-0.22。 -->
