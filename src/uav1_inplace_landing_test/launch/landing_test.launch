@@ -52,6 +52,9 @@
   </include>
   <!-- 新权重先在18cm独立测试验证；桥梁控制器暂不启用。 -->
   <group if="$(eval arg('enable_nmpc_descent') and abs(float(arg('marker_size_m')) - 0.18) &lt; 0.000001)">
+    <!-- 18 cm 独立测试：FAST-LIO 距起飞平台20 cm时切 AUTO.LAND，末端由飞控接管。 -->
+    <param name="$(arg vehicle_ns)/precision_landing_node/auto_land_at_cutoff" value="true"/>
+    <param name="/landing_nmpc_test_router/offboard_touchdown" value="false"/>
     <param name="/mpc_controller_node/precision_landing/fixed_xy_Q_pos_xy" value="400.0"/>
     <param name="/mpc_controller_node/precision_landing/fixed_xy_R_pitchroll" value="20.0"/>
     <param name="/mpc_controller_node/precision_landing/xy_handoff_duration" value="1.5"/>

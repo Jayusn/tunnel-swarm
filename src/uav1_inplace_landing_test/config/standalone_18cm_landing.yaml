@@ -42,3 +42,6 @@ stages:
   auto_land:
     height_m: 0.70
     error_m: 0.05
+  fixed_xy_descent:
+    # 使用当前 FAST-LIO Z 减去起飞时记录的 FAST-LIO Z，20 cm 时交给 PX4。
+    cutoff_height_m: 0.20

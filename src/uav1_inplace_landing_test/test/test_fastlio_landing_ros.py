@@ -40,6 +40,8 @@ class FastlioControllerTest(RcLandPriorityTest):
         for name, value in config.params.items():
             if name.startswith('/mpc_controller_node/'):
                 rospy.set_param(self.prefix+'/controller/'+name.split('/mpc_controller_node/')[1], value.value)
+            elif name.startswith('/landing_nmpc_test_router/'):
+                rospy.set_param(self.prefix+'/router/'+name.split('/landing_nmpc_test_router/')[1], value.value)
         rospy.set_param(self.prefix+'/router/odometry_topic', self.prefix+'/odom')
         mode_calls = []
         service = rospy.Service(self.prefix+'/mode', SetMode,
@@ -140,6 +142,12 @@ class FastlioControllerTest(RcLandPriorityTest):
         rc.channels[9] = 1933
         drive(.6)
         self.assertIn('AUTO.LAND', mode_calls)
+        # 飞控确认 AUTO.LAND 后，路由器停止NMPC输出，避免继续争用末端控制权。
+        state.mode = 'AUTO.LAND'
+        drive(.3)
+        count = len(self.messages['mavros_attitude'])
+        drive(.3)
+        self.assertEqual(len(self.messages['mavros_attitude']), count)
 
 
 class FastlioPrecisionTest(LandingMemoryTest):
@@ -149,20 +157,32 @@ class FastlioPrecisionTest(LandingMemoryTest):
 class FastlioTakeoffReferenceTest(FastlioPrecisionTest):
     use_takeoff_reference = True
 
+    def setUp(self):
+        # 从实际18 cm入口取末端参数；基类故意把飞控Z设为30 m，起飞FAST-LIO Z设为1 m。
+        launch = Path(__file__).resolve().parents[1]/'launch/landing_test.launch'
+        config = roslaunch.config.load_config_default([(str(launch), ['marker_size_m:=0.18'])], None)
+        root = '/UAV1/precision_landing_node/'
+        self.assertTrue(config.params[root+'auto_land_at_cutoff'].value)
+        self.assertFalse(config.params['/landing_nmpc_test_router/offboard_touchdown'].value)
+        self.assertEqual(config.params[root+'stages/auto_land/height_m'].value, .70)
+        for key in ('stages/fixed_xy_descent/cutoff_height_m', 'control/use_fastlio_z_for_height'):
+            rospy.set_param('/'+self._testMethodName+'/node/'+key, config.params[root+key].value)
+        super().setUp()
+
     def test_takeoff_reference_handoff_with_marker_offset(self):
         expected = self.acquire()
         # 模拟落地后定位原点仍在码面上方；旧码面门限此时不会触发。
         marker_ground = 3. - self.targets[-1].pose.position.z
-        self.assertGreater(1.29 - marker_ground, .3)
+        self.assertGreater(1.19 - marker_ground, .3)
         self.frames = False
         self.x, self.y = expected
         self.wait(lambda: self.stage() == 'FIXED_XY_DESCENT', 'locked XY descent')
-        self.z = 1.31
+        self.z = 1.21
         time.sleep(.4)
-        self.assertFalse(self.requests, 'above 0.3 m relative to takeoff')
+        self.assertFalse(self.requests, 'above 0.2 m relative to FAST-LIO takeoff Z')
         self.assertAlmostEqual(self.commands[-1].position.x, expected[0], delta=.025)
         self.assertAlmostEqual(self.commands[-1].position.y, expected[1], delta=.025)
-        self.z = 1.29
+        self.z = 1.19
         self.wait(lambda: self.requests, 'takeoff-relative handoff with camera stopped')
         self.assertEqual(self.requests[-1], 'AUTO.LAND')
 
@@ -170,10 +190,10 @@ class FastlioTakeoffReferenceTest(FastlioPrecisionTest):
         self.have_marker = False
         self.trigger = True
         self.wait(lambda: self.stage() == 'FIXED_XY_DESCENT', 'no-marker descent')
-        self.z = 1.31
+        self.z = 1.21
         time.sleep(.4)
         self.assertFalse(self.requests)
-        self.z = 1.29
+        self.z = 1.19
         self.wait(lambda: self.requests, 'takeoff reference without marker ground')
         self.assertEqual(self.requests[-1], 'AUTO.LAND')
 
