@@ -1950,6 +1950,80 @@ TEST_F(FifoEntrySpacing, OutsideRelayScanUsesRelayHeadingAndCompletesBeforeNextG
   EXPECT_FALSE(follower->diff_wait_hold_active_);
 }
 
+TEST_F(FifoEntrySpacing, DoorScanWaitsForSettlingAndReturnsBeforeNextGoal) {
+  follower->ordinary_scan_enabled_ = true;
+  follower->require_waypoint_yaw_ = true;
+  follower->door_waypoint_released_ = true;
+  queuePoint(1.0, true);
+  queuePoint(2.0);
+  setLeader(4.0);
+  const double center = 0.5;
+  follower->follower_alignment_yaw_ = 0.2;
+  follower->relay_waypoints_[0].yaw = center + 0.2;
+  auto setYaw = [&](double yaw) {
+    follower->follower_odom_.pose.pose.orientation.w = std::cos(yaw / 2.0);
+    follower->follower_odom_.pose.pose.orientation.z = std::sin(yaw / 2.0);
+  };
+  setYaw(center);
+  const ros::Time start = ros::Time::now();
+  follower->handleSimpleDiffPlannerExecution(start);
+  EXPECT_EQ(0, follower->ordinary_scan_stage_); // 尚未到门点。
+  follower->follower_odom_.pose.pose.position.x = 1.0;
+  follower->follower_horizontal_speed_ = follower->entry_arrive_max_horizontal_speed_ + 0.1;
+  follower->handleSimpleDiffPlannerExecution(start);
+  EXPECT_EQ(0, follower->ordinary_scan_stage_); // 到点但尚未停稳。
+  ASSERT_EQ(2U, follower->relay_waypoints_.size());
+  follower->follower_horizontal_speed_ = 0.0;
+  follower->handleSimpleDiffPlannerExecution(start);
+  ASSERT_NE(0, follower->ordinary_scan_stage_);
+  EXPECT_NEAR(center, follower->ordinary_scan_center_, 1e-9);
+  EXPECT_TRUE(follower->diff_wait_hold_active_);
+  bool left = false, right = false;
+  double finish_time = 0.0;
+  for (int i = 1; i <= 320; ++i) {
+    const ros::Time now = start + ros::Duration(i * 0.05);
+    follower->leader_odom_stamp_ = now;
+    setYaw(follower->ordinary_scan_yaw_);
+    follower->handleSimpleDiffPlannerExecution(now);
+    const double offset = std::remainder(follower->ordinary_scan_yaw_ - center, 2*M_PI);
+    left = left || std::abs(offset - M_PI/4) < 1e-8;
+    right = right || std::abs(offset + M_PI/4) < 1e-8;
+    if (follower->relay_waypoints_.size() == 1U) {
+      finish_time = i * 0.05;
+      break;
+    }
+    ASSERT_EQ(2U, follower->relay_waypoints_.size());
+    EXPECT_TRUE(follower->relay_waypoints_.front().is_door);
+    EXPECT_TRUE(follower->diff_wait_hold_active_);
+  }
+  EXPECT_TRUE(left);
+  EXPECT_TRUE(right);
+  ASSERT_EQ(1U, follower->relay_waypoints_.size());
+  EXPECT_GE(finish_time, 12.5);
+  EXPECT_LT(finish_time, 13.0);
+  EXPECT_NEAR(center, follower->ordinary_scan_yaw_, 1e-8);
+  EXPECT_TRUE(follower->simple_door_hover_active_);
+  follower->handleSimpleDiffPlannerExecution(start + ros::Duration(finish_time + 0.05));
+  EXPECT_EQ(0, follower->ordinary_scan_stage_);
+  EXPECT_TRUE(follower->diff_goal_published_);
+  EXPECT_FALSE(follower->simple_door_hover_active_);
+}
+
+TEST_F(FifoEntrySpacing, DoorScanRespectsExistingScanSwitches) {
+  follower->follower_odom_.pose.pose.orientation.w = 1.0;
+  for (int mode = 0; mode < 3; ++mode) {
+    follower->ordinary_scan_enabled_ = mode != 0;
+    follower->in_dynamic_passage_ = mode == 1;
+    follower->stop_scan_after_all_targets_ = mode == 2;
+    if (mode == 2)
+      follower->confirmed_target_types_ = {"qr_code", "color_tag", "thermal_source"};
+    queuePoint(0.0, true);
+    follower->handleSimpleDiffPlannerExecution(ros::Time::now());
+    EXPECT_EQ(0, follower->ordinary_scan_stage_);
+    EXPECT_TRUE(follower->relay_waypoints_.empty());
+  }
+}
+
 TEST_F(FifoEntrySpacing, InsideDynamicPassageDoesNotScan) {
   prepareQualifiedPoints();
   follower->ordinary_scan_enabled_ = true;

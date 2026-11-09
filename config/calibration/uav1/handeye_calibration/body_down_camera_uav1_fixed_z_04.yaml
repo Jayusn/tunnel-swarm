@@ -1,0 +1,48 @@
+parent_frame: UAV1/body
+child_frame: UAV1/down_camera_optical_frame
+translation_m:
+- -0.01407227
+- 0.02038670
+- -0.13346814265233625
+quaternion_xyzw:
+- -0.62323218
+- 0.78197703
+- 0.00314224
+- 0.00914851
+rotation_matrix:
+- - -0.222995906
+  - -0.974763997
+  - 0.010391158
+- - -0.974649010
+  - 0.223143549
+  - 0.016317603
+- - -0.018224531
+  - -0.006488973
+  - -0.999812862
+board:
+  inner_corners: [11, 8]
+  square_size_m: 0.04
+samples_used: 30
+metrics:
+  reprojection_rms_px: 0.4696
+  target_translation_rms_m: 0.027759
+  target_translation_median_m: 0.021318
+  target_translation_max_m: 0.048825
+  target_rotation_rms_deg: 0.783414
+  target_rotation_median_deg: 0.536492
+  target_rotation_max_deg: 1.727548
+  leave_one_out_x_range_m: 0.0087442
+  leave_one_out_y_range_m: 0.0160011
+  leave_one_out_rotation_max_deg: 0.86852
+metadata:
+  status: candidate_not_deployed
+  method: robust_rotation_and_xy_with_fixed_z_prior
+  source_bag: /home/oem/handeye_calibration/uav1_down_camera_handeye_04.bag
+  source_stable_holds: 35
+  source_consistent_holds: 30
+  fixed_z_m: -0.13346814265233625
+  fixed_z_source: UAV0/body_to_down_camera_optical_frame
+  image_topic: /UAV1/calibration/down_camera/image_raw
+  camera_info_topic: /UAV1/down_camera/camera_info
+  odom_topic: /UAV1/fast_lio/Odometry
+  note: Must pass propellers-removed ground validation before deployment.

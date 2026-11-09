@@ -466,6 +466,11 @@ class LeaderSafePathFollower {
       traj_started_pub_ = nh_.advertise<std_msgs::Empty>(traj_started_topic_, 1, true);
     }
     diff_goal_pub_ = nh_.advertise<geometry_msgs::PoseStamped>(diff_goal_topic_, 1, true);
+    corridor_exit_reached_pub_ = nh_.advertise<std_msgs::Bool>(
+        diff_goal_topic_ + "/corridor_exit_reached", 1, true);
+    std_msgs::Bool corridor_exit;
+    corridor_exit.data = false;
+    corridor_exit_reached_pub_.publish(corridor_exit);
     diff_yaw_pub_ = nh_.advertise<quadrotor_msgs::PositionCommand>(diff_yaw_topic_, 1);
     ordinary_scan_yaw_pub_ = nh_.advertise<quadrotor_msgs::PositionCommand>(
         diff_goal_topic_ + "/scan_yaw", 1);
@@ -2209,6 +2214,15 @@ class LeaderSafePathFollower {
     }
   }
 
+  void publishCorridorExitReached() {
+    if (exit_waypoint_index_ == std::numeric_limits<std::size_t>::max() ||
+        active_relay_index_ != exit_waypoint_index_) return;
+    std_msgs::Bool reached;
+    reached.data = true;
+    corridor_exit_reached_pub_.publish(reached);
+    ROS_INFO("[safe_follower] 后机已到达出口，解除通道规划限高。");
+  }
+
   void consumeSimpleRelayFront() {
     if (active_relay_index_ >= relay_waypoints_.size()) return;
     previous_fifo_position_ = relay_waypoints_[active_relay_index_].position;
@@ -2356,7 +2370,7 @@ class LeaderSafePathFollower {
 
   void startOrdinaryScan(double center_yaw, const ros::Time& now) {
     if (!ordinaryScanAllowed()) return;
-    // 中心来自当前接力点的前机航向，转换为后机坐标系后锁存一次。
+    // 中心来自门点或当前接力点的世界航向，转换为后机坐标系后锁存一次。
     ordinary_scan_center_ = center_yaw;
     ordinary_scan_yaw_ = yawFromQuaternion(follower_odom_.pose.pose.orientation);
     ordinary_scan_last_update_ = now;
@@ -2611,7 +2625,8 @@ class LeaderSafePathFollower {
         // 保留队首，后续周期复用普通间距等待，恢复后再消费并接续下一点。
         if (handleDiffSeparationSafety(now)) return true;
       }
-      if (ordinary_relay && ordinaryScanAllowed() && !skip_occupied_point &&
+      // 入口门点停稳后也复用左右扫描，回正后才消费门点并接续普通FIFO。
+      if ((desired_world.is_door || ordinary_relay) && ordinaryScanAllowed() && !skip_occupied_point &&
           !skip_passed_point && !in_dynamic_passage_ && !ordinary_scan_done_) {
         startOrdinaryScan(worldYawToFollower(desired_world.yaw), now);
         stepOrdinaryScan(now);
@@ -2671,6 +2686,7 @@ class LeaderSafePathFollower {
                   "at (%.2f,%.2f,%.2f).",
                   relay_waypoints_.size(), desired_local.x, desired_local.y,
                   desired_local.z);
+      if (!skip_occupied_point && !skip_passed_point) publishCorridorExitReached();
       if (outside_wait_relay) {
         outside_wait_arrived_ = true;
         setFollowerDetectionEnable(false, "follower reached outside-door hover point");
@@ -4301,6 +4317,7 @@ class LeaderSafePathFollower {
 
       ROS_ERROR("[safe_follower] UAV1 Diff ARRIVED relay waypoint %zu/%zu.",
                 active_relay_index_ + 1, relay_waypoints_.size());
+      publishCorridorExitReached();
       if (active_relay_index_ == outside_wait_waypoint_index_) {
         outside_wait_arrived_ = true;
         setFollowerDetectionEnable(false, "follower reached outside-door hover point");
@@ -4583,6 +4600,7 @@ class LeaderSafePathFollower {
       if (!terminal_reached) {
         ROS_ERROR("[safe_follower] ARRIVED relay waypoint %zu/%zu; wait/execute next released point.",
                   active_relay_index_ + 1, relay_waypoints_.size());
+        publishCorridorExitReached();
         // 2026-07-22: 正常抵达后把已验证接力点锁为等待目标；即使受扰离开，也会主动拉回而不是接受漂移后的位置。
         hold_target_local_ = occupied_attachment ? current_local : desired_local;
         hold_target_yaw_ = worldYawToFollower(desired_world.yaw);
@@ -4754,6 +4772,7 @@ class LeaderSafePathFollower {
   ros::Subscriber follower_assigned_target_sub_;
   ros::Subscriber follower_landing_trigger_sub_;
   ros::Subscriber final_exit_pose_sub_;  // 2026-07-28: 前机永久锁存的最终出口门心。
+  ros::Publisher corridor_exit_reached_pub_;
   ros::Subscriber leader_task_status_sub_, landing_search_state_sub_,
       front_scan_anchor_sub_;
   ros::Subscriber diff_status_sub_;  // 2026-07-28: UAV1 Diff轨迹成功/失败反馈。

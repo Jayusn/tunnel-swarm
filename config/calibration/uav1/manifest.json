@@ -1,0 +1,31 @@
+{
+  "vehicle": "UAV1",
+  "collected_date": "2026-11-09",
+  "files": [
+    {
+      "source": "/home/oem/.ros/camera_info/down_camera.yaml",
+      "file": "camera_info/down_camera.yaml",
+      "sha256": "ef8fc29f575fe11c2c6887ec36c8a312c1b97cbd01f185c52a83a401110b6326"
+    },
+    {
+      "source": "/home/oem/handeye_calibration/body_camera_03.yaml",
+      "file": "handeye_calibration/body_camera_03.yaml",
+      "sha256": "3b8d1b2f75832d5fcc5542dcf54fdc5ba3abbddf22a797db39d3cc2217dc74ca"
+    },
+    {
+      "source": "/home/oem/handeye_calibration/body_down_camera_uav1_fixed_z_04.yaml",
+      "file": "handeye_calibration/body_down_camera_uav1_fixed_z_04.yaml",
+      "sha256": "ea215f1c0a3b0fab625a0226643435be32b7edab0310006098a9a6c416694090"
+    },
+    {
+      "source": "/home/oem/handeye_calibration/body_down_camera_uav1_park.yaml",
+      "file": "handeye_calibration/body_down_camera_uav1_park.yaml",
+      "sha256": "1c98a8af07ed1357b931ccdba0c0e91324972d4ddd5728db8b3f2dc0b5891cb9"
+    },
+    {
+      "source": "/home/oem/handeye_calibration/body_down_camera_uav1_park_03.yaml",
+      "file": "handeye_calibration/body_down_camera_uav1_park_03.yaml",
+      "sha256": "89de3107dc5e1c084d6c0196e7eb1ebb6189a9f879c1ddc5037fa197167f29c1"
+    }
+  ]
+}

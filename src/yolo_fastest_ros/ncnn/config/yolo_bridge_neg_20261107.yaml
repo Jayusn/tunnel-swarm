@@ -4,7 +4,7 @@ subscribers:
     img_topic: /camera/color/image_raw
 yolo:
   detection_parameters:
-    confThresh: 0.99
+    confThresh: 0.90
     global_nms: 0.25
     input_size: 352
     max_tiles: 256

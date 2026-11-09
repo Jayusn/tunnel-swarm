@@ -195,6 +195,7 @@ namespace diff_planner
   bool PolyTrajOptimizer::checkDynamicFeasibility(const poly_traj::MinJerkOpt &pt_data)
   {
     poly_traj::Trajectory traj = pt_data.getTraj();
+    if (!trajectoryWithinCorridorHeight(traj)) return false;
     Eigen::VectorXd durations = traj.getDurations();
     const double RES = grid_map_->getResolution();
     const double traj_duration = traj.getTotalDuration();
@@ -2294,6 +2295,18 @@ namespace diff_planner
     nh.param("optimization/obstacle_clearance", obs_clearance_, -1.0);
     nh.param("optimization/obstacle_clearance_soft", obs_clearance_soft_, -1.0);
     nh.param("optimization/upper_obstacle_clearance", upper_obstacle_clearance_, 0.0);
+    nh.param("optimization/corridor_max_height", corridor_max_height_,
+             std::numeric_limits<double>::infinity());
+    std::string corridor_exit_topic;
+    nh.param("optimization/corridor_exit_topic", corridor_exit_topic, std::string());
+    if (!corridor_exit_topic.empty())
+      corridor_exit_sub_ = nh.subscribe<std_msgs::Bool>(corridor_exit_topic, 1,
+          [this](const std_msgs::Bool::ConstPtr &msg) {
+            corridor_exit_reached_ = msg->data;
+            ROS_INFO("[通道限高] 后机到达出口=%d，规划高度上限=%.2fm",
+                     int(corridor_exit_reached_), corridor_exit_reached_
+                         ? std::numeric_limits<double>::infinity() : corridor_max_height_);
+          });
     nh.param("grid_map/obstacles_inflation", obstacle_inflation_, 0.0);
     SuspendedObstacleUnderpass::Config underpass_config;
     nh.param("optimization/enable_suspended_obstacle_underpass",
@@ -2377,7 +2390,8 @@ namespace diff_planner
     // the 7.5 m corridor needs more than the old 100-cell local detour pool.
     a_star_->initGridMap(grid_map_, dynamic_obstacle_config_.enabled
         ? Eigen::Vector3i(160, 160, 100) : Eigen::Vector3i(100, 100, 100));
-    if (dynamic_obstacle_config_.enabled || upper_obstacle_clearance_ > 0.0)
+    if (dynamic_obstacle_config_.enabled || upper_obstacle_clearance_ > 0.0 ||
+        std::isfinite(corridor_max_height_))
       a_star_->setOccupancyChecker([this](const Eigen::Vector3d &position) {
         if (checkPlanningTimeout("A-star occupancy query") || staticPositionOccupied(position) ||
             (dynamic_candidate_active_ && dynamic_continuous_crossing_ && position.z() < dynamic_min_height_))
@@ -2430,6 +2444,8 @@ namespace diff_planner
 
   bool PolyTrajOptimizer::staticPositionOccupied(const Eigen::Vector3d &position) const
   {
+    if (!corridor_exit_reached_ && position.z() > corridor_max_height_ + 1.0e-6)
+      return true;
     if (grid_map_->getInflateOccupancy(position) != 0)
       return true;
     if (upper_obstacle_clearance_ <= 0.0 || dynamic_candidate_active_)
@@ -2503,10 +2519,32 @@ namespace diff_planner
     }
   }
 
+  bool PolyTrajOptimizer::trajectoryWithinCorridorHeight(
+      const poly_traj::Trajectory &trajectory) const
+  {
+    if (corridor_exit_reached_ || !std::isfinite(corridor_max_height_)) return true;
+    // 检查每段曲线的端点及高度极值，避免只检查引导点或离散采样而漏掉抬高过冲。
+    for (const auto &piece : trajectory) {
+      const Eigen::VectorXd velocity_z = piece.normalizeVelCoeffMat().row(2).transpose();
+      std::set<double> times{0.0, 1.0};
+      if (velocity_z.cwiseAbs().maxCoeff() > 0.0) {
+        const auto extrema = RootFinder::solvePolynomial(velocity_z, 0.0, 1.0, 1.0e-8);
+        times.insert(extrema.begin(), extrema.end());
+      }
+      for (double t : times)
+        if (piece.getPos(t * piece.getDuration()).z() > corridor_max_height_ + 1.0e-6) {
+          ROS_WARN("[通道限高] 拒绝超过 %.2fm 的轨迹", corridor_max_height_);
+          return false;
+        }
+    }
+    return true;
+  }
+
   bool PolyTrajOptimizer::trajectoryCollisionFree(
       const poly_traj::Trajectory &trajectory, const double start_time,
       const double reference_time, const double max_initial_occupied_prefix)
   {
+    if (!trajectoryWithinCorridorHeight(trajectory)) return false;
     const auto samples = sampleCollisionTrajectory(trajectory, 0.0,
         trajectory.getTotalDuration(), 0.5 * grid_map_->getResolution());
     if (samples.empty()) return false;

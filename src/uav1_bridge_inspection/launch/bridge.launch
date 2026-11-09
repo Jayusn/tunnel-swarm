@@ -6,8 +6,8 @@
   <arg name="bridge_yaw" default="0.0"/>
   <!-- FAST-LIO世界系绝对航向：降落接近与精降统一使用。 -->
   <arg name="landing_yaw_deg" default="-90.0"/>
-  <arg name="landing_x" default="16.00"/>
-  <arg name="landing_y" default="0.00"/>
+  <arg name="landing_x" default="16.10"/>
+  <arg name="landing_y" default="0.60"/>
   <arg name="bridge_floor_height" default="1.5"/>
   <arg name="bridge_clear_height" default="1.2"/>
   <arg name="floor_margin" default="0.05"/>

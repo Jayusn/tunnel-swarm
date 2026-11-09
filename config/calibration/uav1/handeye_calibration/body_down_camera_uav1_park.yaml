@@ -1,0 +1,61 @@
+parent_frame: body
+child_frame: camera_link
+translation_m:
+- 0.03319108548003494
+- -0.02243607690206577
+- 0.3108554315086491
+quaternion_xyzw:
+- -0.5593820277697611
+- 0.828568410698749
+- 0.019884809613437252
+- -0.013066374668473182
+rotation_matrix:
+- - -0.37384203372242686
+  - -0.9264529107000281
+  - -0.04389918083206276
+- - -0.9274922001905094
+  - 0.3733926827096549
+  - 0.018333659881605867
+- - -0.0005936396614578954
+  - 0.04757004051220576
+  - -0.998867728399321
+board:
+  inner_corners:
+  - 11
+  - 8
+  square_size_m: 0.04
+samples_used: 80
+metrics:
+  reprojection_rms_px: 0.5032436424896232
+  reprojection_max_px: 0.9208343539003656
+  target_translation_rms_m: 0.10518624785734038
+  target_rotation_rms_deg: 10.48238758529424
+  timestamp_diff_max_s: 0.029937744140625
+  valid_images: 576.0
+  selected_samples: 80.0
+  total_images: 1233.0
+metadata:
+  method: park
+  image_topic: /UAV1/calibration/down_camera/image_raw
+  camera_info_topic: /UAV1/down_camera/camera_info
+  odom_topic: /UAV1/fast_lio/Odometry
+  camera_optical_frame: UAV1/down_camera_optical_frame
+  camera_link_frame: UAV1/down_camera_optical_frame
+  odom_parent_frame: UAV1/camera_init
+  odom_child_frame: UAV1/body
+  camera_matrix:
+  - 689.1200339097638
+  - 0.0
+  - 341.7238504917081
+  - 0.0
+  - 689.0133471548666
+  - 272.3303308016319
+  - 0.0
+  - 0.0
+  - 1.0
+  distortion:
+  - 0.04686351718633109
+  - -0.07455795837720268
+  - -0.0004388284203006239
+  - 0.000528317760614364
+  - 0.0

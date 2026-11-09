@@ -12,6 +12,8 @@
     <arg name="odom_topic" default="/UAV1/fast_lio/Odom_high_freq"/>
     <arg name="cloud_topic" default="/UAV1/fast_lio/cloud_registered"/>
     <arg name="goal_topic" default="/UAV1/planning/goal"/>
+    <!-- 透明通道内的定位中心Z上限；后机按既有到达规则抵达出口后解除。 -->
+    <arg name="corridor_max_height" default="1.35"/>
     <arg name="position_cmd_topic" default="/UAV1/planning/pos_cmd"/>
     <arg name="route_segment_count" default="3"/>
     <arg name="route_segment_min_length" default="0.60"/>
@@ -125,6 +127,8 @@
         <arg name="obstacle_clearance" value="0.18"/>
         <!-- 选定上绕后，最终轨迹跨越该障碍的区段至少高于原始体素顶面20cm。 -->
         <arg name="upper_obstacle_clearance" value="0.20"/>
+        <arg name="corridor_max_height" value="$(arg corridor_max_height)"/>
+        <arg name="corridor_exit_topic" value="$(arg goal_topic)/corridor_exit_reached"/>
         <!-- 2026-07-28: FAST-LIO点云/里程计均为UAV1局部坐标，不叠加出生点偏移。 -->
         <arg name="init_x" value="0.0"/>
         <arg name="init_y" value="0.0"/>

@@ -145,7 +145,7 @@ class RoleConfigurationTest(unittest.TestCase):
         result = subprocess.run(['bash', '-c', 'source "$1"; configure_dual_uav_ros_network uav1',
                                  'test', str(ROOT / 'shfiles/configure_dual_uav_ros_network.sh')],
                                 env=env, text=True, capture_output=True, check=True)
-        self.assertIn('master=http://192.168.43.14:11311 local_ip=192.168.43.21', result.stdout)
+        self.assertIn('master=http://10.59.40.213:11311 local_ip=10.59.40.233', result.stdout)
 
 
 if __name__ == '__main__':

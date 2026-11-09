@@ -12,6 +12,7 @@
 #include <path_searching/dyn_a_star.h>
 #include <plan_env/grid_map.h>
 #include <ros/ros.h>
+#include <std_msgs/Bool.h>
 #include "optimizer/lbfgs.hpp"
 #include <traj_utils/plan_container.hpp>
 #include "poly_traj_utils.hpp"
@@ -123,6 +124,9 @@ namespace diff_planner
     void prepareCorridorCenters(const Eigen::Vector3d &start, const Eigen::Vector3d &goal);
     double obs_clearance_, obs_clearance_soft_, swarm_clearance_; // safe distance
     double upper_obstacle_clearance_{0.0};
+    double corridor_max_height_{std::numeric_limits<double>::infinity()};
+    bool corridor_exit_reached_{false};
+    ros::Subscriber corridor_exit_sub_;
     double obstacle_inflation_{0.0};
     // 本次完整通路选中的上绕障碍；XY是原始体素列，值为越障顶面高度。
     std::map<std::pair<int, int>, double> upper_crossing_tops_;
@@ -198,6 +202,7 @@ namespace diff_planner
     bool searchRouteGuide(const Eigen::Vector3d& start, const Eigen::Vector3d& end,
                           std::vector<Eigen::Vector3d>& path);
     bool staticPositionOccupied(const Eigen::Vector3d &position) const;
+    bool trajectoryWithinCorridorHeight(const poly_traj::Trajectory &trajectory) const;
     void prepareUpperRoute(const Eigen::Vector3d &start, const Eigen::Vector3d &goal);
     void selectUpperRoute(const std::vector<Eigen::Vector3d> &path);
     bool allowsDirectRoute(const Eigen::Vector3d &start, const Eigen::Vector3d &end) const {
