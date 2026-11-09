@@ -1,0 +1,61 @@
+parent_frame: body
+child_frame: camera_link
+translation_m:
+- -0.018125367126193403
+- -0.027227861065690882
+- -0.05037700305132471
+quaternion_xyzw:
+- 0.023058978170846265
+- 0.011156414850228401
+- -0.0028778611803164465
+- 0.9996677127167972
+rotation_matrix:
+- - 0.9997345046454332
+  - 0.006268320860279412
+  - 0.022172694354623778
+- - -0.005239298754294205
+  - 0.9989200028814863
+  - -0.04616684515769063
+- - -0.022438136507166362
+  - 0.046038418704855144
+  - 0.9986876358668128
+board:
+  inner_corners:
+  - 11
+  - 8
+  square_size_m: 0.04
+samples_used: 80
+metrics:
+  reprojection_rms_px: 0.41096769648999876
+  reprojection_max_px: 1.2017692903767527
+  target_translation_rms_m: 0.039536421553424225
+  target_rotation_rms_deg: 3.5966273031720397
+  timestamp_diff_max_s: 0.07886600494384766
+  valid_images: 4580.0
+  selected_samples: 80.0
+  total_images: 5191.0
+metadata:
+  method: park
+  image_topic: /camera/color/image_raw
+  camera_info_topic: /camera/color/camera_info
+  odom_topic: /Odometry
+  camera_optical_frame: camera_color_optical_frame
+  camera_link_frame: camera_link
+  odom_parent_frame: camera_init
+  odom_child_frame: body
+  camera_matrix:
+  - 604.8923950195312
+  - 0.0
+  - 326.9781494140625
+  - 0.0
+  - 604.7212524414062
+  - 248.3306121826172
+  - 0.0
+  - 0.0
+  - 1.0
+  distortion:
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0

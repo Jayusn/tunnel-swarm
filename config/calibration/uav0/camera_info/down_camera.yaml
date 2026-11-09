@@ -1,0 +1,28 @@
+image_width: 640
+image_height: 480
+camera_name: down_camera
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [677.8711860007506, 0, 377.734238084919, 0, 678.1072499365622, 213.0287690991459, 0, 0, 1]
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [0.1039172812284425, -0.2424811207450992, -0.002361691352612535, 0.004409752356671896, 0]
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1, 0, 0, 0, 1, 0, 0, 0, 1]
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [682.5859375, 0, 379.7243772586808, 0, 0, 685.8419799804688, 211.7281232876212, 0, 0, 0, 1, 0]
+binning_x: 0
+binning_y: 0
+roi:
+  x_offset: 0
+  y_offset: 0
+  height: 0
+  width: 0
+  do_rectify: false

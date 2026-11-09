@@ -5,8 +5,8 @@ use_fix_yaw: false   # using fix yaw.
 
 # Cost on states
 # 当前先保留源码权重；首次室内悬停若响应过激，后续优先降低 Q_pos/Q_attitude 或增大 R。
-Q_pos_xy:   200.0    # Cost for horizontal positon error //default: 200     0.5
-Q_pos_z:  200.0    # Cost for horizontal positon error //default: 200     0.5
+Q_pos_xy:   250.0    # Cost for horizontal positon error //default: 200     0.5
+Q_pos_z:  250.0   # Cost for horizontal positon error //default: 200     0.5
 Q_attitude_rp:  120.0   # Cost for attitude error           //default: 50     0.1
 Q_attitude_yaw:  120.0    # Cost for attitude error           //default: 50     0.1
 Q_velocity:  55.0   # Cost for velocity error           //default: 10    0.05
@@ -70,7 +70,7 @@ fixed_hover:
     enabled: true
     x: 0.0
     y: 0.0
-    z: 0.6
+    z: 1.0
 
 max_angle: 30  # Attitude angle limit in degree. A negative value means no limit.
 # 源码值 -0.1 等价于基本关闭低电压保护；实飞前应按你的电池节数和最低安全电压设置。
@@ -104,13 +104,13 @@ force_estimator: # *
     ndob_rate: 20.0 # NDOB 观测器增益，单位 1/s
     ndob_cutoff_freq: 20.0 # NDOB 输出低通截止频率，单位 Hz
     # kf 将当前 CAV0 四个电机的机械转速平方和换算为总推力，单位 N/rpm^2；由 1.817 kg 实机稳定悬停日志标定。
-    kf: 1.785e-8 # 用于世界系外力估计和 thrust_model 模式 1 的 RPM 推力反馈。
+    kf: 1.926e-8 # 用于世界系外力估计和 thrust_model 模式 1 的 RPM 推力反馈。
 
     # f_Q 由外力观察器以 100 Hz 更新；该频率用于最终 f_Q 二阶低通滤波器系数。
     sample_freq_fq: 100.0
     sample_freq_fl: 400.0
     # 当前保留源码 0.0；若 f_Q 抖动，后续建议改为 5~10 Hz 低通。
-    cutoff_freq_fq: 3.0  # 世界系外力估计 f_Q 的低通截止频率，单位 Hz；降低 IMU/RPM 噪声，但会增加估计延迟
+    cutoff_freq_fq: 0.0  # 世界系外力估计 f_Q 的低通截止频率，单位 Hz；降低 IMU/RPM 噪声，但会增加估计延迟
     cutoff_freq_fl: 0.0
     imu_body_length: 0.66844507
     # 只估计模式：计算并记录世界系外力 f_Q（单位 N），但不把它传入 NMPC。
@@ -183,7 +183,7 @@ takeoff:
     # AUTO_TAKEOFF 不自动解锁，也不调用 /mavros/set_mode；仅等待 PX4 已进入 OFFBOARD。
     enabled: true
     # 唯一 ENU 世界系起飞/悬停目标点的高度，单位 m；参考值按 climb_rate 平滑上升。
-    target_z: 0.6
+    target_z: 1.0
     # z 参考值上升速度，单位 m/s；达到 target_z 后保持目标点。
     climb_rate: 0.15
     # fixed_hover 启用时，起飞前到唯一目标点的水平距离上限，单位 m。

@@ -1,0 +1,27 @@
+{
+  "vehicle": "UAV0",
+  "host": "192.168.230.212",
+  "date": "2026-11-09",
+  "files": [
+    {
+      "source": "/home/asus/.ros/camera_info/down_camera.yaml",
+      "archive": "config/calibration/uav0/camera_info/down_camera.yaml",
+      "sha256": "d03af4041e80103df1c9ca8955fb73b180e233743edd7c44af2abfcb3506d744"
+    },
+    {
+      "source": "/home/asus/handeye_calibration/body_camera_03.yaml",
+      "archive": "config/calibration/uav0/handeye_calibration/body_camera_03.yaml",
+      "sha256": "3b8d1b2f75832d5fcc5542dcf54fdc5ba3abbddf22a797db39d3cc2217dc74ca"
+    },
+    {
+      "source": "/home/asus/handeye_calibration/body_camera.yaml",
+      "archive": "config/calibration/uav0/handeye_calibration/body_camera.yaml",
+      "sha256": "21832d5e362b69e2854daee8c7b91c7862d42ca2bf09f45efaea3eb6f0c29b2e"
+    },
+    {
+      "source": "/home/asus/handeye_calibration/body_down_camera_park_03_stable.yaml",
+      "archive": "config/calibration/uav0/handeye_calibration/body_down_camera_park_03_stable.yaml",
+      "sha256": "8fa415b2afab2c9f715b30be2042f54c6ff23bd1e54df2aeba588ffc381e1653"
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+[submodule "src/cxr_ego_ctrl"]
+	path = src/cxr_ego_ctrl
+	url = https://github.com/Jayusn/tunnel-swarm.git
+	branch = components/cav0/cxr-ego-ctrl
+[submodule "src/Livox-SDK2"]
+	path = src/Livox-SDK2
+	url = https://github.com/Jayusn/tunnel-swarm.git
+	branch = components/cav0/livox-sdk2
+[submodule "src/FAST_LIO"]
+	path = src/FAST_LIO
+	url = https://github.com/Jayusn/tunnel-swarm.git
+	branch = components/cav0/fast-lio
+[submodule "src/livox_ros_driver2"]
+	path = src/livox_ros_driver2
+	url = https://github.com/Jayusn/tunnel-swarm.git
+	branch = components/cav0/livox-driver2
+[submodule "src/LDOP"]
+	path = src/LDOP
+	url = https://github.com/Jayusn/tunnel-swarm.git
+	branch = components/cav0/ldop
+[submodule "src/Diff-Planner"]
+	path = src/Diff-Planner
+	url = https://github.com/Jayusn/tunnel-swarm.git
+	branch = components/cav0/diff-planner
+[submodule "src/zyc_fuel_ws/src/offb_takeoff"]
+	path = src/zyc_fuel_ws/src/offb_takeoff
+	url = https://github.com/Jayusn/tunnel-swarm.git
+	branch = components/cav0/offb-takeoff
+[submodule "src/zyc_fuel_ws/src/vins_to_mavros"]
+	path = src/zyc_fuel_ws/src/vins_to_mavros
+	url = https://github.com/Jayusn/tunnel-swarm.git
+	branch = components/cav0/vins-to-mavros
+[submodule "src/zyc_fuel_ws/src/pose_to_odom_converter"]
+	path = src/zyc_fuel_ws/src/pose_to_odom_converter
+	url = https://github.com/Jayusn/tunnel-swarm.git
+	branch = components/cav0/pose-to-odom
+[submodule "src/zyc_fuel_ws/src/drone_land"]
+	path = src/zyc_fuel_ws/src/drone_land
+	url = https://github.com/Jayusn/tunnel-swarm.git
+	branch = components/cav0/drone-land

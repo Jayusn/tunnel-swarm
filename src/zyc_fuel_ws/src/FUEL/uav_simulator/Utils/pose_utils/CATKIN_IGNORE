@@ -1,0 +1,1 @@
+# 2026-07-07: 屏蔽 FUEL 侧重复的 pose_utils，统一使用 Diff-Planner 版本，避免同名包冲突。

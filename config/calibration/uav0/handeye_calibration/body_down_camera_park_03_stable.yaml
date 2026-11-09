@@ -1,0 +1,76 @@
+parent_frame: UAV0/body
+child_frame: UAV0/down_camera_optical_frame
+translation_m:
+- 0.07383116536212123
+- -0.03902001736630811
+- -0.13346814265233625
+quaternion_xyzw:
+- 0.7107958426327318
+- -0.7033418639826419
+- 0.00889926708530993
+- -0.0005436090435832874
+rotation_matrix:
+- - 0.010462050829534572
+  - -0.9998552702926987
+  - 0.013415810089416448
+- - -0.9998746211809735
+  - -0.010619853717261046
+  - -0.011745664103329254
+- - 0.011886438097449967
+  - -0.013291244296115478
+  - -0.9998410150691043
+board:
+  inner_corners:
+  - 11
+  - 8
+  square_size_m: 0.04
+samples_used: 80
+metrics:
+  reprojection_rms_px: 0.0938774574831375
+  reprojection_max_px: 0.1617005455841811
+  target_translation_rms_m: 0.01939208475420654
+  target_rotation_rms_deg: 0.6252900175173798
+  timestamp_diff_max_s: 0.013199090957641602
+  target_translation_max_m: 0.04932163735792171
+  target_rotation_max_deg: 1.8530086774581016
+  valid_images: 1615.0
+  stable_images: 1072.0
+  selected_samples_before_outlier_rejection: 80.0
+  selected_samples: 80.0
+  total_images: 1777.0
+  rotation_determinant: 1.0000000000000002
+  rotation_orthogonality_error: 1.0605291710181286e-15
+metadata:
+  method: park
+  bag: /home/asus/handeye_calibration/down_camera_handeye_03.bag
+  image_topic: /UAV0/calibration/down_camera/image_raw
+  camera_info_topic: /UAV0/down_camera/camera_info
+  odom_topic: /UAV0/fast_lio/Odometry
+  camera_optical_frame: UAV0/down_camera_optical_frame
+  camera_link_frame: UAV0/down_camera_optical_frame
+  odom_parent_frame: UAV0/camera_init
+  odom_child_frame: UAV0/body
+  max_time_diff_s: 0.03
+  stability_window_half_s: 0.15
+  stability_max_translation_m: 0.01
+  stability_max_rotation_deg: 1.0
+  diversity_min_translation_m: 0.02
+  diversity_min_rotation_deg: 3.0
+  outlier_max_target_translation_m: 0.05
+  outlier_max_target_rotation_deg: 3.0
+  camera_matrix:
+  - 677.8711860007506
+  - 0.0
+  - 377.734238084919
+  - 0.0
+  - 678.1072499365622
+  - 213.0287690991459
+  - 0.0
+  - 0.0
+  - 1.0
+  distortion:
+  - 0.1039172812284425
+  - -0.2424811207450992
+  - -0.002361691352612535
+  - 0.004409752356671896
+  - 0.0

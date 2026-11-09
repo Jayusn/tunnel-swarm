@@ -1,0 +1,83 @@
+{
+  "base_commit": "44a2bc14f46655af2bb3dea9c0a58d38703764a6",
+  "components": [
+    {
+      "path": "src/cxr_ego_ctrl",
+      "original_commit": "5c76c3de8ddadb669b9b98ed3c35cd62241aa9bf",
+      "branch": "components/cav0/cxr-ego-ctrl",
+      "published_commit": "5c76c3de8ddadb669b9b98ed3c35cd62241aa9bf"
+    },
+    {
+      "path": "src/Livox-SDK2",
+      "original_commit": "b27f2fa800cf945e1d1ccaa184d7b18d4c51912b",
+      "branch": "components/cav0/livox-sdk2",
+      "published_commit": "b27f2fa800cf945e1d1ccaa184d7b18d4c51912b"
+    },
+    {
+      "path": "src/FAST_LIO",
+      "original_commit": "a893cc5f7e5a72ae8892b0b60e003377b2116b27",
+      "branch": "components/cav0/fast-lio",
+      "published_commit": "0b1f92f56e46d488017754c83d7afef2a767d0f3"
+    },
+    {
+      "path": "src/FAST_LIO/include/ikd-Tree/ikd-Tree",
+      "original_commit": "5f1ec7df5e201bcd0669c5249da46ae4fdb008c4",
+      "branch": "components/cav0/ikd-tree",
+      "published_commit": "5f1ec7df5e201bcd0669c5249da46ae4fdb008c4"
+    },
+    {
+      "path": "src/livox_ros_driver2",
+      "original_commit": "02c88582e59051c4641d2ed28a6f82253d0354e1",
+      "branch": "components/cav0/livox-driver2",
+      "published_commit": "02c88582e59051c4641d2ed28a6f82253d0354e1"
+    },
+    {
+      "path": "src/LDOP",
+      "original_commit": "a4c94578cd04dd961663f190e04c5c6ed31cf957",
+      "branch": "components/cav0/ldop",
+      "published_commit": "a4c94578cd04dd961663f190e04c5c6ed31cf957"
+    },
+    {
+      "path": "src/Diff-Planner",
+      "original_commit": "ea90767cd2c9043c723e5d20a57e09bb9170c417",
+      "branch": "components/cav0/diff-planner",
+      "published_commit": "94cab75d8997f61ff7fbe08e2c1a72fd02c7130e"
+    },
+    {
+      "path": "src/Diff-Planner/src/realflight_modules/faster-lio",
+      "original_commit": "89f6802383167feee8776d9aa5e406d860355176",
+      "branch": "components/cav0/faster-lio",
+      "published_commit": "89f6802383167feee8776d9aa5e406d860355176"
+    },
+    {
+      "path": "src/Diff-Planner/src/realflight_modules/px4ctrl",
+      "original_commit": "c7d67e1447cda6d75441f501b507f80890cb092f",
+      "branch": "components/cav0/px4ctrl",
+      "published_commit": "c7d67e1447cda6d75441f501b507f80890cb092f"
+    },
+    {
+      "path": "src/zyc_fuel_ws/src/offb_takeoff",
+      "original_commit": "da23866710e431777251dcf593294b43e031e8ef",
+      "branch": "components/cav0/offb-takeoff",
+      "published_commit": "da23866710e431777251dcf593294b43e031e8ef"
+    },
+    {
+      "path": "src/zyc_fuel_ws/src/vins_to_mavros",
+      "original_commit": "01efef76ec27bb5328d2dec33a6ca67aec64db49",
+      "branch": "components/cav0/vins-to-mavros",
+      "published_commit": "01efef76ec27bb5328d2dec33a6ca67aec64db49"
+    },
+    {
+      "path": "src/zyc_fuel_ws/src/pose_to_odom_converter",
+      "original_commit": "1cc5c028be3ab5030b434d9786dbb7bfc219b55f",
+      "branch": "components/cav0/pose-to-odom",
+      "published_commit": "1cc5c028be3ab5030b434d9786dbb7bfc219b55f"
+    },
+    {
+      "path": "src/zyc_fuel_ws/src/drone_land",
+      "original_commit": "c1687bb958c38c679ff84c5d57a9ac27ad084534",
+      "branch": "components/cav0/drone-land",
+      "published_commit": "c1687bb958c38c679ff84c5d57a9ac27ad084534"
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+# 旧 ROS/rosbuild 构建产物；保留源文件和 CATKIN_IGNORE。
+msg_gen/
+srv_gen/
+bin/
+lib/
+**/cfg/cpp/
+**/src/*/msg/
+**/src/*/cfg/
+/Utils/multi_map_server/src/multi_map_server/
+/Utils/quadrotor_msgs/src/quadrotor_msgs/
+/Utils/multi_map_server/quadrotor_msgs/src/quadrotor_msgs/
+/so3_disturbance_generator/docs/DisturbanceUIConfig.wikidoc
+/so3_disturbance_generator/docs/DisturbanceUIConfig*.dox
+/so3_disturbance_generator/include/so3_disturbance_generator/DisturbanceUIConfig.h
+/so3_quadrotor_simulator/include/ode/libs/numeric/odeint/doc/html/
+/so3_quadrotor_simulator/include/ode/libs/numeric/odeint/examples/*.agr

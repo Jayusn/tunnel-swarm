@@ -4,3 +4,36 @@
 __pycache__/
 
 /bags/exit_detection/
+
+# 本机编译、采集与临时文件不随前机源码发布。
+build/
+build_isolated/
+devel/
+devel_isolated/
+install/
+install_isolated/
+logs/
+Testing/
+.catkin_tools/
+.pytest_cache/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+*.bag
+*.bag.active
+*.pcd
+*.ply
+*.mp4
+*.avi
+*.mkv
+*.mov
+*.zip
+*.tar.gz
+*.tgz
+*.log
+*.o
+*.so
+*.so.*
+*.a
+*.cfgc
+*~
