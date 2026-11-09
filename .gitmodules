@@ -1,6 +1,8 @@
 [submodule "src/realflight_modules/faster-lio"]
 	path = src/realflight_modules/faster-lio
-	url = https://github.com/DifferentialRobotics/faster-lio.git
+	url = https://github.com/Jayusn/tunnel-swarm.git
+	branch = components/cav0/faster-lio
 [submodule "src/realflight_modules/px4ctrl"]
 	path = src/realflight_modules/px4ctrl
-	url = https://github.com/DifferentialRobotics/px4ctrl.git
+	url = https://github.com/Jayusn/tunnel-swarm.git
+	branch = components/cav0/px4ctrl
