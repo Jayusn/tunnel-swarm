@@ -57,6 +57,7 @@ class BridgeTest(RcLandPriorityTest):
         rc=RCIn(channels=[1500]*10);rc.channels[7]=1000;rc.channels[9]=1000
         target=PositionTarget(coordinate_frame=1,type_mask=2552)
         target.position=Point(1.25,-.72,1.5)
+        landing_stage = 'ALIGN'
         def drive(seconds,landing=False):
             end=time.monotonic()+seconds
             while time.monotonic()<end:
@@ -64,7 +65,7 @@ class BridgeTest(RcLandPriorityTest):
                     ('mavros/local_position/pose',local),('mavros/state',state),
                     ('mavros/extended_state',ext),('mavros/rc/in',rc)]:
                     msg.header.stamp=rospy.Time.now();pubs[topic].publish(msg)
-                pubs['landing/state'].publish(String(data='ALIGN' if landing else 'IDLE'))
+                pubs['landing/state'].publish(String(data=landing_stage if landing else 'IDLE'))
                 if landing:
                     target.header.stamp=rospy.Time.now();pubs['bridge/precision_position'].publish(target)
                 time.sleep(.01)
@@ -79,11 +80,19 @@ class BridgeTest(RcLandPriorityTest):
         self.assertAlmostEqual(ref.x,1.25,places=4)
         self.assertAlmostEqual(ref.y,-.72,places=4)
         self.assertAlmostEqual(ref.z,1.5,places=4)
+        landing_stage = 'FIXED_XY_DESCENT'
+        drive(.5,landing=True)
+        self.assertIn('active=1 Q_pos_xy=400.0 R_pitchroll=20.0', Path(self.log.name).read_text())
         # CH10 后视觉参考不再覆盖人工降落参考；飞控坐标不参与精降目标转换。
         rc.channels[9]=2000;target.position=Point(99.,99.,99.);drive(.4,landing=True)
         ref=self.last('mpc_controller_node/mpc/reference_trajectory').poses[0].pose.position
         self.assertLess(ref.z,1.6)
         self.assertAlmostEqual(ref.x,1.2,places=4)
+        state.mode = 'AUTO.LAND'
+        drive(.3,landing=True)
+        count = len(self.messages['mavros/setpoint_raw/attitude'])
+        drive(.3,landing=True)
+        self.assertEqual(len(self.messages['mavros/setpoint_raw/attitude']), count)
 
     def test_launch_ch8_route_and_landing(self):
         """使用真实 launch 接线和控制器 CH8 输出，逐点验证到达与精降交接。"""

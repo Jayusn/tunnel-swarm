@@ -256,6 +256,7 @@ namespace PayloadMPC
         double waypoint_reference_max_velocity_{0.0};
         // 0 沿用普通权重；仅指定配置的航点飞行使用，精降恢复普通权重。
         double waypoint_position_weight_xy_{0.0};
+        bool landing_use_waypoint_weights_{false};
         double waypoint_bodyrate_weight_xy_{0.0};
 
 		real_t state_cost_exponential_;
@@ -327,6 +328,7 @@ namespace PayloadMPC
 			}
 
         nh.param("waypoint_reference/max_velocity", waypoint_reference_max_velocity_, 0.0);
+        nh.param("precision_landing/use_waypoint_tracking_weights", landing_use_waypoint_weights_, false);
         nh.param("waypoint_tracking/Q_pos_xy", waypoint_position_weight_xy_, 0.0);
         nh.param("waypoint_tracking/R_pitchroll", waypoint_bodyrate_weight_xy_, 0.0);
         if (!std::isfinite(waypoint_position_weight_xy_) || waypoint_position_weight_xy_ < 0.0 ||

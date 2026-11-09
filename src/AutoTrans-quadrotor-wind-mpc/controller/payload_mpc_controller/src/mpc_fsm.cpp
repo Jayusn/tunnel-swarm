@@ -537,6 +537,14 @@ namespace PayloadMPC
             ROS_WARN_THROTTLE(1.0, "[精降NMPC] 目标超时，保持最后位置目标。");
         }
         landing_reference_velocity_ = velocity;
+        // 桥梁显式开启：锁点交接/下降使用与独立测试一致的400/20权重。
+        // 复用航点权重切换；退出精降后的悬停/恢复路径会恢复默认权重。
+        if (!controller_.setWaypointTrackingWeights(
+                params_.landing_use_waypoint_weights_ && landing_fixed_stage_))
+        {
+            beginMpcRecovery(now, "精降权重切换失败");
+            return;
+        }
         if (!controller_.setPositionCommandReference(hover_pose_, velocity,
             acceleration, Eigen::Vector3d::Zero(), hover_yaw_, 0.0))
         {
