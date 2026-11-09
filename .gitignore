@@ -4,3 +4,8 @@ devel/
 *.pyc
 __pycache__/
 
+# 实机生成的日志与点云保留在本机。
+/Log/*.txt
+/PCD/*.pcd
+.pytest_cache/
+
