@@ -386,6 +386,13 @@ class PrecisionLandingNode {
     loadParameter(private_node_, "control/freeze_descent_hold_height",
                   freeze_descent_hold_height_);
     loadParameter(private_node_, "control/use_fastlio_z_for_height", use_fastlio_z_for_height_);
+    double fixed_yaw_deg = 0.0;
+    fixed_yaw_enabled_ = private_node_.getParam("control/fixed_yaw_deg", fixed_yaw_deg);
+    if (fixed_yaw_enabled_) {
+      if (!isFinite(fixed_yaw_deg))
+        throw std::invalid_argument("control/fixed_yaw_deg must be finite");
+      fixed_yaw_rad_ = std::remainder(fixed_yaw_deg, 360.0) * std::acos(-1.0) / 180.0;
+    }
     loadParameter(private_node_, "control/fixed_xy_settle_enabled", fixed_xy_settle_enabled_);
     loadParameter(private_node_, "control/fixed_xy_handoff_sec", fixed_xy_handoff_sec_);
     loadParameter(private_node_, "control/fixed_xy_settle_error_m", fixed_xy_settle_error_m_);
@@ -680,6 +687,7 @@ class PrecisionLandingNode {
 
   bool captureCurrentYaw() {
     yaw_captured_ = currentYaw(captured_yaw_rad_);
+    if (yaw_captured_ && fixed_yaw_enabled_) captured_yaw_rad_ = fixed_yaw_rad_;
     return yaw_captured_;
   }
 
@@ -1076,7 +1084,7 @@ class PrecisionLandingNode {
       fixed_xy_descent_valid_ = true;
       fixed_xy_handoff_start_ = now;
       fixed_xy_stable_since_ = ros::Time(0);
-      fixed_xy_settled_ = !fixed_xy_settle_enabled_;
+      fixed_xy_settled_ = !fixed_xy_settle_enabled_ && fixed_xy_handoff_sec_ <= 0.0;
       ROS_WARN("CONTROLLER DESCENT: remembered_target=%s x=%.3f y=%.3f ground_valid=%s z=%.3f",
                remembered_target_valid_ ? "yes" : "no", fixed_xy_position_.x(), fixed_xy_position_.y(),
                fixed_ground_valid_ ? "yes" : "no", fixed_xy_ground_z_);
@@ -1130,12 +1138,15 @@ class PrecisionLandingNode {
            output.state != LandingState::FIXED_XY_DESCENT);
       if (output.state == LandingState::FIXED_XY_DESCENT &&
           fixed_xy_descent_valid_) {
-        // 只在锁点交接时等待一次，不改变后续下降或既有丢码处理。
-        if (!fixed_xy_settled_) {
+        // 交接计时与二次对中分开；关闭二次对中时，交接结束即下降。
+        const bool handoff_complete =
+            (now - fixed_xy_handoff_start_).toSec() >= fixed_xy_handoff_sec_;
+        if (!fixed_xy_settle_enabled_ && handoff_complete) fixed_xy_settled_ = true;
+        if (!fixed_xy_settled_ && fixed_xy_settle_enabled_) {
           const double xy_error = (fixed_xy_position_ - Eigen::Vector2d(
               local_pose_.pose.position.x, local_pose_.pose.position.y)).norm();
           const bool stable = fresh_pose && std::isfinite(odom_xy_speed_) &&
-              (now - fixed_xy_handoff_start_).toSec() >= fixed_xy_handoff_sec_ &&
+              handoff_complete &&
               xy_error <= fixed_xy_settle_error_m_ && odom_xy_speed_ <= fixed_xy_settle_speed_mps_;
           if (!stable) fixed_xy_stable_since_ = ros::Time(0);
           else if (fixed_xy_stable_since_.isZero()) fixed_xy_stable_since_ = now;
@@ -1144,8 +1155,16 @@ class PrecisionLandingNode {
             ROS_INFO("FIXED XY SETTLED: error=%.3f speed=%.3f; start descent", xy_error, odom_xy_speed_);
           }
         }
+        // 总超时优先于交接计时和二次对中等待；仍使用已锁定目标下降。
+        const bool landing_timed_out = !mission_trigger_time_.isZero() &&
+            (now - mission_trigger_time_).toSec() >= search_warning_sec_;
+        if (landing_timed_out && !fixed_xy_settled_) {
+          fixed_xy_settled_ = true;
+          ROS_WARN("LANDING TIMEOUT: bypass XY handoff/settle wait; descend to locked target");
+        }
         if (!fixed_xy_settled_) {
-          ROS_INFO_THROTTLE(1.0, "FIXED XY HANDOFF: holding Z=%.3f until XY settles", fixed_xy_target_z_);
+          ROS_INFO_THROTTLE(1.0, "FIXED XY HANDOFF: holding Z=%.3f, waiting for %s",
+                            fixed_xy_target_z_, fixed_xy_settle_enabled_ ? "XY settle" : "handoff timer");
         } else if (!auto_land_at_cutoff_ && takeoff_reference_valid_) {
           // 同地面独立测试：目标进入近地 15 cm 后按至多 0.10 m/s 下压，XY 不变。
           const double slow_z = takeoff_reference_z_ + 0.15;
@@ -1819,7 +1838,7 @@ class PrecisionLandingNode {
   bool fixed_xy_descent_valid_{false};
   bool fixed_xy_settle_enabled_{false};
   bool fixed_xy_settled_{true};
-  double fixed_xy_handoff_sec_{1.5};
+  double fixed_xy_handoff_sec_{0.0};
   double fixed_xy_settle_error_m_{0.05};
   double fixed_xy_settle_speed_mps_{0.05};
   double fixed_xy_settle_sec_{0.5};
@@ -1849,6 +1868,8 @@ class PrecisionLandingNode {
   bool flight_position_log_initialized_{false};
   Eigen::Vector3d last_logged_flight_position_{Eigen::Vector3d::Zero()};
   ros::Time last_flight_position_log_time_;
+  bool fixed_yaw_enabled_{false};
+  double fixed_yaw_rad_{0.0};
   bool yaw_captured_{false};
   double captured_yaw_rad_{0.0};
 

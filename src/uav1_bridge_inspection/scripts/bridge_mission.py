@@ -30,13 +30,9 @@ class Mission:
         self.points.append((float(rospy.get_param('~landing_x')),
                             float(rospy.get_param('~landing_y')),
                             float(rospy.get_param('~landing_approach_z'))))
-        # 最后航段朝向降落点，避免 NMPC 到点前又转回桥洞航向。
+        # 最后接近航段与精降指定同一绝对航向，不再由两点连线决定。
         self.point_yaws = [self.yaw] * len(self.points)
-        if len(self.points) > 1:
-            dx = self.points[-1][0] - self.points[-2][0]
-            dy = self.points[-1][1] - self.points[-2][1]
-            if math.hypot(dx, dy) > 1.e-6:
-                self.point_yaws[-1] = math.atan2(dy, dx)
+        self.point_yaws[-1] = math.radians(float(rospy.get_param('~landing_yaw_deg', -90.0)))
         self.radius = float(rospy.get_param('~arrival_distance_m', .15))
         self.speed = float(rospy.get_param('~arrival_speed_mps', .15))
         self.platform_delta = float(rospy.get_param('~landing_platform_delta_z', 0.0))

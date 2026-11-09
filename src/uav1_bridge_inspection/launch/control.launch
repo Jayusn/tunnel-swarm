@@ -1,6 +1,7 @@
 <?xml version="1.0" ?>
 <launch>
   <arg name="takeoff_z"/>
+  <arg name="landing_yaw_deg" default="-90.0"/>
   <arg name="force_estimator_method" default="window_opt"/>
   <arg name="ndob_rate" default="20.0"/>
   <arg name="ndob_cutoff_freq" default="5.0"/>
@@ -50,6 +51,7 @@
   <rosparam command="load" ns="/UAV1/precision_landing_node" file="$(find uav1_inplace_landing_test)/config/standalone_center_offset.yaml"/>
   <!-- 桥梁独立保存的 18 cm 实飞精降参数，覆盖公共配置和旧中心补偿。 -->
   <rosparam command="load" ns="/UAV1/precision_landing_node" file="$(find uav1_bridge_inspection)/config/landing_18cm.yaml"/>
+  <param name="/UAV1/precision_landing_node/control/fixed_yaw_deg" value="$(arg landing_yaw_deg)"/>
   <param name="/UAV1/precision_landing_node/marker/size_m" value=".18"/>
   <param name="/UAV1/precision_landing_node/marker/dictionary" value="DICT_4X4_50"/>
   <param name="/UAV1/precision_landing_node/topics/rc_land_active" value="/UAV1/landing/rc_land_active"/>

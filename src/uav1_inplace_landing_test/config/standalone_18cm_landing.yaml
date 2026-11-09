@@ -11,8 +11,9 @@ control:
   use_fastlio_z_for_height: true
   # 暂停下降时捕获一次当前 Z；后续下沉、丢码不再下移保持目标。
   freeze_descent_hold_height: true
-  # 锁定XY后先保持高度完成NMPC交接，再连续稳定0.5秒后下降。
-  fixed_xy_settle_enabled: true
+  # 锁定XY后只保持高度交接1.5秒，随后下降；不再检查XY误差或速度。
+  fixed_xy_settle_enabled: false
+  # 精降触发满20秒时，超时兜底优先于交接计时，直接开始固定目标下降。
   fixed_xy_handoff_sec: 1.5
   fixed_xy_settle_error_m: 0.05
   fixed_xy_settle_speed_mps: 0.05

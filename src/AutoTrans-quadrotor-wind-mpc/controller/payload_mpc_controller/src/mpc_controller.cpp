@@ -413,7 +413,7 @@ namespace PayloadMPC
       const Eigen::Ref<const Eigen::Vector3d> &acceleration,
       const Eigen::Ref<const Eigen::Vector3d> &jerk,
       double yaw,
-      double yaw_rate)
+      double yaw_rate, bool use_waypoint_weights)
   {
     // 入口点的位置、速度和加速度位于规划器世界系；yaw/yaw_rate 由 FSM 提供。
     Eigen::Quaterniond quad_q;
@@ -427,7 +427,7 @@ namespace PayloadMPC
       return false;
     }
 
-    setWaypointTrackingWeights(false);
+    if (!setWaypointTrackingWeights(use_waypoint_weights)) return false;
     // 精降接管可能带入当时姿态；继续使用出口锁存值和零偏航角速度。
     if (locked_yaw_active_)
     {

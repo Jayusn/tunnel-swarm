@@ -17,11 +17,15 @@ from mavros_msgs.msg import AttitudeTarget, ExtendedState, PositionTarget, RCIn,
 from mavros_msgs.srv import SetMode, SetModeResponse
 from nav_msgs.msg import Odometry, Path as RosPath
 from sensor_msgs.msg import Imu
+from rosgraph_msgs.msg import Log
 from std_msgs.msg import Bool, Float64, String
 
 
 class BridgeTest(RcLandPriorityTest):
     def test_task_nmpc_precision(self):
+        controller_logs = []
+        log_sub = rospy.Subscriber('/rosout', Log, controller_logs.append)
+        self.addCleanup(log_sub.unregister)
         launch = str(Path(__file__).resolve().parents[1] / 'launch/control.launch')
         config = roslaunch.config.load_config_default([(launch, ['takeoff_z:=1.6'])], None)
         def mapped(name):
@@ -82,7 +86,13 @@ class BridgeTest(RcLandPriorityTest):
         self.assertAlmostEqual(ref.z,1.5,places=4)
         landing_stage = 'FIXED_XY_DESCENT'
         drive(.5,landing=True)
-        self.assertIn('active=1 Q_pos_xy=400.0 R_pitchroll=20.0', Path(self.log.name).read_text())
+        weight_log = '\n'.join(m.msg for m in controller_logs
+                               if m.name == self.prefix+'/mpc_controller_node')
+        locked_weights = 'active=1 Q_pos_xy=400.0 R_pitchroll=20.0'
+        self.assertIn(locked_weights, weight_log)
+        # 不能只验证曾经启用；设置位置参考后也必须保持加强权重。
+        self.assertNotIn('active=0', weight_log.split(locked_weights, 1)[1])
+        self.assertEqual(weight_log.count(locked_weights), 1)
         # CH10 后视觉参考不再覆盖人工降落参考；飞控坐标不参与精降目标转换。
         rc.channels[9]=2000;target.position=Point(99.,99.,99.);drive(.4,landing=True)
         ref=self.last('mpc_controller_node/mpc/reference_trajectory').poses[0].pose.position
@@ -130,10 +140,9 @@ class BridgeTest(RcLandPriorityTest):
         actions.append(points[-1])
         points = [point[:3] for point in points]
         self.subscribe('bridge/waypoint_turn', PoseStamped)
-        approach_yaw = math.atan2(points[-1][1]-points[-2][1],
-                                 points[-1][0]-points[-2][0])
-        if math.hypot(points[-1][0]-points[-2][0], points[-1][1]-points[-2][1]) <= 1.e-6:
-            approach_yaw = rospy.get_param('/bridge_mission/bridge_yaw')
+        approach_yaw = math.radians(rospy.get_param('/bridge_mission/landing_yaw_deg'))
+        self.assertAlmostEqual(approach_yaw, -math.pi/2.)
+        self.assertEqual(rospy.get_param('/UAV1/precision_landing_node/control/fixed_yaw_deg'), -90.)
         for topic, kind in [('planning/goal', PoseStamped), ('need_to_land', Bool),
                             ('landing/state', String), ('landing/nmpc_target', PositionTarget),
                             ('bridge/precision_position', PositionTarget)]:
@@ -246,6 +255,9 @@ class BridgeTest(RcLandPriorityTest):
             elif hold:
                 drive(hold+.1)
             if index == len(points)-1:
+                # 实际朝向在到点容差内偏3度，精降仍须使用指定-90度。
+                odom.pose.pose.orientation.z = math.sin((approach_yaw+math.radians(3.))/2.)
+                odom.pose.pose.orientation.w = math.cos((approach_yaw+math.radians(3.))/2.)
                 drive(.6)  # 降落接近点摆正后连续稳定0.5秒。
             drive(.2)
             if index < len(points)-1:
@@ -328,14 +340,14 @@ class BridgeTest(RcLandPriorityTest):
                 self.assertIsNone(self.last('need_to_land'))
                 self.wait(lambda: self.last('turn_goal') is not None, 'landing turn request')
                 target_q = self.last('turn_goal').pose.orientation
-                self.assertAlmostEqual(2*math.atan2(target_q.z, target_q.w), math.pi/2)
+                self.assertAlmostEqual(2*math.atan2(target_q.z, target_q.w), -math.pi/2)
                 odom.pose.pose.orientation = target_q
                 pubs['odom'].publish(odom)
                 time.sleep(.25)
                 self.assertIsNone(self.last('need_to_land'))
                 # 稳定计时中航向再次超限，计时必须重置。
-                odom.pose.pose.orientation.z = math.sin((math.pi/2-.30)/2)
-                odom.pose.pose.orientation.w = math.cos((math.pi/2-.30)/2)
+                odom.pose.pose.orientation.z = math.sin((-math.pi/2-.30)/2)
+                odom.pose.pose.orientation.w = math.cos((-math.pi/2-.30)/2)
                 pubs['odom'].publish(odom)
                 time.sleep(.15)
                 odom.pose.pose.orientation = self.last('turn_goal').pose.orientation

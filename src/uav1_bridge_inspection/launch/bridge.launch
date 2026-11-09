@@ -4,6 +4,8 @@
        ground_z 沿用实测 Z 平移 -0.22；起飞、巡检与降落接近Z=1.50，精降阶段按平台高度上移15cm。 -->
   <arg name="ground_z" default="-0.22"/>
   <arg name="bridge_yaw" default="0.0"/>
+  <!-- FAST-LIO世界系绝对航向：降落接近与精降统一使用。 -->
+  <arg name="landing_yaw_deg" default="-90.0"/>
   <arg name="landing_x" default="16.00"/>
   <arg name="landing_y" default="0.00"/>
   <arg name="bridge_floor_height" default="1.5"/>
@@ -34,6 +36,7 @@
   </include>
   <include file="$(find uav1_bridge_inspection)/launch/control.launch">
     <arg name="takeoff_z" value="$(arg takeoff_z)"/>
+    <arg name="landing_yaw_deg" value="$(arg landing_yaw_deg)"/>
     <arg name="force_estimator_method" value="$(arg force_estimator_method)"/>
     <arg name="ndob_rate" value="$(arg ndob_rate)"/>
     <arg name="ndob_cutoff_freq" value="$(arg ndob_cutoff_freq)"/>
@@ -44,6 +47,7 @@
   <node pkg="uav1_bridge_inspection" type="bridge_mission.py" name="bridge_mission" output="screen">
     <rosparam command="load" file="$(arg route_file)"/>
     <param name="bridge_yaw" value="$(arg bridge_yaw)"/>
+    <param name="landing_yaw_deg" value="$(arg landing_yaw_deg)"/>
     <param name="landing_x" value="$(arg landing_x)"/>
     <param name="landing_y" value="$(arg landing_y)"/>
     <param name="landing_approach_z" value="$(arg landing_approach_z)"/>

@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""隔离master验证：交接保持Z、XY/速度连续达标后才开始下降。"""
+"""隔离master验证：限时交接、可选二次对中及总超时优先下降。"""
 import subprocess
 import time
 import unittest
+import math
+from pathlib import Path
 
 import cv2
 import numpy as np
 import roslib.packages
 import rospy
+import yaml
 from test_landing_memory_ros import LandingMemoryTest
 
 
@@ -29,6 +32,16 @@ class FixedXYSettleTest(LandingMemoryTest):
             'stages/auto_land/error_m': .05,
             'safety/total_timeout_sec': 30.,
         }
+        if self._testMethodName == 'test_locked_target_descends_after_handoff_without_rechecking_error':
+            config = yaml.safe_load((Path(__file__).resolve().parents[1] /
+                                     'config/standalone_18cm_landing.yaml').read_text())
+            for key in ('fixed_xy_settle_enabled', 'fixed_xy_handoff_sec'):
+                params['control/'+key] = config['control'][key]
+            self.assertFalse(params['control/fixed_xy_settle_enabled'])
+            params['control/fixed_yaw_deg'] = -90.
+        if self._testMethodName == 'test_timeout_overrides_handoff_and_xy_settle_wait':
+            params['control/fixed_xy_handoff_sec'] = 30.
+            params['safety/total_timeout_sec'] = 2.
         for key, value in params.items():
             rospy.set_param(self.ns+'/node/'+key, value)
         self.z = .43
@@ -83,8 +96,51 @@ class FixedXYSettleTest(LandingMemoryTest):
         time.sleep(.3)
         self.assertLess(self.commands[-1].position.z, before-.02)
 
+    def test_locked_target_descends_after_handoff_without_rechecking_error(self):
+        self.trigger = True
+        self.wait(lambda: self.stage() == 'FIXED_XY_DESCENT', 'fixed XY')
+        time.sleep(.08)
+        target = self.commands[-1]
+        # 实际航向为0；桥梁指定航向必须替代当前航向捕获值。
+        self.assertAlmostEqual(target.yaw, -math.pi/2., places=5)
+        z = target.position.z
+        # 锁点后模拟12厘米偏差、横向速度和丢码；交接仍只按时间结束。
+        self.x = target.position.x + .12
+        self.vx = .1
+        self.have_marker = False
+        time.sleep(.7)
+        self.assertAlmostEqual(self.commands[-1].position.z, z, delta=.001)
+        self.wait(lambda: self.commands[-1].position.z < z-.025, 'timed handoff descent')
+        self.assertAlmostEqual(self.commands[-1].position.x, target.position.x, places=5)
+        self.assertAlmostEqual(self.commands[-1].position.y, target.position.y, places=5)
+        self.assertAlmostEqual(self.commands[-1].yaw, target.yaw, places=5)
+        before = self.commands[-1].position.z
+        time.sleep(.3)
+        self.assertLess(self.commands[-1].position.z, before-.02)
+
+    def test_timeout_overrides_handoff_and_xy_settle_wait(self):
+        started = time.monotonic()
+        self.trigger = True
+        self.wait(lambda: self.stage() == 'FIXED_XY_DESCENT', 'fixed XY')
+        time.sleep(.08)
+        target = self.commands[-1]
+        self.x = target.position.x + .20
+        self.vx = .1
+        self.have_marker = False
+        time.sleep(.3)
+        self.assertAlmostEqual(self.commands[-1].position.z, target.position.z, delta=.001)
+        self.wait(lambda: self.commands[-1].position.z < target.position.z-.025,
+                  'timeout overrides handoff and error')
+        self.assertLess(time.monotonic()-started, 3.5)
+        self.assertAlmostEqual(self.commands[-1].position.x, target.position.x, places=5)
+        before = self.commands[-1].position.z
+        time.sleep(.3)
+        self.assertLess(self.commands[-1].position.z, before-.02)
+
 
 if __name__ == '__main__':
-    suite = unittest.TestSuite([FixedXYSettleTest(
-        'test_handoff_and_continuous_xy_settle_before_descent')])
+    suite = unittest.TestSuite(FixedXYSettleTest(name) for name in (
+        'test_handoff_and_continuous_xy_settle_before_descent',
+        'test_locked_target_descends_after_handoff_without_rechecking_error',
+        'test_timeout_overrides_handoff_and_xy_settle_wait'))
     raise SystemExit(not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful())

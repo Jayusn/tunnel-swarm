@@ -539,16 +539,11 @@ namespace PayloadMPC
         landing_reference_velocity_ = velocity;
         // 桥梁显式开启：锁点交接/下降使用与独立测试一致的400/20权重。
         // 复用航点权重切换；退出精降后的悬停/恢复路径会恢复默认权重。
-        if (!controller_.setWaypointTrackingWeights(
-                params_.landing_use_waypoint_weights_ && landing_fixed_stage_))
-        {
-            beginMpcRecovery(now, "精降权重切换失败");
-            return;
-        }
         if (!controller_.setPositionCommandReference(hover_pose_, velocity,
-            acceleration, Eigen::Vector3d::Zero(), hover_yaw_, 0.0))
+            acceleration, Eigen::Vector3d::Zero(), hover_yaw_, 0.0,
+            params_.landing_use_waypoint_weights_ && landing_fixed_stage_))
         {
-            beginMpcRecovery(now, "精降参考无效");
+            beginMpcRecovery(now, "精降参考或权重无效");
             return;
         }
         controller_.execMPC(est_state_, mpc_predicted_states_, mpc_predicted_inputs_);
