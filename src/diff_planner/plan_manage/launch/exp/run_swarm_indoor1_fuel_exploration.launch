@@ -1,4 +1,8 @@
 <launch>
+    <!-- false：实体墙出口检测；true：兼容透明侧板，利用机体上方0.4m内横梁作为边界。 -->
+    <arg name="transparent_tunnel_mode" default="false"/>
+    <param name="/exploration_node/mission/task_search/transparent_tunnel_mode"
+           value="$(arg transparent_tunnel_mode)"/>
     <!-- 默认 a=原方形门入口检测；arch=矩形下部+半圆拱顶。 -->
     <arg name="entry_detection_mode" default="a"/>
     <!-- 本次拱门宽高1.5m；飞行中心Z=0.6m，横向中心由同一门截面自动识别。 -->
