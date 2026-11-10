@@ -141,6 +141,7 @@ void TaskSearchManager::initialize(ros::NodeHandle& nh) {
       std::max(0.5, recovery_turn_confirmation_accumulation_window_);
 
   // 出口只根据局部受限空间向双侧开阔区域的过渡判定。
+  nh.param("mission/task_search/transparent_tunnel_mode", transparent_tunnel_mode_, false);
   nh.param("mission/task_search/exit/enabled", exit_detection_enabled_, true);
   nh.param("mission/task_search/exit/auto_crossing_enabled", exit_auto_crossing_enabled_, true);
   nh.param("mission/task_search/exit/inference_period", exit_inference_period_, 0.50);
@@ -2199,13 +2200,14 @@ bool TaskSearchManager::landingColumnSafe(const Eigen::Vector3d& marker,
 // 2026-07-23: 只在当前里程计高度上下各0.40m内投影占据，地图和里程计共同漂移时仍保持相对一致；
 // 不再用固定世界高度找“门柱”，同时避开明显低于机体的地面和明显高于机体的顶棚。
 bool TaskSearchManager::mapRelativeColumnOccupied(const Eigen::Vector3d& point,
-                                                  double reference_z, bool exclude_below_body) const {
+                                                  double reference_z, bool exclude_below_body,
+                                                  double upper_height) const {
   if (!sdf_map_) return false;
   Eigen::Vector3d box_min, box_max;
   sdf_map_->getBox(box_min, box_max);
   const double min_z = std::max(box_min.z() + 0.05, reference_z -
       (exclude_below_body ? exit_footprint_half_height_ : 0.40));
-  const double max_z = std::min(box_max.z() - 0.05, reference_z + 0.40);
+  const double max_z = std::min(box_max.z() - 0.05, reference_z + upper_height);
   if (max_z < min_z) return false;
   const double xy_offsets[][2] = {{0.0, 0.0}, {0.06, 0.0}, {-0.06, 0.0},
                                   {0.0, 0.06}, {0.0, -0.06}};
@@ -2254,10 +2256,11 @@ bool TaskSearchManager::detectLocalMapExit(const Eigen::Vector3d& cur_pos,
       return point;
     };
     auto occupied = [&](double along, double across) {
-      // 排除机体下方的地板，保留上方支架，不能要求透明侧板在机体高度形成连续墙面。
+      // 两种模式都排除机体下方地板；透明模式额外保留上方细横梁证据。
       // 按地图分辨率采样，避免漏掉单层横梁；转弯轮廓和机体路径检查不变。
       return mapRelativeColumnOccupied(pointAt(along, across), cur_pos.z(),
-                                       true);
+                                       true, transparent_tunnel_mode_ ? 0.40 :
+                                           exit_footprint_half_height_);
     };
     auto known_free = [&](double along, double across) {
       Eigen::Vector3d point = pointAt(along, across);

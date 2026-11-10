@@ -179,7 +179,7 @@ private:
   void beginExitCrossing(const ros::Time& now);
   bool mapExitFootprintFree(const Eigen::Vector3d& point) const;
   bool mapRelativeColumnOccupied(const Eigen::Vector3d& point, double reference_z,
-                                 bool exclude_below_body = false) const;
+                                 bool exclude_below_body = false, double upper_height = 0.40) const;
   // 2026-07-21: 穿门只发布已成为FREE的短滚动目标，UNKNOWN只用于证明开口延伸，不能直接飞入。
   bool buildSafeExitCrossingGoal(const Eigen::Vector3d& cur_pos, Eigen::Vector3d& goal) const;
   // 2026-07-22: 出口候选接近确认且普通frontier耗尽时，发布门内局部补扫点，避免停在门口无法补齐地图证据。
@@ -414,6 +414,7 @@ private:
 
 
   // 局部双侧开阔出口检测与自动任务接管分开；只检测时保持人工流程。
+  bool transparent_tunnel_mode_{false};
   bool exit_detection_enabled_{true};
   bool exit_auto_crossing_enabled_{true};
   double exit_inference_period_{0.50};

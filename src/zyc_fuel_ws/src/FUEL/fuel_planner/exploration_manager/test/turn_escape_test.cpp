@@ -186,12 +186,13 @@ public:
     EXPECT_EQ(task.mission_stage_,TaskSearchManager::SEARCH_OUTSIDE_LANDING);
   }
 
-  static void runLowExit(int mode) {
+  static void runLowExit(int mode, bool transparent = true, bool solid_wall = false) {
     ros::NodeHandle nh("~low_exit_"+std::to_string(mode));
     FastExplorationManager manager; initialize(nh,manager,true,true);
     auto& task=*manager.task_search_manager_;
     auto& map=*manager.sdf_map_;
     task.setMap(manager.sdf_map_);
+    task.transparent_tunnel_mode_=transparent;
     task.exit_outside_length_=.60;
     task.exit_footprint_extra_radius_=.20;
     std::fill(map.md_->occupancy_buffer_.begin(),map.md_->occupancy_buffer_.end(),map.mp_->clamp_min_log_);
@@ -209,6 +210,9 @@ public:
         for (int side : {-1,1}) {
           if (mode==3 && side==-1) continue;
           mark(x,side*.75,.625,map.mp_->clamp_max_log_);
+          if (solid_wall)
+            for (double z=.075;z<.65;z+=.05)
+              mark(x,side*.75,z,map.mp_->clamp_max_log_);
         }
       }
       if (mode==2 && x>.55)
@@ -222,7 +226,7 @@ public:
     const Vector3d start(0,0,.233);
     TaskSearchManager::OpenExitResult result;
     const bool found=task.detectLocalMapExit(start,Eigen::Vector2d::UnitX(),result);
-    if (mode!=0) { EXPECT_FALSE(found); return; }
+    if (mode!=0 || (!transparent && !solid_wall)) { EXPECT_FALSE(found); return; }
     ASSERT_TRUE(found);
     EXPECT_NEAR(result.portal_center.x(),.5,.16);
     EXPECT_NEAR(result.portal_center.y(),0,.08);
@@ -6310,3 +6314,7 @@ TEST(CorridorLowFlight, SearchTrajectoryCurveAndOutsideLandingScope) { fast_plan
 
 TEST(CorridorLowFlight, LeftBypassPrefersTwentyCentimetersFromCenter) { fast_planner::TurnEscapeTest::runBypassContinuation(1,true,false,false,true); }
 TEST(CorridorLowFlight, RightBypassPrefersTwentyCentimetersFromCenter) { fast_planner::TurnEscapeTest::runBypassContinuation(-1,true,false,false,true); }
+
+TEST(AutomaticExit, OpaqueModeIgnoresOverheadRails) { fast_planner::TurnEscapeTest::runLowExit(0,false); }
+TEST(AutomaticExit, OpaqueModeAcceptsSolidWalls) { fast_planner::TurnEscapeTest::runLowExit(0,false,true); }
+TEST(AutomaticExit, TransparentModeAlsoAcceptsSolidWalls) { fast_planner::TurnEscapeTest::runLowExit(0,true,true); }
