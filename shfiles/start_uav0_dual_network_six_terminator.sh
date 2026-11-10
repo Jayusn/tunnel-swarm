@@ -7,8 +7,8 @@ set -e
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 NETWORK_SETUP="${SCRIPT_DIR}/configure_dual_uav_ros_network.sh"
 UAV0_LAUNCHER="${SCRIPT_DIR}/start_uav0_six_terminator.sh"
-export DUAL_UAV_ROS_MASTER_IP="${DUAL_UAV_ROS_MASTER_IP:-10.227.10.212}"
-export UAV0_ROS_IP="${UAV0_ROS_IP:-10.227.10.212}"
+export DUAL_UAV_ROS_MASTER_IP="${DUAL_UAV_ROS_MASTER_IP:-192.168.230.212}"
+export UAV0_ROS_IP="${UAV0_ROS_IP:-192.168.230.212}"
 
 [[ -r "${NETWORK_SETUP}" ]] || { printf '找不到 %s\n' "${NETWORK_SETUP}" >&2; exit 1; }
 [[ -x "${UAV0_LAUNCHER}" ]] || { printf '找不到 %s\n' "${UAV0_LAUNCHER}" >&2; exit 1; }
