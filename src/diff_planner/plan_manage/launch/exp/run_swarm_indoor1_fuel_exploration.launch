@@ -1,6 +1,6 @@
 <launch>
-    <!-- arch=矩形下部+半圆拱顶；a/b/c保留原检测，可显式切回。 -->
-    <arg name="entry_detection_mode" default="arch"/>
+    <!-- 默认 a=原方形门入口检测；arch=矩形下部+半圆拱顶。 -->
+    <arg name="entry_detection_mode" default="a"/>
     <!-- 本次拱门宽高1.5m；飞行中心Z=0.6m，横向中心由同一门截面自动识别。 -->
     <arg name="entry_door_width" default="1.50"/>
     <arg name="entry_door_height" default="1.50"/>
