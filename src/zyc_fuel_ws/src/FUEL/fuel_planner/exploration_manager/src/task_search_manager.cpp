@@ -47,7 +47,6 @@ void TaskSearchManager::initialize(ros::NodeHandle& nh) {
   nh.param("mission/task_search/max_history_size", max_history_size_, 120);
   nh.param("mission/task_search/cruise_height", cruise_height_, 0.75);
   nh.param("mission/task_search/min_height", min_search_height_, 0.55);
-  nh.param("mission/task_search/corridor_width", corridor_width_, 0.0);
   nh.param("mission/task_search/max_height", max_search_height_, 1.00);
   // 2026-07-13: 比赛窄道采用水平优先搜索，目标高度不能随 frontier 一次跳到顶层。
   nh.param("mission/task_search/max_goal_climb", max_goal_climb_, 0.06);
@@ -425,8 +424,6 @@ void TaskSearchManager::setCorridorFrame(const Eigen::Vector3d& origin,
   segment_origin_ = corridor_origin_.head<2>();
   segment_direction_ = corridor_dir_.head<2>().normalized();
   segment_high_water_ = 0.0;
-  width_origin_ = segment_origin_;
-  width_direction_ = segment_direction_;
   stable_progress_direction_ = corridor_dir_.head<2>().normalized();
   stable_progress_direction_valid_ = true;
   turn_detection_direction_ = stable_progress_direction_;
@@ -684,7 +681,7 @@ Eigen::Vector2d TaskSearchManager::turnDetectionDirection() const {
 }
 
 void TaskSearchManager::updateCurveHeading() {
-  if ((return_straight_active_ && corridorFlightLimitsActive()) ||
+  if ((return_straight_active_ && (corridor_frame_received_ && corridor_entry_crossed_ && mission_stage_ == SEARCH_CORRIDOR)) ||
       !curve_heading_enabled_ || !sdf_map_ || !corridor_entry_crossed_ ||
       entry_forward::needsAdvance((latest_robot_pos_-corridor_origin_).dot(corridor_dir_)) ||
       mission_stage_ != SEARCH_CORRIDOR ||
@@ -732,15 +729,6 @@ void TaskSearchManager::updateCurveHeading() {
   corridor_curve::Result geometry;
   const bool fitted = corridor_curve::infer(
       left,right,std::max(0.06,0.8*resolution),geometry);
-  width_curve_valid_ = fitted;
-  if (fitted) {
-    width_curve_ = geometry;
-    width_curve_origin_ = origin.head<2>();
-    width_curve_forward_ = curve_forward_;
-    width_origin_ = origin.head<2>() + geometry.center[0] * lateral;
-    const double heading = std::atan2(curve_forward_.y(), curve_forward_.x()) + geometry.yaw(0.0);
-    width_direction_ = Eigen::Vector2d(std::cos(heading), std::sin(heading));
-  }
   // 首次局部曲线拟合不改变旧基准；连续双墙证据才用当前位置切线交接。
   // 前视0.35m的机头参考独立计算，不把前视角度当成旧通道方向。
   if (fitted && following_curve) {
@@ -775,7 +763,7 @@ void TaskSearchManager::updateCurveHeading() {
 
 bool TaskSearchManager::corridorCurveYaw(
     const Eigen::Vector3d& position,double& yaw) const {
-  if (return_straight_active_ && corridorFlightLimitsActive()) {
+  if (return_straight_active_ && (corridor_frame_received_ && corridor_entry_crossed_ && mission_stage_ == SEARCH_CORRIDOR)) {
     yaw = manual_exit_enabled_ ? manual_exit_yaw_ :
         std::atan2(-corridor_dir_.y(), -corridor_dir_.x());
     return true;
@@ -1155,7 +1143,7 @@ bool TaskSearchManager::inferOccupancyTurnDirection(
   forward_free_length = 0.0;
   turn_free_length = 0.0;
   // 已确认的U形出口直道不因局部避障空隙再次改写方向。
-  if (return_straight_active_ && corridorFlightLimitsActive()) return false;
+  if (return_straight_active_ && (corridor_frame_received_ && corridor_entry_crossed_ && mission_stage_ == SEARCH_CORRIDOR)) return false;
   if (!recovery_occupancy_turn_enabled_ || !sdf_map_ || visited_positions_.empty() ||
       travel_direction.head<2>().norm() < 1e-3)
     return false;
@@ -1213,7 +1201,7 @@ bool TaskSearchManager::inferOccupancyTurnDirection(
         sample.head<2>() +=
             (-half + forward_sample * sample_step) * travel +
             (-half + lateral_sample * sample_step) * lateral;
-        if (!isInsideCorridorWidth(sample) || !sdf_map_->isInMap(sample) ||
+        if (!sdf_map_->isInMap(sample) ||
             sdf_map_->getOccupancy(sample) != SDFMap::FREE)
           return false;
       }
@@ -1450,22 +1438,11 @@ bool TaskSearchManager::inferOccupancyTurnDirection(
         // 这里只识别通道，不发布这条折线路径，也不要求实际直飞一米。
         const Eigen::Vector3d continuation_start = branch.back();
         bool old_corridor_continues = true;
-        // 通道外的空地不能否决转弯：普通绕行必须整条连接段都在旧通道内。
-        // 新通道候选仍按地图验证，确认转弯后才更新通道边界。
-        for (std::size_t i = 1; i < anchors.size() && i <= a; ++i)
-          old_corridor_continues = old_corridor_continues &&
-              isInsideCorridorWidth(anchors[i], exit_footprint_extra_radius_);
-        for (double distance = 0.0; old_corridor_continues && distance <= horizon + 1e-6;
-             distance += body_step)
-          old_corridor_continues = isInsideCorridorWidth(
-              anchor + distance * forward, exit_footprint_extra_radius_);
         for (double distance = body_step; distance <= horizon + 1e-6;
              distance += body_step) {
           const Eigen::Vector3d point = continuation_start +
               distance * Eigen::Vector3d(travel.x(), travel.y(), 0.0);
-          if (!old_corridor_continues ||
-              !isInsideCorridorWidth(point, exit_footprint_extra_radius_) ||
-              !mapExitFootprintFree(point)) {
+          if (!mapExitFootprintFree(point)) {
             old_corridor_continues = false;
             break;
           }
@@ -1603,9 +1580,6 @@ void TaskSearchManager::commitCorridorTurn(
   // 但必须防止恢复轨迹沿当前段长距离倒退。
   segment_origin_ = anchor;
   segment_direction_ = outgoing;
-  width_origin_ = anchor;
-  width_direction_ = outgoing;
-  width_curve_valid_ = false;
   segment_high_water_ = 0.0;
   if (!exit_portal_locked_) clearExitEvidence();
   stable_progress_direction_ = outgoing;
@@ -1627,7 +1601,7 @@ void TaskSearchManager::commitCorridorTurn(
 }
 
 bool TaskSearchManager::inferReturnStraightDirection(Eigen::Vector3d& direction) const {
-  if (!return_straight_enabled_ || !corridorFlightLimitsActive() || !sdf_map_ ||
+  if (!return_straight_enabled_ || !(corridor_frame_received_ && corridor_entry_crossed_ && mission_stage_ == SEARCH_CORRIDOR) || !sdf_map_ ||
       !latest_robot_pose_valid_ || entryForwardPhaseActive()) return false;
   direction = -corridor_dir_;
   if (manual_exit_enabled_)
@@ -1662,7 +1636,7 @@ bool TaskSearchManager::mappedCorridorDirection(
     direction = Eigen::Vector3d(latched_direction.x(), latched_direction.y(), 0.0);
     return true;
   }
-  if (return_straight_active_ && corridorFlightLimitsActive()) return false;
+  if (return_straight_active_ && (corridor_frame_received_ && corridor_entry_crossed_ && mission_stage_ == SEARCH_CORRIDOR)) return false;
 
   // 已确认的转弯尚未沿新通道离开转角时，不得把同一片转角地图再次解释成
   // 另一条新通道。保持刚提交的通道方向，走出既有0.60m过渡区后再恢复检测。
@@ -1849,28 +1823,7 @@ bool TaskSearchManager::isMissionBoundaryMotionAllowed(
   return true;
 }
 
-Eigen::Vector3d TaskSearchManager::corridorSectionCenter(const Eigen::Vector3d& point) const {
-  Eigen::Vector3d center = point;
-  if (width_curve_valid_) {
-    const Eigen::Vector2d lateral(-width_curve_forward_.y(), width_curve_forward_.x());
-    const double x = (point.head<2>() - width_curve_origin_).dot(width_curve_forward_);
-    center.head<2>() = width_curve_origin_ + x * width_curve_forward_ +
-        width_curve_.center.dot(Eigen::Vector3d(1.0, x, x*x)) * lateral;
-  } else {
-    center.head<2>() = width_origin_ +
-        (point.head<2>() - width_origin_).dot(width_direction_) * width_direction_;
-  }
-  return center;
-}
-
-bool TaskSearchManager::isInsideCorridorWidth(const Eigen::Vector3d& point, double radius) const {
-  return !corridorFlightLimitsActive() ||
-      (point - corridorSectionCenter(point)).head<2>().norm() <=
-          std::max(0.0, 0.5 * corridor_width_ - radius) + 1e-6;
-}
-
 bool TaskSearchManager::isTaskMotionAllowed(const Eigen::Vector3d& candidate) const {
-  if (!isInsideCorridorWidth(candidate)) return false;
   if (!isMissionBoundaryMotionAllowed(candidate)) return false;
   if (!global_no_return_ || !corridor_frame_received_) return true;
   if (!hybrid_constraints_enabled_) {

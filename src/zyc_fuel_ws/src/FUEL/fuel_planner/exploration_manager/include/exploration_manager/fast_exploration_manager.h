@@ -349,17 +349,6 @@ private:
   bool skip_straight_extension_after_turn_{false};
   // 当前位置下方出现受支撑障碍时，先固定 XY/yaw 回到巡航高度，再恢复水平搜索。
   bool ground_ascent_enabled_{true};
-  bool corridor_low_flight_enabled_{false};
-  double corridor_normal_max_height_{0.70}, corridor_upper_max_height_{1.10};
-  double corridor_floor_z_{-0.15}, corridor_blocking_height_{0.50};
-  double corridor_height_limit_{0.70};
-  bool corridor_bottom_blocked_{false};
-  Vector3d corridor_limit_start_{0.0,0.0,0.0};
-  double preferred_obstacle_distance_{0.0};
-  bool corridorPolicyActive() const;
-  bool corridorPointAllowed(const Vector3d& point) const;
-  bool corridorBottomBlocked(const Vector3d& pos, const Vector3d& forward) const;
-  void updateCorridorFlightLimits(const Vector3d& pos, double yaw);
   bool ground_ascent_active_{false};
   // 普通动作后的 0.60m 高度恢复只是偏好，与转弯无关。
   bool ground_ascent_optional_{false};

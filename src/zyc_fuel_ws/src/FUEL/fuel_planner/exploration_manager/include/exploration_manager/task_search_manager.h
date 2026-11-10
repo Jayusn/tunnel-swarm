@@ -72,13 +72,6 @@ public:
                                    double cur_yaw);
   bool isRecoveryCandidateUseful(const Eigen::Vector3d& candidate) const;
   bool isTaskMotionAllowed(const Eigen::Vector3d& candidate) const;
-  bool corridorFlightLimitsActive() const {
-    return corridor_width_ > 0.0 && corridor_frame_received_ &&
-           corridor_entry_crossed_ && mission_stage_ == SEARCH_CORRIDOR;
-  }
-  Eigen::Vector3d corridorSectionCenter(const Eigen::Vector3d& point) const;
-  bool isInsideCorridorWidth(const Eigen::Vector3d& point, double radius = 0.0) const;
-  double corridorWidth() const { return corridor_width_; }
   bool isMissionBoundaryMotionAllowed(const Eigen::Vector3d& candidate) const;
   double entryStartBackMargin() const { return inside_return_margin_; }
   bool isTaskPathAllowed(const std::vector<Eigen::Vector3d>& path) const;
@@ -285,11 +278,6 @@ private:
   Eigen::Vector2d segment_origin_{0.0, 0.0};
   Eigen::Vector2d segment_direction_{1.0, 0.0};
   double segment_high_water_{0.0};
-  double corridor_width_{0.0};  // 0: other launch files retain their existing policy.
-  Eigen::Vector2d width_origin_{0.0, 0.0}, width_direction_{1.0, 0.0};
-  bool width_curve_valid_{false};
-  corridor_curve::Result width_curve_;
-  Eigen::Vector2d width_curve_origin_{0.0, 0.0}, width_curve_forward_{1.0, 0.0};
   bool transition_active_{false};
   Eigen::Vector2d transition_anchor_{0.0, 0.0};
   Eigen::Vector2d transition_incoming_direction_{1.0, 0.0};
