@@ -109,7 +109,8 @@ class DualUavLandingCoordinator {
   }
 
   static bool frontCandidatesAllowed(const std::string& state) {
-    return state == "FRONT_ARUCO_VERIFY_APPROACH" ||
+    return state == "FRONT_ARUCO_FORWARD_APPROACH" ||
+           state == "FRONT_ARUCO_VERIFY_APPROACH" ||
            state == "FRONT_ARUCO_INITIAL_WAIT" ||
            state == "FRONT_ARUCO_YAW_SCAN_LEFT" ||
            state == "FRONT_ARUCO_YAW_SCAN_RIGHT" ||
@@ -137,8 +138,7 @@ class DualUavLandingCoordinator {
     const std::string next_state = firstToken(message->data);
     if (next_state == "FRONT_ARUCO_FORWARD_APPROACH" &&
         landing_search_state_ != next_state && !assignments_ready_) {
-      // 新一轮 CH9 搜索开始时清空上轮或锁存话题带来的候选。前飞阶段不采集，
-      // 到达扫描点后再保留本轮前视相机给出的粗位置。
+      // 新一轮搜索开始时清空上轮候选；到达出口后的前飞阶段即可采集。
       resetSearchCandidates();
     }
     landing_search_state_ = next_state;

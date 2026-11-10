@@ -190,7 +190,8 @@ class FrontArucoHintNode {
   }
 
   static bool isFrontScanState(const std::string& state) {
-    return state == "FRONT_ARUCO_VERIFY_APPROACH" ||
+    return state == "FRONT_ARUCO_FORWARD_APPROACH" ||
+           state == "FRONT_ARUCO_VERIFY_APPROACH" ||
            state == "FRONT_ARUCO_INITIAL_WAIT" ||
            state == "FRONT_ARUCO_YAW_SCAN_LEFT" ||
            state == "FRONT_ARUCO_YAW_SCAN_RIGHT" ||

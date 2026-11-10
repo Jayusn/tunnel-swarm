@@ -113,7 +113,7 @@ class DualUavLandingCoordinatorTest(unittest.TestCase):
         self.exit_pub.publish(exit_pose)
         rospy.sleep(0.1)
 
-        self.state_pub.publish(String(data="FRONT_ARUCO_INITIAL_WAIT"))
+        self.state_pub.publish(String(data="FRONT_ARUCO_FORWARD_APPROACH"))
         self.front_candidates_pub.publish(
             self._candidate_array(rospy.Time.now() - rospy.Duration(2.0))
         )
@@ -132,7 +132,7 @@ class DualUavLandingCoordinatorTest(unittest.TestCase):
         # 无新观测时保留线索；不是依靠图像每帧重发才能继续搜索。
         first_stamp = self.hint.header.stamp
         self.assertTrue(self._wait_for(lambda: self.hint.header.stamp > first_stamp))
-        self.state_pub.publish(String(data="FRONT_ARUCO_VERIFY_APPROACH"))
+        self.state_pub.publish(String(data="FRONT_ARUCO_FORWARD_APPROACH"))
         rospy.sleep(0.1)
         confirmed = self._candidate_array(rospy.Time.now())
         confirmed.platforms = confirmed.platforms[:1]

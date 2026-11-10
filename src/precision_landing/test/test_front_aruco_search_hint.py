@@ -49,7 +49,7 @@ class FrontArucoSearchHintTest(unittest.TestCase):
         info.distortion_model = 'plumb_bob'
         info_pub.publish(info)
         stage_pub.publish(String(data='SEARCH_OUTSIDE_LANDING'))
-        state_pub.publish(String(data='FRONT_ARUCO_VERIFY_APPROACH'))
+        state_pub.publish(String(data='FRONT_ARUCO_FORWARD_APPROACH'))
         rospy.sleep(.2)
         marker = cv2.aruco.drawMarker(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_250), 2, 200)
         gray = np.full((480, 640), 255, dtype=np.uint8)
