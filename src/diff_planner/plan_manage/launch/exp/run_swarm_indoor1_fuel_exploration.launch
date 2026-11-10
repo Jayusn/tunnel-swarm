@@ -7,7 +7,7 @@
     <arg name="entry_center_z" default="0.60"/>
     <arg name="manual_entry_enabled" default="true"/>
 
-    <arg name="manual_exit_enabled" default="true"/>
+    <arg name="manual_exit_enabled" default="false"/>
     <arg name="manual_exit_x" default="1.8"/>
     <arg name="manual_exit_y" default="-3.0"/>
     <arg name="manual_exit_z" default="0.60"/>
