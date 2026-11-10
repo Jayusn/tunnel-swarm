@@ -13,6 +13,7 @@ from precision_landing.msg import LandingPlatform, LandingPlatformArray
 
 class DualUavLandingCoordinatorTest(unittest.TestCase):
     def setUp(self):
+        self.single_platform_mode = rospy.get_param("~single_platform_mode", False)
         self.ready = False
         self.uav0_id = -1
         self.uav1_id = -1
@@ -40,6 +41,7 @@ class DualUavLandingCoordinatorTest(unittest.TestCase):
         self.state_pub = rospy.Publisher(
             "/test/search_state", String, queue_size=1
         )
+        self.success_pub = rospy.Publisher("/test/uav0_success", Bool, queue_size=1)
         self.landing_request_pub = rospy.Publisher(
             "/test/uav0_landing_request", Bool, queue_size=1
         )
@@ -136,6 +138,23 @@ class DualUavLandingCoordinatorTest(unittest.TestCase):
         confirmed.platforms = confirmed.platforms[:1]
         self.front_candidates_pub.publish(confirmed)
         rospy.sleep(0.15)
+        if self.single_platform_mode:
+            self.assertTrue(self._wait_for(lambda: self.ready and self.uav0_target is not None))
+            self.assertEqual(self.uav0_id, 31)
+            self.assertEqual(self.uav1_id, -1)
+            self.assertIsNone(self.uav1_target)
+            first_stamp = self.uav0_target.header.stamp
+            self.assertTrue(self._wait_for(lambda: self.uav0_target.header.stamp > first_stamp))
+            self.landing_request_pub.publish(Bool(data=True))
+            rospy.sleep(0.3)
+            self.assertFalse(self.released)
+            self.assertTrue(self._wait_for(lambda: self.success_pub.get_num_connections() > 0))
+            self.success_pub.publish(Bool(data=True))
+            rospy.sleep(0.3)
+            self.assertFalse(self.released)
+            self.assertEqual(self.uav1_id, -1)
+            self.assertIsNone(self.uav1_target)
+            return
         self.assertFalse(self.ready, "one confirmed plus one rough candidate must not assign")
         self.assertEqual(self.uav0_id, -1)
         self.assertEqual(self.uav1_id, -1)

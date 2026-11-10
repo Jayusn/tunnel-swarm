@@ -1,7 +1,9 @@
 <launch>
+  <arg name="single_platform_mode" default="false"/>
   <!-- UAV0 确认至少两个平台后立即选择最近两个：近点给 UAV1，另一点给 UAV0；UAV0 请求精降后释放 UAV1。 -->
   <node pkg="precision_landing" type="dual_uav_landing_coordinator_node"
         name="dual_uav_landing_coordinator" output="screen" required="true">
+    <param name="single_platform_mode" value="$(arg single_platform_mode)"/>
     <param name="topics/candidates" value="/UAV0/landing/search/candidates"/>
     <param name="topics/front_candidates" value="/UAV0/landing/front/candidates"/>
     <param name="topics/search_candidates" value="/UAV0/landing/front/search_candidates"/>

@@ -25,6 +25,7 @@ std::string firstToken(const std::string& text) {
 class DualUavLandingCoordinator {
  public:
   DualUavLandingCoordinator() : private_node_("~") {
+    private_node_.param("single_platform_mode", single_platform_mode_, false);
     std::string candidates_topic{"/UAV0/landing/search/candidates"};
     std::string front_candidates_topic{"/UAV0/landing/front/candidates"};
     std::string search_candidates_topic{"/UAV0/landing/front/search_candidates"};
@@ -87,7 +88,8 @@ class DualUavLandingCoordinator {
     publishId(uav1_assigned_pub_, -1);
     publishBool(release_pub_, false);
     publishBool(ready_pub_, false);
-    publishStatus("等待 UAV0 稳定确认两个降落平台");
+    publishStatus(single_platform_mode_ ? "等待 UAV0 稳定确认一个降落平台" :
+                  "等待 UAV0 稳定确认两个降落平台");
   }
 
  private:
@@ -214,13 +216,25 @@ class DualUavLandingCoordinator {
   }
 
   void tryAssignPlatforms() {
-    if (assignments_ready_ || uav0_success_ || !have_exit_ || candidates_by_id_.size() < 2U) return;
+    if (assignments_ready_ || uav0_success_ || !have_exit_ ||
+        candidates_by_id_.empty() || (!single_platform_mode_ && candidates_by_id_.size() < 2U)) return;
     std::vector<precision_landing::LandingPlatform> nearest;
     for (const auto& item : candidates_by_id_) nearest.push_back(item.second);
     std::sort(nearest.begin(), nearest.end(), [&](const auto& a, const auto& b) {
       const double da = distanceFromExit(a), db = distanceFromExit(b);
       return da != db ? da < db : a.id < b.id;
     });
+    if (single_platform_mode_) {
+      const auto& platform = nearest.front();
+      uav0_id_ = platform.id;
+      uav0_target_ = platform.pose;
+      assignments_ready_ = true;
+      publishTargets();
+      publishId(uav0_assigned_pub_, uav0_id_);
+      publishBool(ready_pub_, true);
+      publishStatus("已确认一个平台：分配给 UAV0 并结束搜索；UAV1 不分配、不释放");
+      return;
+    }
     // 已确认的两个最近平台立即接管搜索；近的留给后机，前机继续到另一个。
     const auto& uav1_platform = nearest[0];
     const auto& uav0_platform = nearest[1];
@@ -246,7 +260,7 @@ class DualUavLandingCoordinator {
   }
 
   void tryReleaseUav1() {
-    if (uav1_released_ || !assignments_ready_ || !uav0_landing_requested_) {
+    if (single_platform_mode_ || uav1_released_ || !assignments_ready_ || !uav0_landing_requested_) {
       return;
     }
     uav1_released_ = true;
@@ -255,8 +269,12 @@ class DualUavLandingCoordinator {
   }
 
   void successCallback(const std_msgs::BoolConstPtr& message) {
-    if (!message->data || uav0_id_ < 0 || uav1_id_ < 0 || uav0_success_) return;
+    if (!message->data || uav0_id_ < 0 || (!single_platform_mode_ && uav1_id_ < 0) || uav0_success_) return;
     uav0_success_ = true;
+    if (single_platform_mode_) {
+      publishStatus("UAV0 已完成单平台降落；UAV1 不释放");
+      return;
+    }
     if (!uav1_released_) {
       // 兼容精降请求话题异常缺失的情况：成功信号仍作为最终兜底释放。
       uav1_released_ = true;
@@ -277,7 +295,7 @@ class DualUavLandingCoordinator {
     uav0_target_.header.stamp = now;
     uav1_target_.header.stamp = now;
     uav0_target_pub_.publish(uav0_target_);
-    uav1_target_pub_.publish(uav1_target_);
+    if (!single_platform_mode_) uav1_target_pub_.publish(uav1_target_);
   }
 
   void publishStatus(const std::string& value) {
@@ -310,6 +328,7 @@ class DualUavLandingCoordinator {
   std::map<int, precision_landing::LandingPlatform> candidates_by_id_;
   std::map<int, precision_landing::LandingPlatform> search_candidates_;
   std::set<int> downward_ids_;
+  bool single_platform_mode_{false};
   bool have_exit_{false}, uav0_landing_requested_{false}, uav0_success_{false},
       assignments_ready_{false}, uav1_released_{false};
   int uav0_id_{-1}, uav1_id_{-1};

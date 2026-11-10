@@ -1,6 +1,8 @@
 <launch>
+  <arg name="single_platform_mode" default="false"/>
   <node pkg="precision_landing" type="dual_uav_landing_coordinator_node"
         name="dual_uav_landing_coordinator" output="screen">
+    <param name="single_platform_mode" value="$(arg single_platform_mode)"/>
     <param name="topics/candidates" value="/test/down_candidates"/>
     <param name="topics/front_candidates" value="/test/front_candidates"/>
     <param name="topics/search_candidates" value="/test/search_candidates"/>
@@ -22,5 +24,7 @@
   <test test-name="dual_uav_landing_coordinator_test"
         pkg="precision_landing"
         type="test_dual_uav_landing_coordinator.py"
-        time-limit="15.0"/>
+        time-limit="15.0">
+    <param name="single_platform_mode" value="$(arg single_platform_mode)"/>
+  </test>
 </launch>

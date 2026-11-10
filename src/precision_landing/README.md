@@ -299,3 +299,11 @@ mode change.
    target descends at `0.25 m/s`, including when ArUco leaves the image.
 7. Low-height cutoff: confirm the node logs the `0.30 m` threshold and requests
    PX4 `AUTO.LAND`; PX4 completes the final descent and motor stop.
+
+### 单平台降落开关
+
+`uav0_detection_landing_stack.launch` 的 `single_platform_mode` 默认 `true`：
+确认一个 ArUco 平台后即可分配给 UAV0，结束找第二个平台并进入既有接近、精降流程；
+UAV1 不分配目标、不释放。粗搜索线索仍需通过原有确认流程。
+设为 `false` 恢复双平台分配（近点给 UAV1，另一点给 UAV0）。
+修改后重启检测降落栈生效；独立协调器 launch 默认仍为双平台模式。
