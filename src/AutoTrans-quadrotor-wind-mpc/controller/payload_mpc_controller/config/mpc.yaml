@@ -70,7 +70,7 @@ fixed_hover:
     enabled: true
     x: 0.0
     y: 0.0
-    z: 1.0
+    z: 0.6
 
 max_angle: 30  # Attitude angle limit in degree. A negative value means no limit.
 # 源码值 -0.1 等价于基本关闭低电压保护；实飞前应按你的电池节数和最低安全电压设置。
@@ -184,7 +184,7 @@ takeoff:
     # AUTO_TAKEOFF 不自动解锁，也不调用 /mavros/set_mode；仅等待 PX4 已进入 OFFBOARD。
     enabled: true
     # 唯一 ENU 世界系起飞/悬停目标点的高度，单位 m；参考值按 climb_rate 平滑上升。
-    target_z: 1.0
+    target_z: 0.6
     # z 参考值上升速度，单位 m/s；达到 target_z 后保持目标点。
     climb_rate: 0.15
     # fixed_hover 启用时，起飞前到唯一目标点的水平距离上限，单位 m。
