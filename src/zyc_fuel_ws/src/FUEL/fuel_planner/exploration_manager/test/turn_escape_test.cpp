@@ -80,6 +80,59 @@ class TurnEscapeTest {
     manager.task_search_manager_->initialize(nh);
   }
 public:
+  static void runPostTurnStraight(bool confirmed_turn, bool single_wall) {
+    ros::NodeHandle nh("~post_turn_straight");
+    FastExplorationManager manager;
+    initialize(nh,manager);
+    auto& task=*manager.task_search_manager_;
+    auto& map=*manager.sdf_map_;
+    task.setMap(manager.sdf_map_);
+    task.setCorridorFrame(Vector3d(-3,0,.6),Vector3d::UnitX());
+    task.corridor_entry_crossed_=true;
+    task.curve_heading_enabled_=true;
+    task.latest_robot_pos_=Vector3d(0,0,.6);
+    task.latest_robot_pose_valid_=true;
+    const double old_yaw=60*M_PI/180.0, wall_yaw=92*M_PI/180.0;
+    task.commitCorridorTurn(Vector3d(std::cos(old_yaw),std::sin(old_yaw),0));
+    task.completeTurnYawAlignment();
+    task.transition_active_=false;
+    task.latest_turn_anchor_valid_=confirmed_turn;
+    task.segment_high_water_=.2;
+    const auto gates=task.completed_gates_.size();
+    const auto anchor=task.latest_turn_anchor_;
+    std::fill(map.md_->occupancy_buffer_.begin(),map.md_->occupancy_buffer_.end(),map.mp_->clamp_min_log_);
+    for (int x=0;x<map.mp_->map_voxel_num_(0);++x)
+      for (int y=0;y<map.mp_->map_voxel_num_(1);++y)
+        for (int z=0;z<map.mp_->map_voxel_num_(2);++z) {
+          Eigen::Vector3i id(x,y,z); Vector3d p; map.indexToPos(id,p);
+          const double across=-std::sin(wall_yaw)*p.x()+std::cos(wall_yaw)*p.y();
+          if (p.z()>.1 && p.z()<1.1 &&
+              (std::fabs(across-.65)<.045 || (!single_wall && std::fabs(across+.65)<.045)))
+            map.md_->occupancy_buffer_[map.toAddress(id)]=map.mp_->clamp_max_log_;
+        }
+    task.updateCurveHeading();
+    double yaw=0;
+    if (!confirmed_turn || single_wall) {
+      EXPECT_FALSE(task.corridorCurveYaw(task.latest_robot_pos_,yaw));
+      EXPECT_NEAR(std::atan2(task.stableProgressDirection().y(),task.stableProgressDirection().x()),old_yaw,1e-6);
+      return;
+    }
+    ASSERT_TRUE(task.corridorCurveYaw(task.latest_robot_pos_,yaw));
+    EXPECT_NEAR(yaw,wall_yaw,3*M_PI/180.0);
+    EXPECT_TRUE(task.stableProgressDirection().isApprox(task.turnDetectionDirection()));
+    EXPECT_TRUE(task.segment_direction_.isApprox(task.stableProgressDirection()));
+    EXPECT_NEAR(task.segment_high_water_,.2,1e-6);
+    EXPECT_EQ(task.completed_gates_.size(),gates);
+    EXPECT_TRUE(task.latest_turn_anchor_.isApprox(anchor));
+    EXPECT_FALSE(task.transition_active_);
+    EXPECT_FALSE(task.turnYawAlignmentPending());
+    // 侧向绕障的取样位置不改变直墙轴线。
+    task.latest_robot_pos_.x()+=.15;
+    task.updateCurveHeading();
+    ASSERT_TRUE(task.corridorCurveYaw(task.latest_robot_pos_,yaw));
+    EXPECT_NEAR(yaw,wall_yaw,3*M_PI/180.0);
+  }
+
   static void runReturnStraight(int mode) {
     ros::NodeHandle nh("~return_straight_"+std::to_string(mode));
     FastExplorationManager manager; initialize(nh,manager);
@@ -6079,3 +6132,13 @@ TEST(ManualExit, OccupiedDoorCannotTakeOver) { fast_planner::TurnEscapeTest::run
 TEST(AutomaticExit, OpaqueModeIgnoresOverheadRails) { fast_planner::TurnEscapeTest::runLowExit(0,false); }
 TEST(AutomaticExit, OpaqueModeAcceptsSolidWalls) { fast_planner::TurnEscapeTest::runLowExit(0,false,true); }
 TEST(AutomaticExit, TransparentModeAlsoAcceptsSolidWalls) { fast_planner::TurnEscapeTest::runLowExit(0,true,true); }
+
+TEST(PostTurnStraight, CorrectsAxisWithoutNewTurn) {
+  fast_planner::TurnEscapeTest::runPostTurnStraight(true,false);
+}
+TEST(PostTurnStraight, DoesNotReplaceInitialTurn) {
+  fast_planner::TurnEscapeTest::runPostTurnStraight(false,false);
+}
+TEST(PostTurnStraight, RejectsSingleWall) {
+  fast_planner::TurnEscapeTest::runPostTurnStraight(true,true);
+}

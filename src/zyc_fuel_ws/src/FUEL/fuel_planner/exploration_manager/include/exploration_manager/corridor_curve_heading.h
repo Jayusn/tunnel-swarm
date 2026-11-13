@@ -69,7 +69,7 @@ inline bool fitWall(const std::vector<Eigen::Vector2d>& points, double tolerance
 
 inline bool infer(const std::vector<Eigen::Vector2d>& left,
                   const std::vector<Eigen::Vector2d>& right,
-                  double tolerance, Result& result) {
+                  double tolerance, Result& result, bool post_turn_straight = false) {
   Eigen::Vector3d l, r;
   if (!fitWall(left, tolerance, l) || !fitWall(right, tolerance, r)) return false;
   const auto tangent = [](const Eigen::Vector3d& c, double x) {
@@ -96,7 +96,12 @@ inline bool infer(const std::vector<Eigen::Vector2d>& left,
   if (!result.curved &&
       std::max(std::fabs(left_change),std::fabs(right_change)) > 5.0*M_PI/180.0)
     return false;
-  return std::fabs(result.yaw(0.35)) <= 30.0*M_PI/180.0;
+  // 离散转弯后的直墙校准允许跨过30度采样边界；曲线仍沿用原限制。
+  // 额外范围只给近似平行的双直墙，不能让分叉或单墙接管。
+  const bool parallel_straight = !result.curved &&
+      std::fabs(tangent(l,0.0)-tangent(r,0.0)) <= 5.0*M_PI/180.0;
+  const double limit = post_turn_straight && parallel_straight ? 45.0 : 30.0;
+  return std::fabs(result.yaw(0.35)) <= limit*M_PI/180.0;
 }
 }  // namespace corridor_curve
 }  // namespace fast_planner

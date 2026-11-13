@@ -57,5 +57,18 @@ int main() {
   }
   check(infer(left,right,0.06,curve) && curve.curved,
         "different inner/outer arc radii prevented curve recognition");
+  for (int i=0;i<=10;++i) {
+    const double x=left[i].x();
+    left[i].y()=.65+std::tan(32*M_PI/180.0)*x;
+    right[i].y()=-.65+std::tan(32*M_PI/180.0)*x;
+  }
+  check(!infer(left,right,.06,straight),"default angular limit changed");
+  check(infer(left,right,.06,straight,true) && !straight.curved,
+        "post-turn parallel straight failed beyond 30 degrees");
+  for (int i=0;i<=10;++i) {
+    left[i].y()=.65+std::tan(46*M_PI/180.0)*left[i].x();
+    right[i].y()=-.65+std::tan(46*M_PI/180.0)*right[i].x();
+  }
+  check(!infer(left,right,.06,straight,true),"excessive correction accepted");
   std::cout << "corridor curve geometry: passed" << std::endl;
 }

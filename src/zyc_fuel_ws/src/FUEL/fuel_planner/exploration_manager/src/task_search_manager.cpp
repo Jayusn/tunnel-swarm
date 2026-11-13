@@ -728,16 +728,17 @@ void TaskSearchManager::updateCurveHeading() {
   }
   corridor_curve::Result geometry;
   const bool fitted = corridor_curve::infer(
-      left,right,std::max(0.06,0.8*resolution),geometry);
+      left,right,std::max(0.06,0.8*resolution),geometry,latest_turn_anchor_valid_);
+  const bool straight_correction = fitted && !geometry.curved && latest_turn_anchor_valid_;
   // 首次局部曲线拟合不改变旧基准；连续双墙证据才用当前位置切线交接。
   // 前视0.35m的机头参考独立计算，不把前视角度当成旧通道方向。
-  if (fitted && following_curve) {
+  if (fitted && (following_curve || straight_correction)) {
     const double local_yaw=std::atan2(curve_forward_.y(),curve_forward_.x())+
                            geometry.yaw(0.0);
     turn_detection_direction_=Eigen::Vector2d(std::cos(local_yaw),std::sin(local_yaw));
   }
   curve_heading_active_ = fitted &&
-      (geometry.curved || (following_curve &&
+      (straight_correction || geometry.curved || (following_curve &&
                           std::fabs(geometry.yaw(0.35))>M_PI/180.0));
   if (!curve_heading_active_) return;
   curve_geometry_=geometry;
@@ -752,7 +753,9 @@ void TaskSearchManager::updateCurveHeading() {
   segment_high_water_=regression;
   stable_progress_direction_=direction;
   stable_progress_direction_valid_=true;
-  // 弧形只滚动任务推进方向；离散转弯另有已确认通道基准。
+  // 直墙校准同步更新当前段基准，不提交新转弯或清空历史进度。
+  if (straight_correction) turn_detection_direction_=direction;
+  // 弧形保留当前位置切线作为转弯基准。
   if (hybrid_constraints_enabled_) exploration_initial_yaw_=heading;
   clearPendingTurnEvidence();
   ROS_INFO_THROTTLE(0.3,
