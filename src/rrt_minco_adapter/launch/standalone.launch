@@ -1,0 +1,27 @@
+<launch>
+  <!-- 必须明确提供地图；example_scene.json 仅用于离线/合成输入测试。 -->
+  <arg name="scene_file"/>
+  <arg name="frame_id" default="UAV0/camera_init"/>
+  <arg name="odom_topic" default="/UAV0/fast_lio/Odom_high_freq"/>
+  <arg name="goal_topic" default="/UAV0/rrt/goal"/>
+  <arg name="polynomial_topic" default="/UAV0/rrt/polynomial"/>
+  <arg name="path_topic" default="/UAV0/rrt/path"/>
+  <arg name="command_topic" default="/UAV0/rrt/pos_cmd"/>
+  <arg name="speed" default="0.6"/>
+  <arg name="acceleration" default="0.8"/>
+  <arg name="clearance" default="0.3"/>
+  <arg name="tracking_margin" default="0.1"/>
+  <node pkg="rrt_minco_adapter" type="rrt_minco_node.py" name="rrt_minco_adapter" output="screen">
+    <param name="scene_file" value="$(arg scene_file)"/>
+    <param name="frame_id" value="$(arg frame_id)"/>
+    <param name="speed" value="$(arg speed)"/>
+    <param name="acceleration" value="$(arg acceleration)"/>
+    <param name="clearance" value="$(arg clearance)"/>
+    <param name="tracking_margin" value="$(arg tracking_margin)"/>
+    <remap from="~odom" to="$(arg odom_topic)"/>
+    <remap from="~goal" to="$(arg goal_topic)"/>
+    <remap from="~polynomial" to="$(arg polynomial_topic)"/>
+    <remap from="~path" to="$(arg path_topic)"/>
+    <remap from="~pos_cmd" to="$(arg command_topic)"/>
+  </node>
+</launch>
