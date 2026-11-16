@@ -3,6 +3,7 @@ project(rrt_minco_adapter)
 find_package(catkin REQUIRED)
 catkin_package()
 catkin_install_python(PROGRAMS scripts/rrt_minco_node.py scripts/cloud_to_scene_node.py
+  scripts/point_to_point_mission.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 install(DIRECTORY launch config rrt_core scripts
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}

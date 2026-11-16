@@ -6,6 +6,59 @@
 `rrt_core` 保持原算法实现。原包未为这些 Python 文件明确指定许可，
 本包不作额外开源授权。SUPER 未纳入此次接入。
 
+## 起飞后自动完成点到点任务
+
+`point_to_point_mission.launch` 包含点云地图、RRT 和独立任务脚本，替代下面的
+`real_cloud.launch`；不要同时启动两者。完整流程为：
+
+1. 在 FAST-LIO 坐标 `(0.5,0.5)` 处准备起飞，先扫描并冻结静态地图。
+2. 遥控器解锁、切入 OFFBOARD；现有简单控制器保持起始 XY 并爬升到 Z=0.5m。
+3. 实际位置在 `(0.5,0.5,0.5)` 附近连续稳定2秒后，任务脚本自动发送目标
+   `(4.5,4.5,0.5)`。无需 RViz 点击。
+4. RRT＋MINCO 按地图规划并发布轨迹，现有控制器执行。
+5. 轨迹执行时间结束，且实际位置在目标附近连续稳定3秒后，脚本仅请求一次
+   `/UAV0/mavros/set_mode` 的 `AUTO.LAND`，进行普通就地降落。
+6. 收到实际 `AUTO.LAND` 模式后进入 LANDING；同时收到落地和解除武装状态后才报告 DONE。
+
+稳定判定：XY距离≤0.1m、Z误差≤0.02m、三维速度≤0.1m/s；里程计需新鲜且坐标系匹配。
+偏离条件会重新累计稳定时间。里程计有效期1秒，飞控状态有效期3秒；
+任务同时检查 MAVROS 已连接、已解锁且为 OFFBOARD。
+任务脚本不解锁、不自动进入 OFFBOARD，也不触发 ArUco 搜索或精确降落流程。
+
+保留已有 FAST-LIO、MAVROS 和控制输出仲裁链路，停用 FUEL/Diff 及其规划指令发布者后：
+
+```bash
+source ~/match_ws/devel/setup.bash
+# 终端1：已有简单控制器需按这些参数启动，不重复启动同用途控制器。
+roslaunch exploration_control simple_controller.launch \
+  offboard_takeoff_height:=0.5 planner_enable_height:=0.45
+# 终端2：任务入口，自带实机点云和规划节点。
+roslaunch rrt_minco_adapter point_to_point_mission.launch
+# 完整扫描后，终端3冻结地图，再通过遥控器解锁并切入OFFBOARD。
+rosservice call /UAV0/rrt/freeze_map "{}"
+rostopic echo /UAV0/rrt/mission_status
+```
+
+自动任务使用 `/UAV0/rrt/mission_goal`，不接收 RViz 目标，避免任务期间目标被点选覆盖。
+其余点云、里程计、路径和控制指令话题与 `real_cloud.launch` 相同。
+任务状态为 WAIT_START → PLANNING → FLYING → LAND_REQUESTED → LANDING → DONE。
+规划失败或降落服务拒绝会报告 FAILED，不自动重试；规划/飞行阶段退出 OFFBOARD、
+解除武装或飞控状态过期时报告 CANCELLED，不再自动请求降落。
+LAND_REQUESTED 只表示已发起请求，不能视为实际进入降落；服务接受后仍等待实际模式反馈。
+RRT节点在轨迹结束后仍发布终点保持指令，由PX4 AUTO.LAND模式执行降落。
+任务节点不负责撤回已有轨迹或切换到其他控制源；人工接管后若要重新测试，
+应重启整套测试入口和控制器并重新建图冻结，不要直接切回OFFBOARD复用旧轨迹。
+
+默认稳定和悬停时间可用 `start_stable_seconds`、`goal_hover_seconds` 调整。
+这里所有XYZ仍是FAST-LIO地图坐标；地图初始原点若就在机身位置，起点通常为 `(0,0)`，
+需确认实际坐标满足 `(0.5,0.5)`，不能通过伪改里程计实现。
+
+完整任务隔离验证（真实RRT规划，模拟里程计跟踪和MAVROS服务，无实机控制）：
+
+```bash
+python3 ~/match_ws/src/rrt_minco_adapter/tests/mission_smoke.py
+```
+
 ## 实机点云静态地图入口
 
 新增 `real_cloud.launch`，默认配置：
