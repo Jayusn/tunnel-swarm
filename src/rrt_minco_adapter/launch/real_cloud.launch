@@ -1,0 +1,46 @@
+<launch>
+  <!-- bounds 是操作者确认已完整扫描的静态区域，不从障碍点外接框推断。 -->
+  <arg name="xmin" default="0.0"/>
+  <arg name="xmax" default="5.0"/>
+  <arg name="ymin" default="0.0"/>
+  <arg name="ymax" default="5.0"/>
+  <arg name="fixed_height" default="0.5"/>
+  <arg name="z_min" default="0.3"/>
+  <arg name="z_max" default="0.7"/>
+  <arg name="resolution" default="0.1"/>
+  <arg name="frame_id" default="UAV0/camera_init"/>
+  <arg name="cloud_topic" default="/UAV0/fast_lio/cloud_registered"/>
+  <arg name="odom_topic" default="/UAV0/fast_lio/Odom_high_freq"/>
+  <arg name="goal_topic" default="/UAV0/move_base_simple/goal"/>
+  <!-- 实机测试专用：停用原规划器与仲裁器后才使用此指令话题。 -->
+  <arg name="command_topic" default="/UAV0/planning/pos_cmd"/>
+  <arg name="speed" default="0.2"/>
+  <arg name="acceleration" default="0.8"/>
+  <arg name="clearance" default="0.3"/>
+  <arg name="tracking_margin" default="0.1"/>
+  <node pkg="rrt_minco_adapter" type="cloud_to_scene_node.py" name="rrt_cloud_scene" output="screen">
+    <rosparam param="bounds" subst_value="true">[$(arg xmin), $(arg xmax), $(arg ymin), $(arg ymax)]</rosparam>
+    <param name="frame_id" value="$(arg frame_id)"/>
+    <param name="z_min" value="$(arg z_min)"/>
+    <param name="z_max" value="$(arg z_max)"/>
+    <param name="resolution" value="$(arg resolution)"/>
+    <remap from="~cloud" to="$(arg cloud_topic)"/>
+    <remap from="~scene" to="/UAV0/rrt/scene"/>
+    <remap from="~freeze" to="/UAV0/rrt/freeze_map"/>
+  </node>
+  <node pkg="rrt_minco_adapter" type="rrt_minco_node.py" name="rrt_minco_adapter" output="screen">
+    <param name="scene_file" value="" type="str"/>
+    <param name="frame_id" value="$(arg frame_id)"/>
+    <param name="fixed_height" value="$(arg fixed_height)"/>
+    <param name="speed" value="$(arg speed)"/>
+    <param name="acceleration" value="$(arg acceleration)"/>
+    <param name="clearance" value="$(arg clearance)"/>
+    <param name="tracking_margin" value="$(arg tracking_margin)"/>
+    <remap from="~scene" to="/UAV0/rrt/scene"/>
+    <remap from="~odom" to="$(arg odom_topic)"/>
+    <remap from="~goal" to="$(arg goal_topic)"/>
+    <remap from="~polynomial" to="/UAV0/rrt/polynomial"/>
+    <remap from="~path" to="/UAV0/rrt/path"/>
+    <remap from="~pos_cmd" to="$(arg command_topic)"/>
+  </node>
+</launch>

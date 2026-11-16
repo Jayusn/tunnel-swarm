@@ -6,6 +6,82 @@
 `rrt_core` 保持原算法实现。原包未为这些 Python 文件明确指定许可，
 本包不作额外开源授权。SUPER 未纳入此次接入。
 
+## 实机点云静态地图入口
+
+新增 `real_cloud.launch`，默认配置：
+
+| 项目 | 配置 |
+|---|---|
+| 障碍点高度筛选 | Z=0.3～0.7m，包含边界 |
+| 固定飞行平面 | Z=0.5m；覆盖目标消息中的 Z，适配 RViz 二维点选 |
+| 已扫描地图范围 | X=0～5m、Y=0～5m |
+| 栅格分辨率 | 0.1m；占据格合并为矩形，不重复做障碍膨胀 |
+| 点云输入 | `/UAV0/fast_lio/cloud_registered`，PointCloud2 |
+| 里程计输入 | `/UAV0/fast_lio/Odom_high_freq`，Odometry |
+| 目标输入 | `/UAV0/move_base_simple/goal`，PoseStamped |
+| 静态地图中间话题 | `/UAV0/rrt/scene`，锁存的 String JSON |
+| 控制器指令输出 | `/UAV0/planning/pos_cmd`，PositionCommand |
+| 规划结果 / RViz | `/UAV0/rrt/polynomial`、`/UAV0/rrt/path` |
+| 坐标系 | `UAV0/camera_init`；不做 TF 转换 |
+| 参考速度 | 0.2m/s，与现有简单控制器默认水平限速对应 |
+
+所有 XYZ 数值是 FAST-LIO 地图坐标，不是测距仪离地高度。需确认初始化原点后使用。
+该入口只是静态已扫描区域转换，不建立自由/未知体素地图：bounds 内未收到障碍点的位置
+会按自由空间处理。必须先完整扫描并确认该区域，不能把遮挡未扫描区域当成已知自由空间。
+只保留指定高度内的障碍点，边界外障碍、地面和高度区间外障碍不参与本次二维规划。
+
+启动前停用 FUEL/Diff 轨迹发布节点、规划指令仲裁器及其他向
+`/UAV0/planning/pos_cmd` 发布的节点；本入口不启动或停止现有控制器、定位和 MAVROS。
+不要与 `run_swarm_indoor1_fuel_exploration.launch` 并行作为控制源。
+
+```bash
+source ~/match_ws/devel/setup.bash
+roslaunch rrt_minco_adapter real_cloud.launch
+```
+
+在无控制输出的观察阶段，可加 `command_topic:=/UAV0/rrt/pos_cmd`。
+点云累计到稀疏二维栅格中，未冻结前目标请求会返回 `order=0`。
+完整扫描所选静态区域后，冻结地图：
+
+```bash
+rosservice call /UAV0/rrt/freeze_map "{}"
+```
+
+冻结成功后发布静态场景，后续点云不会修改该地图；重建需重启此测试入口。
+地图只保存在节点内存和锁存话题中，不自动写入 Git 工作区。
+规划器和地图节点需一起重启，避免规划器保留旧地图。
+
+现有简单控制器默认悬停0.6m、接管门限0.5m。独立测试采用0.5m飞行时，
+启动该控制器应传入以下已有参数（不要再启动第二个同用途控制器）：
+
+```bash
+roslaunch exploration_control simple_controller.launch \
+  offboard_takeoff_height:=0.5 planner_enable_height:=0.45
+```
+
+该控制器仍通过原来的 `/UAV0/control/position_setpoint` 和降落仲裁链路输出，
+以上命令不代替已有 MAVROS、定位、降落指令仲裁等启动流程，也不解锁或切换飞行模式。
+开始规划前应在Z=0.5m附近稳定悬停；继承原有高度误差0.02m、速度0.15m/s限制。
+
+目标示例（实际需选择已确认无障碍的位置）：
+
+```bash
+rostopic pub -1 /UAV0/move_base_simple/goal geometry_msgs/PoseStamped \
+"{header: {stamp: now, frame_id: 'UAV0/camera_init'}, pose: {position: {x: 2.0, y: 2.0, z: 0.5}, orientation: {w: 1.0}}}"
+rostopic info /UAV0/planning/pos_cmd
+rostopic echo -n 1 /UAV0/rrt/polynomial
+```
+
+默认规划净空加余量为0.4m，因此起终点需要严格位于 `(0.4,4.6)×(0.4,4.6)` 内，
+同时避开障碍膨胀区。如果 FAST-LIO 起点为 `(0,0)`，它不满足当前区域要求，
+需要选择区域内起点，或根据实际已扫描范围显式调整 `xmin/xmax/ymin/ymax`，不能伪改里程计。
+
+点云链路的隔离验证命令：
+
+```bash
+python3 ~/match_ws/src/rrt_minco_adapter/tests/ros_smoke.py --cloud
+```
+
 ## 运行
 
 依赖 ROS1、当前工作区的 `quadrotor_msgs`、numpy、scipy、threadpoolctl。
@@ -20,7 +96,7 @@ roslaunch rrt_minco_adapter standalone.launch scene_file:=/绝对路径/实际�
 `scene_file` 必填；`config/example_scene.json` 是原包测试地图，不是实际场地。
 JSON 格式为 `{"bounds":[xmin,xmax,ymin,ymax],"boxes":[[cx,cy,sx,sy],...]}`，
 单位米，必须与里程计、目标点在同一坐标系。矩形障碍视为覆盖飞行高度的障碍。
-不订阅雷达点云，不处理未知空间、动态障碍或连续在线重规划。
+此 `standalone.launch` 文件地图模式不订阅雷达点云，不处理未知空间、动态障碍或连续在线重规划。
 
 默认输入输出：
 

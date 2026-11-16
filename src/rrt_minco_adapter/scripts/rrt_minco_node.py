@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """RRT/MINCO static-scene adapter using match_ws PositionCommand messages."""
 import json
+import copy
 import math
 from pathlib import Path
 import sys
@@ -21,8 +22,14 @@ from plan_rrt import solve
 
 class RrtMincoNode:
     def __init__(self):
-        self.scene = json.loads(Path(rospy.get_param('~scene_file')).expanduser().read_text())
+        scene_file = rospy.get_param('~scene_file', '')
+        self.scene = json.loads(Path(scene_file).expanduser().read_text()) if scene_file else None
         self.frame = rospy.get_param('~frame_id', 'UAV0/camera_init')
+        self.fixed_height = rospy.get_param('~fixed_height', None)
+        if self.fixed_height is not None:
+            self.fixed_height = float(self.fixed_height)
+            if not math.isfinite(self.fixed_height):
+                raise ValueError('Invalid fixed_height')
         self.options = dict(speed=float(rospy.get_param('~speed', .6)),
                             acceleration=float(rospy.get_param('~acceleration', .8)),
                             clearance=float(rospy.get_param('~clearance', .3)),
@@ -30,12 +37,8 @@ class RrtMincoNode:
         for key, value in self.options.items():
             if not math.isfinite(value) or value < 0 or (key != 'reserve' and value == 0):
                 raise ValueError('Invalid planning parameter: ' + key)
-        bounds = np.asarray(self.scene['bounds'], dtype=float)
-        boxes = np.asarray(self.scene['boxes'], dtype=float).reshape(-1, 4)
-        if (bounds.shape != (4,) or not np.isfinite(bounds).all()
-                or bounds[0] >= bounds[1] or bounds[2] >= bounds[3]
-                or not np.isfinite(boxes).all() or np.any(boxes[:, 2:] <= 0)):
-            raise ValueError('Invalid static scene bounds/boxes')
+        if self.scene is not None:
+            self.validate_scene(self.scene)
         self.lock = threading.Lock()
         self.odom = None
         self.busy = False
@@ -46,8 +49,29 @@ class RrtMincoNode:
         self.command_pub = rospy.Publisher('~pos_cmd', PositionCommand, queue_size=1)
         self.odom_sub = rospy.Subscriber('~odom', Odometry, self.on_odom, queue_size=1)
         self.goal_sub = rospy.Subscriber('~goal', PoseStamped, self.on_goal, queue_size=1)
+        self.scene_sub = rospy.Subscriber('~scene', String, self.on_scene, queue_size=1)
         self.timer = rospy.Timer(rospy.Duration(.02), self.on_timer)
         rospy.loginfo('RRT/MINCO ready: static scene, fixed height, frame=%s', self.frame)
+
+    def validate_scene(self, scene):
+        bounds = np.asarray(scene['bounds'], dtype=float)
+        boxes = np.asarray(scene['boxes'], dtype=float).reshape(-1, 4)
+        if (bounds.shape != (4,) or not np.isfinite(bounds).all()
+                or bounds[0] >= bounds[1] or bounds[2] >= bounds[3]
+                or not np.isfinite(boxes).all() or np.any(boxes[:, 2:] <= 0)):
+            raise ValueError('Invalid static scene bounds/boxes')
+        if scene.get('frame_id', self.frame) != self.frame:
+            raise ValueError('Scene frame mismatch')
+
+    def on_scene(self, msg):
+        try:
+            scene = json.loads(msg.data)
+            self.validate_scene(scene)
+            with self.lock:
+                self.scene = scene
+            rospy.loginfo('Received static scene: %d obstacle rectangles', len(scene['boxes']))
+        except (ValueError, KeyError, TypeError) as error:
+            rospy.logwarn('Invalid scene: %s', error)
 
     def on_odom(self, msg):
         with self.lock:
@@ -59,10 +83,17 @@ class RrtMincoNode:
         rospy.logwarn('RRT/MINCO request rejected: %s', error)
 
     def on_goal(self, msg):
+        msg = copy.deepcopy(msg)
+        if self.fixed_height is not None:
+            msg.pose.position.z = self.fixed_height
         request = str((msg.header.stamp if msg.header.stamp != rospy.Time()
                        else rospy.Time.now()).to_nsec())
         with self.lock:
             odom = self.odom
+            scene = self.scene
+            if scene is None:
+                self.fail(request, 'Static scene required; freeze the surveyed point cloud first')
+                return
             if self.busy:
                 self.fail(request, 'Planner busy; retry after the current result')
                 return
@@ -92,12 +123,12 @@ class RrtMincoNode:
             x, y, z, w = np.array([q.x, q.y, q.z, q.w]) / norm
             yaw = math.atan2(2 * (w*z + x*y), 1 - 2 * (y*y + z*z))
             self.busy = True
-        threading.Thread(target=self.plan, args=(msg, odom, request, yaw), daemon=True).start()
+        threading.Thread(target=self.plan, args=(msg, odom, request, yaw, scene), daemon=True).start()
 
-    def plan(self, goal, odom, request, yaw):
+    def plan(self, goal, odom, request, yaw, scene):
         try:
             p, g = odom.pose.pose.position, goal.pose.position
-            trajectory, result = solve(self.scene, [p.x, p.y], [g.x, g.y], **self.options)
+            trajectory, result = solve(scene, [p.x, p.y], [g.x, g.y], **self.options)
             path = RosPath()
             path.header.frame_id = self.frame
             for t in np.linspace(0., trajectory.total_time,
