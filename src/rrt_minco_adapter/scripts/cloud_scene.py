@@ -12,14 +12,23 @@ class CloudScene:
                 or resolution <= 0 or z_min >= z_max):
             raise ValueError('Invalid bounds, resolution or height interval')
         self.cells = set()
+        self.voxels = set()
 
     def add(self, points):
         xmin, xmax, ymin, ymax = self.bounds
         for x, y, z in points:
-            if (all(map(math.isfinite, (x, y, z))) and self.z_min <= z <= self.z_max
+            if (all(map(math.isfinite, (x, y, z)))
                     and xmin <= x < xmax and ymin <= y < ymax):
-                self.cells.add((math.floor((x-xmin)/self.resolution),
-                                math.floor((y-ymin)/self.resolution)))
+                ix = math.floor((x-xmin)/self.resolution)
+                iy = math.floor((y-ymin)/self.resolution)
+                self.voxels.add((ix, iy, math.floor(z/self.resolution)))
+                if self.z_min <= z <= self.z_max:
+                    self.cells.add((ix, iy))
+
+    def voxel_centers(self):
+        r = self.resolution
+        return [(self.bounds[0] + (x+.5)*r, self.bounds[2] + (y+.5)*r, (z+.5)*r)
+                for x, y, z in sorted(self.voxels)]
 
     def scene(self, frame):
         # Merge horizontal runs and identical runs in consecutive rows; never bridge holes.

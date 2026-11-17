@@ -32,6 +32,17 @@ class CloudSceneTests(unittest.TestCase):
         self.assertEqual(covered, scene.cells)
         self.assertEqual(len(result['boxes']), 4)
 
+    def test_voxels_retain_height_deduplicate_and_preserve_slice(self):
+        scene = CloudScene([0, 5, 0, 5], .1)
+        points = [(.55, .55, z) for z in [-.15, .45, 2.15]]
+        scene.add(points + points + [(float('inf'), 0., 1.), (5., .5, 1.)])
+        self.assertEqual(len(scene.voxels), 3)
+        self.assertEqual(scene.cells, {(5, 5)})
+        centers = scene.voxel_centers()
+        for point, expected in zip(centers, points):
+            for value, target in zip(point, expected):
+                self.assertAlmostEqual(value, target)
+
     def test_invalid_extent(self):
         for bounds in [[0, 0, 0, 1], [0, 1, 0, float('nan')]]:
             with self.assertRaises(ValueError):

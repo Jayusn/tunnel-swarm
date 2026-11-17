@@ -21,6 +21,7 @@
     <remap from="~cloud" to="$(arg cloud_topic)"/>
     <remap from="~scene" to="/UAV0/rrt/scene"/>
     <remap from="~grid_map" to="/UAV0/rrt/grid_map"/>
+    <remap from="~voxel_map" to="/UAV0/rrt/voxel_map"/>
     <remap from="~freeze" to="/UAV0/rrt/freeze_map"/>
   </node>
   <node if="$(arg rviz)" pkg="rviz" type="rviz" name="rrt_grid_rviz"

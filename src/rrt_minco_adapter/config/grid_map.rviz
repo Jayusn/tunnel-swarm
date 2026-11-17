@@ -6,18 +6,24 @@ Panels:
 Visualization Manager:
   Class: ""
   Global Options:
-    Background Color: 48; 48; 48
+    Background Color: 240; 240; 240
     Fixed Frame: UAV0/camera_init
     Frame Rate: 30
   Displays:
-    - Class: rviz/Map
-      Name: Radar occupancy grid
+    - Class: rviz/Marker
+      Name: Radar 3D occupied voxels
       Enabled: true
-      Topic: /UAV0/rrt/grid_map
-      Alpha: 1
-      Color Scheme: map
-      Draw Behind: true
-      Use Timestamp: false
+      Marker Topic: /UAV0/rrt/voxel_map
+      Queue Size: 1
+      Value: true
+    - Class: rviz/Grid
+      Name: Ground reference grid
+      Enabled: true
+      Cell Size: 0.5
+      Plane Cell Count: 20
+      Color: 160; 160; 160
+      Alpha: 0.3
+      Reference Frame: <Fixed Frame>
       Value: true
     - Class: rviz/Path
       Name: RRT dry run path
@@ -36,13 +42,16 @@ Visualization Manager:
     - Class: rviz/Select
   Views:
     Current:
-      Class: rviz/TopDownOrtho
+      Class: rviz/Orbit
       Name: Current View
       Target Frame: <Fixed Frame>
-      Angle: 0
-      Scale: 100
-      X: 2.5
-      Y: 2.5
+      Distance: 9
+      Pitch: 0.6
+      Yaw: 0.8
+      Focal Point:
+        X: 2.5
+        Y: 2.5
+        Z: 0.8
 Window Geometry:
   Width: 1200
   Height: 900

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Accumulate registered obstacle points; freeze an operator-surveyed static scene."""
+import colorsys
 import json
 from pathlib import Path
 import sys
@@ -7,10 +8,12 @@ import threading
 
 import rospkg
 import rospy
+from geometry_msgs.msg import Point
+from visualization_msgs.msg import Marker
 from nav_msgs.msg import OccupancyGrid
 from sensor_msgs.msg import PointCloud2
 from sensor_msgs import point_cloud2
-from std_msgs.msg import String
+from std_msgs.msg import String, ColorRGBA
 from std_srvs.srv import Trigger, TriggerResponse
 
 sys.path.insert(0, str(Path(rospkg.RosPack().get_path('rrt_minco_adapter')) / 'scripts'))
@@ -27,11 +30,12 @@ class CloudToScene:
         self.cloud_count = 0
         self.pub = rospy.Publisher('~scene', String, queue_size=1, latch=True)
         self.grid_pub = rospy.Publisher('~grid_map', OccupancyGrid, queue_size=1, latch=True)
+        self.voxel_pub = rospy.Publisher('~voxel_map', Marker, queue_size=1, latch=True)
         self.loaded_at = rospy.Time.now()
         self.sub = rospy.Subscriber('~cloud', PointCloud2, self.cloud, queue_size=1)
         self.service = rospy.Service('~freeze', Trigger, self.freeze)
         self.grid_timer = rospy.Timer(rospy.Duration(1.), self.publish_grid)
-        rospy.loginfo('Accumulating static map z=[%.2f, %.2f]; call ~freeze after surveying bounds',
+        rospy.loginfo('Accumulating 3D voxels; planning slice z=[%.2f, %.2f]; call ~freeze after surveying bounds',
                       self.map.z_min, self.map.z_max)
 
     def publish_grid(self, _event):
@@ -45,7 +49,26 @@ class CloudToScene:
         grid.info.origin.orientation.w = 1.
         with self.lock:
             grid.info.width, grid.info.height, grid.data = self.map.occupancy_grid()
+            centers = self.map.voxel_centers()
         self.grid_pub.publish(grid)
+        marker = Marker()
+        marker.header = grid.header
+        marker.ns = 'occupied_voxels'
+        marker.id = 0
+        marker.type = Marker.CUBE_LIST
+        marker.action = Marker.ADD
+        marker.pose.orientation.w = 1.
+        marker.scale.x = marker.scale.y = marker.scale.z = self.map.resolution
+        marker.color.a = 1.
+        if centers:
+            low = min(p[2] for p in centers)
+            span = max(p[2] for p in centers) - low
+            for x, y, z in centers:
+                marker.points.append(Point(x=x, y=y, z=z))
+                fraction = (z-low)/span if span else 0.
+                red, green, blue = colorsys.hsv_to_rgb(.5 + fraction/3., 1., 1.)
+                marker.colors.append(ColorRGBA(r=red, g=green, b=blue, a=1.))
+        self.voxel_pub.publish(marker)
 
     def cloud(self, msg):
         if msg.header.frame_id != self.frame:

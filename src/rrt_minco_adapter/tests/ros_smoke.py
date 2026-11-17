@@ -64,14 +64,16 @@ def main():
         from sensor_msgs.msg import PointCloud2
         from sensor_msgs import point_cloud2
         from std_srvs.srv import Trigger
+        from visualization_msgs.msg import Marker
         rospy.init_node('rrt_adapter_test', anonymous=True, disable_signals=True)
-        results, commands, paths, scenes, grids = [], [], [], [], []
+        results, commands, paths, scenes, grids, voxels = [], [], [], [], [], []
         subscribers = [
             rospy.Subscriber('/UAV0/rrt/polynomial', String, lambda m: results.append(json.loads(m.data))),
             rospy.Subscriber('/UAV0/rrt/pos_cmd', PositionCommand, commands.append),
             rospy.Subscriber('/UAV0/rrt/path', RosPath, paths.append),
             rospy.Subscriber('/UAV0/rrt/scene', String, lambda m: scenes.append(json.loads(m.data))),
-            rospy.Subscriber('/UAV0/rrt/grid_map', OccupancyGrid, grids.append)]
+            rospy.Subscriber('/UAV0/rrt/grid_map', OccupancyGrid, grids.append),
+            rospy.Subscriber('/UAV0/rrt/voxel_map', Marker, voxels.append)]
         odom_pub = rospy.Publisher('/UAV0/fast_lio/Odom_high_freq', Odometry, queue_size=1)
         goal_pub = rospy.Publisher('/UAV0/move_base_simple/goal' if args.cloud else '/UAV0/rrt/goal',
                                    PoseStamped, queue_size=1)
@@ -118,12 +120,23 @@ def main():
             assert (grid.info.origin.position.x, grid.info.origin.position.y) == (-3., -3.)
             assert grid.data[40 * 60 + 30] == grid.data[40 * 60 + 31] == 100
             assert grid.data.count(-1) == 3598
+            wait_for(lambda: voxels and len(voxels[-1].points) == 4)
+            marker = voxels[-1]
+            assert marker.header.frame_id == 'UAV0/camera_init'
+            assert marker.type == Marker.CUBE_LIST
+            assert marker.scale.x == marker.scale.y == marker.scale.z == .1
+            assert len(marker.colors) == len(marker.points)
+            assert min(p.z for p in marker.points) < .3
+            assert max(p.z for p in marker.points) > .7
             # Frozen maps do not absorb later points on the route.
             cloud_pub.publish(point_cloud2.create_cloud_xyz32(cloud.header, [(0., 0., .5)]))
             time.sleep(.1)
             assert freeze().success
             wait_for(lambda: len(scenes) == 2)
             assert scenes[0] == scenes[1]
+            last_stamp = voxels[-1].header.stamp
+            wait_for(lambda: voxels[-1].header.stamp > last_stamp)
+            assert voxels[-1].points == marker.points
         odom = Odometry()
         odom.header.frame_id = 'UAV0/camera_init'
         odom.pose.pose.position.x, odom.pose.pose.position.z = -.2, height
