@@ -47,6 +47,28 @@ roslaunch rrt_minco_adapter grid_map_view.launch start_mapper:=false
 手动配置RViz时，Fixed Frame设为 `UAV0/camera_init`，添加 **Map** 显示项，
 Topic选择 `/UAV0/rrt/grid_map`。只需后台建图时加 `rviz:=false`。
 
+### 第六步：直接调用地面规划脚本
+
+冻结地图后，在已经加载工作区和相同ROS网络环境的终端执行：
+
+```bash
+rosrun rrt_minco_adapter ground_plan.py
+```
+
+脚本等待冻结地图最多30秒，以虚拟起点 `(0.5,0.5,0.5)` 和目标
+`(4.5,4.5,0.5)` 进行一次规划，仅发布锁存的 `/UAV0/rrt/dry_run_path`。
+不订阅实际无人机位置，不启动控制器、不发布PositionCommand、不调用飞控服务。
+保持终端运行即可在栅格地图上看到红色路径，Ctrl+C退出。
+地图与二维多项式结果分别保存为 `~/.ros/rrt_ground_check/scene.json` 和
+`trajectory_xy.json`，重复成功运行会覆盖文件；规划失败请查看当前终端错误，
+旧的轨迹文件不能作为本次规划成功的依据。
+
+可选参数示例（保持相同高度切片）：
+
+```bash
+rosrun rrt_minco_adapter ground_plan.py _start:="[0.5,0.5]" _goal:="[4.5,4.5]" _height:=0.5
+```
+
 ## 起飞后自动完成点到点任务
 
 `point_to_point_mission.launch` 包含点云地图、RRT 和独立任务脚本，替代下面的
