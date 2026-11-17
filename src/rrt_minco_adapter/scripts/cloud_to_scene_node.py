@@ -25,6 +25,7 @@ class CloudToScene:
         self.frame = rospy.get_param('~frame_id', 'UAV0/camera_init')
         self.map = CloudScene(rospy.get_param('~bounds'), rospy.get_param('~resolution', .1),
                               rospy.get_param('~z_min', .3), rospy.get_param('~z_max', .7))
+        self.snapshot_input = rospy.get_param('~snapshot_input', False)
         self.lock = threading.Lock()
         self.frozen = False
         self.cloud_count = 0
@@ -80,6 +81,9 @@ class CloudToScene:
         with self.lock:
             if self.frozen:
                 return
+            if self.snapshot_input:
+                self.map.cells.clear()
+                self.map.voxels.clear()
             self.map.add(point_cloud2.read_points(msg, field_names=('x', 'y', 'z'), skip_nans=True))
             self.cloud_count += 1
 

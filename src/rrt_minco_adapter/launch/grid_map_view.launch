@@ -9,8 +9,35 @@
   <arg name="z_max" default="0.7"/>
   <arg name="frame_id" default="UAV0/camera_init"/>
   <arg name="cloud_topic" default="/UAV0/fast_lio/cloud_registered"/>
+  <!-- FUEL地图范围独立于RRT规划边界；与原实飞默认尺寸一致。 -->
+  <arg name="map_size_x" default="20.0"/>
+  <arg name="map_size_y" default="20.0"/>
+  <arg name="map_size_z" default="2.5"/>
+  <arg name="map_ground" default="-1.0"/>
+  <arg name="raycast_max_dist" default="8.0"/>
+  <arg name="odom_topic" default="/UAV0/fast_lio/Odometry"/>
   <arg name="start_mapper" default="true"/>
   <arg name="rviz" default="true"/>
+  <node if="$(arg start_mapper)" pkg="rrt_minco_adapter" type="rrt_fuel_map"
+        name="rrt_fuel_map" output="screen">
+    <rosparam command="load" file="$(find exploration_manager)/config/fuel_map.yaml"/>
+    <param name="sdf_map/map_size_x" value="$(arg map_size_x)"/>
+    <param name="sdf_map/map_size_y" value="$(arg map_size_y)"/>
+    <param name="sdf_map/map_size_z" value="$(arg map_size_z)"/>
+    <param name="sdf_map/ground_height" value="$(arg map_ground)"/>
+    <param name="sdf_map/max_ray_length" value="$(arg raycast_max_dist)"/>
+    <param name="map_ros/frame_id" value="$(arg frame_id)"/>
+    <remap from="/map_ros/cloud" to="$(arg cloud_topic)"/>
+    <remap from="/map_ros/pose" to="$(arg odom_topic)"/>
+    <remap from="/map_ros/depth" to="/UAV0/rrt/fuel/depth_unused"/>
+    <remap from="/sdf_map/occupancy_all" to="/UAV0/rrt/fuel/occupancy_all"/>
+    <remap from="/sdf_map/occupancy_local" to="/UAV0/rrt/fuel/occupancy_local"/>
+    <remap from="/sdf_map/occupancy_local_inflate" to="/UAV0/rrt/fuel/occupancy_local_inflate"/>
+    <remap from="/sdf_map/unknown" to="/UAV0/rrt/fuel/unknown"/>
+    <remap from="/sdf_map/esdf" to="/UAV0/rrt/fuel/esdf"/>
+    <remap from="/sdf_map/update_range" to="/UAV0/rrt/fuel/update_range"/>
+    <remap from="/sdf_map/depth_cloud" to="/UAV0/rrt/fuel/depth_cloud"/>
+  </node>
   <node if="$(arg start_mapper)" pkg="rrt_minco_adapter" type="cloud_to_scene_node.py"
         name="rrt_cloud_scene" output="screen">
     <rosparam param="bounds" subst_value="true">[$(arg xmin), $(arg xmax), $(arg ymin), $(arg ymax)]</rosparam>
@@ -18,7 +45,9 @@
     <param name="resolution" value="$(arg resolution)"/>
     <param name="z_min" value="$(arg z_min)"/>
     <param name="z_max" value="$(arg z_max)"/>
-    <remap from="~cloud" to="$(arg cloud_topic)"/>
+    <!-- 完整占据快照必须替换旧地图，不能累计被FUEL清除的噪点。 -->
+    <param name="snapshot_input" value="true"/>
+    <remap from="~cloud" to="/UAV0/rrt/fuel/occupancy_all"/>
     <remap from="~scene" to="/UAV0/rrt/scene"/>
     <remap from="~grid_map" to="/UAV0/rrt/grid_map"/>
     <remap from="~voxel_map" to="/UAV0/rrt/voxel_map"/>

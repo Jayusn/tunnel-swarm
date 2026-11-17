@@ -17,38 +17,55 @@ configure_dual_uav_ros_network uav0
 roslaunch rrt_minco_adapter grid_map_view.launch
 ```
 
-该入口只启动地图转换和RViz，不启动控制器、规划指令输出或自动飞行任务。
-默认以三维透视视角显示 `/UAV0/rrt/voxel_map`（`visualization_msgs/Marker`，CUBE_LIST）。
-将注册点云按XYZ量化、去重并累计为边长0.1m的占据体素，保留墙体等障碍的实际高度。
-颜色按当前地图高度从低到高呈青色、蓝色、紫色；可拖动鼠标旋转视角。
-红色路径来自 `/UAV0/rrt/dry_run_path`，位于Z=0.5m。
+该入口只启动独立FUEL建图节点、占据快照转换节点和RViz，不启动探索FSM、控制器或飞行任务。
+`rrt_fuel_map` 直接链接原 `fuel_plan_env` 库，加载原
+`exploration_manager/config/fuel_map.yaml`，不修改FUEL核心代码。
+输入为 `/UAV0/fast_lio/cloud_registered` 和同坐标系的
+`/UAV0/fast_lio/Odometry`（点云与里程计按时间同步）。
 
-三维显示累计收到的全部有限XYZ点，不按规划区域裁剪XY或Z。
-只有规划区域限制为X/Y=0～5m；区域外体素仍显示，但不加入规划障碍。
-滚轮缩小视图可查看更大的环境。重启地图节点后需重新扫描，旧节点丢弃的区域外点无法恢复。
-Z=0.3～0.7m只用于生成RRT的二维规划障碍，规划器仍是固定高度规划。
-保留 `/UAV0/rrt/grid_map` 二维切片话题供兼容使用，默认RViz不显示它。
-体素仅代表点云命中的占据位置；没有射线清空、自由空间推断或动态障碍清除，
-未显示立方体的位置不能视为已确认自由。显示未做膨胀，RRT另行计算净空。
+链路：FAST-LIO → FUEL概率占据/射线融合 → `/UAV0/rrt/fuel/occupancy_all`
+→ 当前占据快照 → 三维显示及RRT高度切片。每次快照替换旧内容，保留FUEL清除结果，
+不再永久累计单次点云命中。FUEL的膨胀层噪点过滤与原始概率占据层不同；此入口使用后者，
+RRT仍自行计算净空，不能宣称所有噪点都被滤除。
 
-地图每秒发布一次并锁存，冻结前累计更新；地图冻结服务仍然是：
+建图参数沿用原实飞：分辨率0.05m、命中0.65、未命中0.35、占据阈值0.80、
+最大射线距离8m，关闭静态永久保留。默认地图尺寸20×20×2.5m，
+实际边界X/Y为-10～10m、Z为-1～1.5m。完整显示此FUEL地图，
+不按RRT的0～5m规划区域裁剪显示。FUEL使用有限大小的稠密地图，并非无限范围地图。
+扩大显示/建图范围可显式传参（会增加内存和运算量），例如：
+
+```bash
+roslaunch rrt_minco_adapter grid_map_view.launch map_size_z:=6.0
+```
+
+此例Z范围为-1～5m；`map_size_x/map_size_y/map_ground/raycast_max_dist`也可设置。
+规划区域仍为X/Y=0～5m，Z=0.3～0.7m仅用于规划障碍切片，路径高度0.5m。
+RViz默认以Orbit立体视角显示 `/UAV0/rrt/voxel_map` 的0.1m立方体，按高度青→蓝→紫着色，
+红色路径来自 `/UAV0/rrt/dry_run_path`。`resolution`参数控制转换格大小，不修改FUEL分辨率。
+
+扫描后冻结供规划和显示使用的占据快照：
 
 ```bash
 rosservice call /UAV0/rrt/freeze_map "{}"
+rosrun rrt_minco_adapter ground_plan.py
 ```
 
-冻结后仍显示静态三维体素。显示方式不会改变当前RRT对操作者确认已扫描区域的
-规划假设，不能据此认为RRT已经实现未知空间避障。离线规划仍需先确认整个测试区域已扫描。
-重启地图节点会清空累计地图，需要重新扫描和冻结。
+冻结后FUEL上游继续融合，RRT快照和默认RViz体素保持冻结状态。
+RRT只接收占据障碍，仍不会使用FUEL自由/未知分类来约束路径；必须确认规划区域已扫描。
+重启入口会清空地图，需要重新扫描；雷达与FAST-LIO保持运行，不重复启动。
+已有新入口运行时，仅打开RViz可用 `start_mapper:=false`，后台建图可用 `rviz:=false`。
+手动配置RViz：Fixed Frame=`UAV0/camera_init`，Marker Topic=`/UAV0/rrt/voxel_map`。
 
-已有新版地图节点运行时可只打开RViz：
+构建与隔离验证：
 
 ```bash
-roslaunch rrt_minco_adapter grid_map_view.launch start_mapper:=false
+catkin_make -C ~/match_ws --pkg rrt_minco_adapter -j2
+source ~/match_ws/devel/setup.bash
+python3 ~/match_ws/src/rrt_minco_adapter/tests/fuel_map_smoke.py
 ```
 
-手动配置RViz时，Fixed Frame设为 `UAV0/camera_init`，添加 **Marker** 显示项，
-Marker Topic选择 `/UAV0/rrt/voxel_map`，Views选择Orbit。只需后台建图时加 `rviz:=false`。
+本次仅将不飞行入口 `grid_map_view.launch` 改为FUEL建图；
+`real_cloud.launch` 和自动飞行入口仍保留原先点云累计方式。
 
 ### 第六步：直接调用地面规划脚本
 
