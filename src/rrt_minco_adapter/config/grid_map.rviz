@@ -1,0 +1,48 @@
+Panels:
+  - Class: rviz/Displays
+    Name: Displays
+  - Class: rviz/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: UAV0/camera_init
+    Frame Rate: 30
+  Displays:
+    - Class: rviz/Map
+      Name: Radar occupancy grid
+      Enabled: true
+      Topic: /UAV0/rrt/grid_map
+      Alpha: 1
+      Color Scheme: map
+      Draw Behind: true
+      Use Timestamp: false
+      Value: true
+    - Class: rviz/Path
+      Name: RRT dry run path
+      Enabled: true
+      Topic: /UAV0/rrt/dry_run_path
+      Color: 255; 40; 40
+      Alpha: 1
+      Line Style: Lines
+      Line Width: 0.03
+      Buffer Length: 1
+      Pose Style: None
+      Value: true
+  Tools:
+    - Class: rviz/Interact
+    - Class: rviz/MoveCamera
+    - Class: rviz/Select
+  Views:
+    Current:
+      Class: rviz/TopDownOrtho
+      Name: Current View
+      Target Frame: <Fixed Frame>
+      Angle: 0
+      Scale: 100
+      X: 2.5
+      Y: 2.5
+Window Geometry:
+  Width: 1200
+  Height: 900

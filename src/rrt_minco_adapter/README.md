@@ -6,6 +6,47 @@
 `rrt_core` 保持原算法实现。原包未为这些 Python 文件明确指定许可，
 本包不作额外开源授权。SUPER 未纳入此次接入。
 
+## 不飞行：雷达二维栅格地图显示
+
+保留ROS master、MID360和FAST-LIO。停止旧的 `cloud_to_scene_node.py` 后，执行：
+
+```bash
+source ~/match_ws/devel/setup.bash
+source ~/match_ws/shfiles/configure_dual_uav_ros_network.sh
+configure_dual_uav_ros_network uav0
+roslaunch rrt_minco_adapter grid_map_view.launch
+```
+
+该入口只启动地图转换和RViz，不启动控制器、规划指令输出或自动飞行任务。
+默认以俯视图显示 `nav_msgs/OccupancyGrid` 话题 `/UAV0/rrt/grid_map`，
+不添加PointCloud2显示项。红色路径来自已有离线规划命令的 `/UAV0/rrt/dry_run_path`。
+先前原始点云显示可关闭；雷达点云仍是建图输入。
+
+每格0.1m，地图50×50格，覆盖X/Y=0～5m，障碍来自Z=0.3～0.7m。
+黑色格子为有障碍点的占据格（100）；灰色格子为未确认自由的区域（-1）。
+当前节点没有射线清空或自由空间观测，因此不发布白色“已确认自由”格子。
+这是一张高度切片的二维障碍占据图，不是完整三维地图，也不是另一个SLAM定位器。
+显示未做额外膨胀；RRT仍在规划时按clearance和tracking_margin计算净空。
+
+地图每秒发布一次并锁存，冻结前累计更新；地图冻结服务仍然是：
+
+```bash
+rosservice call /UAV0/rrt/freeze_map "{}"
+```
+
+冻结后仍显示静态栅格。注意：灰色的显示语义不会改变当前RRT对操作者确认已扫描区域的
+规划假设，不能据此认为RRT已经实现未知空间避障。离线规划仍需先确认整个测试区域已扫描。
+重启地图节点会清空累计地图，需要重新扫描和冻结。
+
+已有新版地图节点运行时可只打开RViz：
+
+```bash
+roslaunch rrt_minco_adapter grid_map_view.launch start_mapper:=false
+```
+
+手动配置RViz时，Fixed Frame设为 `UAV0/camera_init`，添加 **Map** 显示项，
+Topic选择 `/UAV0/rrt/grid_map`。只需后台建图时加 `rviz:=false`。
+
 ## 起飞后自动完成点到点任务
 
 `point_to_point_mission.launch` 包含点云地图、RRT 和独立任务脚本，替代下面的

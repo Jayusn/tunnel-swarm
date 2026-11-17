@@ -57,7 +57,7 @@ def main():
         import numpy as np
         import rospy
         from geometry_msgs.msg import PoseStamped
-        from nav_msgs.msg import Odometry, Path as RosPath
+        from nav_msgs.msg import Odometry, Path as RosPath, OccupancyGrid
         from quadrotor_msgs.msg import PositionCommand
         from std_msgs.msg import String
         from std_msgs.msg import Header
@@ -65,12 +65,13 @@ def main():
         from sensor_msgs import point_cloud2
         from std_srvs.srv import Trigger
         rospy.init_node('rrt_adapter_test', anonymous=True, disable_signals=True)
-        results, commands, paths, scenes = [], [], [], []
+        results, commands, paths, scenes, grids = [], [], [], [], []
         subscribers = [
             rospy.Subscriber('/UAV0/rrt/polynomial', String, lambda m: results.append(json.loads(m.data))),
             rospy.Subscriber('/UAV0/rrt/pos_cmd', PositionCommand, commands.append),
             rospy.Subscriber('/UAV0/rrt/path', RosPath, paths.append),
-            rospy.Subscriber('/UAV0/rrt/scene', String, lambda m: scenes.append(json.loads(m.data)))]
+            rospy.Subscriber('/UAV0/rrt/scene', String, lambda m: scenes.append(json.loads(m.data))),
+            rospy.Subscriber('/UAV0/rrt/grid_map', OccupancyGrid, grids.append)]
         odom_pub = rospy.Publisher('/UAV0/fast_lio/Odom_high_freq', Odometry, queue_size=1)
         goal_pub = rospy.Publisher('/UAV0/move_base_simple/goal' if args.cloud else '/UAV0/rrt/goal',
                                    PoseStamped, queue_size=1)
@@ -109,6 +110,14 @@ def main():
             assert scenes[-1]['z_min'] == .3 and scenes[-1]['z_max'] == .7
             assert len(scenes[-1]['boxes']) == 1
             assert abs(scenes[-1]['boxes'][0][2] - .2) < 1e-6
+            wait_for(lambda: grids and grids[-1].data.count(100) == 2)
+            grid = grids[-1]
+            assert grid.header.frame_id == 'UAV0/camera_init'
+            assert (grid.info.width, grid.info.height) == (60, 60)
+            assert abs(grid.info.resolution - .1) < 1e-6
+            assert (grid.info.origin.position.x, grid.info.origin.position.y) == (-3., -3.)
+            assert grid.data[40 * 60 + 30] == grid.data[40 * 60 + 31] == 100
+            assert grid.data.count(-1) == 3598
             # Frozen maps do not absorb later points on the route.
             cloud_pub.publish(point_cloud2.create_cloud_xyz32(cloud.header, [(0., 0., .5)]))
             time.sleep(.1)

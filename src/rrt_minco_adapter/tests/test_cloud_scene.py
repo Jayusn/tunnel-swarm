@@ -37,6 +37,21 @@ class CloudSceneTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 CloudScene(bounds)
 
+    def test_grid_origin_row_order_and_unknown_cells(self):
+        scene = CloudScene([-1, 1, 2, 3], .5)
+        scene.add([(-.75, 2.25, .5), (.75, 2.75, .5)])
+        width, height, data = scene.occupancy_grid()
+        self.assertEqual((width, height), (4, 2))
+        self.assertEqual(data, [100, -1, -1, -1, -1, -1, -1, 100])
+
+    def test_grid_partial_edge_cell(self):
+        scene = CloudScene([0, 1.05, 0, .25], .1)
+        scene.add([(1.04, .24, .5)])
+        width, height, data = scene.occupancy_grid()
+        self.assertEqual((width, height), (11, 3))
+        self.assertEqual(data[-1], 100)
+        self.assertEqual(data.count(100), 1)
+
 
 if __name__ == '__main__':
     unittest.main()

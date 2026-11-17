@@ -1,0 +1,28 @@
+<launch>
+  <!-- 仅点云转栅格与RViz；不启动规划执行器、任务脚本或控制器。 -->
+  <arg name="xmin" default="0.0"/>
+  <arg name="xmax" default="5.0"/>
+  <arg name="ymin" default="0.0"/>
+  <arg name="ymax" default="5.0"/>
+  <arg name="resolution" default="0.1"/>
+  <arg name="z_min" default="0.3"/>
+  <arg name="z_max" default="0.7"/>
+  <arg name="frame_id" default="UAV0/camera_init"/>
+  <arg name="cloud_topic" default="/UAV0/fast_lio/cloud_registered"/>
+  <arg name="start_mapper" default="true"/>
+  <arg name="rviz" default="true"/>
+  <node if="$(arg start_mapper)" pkg="rrt_minco_adapter" type="cloud_to_scene_node.py"
+        name="rrt_cloud_scene" output="screen">
+    <rosparam param="bounds" subst_value="true">[$(arg xmin), $(arg xmax), $(arg ymin), $(arg ymax)]</rosparam>
+    <param name="frame_id" value="$(arg frame_id)"/>
+    <param name="resolution" value="$(arg resolution)"/>
+    <param name="z_min" value="$(arg z_min)"/>
+    <param name="z_max" value="$(arg z_max)"/>
+    <remap from="~cloud" to="$(arg cloud_topic)"/>
+    <remap from="~scene" to="/UAV0/rrt/scene"/>
+    <remap from="~grid_map" to="/UAV0/rrt/grid_map"/>
+    <remap from="~freeze" to="/UAV0/rrt/freeze_map"/>
+  </node>
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="rrt_grid_rviz"
+        args="-d $(find rrt_minco_adapter)/config/grid_map.rviz -f $(arg frame_id)"/>
+</launch>

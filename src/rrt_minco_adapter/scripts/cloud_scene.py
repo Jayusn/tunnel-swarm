@@ -56,3 +56,13 @@ class CloudScene:
         return dict(bounds=self.bounds, boxes=boxes, frame_id=frame,
                     z_min=self.z_min, z_max=self.z_max, resolution=r,
                     map_semantics='operator_surveyed_static_region')
+
+    def occupancy_grid(self):
+        xmin, xmax, ymin, ymax = self.bounds
+        width = math.ceil((xmax-xmin)/self.resolution)
+        height = math.ceil((ymax-ymin)/self.resolution)
+        # Point hits establish obstacles, but absence of hits does not establish free space.
+        data = [-1] * (width * height)
+        for x, y in self.cells:
+            data[y * width + x] = 100
+        return width, height, data
