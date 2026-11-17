@@ -100,7 +100,7 @@ def main():
             wait_for(lambda: cloud_pub.get_num_connections() > 0)
             cloud = point_cloud2.create_cloud_xyz32(
                 Header(stamp=rospy.Time.now(), frame_id='wrong_frame'),
-                [(.05, 1.05, .3), (.15, 1.05, .7), (0., 0., .2), (0., 0., .8)])
+                [(.05, 1.05, .3), (.15, 1.05, .7), (0., 0., .2), (0., 0., .8), (-4., 0., .5), (4., 0., .5)])
             cloud_pub.publish(cloud)
             time.sleep(.15)
             assert not freeze().success
@@ -120,9 +120,11 @@ def main():
             assert (grid.info.origin.position.x, grid.info.origin.position.y) == (-3., -3.)
             assert grid.data[40 * 60 + 30] == grid.data[40 * 60 + 31] == 100
             assert grid.data.count(-1) == 3598
-            wait_for(lambda: voxels and len(voxels[-1].points) == 4)
+            wait_for(lambda: voxels and len(voxels[-1].points) == 6)
             marker = voxels[-1]
             assert marker.header.frame_id == 'UAV0/camera_init'
+            assert min(p.x for p in marker.points) < -3.
+            assert max(p.x for p in marker.points) > 3.
             assert marker.type == Marker.CUBE_LIST
             assert marker.scale.x == marker.scale.y == marker.scale.z == .1
             assert len(marker.colors) == len(marker.points)

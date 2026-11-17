@@ -17,12 +17,12 @@ class CloudScene:
     def add(self, points):
         xmin, xmax, ymin, ymax = self.bounds
         for x, y, z in points:
-            if (all(map(math.isfinite, (x, y, z)))
-                    and xmin <= x < xmax and ymin <= y < ymax):
+            if all(map(math.isfinite, (x, y, z))):
                 ix = math.floor((x-xmin)/self.resolution)
                 iy = math.floor((y-ymin)/self.resolution)
                 self.voxels.add((ix, iy, math.floor(z/self.resolution)))
-                if self.z_min <= z <= self.z_max:
+                if (xmin <= x < xmax and ymin <= y < ymax
+                        and self.z_min <= z <= self.z_max):
                     self.cells.add((ix, iy))
 
     def voxel_centers(self):

@@ -23,7 +23,9 @@ roslaunch rrt_minco_adapter grid_map_view.launch
 颜色按当前地图高度从低到高呈青色、蓝色、紫色；可拖动鼠标旋转视角。
 红色路径来自 `/UAV0/rrt/dry_run_path`，位于Z=0.5m。
 
-默认XY覆盖0～5m，三维显示不按0.3～0.7m裁剪Z，也不将二维格子拉伸成墙。
+三维显示累计收到的全部有限XYZ点，不按规划区域裁剪XY或Z。
+只有规划区域限制为X/Y=0～5m；区域外体素仍显示，但不加入规划障碍。
+滚轮缩小视图可查看更大的环境。重启地图节点后需重新扫描，旧节点丢弃的区域外点无法恢复。
 Z=0.3～0.7m只用于生成RRT的二维规划障碍，规划器仍是固定高度规划。
 保留 `/UAV0/rrt/grid_map` 二维切片话题供兼容使用，默认RViz不显示它。
 体素仅代表点云命中的占据位置；没有射线清空、自由空间推断或动态障碍清除，
@@ -131,7 +133,7 @@ python3 ~/match_ws/src/rrt_minco_adapter/tests/mission_smoke.py
 |---|---|
 | 障碍点高度筛选 | Z=0.3～0.7m，包含边界 |
 | 固定飞行平面 | Z=0.5m；覆盖目标消息中的 Z，适配 RViz 二维点选 |
-| 已扫描地图范围 | X=0～5m、Y=0～5m |
+| 已扫描规划区域 | X=0～5m、Y=0～5m |
 | 栅格分辨率 | 0.1m；占据格合并为矩形，不重复做障碍膨胀 |
 | 点云输入 | `/UAV0/fast_lio/cloud_registered`，PointCloud2 |
 | 里程计输入 | `/UAV0/fast_lio/Odom_high_freq`，Odometry |

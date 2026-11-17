@@ -35,13 +35,28 @@ class CloudSceneTests(unittest.TestCase):
     def test_voxels_retain_height_deduplicate_and_preserve_slice(self):
         scene = CloudScene([0, 5, 0, 5], .1)
         points = [(.55, .55, z) for z in [-.15, .45, 2.15]]
-        scene.add(points + points + [(float('inf'), 0., 1.), (5., .5, 1.)])
+        scene.add(points + points + [(float('inf'), 0., 1.)])
         self.assertEqual(len(scene.voxels), 3)
         self.assertEqual(scene.cells, {(5, 5)})
         centers = scene.voxel_centers()
         for point, expected in zip(centers, points):
             for value, target in zip(point, expected):
                 self.assertAlmostEqual(value, target)
+
+    def test_full_voxel_map_keeps_points_outside_planning_region(self):
+        scene = CloudScene([0, 5, 0, 5], .1)
+        points = [(-2.05, .55, .45), (6.05, .55, .45),
+                  (.55, -3.05, .45), (.55, 7.05, .45), (.55, .55, .45)]
+        scene.add(points)
+        self.assertEqual(len(scene.voxels), 5)
+        self.assertEqual(scene.cells, {(5, 5)})
+        for actual, expected in zip(scene.voxel_centers(), sorted(points)):
+            for value, target in zip(actual, expected):
+                self.assertAlmostEqual(value, target)
+        self.assertEqual(scene.scene('map')['bounds'], [0, 5, 0, 5])
+        width, height, data = scene.occupancy_grid()
+        self.assertEqual((width, height), (50, 50))
+        self.assertEqual(data.count(100), 1)
 
     def test_invalid_extent(self):
         for bounds in [[0, 0, 0, 1], [0, 1, 0, float('nan')]]:
