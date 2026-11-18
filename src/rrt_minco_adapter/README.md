@@ -78,7 +78,7 @@ python3 ~/match_ws/src/rrt_minco_adapter/tests/fuel_map_smoke.py
 rosrun rrt_minco_adapter ground_plan.py
 ```
 
-脚本等待冻结地图最多30秒，以虚拟起点 `(0,0,0.5)` 和目标
+脚本等待冻结地图最多30秒，以虚拟起点 `(0.01,0.01,0.5)` 和目标
 `(3,3,0.5)` 进行一次规划，仅发布锁存的 `/UAV0/rrt/dry_run_path`。
 不订阅实际无人机位置，不启动控制器、不发布PositionCommand、不调用飞控服务。
 保持终端运行即可在栅格地图上看到红色路径，Ctrl+C退出。
@@ -89,7 +89,7 @@ rosrun rrt_minco_adapter ground_plan.py
 可选参数示例（保持相同高度切片）：
 
 ```bash
-rosrun rrt_minco_adapter ground_plan.py _start:="[0,0]" _goal:="[3,3]" _height:=0.5
+rosrun rrt_minco_adapter ground_plan.py _start:="[0.01,0.01]" _goal:="[3,3]" _height:=0.5
 ```
 
 ## 起飞后自动完成点到点任务
