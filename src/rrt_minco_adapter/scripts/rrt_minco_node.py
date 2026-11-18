@@ -30,6 +30,11 @@ class RrtMincoNode:
             self.fixed_height = float(self.fixed_height)
             if not math.isfinite(self.fixed_height):
                 raise ValueError('Invalid fixed_height')
+        self.boundary_clearance = rospy.get_param('~boundary_clearance', None)
+        if self.boundary_clearance is not None:
+            self.boundary_clearance = float(self.boundary_clearance)
+            if not math.isfinite(self.boundary_clearance) or self.boundary_clearance < 0:
+                raise ValueError('Invalid boundary_clearance')
         self.options = dict(speed=float(rospy.get_param('~speed', .6)),
                             acceleration=float(rospy.get_param('~acceleration', .8)),
                             clearance=float(rospy.get_param('~clearance', .2)),
@@ -128,6 +133,9 @@ class RrtMincoNode:
     def plan(self, goal, odom, request, yaw, scene):
         try:
             p, g = odom.pose.pose.position, goal.pose.position
+            scene = dict(scene)
+            if self.boundary_clearance is not None:
+                scene['boundary_clearance'] = self.boundary_clearance
             trajectory, result = solve(scene, [p.x, p.y], [g.x, g.y], **self.options)
             path = RosPath()
             path.header.frame_id = self.frame

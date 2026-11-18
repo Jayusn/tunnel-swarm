@@ -51,11 +51,12 @@ def main():
         extended = ExtendedState(landed_state=ExtendedState.LANDED_STATE_ON_GROUND)
         odom = Odometry()
         odom.header.frame_id = 'UAV0/camera_init'
-        odom.pose.pose.position.x = odom.pose.pose.position.y = .5
+        odom.pose.pose.position.x = odom.pose.pose.position.y = .01
         odom.pose.pose.orientation.w = 1.
         state_pub = rospy.Publisher('/UAV0/mavros/state', State, queue_size=1)
         ext_pub = rospy.Publisher('/UAV0/mavros/extended_state', ExtendedState, queue_size=1)
         odom_pub = rospy.Publisher('/UAV0/fast_lio/Odom_high_freq', Odometry, queue_size=1)
+        map_odom_pub = rospy.Publisher('/UAV0/fast_lio/Odometry', Odometry, queue_size=1)
         cloud_pub = rospy.Publisher('/UAV0/fast_lio/cloud_registered', PointCloud2, queue_size=1)
         goals, phases, mode_requests, trajectories = [], [], [], []
 
@@ -85,14 +86,16 @@ def main():
                 ext_pub.publish(extended)
                 last_state_time[0] = time.monotonic()
             odom_pub.publish(odom)
+            map_odom_pub.publish(odom)
         timer = rospy.Timer(rospy.Duration(.02), heartbeat)
-        spawn(['roslaunch', 'rrt_minco_adapter', 'point_to_point_mission.launch',
+        spawn(['rosrun', 'rrt_minco_adapter', 'start_flight.sh', 'start_mapper:=true',
                'command_topic:=/UAV0/rrt/test_pos_cmd'], 'mission.log')
         rospy.wait_for_service('/UAV0/rrt/freeze_map', timeout=15)
         wait_for(lambda: cloud_pub.get_num_connections() > 0 and 'WAIT_START' in phases)
-        cloud_pub.publish(point_cloud2.create_cloud_xyz32(
-            Header(stamp=rospy.Time.now(), frame_id='UAV0/camera_init'), [(2., 1., .5)]))
-        time.sleep(.3)
+        for _ in range(12):
+            cloud_pub.publish(point_cloud2.create_cloud_xyz32(
+                Header(stamp=rospy.Time.now(), frame_id='UAV0/camera_init'), [(2., 1., .5)]))
+            time.sleep(.15)
         assert rospy.ServiceProxy('/UAV0/rrt/freeze_map', Trigger)().success
         time.sleep(2.2)
         assert not goals and not mode_requests, 'Must wait for manual arming/OFFBOARD'
@@ -103,10 +106,12 @@ def main():
         wait_for(lambda: goals, timeout=8)
         assert len(goals) == 1 and goals[0][0] - ready_at >= 2.
         goal = goals[0][1].pose.position
-        assert (goal.x, goal.y, goal.z) == (4.5, 4.5, .5)
+        assert (goal.x, goal.y, goal.z) == (3., 3., .5)
         wait_for(lambda: trajectories, timeout=15)
         result = trajectories[-1]
         assert result['order'] == 5, result
+        assert result['start'] == [.01, .01]
+        assert result['goal'] == [3., 3.]
         print('Trajectory ready; testing full %.2fs flight plus 3s goal hover' % sum(result['duration']), flush=True)
         wait_for(lambda: mode_requests, timeout=sum(result['duration']) + 15)
         assert len(mode_requests) == 1

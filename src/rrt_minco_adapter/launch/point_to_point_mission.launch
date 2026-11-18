@@ -1,15 +1,17 @@
 <launch>
   <arg name="start_stable_seconds" default="2.0"/>
   <arg name="goal_hover_seconds" default="3.0"/>
+  <arg name="start_mapper" default="true"/>
   <arg name="command_topic" default="/UAV0/planning/pos_cmd"/>
   <include file="$(find rrt_minco_adapter)/launch/real_cloud.launch">
+    <arg name="start_mapper" value="$(arg start_mapper)"/>
     <arg name="goal_topic" value="/UAV0/rrt/mission_goal"/>
     <arg name="command_topic" value="$(arg command_topic)"/>
   </include>
   <node pkg="rrt_minco_adapter" type="point_to_point_mission.py"
         name="rrt_point_to_point_mission" output="screen">
-    <rosparam param="start">[0.5, 0.5, 0.5]</rosparam>
-    <rosparam param="goal">[4.5, 4.5, 0.5]</rosparam>
+    <rosparam param="start">[0.01, 0.01, 0.5]</rosparam>
+    <rosparam param="goal">[3.0, 3.0, 0.5]</rosparam>
     <param name="frame_id" value="UAV0/camera_init"/>
     <param name="start_stable_seconds" value="$(arg start_stable_seconds)"/>
     <param name="goal_hover_seconds" value="$(arg goal_hover_seconds)"/>

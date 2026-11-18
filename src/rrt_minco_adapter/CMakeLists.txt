@@ -12,6 +12,7 @@ install(TARGETS rrt_fuel_map RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATIO
 catkin_install_python(PROGRAMS scripts/rrt_minco_node.py scripts/cloud_to_scene_node.py
   scripts/point_to_point_mission.py scripts/ground_plan.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
+install(PROGRAMS scripts/start_flight.sh DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 install(DIRECTORY launch config rrt_core scripts
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
   PATTERN "__pycache__" EXCLUDE)

@@ -18,19 +18,30 @@
   <arg name="acceleration" default="0.8"/>
   <arg name="clearance" default="0.2"/>
   <arg name="tracking_margin" default="0.1"/>
-  <node pkg="rrt_minco_adapter" type="cloud_to_scene_node.py" name="rrt_cloud_scene" output="screen">
-    <rosparam param="bounds" subst_value="true">[$(arg xmin), $(arg xmax), $(arg ymin), $(arg ymax)]</rosparam>
-    <param name="frame_id" value="$(arg frame_id)"/>
-    <param name="z_min" value="$(arg z_min)"/>
-    <param name="z_max" value="$(arg z_max)"/>
-    <param name="resolution" value="$(arg resolution)"/>
-    <remap from="~cloud" to="$(arg cloud_topic)"/>
-    <remap from="~scene" to="/UAV0/rrt/scene"/>
-    <remap from="~grid_map" to="/UAV0/rrt/grid_map"/>
-    <remap from="~voxel_map" to="/UAV0/rrt/voxel_map"/>
-    <remap from="~freeze" to="/UAV0/rrt/freeze_map"/>
-  </node>
+  <arg name="start_mapper" default="true"/>
+  <arg name="map_odom_topic" default="/UAV0/fast_lio/Odometry"/>
+  <arg name="map_size_x" default="20.0"/>
+  <arg name="map_size_y" default="20.0"/>
+  <arg name="map_size_z" default="2.5"/>
+  <arg name="boundary_clearance" default="0.0"/>
+  <include if="$(arg start_mapper)" file="$(find rrt_minco_adapter)/launch/grid_map_view.launch">
+    <arg name="rviz" value="false"/>
+    <arg name="xmin" value="$(arg xmin)"/>
+    <arg name="xmax" value="$(arg xmax)"/>
+    <arg name="ymin" value="$(arg ymin)"/>
+    <arg name="ymax" value="$(arg ymax)"/>
+    <arg name="z_min" value="$(arg z_min)"/>
+    <arg name="z_max" value="$(arg z_max)"/>
+    <arg name="resolution" value="$(arg resolution)"/>
+    <arg name="frame_id" value="$(arg frame_id)"/>
+    <arg name="cloud_topic" value="$(arg cloud_topic)"/>
+    <arg name="odom_topic" value="$(arg map_odom_topic)"/>
+    <arg name="map_size_x" value="$(arg map_size_x)"/>
+    <arg name="map_size_y" value="$(arg map_size_y)"/>
+    <arg name="map_size_z" value="$(arg map_size_z)"/>
+  </include>
   <node pkg="rrt_minco_adapter" type="rrt_minco_node.py" name="rrt_minco_adapter" output="screen">
+    <param name="boundary_clearance" value="$(arg boundary_clearance)"/>
     <param name="scene_file" value="" type="str"/>
     <param name="frame_id" value="$(arg frame_id)"/>
     <param name="fixed_height" value="$(arg fixed_height)"/>
