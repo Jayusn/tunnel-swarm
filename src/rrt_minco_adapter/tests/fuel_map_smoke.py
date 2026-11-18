@@ -100,14 +100,14 @@ def main():
         assert freeze().success
         wait_for(lambda: scenes)
         frozen = scenes[-1]
-        assert frozen['bounds'] == [0., 5., 0., 5.]
+        assert frozen['bounds'] == [-1., 4., -1., 4.]
         assert frozen['boxes'] and all(box[0] >= 0 for box in frozen['boxes'])
         spawn(['rosrun', 'rrt_minco_adapter', 'ground_plan.py',
                '_output_dir:=' + str(directory / 'plan')], 'ground_plan.log')
         wait_for(lambda: paths, 30)
         assert paths[-1].header.frame_id == 'UAV0/camera_init'
         assert paths[-1].poses
-        assert all(0 <= p.pose.position.x <= 5 and 0 <= p.pose.position.y <= 5
+        assert all(-1 <= p.pose.position.x <= 4 and -1 <= p.pose.position.y <= 4
                    and abs(p.pose.position.z-.5) < 1e-9 for p in paths[-1].poses)
         saved_points = markers[-1].points
         observe([near, outside], 14)

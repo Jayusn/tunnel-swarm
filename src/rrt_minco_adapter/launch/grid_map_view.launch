@@ -1,9 +1,9 @@
 <launch>
   <!-- 仅点云转栅格与RViz；不启动规划执行器、任务脚本或控制器。 -->
-  <arg name="xmin" default="0.0"/>
-  <arg name="xmax" default="5.0"/>
-  <arg name="ymin" default="0.0"/>
-  <arg name="ymax" default="5.0"/>
+  <arg name="xmin" default="-1.0"/>
+  <arg name="xmax" default="4.0"/>
+  <arg name="ymin" default="-1.0"/>
+  <arg name="ymax" default="4.0"/>
   <arg name="resolution" default="0.1"/>
   <arg name="z_min" default="0.3"/>
   <arg name="z_max" default="0.7"/>
