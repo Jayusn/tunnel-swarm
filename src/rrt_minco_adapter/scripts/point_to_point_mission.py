@@ -17,15 +17,15 @@ class Mission:
         self.frame = rospy.get_param('~frame_id', 'UAV0/camera_init')
         self.start = tuple(rospy.get_param('~start', [.01, .01, .5]))
         self.goal = tuple(rospy.get_param('~goal', [3., 3., .5]))
-        self.start_wait = float(rospy.get_param('~start_stable_seconds', 2.))
+        self.start_wait = float(rospy.get_param('~start_stable_seconds', 0.))
         self.goal_wait = float(rospy.get_param('~goal_hover_seconds', 2.))
         self.xy_tolerance = float(rospy.get_param('~xy_tolerance', .1))
-        self.z_tolerance = float(rospy.get_param('~z_tolerance', .02))
+        self.z_tolerance = float(rospy.get_param('~z_tolerance', .05))
         self.speed_tolerance = float(rospy.get_param('~speed_tolerance', .1))
         values = self.start + self.goal + (self.start_wait, self.goal_wait,
                                           self.xy_tolerance, self.z_tolerance, self.speed_tolerance)
         if (len(self.start) != 3 or len(self.goal) != 3 or not all(map(math.isfinite, values))
-                or min(values[6:]) <= 0 or self.start[2] != self.goal[2]):
+                or self.start_wait < 0 or min(values[7:]) <= 0 or self.start[2] != self.goal[2]):
             raise ValueError('Invalid fixed-height mission parameters')
         self.lock = threading.RLock()
         self.odom = None

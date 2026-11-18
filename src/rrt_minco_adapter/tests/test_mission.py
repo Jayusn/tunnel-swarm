@@ -64,6 +64,17 @@ class MissionTests(unittest.TestCase):
         m.tick(None)
         m.goal_pub.publish.assert_not_called()
 
+    def test_start_without_dwell_and_five_cm_height_tolerance(self):
+        m = self.m
+        m.start_wait, m.z_tolerance = 0., .05
+        m.odom.pose.pose.position.z = .56
+        m.tick(None)
+        m.goal_pub.publish.assert_not_called()
+        m.odom.pose.pose.position.z = .54
+        m.tick(None)
+        self.assertEqual(m.phase, 'PLANNING')
+        m.goal_pub.publish.assert_called_once()
+
     def test_manual_start_and_continuous_two_seconds(self):
         m = self.m
         m.state.armed = False

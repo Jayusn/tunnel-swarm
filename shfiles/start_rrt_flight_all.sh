@@ -77,8 +77,8 @@ cat <<'HELP'
 本轮重新扫描后，另开已加载ROS环境的终端执行：
   rosservice call /UAV0/rrt/freeze_map "{}"
 确认地图、定位、控制输出正常后，CH8低位、CH10低位，遥控解锁并切入OFFBOARD。
-到0.5m后CH8拨高位进入轨迹模式，稳定2秒后开始规划。CH10低→高触发MPC降落。
-流程：上升0.5m稳定2秒 → 规划飞往(3,3,0.5) → 悬停2秒 → AUTO.LAND。
+到0.5m后CH8拨高位进入轨迹模式，满足起点条件后立即开始规划。CH10低→高触发MPC降落。
+流程：上升至0.5m（容差±0.05m，无起点等待） → 规划飞往(3,3,0.5) → 悬停2秒 → AUTO.LAND。
 录包另开终端：bash ~/match_ws/shfiles/record_rrt_flight.sh
 落地解除武装后Ctrl+C退出；空中异常请遥控接管，不要关闭本终端。
 HELP

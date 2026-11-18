@@ -131,7 +131,7 @@ class RrtMincoNode:
             if not np.isfinite(values).all():
                 self.fail(request, 'Non-finite odometry or goal')
                 return
-            if np.linalg.norm([v.x, v.y, v.z]) > .15 or abs(p.z - g.z) > .02:
+            if np.linalg.norm([v.x, v.y, v.z]) > .15 or abs(p.z - g.z) > .05:
                 self.fail(request, 'Stationary fixed-height request required')
                 return
             norm = np.linalg.norm([q.x, q.y, q.z, q.w])

@@ -139,7 +139,7 @@ def main():
         rc.channels[7] = 2000
         ready_at = time.monotonic()
         wait_for(lambda: goals, timeout=8)
-        assert len(goals) == 1 and goals[0][0] - ready_at >= 2.
+        assert len(goals) == 1 and goals[0][0] - ready_at < 2.
         goal = goals[0][1].pose.position
         assert (goal.x, goal.y, goal.z) == (3., 3., .5)
         wait_for(lambda: trajectories, timeout=15)
@@ -178,7 +178,7 @@ def main():
         assert phases == ['WAIT_START', 'PLANNING', 'FLYING', 'LAND_REQUESTED', 'LANDING', 'DONE'], phases
         timer.shutdown()
         rospy.signal_shutdown('test finished')
-        print('PASS: manual takeoff gate, 2s stability, actual RRT trajectory, 2s arrival hover, AUTO.LAND, grounded/disarmed completion')
+        print('PASS: manual takeoff gate, no start dwell, actual RRT trajectory, 2s arrival hover, AUTO.LAND, grounded/disarmed completion')
     finally:
         for process in reversed(processes):
             if process.poll() is None:

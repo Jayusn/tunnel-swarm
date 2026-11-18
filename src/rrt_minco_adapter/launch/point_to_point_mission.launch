@@ -1,6 +1,6 @@
 <launch>
   <arg name="require_mpc_rc" default="true"/>
-  <arg name="start_stable_seconds" default="2.0"/>
+  <arg name="start_stable_seconds" default="0.0"/>
   <arg name="goal_hover_seconds" default="2.0"/>
   <arg name="command_topic" default="/UAV0/planning/pos_cmd"/>
   <include file="$(find rrt_minco_adapter)/launch/real_cloud.launch">
