@@ -69,6 +69,8 @@ python3 "${SCRIPT_DIR}/wait_rrt_localization.py"
 wait_topic /UAV0/livox/imu_mps2
 wait_topic /UAV0/mavros/esc_status
 wait_topic /UAV0/mavros/rc/in
+echo '[设置降落速度] PX4 MPC_LAND_SPEED=0.6m/s'
+timeout 15 rosrun mavros mavparam -n /UAV0/mavros set MPC_LAND_SPEED 0.6
 start roslaunch rrt_minco_adapter autotrans_controller.launch
 start rosrun rrt_minco_adapter start_flight.sh
 start roslaunch rrt_minco_adapter grid_map_view.launch start_mapper:=false
@@ -78,7 +80,7 @@ cat <<'HELP'
   rosservice call /UAV0/rrt/freeze_map "{}"
 确认地图、定位、控制输出正常后，CH8低位、CH10低位，遥控解锁并切入OFFBOARD。
 到0.5m后CH8拨高位进入轨迹模式，满足起点条件后立即开始规划。CH10低→高触发MPC降落。
-流程：上升至0.5m（起点XY距离≤0.5m，无高度/速度门槛或等待） → 规划飞往(3,3,0.5) → 悬停2秒 → AUTO.LAND。
+流程：上升至0.5m（起点XY距离≤0.5m，无高度/速度门槛或等待） → 规划飞往(3,3,0.5) → 到点立即 → AUTO.LAND。
 录包另开终端：bash ~/match_ws/shfiles/record_rrt_flight.sh
 落地解除武装后Ctrl+C退出；空中异常请遥控接管，不要关闭本终端。
 HELP

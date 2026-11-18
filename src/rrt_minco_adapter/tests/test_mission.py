@@ -117,6 +117,17 @@ class MissionTests(unittest.TestCase):
         self.assertEqual(m.phase, 'CANCELLED')
         m.mode_client.assert_not_called()
 
+    def test_goal_without_dwell_requests_landing_immediately(self):
+        m = self.m
+        m.goal_wait = 0.
+        m.phase, m.trajectory_end = 'FLYING', rospy.Time.from_sec(9.)
+        p = m.odom.pose.pose.position
+        p.x, p.y, p.z = m.goal
+        with patch.object(module.threading, 'Thread') as worker:
+            m.tick(None)
+            worker.assert_called_once()
+        self.assertEqual(m.phase, 'LAND_REQUESTED')
+
     def test_time_end_is_not_arrival_and_hover_resets_on_stale_odom(self):
         m = self.m
         m.phase, m.trajectory_end = 'FLYING', rospy.Time.from_sec(11.)
