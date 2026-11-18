@@ -40,7 +40,7 @@ def main():
         scene, start=start, goal=goal,
         speed=float(rospy.get_param('~speed', .2)),
         acceleration=float(rospy.get_param('~acceleration', .8)),
-        clearance=float(rospy.get_param('~clearance', .3)),
+        clearance=float(rospy.get_param('~clearance', .2)),
         reserve=float(rospy.get_param('~tracking_margin', .1)))
     result.update(frame_id=frame, visualization_height=height)
     (output / 'trajectory_xy.json').write_text(json.dumps(result, indent=2, allow_nan=False))

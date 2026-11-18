@@ -9,7 +9,7 @@ from local_rrt_core import Scene,plan
 from trajectory_backend import build_trajectory,backend_stats
 
 
-def solve(data,start=None,goal=None,speed=.6,acceleration=.8,clearance=.3,reserve=.1):
+def solve(data,start=None,goal=None,speed=.6,acceleration=.8,clearance=.2,reserve=.1):
     data=dict(data);start=data['start'] if start is None else start;goal=data['goal'] if goal is None else goal
     scene=Scene(data,clearance=clearance+reserve)
     began=time.monotonic()
@@ -33,7 +33,7 @@ def main():
     p.add_argument('--scene',type=Path,default=ROOT/'config/example_scene.json')
     p.add_argument('--output',type=Path,default=ROOT/'runtime/rrt_trajectory.json')
     p.add_argument('--speed',type=float,default=.6);p.add_argument('--acceleration',type=float,default=.8)
-    p.add_argument('--clearance',type=float,default=.3);p.add_argument('--tracking-margin',type=float,default=.1)
+    p.add_argument('--clearance',type=float,default=.2);p.add_argument('--tracking-margin',type=float,default=.1)
     a=p.parse_args()
     if not np.isfinite(a.tracking_margin) or a.tracking_margin<0:p.error('tracking-margin must be finite and nonnegative')
     traj,r=solve(json.loads(a.scene.read_text()),speed=a.speed,acceleration=a.acceleration,clearance=a.clearance,reserve=a.tracking_margin)

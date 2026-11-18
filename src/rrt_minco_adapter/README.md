@@ -208,7 +208,7 @@ rostopic info /UAV0/planning/pos_cmd
 rostopic echo -n 1 /UAV0/rrt/polynomial
 ```
 
-默认规划净空加余量为0.4m，因此起终点需要严格位于 `(0.4,4.6)×(0.4,4.6)` 内，
+默认障碍净空0.2m加跟踪余量0.1m，合计0.3m，因此起终点需要严格位于 `(0.3,4.7)×(0.3,4.7)` 内，
 同时避开障碍膨胀区。如果 FAST-LIO 起点为 `(0,0)`，它不满足当前区域要求，
 需要选择区域内起点，或根据实际已扫描范围显式调整 `xmin/xmax/ymin/ymax`，不能伪改里程计。
 
@@ -256,7 +256,7 @@ JSON 格式为 `{"bounds":[xmin,xmax,ymin,ymax],"boxes":[[cx,cy,sx,sy],...]}`，
 JSON 的 `start_ns` 是请求标识；`execution_start_ns` 是采样开始的 ROS 时间，
 各段 `coef_x/y/z` 为真实局部秒变量的降幂系数。
 
-默认速度 0.6m/s、加速度 0.8m/s²、净空 0.3m、额外余量 0.1m，可用
+默认速度 0.6m/s、加速度 0.8m/s²、净空 0.2m、额外余量 0.1m，可用
 `speed`、`acceleration`、`clearance`、`tracking_margin` 参数调整。
 
 ## 与现有系统的边界

@@ -32,7 +32,7 @@ class RrtMincoNode:
                 raise ValueError('Invalid fixed_height')
         self.options = dict(speed=float(rospy.get_param('~speed', .6)),
                             acceleration=float(rospy.get_param('~acceleration', .8)),
-                            clearance=float(rospy.get_param('~clearance', .3)),
+                            clearance=float(rospy.get_param('~clearance', .2)),
                             reserve=float(rospy.get_param('~tracking_margin', .1)))
         for key, value in self.options.items():
             if not math.isfinite(value) or value < 0 or (key != 'reserve' and value == 0):

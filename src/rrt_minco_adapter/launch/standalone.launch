@@ -9,7 +9,7 @@
   <arg name="command_topic" default="/UAV0/rrt/pos_cmd"/>
   <arg name="speed" default="0.6"/>
   <arg name="acceleration" default="0.8"/>
-  <arg name="clearance" default="0.3"/>
+  <arg name="clearance" default="0.2"/>
   <arg name="tracking_margin" default="0.1"/>
   <node pkg="rrt_minco_adapter" type="rrt_minco_node.py" name="rrt_minco_adapter" output="screen">
     <param name="scene_file" value="$(arg scene_file)"/>

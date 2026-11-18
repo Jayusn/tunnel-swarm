@@ -16,7 +16,7 @@
   <arg name="command_topic" default="/UAV0/planning/pos_cmd"/>
   <arg name="speed" default="0.2"/>
   <arg name="acceleration" default="0.8"/>
-  <arg name="clearance" default="0.3"/>
+  <arg name="clearance" default="0.2"/>
   <arg name="tracking_margin" default="0.1"/>
   <node pkg="rrt_minco_adapter" type="cloud_to_scene_node.py" name="rrt_cloud_scene" output="screen">
     <rosparam param="bounds" subst_value="true">[$(arg xmin), $(arg xmax), $(arg ymin), $(arg ymax)]</rosparam>
