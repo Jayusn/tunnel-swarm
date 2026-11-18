@@ -98,10 +98,10 @@ rosrun rrt_minco_adapter ground_plan.py _start:="[0.01,0.01]" _goal:="[3,3]" _he
 `real_cloud.launch`；不要同时启动两者。完整流程为：
 
 1. 在 FAST-LIO 地面坐标 `(0.01,0.01,0)` 处准备起飞，每次启动新建图，重新扫描并冻结静态地图。
-2. 遥控器解锁、切入 OFFBOARD；现有简单控制器保持起始 XY 并爬升到 Z=0.5m。
-3. 实际位置在 `(0.01,0.01,0.5)` 附近连续稳定2秒后，任务脚本自动发送目标
+2. 遥控器解锁、切入 OFFBOARD；AutoTrans MPC在CH9低位时保持实际起飞XY并爬升到Z=0.5m；升至0.5m后CH9拨高进入轨迹模式。
+3. CH9高位且实际位置在 `(0.01,0.01,0.5)` 附近连续稳定2秒后，任务脚本自动发送目标
    `(3,3,0.5)`。无需 RViz 点击。
-4. RRT＋MINCO 按地图规划并发布轨迹，现有控制器执行。
+4. RRT＋MINCO以50Hz发布PositionCommand位置/速度/加速度/jerk参考，AutoTrans MPC执行。
 5. 轨迹执行时间结束，且实际位置在目标附近连续稳定2秒后，脚本仅请求一次
    `/UAV0/mavros/set_mode` 的 `AUTO.LAND`，进行普通就地降落。
 6. 收到实际 `AUTO.LAND` 模式后进入 LANDING；同时收到落地和解除武装状态后才报告 DONE。
@@ -111,13 +111,12 @@ rosrun rrt_minco_adapter ground_plan.py _start:="[0.01,0.01]" _goal:="[3,3]" _he
 任务同时检查 MAVROS 已连接、已解锁且为 OFFBOARD。
 任务脚本不解锁、不自动进入 OFFBOARD，也不触发 ArUco 搜索或精确降落流程。
 
-保留已有 FAST-LIO、MAVROS 和控制输出仲裁链路，停用 FUEL/Diff 及其规划指令发布者后：
+保留已有FAST-LIO和MAVROS；退出简单控制器、旧MPC、输出仲裁器及其他规划指令发布者后：
 
 ```bash
 source ~/match_ws/devel/setup.bash
-# 终端1：已有简单控制器需按这些参数启动，不重复启动同用途控制器。
-roslaunch exploration_control simple_controller.launch \
-  offboard_takeoff_height:=0.5 planner_enable_height:=0.45
+# 终端1：MPC入口直接输出MAVROS姿态/推力，不再启动简单控制器和输出仲裁器。
+roslaunch rrt_minco_adapter autotrans_controller.launch
 # 先Ctrl+C退出上一轮实飞任务及grid_map_view/real_cloud建图入口。
 # 终端2：每次启动新FUEL地图和任务，保持运行并重新扫描。
 rosrun rrt_minco_adapter start_flight.sh
@@ -130,7 +129,7 @@ rostopic echo /UAV0/rrt/mission_status
 实飞脚本与 `point_to_point_mission.launch` 每次启动新的FUEL地图和未冻结的场景转换节点，
 不再提供复用旧地图的 `start_mapper` 参数。必须先退出上一轮任务和建图入口，
 避免同名节点互相顶掉；每次重新扫描、冻结后再起飞。雷达和FAST-LIO可以保持运行。
-脚本不启动雷达、FAST-LIO、MAVROS或控制器；控制器起飞高度需按上述命令设为0.5m。
+任务脚本不启动雷达、FAST-LIO、MAVROS或控制器；autotrans_controller.launch已覆盖起飞高度为0.5m。
 脚本可用 `--help` 查看说明。
 
 自动任务使用 `/UAV0/rrt/mission_goal`，不接收 RViz 目标，避免任务期间目标被点选覆盖。
@@ -140,8 +139,19 @@ rostopic echo /UAV0/rrt/mission_status
 解除武装或飞控状态过期时报告 CANCELLED，不再自动请求降落。
 LAND_REQUESTED 只表示已发起请求，不能视为实际进入降落；服务接受后仍等待实际模式反馈。
 RRT节点在轨迹结束后仍发布终点保持指令，由PX4 AUTO.LAND模式执行降落。
-任务节点不负责撤回已有轨迹或切换到其他控制源；人工接管后若要重新测试，
-应重启整套测试入口和控制器并重新建图冻结，不要直接切回OFFBOARD复用旧轨迹。
+CH10降落由AutoTrans原有逻辑识别：先低于1300，再高于1800（数组下标9）。
+MPC发布 `/UAV0/mission/rc_land_active=true` 后，RRT任务进入CANCELLED，
+规划节点清除活动轨迹并停止PositionCommand，规划线程迟到的结果也不会重新发布。
+降落锁存不自动恢复，落地后重启整套任务与MPC，并重新扫描冻结地图。
+仅退出OFFBOARD的人工接管仍须落地后重启，不能直接切回复用旧轨迹。
+
+本入口CH9配置为数组下标8：低位起飞，高位CMD_CTRL。任务默认等待新鲜CH9高位，
+避免控制器尚未跟踪时轨迹时钟已经开始。MPC部分日志仍写“CH8”，以本入口参数为准。
+CH6是否切OFFBOARD由飞控实际映射决定，必须现场确认。CH10受RC数据有效性影响，
+必须在不解锁状态确认通道值，并进行受控接管测试，不能仅凭代码接入认定实机有效。
+一键入口：`bash ~/match_ws/shfiles/start_rrt_flight_all.sh`。
+MPC自动logger关闭，避免额外重复录包；使用现有record_rrt_flight.sh独立录包，
+已加入姿态指令、CH10锁存、IMU、RPM和MPC参考轨迹。
 
 默认稳定和悬停时间可用 `start_stable_seconds`、`goal_hover_seconds` 调整。
 这里所有XYZ仍是FAST-LIO地图坐标；地图初始原点若就在机身位置，起点通常为 `(0,0)`，
@@ -151,6 +161,8 @@ RRT节点在轨迹结束后仍发布终点保持指令，由PX4 AUTO.LAND模式�
 
 ```bash
 python3 ~/match_ws/src/rrt_minco_adapter/tests/mission_smoke.py
+# 真实MPC节点＋模拟传感器，验证RRT参考接收和CH10中断
+python3 ~/match_ws/src/rrt_minco_adapter/tests/mission_smoke.py --mpc-ch10
 ```
 
 ## 实机点云静态地图入口
@@ -172,7 +184,7 @@ python3 ~/match_ws/src/rrt_minco_adapter/tests/mission_smoke.py
 | 控制器指令输出 | `/UAV0/planning/pos_cmd`，PositionCommand |
 | 规划结果 / RViz | `/UAV0/rrt/polynomial`、`/UAV0/rrt/path` |
 | 坐标系 | `UAV0/camera_init`；不做 TF 转换 |
-| 参考速度 | 0.2m/s，与现有简单控制器默认水平限速对应 |
+| 参考速度 | 0.2m/s，RRT参考速度 |
 
 所有 XYZ 数值是 FAST-LIO 地图坐标，不是测距仪离地高度。需确认初始化原点后使用。
 FUEL维护占据地图，但RRT适配器只提取静态占据障碍，不使用自由/未知状态：bounds 内未收到障碍点的位置
@@ -200,17 +212,16 @@ rosservice call /UAV0/rrt/freeze_map "{}"
 地图只保存在节点内存和锁存话题中，不自动写入 Git 工作区。
 规划器和地图节点需一起重启，避免规划器保留旧地图。
 
-现有简单控制器默认悬停0.6m、接管门限0.5m。独立测试采用0.5m飞行时，
-启动该控制器应传入以下已有参数（不要再启动第二个同用途控制器）：
+本入口使用AutoTrans MPC，起飞高度覆盖为0.5m。手动启动时执行
+（使用一键脚本时不要重复启动）：
 
 ```bash
-roslaunch exploration_control simple_controller.launch \
-  offboard_takeoff_height:=0.5 planner_enable_height:=0.45
+roslaunch rrt_minco_adapter autotrans_controller.launch
 ```
 
-该控制器仍通过原来的 `/UAV0/control/position_setpoint` 和降落仲裁链路输出，
-以上命令不代替已有 MAVROS、定位、降落指令仲裁等启动流程，也不解锁或切换飞行模式。
-开始规划前应在Z=0.5m附近稳定悬停；继承原有高度误差0.02m、速度0.15m/s限制。
+AutoTrans通过 `/UAV0/mavros/setpoint_raw/attitude` 输出姿态与推力，
+原有恢复逻辑可能使用 `/UAV0/mavros/setpoint_raw/local`。不要同时启动其他控制输出源。
+开始规划前需稳定悬停在0.5m，CH9高位进入轨迹模式。
 
 目标示例（实际需选择已确认无障碍的位置）：
 
@@ -230,6 +241,8 @@ rostopic echo -n 1 /UAV0/rrt/polynomial
 ```bash
 python3 ~/match_ws/src/rrt_minco_adapter/tests/fuel_map_smoke.py
 python3 ~/match_ws/src/rrt_minco_adapter/tests/mission_smoke.py
+# 真实MPC节点＋模拟传感器，验证RRT参考接收和CH10中断
+python3 ~/match_ws/src/rrt_minco_adapter/tests/mission_smoke.py --mpc-ch10
 ```
 
 ## 运行

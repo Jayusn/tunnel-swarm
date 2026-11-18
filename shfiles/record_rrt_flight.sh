@@ -21,6 +21,11 @@ exec rosbag record --split --size=1024 \
   /UAV0/rrt/path \
   /UAV0/planning/pos_cmd \
   /UAV0/control/position_setpoint \
+  /UAV0/mavros/setpoint_raw/attitude \
+  /UAV0/mission/rc_land_active \
+  /UAV0/livox/imu_mps2 \
+  /UAV0/mavros/esc_status \
+  /mpc_controller_node/mpc/reference_trajectory \
   /UAV0/landing/control_owner \
   /UAV0/mavros/setpoint_raw/local \
   /UAV0/mavros/state \

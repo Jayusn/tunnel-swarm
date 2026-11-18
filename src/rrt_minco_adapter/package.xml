@@ -12,6 +12,7 @@
   <build_depend>libpcl-all-dev</build_depend>
   <exec_depend>exploration_manager</exec_depend>
   <exec_depend>rospy</exec_depend>
+  <exec_depend>payload_mpc_controller</exec_depend>
   <exec_depend>rospkg</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>visualization_msgs</exec_depend>

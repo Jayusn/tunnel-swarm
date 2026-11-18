@@ -13,7 +13,7 @@ import rospy
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry, Path as RosPath
 from quadrotor_msgs.msg import PositionCommand
-from std_msgs.msg import String
+from std_msgs.msg import String, Bool
 
 PACKAGE = Path(rospkg.RosPack().get_path('rrt_minco_adapter'))
 sys.path.insert(0, str(PACKAGE / 'scripts'))
@@ -48,6 +48,7 @@ class RrtMincoNode:
         self.odom = None
         self.busy = False
         self.active = None
+        self.rc_landing = False
         self.trajectory_id = 0
         self.polynomial_pub = rospy.Publisher('~polynomial', String, queue_size=1)
         self.path_pub = rospy.Publisher('~path', RosPath, queue_size=1, latch=True)
@@ -55,8 +56,17 @@ class RrtMincoNode:
         self.odom_sub = rospy.Subscriber('~odom', Odometry, self.on_odom, queue_size=1)
         self.goal_sub = rospy.Subscriber('~goal', PoseStamped, self.on_goal, queue_size=1)
         self.scene_sub = rospy.Subscriber('~scene', String, self.on_scene, queue_size=1)
+        self.rc_land_sub = rospy.Subscriber(
+            "/UAV0/mission/rc_land_active", Bool, self.on_rc_land, queue_size=1)
         self.timer = rospy.Timer(rospy.Duration(.02), self.on_timer)
         rospy.loginfo('RRT/MINCO ready: static scene, fixed height, frame=%s', self.frame)
+
+    def on_rc_land(self, msg):
+        if msg.data:
+            with self.lock:
+                self.rc_landing = True
+                self.active = None
+            rospy.logwarn('AutoTrans CH10 landing: RRT command output stopped until restart')
 
     def validate_scene(self, scene):
         bounds = np.asarray(scene['bounds'], dtype=float)
@@ -94,6 +104,9 @@ class RrtMincoNode:
         request = str((msg.header.stamp if msg.header.stamp != rospy.Time()
                        else rospy.Time.now()).to_nsec())
         with self.lock:
+            if self.rc_landing:
+                self.fail(request, "CH10 landing active; restart after landing")
+                return
             odom = self.odom
             scene = self.scene
             if scene is None:
@@ -150,6 +163,8 @@ class RrtMincoNode:
                 pose.pose.orientation.w = math.cos(yaw / 2)
                 path.poses.append(pose)
             with self.lock:
+                if self.rc_landing:
+                    return
                 start_time = rospy.Time.now()
                 self.trajectory_id += 1
                 result.update(frame_id=self.frame, dimensions=3, start_ns=request,

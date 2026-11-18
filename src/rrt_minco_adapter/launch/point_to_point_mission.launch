@@ -1,4 +1,5 @@
 <launch>
+  <arg name="require_mpc_rc" default="true"/>
   <arg name="start_stable_seconds" default="2.0"/>
   <arg name="goal_hover_seconds" default="2.0"/>
   <arg name="command_topic" default="/UAV0/planning/pos_cmd"/>
@@ -11,6 +12,7 @@
         name="rrt_point_to_point_mission" output="screen">
     <rosparam param="start">[0.01, 0.01, 0.5]</rosparam>
     <rosparam param="goal">[3.0, 3.0, 0.5]</rosparam>
+    <param name="require_mpc_rc" value="$(arg require_mpc_rc)"/>
     <param name="frame_id" value="UAV0/camera_init"/>
     <param name="start_stable_seconds" value="$(arg start_stable_seconds)"/>
     <param name="goal_hover_seconds" value="$(arg goal_hover_seconds)"/>

@@ -32,6 +32,7 @@ class MissionTests(unittest.TestCase):
         m.odom = Odometry()
         m.odom.header.frame_id = m.frame
         m.odom.pose.pose.position.x, m.odom.pose.pose.position.y, m.odom.pose.pose.position.z = m.start
+        m.require_mpc_rc = False
         m.map_ready, m.phase, m.stable_since = True, 'WAIT_START', None
         m.request_id, m.trajectory_end, m.extended = None, None, None
         self.advance(10.)
@@ -41,6 +42,25 @@ class MissionTests(unittest.TestCase):
         if fresh:
             self.m.state_received = self.m.odom.header.stamp = rospy.Time.now()
             self.m.extended_received = rospy.Time.now()
+
+    def test_mpc_command_gate_and_ch10_cancel(self):
+        from mavros_msgs.msg import RCIn
+        from std_msgs.msg import Bool
+        m = self.m
+        m.require_mpc_rc, m.rc = True, None
+        m.rc_received = rospy.Time()
+        self.assertFalse(m.mpc_command_ready(rospy.Time.now()))
+        m.on_rc(RCIn(channels=[1500]*8+[1000,1000]))
+        self.assertFalse(m.mpc_command_ready(rospy.Time.now()))
+        m.on_rc(RCIn(channels=[1500]*8+[2000,1000]))
+        self.assertTrue(m.mpc_command_ready(rospy.Time.now()))
+        self.advance(11.)
+        self.assertFalse(m.mpc_command_ready(rospy.Time.now()))
+        m.on_rc_land(Bool(data=True))
+        self.assertEqual(m.phase, 'CANCELLED')
+        m.on_rc_land(Bool(data=False))
+        m.tick(None)
+        m.goal_pub.publish.assert_not_called()
 
     def test_manual_start_and_continuous_two_seconds(self):
         m = self.m

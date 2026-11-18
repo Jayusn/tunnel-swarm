@@ -6,10 +6,10 @@ import threading
 
 import rospy
 from geometry_msgs.msg import PoseStamped
-from mavros_msgs.msg import State, ExtendedState
+from mavros_msgs.msg import State, ExtendedState, RCIn
 from mavros_msgs.srv import SetMode
 from nav_msgs.msg import Odometry
-from std_msgs.msg import String
+from std_msgs.msg import String, Bool
 
 
 class Mission:
@@ -33,6 +33,9 @@ class Mission:
         self.state_received = rospy.Time()
         self.extended = None
         self.extended_received = rospy.Time()
+        self.require_mpc_rc = rospy.get_param("~require_mpc_rc", False)
+        self.rc = None
+        self.rc_received = rospy.Time()
         self.map_ready = False
         self.phase = 'WAIT_START'
         self.stable_since = None
@@ -41,14 +44,32 @@ class Mission:
         self.status = rospy.Publisher('~status', String, queue_size=1, latch=True)
         self.goal_pub = rospy.Publisher('~goal', PoseStamped, queue_size=1)
         self.mode_client = rospy.ServiceProxy('~set_mode', SetMode)
+        self.set_phase("WAIT_START")
         self.subscribers = [
             rospy.Subscriber('~odom', Odometry, self.on_odom, queue_size=1),
             rospy.Subscriber('~state', State, self.on_state, queue_size=1),
             rospy.Subscriber('~extended_state', ExtendedState, self.on_extended, queue_size=1),
             rospy.Subscriber('~scene', String, self.on_scene, queue_size=1),
             rospy.Subscriber('~polynomial', String, self.on_result, queue_size=1)]
-        self.set_phase('WAIT_START')
+        self.subscribers.extend([
+            rospy.Subscriber('/UAV0/mavros/rc/in', RCIn, self.on_rc, queue_size=1),
+            rospy.Subscriber('/UAV0/mission/rc_land_active', Bool, self.on_rc_land, queue_size=1)])
         self.timer = rospy.Timer(rospy.Duration(.05), self.tick)
+
+    def on_rc(self, msg):
+        with self.lock:
+            self.rc, self.rc_received = msg, rospy.Time.now()
+
+    def on_rc_land(self, msg):
+        if msg.data:
+            with self.lock:
+                self.set_phase('CANCELLED', 'AutoTrans CH10 landing owns control; restart after landing')
+
+    def mpc_command_ready(self, now):
+        if not self.require_mpc_rc:
+            return True
+        return (self.rc is not None and self.fresh(now, self.rc_received, .5)
+                and len(self.rc.channels) >= 10 and 1800 < self.rc.channels[8] <= 2200)
 
     def set_phase(self, phase, detail=''):
         self.phase = phase
@@ -137,7 +158,8 @@ class Mission:
                     self.set_phase('DONE')
                 return
             if self.phase == 'WAIT_START':
-                ready = offboard and self.map_ready and self.goal_pub.get_num_connections() > 0
+                ready = (offboard and self.map_ready and self.mpc_command_ready(now)
+                         and self.goal_pub.get_num_connections() > 0)
                 if self.stable_for(ready and self.at_rest(self.start, now), self.start_wait, now):
                     msg = PoseStamped()
                     msg.header.stamp, msg.header.frame_id = now, self.frame
