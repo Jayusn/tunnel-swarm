@@ -10,6 +10,7 @@
 #include <geometry_msgs/PoseStamped.h>
 #include <nav_msgs/Odometry.h>
 #include <std_msgs/Empty.h>
+#include <std_srvs/Trigger.h>
 #include <std_msgs/Bool.h>
 #include <std_msgs/Float64.h>
 #include <std_msgs/String.h>
@@ -37,6 +38,8 @@ namespace PayloadMPC
 	class MPCFSM
 	{
 	public:
+        bool requestLanding(std_srvs::Trigger::Request &, std_srvs::Trigger::Response &);
+        bool landing_request_pending_ = false;
 		//***************PX4CTRL Real *****************
 
 		RC_Data_t rc_data;

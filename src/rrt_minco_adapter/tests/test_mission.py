@@ -167,14 +167,24 @@ class MissionTests(unittest.TestCase):
         m.tick(None)
         self.assertEqual(m.phase, 'DONE')
 
+    def test_task_landing_latch_preserves_landing_and_done(self):
+        from std_msgs.msg import Bool
+        m = self.m
+        m.phase = 'LAND_REQUESTED'
+        m.on_rc_land(Bool(data=True))
+        self.assertEqual(m.phase, 'LANDING')
+        m.phase = 'DONE'
+        m.on_rc_land(Bool(data=True))
+        self.assertEqual(m.phase, 'DONE')
+
     def test_rejected_landing_service_does_not_report_success(self):
         m = self.m
         m.phase = 'LAND_REQUESTED'
         p = m.odom.pose.pose.position
         p.x, p.y, p.z = m.goal
-        m.mode_client.return_value.mode_sent = False
+        m.mode_client.return_value.success = False
         m.request_land()
-        m.mode_client.assert_called_once_with(base_mode=0, custom_mode='AUTO.LAND')
+        m.mode_client.assert_called_once_with()
         self.assertEqual(m.phase, 'FAILED')
 
 

@@ -17,6 +17,7 @@
   <depend>rospy</depend>
   <depend>rosgraph_msgs</depend>
   <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
   <depend>trajectory_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>uav_utils</depend>

@@ -7,7 +7,7 @@ import threading
 import rospy
 from geometry_msgs.msg import PoseStamped
 from mavros_msgs.msg import State, ExtendedState, RCIn
-from mavros_msgs.srv import SetMode
+from std_srvs.srv import Trigger
 from nav_msgs.msg import Odometry
 from std_msgs.msg import String, Bool
 
@@ -44,7 +44,7 @@ class Mission:
         self.trajectory_end = None
         self.status = rospy.Publisher('~status', String, queue_size=1, latch=True)
         self.goal_pub = rospy.Publisher('~goal', PoseStamped, queue_size=1)
-        self.mode_client = rospy.ServiceProxy('~set_mode', SetMode)
+        self.mode_client = rospy.ServiceProxy('~request_land', Trigger)
         self.set_phase("WAIT_START")
         self.subscribers = [
             rospy.Subscriber('~odom', Odometry, self.on_odom, queue_size=1),
@@ -64,7 +64,10 @@ class Mission:
     def on_rc_land(self, msg):
         if msg.data:
             with self.lock:
-                self.set_phase('CANCELLED', 'AutoTrans CH10 landing owns control; restart after landing')
+                if self.phase == 'LAND_REQUESTED':
+                    self.set_phase('LANDING', 'AutoTrans MPC descent active')
+                elif self.phase not in ('LANDING', 'DONE'):
+                    self.set_phase('CANCELLED', 'AutoTrans CH10 landing owns control; restart after landing')
 
     def mpc_command_ready(self, now):
         if not self.require_mpc_rc:
@@ -196,10 +199,10 @@ class Mission:
                         and self.fresh(now, self.state_received, 3.) and self.at_rest(self.goal, now)):
                     self.set_phase('CANCELLED', 'Vehicle state changed before landing request')
                     return
-            result = self.mode_client(base_mode=0, custom_mode='AUTO.LAND')
+            result = self.mode_client()
             with self.lock:
-                if not result.mode_sent and self.phase == 'LAND_REQUESTED':
-                    self.set_phase('FAILED', 'AUTO.LAND request rejected; no automatic retry')
+                if not result.success and self.phase == 'LAND_REQUESTED':
+                    self.set_phase('FAILED', 'MPC landing request rejected; no automatic retry')
         except (rospy.ROSException, rospy.ServiceException) as error:
             with self.lock:
                 if self.phase == 'LAND_REQUESTED':

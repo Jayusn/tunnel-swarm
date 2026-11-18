@@ -140,6 +140,7 @@ int main(int argc, char **argv)
                                              ros::TransportHints().tcpNoDelay());
     fsm.rpm_data.set_filter_params(param.filter_param_.sample_freq_rpm, param.filter_param_.cutoff_freq_rpm);
 
+    ros::ServiceServer landing_service = nh.advertiseService("request_land", &PayloadMPC::MPCFSM::requestLanding, &fsm);
     fsm.planning_stop_pub_ = nh.advertise<std_msgs::Empty>("/planning_stop_trigger", 10);
     fsm.rc_land_active_pub_ = nh.advertise<std_msgs::Bool>("rc_land_active", 1, true);
     fsm.planning_restart_pub_ = nh.advertise<std_msgs::Empty>("/planning_restart_trigger", 10);

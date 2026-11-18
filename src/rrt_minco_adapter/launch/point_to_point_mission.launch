@@ -23,6 +23,6 @@
     <remap from="~polynomial" to="/UAV0/rrt/polynomial"/>
     <remap from="~goal" to="/UAV0/rrt/mission_goal"/>
     <remap from="~status" to="/UAV0/rrt/mission_status"/>
-    <remap from="~set_mode" to="/UAV0/mavros/set_mode"/>
+    <remap from="~request_land" to="/mpc_controller_node/request_land"/>
   </node>
 </launch>

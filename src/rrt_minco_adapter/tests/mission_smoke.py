@@ -16,7 +16,9 @@ from ros_smoke import wait_for
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mpc-ch10", action="store_true", help="真实MPC接收RRT参考并验证CH10中断，模拟传感器")
+    parser.add_argument("--mpc-land", action="store_true", help="验证到点MPC降落及落地后停发")
     args = parser.parse_args()
+    use_mpc = args.mpc_ch10 or args.mpc_land
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))
         port = sock.getsockname()[1]
@@ -50,7 +52,7 @@ def main():
         from sensor_msgs import point_cloud2
         from std_msgs.msg import String, Header, Bool
         from rosgraph_msgs.msg import Log
-        from std_srvs.srv import Trigger
+        from std_srvs.srv import Trigger, TriggerResponse
         rospy.init_node('rrt_mission_test', anonymous=True, disable_signals=True)
         state = State(connected=True, armed=False, mode='POSCTL')
         extended = ExtendedState(landed_state=ExtendedState.LANDED_STATE_ON_GROUND)
@@ -88,6 +90,14 @@ def main():
             return SetModeResponse(mode_sent=True)
 
         service = rospy.Service('/UAV0/mavros/set_mode', SetMode, request_mode)
+        landing_pub = rospy.Publisher('/UAV0/mission/rc_land_active', Bool, queue_size=1, latch=True)
+        if not use_mpc:
+            def fake_mpc_land(_):
+                landing_pub.publish(Bool(data=True))
+                mode_requests.append((time.monotonic(), 'AUTO.LAND'))
+                state.mode = 'AUTO.LAND'
+                return TriggerResponse(success=True, message='test MPC landing')
+            landing_service = rospy.Service('/mpc_controller_node/request_land', Trigger, fake_mpc_land)
         subscribers = [
             rospy.Subscriber('/UAV0/rrt/test_pos_cmd', PositionCommand, command),
             rospy.Subscriber('/UAV0/rrt/mission_goal', PoseStamped, lambda m: goals.append((time.monotonic(), m))),
@@ -99,6 +109,8 @@ def main():
 
         last_state_time = [0.]
         def heartbeat(_):
+            if args.mpc_land and True in rc_lands and state.mode == 'OFFBOARD':
+                odom.pose.pose.position.z = max(.04, odom.pose.pose.position.z - .004)
             odom.header.stamp = rospy.Time.now()
             if time.monotonic() - last_state_time[0] >= 1.:
                 state_pub.publish(state)
@@ -108,13 +120,13 @@ def main():
             rc_pub.publish(rc)
             odom_pub.publish(odom)
             map_odom_pub.publish(odom)
-            if args.mpc_ch10:
+            if use_mpc:
                 imu.header.stamp = esc.header.stamp = rospy.Time.now()
                 imu_pub.publish(imu)
                 esc_pub.publish(esc)
                 local_pub.publish(PoseStamped(header=odom.header, pose=odom.pose.pose))
         timer = rospy.Timer(rospy.Duration(.02), heartbeat)
-        if args.mpc_ch10:
+        if use_mpc:
             spawn(['roslaunch', 'rrt_minco_adapter', 'autotrans_controller.launch'], 'mpc.log')
             # MPC现有参考接口重映射到测试专用话题，无实际飞控。
             mpc_cmd_pub = rospy.Publisher('/UAV0/planning/pos_cmd', PositionCommand, queue_size=1)
@@ -176,6 +188,23 @@ def main():
         wait_for(lambda: 'DONE' in phases)
         assert len(goals) == 1
         assert phases == ['WAIT_START', 'PLANNING', 'FLYING', 'LAND_REQUESTED', 'LANDING', 'DONE'], phases
+        time.sleep(.4)
+        stopped_commands = len(commands)
+        time.sleep(.5)
+        assert len(commands) == stopped_commands, 'RRT still publishes after landing'
+        if args.mpc_land:
+            # 模拟实包中的落地后OFFBOARD/未解锁，以及拨低再拨高。
+            state.mode = 'OFFBOARD'
+            time.sleep(1.3)
+            n = len(attitudes)
+            rc.channels[7] = 1000
+            time.sleep(.4)
+            rc.channels[7] = 2000
+            time.sleep(.6)
+            assert len(attitudes) == n, 'MPC resumed output after disarm'
+            assert True in rc_lands
+            assert mode_requests[0][0] - ready_at > sum(result['duration']) + 1.
+            print('PASS: MPC slow descent, RRT stops on latch, no post-landing attitude output or RC resume')
         timer.shutdown()
         rospy.signal_shutdown('test finished')
         print('PASS: manual takeoff gate, no start dwell, actual RRT trajectory, no arrival dwell, AUTO.LAND, grounded/disarmed completion')

@@ -397,9 +397,40 @@ namespace PayloadMPC
         precision_test_target_time_ = msg->header.stamp;
     }
 
+    bool MPCFSM::requestLanding(std_srvs::Trigger::Request &, std_srvs::Trigger::Response &res)
+    {
+        const auto now = ros::Time::now();
+        res.success = !state_data.rcv_stamp.isZero() &&
+            (now - state_data.rcv_stamp).toSec() < params_.msg_timeout_.state &&
+            state_data.current_state.connected && state_data.current_state.armed &&
+            state_data.current_state.mode == "OFFBOARD" &&
+            (fsm_state == AUTO_HOVER || fsm_state == CMD_CTRL || fsm_state == AUTO_TAKEOFF || fsm_state == AUTO_LAND) &&
+            rc_is_received(now) && rc_data.mode_input_valid &&
+            !mpc_recovery_active_ && !direct_auto_land_active_;
+        if (res.success && !rc_land_active_) landing_request_pending_ = true;
+        res.message = res.success ? "MPC landing accepted" : "MPC landing unavailable";
+        return true;
+    }
+
 	void MPCFSM::process()
 	{
 		ros::Time now_time = ros::Time::now();
+        // 降落锁存后退出OFFBOARD或解除武装，不再重入旧任务或输出预流。
+        if (rc_land_active_ && (fsm_state == MANUAL_CTRL ||
+            (!state_data.rcv_stamp.isZero() &&
+             (now_time - state_data.rcv_stamp).toSec() < params_.msg_timeout_.state &&
+             (!state_data.current_state.armed || state_data.current_state.mode != "OFFBOARD"))))
+        {
+            if (fsm_state != MANUAL_CTRL) clearAutonomousState();
+            fsm_state = MANUAL_CTRL;
+            suppress_manual_setpoint_ = true;
+            return;
+        }
+        if (landing_request_pending_)
+        {
+            landing_request_pending_ = false;
+            rc_data.enter_land_mode = true;
+        }
 		manual_setpoint_published_ = false;
 		if (fsm_state != CMD_CTRL)
 		{
@@ -1756,7 +1787,7 @@ namespace PayloadMPC
 		std_msgs::Bool active;
 		active.data = true;
 		rc_land_active_pub_.publish(active);
-		ROS_ERROR("[RC_LAND] CH10 原地降落锁存，停止穿越、搜索和精降接管。");
+		ROS_ERROR("[RC_LAND] CH10/任务请求原地降落锁存，停止穿越、搜索和精降接管。");
 	}
 
 	void MPCFSM::clearAutonomousState()

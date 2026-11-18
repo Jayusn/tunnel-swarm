@@ -103,8 +103,8 @@ rosrun rrt_minco_adapter ground_plan.py _start:="[0.01,0.01]" _goal:="[3,3]" _he
    `(3,3,0.5)`。无需 RViz 点击。
 4. RRT＋MINCO以50Hz发布PositionCommand位置/速度/加速度/jerk参考，AutoTrans MPC执行。
 5. 轨迹执行时间结束，满足终点位置和速度条件后，脚本立即请求一次
-   `/UAV0/mavros/set_mode` 的 `AUTO.LAND`，进行普通就地降落。
-6. 收到实际 `AUTO.LAND` 模式后进入 LANDING；同时收到落地和解除武装状态后才报告 DONE。
+   `/mpc_controller_node/request_land`，调用与CH10一致的MPC原地降落。
+6. 收到MPC降落锁存后进入 LANDING；同时收到落地和解除武装状态后才报告 DONE。
 
 终点稳定判定：XY距离≤0.1m、Z误差≤0.05m、三维速度≤0.1m/s；里程计需新鲜且坐标系匹配。
 偏离条件会重新累计稳定时间。里程计有效期1秒，飞控状态有效期3秒；
@@ -137,10 +137,10 @@ rostopic echo /UAV0/rrt/mission_status
 任务状态为 WAIT_START → PLANNING → FLYING → LAND_REQUESTED → LANDING → DONE。
 规划失败或降落服务拒绝会报告 FAILED，不自动重试；规划/飞行阶段退出 OFFBOARD、
 解除武装或飞控状态过期时报告 CANCELLED，不再自动请求降落。
-LAND_REQUESTED 只表示已发起请求，不能视为实际进入降落；服务接受后仍等待实际模式反馈。
-RRT节点在轨迹结束后仍发布终点保持指令，由PX4 AUTO.LAND模式执行降落。
+LAND_REQUESTED 只表示已发起请求，不能视为实际进入降落；服务接受后仍等待MPC降落锁存反馈。
+RRT节点在收到降落锁存时停止终点保持指令。MPC以0.2m/s降低高度参考，再按现有近地/超时条件交给PX4 AUTO.LAND收尾。
 CH10降落由AutoTrans原有逻辑识别：先低于1300，再高于1800（数组下标9）。
-MPC发布 `/UAV0/mission/rc_land_active=true` 后，RRT任务进入CANCELLED，
+MPC发布 `/UAV0/mission/rc_land_active=true` 后，主动请求降落的RRT任务进入LANDING；人工CH10中断则进入CANCELLED，
 规划节点清除活动轨迹并停止PositionCommand，规划线程迟到的结果也不会重新发布。
 降落锁存不自动恢复，落地后重启整套任务与MPC，并重新扫描冻结地图。
 仅退出OFFBOARD的人工接管仍须落地后重启，不能直接切回复用旧轨迹。
@@ -308,4 +308,4 @@ ROS 测试自动建立独立 master，使用合成地图/里程计，不连接�
 
 起点规划触发更新：CH8高位且距起点(0.01,0.01)的XY距离≤0.5m即可，无起点高度/速度门槛，无起点等待。规划器入口也不再拒绝高度差或运动状态。轨迹仍固定Z=0.5m；终点保留位置和速度判断，无额外悬停等待。
 
-到点降落：轨迹时间结束并满足终点位置、速度条件后立即请求AUTO.LAND；一键启动将PX4 MPC_LAND_SPEED设为0.6m/s（飞控参数修改会影响后续AUTO.LAND）。实机实际下降速度需验证。
+到点立即调用MPC降落服务，下降参考0.2m/s；不再由启动脚本写入MPC_LAND_SPEED。此前已写入飞控的参数不会自动恢复。解除武装或退出OFFBOARD后，降落锁存阻止MPC重新输出，需落地重启下一轮。

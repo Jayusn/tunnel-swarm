@@ -16,4 +16,5 @@
   <param name="/mpc_controller_node/rc_mode/land_channel" value="9"/>
   <param name="/mpc_controller_node/rc_mode/low_threshold" value="1300"/>
   <param name="/mpc_controller_node/rc_mode/high_threshold" value="1800"/>
+  <param name="/mpc_controller_node/land/descent_rate" value="0.2"/>
 </launch>
