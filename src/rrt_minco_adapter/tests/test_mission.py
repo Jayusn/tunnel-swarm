@@ -50,9 +50,11 @@ class MissionTests(unittest.TestCase):
         m.require_mpc_rc, m.rc = True, None
         m.rc_received = rospy.Time()
         self.assertFalse(m.mpc_command_ready(rospy.Time.now()))
-        m.on_rc(RCIn(channels=[1500]*8+[1000,1000]))
+        m.on_rc(RCIn(channels=[1500]*7+[1000,1500,1000]))
         self.assertFalse(m.mpc_command_ready(rospy.Time.now()))
-        m.on_rc(RCIn(channels=[1500]*8+[2000,1000]))
+        m.on_rc(RCIn(channels=[1500]*7+[1000,2000,1000]))
+        self.assertFalse(m.mpc_command_ready(rospy.Time.now()))
+        m.on_rc(RCIn(channels=[1500]*7+[2000,1000,1000]))
         self.assertTrue(m.mpc_command_ready(rospy.Time.now()))
         self.advance(11.)
         self.assertFalse(m.mpc_command_ready(rospy.Time.now()))

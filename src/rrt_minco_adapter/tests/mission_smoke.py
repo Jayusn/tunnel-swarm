@@ -58,7 +58,7 @@ def main():
         odom.header.frame_id = 'UAV0/camera_init'
         odom.pose.pose.position.x = odom.pose.pose.position.y = .01
         odom.pose.pose.orientation.w = 1.
-        rc = RCIn(channels=[1500]*8+[1000,1000])
+        rc = RCIn(channels=[1500]*7+[1000,1500,1000])
         rc_pub = rospy.Publisher('/UAV0/mavros/rc/in', RCIn, queue_size=1)
         state_pub = rospy.Publisher('/UAV0/mavros/state', State, queue_size=1)
         ext_pub = rospy.Publisher('/UAV0/mavros/extended_state', ExtendedState, queue_size=1)
@@ -135,8 +135,8 @@ def main():
         extended.landed_state = ExtendedState.LANDED_STATE_IN_AIR
         odom.pose.pose.position.z = .5
         time.sleep(2.3)
-        assert not goals, "CH9 low must not start RRT execution clock"
-        rc.channels[8] = 2000
+        assert not goals, "CH8 low must not start RRT execution clock"
+        rc.channels[7] = 2000
         ready_at = time.monotonic()
         wait_for(lambda: goals, timeout=8)
         assert len(goals) == 1 and goals[0][0] - ready_at >= 2.

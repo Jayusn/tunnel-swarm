@@ -8,11 +8,11 @@
     <arg name="setpoint_topic" value="/UAV0/mavros/setpoint_raw/attitude"/>
     <arg name="recovery_position_setpoint_topic" value="/UAV0/mavros/setpoint_raw/local"/>
   </include>
-  <!-- 仅本入口覆盖，不修改MPC通用配置。起飞保持实际XY，CH9高位才跟踪轨迹。 -->
+  <!-- 仅本入口覆盖，不修改MPC通用配置。起飞保持实际XY，CH8高位才跟踪轨迹。 -->
   <param name="/mpc_controller_node/takeoff/target_z" value="0.5"/>
   <param name="/mpc_controller_node/fixed_hover/enabled" value="false"/>
-  <param name="/mpc_controller_node/rc_mode/mode_channel" value="8"/>
-  <param name="/mpc_controller_node/rc_mode/takeoff_hover_channel" value="8"/>
+  <param name="/mpc_controller_node/rc_mode/mode_channel" value="7"/>
+  <param name="/mpc_controller_node/rc_mode/takeoff_hover_channel" value="7"/>
   <param name="/mpc_controller_node/rc_mode/land_channel" value="9"/>
   <param name="/mpc_controller_node/rc_mode/low_threshold" value="1300"/>
   <param name="/mpc_controller_node/rc_mode/high_threshold" value="1800"/>

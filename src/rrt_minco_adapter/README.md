@@ -98,8 +98,8 @@ rosrun rrt_minco_adapter ground_plan.py _start:="[0.01,0.01]" _goal:="[3,3]" _he
 `real_cloud.launch`；不要同时启动两者。完整流程为：
 
 1. 在 FAST-LIO 地面坐标 `(0.01,0.01,0)` 处准备起飞，每次启动新建图，重新扫描并冻结静态地图。
-2. 遥控器解锁、切入 OFFBOARD；AutoTrans MPC在CH9低位时保持实际起飞XY并爬升到Z=0.5m；升至0.5m后CH9拨高进入轨迹模式。
-3. CH9高位且实际位置在 `(0.01,0.01,0.5)` 附近连续稳定2秒后，任务脚本自动发送目标
+2. 遥控器解锁、切入 OFFBOARD；AutoTrans MPC在CH8低位时保持实际起飞XY并爬升到Z=0.5m；升至0.5m后CH8拨高进入轨迹模式。
+3. CH8高位且实际位置在 `(0.01,0.01,0.5)` 附近连续稳定2秒后，任务脚本自动发送目标
    `(3,3,0.5)`。无需 RViz 点击。
 4. RRT＋MINCO以50Hz发布PositionCommand位置/速度/加速度/jerk参考，AutoTrans MPC执行。
 5. 轨迹执行时间结束，且实际位置在目标附近连续稳定2秒后，脚本仅请求一次
@@ -145,7 +145,7 @@ MPC发布 `/UAV0/mission/rc_land_active=true` 后，RRT任务进入CANCELLED，
 降落锁存不自动恢复，落地后重启整套任务与MPC，并重新扫描冻结地图。
 仅退出OFFBOARD的人工接管仍须落地后重启，不能直接切回复用旧轨迹。
 
-本入口CH9配置为数组下标8：低位起飞，高位CMD_CTRL。任务默认等待新鲜CH9高位，
+本入口CH8配置为数组下标7：低位起飞，高位CMD_CTRL。任务默认等待新鲜CH8高位，
 避免控制器尚未跟踪时轨迹时钟已经开始。MPC部分日志仍写“CH8”，以本入口参数为准。
 CH6是否切OFFBOARD由飞控实际映射决定，必须现场确认。CH10受RC数据有效性影响，
 必须在不解锁状态确认通道值，并进行受控接管测试，不能仅凭代码接入认定实机有效。
@@ -221,7 +221,7 @@ roslaunch rrt_minco_adapter autotrans_controller.launch
 
 AutoTrans通过 `/UAV0/mavros/setpoint_raw/attitude` 输出姿态与推力，
 原有恢复逻辑可能使用 `/UAV0/mavros/setpoint_raw/local`。不要同时启动其他控制输出源。
-开始规划前需稳定悬停在0.5m，CH9高位进入轨迹模式。
+开始规划前需稳定悬停在0.5m，CH8高位进入轨迹模式。
 
 目标示例（实际需选择已确认无障碍的位置）：
 

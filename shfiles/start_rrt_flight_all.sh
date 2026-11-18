@@ -6,7 +6,7 @@ if [[ "${1:-}" == "--help" ]]; then
   echo '用法：bash ~/match_ws/shfiles/start_rrt_flight_all.sh'
   echo '启动基础链路、全新FUEL地图、RRT任务、AutoTrans MPC和RViz。'
   echo '先在地面退出上一轮任务/建图/控制器；已有雷达、定位和MAVROS保留。'
-  echo '扫描后另开终端冻结地图；CH9低位遥控解锁并切入OFFBOARD，升至0.5m后CH9拨高执行任务。'
+  echo '扫描后另开终端冻结地图；CH8低位遥控解锁并切入OFFBOARD，升至0.5m后CH8拨高执行任务。'
   echo '落地解除武装后Ctrl+C结束本脚本启动的节点；复用节点不停止。'
   exit 0
 fi
@@ -76,8 +76,8 @@ cat <<'HELP'
 链路已启动，请保持终端运行并检查各节点输出。
 本轮重新扫描后，另开已加载ROS环境的终端执行：
   rosservice call /UAV0/rrt/freeze_map "{}"
-确认地图、定位、控制输出正常后，CH9低位、CH10低位，遥控解锁并切入OFFBOARD。
-到0.5m后CH9拨高位进入轨迹模式，稳定2秒后开始规划。CH10低→高触发MPC降落。
+确认地图、定位、控制输出正常后，CH8低位、CH10低位，遥控解锁并切入OFFBOARD。
+到0.5m后CH8拨高位进入轨迹模式，稳定2秒后开始规划。CH10低→高触发MPC降落。
 流程：上升0.5m稳定2秒 → 规划飞往(3,3,0.5) → 悬停2秒 → AUTO.LAND。
 录包另开终端：bash ~/match_ws/shfiles/record_rrt_flight.sh
 落地解除武装后Ctrl+C退出；空中异常请遥控接管，不要关闭本终端。

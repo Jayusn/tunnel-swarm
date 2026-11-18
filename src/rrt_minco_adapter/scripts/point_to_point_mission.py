@@ -69,7 +69,7 @@ class Mission:
         if not self.require_mpc_rc:
             return True
         return (self.rc is not None and self.fresh(now, self.rc_received, .5)
-                and len(self.rc.channels) >= 10 and 1800 < self.rc.channels[8] <= 2200)
+                and len(self.rc.channels) >= 10 and 1800 < self.rc.channels[7] <= 2200)
 
     def set_phase(self, phase, detail=''):
         self.phase = phase
