@@ -24,6 +24,7 @@ class MissionTests(unittest.TestCase):
         m.frame = 'UAV0/camera_init'
         m.start, m.goal = (.5, .5, .5), (4.5, 4.5, .5)
         m.start_wait, m.goal_wait = 2., 3.
+        m.start_xy_tolerance = .5
         m.xy_tolerance, m.z_tolerance, m.speed_tolerance = .1, .02, .1
         m.lock = threading.RLock()
         m.status, m.goal_pub, m.mode_client = Mock(), Mock(), Mock()
@@ -64,16 +65,19 @@ class MissionTests(unittest.TestCase):
         m.tick(None)
         m.goal_pub.publish.assert_not_called()
 
-    def test_start_without_dwell_and_five_cm_height_tolerance(self):
+    def test_start_ignores_height_speed_and_checks_half_meter_xy(self):
         m = self.m
-        m.start_wait, m.z_tolerance = 0., .05
-        m.odom.pose.pose.position.z = .56
+        m.start_wait = 0.
+        m.odom.pose.pose.position.x = m.start[0] + .51
+        m.odom.pose.pose.position.z = .1
+        m.odom.twist.twist.linear.x = 1.
         m.tick(None)
         m.goal_pub.publish.assert_not_called()
-        m.odom.pose.pose.position.z = .54
+        m.odom.pose.pose.position.x = m.start[0] + .49
         m.tick(None)
         self.assertEqual(m.phase, 'PLANNING')
         m.goal_pub.publish.assert_called_once()
+        self.assertFalse(m.at_rest(m.goal, rospy.Time.now()))
 
     def test_manual_start_and_continuous_two_seconds(self):
         m = self.m
@@ -85,9 +89,9 @@ class MissionTests(unittest.TestCase):
         m.state.armed = True
         m.tick(None)
         self.advance(21.)
-        m.odom.twist.twist.linear.x = .2
+        m.odom.pose.pose.position.x = m.start[0] + .6
         m.tick(None)
-        m.odom.twist.twist.linear.x = 0.
+        m.odom.pose.pose.position.x = m.start[0]
         self.advance(22.)
         m.tick(None)
         self.advance(23.9)

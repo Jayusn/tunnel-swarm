@@ -19,11 +19,12 @@ class Mission:
         self.goal = tuple(rospy.get_param('~goal', [3., 3., .5]))
         self.start_wait = float(rospy.get_param('~start_stable_seconds', 0.))
         self.goal_wait = float(rospy.get_param('~goal_hover_seconds', 2.))
+        self.start_xy_tolerance = float(rospy.get_param('~start_xy_tolerance', .5))
         self.xy_tolerance = float(rospy.get_param('~xy_tolerance', .1))
         self.z_tolerance = float(rospy.get_param('~z_tolerance', .05))
         self.speed_tolerance = float(rospy.get_param('~speed_tolerance', .1))
         values = self.start + self.goal + (self.start_wait, self.goal_wait,
-                                          self.xy_tolerance, self.z_tolerance, self.speed_tolerance)
+                                          self.xy_tolerance, self.z_tolerance, self.speed_tolerance, self.start_xy_tolerance)
         if (len(self.start) != 3 or len(self.goal) != 3 or not all(map(math.isfinite, values))
                 or self.start_wait < 0 or min(values[7:]) <= 0 or self.start[2] != self.goal[2]):
             raise ValueError('Invalid fixed-height mission parameters')
@@ -122,6 +123,14 @@ class Mission:
     def fresh(now, stamp, timeout=1.):
         return 0 <= (now - stamp).to_sec() <= timeout
 
+    def at_start(self, now):
+        if (self.odom is None or self.odom.header.frame_id != self.frame
+                or not self.fresh(now, self.odom.header.stamp)):
+            return False
+        p = self.odom.pose.pose.position
+        return (all(map(math.isfinite, (p.x, p.y, p.z)))
+                and math.hypot(p.x-self.start[0], p.y-self.start[1]) <= self.start_xy_tolerance)
+
     def at_rest(self, target, now):
         if (self.odom is None or self.odom.header.frame_id != self.frame
                 or not self.fresh(now, self.odom.header.stamp)):
@@ -160,7 +169,7 @@ class Mission:
             if self.phase == 'WAIT_START':
                 ready = (offboard and self.map_ready and self.mpc_command_ready(now)
                          and self.goal_pub.get_num_connections() > 0)
-                if self.stable_for(ready and self.at_rest(self.start, now), self.start_wait, now):
+                if self.stable_for(ready and self.at_start(now), self.start_wait, now):
                     msg = PoseStamped()
                     msg.header.stamp, msg.header.frame_id = now, self.frame
                     msg.pose.position.x, msg.pose.position.y, msg.pose.position.z = self.goal
