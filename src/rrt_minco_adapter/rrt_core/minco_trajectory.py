@@ -131,11 +131,11 @@ def corridor(a, b, scene):
     a, b = np.asarray(a), np.asarray(b)
     if not scene.free(a,b): raise ValueError('MINCO input edge collides')
     xmin,xmax,ymin,ymax = scene.bounds
-    eps = 1e-9
+    eps = 1e-9 if scene.boundary_margin > 0 else 0.
     # 先用地图的左、右、上、下边界限制走廊；eps 避免恰好贴边。
     normals = [(1.,0.),(-1.,0.),(0.,1.),(0.,-1.)]
-    bounds = [xmax-scene.margin-eps, -xmin-scene.margin-eps,
-              ymax-scene.margin-eps, -ymin-scene.margin-eps]
+    bounds = [xmax-scene.boundary_margin-eps, -xmin-scene.boundary_margin-eps,
+              ymax-scene.boundary_margin-eps, -ymin-scene.boundary_margin-eps]
     delta = b-a; squared = float(delta@delta)
     for left,right,bottom,top in scene.boxes:
         vertices = np.array([(left,bottom),(left,top),(right,bottom),(right,top)])
@@ -792,9 +792,7 @@ def certify_curve(control,scene,depth=0):
     达到递归上限仍无法确认时返回 False，表示拒绝这条轨迹。
     """
     lower=np.min(control,axis=0);upper=np.max(control,axis=0)
-    xmin,xmax,ymin,ymax=scene.bounds;m=scene.margin
-    if not (xmin+m<lower[0] and upper[0]<xmax-m and
-            ymin+m<lower[1] and upper[1]<ymax-m): return False
+    if not scene.within_bounds(lower) or not scene.within_bounds(upper): return False
     if not any(upper[0]>=l and lower[0]<=r and upper[1]>=b and lower[1]<=t
                for l,r,b,t in scene.boxes): return True
     if depth>=18: return False

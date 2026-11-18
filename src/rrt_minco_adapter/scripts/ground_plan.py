@@ -21,8 +21,8 @@ def main():
     frame = rospy.get_param('~frame_id', 'UAV0/camera_init')
     scene_topic = rospy.get_param('~scene_topic', '/UAV0/rrt/scene')
     path_topic = rospy.get_param('~path_topic', '/UAV0/rrt/dry_run_path')
-    start = rospy.get_param('~start', [.5, .5])
-    goal = rospy.get_param('~goal', [4.5, 4.5])
+    start = rospy.get_param('~start', [0., 0.])
+    goal = rospy.get_param('~goal', [3., 3.])
     height = float(rospy.get_param('~height', .5))
     if len(start) != 2 or len(goal) != 2 or not np.isfinite(list(start) + list(goal) + [height]).all():
         raise ValueError('start/goal 必须为两个有限XY坐标，height必须为有限数值')
@@ -32,6 +32,7 @@ def main():
     scene = json.loads(message.data)
     if scene.get('frame_id') != frame:
         raise ValueError('地图坐标系不匹配，期望 ' + frame)
+    scene['boundary_clearance'] = 0.
     output.mkdir(parents=True, exist_ok=True)
     (output / 'scene.json').write_text(json.dumps(scene, indent=2, allow_nan=False))
     rospy.loginfo('障碍矩形数量：%d；虚拟起点%s，目标%s，高度%.2fm',

@@ -74,8 +74,7 @@ def bezier(control,u):
 def curve_free(control,scene,depth=0):
     # The curve lies in its control hull. A disjoint bounding box certifies it.
     xs=[p[0] for p in control];ys=[p[1] for p in control]
-    xmin,xmax,ymin,ymax=scene.bounds;m=scene.margin
-    if not (xmin+m<min(xs) and max(xs)<xmax-m and ymin+m<min(ys) and max(ys)<ymax-m): return False
+    if not scene.within_bounds((min(xs),min(ys))) or not scene.within_bounds((max(xs),max(ys))): return False
     overlap=any(not (max(xs)<l or min(xs)>r or max(ys)<b or min(ys)>t) for l,r,b,t in scene.boxes)
     if not overlap: return True
     if depth>=16: return False

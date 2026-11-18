@@ -16,17 +16,24 @@ class Scene:
         self.data=data
         self.margin=float(data.get('clearance',0.4) if clearance is None else clearance)
         self.bounds=data['bounds']
+        self.boundary_margin=float(data.get('boundary_clearance', self.margin))
+        if self.boundary_margin < 0 or not math.isfinite(self.boundary_margin):
+            raise ValueError('boundary_clearance must be finite and nonnegative')
         if self.margin<=0 or not math.isfinite(self.margin):
             raise ValueError('clearance must be positive')
         self.boxes=[(x-sx/2-self.margin,x+sx/2+self.margin,
                      y-sy/2-self.margin,y+sy/2+self.margin) for x,y,sx,sy in data['boxes']]
 
-    def free(self,a,b):
+    def within_bounds(self, p):
+        if not all(math.isfinite(v) for v in p): return False
         xmin,xmax,ymin,ymax=self.bounds
-        for p in (a,b):
-            if not all(math.isfinite(v) for v in p): return False
-            if not (xmin+self.margin<p[0]<xmax-self.margin and ymin+self.margin<p[1]<ymax-self.margin):
-                return False
+        m=self.boundary_margin
+        if m == 0:
+            return xmin <= p[0] <= xmax and ymin <= p[1] <= ymax
+        return xmin+m < p[0] < xmax-m and ymin+m < p[1] < ymax-m
+
+    def free(self,a,b):
+        if not self.within_bounds(a) or not self.within_bounds(b): return False
         for box in self.boxes:
             lo,hi=0.,1.
             for axis in range(2):

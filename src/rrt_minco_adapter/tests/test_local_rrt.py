@@ -17,6 +17,15 @@ class PlannerTests(unittest.TestCase):
         self.assertTrue(scene.free((-2,2),(2,2)))
         self.assertFalse(scene.free((-2,.9),(2,.9)))  # tangent to inflated box
 
+    def test_closed_boundary_keeps_real_obstacle_clearance(self):
+        scene=Scene(dict(bounds=[0,5,0,5],boxes=[(2,2,.2,.2)],
+                         boundary_clearance=0),clearance=.3)
+        self.assertTrue(scene.free((0,0),(5,0)))
+        self.assertFalse(scene.free((0,0),(-.001,0)))
+        self.assertFalse(scene.free((0,0),(5.001,0)))
+        self.assertFalse(scene.free((1.7,2),(1.7,2)))
+        self.assertFalse(scene.free((0,0),(3,3)))
+
     def test_existing_world_path(self):
         root=Path(__file__).resolve().parents[1]
         scene=Scene(json.loads((root/'config/example_scene.json').read_text()))

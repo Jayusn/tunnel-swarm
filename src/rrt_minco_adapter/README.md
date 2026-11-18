@@ -3,7 +3,7 @@
 本包新增静态地图点到点规划入口，不修改 FUEL、Diff、控制器及现有任务入口。
 算法来自 `rrt_super_bundle_20261116`，基础提交
 `6003f70ac1520447137bf01854813c9c7a895818`，原包包含未提交源码；迁入的
-`rrt_core` 保持原算法实现。原包未为这些 Python 文件明确指定许可，
+`rrt_core` 保留原算法主体，并适配独立的边界净空选项。原包未为这些 Python 文件明确指定许可，
 本包不作额外开源授权。SUPER 未纳入此次接入。
 
 ## 不飞行：雷达三维体素栅格地图显示
@@ -69,14 +69,17 @@ python3 ~/match_ws/src/rrt_minco_adapter/tests/fuel_map_smoke.py
 
 ### 第六步：直接调用地面规划脚本
 
+地面脚本取消边界净空，允许起点位于边界，整条路径仍限制在闭区间 `[0,5]×[0,5]`。
+真实障碍不删除，仍使用0.2m障碍净空＋0.1m跟踪余量。自动飞行入口的起终点和边界策略不变。
+
 冻结地图后，在已经加载工作区和相同ROS网络环境的终端执行：
 
 ```bash
 rosrun rrt_minco_adapter ground_plan.py
 ```
 
-脚本等待冻结地图最多30秒，以虚拟起点 `(0.5,0.5,0.5)` 和目标
-`(4.5,4.5,0.5)` 进行一次规划，仅发布锁存的 `/UAV0/rrt/dry_run_path`。
+脚本等待冻结地图最多30秒，以虚拟起点 `(0,0,0.5)` 和目标
+`(3,3,0.5)` 进行一次规划，仅发布锁存的 `/UAV0/rrt/dry_run_path`。
 不订阅实际无人机位置，不启动控制器、不发布PositionCommand、不调用飞控服务。
 保持终端运行即可在栅格地图上看到红色路径，Ctrl+C退出。
 地图与二维多项式结果分别保存为 `~/.ros/rrt_ground_check/scene.json` 和
@@ -86,7 +89,7 @@ rosrun rrt_minco_adapter ground_plan.py
 可选参数示例（保持相同高度切片）：
 
 ```bash
-rosrun rrt_minco_adapter ground_plan.py _start:="[0.5,0.5]" _goal:="[4.5,4.5]" _height:=0.5
+rosrun rrt_minco_adapter ground_plan.py _start:="[0,0]" _goal:="[3,3]" _height:=0.5
 ```
 
 ## 起飞后自动完成点到点任务

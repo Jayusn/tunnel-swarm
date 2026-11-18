@@ -14,6 +14,21 @@ from trajectory_backend import build_trajectory, backend_stats
 
 
 class MincoTests(unittest.TestCase):
+    def test_corner_start_with_closed_boundary(self):
+        scene=Scene(dict(bounds=[0,5,0,5],boxes=[],boundary_clearance=0),clearance=.3)
+        from local_rrt_core import plan
+        route,_=plan(scene,(0.,0.),(3.,3.),seed=7,iterations=12000,timeout=8,optimization_time=.5)
+        trajectory=build_trajectory(route,scene,.2,.8,
+                                    time_optimization=False, pair_search=False,
+                                    terminal_braking=False,start_turn_braking=False,
+                                    position_length_weight=1.,position_speed_weight=1.,
+                                    position_ftol=1e-8,compact_constraints=True,improve_initial=True)
+        self.assertTrue(all(certify_curve(c,scene) for c in trajectory.control_points))
+        self.assertFalse(certify_curve(np.array([[-.001,0.],[1.,1.],[3.,3.]]),scene))
+        from smooth_trajectory import curve_free
+        self.assertTrue(curve_free([(0,0),(1,1),(3,3)],scene))
+        self.assertFalse(curve_free([(0,0),(-1,1),(3,3)],scene))
+
     def test_subdivision_bounds_interior_peak_without_sampling(self):
         # 二次曲线 x(u)=2u(1-u)，端点为零，内部真实峰值为 0.5。
         controls=np.array([[0.,0.],[1.,0.],[0.,0.]])
