@@ -97,12 +97,12 @@ rosrun rrt_minco_adapter ground_plan.py _start:="[0.01,0.01]" _goal:="[3,3]" _he
 `point_to_point_mission.launch` 包含点云地图、RRT 和独立任务脚本，替代下面的
 `real_cloud.launch`；不要同时启动两者。完整流程为：
 
-1. 在 FAST-LIO 坐标 `(0.01,0.01)` 处准备起飞，先扫描并冻结静态地图。
+1. 在 FAST-LIO 地面坐标 `(0.01,0.01,0)` 处准备起飞，每次启动新建图，重新扫描并冻结静态地图。
 2. 遥控器解锁、切入 OFFBOARD；现有简单控制器保持起始 XY 并爬升到 Z=0.5m。
 3. 实际位置在 `(0.01,0.01,0.5)` 附近连续稳定2秒后，任务脚本自动发送目标
    `(3,3,0.5)`。无需 RViz 点击。
 4. RRT＋MINCO 按地图规划并发布轨迹，现有控制器执行。
-5. 轨迹执行时间结束，且实际位置在目标附近连续稳定3秒后，脚本仅请求一次
+5. 轨迹执行时间结束，且实际位置在目标附近连续稳定2秒后，脚本仅请求一次
    `/UAV0/mavros/set_mode` 的 `AUTO.LAND`，进行普通就地降落。
 6. 收到实际 `AUTO.LAND` 模式后进入 LANDING；同时收到落地和解除武装状态后才报告 DONE。
 
@@ -118,18 +118,20 @@ source ~/match_ws/devel/setup.bash
 # 终端1：已有简单控制器需按这些参数启动，不重复启动同用途控制器。
 roslaunch exploration_control simple_controller.launch \
   offboard_takeoff_height:=0.5 planner_enable_height:=0.45
-# 终端2：复用已运行的grid_map_view.launch；扫描完毕后冻结地图。
-rosservice call /UAV0/rrt/freeze_map "{}"
-# 启动飞行任务和指令发布器，不重复启动建图。
+# 先Ctrl+C退出上一轮实飞任务及grid_map_view/real_cloud建图入口。
+# 终端2：每次启动新FUEL地图和任务，保持运行并重新扫描。
 rosrun rrt_minco_adapter start_flight.sh
-# 终端3：观察状态；通过遥控器解锁并切入OFFBOARD。
+# 终端3：本轮扫描完成后冻结地图，确认success为True再解锁起飞。
+rosservice call /UAV0/rrt/freeze_map "{}"
+# 观察状态；通过遥控器解锁并切入OFFBOARD。
 rostopic echo /UAV0/rrt/mission_status
 ```
 
-如果尚未启动建图，可用 `rosrun rrt_minco_adapter start_flight.sh start_mapper:=true`，
-待扫描完成后另开终端冻结地图。脚本不启动雷达、FAST-LIO、MAVROS或控制器。
-直接启动 `point_to_point_mission.launch` 默认启动一套FUEL地图，不要与已有地图重复启动。
-脚本参数通过roslaunch透传，可用 `--help` 查看说明。
+实飞脚本与 `point_to_point_mission.launch` 每次启动新的FUEL地图和未冻结的场景转换节点，
+不再提供复用旧地图的 `start_mapper` 参数。必须先退出上一轮任务和建图入口，
+避免同名节点互相顶掉；每次重新扫描、冻结后再起飞。雷达和FAST-LIO可以保持运行。
+脚本不启动雷达、FAST-LIO、MAVROS或控制器；控制器起飞高度需按上述命令设为0.5m。
+脚本可用 `--help` 查看说明。
 
 自动任务使用 `/UAV0/rrt/mission_goal`，不接收 RViz 目标，避免任务期间目标被点选覆盖。
 其余点云、里程计、路径和控制指令话题与 `real_cloud.launch` 相同。

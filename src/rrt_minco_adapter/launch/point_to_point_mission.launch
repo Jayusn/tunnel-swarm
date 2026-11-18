@@ -1,10 +1,9 @@
 <launch>
   <arg name="start_stable_seconds" default="2.0"/>
-  <arg name="goal_hover_seconds" default="3.0"/>
-  <arg name="start_mapper" default="true"/>
+  <arg name="goal_hover_seconds" default="2.0"/>
   <arg name="command_topic" default="/UAV0/planning/pos_cmd"/>
   <include file="$(find rrt_minco_adapter)/launch/real_cloud.launch">
-    <arg name="start_mapper" value="$(arg start_mapper)"/>
+    <arg name="start_mapper" value="true"/>
     <arg name="goal_topic" value="/UAV0/rrt/mission_goal"/>
     <arg name="command_topic" value="$(arg command_topic)"/>
   </include>

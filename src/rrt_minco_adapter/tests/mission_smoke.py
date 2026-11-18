@@ -88,7 +88,7 @@ def main():
             odom_pub.publish(odom)
             map_odom_pub.publish(odom)
         timer = rospy.Timer(rospy.Duration(.02), heartbeat)
-        spawn(['rosrun', 'rrt_minco_adapter', 'start_flight.sh', 'start_mapper:=true',
+        spawn(['rosrun', 'rrt_minco_adapter', 'start_flight.sh',
                'command_topic:=/UAV0/rrt/test_pos_cmd'], 'mission.log')
         rospy.wait_for_service('/UAV0/rrt/freeze_map', timeout=15)
         wait_for(lambda: cloud_pub.get_num_connections() > 0 and 'WAIT_START' in phases)
@@ -112,11 +112,11 @@ def main():
         assert result['order'] == 5, result
         assert result['start'] == [.01, .01]
         assert result['goal'] == [3., 3.]
-        print('Trajectory ready; testing full %.2fs flight plus 3s goal hover' % sum(result['duration']), flush=True)
+        print('Trajectory ready; testing full %.2fs flight plus 2s goal hover' % sum(result['duration']), flush=True)
         wait_for(lambda: mode_requests, timeout=sum(result['duration']) + 15)
         assert len(mode_requests) == 1
         elapsed = rospy.Time.now().to_sec() - int(result['execution_start_ns']) / 1e9
-        assert elapsed >= sum(result['duration']) + 3.
+        assert elapsed >= sum(result['duration']) + 2.
         wait_for(lambda: 'LANDING' in phases)
         assert 'DONE' not in phases
         extended.landed_state = ExtendedState.LANDED_STATE_ON_GROUND
@@ -126,7 +126,7 @@ def main():
         assert phases == ['WAIT_START', 'PLANNING', 'FLYING', 'LAND_REQUESTED', 'LANDING', 'DONE'], phases
         timer.shutdown()
         rospy.signal_shutdown('test finished')
-        print('PASS: manual takeoff gate, 2s stability, actual RRT trajectory, 3s arrival hover, AUTO.LAND, grounded/disarmed completion')
+        print('PASS: manual takeoff gate, 2s stability, actual RRT trajectory, 2s arrival hover, AUTO.LAND, grounded/disarmed completion')
     finally:
         for process in reversed(processes):
             if process.poll() is None:

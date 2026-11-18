@@ -18,7 +18,7 @@ class Mission:
         self.start = tuple(rospy.get_param('~start', [.01, .01, .5]))
         self.goal = tuple(rospy.get_param('~goal', [3., 3., .5]))
         self.start_wait = float(rospy.get_param('~start_stable_seconds', 2.))
-        self.goal_wait = float(rospy.get_param('~goal_hover_seconds', 3.))
+        self.goal_wait = float(rospy.get_param('~goal_hover_seconds', 2.))
         self.xy_tolerance = float(rospy.get_param('~xy_tolerance', .1))
         self.z_tolerance = float(rospy.get_param('~z_tolerance', .02))
         self.speed_tolerance = float(rospy.get_param('~speed_tolerance', .1))
