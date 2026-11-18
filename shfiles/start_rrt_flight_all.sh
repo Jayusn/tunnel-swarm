@@ -27,6 +27,13 @@ start() {
   setsid "$@" &
   children+=("$!")
 }
+wait_topic() {
+  echo "[等待数据] $1"
+  if ! timeout 60 rostopic echo -n 1 "$1" >/dev/null; then
+    echo "等待话题超时：$1；未继续启动后续节点。" >&2
+    exit 1
+  fi
+}
 nodes="$(timeout 5 rosnode list 2>/dev/null || true)"
 has_node() { [[ $'\n'"${nodes}"$'\n' == *$'\n'"$1"$'\n'* ]]; }
 # 避免旧地图、旧任务或旧控制器被同名新节点替换。
@@ -48,12 +55,17 @@ if ! has_node /UAV0/mavros; then start bash "${SCRIPT_DIR}/run.sh"; fi
 if ! has_node /UAV0/livox_lidar_publisher2; then
   start roslaunch livox_ros_driver2 msg_MID360.launch vehicle_ns:=UAV0 msg_frame_id:=UAV0/livox_frame publish_freq:=10.0
 fi
+wait_topic /UAV0/livox/lidar
+wait_topic /UAV0/livox/imu
 if ! has_node /UAV0/laserMapping; then
   start roslaunch fast_lio mapping_mid360.launch vehicle_ns:=UAV0 odom_topic:=/UAV0/fast_lio/Odometry high_freq_odom_topic:=/UAV0/fast_lio/Odom_high_freq rviz:=false
 fi
+wait_topic /UAV0/fast_lio/Odom_high_freq
+wait_topic /UAV0/fast_lio/cloud_registered
 if ! has_node /UAV0_fastlio_laser_transfer; then
   start python3 "${SCRIPT_DIR}/../src/cxr_ego_ctrl/src/laser_mid360.py" iris 0 fastlio off _odom_topic:=/UAV0/fast_lio/Odom_high_freq
 fi
+python3 "${SCRIPT_DIR}/wait_rrt_localization.py"
 if ! has_node /UAV0/landing_setpoint_arbiter; then
   start rosrun precision_landing landing_setpoint_arbiter_node __ns:=/UAV0 __name:=landing_setpoint_arbiter \
     _trigger_topic:=/UAV0/need_to_land \
