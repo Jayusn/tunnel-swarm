@@ -17,6 +17,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mpc-ch10", action="store_true", help="真实MPC接收RRT参考并验证CH10中断，模拟传感器")
     parser.add_argument("--mpc-land", action="store_true", help="验证到点MPC降落及落地后停发")
+    parser.add_argument('--planner', choices=['rrt', 'super'], default='rrt')
     args = parser.parse_args()
     use_mpc = args.mpc_ch10 or args.mpc_land
     with socket.socket() as sock:
@@ -133,7 +134,7 @@ def main():
             subscribers.append(rospy.Subscriber('/UAV0/rrt/test_pos_cmd', PositionCommand,
                                                 lambda m: mpc_cmd_pub.publish(m)))
         spawn(['rosrun', 'rrt_minco_adapter', 'start_flight.sh',
-               'command_topic:=/UAV0/rrt/test_pos_cmd'], 'mission.log')
+               'command_topic:=/UAV0/rrt/test_pos_cmd', 'planner:='+args.planner], 'mission.log')
         rospy.wait_for_service('/UAV0/rrt/freeze_map', timeout=15)
         wait_for(lambda: cloud_pub.get_num_connections() > 0 and 'WAIT_START' in phases)
         for _ in range(12):
@@ -156,7 +157,7 @@ def main():
         assert (goal.x, goal.y, goal.z) == (3., 3., .5)
         wait_for(lambda: trajectories, timeout=15)
         result = trajectories[-1]
-        assert result['order'] == 5, result
+        assert result['order'] == (7 if args.planner=='super' else 5), result
         assert result['start'] == [.01, .01]
         assert result['goal'] == [3., 3.]
         print('Trajectory ready; testing full %.2fs flight without goal dwell' % sum(result['duration']), flush=True)

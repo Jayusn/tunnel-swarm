@@ -3,12 +3,18 @@
 set -e
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 if [[ "${1:-}" == "--help" ]]; then
-  echo '用法：bash ~/match_ws/shfiles/start_rrt_flight_all.sh'
-  echo '启动基础链路、全新FUEL地图、RRT任务、AutoTrans MPC和RViz。'
+  echo '用法：bash ~/match_ws/shfiles/start_rrt_flight_all.sh [rrt|super]'
+  echo '启动基础链路、全新FUEL地图、所选规划任务、AutoTrans MPC和RViz。'
   echo '先在地面退出上一轮任务/建图/控制器；已有雷达、定位和MAVROS保留。'
   echo '扫描后另开终端冻结地图；CH8低位遥控解锁并切入OFFBOARD，升至0.5m后CH8拨高执行任务。'
   echo '落地解除武装后Ctrl+C结束本脚本启动的节点；复用节点不停止。'
   exit 0
+fi
+planner="${1:-rrt}"
+case "$planner" in rrt|super) ;; *) echo '用法：start_rrt_flight_all.sh [rrt|super]' >&2; exit 2 ;; esac
+if [[ "$planner" == super && ! -x "$HOME/rrt_super_bundle/adapter_ws/devel/lib/super_gazebo_adapter/super_static_planner_node" ]]; then
+  echo '请先编译 SUPER：env -u CMAKE_PREFIX_PATH -u ROS_PACKAGE_PATH -u PYTHONPATH bash ~/rrt_super_bundle/scripts/build_super.sh' >&2
+  exit 1
 fi
 source "${SCRIPT_DIR}/../devel/setup.bash"
 source "${SCRIPT_DIR}/configure_dual_uav_ros_network.sh"
@@ -70,7 +76,7 @@ wait_topic /UAV0/livox/imu_mps2
 wait_topic /UAV0/mavros/esc_status
 wait_topic /UAV0/mavros/rc/in
 start roslaunch rrt_minco_adapter autotrans_controller.launch
-start rosrun rrt_minco_adapter start_flight.sh
+start rosrun rrt_minco_adapter start_flight.sh planner:="$planner"
 start roslaunch rrt_minco_adapter grid_map_view.launch start_mapper:=false
 cat <<'HELP'
 链路已启动，请保持终端运行并检查各节点输出。

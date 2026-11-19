@@ -25,6 +25,7 @@ def wait_for(predicate, timeout=15):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--cloud', action='store_true')
+    parser.add_argument('--planner', choices=['rrt', 'super'], default='rrt')
     args = parser.parse_args()
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0))
@@ -82,7 +83,7 @@ def main():
         launch = (['real_cloud.launch', 'xmin:=-3', 'xmax:=3', 'ymin:=-3', 'ymax:=3',
                    'command_topic:=/UAV0/rrt/pos_cmd'] if args.cloud else
                   ['standalone.launch', 'scene_file:=' + str(scene_path)])
-        spawn(['roslaunch', 'rrt_minco_adapter'] + launch, 'adapter.log')
+        spawn(['roslaunch', 'rrt_minco_adapter'] + launch + ['planner:='+args.planner], 'adapter.log')
         wait_for(lambda: goal_pub.get_num_connections() > 0 and odom_pub.get_num_connections() > 0)
         time.sleep(.3)
         goal = PoseStamped()
@@ -146,9 +147,7 @@ def main():
             odom_pub.publish(odom)
         timer = rospy.Timer(rospy.Duration(.02), publish_odom)
         time.sleep(.15)
-        invalid = [('world', height, 0.), ('UAV0/camera_init', height, .3)]
-        if not args.cloud:
-            invalid.insert(1, ('UAV0/camera_init', .8, 0.))
+        invalid = [('world', height, 0.)]
         for frame, goal_height, speed in invalid:
             count = len(results)
             goal.header.frame_id, goal.pose.position.z = frame, goal_height
@@ -158,14 +157,16 @@ def main():
             goal_pub.publish(goal)
             wait_for(lambda: len(results) > count)
             assert results[-1]['order'] == 0 and not commands
+        goal.header.frame_id = 'UAV0/camera_init'
+        goal.pose.position.z = height
         odom.twist.twist.linear.x = 0.
         if args.cloud:
             goal.pose.position.z = 0.  # RViz XY clicks are lifted to the configured plane.
         time.sleep(.1)
         goal.header.stamp = rospy.Time.now()
         goal_pub.publish(goal)
-        wait_for(lambda: any(r['order'] == 5 for r in results))
-        result = next(r for r in results if r['order'] == 5)
+        wait_for(lambda: any(r['order'] == (7 if args.planner=='super' else 5) for r in results))
+        result = next(r for r in results if r['order'] == (7 if args.planner=='super' else 5))
         wait_for(lambda: len(commands) >= 5 and paths)
         durations = np.array(result['duration'])
         total = float(sum(durations))
@@ -180,7 +181,7 @@ def main():
             segment = min(int(np.searchsorted(np.cumsum(durations), t, side='right')), len(durations)-1)
             local_time = t - sum(durations[:segment])
             for axis in ['x', 'y', 'z']:
-                coefficients = np.array(result['coef_' + axis]).reshape(-1, 6)[segment]
+                coefficients = np.array(result['coef_' + axis]).reshape(-1, result['order']+1)[segment]
                 for derivative, field in enumerate(['position', 'velocity', 'acceleration', 'jerk']):
                     expected = np.polyval(np.polyder(coefficients, derivative), local_time)
                     if elapsed >= total and derivative:

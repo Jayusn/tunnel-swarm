@@ -22,6 +22,9 @@ from plan_rrt import solve
 
 class RrtMincoNode:
     def __init__(self):
+        self.planner = rospy.get_param('~planner', 'rrt')
+        if self.planner not in ('rrt', 'super'):
+            raise ValueError('planner must be rrt or super')
         scene_file = rospy.get_param('~scene_file', '')
         self.scene = json.loads(Path(scene_file).expanduser().read_text()) if scene_file else None
         self.frame = rospy.get_param('~frame_id', 'UAV0/camera_init')
@@ -59,7 +62,7 @@ class RrtMincoNode:
         self.rc_land_sub = rospy.Subscriber(
             "/UAV0/mission/rc_land_active", Bool, self.on_rc_land, queue_size=1)
         self.timer = rospy.Timer(rospy.Duration(.02), self.on_timer)
-        rospy.loginfo('RRT/MINCO ready: static scene, fixed height, frame=%s', self.frame)
+        rospy.loginfo('%s ready: static scene, fixed height, frame=%s', self.planner, self.frame)
 
     def on_rc_land(self, msg):
         if msg.data:
@@ -94,8 +97,8 @@ class RrtMincoNode:
 
     def fail(self, request, error):
         self.polynomial_pub.publish(String(data=json.dumps(
-            dict(order=0, start_ns=request, frame_id=self.frame, error=str(error)))))
-        rospy.logwarn('RRT/MINCO request rejected: %s', error)
+            dict(order=0, planner=self.planner, start_ns=request, frame_id=self.frame, error=str(error)))))
+        rospy.logwarn('%s request rejected: %s', self.planner, error)
 
     def on_goal(self, msg):
         msg = copy.deepcopy(msg)
@@ -146,7 +149,12 @@ class RrtMincoNode:
             scene = dict(scene)
             if self.boundary_clearance is not None:
                 scene['boundary_clearance'] = self.boundary_clearance
-            trajectory, result = solve(scene, [p.x, p.y], [g.x, g.y], **self.options)
+            if self.planner == 'super':
+                from plan_super import solve as super_solve
+                trajectory, result = super_solve(scene, [p.x, p.y], [g.x, g.y], height=g.z, **self.options)
+            else:
+                trajectory, result = solve(scene, [p.x, p.y], [g.x, g.y], **self.options)
+            result['planner'] = self.planner
             path = RosPath()
             path.header.frame_id = self.frame
             for t in np.linspace(0., trajectory.total_time,
@@ -168,15 +176,15 @@ class RrtMincoNode:
                               execution_start_ns=str(start_time.to_nsec()),
                               trajectory_id=self.trajectory_id, yaw=float(yaw),
                               coef_z=[c for _ in trajectory.durations
-                                      for c in [0., 0., 0., 0., 0., float(g.z)]])
+                                      for c in ([0.] * result['order'] + [float(g.z)])])
                 path.header.stamp = start_time
                 for pose in path.poses:
                     pose.header.stamp = start_time
                 self.polynomial_pub.publish(String(data=json.dumps(result, allow_nan=False)))
                 self.path_pub.publish(path)
                 self.active = (trajectory, start_time, g.z, yaw, self.trajectory_id)
-            rospy.loginfo('RRT/MINCO trajectory %d ready: %.3fs planning, %.3fs duration',
-                          self.trajectory_id, result['total_wall_s'], trajectory.total_time)
+            rospy.loginfo('%s trajectory %d ready: %.3fs planning, %.3fs duration',
+                          self.planner, self.trajectory_id, result['total_wall_s'], trajectory.total_time)
         except Exception as error:
             self.fail(request, error)
         finally:

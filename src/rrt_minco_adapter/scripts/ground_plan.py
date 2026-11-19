@@ -37,13 +37,21 @@ def main():
     (output / 'scene.json').write_text(json.dumps(scene, indent=2, allow_nan=False))
     rospy.loginfo('障碍矩形数量：%d；虚拟起点%s，目标%s，高度%.2fm',
                   len(scene['boxes']), start, goal, height)
-    trajectory, result = solve(
+    planner = rospy.get_param('~planner', 'rrt')
+    options = {}
+    solver = solve
+    if planner == 'super':
+        from plan_super import solve as solver
+        options['height'] = height
+    elif planner != 'rrt':
+        raise ValueError('planner must be rrt or super')
+    trajectory, result = solver(
         scene, start=start, goal=goal,
         speed=float(rospy.get_param('~speed', .2)),
         acceleration=float(rospy.get_param('~acceleration', .8)),
         clearance=float(rospy.get_param('~clearance', .2)),
-        reserve=float(rospy.get_param('~tracking_margin', .1)))
-    result.update(frame_id=frame, visualization_height=height)
+        reserve=float(rospy.get_param('~tracking_margin', .1)), **options)
+    result.update(planner=planner, frame_id=frame, visualization_height=height)
     (output / 'trajectory_xy.json').write_text(json.dumps(result, indent=2, allow_nan=False))
     path = RosPath()
     path.header.frame_id, path.header.stamp = frame, rospy.Time.now()

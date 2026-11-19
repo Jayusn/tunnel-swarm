@@ -1,4 +1,5 @@
 <launch>
+  <arg name="planner" default="rrt"/>
   <!-- bounds 是操作者确认已完整扫描的静态区域，不从障碍点外接框推断。 -->
   <arg name="xmin" default="-1.0"/>
   <arg name="xmax" default="4.0"/>
@@ -41,6 +42,7 @@
     <arg name="map_size_z" value="$(arg map_size_z)"/>
   </include>
   <node pkg="rrt_minco_adapter" type="rrt_minco_node.py" name="rrt_minco_adapter" output="screen">
+    <param name="planner" value="$(arg planner)"/>
     <param name="boundary_clearance" value="$(arg boundary_clearance)"/>
     <param name="scene_file" value="" type="str"/>
     <param name="frame_id" value="$(arg frame_id)"/>
