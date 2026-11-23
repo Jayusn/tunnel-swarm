@@ -167,13 +167,13 @@ rc_reverse: # *
 
 rc_mode:
     # IPC 风格遥控器模式通道。这里使用 mavros_msgs/RCIn.channels 的数组下标：
-    # 两个模式参数均使用数组下标 8，对应 CH9 两档开关：低位起飞、高位轨迹控制。
-    mode_channel: 8
-    takeoff_hover_channel: 8
+    # 两个模式参数均使用数组下标 7，对应 CH8 三档开关：低位起飞、中位悬停、高位轨迹。
+    mode_channel: 7
+    takeoff_hover_channel: 7
     land_channel: 9
-    # CH9 高位优先进入 CMD_CTRL，低位进入 AUTO_TAKEOFF；不再通过开关选择 AUTO_HOVER。
-    # CH8 不再参与控制器模式选择；CH10 仍触发降落。
-    # 阈值单位 PWM/us；mid_* 为旧三档配置兼容项，两档模式不使用。
+    # CH8 低位进入 AUTO_TAKEOFF，中位进入 AUTO_HOVER，高位进入 CMD_CTRL。
+    # CH9 不参与控制器模式选择；CH10 仍触发降落。
+    # 阈值单位 PWM/us；中位区间为 mid_low_threshold 到 mid_high_threshold（含端点）。
     # CH6 不由 AutoTrans 读取，仅由 PX4/QGC 的 RC_MAP_OFFB_SW 负责切换 OFFBOARD。
     low_threshold: 1300
     mid_low_threshold: 1300

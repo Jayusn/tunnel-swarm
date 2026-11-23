@@ -444,7 +444,7 @@ namespace PayloadMPC
                 (now_time - state_data.rcv_stamp).toSec() < params_.msg_timeout_.state &&
                 state_data.current_state.connected && state_data.current_state.armed &&
                 state_data.current_state.mode == "OFFBOARD";
-            // 待命期间不输出预流、不按CH9起飞；退出OFFBOARD后不重新接管。
+            // 待命期间不输出预流、不按CH8起飞；退出OFFBOARD后不重新接管。
             if (!flying)
             {
                 if (precision_test_started_ && fsm_state != MANUAL_CTRL)
@@ -617,7 +617,7 @@ namespace PayloadMPC
 			{
 				takeoff_request_latched_ = true;
 				takeoff_requested_ = true;
-				ROS_INFO("[AUTO_TAKEOFF] CH9 低位：持续发送安全预流，等待 PX4 OFFBOARD 和起飞条件满足。");
+				ROS_INFO("[AUTO_TAKEOFF] CH8 低位：持续发送安全预流，等待 PX4 OFFBOARD 和起飞条件满足。");
 			}
 				if (takeoff_requested_)
 			{
@@ -773,7 +773,7 @@ namespace PayloadMPC
 			}
 			else if (rc_mode_available && (rc_data.is_takeoff_mode || rc_data.is_hover_mode))
 			{
-				// CH8 退出高位后回到悬停；已在空中时 CH9 低位不重复启动起飞。
+				// CH8 退出高位后回到悬停；已在空中时 CH8 低位不重复启动起飞。
 				trajectory_data.exec_traj = 0;
 				exec_traj_state_ = HOVER;
 				update_mode_hover_pose();

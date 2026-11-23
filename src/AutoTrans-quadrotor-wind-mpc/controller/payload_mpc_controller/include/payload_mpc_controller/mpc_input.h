@@ -51,7 +51,7 @@ public:
   bool toggle_reboot;
 
   int mode_channel{7};
-  int takeoff_hover_channel{8};
+  int takeoff_hover_channel{7};
   int land_channel{9};
   int low_threshold{1300};
   int mid_low_threshold{1300};

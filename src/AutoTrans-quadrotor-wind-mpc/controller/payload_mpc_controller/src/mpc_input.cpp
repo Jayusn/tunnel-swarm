@@ -60,7 +60,7 @@ void RC_Data_t::feed(mavros_msgs::RCInConstPtr pMsg)
 
     if (msg.channels.size() < 4)
     {
-        ROS_WARN_THROTTLE(5.0, "[RC] CH8/CH9 信号无效：RC 通道数量不足，保持上一条有效模式请求。");
+        ROS_WARN_THROTTLE(5.0, "[RC] CH8 信号无效：RC 通道数量不足，保持上一条有效模式请求。");
         mode_input_valid = false;
         return;
     }
@@ -78,7 +78,7 @@ void RC_Data_t::feed(mavros_msgs::RCInConstPtr pMsg)
 
     if (mode_channel < 0 || msg.channels.size() <= static_cast<size_t>(mode_channel))
     {
-        ROS_WARN_THROTTLE(5.0, "[RC] CH8/CH9 信号无效：未收到模式通道 CH%d，保持上一条有效模式请求。", mode_channel + 1);
+        ROS_WARN_THROTTLE(5.0, "[RC] CH8 信号无效：未收到模式通道 CH%d，保持上一条有效模式请求。", mode_channel + 1);
         mode_input_valid = false;
         return;
     }
@@ -92,7 +92,7 @@ void RC_Data_t::feed(mavros_msgs::RCInConstPtr pMsg)
         return;
     }
 
-    // CH8 高位优先请求轨迹控制；退出 CH8 高位后由 CH9 两档选择起飞/悬停。
+    // CH8 三档：低位起飞、中位悬停、高位轨迹控制。
     mode = static_cast<double>(msg.channels[mode_channel]);
     gear = static_cast<double>(msg.channels[takeoff_hover_channel]);
     check_validity();
@@ -108,11 +108,11 @@ void RC_Data_t::feed(mavros_msgs::RCInConstPtr pMsg)
     mode_input_valid = true;
     is_command_mode = mode > high_threshold;
     is_takeoff_mode = !is_command_mode && gear < low_threshold;
-    is_hover_mode = !is_command_mode && gear > high_threshold;
+    is_hover_mode = !is_command_mode && gear >= mid_low_threshold && gear <= mid_high_threshold;
     const char *requested_mode = requestedRcMode(is_takeoff_mode, is_hover_mode, is_command_mode);
     if (have_init_last_mode && std::strcmp(previous_mode, requested_mode) != 0)
     {
-        ROS_INFO("[RC] CH8/CH9 模式切换：%s -> %s。", previous_mode, requested_mode);
+        ROS_INFO("[RC] CH8 模式切换：%s -> %s。", previous_mode, requested_mode);
     }
     enter_hover_mode = have_init_last_mode && !last_hover_mode && is_hover_mode;
     enter_command_mode = have_init_last_mode && !last_command_mode && is_command_mode;
@@ -139,7 +139,7 @@ void RC_Data_t::feed(mavros_msgs::RCInConstPtr pMsg)
     }
     else
     {
-        ROS_WARN_THROTTLE(5.0, "[RC] CH8/CH9 信号无效，保持安全状态：未收到降落通道 CH%d。", land_channel + 1);
+        ROS_WARN_THROTTLE(5.0, "[RC] CH8 信号无效，保持安全状态：未收到降落通道 CH%d。", land_channel + 1);
     }
 
     // 模式通道不兼任飞控重启触发。
@@ -157,7 +157,7 @@ void RC_Data_t::check_validity()
     }
     else
     {
-        ROS_ERROR("[RC] CH8/CH9 信号无效，保持安全状态：轨迹通道 PWM=%.1f，起飞/悬停通道 PWM=%.1f。", mode, gear);
+        ROS_ERROR("[RC] CH8 信号无效，保持安全状态：轨迹通道 PWM=%.1f，起飞/悬停通道 PWM=%.1f。", mode, gear);
     }
 }
 
