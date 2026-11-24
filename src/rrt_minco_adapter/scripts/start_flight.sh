@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start a fresh FUEL map for each flight; manual takeoff remains under RC control.
+# Start fresh mapping or load an explicitly supplied map; takeoff remains under RC control.
 set -e
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
   cat <<'HELP'
@@ -12,7 +12,9 @@ CH8高位且起点条件满足后立即从真实里程计位置规划，50Hz发�
 到达(3,3,0.5)满足终点条件后立即请求MPC降落（参考0.2m/s，PX4收尾）。脚本不解锁，也不启动控制器或雷达。
 CH10先低后高触发MPC降落，RRT任务取消并停止指令；需落地后重启下一轮。
 不要同时运行简单控制器、其他RRT/FUEL/Diff飞行指令发布者。
-不复用上一轮地图；脚本保持运行，另开终端冻结本轮地图后再起飞。
+默认新建地图；传入 map_file:=/绝对路径/site.json 时复用保存地图。
+旧地图模式下 freeze_map 服务执行本次开机定位匹配，成功后发布旧场景。
+详细步骤见 README 的断电后复用地图章节；先做未解锁对齐验证。
 HELP
   exit 0
 fi

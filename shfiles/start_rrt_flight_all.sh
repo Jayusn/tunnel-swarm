@@ -3,15 +3,22 @@
 set -e
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 if [[ "${1:-}" == "--help" ]]; then
-  echo '用法：bash ~/match_ws/shfiles/start_rrt_flight_all.sh [rrt|super]'
-  echo '启动基础链路、全新FUEL地图、所选规划任务、AutoTrans MPC和RViz。'
+  echo '用法：bash ~/match_ws/shfiles/start_rrt_flight_all.sh [rrt|super] [保存地图JSON路径]'
+  echo '启动基础链路、所选规划任务、AutoTrans MPC和RViz；提供地图路径时加载旧地图，否则新建FUEL地图。'
   echo '先在地面退出上一轮任务/建图/控制器；已有雷达、定位和MAVROS保留。'
   echo '扫描后另开终端冻结地图；CH8低位遥控解锁并切入OFFBOARD，升至0.5m后CH8拨高执行任务。'
   echo '落地解除武装后Ctrl+C结束本脚本启动的节点；复用节点不停止。'
   exit 0
 fi
 planner="${1:-rrt}"
-case "$planner" in rrt|super) ;; *) echo '用法：start_rrt_flight_all.sh [rrt|super]' >&2; exit 2 ;; esac
+map_file="${2:-}"
+if [[ -n "$map_file" ]]; then
+  [[ -f "$map_file" ]] || { echo "地图不存在：$map_file" >&2; exit 1; }
+  map_file="$(realpath -- "$map_file")"
+fi
+map_frame="UAV0/camera_init"
+[[ -z "$map_file" ]] || map_frame="UAV0/saved_map"
+case "$planner" in rrt|super) ;; *) echo '用法：start_rrt_flight_all.sh [rrt|super] [保存地图JSON路径]' >&2; exit 2 ;; esac
 if [[ "$planner" == super && ! -x "$HOME/rrt_super_bundle/adapter_ws/devel/lib/super_gazebo_adapter/super_static_planner_node" ]]; then
   echo '请先编译 SUPER：env -u CMAKE_PREFIX_PATH -u ROS_PACKAGE_PATH -u PYTHONPATH bash ~/rrt_super_bundle/scripts/build_super.sh' >&2
   exit 1
@@ -43,7 +50,7 @@ wait_topic() {
 nodes="$(timeout 5 rosnode list 2>/dev/null || true)"
 has_node() { [[ $'\n'"${nodes}"$'\n' == *$'\n'"$1"$'\n'* ]]; }
 # 避免旧地图、旧任务或旧控制器被同名新节点替换。
-for node in /rrt_fuel_map /rrt_cloud_scene /rrt_minco_adapter /rrt_point_to_point_mission /simple_controller /mpc_controller_node /UAV0/landing_setpoint_arbiter /rrt_grid_rviz; do
+for node in /rrt_saved_map /rrt_fuel_map /rrt_cloud_scene /rrt_minco_adapter /rrt_point_to_point_mission /simple_controller /mpc_controller_node /UAV0/landing_setpoint_arbiter /rrt_grid_rviz; do
   if has_node "$node"; then
     echo "请先在地面退出旧入口（仍有${node}），再启动本脚本。" >&2
     exit 1
@@ -76,11 +83,12 @@ wait_topic /UAV0/livox/imu_mps2
 wait_topic /UAV0/mavros/esc_status
 wait_topic /UAV0/mavros/rc/in
 start roslaunch rrt_minco_adapter autotrans_controller.launch
-start rosrun rrt_minco_adapter start_flight.sh planner:="$planner"
-start roslaunch rrt_minco_adapter grid_map_view.launch start_mapper:=false
+start rosrun rrt_minco_adapter start_flight.sh planner:="$planner" map_file:="$map_file"
+start roslaunch rrt_minco_adapter grid_map_view.launch start_mapper:=false frame_id:="$map_frame"
 cat <<'HELP'
 链路已启动，请保持终端运行并检查各节点输出。
-本轮重新扫描后，另开已加载ROS环境的终端执行：
+未指定地图：本轮重新扫描；指定地图：回原起点附近、原朝向，保持未解锁。
+另开已加载ROS环境的终端执行（新地图冻结 / 旧地图匹配对齐）：
   rosservice call /UAV0/rrt/freeze_map "{}"
 确认地图、定位、控制输出正常后，CH8低位、CH10低位，遥控解锁并切入OFFBOARD。
 到0.5m后CH8拨高位进入轨迹模式，满足起点条件后立即开始规划。CH10低→高触发MPC降落。

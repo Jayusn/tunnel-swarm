@@ -323,3 +323,67 @@ ROS 测试自动建立独立 master，使用合成地图/里程计，不连接�
 一键入口下次启动自动启用。仅重启转换节点时，须显式添加`_start_clear_radius:=0.4`，沿用原话题重映射；裸节点默认0（关闭）。独立地图入口可使用`roslaunch rrt_minco_adapter grid_map_view.launch start_clear_radius:=0`关闭。不要在已运行的整套入口旁重复启动另一个建图入口。
 
 冻结scene新增`operator_clear_region`元数据，记录被人为过滤的范围，便于录包/算法对比追溯。它不改变0.3m规划净空，也不保证任意地图的起点都通过检查；范围外障碍仍可能使规划失败。启用前应确认该固定范围内没有真实障碍。
+
+## 断电后复用地图（2026-11-24）
+
+支持将本轮 FUEL 占据快照、三维体素显示、规划场景及起点清除区写入磁盘。
+关程序、无人机断电不会删除保存文件。新入口不重建 FUEL；使用旧场景规划。
+规划仍为固定高度 0.5m，XY 范围沿用保存时的设置（当前默认 [-1,4]×[-1,4]）。
+这不是完整 FUEL 概率/自由空间状态的恢复，也不是 FAST-LIO 的全局地图加载。
+
+首次保存：运行原来的建图入口，从原起飞点附近启动 FAST-LIO 后扫描各个遮挡方向。
+人员离开后检查三维地图，确认真实障碍完整、没有人体残影；起点清除区仍会过滤真实障碍。
+在已有 ROS 环境的终端执行：
+
+```bash
+source ~/match_ws/devel/setup.bash
+source ~/match_ws/shfiles/configure_dual_uav_ros_network.sh
+configure_dual_uav_ros_network uav0
+rosservice call /UAV0/rrt/freeze_map "{}"
+rosparam set /rrt_cloud_scene/save_path "$HOME/rrt_maps/site.json"
+rosservice call /UAV0/rrt/save_map "{}"
+```
+
+仅 `save_map` 返回 `success: True` 才表示文件已保存。文件存在时拒绝覆盖，另选文件名即可。
+保存操作需要新版 `cloud_to_scene_node.py`，此前已运行的旧节点需先在地面退出、重启建图。
+旧的 `ground_plan.py` 输出 `scene.json` 只有规划矩形，不能当成本入口所需的完整地图文件。
+保存不会修复漏扫、人体残影；保存不完整就会在以后重复加载这些缺陷。
+
+重启后先验证：将无人机放回原起飞点附近、地面水平放稳，朝向近似一致；启动雷达、FAST-LIO、
+MAVROS 后，退出旧建图/任务/控制入口，保持未解锁：
+
+```bash
+roslaunch rrt_minco_adapter saved_map_view.launch map_file:=$HOME/rrt_maps/site.json
+# 另一个已加载 ROS 环境的终端，等当前点云正常后：
+rosservice call /UAV0/rrt/freeze_map "{}"
+rosrun rrt_minco_adapter ground_plan.py _planner:=super _frame_id:=UAV0/saved_map _output_dir:=$HOME/.ros/super_saved_map_check
+```
+
+`freeze_map` 在旧地图模式下做一次局部匹配，不是新建地图或重新冻结。
+使用约最近 2 秒扫描、10cm 降采样、XYZ 平移+偏航角 ICP，假设两次 FAST-LIO 世界坐标都重力对齐。
+匹配要求至少100点，20cm范围内对应点比例≥60%，这些对应点 RMSE≤10cm；不足时返回失败。
+这些数值只是匹配质量初筛，不能证明定位唯一或飞行安全。长走廊、重复墙面可能出现错误匹配。
+不支持任意初始位置/朝向，不做飞行中回环和持续全局校正；长距离漂移仍来自 FAST-LIO。
+
+RViz Fixed Frame 为 `UAV0/saved_map`；添加 PointCloud2 `/UAV0/rrt/aligned_cloud`，
+将当前扫描与旧三维占据图叠加核对。匹配后移动少量距离观察是否仍重合。
+`/UAV0/rrt/map_odom` 是旧地图坐标下位置，`/UAV0/rrt/map_alignment` 给出本次平移、偏航和匹配分数。
+不要把原始 `cloud_registered` 直接当成旧地图坐标来显示。地图里的起点和目标始终是旧地图坐标。
+
+地面验证完成后，退出上述加载入口和地面规划节点，再启动实飞入口：
+
+```bash
+bash ~/match_ws/shfiles/start_rrt_flight_all.sh super "$HOME/rrt_maps/site.json"
+# 另一个已加载 ROS 环境的终端，未解锁时重新匹配本次启动：
+rosservice call /UAV0/rrt/freeze_map "{}"
+```
+
+RRT 对比时将 `super` 换为 `rrt`。不提供第二个参数仍走原来的每轮重新建图流程。
+飞行前仍需现场核对匹配结果、路径、遥控接管和控制状态；本次改动未进行实飞验证。
+遥控起飞/跟踪/降落流程不变，脚本不自动解锁。
+
+坐标链路：原始 FAST-LIO → `map_odom` → 旧地图规划与任务 → `map_pos_cmd`
+→ 逆变换 → `/UAV0/planning/pos_cmd` → 原 AutoTrans MPC。
+MPC、MAVROS 定位桥保持原始 FAST-LIO 接口；变换包含位置、速度、加速度、jerk 和 yaw。
+匹配结果在本次节点运行期间固定，不能在飞行中反复重定位；重新匹配需落地后重启。
+保存文件是静态环境快照，不会自动反映后来搬动的障碍，也不会自动避让新进入的人员。

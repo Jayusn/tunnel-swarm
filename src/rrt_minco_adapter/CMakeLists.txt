@@ -11,7 +11,9 @@ target_link_libraries(rrt_fuel_map ${catkin_LIBRARIES})
 install(TARGETS rrt_fuel_map RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 catkin_install_python(PROGRAMS scripts/rrt_minco_node.py scripts/cloud_to_scene_node.py
   scripts/point_to_point_mission.py scripts/ground_plan.py scripts/compare_planners.py
+  scripts/saved_map_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
+install(FILES scripts/saved_map_math.py DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 install(PROGRAMS scripts/start_flight.sh DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
 install(DIRECTORY launch config rrt_core scripts
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}

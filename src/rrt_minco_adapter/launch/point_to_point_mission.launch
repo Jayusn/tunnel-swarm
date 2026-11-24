@@ -1,12 +1,20 @@
 <launch>
+  <arg name="map_file" default=""/>
+  <arg name="frame_id" default="$(eval 'UAV0/saved_map' if arg('map_file') else 'UAV0/camera_init')"/>
+  <arg name="odom_topic" default="$(eval '/UAV0/rrt/map_odom' if arg('map_file') else '/UAV0/fast_lio/Odom_high_freq')"/>
+  <node if="$(eval bool(arg('map_file')))" pkg="rrt_minco_adapter" type="saved_map_node.py" name="rrt_saved_map" output="screen">
+    <param name="map_file" value="$(arg map_file)"/>
+  </node>
   <arg name="planner" default="rrt"/>
   <arg name="require_mpc_rc" default="true"/>
   <arg name="start_stable_seconds" default="0.0"/>
   <arg name="goal_hover_seconds" default="0.0"/>
-  <arg name="command_topic" default="/UAV0/planning/pos_cmd"/>
+  <arg name="command_topic" default="$(eval '/UAV0/rrt/map_pos_cmd' if arg('map_file') else '/UAV0/planning/pos_cmd')"/>
   <include file="$(find rrt_minco_adapter)/launch/real_cloud.launch">
     <arg name="planner" value="$(arg planner)"/>
-    <arg name="start_mapper" value="true"/>
+    <arg name="start_mapper" value="$(eval not bool(arg('map_file')))"/>
+    <arg name="frame_id" value="$(arg frame_id)"/>
+    <arg name="odom_topic" value="$(arg odom_topic)"/>
     <arg name="goal_topic" value="/UAV0/rrt/mission_goal"/>
     <arg name="command_topic" value="$(arg command_topic)"/>
   </include>
@@ -15,10 +23,10 @@
     <rosparam param="start">[0.01, 0.01, 0.5]</rosparam>
     <rosparam param="goal">[3.0, 3.0, 0.5]</rosparam>
     <param name="require_mpc_rc" value="$(arg require_mpc_rc)"/>
-    <param name="frame_id" value="UAV0/camera_init"/>
+    <param name="frame_id" value="$(arg frame_id)"/>
     <param name="start_stable_seconds" value="$(arg start_stable_seconds)"/>
     <param name="goal_hover_seconds" value="$(arg goal_hover_seconds)"/>
-    <remap from="~odom" to="/UAV0/fast_lio/Odom_high_freq"/>
+    <remap from="~odom" to="$(arg odom_topic)"/>
     <remap from="~state" to="/UAV0/mavros/state"/>
     <remap from="~extended_state" to="/UAV0/mavros/extended_state"/>
     <remap from="~scene" to="/UAV0/rrt/scene"/>

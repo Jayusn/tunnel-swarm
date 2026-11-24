@@ -2,6 +2,8 @@
 """Accumulate registered obstacle points; freeze an operator-surveyed static scene."""
 import colorsys
 import json
+import os
+import tempfile
 from pathlib import Path
 import sys
 import threading
@@ -32,12 +34,14 @@ class CloudToScene:
         self.lock = threading.Lock()
         self.frozen = False
         self.cloud_count = 0
+        self.localization_points = []
         self.pub = rospy.Publisher('~scene', String, queue_size=1, latch=True)
         self.grid_pub = rospy.Publisher('~grid_map', OccupancyGrid, queue_size=1, latch=True)
         self.voxel_pub = rospy.Publisher('~voxel_map', Marker, queue_size=1, latch=True)
         self.loaded_at = rospy.Time.now()
         self.sub = rospy.Subscriber('~cloud', PointCloud2, self.cloud, queue_size=1)
         self.service = rospy.Service('~freeze', Trigger, self.freeze)
+        self.save_service = rospy.Service('~save_map', Trigger, self.save_map)
         self.grid_timer = rospy.Timer(rospy.Duration(1.), self.publish_grid)
         rospy.loginfo('Accumulating 3D voxels; planning slice z=[%.2f, %.2f]; call ~freeze after surveying bounds',
                       self.map.z_min, self.map.z_max)
@@ -87,8 +91,36 @@ class CloudToScene:
             if self.snapshot_input:
                 self.map.cells.clear()
                 self.map.voxels.clear()
-            self.map.add(point_cloud2.read_points(msg, field_names=('x', 'y', 'z'), skip_nans=True))
+            self.localization_points = list(point_cloud2.read_points(msg, field_names=('x', 'y', 'z'), skip_nans=True))
+            self.map.add(self.localization_points)
             self.cloud_count += 1
+
+    def save_map(self, _request):
+        # Freeze holds both planning and 3D snapshots; subsequent FUEL updates cannot change them.
+        with self.lock:
+            if not self.frozen:
+                return TriggerResponse(False, 'Freeze and inspect this map before saving')
+            payload = dict(version=1, scene=self.map.scene(self.frame),
+                           voxels=self.map.voxel_centers(),
+                           localization_points=self.localization_points,
+                           saved_at=rospy.Time.now().to_sec())
+        path = Path(rospy.get_param('~save_path', '~/rrt_maps/site.json')).expanduser()
+        temporary = None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # Never silently replace an existing surveyed map.
+            with tempfile.NamedTemporaryFile(mode='w', dir=str(path.parent), delete=False) as stream:
+                temporary = stream.name
+                json.dump(payload, stream, allow_nan=False)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.link(temporary, str(path))
+            return TriggerResponse(True, 'Saved static map: ' + str(path))
+        except (OSError, ValueError) as exc:
+            return TriggerResponse(False, str(exc))
+        finally:
+            if temporary is not None:
+                os.unlink(temporary)
 
     def freeze(self, _request):
         with self.lock:

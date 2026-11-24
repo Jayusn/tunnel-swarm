@@ -1,0 +1,13 @@
+<launch>
+  <!-- 地面加载/匹配验证；不启动控制器和飞行任务。雷达、FAST-LIO、MAVROS需已启动。 -->
+  <arg name="map_file"/>
+  <arg name="rviz" default="true"/>
+  <node pkg="rrt_minco_adapter" type="saved_map_node.py" name="rrt_saved_map" output="screen">
+    <param name="map_file" value="$(arg map_file)"/>
+  </node>
+  <include file="$(find rrt_minco_adapter)/launch/grid_map_view.launch">
+    <arg name="start_mapper" value="false"/>
+    <arg name="rviz" value="$(arg rviz)"/>
+    <arg name="frame_id" value="UAV0/saved_map"/>
+  </include>
+</launch>
