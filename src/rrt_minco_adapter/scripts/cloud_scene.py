@@ -3,7 +3,7 @@ import math
 
 
 class CloudScene:
-    def __init__(self, bounds, resolution=.1, z_min=.3, z_max=.7):
+    def __init__(self, bounds, resolution=.1, z_min=.3, z_max=.7, start_clear_radius=0.):
         self.bounds = list(map(float, bounds))
         self.resolution, self.z_min, self.z_max = map(float, (resolution, z_min, z_max))
         if (len(self.bounds) != 4 or not all(map(math.isfinite,
@@ -11,6 +11,9 @@ class CloudScene:
                 or self.bounds[0] >= self.bounds[1] or self.bounds[2] >= self.bounds[3]
                 or resolution <= 0 or z_min >= z_max):
             raise ValueError('Invalid bounds, resolution or height interval')
+        self.start_clear_radius = float(start_clear_radius)
+        if not math.isfinite(self.start_clear_radius) or self.start_clear_radius < 0:
+            raise ValueError('Invalid start_clear_radius')
         self.cells = set()
         self.voxels = set()
 
@@ -18,6 +21,11 @@ class CloudScene:
         xmin, xmax, ymin, ymax = self.bounds
         for x, y, z in points:
             if all(map(math.isfinite, (x, y, z))):
+                # Operator-confirmed fixed start cylinder; never follows odometry.
+                # Filter before voxelization so an outside hit in the same voxel survives.
+                if (self.start_clear_radius > 0 and .3 <= z <= .7
+                        and math.hypot(x-.01, y-.01) <= self.start_clear_radius):
+                    continue
                 ix = math.floor((x-xmin)/self.resolution)
                 iy = math.floor((y-ymin)/self.resolution)
                 self.voxels.add((ix, iy, math.floor(z/self.resolution)))
@@ -62,9 +70,13 @@ class CloudScene:
         r = self.resolution
         boxes = [[xmin+(a+b)*r/2, ymin+(c+d)*r/2, (b-a)*r, (d-c)*r]
                  for a, b, c, d in rectangles]
-        return dict(bounds=self.bounds, boxes=boxes, frame_id=frame,
+        result = dict(bounds=self.bounds, boxes=boxes, frame_id=frame,
                     z_min=self.z_min, z_max=self.z_max, resolution=r,
                     map_semantics='operator_surveyed_static_region')
+        if self.start_clear_radius > 0:
+            result['operator_clear_region'] = dict(center_xy=[.01, .01],
+                radius=self.start_clear_radius, z_min=.3, z_max=.7)
+        return result
 
     def occupancy_grid(self):
         xmin, xmax, ymin, ymax = self.bounds

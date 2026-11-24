@@ -1,4 +1,6 @@
 <launch>
+  <!-- 操作者确认的固定起点过滤区；0关闭，不影响上游FUEL地图。 -->
+  <arg name="start_clear_radius" default="0.4"/>
   <!-- 仅点云转栅格与RViz；不启动规划执行器、任务脚本或控制器。 -->
   <arg name="xmin" default="-1.0"/>
   <arg name="xmax" default="4.0"/>
@@ -46,6 +48,7 @@
     <param name="z_min" value="$(arg z_min)"/>
     <param name="z_max" value="$(arg z_max)"/>
     <!-- 完整占据快照必须替换旧地图，不能累计被FUEL清除的噪点。 -->
+    <param name="start_clear_radius" value="$(arg start_clear_radius)"/>
     <param name="snapshot_input" value="true"/>
     <remap from="~cloud" to="/UAV0/rrt/fuel/occupancy_all"/>
     <remap from="~scene" to="/UAV0/rrt/scene"/>

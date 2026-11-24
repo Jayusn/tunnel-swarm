@@ -58,6 +58,29 @@ class CloudSceneTests(unittest.TestCase):
         self.assertEqual((width, height), (50, 50))
         self.assertEqual(data.count(100), 1)
 
+    def test_fixed_start_filter_and_height_limits(self):
+        scene = CloudScene([-1, 4, -1, 4], start_clear_radius=.4)
+        scene.add([(.01, .01, .5), (-.2, -.05, .4), (.01, .01, .3),
+                   (.01, .01, .7), (.01, .01, .2), (.01, .01, .8),
+                   (.5, .01, .5), (3., 3., .5)])
+        self.assertEqual(len(scene.voxels), 4)
+        self.assertEqual(len(scene.cells), 2)
+        self.assertEqual(scene.scene('map')['operator_clear_region']['center_xy'], [.01, .01])
+
+    def test_filter_does_not_erase_outside_hit_in_shared_voxel(self):
+        scene = CloudScene([-1, 4, -1, 4], start_clear_radius=.4)
+        scene.add([(.405, .01, .5), (.42, .01, .5)])
+        self.assertEqual(len(scene.cells), 1)
+        self.assertEqual(len(scene.voxels), 1)
+
+    def test_start_filter_disabled_by_default(self):
+        scene = CloudScene([-1, 4, -1, 4])
+        scene.add([(.01, .01, .5)])
+        self.assertEqual(len(scene.cells), 1)
+        self.assertNotIn('operator_clear_region', scene.scene('map'))
+        with self.assertRaises(ValueError):
+            CloudScene([-1, 4, -1, 4], start_clear_radius=float('nan'))
+
     def test_invalid_extent(self):
         for bounds in [[0, 0, 0, 1], [0, 1, 0, float('nan')]]:
             with self.assertRaises(ValueError):

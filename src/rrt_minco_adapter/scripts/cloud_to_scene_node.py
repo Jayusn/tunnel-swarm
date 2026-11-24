@@ -24,7 +24,10 @@ class CloudToScene:
     def __init__(self):
         self.frame = rospy.get_param('~frame_id', 'UAV0/camera_init')
         self.map = CloudScene(rospy.get_param('~bounds'), rospy.get_param('~resolution', .1),
-                              rospy.get_param('~z_min', .3), rospy.get_param('~z_max', .7))
+                              rospy.get_param('~z_min', .3), rospy.get_param('~z_max', .7),
+                              start_clear_radius=rospy.get_param('~start_clear_radius', 0.))
+        if self.map.start_clear_radius > 0:
+            rospy.logwarn('Operator-cleared start region: XY=(0.01,0.01), radius=%.2fm, Z=[0.3,0.7]; real obstacles here are also filtered', self.map.start_clear_radius)
         self.snapshot_input = rospy.get_param('~snapshot_input', False)
         self.lock = threading.Lock()
         self.frozen = False
