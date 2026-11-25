@@ -21,8 +21,8 @@ def main():
     frame = rospy.get_param('~frame_id', 'UAV0/camera_init')
     scene_topic = rospy.get_param('~scene_topic', '/UAV0/rrt/scene')
     path_topic = rospy.get_param('~path_topic', '/UAV0/rrt/dry_run_path')
-    start = rospy.get_param('~start', [0.01, 0.01])
-    goal = rospy.get_param('~goal', [3., 3.])
+    start = rospy.get_param('~start', [0., 0.])
+    goal = rospy.get_param('~goal', [4., 5.])
     height = float(rospy.get_param('~height', .5))
     if len(start) != 2 or len(goal) != 2 or not np.isfinite(list(start) + list(goal) + [height]).all():
         raise ValueError('start/goal 必须为两个有限XY坐标，height必须为有限数值')

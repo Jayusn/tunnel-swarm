@@ -19,7 +19,7 @@ def main():
     scene = (json.loads(Path(source).expanduser().read_text()) if source else
              json.loads(rospy.wait_for_message('/UAV0/rrt/scene', String, timeout=60).data))
     scene['boundary_clearance'] = 0.
-    start = rospy.get_param('~start', [.01, .01]); goal = rospy.get_param('~goal', [3., 3.])
+    start = rospy.get_param('~start', [0., 0.]); goal = rospy.get_param('~goal', [4., 5.])
     options = {key: float(rospy.get_param('~'+key, value)) for key, value in
                [('speed', .2), ('acceleration', .8), ('clearance', .2), ('reserve', .1)]}
     height = float(rospy.get_param('~height', .5))

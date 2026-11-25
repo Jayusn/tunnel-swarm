@@ -15,8 +15,8 @@ from std_msgs.msg import String, Bool
 class Mission:
     def __init__(self):
         self.frame = rospy.get_param('~frame_id', 'UAV0/camera_init')
-        self.start = tuple(rospy.get_param('~start', [.01, .01, .5]))
-        self.goal = tuple(rospy.get_param('~goal', [3., 3., .5]))
+        self.start = tuple(rospy.get_param('~start', [0., 0., .5]))
+        self.goal = tuple(rospy.get_param('~goal', [4., 5., .5]))
         self.start_wait = float(rospy.get_param('~start_stable_seconds', 0.))
         self.goal_wait = float(rospy.get_param('~goal_hover_seconds', 0.))
         self.start_xy_tolerance = float(rospy.get_param('~start_xy_tolerance', .5))

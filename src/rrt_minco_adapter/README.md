@@ -411,3 +411,22 @@ MPC、MAVROS 定位桥保持原始 FAST-LIO 接口；变换包含位置、速度
 转换节点的 `filled_voxels` 参数接收该次确认的索引；推断体素进入显示和规划占据层，保存场景记录 `inferred_wall_voxels`，但不加入定位匹配点云。
 补洞为几何推断，可能封住真实小孔，不能作为扫描完整性的证明。大缺口仍应换角度补扫。
 新建扫描时清空本次补洞参数；保存地图则包含补洞结果。改变该参数后需在地面重启转换节点。
+
+
+## 当前扩大区域任务（2026-11-25）
+
+新建扫描与实飞入口默认规划边界为 X=[-2,6]、Y=[-2,6]，地面规划、对比和任务默认起点为(0,0)、终点为(4,5)，固定高度仍为0.5m。
+加载保存地图时边界以文件里的 scene.bounds 为准；修改 launch 不会自动扩大旧文件。
+本次将 ~/rrt_maps/site.json 用已保存的完整 FUEL 定位点云重建扩大区域的障碍，原规划区域占据格保持一致，三维显示点云和定位点云保持原数据。
+人工删除与补洞索引随新地图原点重编号，原文件备份及扩大版本放在 ~/target_reports/map_resize_20261125/；这些地图生成物不纳入 Git。
+点云覆盖到某坐标不代表整片区域都已观测；新增区域仍需现场检查遮挡和漏扫。
+本次离线 RRT+MINCO 从(0,0)到(4,5)试算失败：MINCO corridor has no obstacle separation。
+终点最近占据矩形约为 X=[3.7,4.0]、Y=[5.3,5.4]，距终点约0.30m，贴当前0.2m障碍净空+0.1m跟踪余量边界。
+终点按用户要求保留，未删除该障碍或缩小净空；应核对其真实性与目标位置后再做地面规划检查。
+
+```bash
+roslaunch rrt_minco_adapter saved_map_view.launch map_file:=$HOME/rrt_maps/site.json
+# 已启动雷达、FAST-LIO、MAVROS并保持未解锁，另一个ROS终端做本次定位匹配：
+rosservice call /UAV0/rrt/freeze_map "{}"
+rosrun rrt_minco_adapter ground_plan.py _planner:=super _frame_id:=UAV0/saved_map _start:='[0,0]' _goal:='[4,5]'
+```
