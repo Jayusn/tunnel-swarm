@@ -86,6 +86,18 @@ class CloudSceneTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 CloudScene(bounds)
 
+    def test_explicit_voxel_removal_preserves_neighbors_and_records_edit(self):
+        scene = CloudScene([-1, 4, -1, 4], removed_voxels=[[10, 10, 1]])
+        points = [(.025, .025, .125), (.075, .075, .175),
+                  (.125, .025, .125), (.025, .025, -.025), (.025, .025, .225)]
+        scene.add(points)
+        self.assertEqual(len(scene.voxels), 3)
+        self.assertTrue(scene.is_removed(points[0]))
+        self.assertFalse(scene.is_removed(points[-1]))
+        self.assertEqual(scene.scene('map')['operator_removed_voxels'], [(10, 10, 1)])
+        with self.assertRaises(ValueError):
+            CloudScene([-1, 4, -1, 4], removed_voxels=[[10.5, 10, 1]])
+
     def test_grid_origin_row_order_and_unknown_cells(self):
         scene = CloudScene([-1, 1, 2, 3], .5)
         scene.add([(-.75, 2.25, .5), (.75, 2.75, .5)])

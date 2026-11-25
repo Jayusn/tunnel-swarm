@@ -50,6 +50,8 @@
     <!-- 完整占据快照必须替换旧地图，不能累计被FUEL清除的噪点。 -->
     <param name="start_clear_radius" value="$(arg start_clear_radius)"/>
     <param name="snapshot_input" value="true"/>
+    <!-- 每次新建地图重置单次人工体素删除；已保存地图自带编辑后的数据。 -->
+    <rosparam param="removed_voxels">[]</rosparam>
     <remap from="~cloud" to="/UAV0/rrt/fuel/occupancy_all"/>
     <remap from="~scene" to="/UAV0/rrt/scene"/>
     <remap from="~grid_map" to="/UAV0/rrt/grid_map"/>

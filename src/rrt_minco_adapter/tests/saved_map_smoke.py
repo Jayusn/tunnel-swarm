@@ -60,7 +60,7 @@ def main():
         path = directory/'site.json'
         mapper = spawn(['rosrun', 'rrt_minco_adapter', 'cloud_to_scene_node.py',
                         '__name:=test_mapper', '_bounds:=[-1,4,-1,4]', '_snapshot_input:=true',
-                        '_start_clear_radius:=0.4', '_save_path:='+str(path),
+                        '_start_clear_radius:=0.4', '_removed_voxels:=[[10,10,1]]', '_save_path:='+str(path),
                         '~cloud:=/test/map'], 'mapper.log')
         cloud_pub = rospy.Publisher('/test/map', PointCloud2, queue_size=1, latch=True)
         rospy.wait_for_service('/test_mapper/save_map', timeout=20)
@@ -70,6 +70,7 @@ def main():
         points = rng.uniform([-2, -2, -.4], [4, 4, 1.5], (7000, 3))
         points[:2300, 0] = -1.5
         points[2300:4600, 1] = 3.5
+        points = np.vstack([points, [[.025, .025, .125], [.075, .075, .175]]])
         wait_for(lambda: cloud_pub.get_num_connections() > 0)
         cloud_pub.publish(point_cloud2.create_cloud_xyz32(Header(frame_id='UAV0/camera_init'), points))
         time.sleep(1.)
@@ -78,7 +79,12 @@ def main():
         assert not save().success  # Existing map cannot be silently overwritten.
         data = json.loads(path.read_text())
         assert data['scene']['operator_clear_region']['radius'] == .4
-        assert len(data['localization_points']) == len(points)
+        from cloud_scene import CloudScene
+        mask = CloudScene([-1, 4, -1, 4], removed_voxels=[[10, 10, 1]])
+        assert len(data['localization_points']) == sum(not mask.is_removed(p) for p in points)
+        assert not any(mask.is_removed(p) for p in data['localization_points'])
+        assert not any(mask.is_removed(p) for p in data['voxels'])
+        assert data['scene']['operator_removed_voxels'] == [[10, 10, 1]]
         # Frozen file must not change when new (empty) map arrives.
         cloud_pub.publish(point_cloud2.create_cloud_xyz32(Header(frame_id='UAV0/camera_init'), []))
         os.killpg(mapper.pid, signal.SIGINT)

@@ -27,7 +27,8 @@ class CloudToScene:
         self.frame = rospy.get_param('~frame_id', 'UAV0/camera_init')
         self.map = CloudScene(rospy.get_param('~bounds'), rospy.get_param('~resolution', .1),
                               rospy.get_param('~z_min', .3), rospy.get_param('~z_max', .7),
-                              start_clear_radius=rospy.get_param('~start_clear_radius', 0.))
+                              start_clear_radius=rospy.get_param('~start_clear_radius', 0.),
+                              removed_voxels=rospy.get_param('~removed_voxels', []))
         if self.map.start_clear_radius > 0:
             rospy.logwarn('Operator-cleared start region: XY=(0.01,0.01), radius=%.2fm, Z=[0.3,0.7]; real obstacles here are also filtered', self.map.start_clear_radius)
         self.snapshot_input = rospy.get_param('~snapshot_input', False)
@@ -91,7 +92,8 @@ class CloudToScene:
             if self.snapshot_input:
                 self.map.cells.clear()
                 self.map.voxels.clear()
-            self.localization_points = list(point_cloud2.read_points(msg, field_names=('x', 'y', 'z'), skip_nans=True))
+            self.localization_points = [p for p in point_cloud2.read_points(
+                msg, field_names=('x', 'y', 'z'), skip_nans=True) if not self.map.is_removed(p)]
             self.map.add(self.localization_points)
             self.cloud_count += 1
 
