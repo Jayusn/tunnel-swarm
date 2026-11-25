@@ -21,7 +21,7 @@
   <node pkg="rrt_minco_adapter" type="point_to_point_mission.py"
         name="rrt_point_to_point_mission" output="screen">
     <rosparam param="start">[0.0, 0.0, 0.5]</rosparam>
-    <rosparam param="goal">[3.5, 5.0, 0.5]</rosparam>
+    <rosparam param="goal">[4.0, 4.0, 0.5]</rosparam>
     <param name="require_mpc_rc" value="$(arg require_mpc_rc)"/>
     <param name="frame_id" value="$(arg frame_id)"/>
     <param name="start_stable_seconds" value="$(arg start_stable_seconds)"/>
