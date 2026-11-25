@@ -430,3 +430,18 @@ roslaunch rrt_minco_adapter saved_map_view.launch map_file:=$HOME/rrt_maps/site.
 rosservice call /UAV0/rrt/freeze_map "{}"
 rosrun rrt_minco_adapter ground_plan.py _planner:=super _frame_id:=UAV0/saved_map _start:='[0,0]' _goal:='[4,5]'
 ```
+
+### 保存地图的 RViz 规划对比
+
+```bash
+source ~/match_ws/devel/setup.bash
+source ~/match_ws/shfiles/configure_dual_uav_ros_network.sh
+configure_dual_uav_ros_network uav0
+roslaunch rrt_minco_adapter compare_saved_map.launch map_file:=$HOME/rrt_maps/site.json
+```
+
+直接加载已保存地图，启动 RViz 并计算 RRT+MINCO、SUPER；无需重新扫描、冻结或做本次定位匹配，所有坐标属于保存地图。
+红线为 RRT+MINCO，绿线为 SUPER，绿色球为起点(0,0,0.5)，橙色球为终点(4,5,0.5)。规划失败时显示 FAILED，路线为空，不用折线冒充有效轨迹。
+`compare_planners.py` 新增可选 `_visualize:=true`；`_scene_file` 兼容裸场景 JSON 和完整保存地图 JSON。
+结果默认放在 ~/target_reports/rrt_super_current_map，保持启动终端运行以维持地图和路径话题；Ctrl+C退出。
+该入口只启动规划对比和RViz，不发布飞行控制指令。

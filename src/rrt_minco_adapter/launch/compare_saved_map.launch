@@ -1,0 +1,16 @@
+<launch>
+  <!-- 只加载地图与离线规划显示，不启动感知、控制器或飞行任务。 -->
+  <arg name="map_file" default="$(env HOME)/rrt_maps/site.json"/>
+  <arg name="output_dir" default="$(env HOME)/target_reports/rrt_super_current_map"/>
+  <arg name="rviz" default="true"/>
+  <node pkg="rrt_minco_adapter" type="compare_planners.py" name="compare_rrt_super" output="screen">
+    <param name="scene_file" value="$(arg map_file)"/>
+    <param name="output_dir" value="$(arg output_dir)"/>
+    <param name="visualize" value="true"/>
+    <rosparam param="start">[0,0]</rosparam>
+    <rosparam param="goal">[4,5]</rosparam>
+    <param name="height" value="0.5"/>
+  </node>
+  <node if="$(arg rviz)" pkg="rviz" type="rviz" name="rrt_comparison_rviz"
+        args="-d $(find rrt_minco_adapter)/config/comparison.rviz"/>
+</launch>

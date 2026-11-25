@@ -1,0 +1,71 @@
+Panels:
+  - Class: rviz/Displays
+    Name: Displays
+  - Class: rviz/Views
+    Name: Views
+Visualization Manager:
+  Class: ""
+  Global Options:
+    Background Color: 240; 240; 240
+    Fixed Frame: UAV0/camera_init
+    Frame Rate: 30
+  Displays:
+    - Class: rviz/Marker
+      Name: Radar 3D occupied voxels
+      Enabled: true
+      Marker Topic: /UAV0/rrt/comparison_map
+      Queue Size: 1
+      Value: true
+    - Class: rviz/Grid
+      Name: Ground reference grid
+      Enabled: true
+      Cell Size: 0.5
+      Plane Cell Count: 20
+      Color: 160; 160; 160
+      Alpha: 0.3
+      Reference Frame: <Fixed Frame>
+      Value: true
+    - Class: rviz/Path
+      Name: RRT + MINCO path
+      Enabled: true
+      Topic: /UAV0/rrt/rrt_comparison_path
+      Color: 255; 40; 40
+      Alpha: 1
+      Line Style: Lines
+      Line Width: 0.03
+      Buffer Length: 1
+      Pose Style: None
+      Value: true
+    - Class: rviz/Path
+      Name: SUPER path
+      Enabled: true
+      Topic: /UAV0/rrt/super_comparison_path
+      Color: 40; 200; 40
+      Alpha: 1
+      Line Style: Lines
+      Line Width: 0.04
+      Value: true
+    - Class: rviz/MarkerArray
+      Name: Endpoints and planning status
+      Enabled: true
+      Marker Topic: /UAV0/rrt/comparison_status
+      Value: true
+  Tools:
+    - Class: rviz/Interact
+    - Class: rviz/MoveCamera
+    - Class: rviz/Select
+  Views:
+    Current:
+      Class: rviz/Orbit
+      Name: Current View
+      Target Frame: <Fixed Frame>
+      Distance: 9
+      Pitch: 0.6
+      Yaw: 0.8
+      Focal Point:
+        X: 2.5
+        Y: 2.5
+        Z: 0.8
+Window Geometry:
+  Width: 1200
+  Height: 900

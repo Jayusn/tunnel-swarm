@@ -16,8 +16,9 @@ from plan_super import solve as solve_super
 def main():
     rospy.init_node('compare_rrt_super', anonymous=True)
     source = rospy.get_param('~scene_file', '')
-    scene = (json.loads(Path(source).expanduser().read_text()) if source else
+    payload = (json.loads(Path(source).expanduser().read_text()) if source else
              json.loads(rospy.wait_for_message('/UAV0/rrt/scene', String, timeout=60).data))
+    scene = dict(payload.get('scene', payload))
     scene['boundary_clearance'] = 0.
     start = rospy.get_param('~start', [0., 0.]); goal = rospy.get_param('~goal', [4., 5.])
     options = {key: float(rospy.get_param('~'+key, value)) for key, value in
@@ -26,7 +27,12 @@ def main():
     output = Path(rospy.get_param('~output_dir', str(Path.home()/'.ros/planner_comparison'/time.strftime('%Y%m%d_%H%M%S')))).expanduser()
     output.mkdir(parents=True, exist_ok=True)
     (output/'scene.json').write_text(json.dumps(scene, indent=2))
+    view = None
+    if rospy.get_param('~visualize', False):
+        from comparison_view import ComparisonView
+        view = ComparisonView(payload, scene, start, goal, height)
     rows = []
+    states = {}
     for trial in range(int(rospy.get_param('~trials', 1))):
         for name, solve in [('rrt', solve_rrt), ('super', solve_super)]:
             row = dict(planner=name, trial=trial, start=start, goal=goal, height=height, **options)
@@ -41,14 +47,24 @@ def main():
                            jerk_squared_integral=float(np.trapz(jerk2, times)),
                            total_wall_s=result['total_wall_s'], native_wall_s=result.get('native_wall_s'),
                            time_stretch=result.get('time_stretch', 1.))
+                if view:
+                    view.path(name, trajectory)
                 result['planner'] = name
                 (output/('%s_%d.json'%(name,trial))).write_text(json.dumps(result, indent=2))
             except Exception as error:
+                if view:
+                    view.path(name)
                 row.update(success=False, error=str(error), total_wall_s=time.monotonic()-began)
+            states[name] = row
+            if view:
+                view.status(states)
             rows.append(row)
             rospy.loginfo('%s', json.dumps(row, ensure_ascii=False))
             (output/'summary.json').write_text(json.dumps(rows, indent=2, ensure_ascii=False))
     rospy.loginfo('对比完成：%s；没有发布飞行指令', output)
+    if view:
+        rospy.loginfo('保持RViz地图与对比路线显示；Ctrl+C退出')
+        rospy.spin()
 
 
 if __name__ == '__main__':
