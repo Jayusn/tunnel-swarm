@@ -17,10 +17,25 @@ class CloudScene:
         self.cells = set()
         self.voxels = set()
         self.removed_voxels = set()
+        self.filled_voxels = set()
         for voxel in removed_voxels or []:
             if len(voxel) != 3 or any(type(v) is not int for v in voxel):
                 raise ValueError('removed_voxels must contain integer XYZ indices')
             self.removed_voxels.add(tuple(voxel))
+
+    def fill_voxels(self, indices):
+        for index in indices:
+            if len(index) != 3 or any(type(v) is not int for v in index):
+                raise ValueError('filled_voxels must contain integer XYZ indices')
+            x, y, z = index
+            point = (self.bounds[0]+(x+.5)*self.resolution,
+                     self.bounds[2]+(y+.5)*self.resolution, (z+.5)*self.resolution)
+            # Apply the same manual removal and fixed start exclusion to repairs.
+            if self.is_removed(point) or ((point[0]-.01)**2+(point[1]-.01)**2 <= .4**2):
+                continue
+            if tuple(index) not in self.voxels:
+                self.add([point])
+                self.filled_voxels.add(tuple(index))
 
     def is_removed(self, point):
         if not self.removed_voxels:
@@ -95,6 +110,8 @@ class CloudScene:
                 radius=self.start_clear_radius, z_min=.3, z_max=.7)
         if self.removed_voxels:
             result['operator_removed_voxels'] = sorted(self.removed_voxels)
+        if self.filled_voxels:
+            result['inferred_wall_voxels'] = sorted(self.filled_voxels)
         return result
 
     def occupancy_grid(self):

@@ -60,7 +60,8 @@ def main():
         path = directory/'site.json'
         mapper = spawn(['rosrun', 'rrt_minco_adapter', 'cloud_to_scene_node.py',
                         '__name:=test_mapper', '_bounds:=[-1,4,-1,4]', '_snapshot_input:=true',
-                        '_start_clear_radius:=0.4', '_removed_voxels:=[[10,10,1]]', '_save_path:='+str(path),
+                        '_start_clear_radius:=0.4', '_removed_voxels:=[[10,10,1]]',
+                        '_filled_voxels:=[[80,80,4]]', '_save_path:='+str(path),
                         '~cloud:=/test/map'], 'mapper.log')
         cloud_pub = rospy.Publisher('/test/map', PointCloud2, queue_size=1, latch=True)
         rospy.wait_for_service('/test_mapper/save_map', timeout=20)
@@ -85,6 +86,9 @@ def main():
         assert not any(mask.is_removed(p) for p in data['localization_points'])
         assert not any(mask.is_removed(p) for p in data['voxels'])
         assert data['scene']['operator_removed_voxels'] == [[10, 10, 1]]
+        assert data['scene']['inferred_wall_voxels'] == [[80, 80, 4]]
+        assert any(abs(p[0]-7.05)<1e-6 and abs(p[1]-7.05)<1e-6 for p in data['voxels'])
+        assert not any(abs(p[0]-7.05)<1e-6 and abs(p[1]-7.05)<1e-6 for p in data['localization_points'])
         # Frozen file must not change when new (empty) map arrives.
         cloud_pub.publish(point_cloud2.create_cloud_xyz32(Header(frame_id='UAV0/camera_init'), []))
         os.killpg(mapper.pid, signal.SIGINT)
