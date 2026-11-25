@@ -70,7 +70,7 @@ fixed_hover:
     enabled: true
     x: 0.0
     y: 0.0
-    z: 0.6
+    z: 1.0
 
 max_angle: 30  # Attitude angle limit in degree. A negative value means no limit.
 # 源码值 -0.1 等价于基本关闭低电压保护；实飞前应按你的电池节数和最低安全电压设置。
