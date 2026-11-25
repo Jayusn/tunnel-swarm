@@ -1,0 +1,94 @@
+核心结论：运行流程按「环境准备→启动核心节点→数据转发→无人机操作」分步执行，全程需保证设备组网正常。
+一、前期准备（必做）
+
+    完成树莓派 / ODROID 的 WiFi 静态 IP 配置（确保和工作站、笔记本在同一网段）。
+    笔记本端配置 ROS 网络（指定机载电脑为 Master，生效.bashrc 配置）。
+    确认 Pixhawk 飞控参数已设置完成（串口、EKF 融合、高度模式等）。
+    记录关键信息：动捕服务器 IP、无人机刚体名称、飞控串口号（如 ttyACM0）。
+    确保遥控器可以控制无人机且可以使电机停转。
+
+二、启动核心节点（机载电脑端，分 3 个终端依次运行）
+    一键启动脚本：./start_px4_vrpn_mavros.sh
+    1.启动 VRPN 客户端，连接动捕服务器获取位姿数据：
+    bash（替换为实际动捕服务器 IP）
+    roslaunch vrpn_client_ros sample.launch server:=192.168.31.125
+    2.启动 MAVROS 节点，建立机载电脑与 Pixhawk 飞控的通信：
+    bash（替换串口号和笔记本 IP）
+    roslaunch mavros px4.launch fcu_url:=/dev/ttyACM0:921600 gcs_url:=udp://@192.168.31.46:14550
+    roslaunch mavros px4.launch fcu_url:=/dev/ttyACM0:921600 gcs_url:=udp://@192.168.31.94:14550
+  
+    3. 设置 PX4 向 MAVROS 发送高频 IMU 数据，频率为 200Hz：
+      rosrun mavros mavcmd long 511 105 4000 0 0 0 0 0
+     查看：    timeout 5 rostopic hz /mavros/imu/data_raw
+    4. 设置 PX4 向 MAVROS 发送高频姿态四元数数据，频率为 200Hz：
+     rosrun mavros mavcmd long 511 31 4000 0 0 0 0 0
+     查看：  timeout 5 rostopic hz /mavros/imu/data
+    5.转发动捕位姿数据到飞控，完成数据链路打通：
+    bash（替换为实际刚体名称）
+    rosrun topic_tools relay /vrpn_client_node/UAV_5/pose /mavros/vision_pose/pose
+    6提高融合后的频率为200hz(实际只有110hz)
+    rosrun mavros mavcmd long 511 32 10000 0 0 0 0 0
+    查看：timeout 5 rostopic hz /mavros/local_position/pose
+   启动俯仰MPC  	
+    roslaunch offboard_attitude_test pitch_mpc_simple.launch
+    启动3轴MPC(imu) 
+    roslaunch offboard_attitude_test attitude_mpc_3axis.launch
+    启动3轴MPC(动捕版)
+    roslaunch offboard_attitude_test attitude_mpc_3axis_mocap.launch
+    启动3轴OMMPC(动捕版)
+    roslaunch offboard_attitude_ommpc attitude_ommpc_3axis.launch
+ 
+    测是
+    roslaunch offboard_attitude_test body_rate_q_step_test.launch
+    查看姿态
+    rosrun offboard_attitude_test attitude_monitor.py
+三、数据转发(关键节点验证)
+
+    #启动 VRPN 后，验证动捕数据是否正常输出:（可选）
+    rostopic echo /vrpn_client_node/UAV_5/pose 
+    rostopic hz /vrpn_client_node/UAV_5/pose
+    # 查看飞控是否接收到视觉位姿数据：（可选）
+    rostopic echo /mavros/vision_pose/pose
+    # 查看飞控融合后的定位数据：
+    rostopic echo /mavros/local_position/pose
+    rostopic hz /mavros/local_position/pose
+    # 原始 IMU，角速度 + 线加速度
+     rostopic echo /mavros/imu/data_raw
+     rostopic echo -n 1 /mavros/imu/data_raw
+    # MAVROS 处理后的 IMU姿态估计
+    rostopic echo /mavros/imu/data
+    rostopic echo -n 1 /mavros/imu/data
+四、无人机操作
+    # 启动 offboard 功能包开始飞行：
+    rosrun offboard_pkg offboard_node
+    
+五、查看PX4模式（可选）
+    rostopic echo /mavros/state -n1 | grep mode
+    rostopic echo /mavros/state
+
+六、查看是否上锁（可选）
+    rostopic echo /mavros/state/armed
+  启动ipc:
+   roslaunch ipc ipc_real.launch 
+  启动ipc单控制模式
+   roslaunch ipc_ctrl ipc_real.launch
+   启动auTORANS
+  ./start_autotrans_quad_wind.sh
+   source devel/setup.bash
+   roslaunch payload_mpc_controller quad_wind_mpc_controller.launch
+
+七、查看遥控器通道
+   rostopic echo /mavros/rc/in
+   
+八、查看发送的角速度和推力
+   rostopic echo /mavros/setpoint_raw/attitude
+   rostopic echo /mpc_controller_node/mpc/force
+   rostopic echo /mpc_controller_node/mpc/force_applied
+九、查看电机转速 
+   rostopic echo -n 1 /mavros/esc_status
+   rostopic echo /mavros/esc_status
+   rosrun mavros mavcmd long 511 291 5000 0 0 0 0 0
+
+
+
+

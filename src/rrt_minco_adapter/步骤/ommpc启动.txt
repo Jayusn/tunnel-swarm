@@ -1,0 +1,12 @@
+终端 1：启动 PX4 + MAVROS
+roslaunch px4 mavros_posix_sitl.launch
+终端 2：启动 OMMPC
+roslaunch ommpc_controller px4_example.launch
+终端 3：确认 PX4 已连接
+rostopic echo /mavros/state
+终端 4：确认 setpoint 正在发
+rostopic hz /mavros/setpoint_raw/attitude
+终端 5：切 OFFBOARD
+rosservice call /mavros/set_mode "{base_mode: 0, custom_mode: 'OFFBOARD'}"
+然后立刻再看状态：
+rostopic echo /mavros/state

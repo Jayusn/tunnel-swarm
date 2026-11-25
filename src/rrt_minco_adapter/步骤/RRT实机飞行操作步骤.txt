@@ -1,0 +1,151 @@
+使用保存地图进行 RRT＋MINCO / SUPER 实机飞行操作步骤（UAV0）
+更新日期：2026-11-25
+
+本文件为当前流程，替代之前每轮重新建图、旧终点(3,3)/(4,5)/(3.5,5)的步骤。
+
+一、当前任务
+
+地图文件：~/rrt_maps/site.json
+规划区域：X=[-2,6]m，Y=[-2,6]m。
+起点：地图坐标(0,0)，规划高度0.5m。
+终点：地图坐标(4,4,0.5)。
+总净空：障碍净空0.2m＋跟踪余量0.1m＝0.3m。
+控制器：AutoTrans MPC。
+到达终点且满足到点判据后，直接请求MPC降落，不额外悬停2秒。
+降落参考速度0.2m/s，之后由PX4 AUTO.LAND收尾；参考速度不是实际下降速度保证值。
+
+保存地图模式：本次不重新扫描、冻结一张新地图；需要把本次FAST-LIO与旧地图匹配对齐。
+旧地图中的XYZ属于建图时的坐标系，不自动等于距离地面的高度。
+当前保存地图曾做过起点残影清除和墙面小孔推断补齐；使用前检查真实环境是否一致。
+RRT＋MINCO到(4,4)在这张地图上已离线试算成功；离线成功不等于本次定位、控制或实飞已经验证。
+
+二、先做地面规划查看（不解锁）
+
+无人机放在原建图起飞点附近，保持与建图时近似朝向；确认真实障碍没有搬动。
+本步骤只查看保存地图上的参考路线，不需要启动飞行控制器。
+终端执行：
+
+source ~/match_ws/devel/setup.bash
+source ~/match_ws/shfiles/configure_dual_uav_ros_network.sh
+configure_dual_uav_ros_network uav0
+roslaunch rrt_minco_adapter compare_saved_map.launch
+
+RViz颜色：红线＝RRT＋MINCO，绿线＝SUPER。
+绿色球＝起点，橙色球＝终点。
+只有成功算法显示路线；失败算法显示FAILED，路线为空。
+结果目录：~/target_reports/rrt_super_current_map/summary.json
+
+确认所选算法规划成功、路线符合真实场地后，在这个终端按Ctrl+C退出。
+不要同时运行多个对比入口。这里的参考路线不会直接交给飞机执行；实飞时会从实际位置重新规划。
+
+三、启动实飞链路（保持未解锁）
+
+退出上一轮任务、建图、旧地图加载、控制器和RViz入口。
+已有正常运行的雷达、FAST-LIO和MAVROS可由脚本复用；不要重复启动同名节点。
+无人机回到原起飞点附近，保持近似原朝向，在启动和定位稳定等待期间放稳。
+遥控器开机并保证有RC输入；CH8低位，CH10低位，保持未解锁。
+
+选择一种算法，只执行下面其中一条：
+
+RRT＋MINCO：
+bash ~/match_ws/shfiles/start_rrt_flight_all.sh rrt "$HOME/rrt_maps/site.json"
+
+SUPER：
+bash ~/match_ws/shfiles/start_rrt_flight_all.sh super "$HOME/rrt_maps/site.json"
+
+必须带地图文件这个第二参数；不带时将走每轮新建地图的旧流程。
+脚本按数据就绪顺序启动雷达、FAST-LIO、MAVROS定位桥、MPC、规划任务和RViz。
+等待启动完成；若超时，先排查提示的话题，不要另开一个同样的一键脚本。
+脚本不会自动解锁、不会自动切OFFBOARD，也不会自动录包。
+保持这个终端运行。
+
+四、本次定位与保存地图匹配（未解锁时执行）
+
+另开终端：
+
+source ~/match_ws/devel/setup.bash
+source ~/match_ws/shfiles/configure_dual_uav_ros_network.sh
+configure_dual_uav_ros_network uav0
+rosservice call /UAV0/rrt/freeze_map "{}"
+
+重要：保存地图模式下，这个服务执行一次本次开机定位匹配。
+它不会把当前场地重新建图，也不会覆盖磁盘上的site.json。
+返回success: True后，查看匹配结果：
+
+rostopic echo -n 1 /UAV0/rrt/map_alignment
+rostopic echo -n 1 /UAV0/rrt/map_odom/pose/pose
+
+在RViz中：
+1. Fixed Frame应为UAV0/saved_map。
+2. 已保存的三维体素地图应显示出来。
+3. Add → By display type → PointCloud2。
+4. PointCloud2的Topic设为/UAV0/rrt/aligned_cloud。
+5. 对比当前扫描和旧地图的墙面、门柱、箱体是否重合。
+
+匹配成功只表示算法通过其初步质量检查；重复墙面可能出现错配，必须目视核对。
+若失败或明显不重合，保持未解锁，检查起点、朝向和环境是否一致；在地面退出实飞入口后重新启动匹配。
+不要用直接修改frame_id代替坐标对齐，不要在空中重启定位或重新匹配。
+
+五、可选录包（建议在解锁前开始）
+
+另开终端执行：
+
+bash ~/match_ws/shfiles/record_rrt_flight.sh
+
+看到Recording to ...bag说明录包已开始。
+目录：~/flight_bags；约1GB分包。分包不会限制总大小。
+当前脚本包含cloud_registered点云，持续录制会较快占用磁盘；只在测试期间录制，落地后及时停止。
+录包不是一键实飞脚本自动启动的。
+
+六、遥控起飞与轨迹跟踪
+
+完成地图匹配、检查定位与控制状态后，再按现有遥控方式解锁和切入OFFBOARD。
+操作顺序：
+
+CH8低位、CH10低位 → 遥控器解锁 → 切入OFFBOARD → 上升到0.5m附近 → CH8拨高位。
+
+CH8低位：现有MPC起飞/悬停逻辑，起飞时保持实际XY位置。
+CH8高位：允许任务规划及轨迹跟踪。
+当前任务启动条件包括：已解锁、OFFBOARD、地图已就绪、RC数据新鲜、实际XY距离地图起点不超过0.5m。
+按此前设置，任务没有起点高度、速度门槛或2秒等待；因此应由操作者确认升至0.5m附近后再拨CH8高位。
+实际起飞点不会被自动搬到(0,0)，规划使用当前真实定位位置。
+
+任务状态可另开已加载ROS环境的终端查看：
+
+rostopic echo /UAV0/rrt/mission_status
+
+WAIT_START：等待任务条件。
+PLANNING：正在从当前实际位置规划。
+FLYING：规划成功，正在输出轨迹参考。
+FAILED：规划或任务失败，不代表会自动重试；按现场状态接管处理。
+LAND_REQUESTED / LANDING：已请求降落或正在降落。
+DONE：落地并解除武装后任务结束。
+CANCELLED：任务已取消，本轮不会自动恢复。
+
+七、到点降落与遥控接管
+
+到达(4,4,0.5)、轨迹结束且满足终点位置与速度判据后，任务请求MPC慢降，再由PX4 AUTO.LAND完成收尾。
+不额外等待终点悬停2秒。保持实飞终端运行直至落地并解除武装。
+
+需要提前降落时：CH10先保持低位，再拨到高位，触发现有MPC降落流程。
+该操作取消本轮规划跟踪并停止相应指令，不能当作独立于软件链路的硬件紧急停机。
+异常时使用已经验证可用的遥控飞控模式接管；空中不要用Ctrl+C关闭定位、控制器或一键实飞终端。
+本文件不将CH8中位解释为已验证的悬停模式。
+
+八、落地后结束
+
+确认已落地并解除武装。
+若录包中，先在录包终端按Ctrl+C，等待bag保存完成。
+再在一键实飞终端按Ctrl+C退出。
+脚本仅停止本次启动的进程，复用的基础节点可能仍在运行。
+下一轮重新启动实飞入口并重新执行保存地图匹配，不直接复用上一轮的运行状态。
+不要删除仍在录制的.bag.active文件。
+
+九、坐标与路线说明
+
+对比入口的红/绿路线是保存地图上的离线规划显示。
+实飞入口采用所选算法，从实际位置重新计算路线，可能与离线显示路线不同。
+/UAV0/rrt/map_odom：旧地图坐标下的本次定位。
+/UAV0/fast_lio/Odom_high_freq：本次FAST-LIO原始定位。
+任务在旧地图坐标下规划，指令逆变换回本次FAST-LIO坐标后交给MPC。
+不要把两个坐标系下的XYZ直接混用。

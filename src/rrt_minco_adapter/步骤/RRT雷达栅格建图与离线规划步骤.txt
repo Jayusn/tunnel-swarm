@@ -1,0 +1,183 @@
+RRT 雷达三维栅格建图与离线规划步骤（不飞行）
+更新日期：2026-11-17
+
+一、用途与默认配置
+
+流程：MID360雷达 → FAST-LIO定位 → FUEL概率占据建图 → 三维体素地图 → 冻结地图 → RRT＋MINCO离线规划 → RViz显示路径。
+全程不解锁、不切换OFFBOARD、不启动控制器、不发布飞行指令。
+不要启动 simple_controller.launch、real_cloud.launch、point_to_point_mission.launch 或原FUEL全套入口。
+
+地图坐标系：UAV0/camera_init（FAST-LIO坐标，不自动换算场地坐标或离地高度）
+三维显示范围：完整FUEL建图范围，不按RRT规划区域裁剪
+默认FUEL边界：X/Y=-10～10m，Z=-1～1.5m（20×20×2.5m）
+FUEL分辨率0.05m，最大射线距离8m，命中0.65/未命中0.35/占据阈值0.80
+规划区域：X=-1～4m，Y=-1～4m
+规划障碍点高度筛选：Z=0.3～0.7m；三维显示保留FUEL地图内高度，不按此范围裁剪
+体素分辨率：0.1m（XYZ方向均为0.1m立方体）
+规划仍在Z=0.5m固定高度进行，并非可上下绕障的三维RRT。
+虚拟规划起点：(0.01,0.01,0.5)
+虚拟规划目标：(3,3,0.5)
+规划参考速度：0.2m/s
+默认净空0.2m＋额外余量0.1m，合计0.3m。
+无需让地面无人机实际到达虚拟起点或0.5m高度。
+
+二、每个新终端先加载环境
+
+source ~/match_ws/devel/setup.bash
+source ~/match_ws/shfiles/configure_dual_uav_ros_network.sh
+configure_dual_uav_ros_network uav0
+
+应显示：
+ROS_MASTER_URI=http://10.145.227.212:11311
+ROS_IP=10.145.227.212
+
+各终端和节点必须使用相同网络配置。如果旧节点使用127.0.0.1配置，应先停止旧节点，再统一启动。
+如果无线IP已经变化，需要先修正网络配置。
+
+三、终端1：启动ROS master
+
+先执行第二节的环境命令，再执行：
+
+roscore
+
+如果已有正常运行的roscore，保留它，不要重复启动。
+
+四、终端2：启动MID360雷达
+
+先执行第二节的环境命令，再执行：
+
+roslaunch livox_ros_driver2 msg_MID360.launch vehicle_ns:=UAV0 msg_frame_id:=UAV0/livox_frame publish_freq:=10.0
+
+如果雷达驱动已运行，跳过本步。
+
+五、终端3：启动FAST-LIO
+
+先执行第二节的环境命令，再执行：
+
+roslaunch fast_lio mapping_mid360.launch vehicle_ns:=UAV0 odom_topic:=/UAV0/fast_lio/Odometry high_freq_odom_topic:=/UAV0/fast_lio/Odom_high_freq rviz:=false
+
+如果FAST-LIO已正常运行，跳过本步。
+雷达和FAST-LIO各保留一套。重复启动会出现“new node registered with same name”，把旧节点顶掉。
+
+在另一个已加载环境的终端检查：
+
+rostopic hz /UAV0/fast_lio/cloud_registered
+
+通常应看到约10Hz。按Ctrl+C只结束频率检查，雷达和FAST-LIO终端继续运行。
+
+检查点云坐标系：
+
+rostopic echo -n 1 /UAV0/fast_lio/cloud_registered/header
+
+frame_id应为UAV0/camera_init。
+
+六、终端4：启动栅格地图和RViz
+
+如果之前单独运行过cloud_to_scene_node.py，先在那个终端按Ctrl+C停止旧地图转换节点。
+先执行第二节的环境命令，再执行：
+
+roslaunch rrt_minco_adapter grid_map_view.launch
+
+这个入口启动独立FUEL建图、占据快照转换和RViz，不启动控制器、探索任务或飞行任务。
+需要点云及/UAV0/fast_lio/Odometry共同输入。
+如果需要显示更高的墙体，可用以下命令替代上一条（Z=-1～5m）：
+roslaunch rrt_minco_adapter grid_map_view.launch map_size_z:=6.0
+如果已运行此入口，不要重复启动。
+
+RViz中默认使用三维透视图，可拖动鼠标旋转查看：
+立方体：FUEL概率判定为占据的三维体素，按最新地图替换显示。
+高度着色：低处青色，中间蓝色，高处紫色（随当前地图高度范围变化）。
+红色路径：完成后面的离线规划后显示，Z=0.5m。
+地面细网格仅为坐标参考。滚轮缩小视图可以查看更大范围。
+地图节点重启后需要重新扫描；旧版本裁掉的区域外点不会自动恢复。
+
+三维地图话题：/UAV0/rrt/voxel_map
+消息类型：visualization_msgs/Marker（CUBE_LIST）
+路径话题：/UAV0/rrt/dry_run_path
+保留的/UAV0/rrt/grid_map仅为二维规划切片，不是本次要查看的三维地图。
+
+手动设置RViz时：
+Fixed Frame = UAV0/camera_init
+添加Marker，Marker Topic = /UAV0/rrt/voxel_map
+Views选择Orbit（三维视角），不要选择TopDownOrtho俯视图。
+添加Path，Topic = /UAV0/rrt/dry_run_path
+
+保持FAST-LIO连续运行，完成测试区域扫描。
+FUEL使用命中/未命中概率更新和射线清空，不再永久保留每个单次回波。
+但RRT转换只读取占据障碍，未显示体素的位置仍可能是未知，不能据此认定可通行。
+地图显示没有额外膨胀，RRT在规划时另行计算0.3m净空余量。
+
+七、扫描完成后冻结地图
+
+在另一个已加载环境的终端执行：
+
+rosservice call /UAV0/rrt/freeze_map "{}"
+
+返回success: True后，RRT规划快照和默认RViz体素已经冻结。
+FUEL上游仍在更新/UAV0/rrt/fuel/occupancy_all，但不会改变已冻结快照。
+地图节点会报告占据栅格数量和合并后的障碍矩形数量。
+
+重要：当前RRT把操作者确认已扫描区域内没有障碍记录的位置作为可通行区域，并未实现未知空间避障。
+必须确认整个测试区域已扫描，不能只因为规划成功就认为路径安全。
+
+八、直接调用脚本进行离线规划
+
+在新终端先执行第二节的环境命令，再执行：
+
+rosrun rrt_minco_adapter ground_plan.py
+
+脚本等待冻结地图最多30秒，然后进行一次规划。
+默认起点：(0.01,0.01,0.5)
+默认目标：(3,3,0.5)
+只发布RViz显示路径，不发布PositionCommand，也不调用飞控服务。
+
+看到“规划成功”后，保持这个终端运行，RViz就能显示红色路径。
+按Ctrl+C退出脚本。
+
+可选：显式指定XY起终点及显示高度（仍与当前高度切片保持一致）：
+
+rosrun rrt_minco_adapter ground_plan.py _start:="[0.01,0.01]" _goal:="[3,3]" _height:=0.5
+
+结果保存到：
+~/.ros/rrt_ground_check/scene.json
+~/.ros/rrt_ground_check/trajectory_xy.json
+
+重复成功运行会覆盖文件；规划失败时不能把旧的trajectory_xy.json当作本次成功结果。
+
+九、检查规划结果
+
+在RViz检查：
+1. 红色路径是否从(0.01,0.01)连接到(3,3)。
+2. 路径是否避开0.3～0.7m规划高度范围内的障碍体素，并留有余量。
+3. 是否经过未扫描或被遮挡区域。
+4. 地图坐标方向和高度切片是否与实际场地一致。
+
+如果看不到路径：
+确认ground_plan.py终端仍运行，且提示规划成功。
+确认RViz中Path显示项启用、Topic为/UAV0/rrt/dry_run_path。
+
+如果规划失败：
+保留终端错误信息。起终点可能位于障碍膨胀区，或地图不存在满足余量的通路。
+地面规划取消虚拟边界净空，允许起终点位于边界；轨迹必须位于[-1,4]×[-1,4]内。
+真实墙体障碍不删除，障碍总净空仍为0.3m。
+
+十、重新扫描或结束
+
+重新扫描：
+1. 在ground_plan.py终端按Ctrl+C退出旧路径发布。
+2. 停止grid_map_view.launch，再重新启动它。
+3. 重新扫描、冻结地图、运行ground_plan.py。
+
+FAST-LIO如果重启，坐标原点可能重新初始化，必须重新建图，不能沿用旧静态地图。
+
+结束测试：
+在各启动终端分别按Ctrl+C停止对应进程，最后停止roscore。
+
+简化记忆：
+环境 → roscore → 雷达 → FAST-LIO → grid_map_view.launch → freeze_map → ground_plan.py → RViz查看。
+已有正常运行的前级节点不要重复启动。
+
+
+查看实时位置
+rostopic echo /UAV0/fast_lio/Odometry/pose/pose/position
+
