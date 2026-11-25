@@ -445,3 +445,6 @@ roslaunch rrt_minco_adapter compare_saved_map.launch map_file:=$HOME/rrt_maps/si
 `compare_planners.py` 新增可选 `_visualize:=true`；`_scene_file` 兼容裸场景 JSON 和完整保存地图 JSON。
 结果默认放在 ~/target_reports/rrt_super_current_map，保持启动终端运行以维持地图和路径话题；Ctrl+C退出。
 该入口只启动规划对比和RViz，不发布飞行控制指令。
+
+
+2026-11-25终点再次更新：当前默认终点为(3.5,5,0.5)，起点仍为(0,0,0.5)，规划范围仍为[-2,6]×[-2,6]。上述(4,5)试算失败记录属于旧终点。重新运行 compare_saved_map.launch 使用新终点。
